@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: install-agent-workflows [--target DIR] [--mode copy|symlink]
+
+Installs this shared workflow pack into an agent home.
+
+Default target:
+  ${CODEX_HOME:-$HOME/.codex}
+
+Installed paths:
+  <target>/skills/*
+  <target>/workflows/*
+  <target>/bin/agent-workflow-seam-doctor
+USAGE
+}
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+target="${CODEX_HOME:-$HOME/.codex}"
+mode="copy"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target)
+      target="${2:?--target requires a directory}"
+      shift 2
+      ;;
+    --mode)
+      mode="${2:?--mode requires copy or symlink}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+case "$mode" in
+  copy|symlink) ;;
+  *)
+    echo "--mode must be copy or symlink, got: $mode" >&2
+    exit 64
+    ;;
+esac
+
+if [[ "$mode" = "copy" ]]; then
+  mkdir -p "$target/skills" "$target/workflows" "$target/bin"
+  rsync -a --delete "$repo_root/skills/" "$target/skills/"
+  rsync -a --delete "$repo_root/workflows/" "$target/workflows/"
+  install -m 0755 "$repo_root/bin/agent-workflow-seam-doctor" "$target/bin/agent-workflow-seam-doctor"
+else
+  mkdir -p "$target/skills" "$target/bin"
+  if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
+    echo "Refusing to replace non-symlink path: $target/workflows" >&2
+    exit 1
+  fi
+  for skill in "$repo_root"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    destination="$target/skills/$(basename "$skill")"
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-symlink path: $destination" >&2
+      exit 1
+    fi
+    ln -sfn "$skill" "$destination"
+  done
+  rm -f "$target/workflows"
+  ln -sfn "$repo_root/workflows" "$target/workflows"
+  ln -sfn "$repo_root/bin/agent-workflow-seam-doctor" "$target/bin/agent-workflow-seam-doctor"
+fi
+
+cat <<MSG
+Installed ShakaCode agent workflows into:
+  $target
+
+Add this to PATH if needed:
+  export PATH="$target/bin:\$PATH"
+
+Validate a consumer repo with:
+  agent-workflow-seam-doctor --shared "$repo_root"
+MSG

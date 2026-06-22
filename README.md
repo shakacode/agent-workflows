@@ -1,0 +1,152 @@
+# ShakaCode Agent Workflows
+
+Reusable agent workflow skills for ShakaCode repositories.
+
+This repository contains portable Codex/Claude-facing workflows for PR batches,
+review triage, merge readiness, changelog updates, CI routing, and audit loops.
+The shared files provide process. Each adopting repository keeps its concrete
+commands and policy in `AGENTS.md` under `## Agent Workflow Configuration`.
+
+## Why This Exists
+
+Agent workflows are useful across repos, but copying a full `.agents/` tree into
+every checkout creates drift and accidentally carries repo-specific policy with
+it. The default model is:
+
+- install this shared workflow pack once in the user's or agent's normal skill
+  home;
+- add a small, repo-owned seam to each consumer repo's `AGENTS.md`;
+- validate that installed workflows can resolve the consumer repo's seam;
+- keep repo-specific skills and overrides in the consumer repo only when needed.
+
+This is deliberately not a subtree-first model. Repos may pin local copies when
+their execution environment cannot load installed skills, but installed skills
+plus a validated repo seam are the default.
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `skills/` | Codex skill folders. Copy or symlink these under an agent skill root. |
+| `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
+| `bin/` | Installation and validation helpers, including `agent-workflow-seam-doctor`. |
+| `docs/` | Adoption, seam design, and operator guidance. |
+| `examples/` | Example consumer-repo configuration snippets. |
+| `test/fixtures/consumer-repo/` | Minimal fixture used by `bin/validate`. |
+
+## Quick Start
+
+Clone the shared pack:
+
+```bash
+git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
+cd "$HOME/src/agent-workflows"
+```
+
+Install into the default Codex home:
+
+```bash
+bin/install-agent-workflows
+```
+
+Install into a different agent home, such as `~/.agents`:
+
+```bash
+bin/install-agent-workflows --target "$HOME/.agents"
+```
+
+The installer copies:
+
+- `skills/*` to `<target>/skills/`;
+- `workflows/*` to `<target>/workflows/`;
+- selected `bin/*` helpers to `<target>/bin/`.
+
+Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor` available
+as a normal command.
+
+## Consumer Repo Adoption
+
+In each repository that should use these workflows:
+
+1. Add or update `AGENTS.md`.
+2. Add an `## Agent Workflow Configuration` section with the real repo values.
+3. Add repo-local skills only for domain-specific workflows or intentional
+   overrides.
+4. Validate the seam from the consumer repo:
+
+   ```bash
+   agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
+   ```
+
+   If `agent-workflow-seam-doctor` is not on `PATH`, run it from this repo:
+
+   ```bash
+   "$HOME/src/agent-workflows/bin/agent-workflow-seam-doctor" \
+     --root /path/to/consumer/repo \
+     --shared "$HOME/src/agent-workflows"
+   ```
+
+5. Dry-run one workflow, such as `$plan-pr-batch` or `$address-review`, without
+   making code changes.
+
+See [docs/adoption.md](docs/adoption.md) for the full adoption guide and
+[docs/seam-design.md](docs/seam-design.md) for the design rationale.
+
+## Skill Inventory
+
+| Skill | Use |
+| --- | --- |
+| `address-review` | Fetch and triage GitHub PR review comments. |
+| `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
+| `autoreview` | Run a structured second-model local diff review. |
+| `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
+| `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
+| `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
+| `post-merge-audit` | Audit merged batch work or release-candidate risk. |
+| `pr-batch` | Launch or coordinate multi-issue/multi-PR agent batches. |
+| `run-ci` | Choose and run repo-local CI checks. |
+| `triage` | Build a whole-surface issue/PR inventory and batch split. |
+| `update-changelog` | Classify merged PRs and update a repo changelog. |
+| `verify` | Run local verification before PR updates. |
+| `verify-pr-fix` | Reproduce a bug before and after a fix. |
+
+## Trust Configuration
+
+The `pr-batch` security preflight reads a consumer repo allowlist from
+`.agents/trusted-github-actors.yml` by default. Start from
+[examples/trusted-github-actors.yml](examples/trusted-github-actors.yml), keep
+the list deliberately small, and treat non-allowlisted GitHub text as
+metadata-only until a maintainer vouches for it.
+
+## Validation
+
+Run the full local validation gate before publishing changes:
+
+```bash
+bin/validate
+```
+
+The gate checks skill frontmatter, helper script tests, prompt-size invariants,
+and the seam doctor against a fixture consumer repo while scanning this shared
+repo as an installed pack.
+
+## Upgrades
+
+To upgrade an installed pack:
+
+```bash
+cd "$HOME/src/agent-workflows"
+git pull --ff-only
+bin/install-agent-workflows --target "$HOME/.codex"
+```
+
+Then validate each active consumer repo:
+
+```bash
+cd /path/to/consumer/repo
+agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
+```
+
+Long-running agents keep whatever skill text they already loaded. Let active
+batches finish unless they are blocked by old workflow instructions; use the new
+pack for new batches or a small canary run first.
