@@ -371,6 +371,10 @@ class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
       assert_includes out, ".agents/workflows/example.md"
     end
   end
+end
+
+class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
 
   def test_shared_root_placeholder_is_scanned
     with_repo do |root|
