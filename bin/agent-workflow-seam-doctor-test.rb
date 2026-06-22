@@ -279,6 +279,10 @@ class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
       assert_includes out, "<follow-up prefix>"
     end
   end
+end
+
+class AgentWorkflowSeamDoctorFenceTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
 
   def test_executable_placeholder_in_tilde_code_fence_fails
     with_repo do |root|
