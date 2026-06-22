@@ -1,6 +1,6 @@
 # PR Batch Skills Usage
 
-Use this guide when deciding between issue triage, planning, and execution skills for Codex batch work.
+Use this guide when deciding between issue triage, planning, and execution skills for agent batch work.
 
 When one coordinator runs multiple batches across machines, desktop apps, or
 repositories, use the target repo's coordination backend plus
@@ -62,7 +62,7 @@ Use `$pr-batch` directly only when the user already supplied an exact maintainer
 
 ```text
 $pr-batch
-Run issues #123, #124, and PR #130 as one Codex batch. Use one worker per independent item.
+Run issues #123, #124, and PR #130 as one agent batch. Use one worker per independent item.
 ```
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from

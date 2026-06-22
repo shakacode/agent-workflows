@@ -41,6 +41,9 @@ RUBY
 echo "== seam doctor unit tests =="
 ruby bin/agent-workflow-seam-doctor-test.rb
 
+echo "== installer/status/upgrade tests =="
+bash bin/install-agent-workflows-test.bash
+
 echo "== fixture seam validation =="
 bin/agent-workflow-seam-doctor --root test/fixtures/consumer-repo --shared .
 

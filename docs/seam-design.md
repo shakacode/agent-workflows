@@ -22,7 +22,7 @@ repo-specific values the portable skills need.
 ```text
 shakacode/agent-workflows
   skills/... and workflows/...        portable process, installed per user/agent
-  bin/...                             install and validation helpers
+  bin/...                             install, status, upgrade, and validation helpers
 
 consumer repo
   AGENTS.md                           canonical policy plus Agent Workflow Configuration seam
@@ -34,9 +34,9 @@ consumer repo
 
 The default distribution path is this repository plus the user's normal skill
 installation mechanism. For example, an agent may install the shared
-`pr-batch`, `verify`, `address-review`, and changelog skills once and use them
-in any repo. The skill then reads the target repo's `AGENTS.md` seam to resolve
-concrete commands and policy.
+`pr-batch`, `verify`, `address-review`, and changelog skills once into Codex or
+Claude and use them in any repo. The skill then reads the target repo's
+`AGENTS.md` seam to resolve concrete commands and policy.
 
 Repository-pinned copies remain an optional escape hatch for environments that
 need exact workflow text in the checkout, such as cloud agents that cannot use a
@@ -124,7 +124,9 @@ Repo-local content should contain concrete policy and domain knowledge:
    copies to resolve values through that seam, add or reference
    `agent-workflow-seam-doctor`, and point adoption docs at this repository.
 2. Shared pack: publish `shakacode/agent-workflows`, install it in the agent
-   surfaces ShakaCode uses, and run `bin/validate` before updates.
+   surfaces ShakaCode uses, and run `bin/validate` before updates. Use
+   `agent-workflows-status` and `upgrade-agent-workflows` for ongoing installed
+   pack maintenance.
 3. Consumer repos: install or enable the shared skills for the user/agent, add
    the repo seam, run the seam doctor, and dry-run one workflow.
 4. Optional pinning: revisit repository-pinned copies only for repos or agents
@@ -134,6 +136,7 @@ Repo-local content should contain concrete policy and domain knowledge:
 
 - `bin/validate`
 - `ruby bin/agent-workflow-seam-doctor-test.rb`
+- `bash bin/install-agent-workflows-test.bash`
 - `bin/agent-workflow-seam-doctor --root <consumer-repo> --shared <this-repo>`
 - Markdown format and link checks for edited documentation
 - a dry run of one shared workflow against the repo seam

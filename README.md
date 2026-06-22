@@ -27,9 +27,9 @@ plus a validated repo seam are the default.
 
 | Path | Purpose |
 | --- | --- |
-| `skills/` | Codex skill folders. Copy or symlink these under an agent skill root. |
+| `skills/` | Agent skill folders. Copy or symlink these under a Codex or Claude skill root. |
 | `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
-| `bin/` | Installation and validation helpers, including `agent-workflow-seam-doctor`. |
+| `bin/` | Install, status, upgrade, and validation helpers. |
 | `docs/` | Adoption, seam design, and operator guidance. |
 | `examples/` | Example consumer-repo configuration snippets. |
 | `test/fixtures/consumer-repo/` | Minimal fixture used by `bin/validate`. |
@@ -46,23 +46,35 @@ cd "$HOME/src/agent-workflows"
 Install into the default Codex home:
 
 ```bash
-bin/install-agent-workflows
+bin/install-agent-workflows --host codex
+```
+
+Install into the default Claude Code home:
+
+```bash
+bin/install-agent-workflows --host claude
 ```
 
 Install into a different agent home, such as `~/.agents`:
 
 ```bash
-bin/install-agent-workflows --target "$HOME/.agents"
+bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
 
 The installer copies:
 
 - `skills/*` to `<target>/skills/`;
 - `workflows/*` to `<target>/workflows/`;
-- selected `bin/*` helpers to `<target>/bin/`.
+- selected `bin/*` helpers to `<target>/bin/`;
+- install metadata to `<target>/.agent-workflows-install.json`.
 
-Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor` available
-as a normal command.
+Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
+`agent-workflows-status`, and `upgrade-agent-workflows` available as normal
+commands.
+
+See [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
+host selection, status states, upgrades, rollback behavior, and Codex/Claude
+notes.
 
 ## Consumer Repo Adoption
 
@@ -89,8 +101,10 @@ In each repository that should use these workflows:
 5. Dry-run one workflow, such as `$plan-pr-batch` or `$address-review`, without
    making code changes.
 
-See [docs/adoption.md](docs/adoption.md) for the full adoption guide and
-[docs/seam-design.md](docs/seam-design.md) for the design rationale.
+See [docs/adoption.md](docs/adoption.md) for the full adoption guide,
+[docs/seam-design.md](docs/seam-design.md) for the design rationale, and
+[docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
+ongoing host installs and upgrades.
 
 ## Skill Inventory
 
@@ -132,21 +146,21 @@ repo as an installed pack.
 
 ## Upgrades
 
-To upgrade an installed pack:
+Check the installed pack:
 
 ```bash
-cd "$HOME/src/agent-workflows"
-git pull --ff-only
-bin/install-agent-workflows --target "$HOME/.codex"
+agent-workflows-status --host codex
 ```
 
-Then validate each active consumer repo:
+Upgrade and validate a consumer repo seam:
 
 ```bash
-cd /path/to/consumer/repo
-agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
+upgrade-agent-workflows --host codex --consumer-root /path/to/consumer/repo
 ```
 
 Long-running agents keep whatever skill text they already loaded. Let active
 batches finish unless they are blocked by old workflow instructions; use the new
-pack for new batches or a small canary run first.
+pack for new batches or a small canary run first. See
+[docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
+`UP_TO_DATE`, `UPGRADE_AVAILABLE`, `NOT_INSTALLED`, and `CHECK_FAILED` status
+semantics plus network-use notes.

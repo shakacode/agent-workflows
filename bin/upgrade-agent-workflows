@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--consumer-root DIR] [--dry-run] [--no-fetch]
+
+Updates the source clone, reinstalls this shared workflow pack into an agent
+home, and optionally validates one or more consumer repository seams.
+
+Network note: by default this command runs git fetch/pull in the source clone.
+Use --no-fetch for an already-updated local clone.
+USAGE
+}
+
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+host="codex"
+target=""
+source=""
+mode=""
+dry_run=false
+fetch=true
+consumer_roots=()
+metadata_name=".agent-workflows-install.json"
+
+default_target_for_host() {
+  case "$1" in
+    codex)
+      printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"
+      ;;
+    claude)
+      printf '%s\n' "${CLAUDE_HOME:-$HOME/.claude}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+resolve_auto_target() {
+  local codex_home="${CODEX_HOME:-$HOME/.codex}"
+  local claude_home="${CLAUDE_HOME:-$HOME/.claude}"
+  local -a candidates=()
+
+  if [[ -n "${CODEX_HOME:-}" || -d "$codex_home" ]]; then
+    candidates+=("codex:$codex_home")
+  fi
+  if [[ -n "${CLAUDE_HOME:-}" || -d "$claude_home" ]]; then
+    candidates+=("claude:$claude_home")
+  fi
+
+  case "${#candidates[@]}" in
+    0)
+      printf 'codex:%s\n' "$codex_home"
+      ;;
+    1)
+      printf '%s\n' "${candidates[0]}"
+      ;;
+    *)
+      echo "Auto host detection found both Codex and Claude homes; pass --host codex or --host claude." >&2
+      return 64
+      ;;
+  esac
+}
+
+resolve_host_and_target() {
+  if [[ -n "$target" ]]; then
+    printf '%s:%s\n' "$host" "$target"
+    return 0
+  fi
+
+  if [[ "$host" = "auto" ]]; then
+    resolve_auto_target
+  else
+    printf '%s:%s\n' "$host" "$(default_target_for_host "$host")"
+  fi
+}
+
+metadata_value() {
+  local path="$1"
+  local key="$2"
+  [[ -f "$path" ]] || return 1
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    value = metadata[ARGV.fetch(1)]
+    exit 1 if value.nil? || value.to_s.empty?
+    puts value
+  ' "$path" "$key"
+}
+
+short_revision() {
+  local value="$1"
+  printf '%s\n' "${value:0:12}"
+}
+
+update_source_clone() {
+  [[ -d "$source/.git" ]] || return 0
+
+  git -C "$source" fetch --quiet --prune origin
+  local branch upstream
+  branch="$(git -C "$source" branch --show-current 2>/dev/null || true)"
+  [[ -n "$branch" ]] || return 0
+
+  upstream="$(git -C "$source" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  if [[ -n "$upstream" ]]; then
+    git -C "$source" merge --ff-only --quiet "$upstream"
+  elif git -C "$source" rev-parse --verify --quiet "origin/$branch" >/dev/null; then
+    git -C "$source" merge --ff-only --quiet "origin/$branch"
+  fi
+}
+
+backup_target() {
+  backup_dir="$(mktemp -d)"
+  backup_target_dir="$backup_dir/target"
+  target_existed=false
+  if [[ -d "$target" ]]; then
+    target_existed=true
+    mkdir -p "$backup_target_dir"
+    rsync -a "$target/" "$backup_target_dir/"
+  fi
+}
+
+restore_target() {
+  if [[ "${target_existed:-false}" = "true" ]]; then
+    mkdir -p "$target"
+    rsync -a --delete "$backup_target_dir/" "$target/"
+  else
+    rm -rf "$target"
+  fi
+  echo "ROLLBACK_COMPLETE target=$target"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      host="${2:?--host requires codex, claude, or auto}"
+      shift 2
+      ;;
+    --target)
+      target="${2:?--target requires a directory}"
+      shift 2
+      ;;
+    --source)
+      source="${2:?--source requires a directory}"
+      shift 2
+      ;;
+    --mode)
+      mode="${2:?--mode requires copy or symlink}"
+      shift 2
+      ;;
+    --consumer-root)
+      consumer_roots+=("${2:?--consumer-root requires a directory}")
+      shift 2
+      ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    --no-fetch)
+      fetch=false
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+case "$host" in
+  codex|claude|auto) ;;
+  *)
+    echo "--host must be codex, claude, or auto, got: $host" >&2
+    exit 64
+    ;;
+esac
+
+case "${mode:-copy}" in
+  copy|symlink) ;;
+  *)
+    echo "--mode must be copy or symlink, got: $mode" >&2
+    exit 64
+    ;;
+esac
+
+resolved="$(resolve_host_and_target)"
+host="${resolved%%:*}"
+target="${resolved#*:}"
+metadata_path="$target/$metadata_name"
+
+if [[ -z "$source" ]]; then
+  source="$(metadata_value "$metadata_path" source 2>/dev/null || printf '%s\n' "$script_root")"
+fi
+if [[ ! -d "$source" ]]; then
+  echo "CHECK_FAILED missing source root: $source" >&2
+  exit 3
+fi
+source="$(cd "$source" && pwd)"
+
+if [[ -z "$mode" ]]; then
+  mode="$(metadata_value "$metadata_path" mode 2>/dev/null || printf 'copy\n')"
+fi
+
+status_script="$source/bin/agent-workflows-status"
+install_script="$source/bin/install-agent-workflows"
+
+if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
+  echo "CHECK_FAILED missing agent-workflows scripts in source: $source" >&2
+  exit 3
+fi
+
+if [[ "$dry_run" = "true" ]]; then
+  status_args=(--host "$host" --target "$target" --source "$source")
+  if [[ "$fetch" = "true" ]]; then
+    status_args+=(--fetch)
+  fi
+  set +e
+  "$status_script" "${status_args[@]}"
+  status=$?
+  set -e
+  if [[ "$status" -eq 3 ]]; then
+    exit 3
+  fi
+  exit 0
+fi
+
+old_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
+
+if [[ "$fetch" = "true" ]]; then
+  update_source_clone
+fi
+
+backup_target
+completed=false
+trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
+
+"$install_script" --host "$host" --target "$target" --mode "$mode"
+
+for consumer_root in "${consumer_roots[@]}"; do
+  "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$source"
+done
+
+completed=true
+trap - ERR
+
+new_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
+echo "UPGRADE_COMPLETE $(short_revision "$old_revision") $(short_revision "$new_revision") target=$target source=$source"

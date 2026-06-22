@@ -65,3 +65,5 @@ agent-workflow-seam-doctor --shared /path/to/agent-workflows
 
 If a consumer repo pins local copies for compatibility, update those copies from
 this repo and rerun the seam doctor with the pinned copy as `--shared`.
+Use `agent-workflows-status` and `upgrade-agent-workflows` for installed
+Codex/Claude homes; see `docs/installation-and-upgrades.md`.

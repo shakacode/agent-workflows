@@ -1,0 +1,220 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require "open3"
+
+module AgentWorkflowsStatus
+  METADATA_NAME = ".agent-workflows-install.json"
+  STATUS_EXIT = {
+    "UP_TO_DATE" => 0,
+    "UPGRADE_AVAILABLE" => 1,
+    "NOT_INSTALLED" => 2,
+    "CHECK_FAILED" => 3
+  }.freeze
+
+  module_function
+
+  def default_target_for_host(host)
+    case host
+    when "codex"
+      ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex"))
+    when "claude"
+      ENV.fetch("CLAUDE_HOME", File.join(Dir.home, ".claude"))
+    else
+      raise ArgumentError, "unsupported host: #{host}"
+    end
+  end
+
+  def resolve_auto_target
+    codex_home = ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex"))
+    claude_home = ENV.fetch("CLAUDE_HOME", File.join(Dir.home, ".claude"))
+    candidates = []
+    candidates << ["codex", codex_home] if ENV.key?("CODEX_HOME") || Dir.directory?(codex_home)
+    candidates << ["claude", claude_home] if ENV.key?("CLAUDE_HOME") || Dir.directory?(claude_home)
+
+    case candidates.length
+    when 0
+      ["codex", codex_home]
+    when 1
+      candidates.first
+    else
+      raise ArgumentError, "auto host detection found both Codex and Claude homes"
+    end
+  end
+
+  def resolve_host_and_target(host, target)
+    return [host, File.expand_path(target)] if target
+    return resolve_auto_target if host == "auto"
+
+    [host, default_target_for_host(host)]
+  end
+
+  def metadata_path(target)
+    File.join(target, METADATA_NAME)
+  end
+
+  def read_metadata(target)
+    path = metadata_path(target)
+    return nil unless File.file?(path)
+
+    JSON.parse(File.read(path))
+  rescue JSON::ParserError => e
+    raise "invalid metadata #{path}: #{e.message}"
+  end
+
+  def version_for(source)
+    path = File.join(source, "VERSION")
+    return "unknown" unless File.file?(path)
+
+    File.read(path).strip
+  end
+
+  def git_output(source, *args)
+    output, status = Open3.capture2e("git", "-C", source, *args)
+    return [output.strip, nil] if status.success?
+
+    [nil, output.strip]
+  end
+
+  def remote_ref_for(source, metadata)
+    head, = git_output(source, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+    return head if head && !head.empty?
+
+    branch = metadata["source_branch"].to_s
+    branch.empty? ? "origin/main" : "origin/#{branch}"
+  end
+
+  def available_revision(source, metadata, fetch:)
+    return [nil, "missing source root: #{source}"] unless File.directory?(source)
+
+    unless File.directory?(File.join(source, ".git"))
+      version = version_for(source)
+      return ["version:#{version}", nil]
+    end
+
+    if fetch
+      _, fetch_error = git_output(source, "fetch", "--quiet", "--prune", "origin")
+      return [nil, "git fetch failed: #{fetch_error}"] if fetch_error
+
+      ref = remote_ref_for(source, metadata)
+      revision, error = git_output(source, "rev-parse", ref)
+      return [nil, "git rev-parse #{ref} failed: #{error}"] if error
+
+      [revision, nil]
+    else
+      revision, error = git_output(source, "rev-parse", "HEAD")
+      return [nil, "git rev-parse HEAD failed: #{error}"] if error
+
+      [revision, nil]
+    end
+  end
+
+  def short_revision(value)
+    value.to_s.start_with?("version:") ? value : value.to_s[0, 12]
+  end
+
+  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil)
+    {
+      "status" => status,
+      "host" => host,
+      "target" => target,
+      "source" => source,
+      "installed_version" => metadata["version"],
+      "installed_revision" => metadata["source_revision"],
+      "available_version" => source && File.directory?(source) ? version_for(source) : nil,
+      "available_revision" => available_revision,
+      "checked_remote" => checked_remote,
+      "reason" => reason
+    }
+  end
+
+  def text_for(payload)
+    case payload.fetch("status")
+    when "UP_TO_DATE"
+      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} target=#{payload['target']}\n"
+    when "UPGRADE_AVAILABLE"
+      installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
+      available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
+      "UPGRADE_AVAILABLE #{installed} #{available} target=#{payload['target']}\n"
+    when "NOT_INSTALLED"
+      "NOT_INSTALLED target=#{payload['target']}\n"
+    when "CHECK_FAILED"
+      "CHECK_FAILED #{payload['reason']}\n"
+    else
+      raise "unknown status: #{payload.fetch('status')}"
+    end
+  end
+
+  def build_payload(options)
+    host, target = resolve_host_and_target(options.fetch(:host), options[:target])
+    metadata = read_metadata(target)
+    unless metadata
+      return status_payload("NOT_INSTALLED", target:, source: options[:source], host:)
+    end
+
+    source = File.expand_path(options[:source] || metadata["source"].to_s)
+    revision, error = available_revision(source, metadata, fetch: options.fetch(:fetch))
+    if error
+      return status_payload(
+        "CHECK_FAILED",
+        target:,
+        source:,
+        host:,
+        metadata:,
+        checked_remote: options.fetch(:fetch),
+        reason: error
+      )
+    end
+
+    installed_revision = metadata["source_revision"].to_s
+    installed_version = metadata["version"].to_s
+    available_version = version_for(source)
+    status = if !installed_revision.empty? && installed_revision == revision
+               "UP_TO_DATE"
+             elsif revision.to_s.start_with?("version:") && installed_version == available_version
+               "UP_TO_DATE"
+             else
+               "UPGRADE_AVAILABLE"
+             end
+
+    status_payload(
+      status,
+      target:,
+      source:,
+      host:,
+      metadata:,
+      available_revision: revision,
+      checked_remote: options.fetch(:fetch)
+    )
+  rescue ArgumentError, RuntimeError => e
+    status_payload("CHECK_FAILED", target: options[:target], source: options[:source], host: options[:host], reason: e.message)
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  options = { host: "codex", target: nil, source: nil, fetch: false, json: false }
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--fetch] [--json]"
+    opts.on("--host HOST", "Agent host: codex, claude, or auto") { |value| options[:host] = value }
+    opts.on("--target DIR", "Installed agent home to inspect") { |value| options[:target] = value }
+    opts.on("--source DIR", "Source shakacode/agent-workflows clone") { |value| options[:source] = value }
+    opts.on("--fetch", "Fetch origin before checking the source revision") { options[:fetch] = true }
+    opts.on("--json", "Print JSON output") { options[:json] = true }
+    opts.on("-h", "--help", "Show help") do
+      puts opts
+      exit 0
+    end
+  end
+  parser.parse!
+
+  unless %w[codex claude auto].include?(options.fetch(:host))
+    warn "--host must be codex, claude, or auto, got: #{options.fetch(:host)}"
+    exit AgentWorkflowsStatus::STATUS_EXIT.fetch("CHECK_FAILED")
+  end
+
+  payload = AgentWorkflowsStatus.build_payload(options)
+  print(options.fetch(:json) ? "#{JSON.pretty_generate(payload)}\n" : AgentWorkflowsStatus.text_for(payload))
+  exit AgentWorkflowsStatus::STATUS_EXIT.fetch(payload.fetch("status"))
+end

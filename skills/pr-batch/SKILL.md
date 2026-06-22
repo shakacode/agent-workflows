@@ -1,6 +1,6 @@
 ---
 name: pr-batch
-description: Plan and safely launch batches of issue or PR work, especially when using Codex subagents, multiple worktrees, or multiple machines. Use when the user asks to run a Codex batch, process several issues or PRs, split work across agents or machines, or turn filters into a PR-processing plan and /goal prompt.
+description: Plan and safely launch batches of issue or PR work, especially when using Codex or Claude subagents, multiple worktrees, or multiple machines. Use when the user asks to run an agent batch, Codex batch, Claude batch, process several issues or PRs, split work across agents or machines, or turn filters into a PR-processing plan and /goal prompt.
 argument-hint: '[exact issue/PR numbers or filters]'
 ---
 
@@ -17,7 +17,9 @@ Memorable invocation:
 
 ```text
 $pr-batch
+Run an agent batch
 Run a Codex batch
+Run a Claude batch
 ```
 
 Resolve the target repo's base branch from `AGENTS.md` -> **Agent Workflow
