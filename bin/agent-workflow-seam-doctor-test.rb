@@ -332,6 +332,10 @@ class AgentWorkflowSeamDoctorFenceTest < Minitest::Test
       assert_includes out, "<follow-up prefix>"
     end
   end
+end
+
+class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
 
   def test_shorter_closing_fence_does_not_close_long_executable_fence
     with_repo do |root|
@@ -415,6 +419,10 @@ class AgentWorkflowSeamDoctorFenceTest < Minitest::Test
       assert_includes out, "<follow-up prefix>"
     end
   end
+end
+
+class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
 
   def test_four_space_indented_fence_does_not_open_executable_fence
     with_repo do |root|
