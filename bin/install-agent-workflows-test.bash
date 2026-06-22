@@ -91,6 +91,23 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/bin/agent-workflows-status"
 }
 
+test_copy_mode_preserves_unrelated_agent_files() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target/skills/personal" "$target/workflows" "$target/bin"
+  printf 'personal skill\n' > "$target/skills/personal/SKILL.md"
+  printf 'personal workflow\n' > "$target/workflows/personal.md"
+  printf '#!/usr/bin/env bash\n' > "$target/bin/personal-helper"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+
+  assert_file "$target/skills/personal/SKILL.md"
+  assert_file "$target/workflows/personal.md"
+  assert_file "$target/bin/personal-helper"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+}
+
 test_symlink_mode_links_skills_workflows_and_helpers() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -235,6 +252,7 @@ main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_copy_mode_preserves_unrelated_agent_files
     test_symlink_mode_links_skills_workflows_and_helpers
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits

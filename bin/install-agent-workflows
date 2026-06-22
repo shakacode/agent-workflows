@@ -139,6 +139,20 @@ write_metadata() {
   mv "$metadata_tmp" "$metadata_path"
 }
 
+copy_children_preserving_unrelated() {
+  local source_dir="$1"
+  local target_dir="$2"
+  local source_path destination
+  mkdir -p "$target_dir"
+
+  for source_path in "$source_dir"/*; do
+    [[ -e "$source_path" ]] || continue
+    destination="$target_dir/$(basename "$source_path")"
+    rm -rf "$destination"
+    rsync -a "$source_path" "$target_dir/"
+  done
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -187,8 +201,8 @@ target="${resolved#*:}"
 
 if [[ "$mode" = "copy" ]]; then
   mkdir -p "$target/skills" "$target/workflows" "$target/bin"
-  rsync -a --delete "$repo_root/skills/" "$target/skills/"
-  rsync -a --delete "$repo_root/workflows/" "$target/workflows/"
+  copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
+  copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
   for helper in "${bin_helpers[@]}"; do
     install -m 0755 "$repo_root/bin/$helper" "$target/bin/$helper"
   done
