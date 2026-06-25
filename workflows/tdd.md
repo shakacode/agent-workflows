@@ -1,9 +1,15 @@
 # TDD Workflow
 
 Use this workflow when skill invocation is unavailable. The authoritative
-companion skill lives alongside this workflow in the source pack.
+companion skill is at `skills/tdd/SKILL.md` in the source pack.
 
 <!-- Keep this workflow in sync with `skills/tdd/SKILL.md`. -->
+
+Use this workflow to move in small, verified behavior slices:
+
+```text
+RED -> GREEN -> REFACTOR -> repeat
+```
 
 ## Core Loop
 
