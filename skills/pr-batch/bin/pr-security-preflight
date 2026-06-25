@@ -560,6 +560,8 @@ ISSUE_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL.freeze
   ... on ReopenedEvent { actor { login } }
 GRAPHQL
 
+PAGINATED_CONNECTIONS = %w[participants timelineItems].freeze
+
 def fetch_target_graph(owner:, name:, number:, query:, variables: {})
   args = [
     "api",
@@ -599,34 +601,18 @@ def participant_connection_page_query(graph_field)
   GRAPHQL
 end
 
-def pr_timeline_connection_page_query
-  <<~GRAPHQL
-    query($owner:String!, $name:String!, $number:Int!, $after:String!) {
-      repository(owner:$owner, name:$name) {
-        pullRequest(number:$number) {
-          timelineItems(first:100, after:$after) {
-            totalCount
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              #{PR_TIMELINE_NODES_FRAGMENT}
-            }
-          }
-        }
-      }
-    }
-  GRAPHQL
-end
+def timeline_connection_page_query(graph_field)
+  fragment = graph_field == "pullRequest" ? PR_TIMELINE_NODES_FRAGMENT : ISSUE_TIMELINE_NODES_FRAGMENT
 
-def issue_timeline_connection_page_query
   <<~GRAPHQL
     query($owner:String!, $name:String!, $number:Int!, $after:String!) {
       repository(owner:$owner, name:$name) {
-        issue(number:$number) {
+        #{graph_field}(number:$number) {
           timelineItems(first:100, after:$after) {
             totalCount
             pageInfo { hasNextPage endCursor }
             nodes {
-              #{ISSUE_TIMELINE_NODES_FRAGMENT}
+              #{fragment}
             }
           }
         }
@@ -640,14 +626,16 @@ def connection_page_query(graph_field, connection_name)
   when "participants"
     participant_connection_page_query(graph_field)
   when "timelineItems"
-    graph_field == "pullRequest" ? pr_timeline_connection_page_query : issue_timeline_connection_page_query
+    timeline_connection_page_query(graph_field)
   else
     raise "Unsupported GraphQL connection: #{connection_name}"
   end
 end
 
 def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
-  connection = target.fetch(connection_name)
+  connection = target[connection_name]
+  return unless connection.is_a?(Hash)
+
   nodes = connection["nodes"]
   return unless nodes.is_a?(Array)
 
@@ -665,6 +653,11 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
       variables: { after: cursor }
     )
     page_connection = page_graph.fetch("data").fetch("repository").fetch(graph_field).fetch(connection_name)
+    unless page_connection.is_a?(Hash)
+      connection["nodes"] = nil
+      return
+    end
+
     page_nodes = page_connection["nodes"]
     unless page_nodes.is_a?(Array)
       connection["nodes"] = nil
@@ -673,18 +666,28 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
 
     nodes.concat(page_nodes)
     connection["totalCount"] = [connection["totalCount"].to_i, page_connection["totalCount"].to_i].max
-    connection["pageInfo"] = page_connection["pageInfo"] || {}
+    page_info = page_connection["pageInfo"]
+    unless page_info.is_a?(Hash)
+      connection["nodes"] = nil
+      return
+    end
+
+    connection["pageInfo"] = page_info
   end
 end
 
 def append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
-  %w[participants timelineItems].each do |connection_name|
+  PAGINATED_CONNECTIONS.each do |connection_name|
     append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
   end
 end
 
 def connection_coverage_finding(target, connection_name)
-  connection = target.fetch(connection_name)
+  connection = target[connection_name]
+  unless connection.is_a?(Hash)
+    return { connection: connection_name, fetched_count: 0, reason: "nodes unavailable", total_count: 0 }
+  end
+
   total_count = connection["totalCount"].to_i
   nodes = connection["nodes"]
 
@@ -698,11 +701,15 @@ def connection_coverage_finding(target, connection_name)
 end
 
 def graph_coverage_findings(target)
-  %w[participants timelineItems].filter_map { |connection_name| connection_coverage_finding(target, connection_name) }
+  PAGINATED_CONNECTIONS.filter_map { |connection_name| connection_coverage_finding(target, connection_name) }
 end
 
 def participant_logins_and_unknown_count(target)
-  participant_connection = target.fetch("participants")
+  participant_connection = target["participants"]
+  unless participant_connection.is_a?(Hash)
+    return { participants: Set.new, unknown_count: 1 }
+  end
+
   participant_nodes = participant_connection["nodes"]
   unless participant_nodes.is_a?(Array)
     # A missing/null nodes array means participant coverage is unknown; fail closed
