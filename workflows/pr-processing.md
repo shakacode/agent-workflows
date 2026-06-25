@@ -31,30 +31,49 @@ For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversari
 3. Isolate the work:
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
    - When the repo's private coordination backend (see `AGENTS.md` →
-     **Agent Workflow Configuration**) is available
-     (`agent-coord doctor` and `agent-coord status` exit 0), acquire an
-     `agent-coord claim` for each issue/PR lane before creating that lane's
-     worktree or branch. Machine agents must hard-stop when the claim is refused
-     with `CLAIM_REFUSED` / exit code 3 and report the holder plus heartbeat
-     liveness. `agent-coord status` is a preflight view; the claim operation is
-     the backend's compare-and-swap gate, so the claim result is the source of
-     truth for races. If `agent-coord doctor` or `agent-coord status` cannot be
-     checked, report private state as `UNKNOWN` and use structured public
-     `codex-claim` comments as an advisory fallback. A structured public
-     `codex-claim` comment is a GitHub issue/PR comment containing a
-     `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with key/value
-     fields; see the "Public claim comment" format below.
+     **Agent Workflow Configuration**) is available, acquire an `agent-coord`
+     claim for each issue/PR lane before creating that lane's worktree or
+     branch. Use the bounded helper from the resolved `pr-batch` skill directory
+     for agent-run preflight reads:
+
+     ```bash
+     PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+     "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
+     "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo OWNER/REPO --target TARGET --json
+     "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id BATCH_ID --json
+     ```
+
+     A timeout, setup/auth failure, or non-zero targeted status other than
+     `CLAIM_REFUSED` / exit code 3 means private state is `UNKNOWN` / degraded
+     for that read. Machine agents must hard-stop when a claim is refused with
+     `CLAIM_REFUSED` / exit code 3 and report the holder plus heartbeat
+     liveness. Targeted `agent-coord status` is a preflight view; the claim
+     operation is the backend's compare-and-swap gate, so the claim result is
+     the source of truth for races.
+   - If bounded doctor/status is degraded but the lane is an exact independent
+     assignment with no `depends_on` refs, a coordinator may attempt the bounded
+     `agent-coord claim` directly before branching. If that claim succeeds,
+     proceed in `private_state: claim-only` mode, heartbeat at phase transitions,
+     and record the degraded status evidence in the handoff. If the claim is
+     refused, hard-stop. If the claim times out, stop with
+     `private_state: UNKNOWN (claim outcome)` and reconcile private state before
+     fallback or branching. Use structured public `codex-claim` comments only
+     when the private claim cannot be started or fails with a definitive
+     non-timeout setup/auth error, and only where dependency rules allow it. A
+     structured public `codex-claim` comment is a GitHub issue/PR comment
+     containing a `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with
+     key/value fields; see the "Public claim comment" format below.
    - For lanes declared in `batches/<batch-id>.json` with `depends_on`, run
-     `agent-coord status` at lane start and before rebase or push. If the lane
-     shows unmet `blocked_on` refs, set that lane's heartbeat status to
+     bounded `agent-coord status` at lane start and before rebase or push. If
+     the lane shows unmet `blocked_on` refs, set that lane's heartbeat status to
      `blocked`, report the blocked refs in the handoff, and move to another
      independent lane until the dependency reports a backend terminal heartbeat
-     status. If the lane declares `depends_on` but `agent-coord status` shows no
-     matching private batch state for that lane, treat dependency state as
-     `UNKNOWN` and stop to report the missing private batch file. If the status
-     command itself fails for a declared dependency lane, also stop with
-     dependency state `UNKNOWN` instead of using advisory fallback. The current
-     public summary lives in
+     status. If the lane declares `depends_on` but status shows no matching
+     private batch state for that lane, treat dependency state as `UNKNOWN` and
+     stop to report the missing private batch file. If the bounded status
+     command itself fails or times out for a declared dependency lane, also stop
+     with dependency state `UNKNOWN` instead of using claim-only mode or
+     advisory fallback. The current public summary lives in
      [coordination-backend.md](../docs/coordination-backend.md).
    - Use the current checkout for one focused task.
    - For multiple independent PRs or lanes (independent work streams with separate branch/worktree ownership), use one worktree per PR branch so agents do not overlap edits.
@@ -170,11 +189,12 @@ runbook is
 Worker path:
 
 1. Determine the PR's target branch and resolve its phase. Prefer the published
-   phase from `agent-coord` status for that branch (available only when
-   `agent-coord doctor` and `agent-coord status` exit 0). If the backend is up
-   but has no published phase entry for that line, derive the phase from the
-   target branch (the same rule below); never treat a missing entry as `beta` for
-   a `release/*` target. If the backend is `UNKNOWN`, derive it: `main` ->
+   phase from bounded targeted `agent-coord` status for that branch (available
+   only when bounded `agent-coord doctor --json` and targeted status probes exit
+   0). If the backend is up but has no published phase entry for that line,
+   derive the phase from the target branch (the same rule below); never treat a
+   missing entry as `beta` for a `release/*` target. If the backend is
+   `UNKNOWN`, derive it: `main` ->
    `beta`; `release/*` -> `rc`, or `final` when the applicable tracker is in
    `final-release` mode (the only machine-readable signal in the fallback path;
    the promotion freeze is normally published via `agent-coord`, which is the
@@ -450,12 +470,17 @@ Coordination: follow the canonical coordination protocol in
 before creating worktrees or branches. Assign stable agent ids, claim before
 branching when the backend is available, heartbeat at phase transitions, create
 private `batches/<batch-id>.json` files for dependency lanes, and check
-`agent-coord status` at lane start and before dependency-sensitive rebase, push,
+bounded `agent-coord` probes before dependency-sensitive rebase, push,
 readiness, or closeout decisions. Treat non-empty `blocked_on` refs as unmet
 dependencies; if a lane declares `depends_on` but status shows no matching
 private batch state, report dependency state as `UNKNOWN` and stop that lane.
 If status cannot be checked for a declared dependency lane, stop with dependency
-state `UNKNOWN` instead of using advisory fallback for that lane.
+state `UNKNOWN` instead of using advisory fallback for that lane. For exact
+independent lanes with no `depends_on`, a successful direct bounded claim may
+proceed as `private_state: claim-only`; if claim times out, stop with
+`private_state: UNKNOWN (claim outcome)` for backend reconciliation; use
+structured public `codex-claim` comments only when the private claim cannot be
+started or definitively fails before mutation.
 
 Attention contract: follow `AGENTS.md` under Maintainer Attention Contract.
 Autonomously handle behavior-preserving optional nits when they stay in scope,
@@ -651,18 +676,30 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
 - For concurrent or multi-machine batches, use the repo's private coordination
   backend when available. Each lane gets a stable agent id such as
   `mobile-codex-batch2` or `desktop-claude-fable-lane1`.
-- Treat the backend as available when `agent-coord doctor` and
-  `agent-coord status` exit 0. If the command is missing, auth fails, doctor
-  fails, or status exits non-zero, report private state as `UNKNOWN` and use
-  advisory public claim comments where dependency rules allow it. A refused
-  `agent-coord claim` after a successful status check returns `CLAIM_REFUSED` /
-  exit code 3 and remains a hard stop.
+- Treat the backend as available when bounded `agent-coord doctor --json` and
+  targeted lane-scoped status probes exit 0. Use
+  `PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"; "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded"`
+  for agent-run preflights; do not run unbounded full-backend `doctor` /
+  `status` in a worker lane. A timeout, missing command, auth failure, doctor
+  failure, or targeted status non-zero means private state is `UNKNOWN` /
+  degraded for that read. A refused `agent-coord claim` after a successful
+  status check returns `CLAIM_REFUSED` / exit code 3 and remains a hard stop.
 - Acquire an `agent-coord claim` for each issue/PR lane before creating that
   lane's worktree or branch. A refused claim is a hard stop for machine agents:
   report the holder, heartbeat liveness, and target instead of creating a
   competing branch.
-  `agent-coord status` is advisory preflight, while `agent-coord claim` is the
-  backend's compare-and-swap gate for concurrent claim races.
+  Targeted `agent-coord status` is advisory preflight, while
+  `agent-coord claim` is the backend's compare-and-swap gate for concurrent
+  claim races.
+- For exact independent lanes that have no `depends_on` refs, degraded bounded
+  doctor/status does not automatically block work. A coordinator may attempt the
+  bounded `agent-coord claim` directly. If the direct claim succeeds, proceed in
+  `private_state: claim-only` mode, heartbeat normally, and include the degraded
+  status evidence in the lane handoff. If the claim is refused, hard-stop. If
+  the claim times out, stop with `private_state: UNKNOWN (claim outcome)` and
+  reconcile private state before fallback or branch/worktree creation. Use an
+  advisory public claim comment only when the private claim cannot be started or
+  fails with a definitive non-timeout setup/auth error.
 - Refresh heartbeats with `agent-coord heartbeat` at phase transitions: item
   start, branch or PR update, review pass, blocked state, resumed state, and
   done state.
@@ -671,11 +708,11 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   `agent-coord config show --json`, the private backend README, and CLI help for
   current TTL defaults, terminal heartbeat statuses, and threshold calculations;
   do not model liveness with sticky labels.
-- Use `agent-coord status` before starting dependency-sensitive lanes and before
-  rebase, push, readiness, or closeout decisions that depend on another lane.
-  If `agent-coord status` cannot be checked for a declared dependency lane, stop
-  with dependency state `UNKNOWN` instead of using advisory fallback for that
-  lane.
+- Use bounded `agent-coord status` before starting dependency-sensitive lanes
+  and before rebase, push, readiness, or closeout decisions that depend on
+  another lane. If status cannot be checked for a declared dependency lane, stop
+  with dependency state `UNKNOWN` instead of using claim-only mode or advisory
+  fallback for that lane.
 - Coordinators create or update private backend `batches/<batch-id>.json` files
   before dispatching workers for dependency-sensitive lanes, following the
   private backend README/schema rather than public examples; declared
@@ -683,10 +720,15 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
 - For lanes declared in `batches/<batch-id>.json` with `depends_on`, treat
   non-empty `blocked_on` refs as an unmet dependency. The worker should refresh
   its own heartbeat with `--status blocked`, switch to another independent lane
-  when one exists, and re-check `agent-coord status` before resuming, rebasing,
-  or pushing the blocked lane.
+  when one exists, and re-check bounded `agent-coord status` before resuming,
+  rebasing, or pushing the blocked lane.
 - Use a structured public claim comment only as an advisory fallback or human
-  hint when the private backend is unavailable or explicitly mirrored:
+  hint when the private claim cannot be started, definitively fails with a
+  non-timeout setup/auth error before mutation, or is explicitly mirrored.
+  Before posting a fallback claim, inspect existing recent issue/PR comments for
+  unexpired `codex-claim` blocks on the same target. If another active fallback
+  claim exists for the same lane, stop and report the conflicting comment URL
+  instead of starting competing work:
 
 ```markdown
 <!-- codex-claim v1
@@ -706,8 +748,10 @@ bounded advisory lease, usually 2-4 hours for an active batch or no later than
 the known batch window. Refresh the comment when continuing beyond that window.
 Do not use the public comment to override or bypass a private claim refusal.
 
-On restart, prefer `agent-coord status` and the private claim/heartbeat state.
-Use claim comments only to recover context when the backend is unavailable.
+On restart, prefer bounded `agent-coord status` and the private
+claim/heartbeat state. Use claim comments only to recover context when the
+private claim could not be started, definitively failed before mutation, or was
+explicitly mirrored.
 
 ### Worker Rules
 
@@ -715,8 +759,13 @@ When worker subagents are explicitly authorized:
 
 - Assign one target or one disjoint lane per worker.
 - Acquire the lane's `agent-coord claim` before creating the worker worktree or
-  branch when the backend is available. If the claim is refused, the worker
-  reports the holder and heartbeat liveness, then stops that lane.
+  branch when the backend is available. If bounded doctor/status is degraded
+  and the lane is exact and independent, the coordinator may provide a
+  successful direct claim result before worker launch. Use an advisory
+  public-claim URL only when the private claim could not be started or
+  definitively failed with a non-timeout setup/auth error before mutation. If
+  the claim is refused, the worker reports the holder and heartbeat liveness,
+  then stops that lane.
 - Give each worker a separate worktree and branch. For in-process subagents
   (Claude Code `Agent`/`Workflow` tools), "separate worktree" means passing
   `isolation: 'worktree'`. Never run two file-editing workers in the same working
@@ -726,14 +775,14 @@ When worker subagents are explicitly authorized:
 - Keep write scopes disjoint unless the main agent serializes integration.
 - Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
   PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
-- For a worker lane with `depends_on`, check `agent-coord status` at lane start
-  and before rebase or push. If dependencies are unmet, the worker reports the
-  `blocked_on` refs, sets heartbeat `--status blocked`, and moves to another
-  independent lane instead of pushing dependent work.
-- If `agent-coord status` cannot be checked for a worker lane with `depends_on`,
-  treat dependency state as `UNKNOWN` and stop that lane instead of using
-  advisory fallback.
-- If a worker lane declares `depends_on` but `agent-coord status` shows no
+- For a worker lane with `depends_on`, check bounded `agent-coord status` at
+  lane start and before rebase or push. If dependencies are unmet, the worker
+  reports the `blocked_on` refs, sets heartbeat `--status blocked`, and moves
+  to another independent lane instead of pushing dependent work.
+- If bounded `agent-coord status` cannot be checked for a worker lane with
+  `depends_on`, treat dependency state as `UNKNOWN` and stop that lane instead
+  of using claim-only mode or advisory fallback.
+- If a worker lane declares `depends_on` but bounded `agent-coord status` shows no
   matching batch state for that lane, treat dependency state as `UNKNOWN` and
   stop to report the missing private batch file.
 - The main agent owns final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
@@ -748,7 +797,7 @@ hatch**, not a single kill switch:
 - **Drain signal (preferred).** Cancellation is coordinator-published batch state,
   exactly like `depends_on` / `blocked_on` and the release phase: only a
   coordinator or maintainer marks a batch — or specific lanes — cancelled in the
-  private backend `batches/<batch-id>.json`. Workers observe it through
+  private backend `batches/<batch-id>.json`. Workers observe it through bounded
   `agent-coord status`. See
   [coordination-backend.md](../docs/coordination-backend.md)
   → **Cancellation** for the public contract; use the private backend README or
@@ -765,8 +814,11 @@ hatch**, not a single kill switch:
   abandons still-local work without pushing, runs `agent-coord release` for the
   lane, records the cancelled lane as its final state, and exits without leaving
   a half-pushed branch or corrupted worktree. The one-phase-transition latency
-  bound holds only for workers that successfully check `agent-coord status` at
-  each phase transition; a worker deep inside one target may not stop until its
+  bound holds only for workers that successfully check targeted status at each
+  phase transition: `agent-coord status --batch-id <batch-id> --json` for batch
+  workers or
+  `agent-coord status --repo <owner/repo> --target <issue-or-pr> --json` for
+  single-lane workers. A worker deep inside one target may not stop until its
   next checkpoint, and a wedged worker requires the hard escape hatch.
 - **Hard escape hatch.** For a wedged or unresponsive worker that is not reaching a
   checkpoint, use this sequence:
@@ -800,14 +852,15 @@ hatch**, not a single kill switch:
   batch, then launch **fresh** workers from a checkout that already contains the
   updated `.agents/skills/...` and `.agents/workflows/...` files. A still-running
   worker that merely receives a new batch assignment keeps its old skill text.
-- **Fallback.** When the private backend is unavailable (`agent-coord doctor` /
-  `status` non-zero), do not assume cancellation state was recorded. If the
-  coordinator recorded cancellation before the outage, continue the hard escape
-  hatch from step 2. If the state was not recorded or is unknown, stop workers at
-  the process level, record the unknown backend state in a human-facing incident
-  note, and wait to reconcile claims and cancellation state in the private
-  backend before relaunch. Advisory GitHub comments are human-targeted only —
-  they are never machine-readable signals and no worker drains because of them.
+- **Fallback.** When the private backend is unavailable or degraded (bounded
+  `agent-coord doctor` / `status` timeout or non-zero), do not assume
+  cancellation state was recorded. If the coordinator recorded cancellation
+  before the outage, continue the hard escape hatch from step 2. If the state was
+  not recorded or is unknown, stop workers at the process level, record the
+  unknown backend state in a human-facing incident note, and wait to reconcile
+  claims and cancellation state in the private backend before relaunch. Advisory
+  GitHub comments are human-targeted only — they are never machine-readable
+  signals and no worker drains because of them.
 
 ### Coordinator Closeout Lane
 
@@ -818,8 +871,12 @@ PR-only output.
 The closeout lane is:
 
 1. Re-fetch every worker PR and issue state from GitHub.
-2. Run `agent-coord status` when available and reconcile blocked or stale lanes
-   before making readiness decisions.
+2. Run bounded `agent-coord status` when available and reconcile blocked or
+   stale lanes before making readiness decisions. If status is degraded, use the
+   lane's direct claim result as evidence for exact independent lanes only. Use
+   advisory public-claim evidence only when the private claim could not be
+   started or definitively failed before mutation; keep dependency-sensitive
+   lanes `UNKNOWN`.
 3. Wait for current-head checks and configured review agents, using bounded
    polling.
 4. Fetch current unresolved review threads and triage them as fixed, waived, or
@@ -1280,19 +1337,22 @@ Use this section when reviewing already-merged PRs from concurrent agent work, e
    work is in scope. If no coordinated batch/run is in scope, record
    `worked_issue_scope: not applicable`. If batch work is in scope but the
    batch/run id is unknown:
-   - run `agent-coord doctor`, then `agent-coord status` to list candidate
-     batch/run ids and lanes
+   - run bounded `agent-coord doctor --json`, then broad `agent-coord status`
+     through the resolved `pr-batch` bounded helper only as an audit/discovery read to list
+     candidate batch/run ids and lanes
    - record `worked_issue_scope: UNKNOWN (needs batch confirmation)`
    - ask the user to confirm a candidate before treating any candidate lane list
      as worked-issue scope
 
-   When the batch/run id is known, run `agent-coord doctor` and
-   `agent-coord status`, then inspect the named batch entry to identify the
-   worked issue set from claims, heartbeats, branches, and dependency metadata.
-   If `agent-coord` is missing or `agent-coord doctor` fails, record
-   `worked_issue_scope: UNKNOWN (setup)`. If `agent-coord doctor` passes but
-   `agent-coord status` fails, record `worked_issue_scope: UNKNOWN (access)`. In
-   all UNKNOWN cases, include the exact command/error and use structured public
+   When the batch/run id is known, run bounded `agent-coord doctor --json` and
+   bounded `agent-coord status --batch-id <batch-id> --json`, then inspect the
+   named batch entry to identify the worked issue set from claims, heartbeats,
+   branches, and dependency metadata. If `agent-coord` is missing or bounded
+   `agent-coord doctor --json` fails or times out, record
+   `worked_issue_scope: UNKNOWN (setup)`. If bounded
+   `agent-coord doctor --json` passes but targeted batch status fails or times
+   out, record `worked_issue_scope: UNKNOWN (access)`. In all UNKNOWN cases,
+   include the exact command/error and use structured public
    `codex-claim` comments as an advisory fallback for possible no-PR, blocked,
    parked, or done-unmerged lanes before reducing scope to merged PRs. If
    candidate discovery cannot verify backend setup or access, `UNKNOWN (setup)`
@@ -1306,8 +1366,8 @@ Use this section when reviewing already-merged PRs from concurrent agent work, e
    issues and open PRs active within the audit time window, and use each claim's
    `batch:` field only to surface candidate ids until the user confirms one.
 
-   If `agent-coord doctor` and `agent-coord status` both succeed but the named
-   batch entry contains no worked issues or lanes, record
+   If bounded `agent-coord doctor --json` and targeted batch status both succeed
+   but the named batch entry contains no worked issues or lanes, record
    `worked_issue_scope: empty (no coordination lanes found for <BATCH_ID>)`,
    scan structured public `codex-claim` comments as advisory recovery rows for
    possible no-PR, blocked, parked, or done-unmerged lanes, keep any recovered

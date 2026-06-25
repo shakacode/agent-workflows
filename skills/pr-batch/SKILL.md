@@ -145,8 +145,8 @@ Mode: spawn worker subagents only after the target list and lane split are confi
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Coordination: follow `.agents/workflows/pr-processing.md` under Coordination
 State and Worker Rules before creating worktrees or branches. Include stable
-agent ids, `agent-coord status` / claim outcomes, batch ids, dependency refs,
-and any `UNKNOWN` state in every worker lane and handoff.
+agent ids, bounded targeted `agent-coord status` / claim outcomes, batch ids,
+dependency refs, and any `UNKNOWN` state in every worker lane and handoff.
 Attention contract: follow `AGENTS.md` under Maintainer Attention Contract and
 `.agents/workflows/pr-processing.md` under Maintainer Attention Contract. Do
 not escalate behavior-preserving optional nits, batch real questions into one
@@ -334,12 +334,17 @@ canonical source for coordination state and worker rules. Keep this skill as a
 routing entry point; do not duplicate the full protocol here.
 
 In short: exact lane assignments beat labels; private `agent-coord` state is the
-source of truth when `agent-coord doctor` and `agent-coord status` exit 0;
-`CLAIM_REFUSED` / exit code 3 hard-stops machine agents; workers heartbeat at
-phase transitions; coordinators create private batch files before dependency
-lanes start; dependency-sensitive lanes run `agent-coord status` before rebase,
-push, readiness, and closeout; and structured public claim comments are only
-advisory fallback state.
+source of truth when bounded `agent-coord doctor --json` and targeted
+lane-scoped status probes exit 0; `CLAIM_REFUSED` / exit code 3 hard-stops
+machine agents; workers heartbeat at phase transitions; coordinators create
+private batch files before dependency lanes start; dependency-sensitive lanes
+run bounded targeted status before rebase, push, readiness, and closeout; broad
+`agent-coord status` is audit-only; exact independent lanes may proceed in
+`private_state: claim-only` after a successful direct bounded claim when status
+is degraded; and structured public claim comments are only advisory fallback
+state when a private claim cannot be started or definitively fails before
+mutation with a non-timeout setup/auth error. Timed-out claims stop as
+`UNKNOWN (claim outcome)` for backend reconciliation.
 
 ## Worker Rules
 
