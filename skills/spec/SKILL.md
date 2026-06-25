@@ -26,8 +26,6 @@ This is upstream planning: do not implement while using this skill.
 
 ## Phase 1: Requirements
 
-Model this on Spec Kit's `/specify` and Kiro's requirements phase.
-
 Produce numbered requirements that say what must be true, not how to build it:
 
 - user-visible goals, actors, and workflows
@@ -43,8 +41,6 @@ and tasks can trace back to it.
 
 ## Phase 2: Design
 
-Model this on Spec Kit's `/plan` and Kiro's design phase.
-
 Design only enough to make implementation tasks safe and reviewable:
 
 - existing code areas or interfaces likely involved, verified by reading the
@@ -59,8 +55,6 @@ Every design decision must cite the requirement ids it satisfies. If a design
 choice cannot be tied to a requirement, drop it or mark it as a question.
 
 ## Phase 3: Tasks
-
-Model this on Spec Kit's `/tasks` and Kiro's task phase.
 
 Create an executable task list that `$plan-pr-batch` can turn into lanes:
 

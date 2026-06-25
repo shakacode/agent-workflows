@@ -156,6 +156,7 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
     with_repo do |root|
       seam = REQUIRED_SEAM.merge(
         "CI change detector" => "<CI change detector command, or \"n/a\">",
+        "CI parity environment" => "<CI parity command, runner image, reproduction guide, or \"n/a\">",
         "Benchmark labels" => "<benchmark labels, or \"n/a\">"
       )
       write_agents(root, seam)
@@ -165,6 +166,7 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "unresolved Agent Workflow Configuration value for key: CI change detector"
+      assert_includes out, "unresolved Agent Workflow Configuration value for key: CI parity environment"
       assert_includes out, "unresolved Agent Workflow Configuration value for key: Benchmark labels"
     end
   end

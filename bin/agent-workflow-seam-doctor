@@ -14,6 +14,7 @@ module AgentWorkflowSeamDoctor
     "Pre-push local validation",
     "CI change detector",
     "Hosted-CI trigger",
+    "CI parity environment",
     "Benchmark labels",
     "Follow-up issue prefix",
     "Changelog",
@@ -33,6 +34,10 @@ module AgentWorkflowSeamDoctor
     (?:
       follow-up\ prefix |
       hosted[-\ ]CI |
+      CI\ parity\ (?:environment|command) |
+      parity\ environment |
+      runner\ image |
+      reproduction\ guide |
       benchmark\ labels? |
       changelog\ path |
       main\ branch |

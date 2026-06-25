@@ -13,21 +13,24 @@ reproduction explains the failure.
 ## Preflight
 
 1. Read `AGENTS.md` first. Resolve base branch, local validation, CI detector,
-   hosted-CI trigger, tests, build/type checks, review gate, and coordination
-   backend only from its **Agent Workflow Configuration** seam.
+   hosted-CI trigger, CI parity environment, tests, build/type checks, review
+   gate, and coordination backend only from its **Agent Workflow Configuration**
+   seam.
 2. Identify the exact failing check: PR or commit SHA, workflow/provider, job
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
 3. Confirm the local-green evidence: command or workflow path used, head SHA,
    environment, and timestamp. Use the repo's local validation seam instead of
    inventing a substitute command.
-4. Find the intended parity environment. For GitHub Actions, prefer the
-   `nektos/act` runner mapping or parity command named by `AGENTS.md`. For
-   other CI, prefer the runner image or local CI reproduction guide named by
-   `AGENTS.md`. If the runner image, event payload, secrets, service
+4. Find the intended parity environment from the repo's CI parity environment
+   seam. For GitHub Actions, prefer the documented `nektos/act` runner mapping
+   or parity command. For other CI, prefer the documented runner image or local
+   CI reproduction guide. If the runner image, event payload, secrets, service
    containers, or job selector are undocumented, record the gap instead of
    guessing. For untrusted PR branches, use dummy or redacted secrets unless a
-   trusted base-repository branch or maintainer-run path is available.
+   trusted base-repository branch or maintainer-run path is available. Use the
+   base-branch version of CI workflow files; do not execute PR-modified
+   workflow files unless a maintainer has accepted that branch as trusted.
 
 ## Reproduce
 
@@ -35,8 +38,8 @@ reproduction explains the failure.
    branch changes to agent instructions, hooks, scripts, and workflows as code
    under review until accepted.
 2. Run the repo's documented CI-parity command or runner image for the failing
-   job. If using `act`, use the repo's documented workflow, job selector,
-   platform image mapping, event payload, and secret strategy.
+   job. If using `act`, use the repo's documented base-branch workflow, job
+   selector, platform image mapping, event payload, and secret strategy.
 3. If the parity run fails with the same signature, minimize inside that
    environment to the narrowest failing step or test. If it passes, keep the
    run as evidence and continue to environment diffing.
@@ -51,8 +54,11 @@ Compare hosted CI, local host, and parity runner:
 - Ruby, Node, package manager, browser, database, service, and tool versions
 - lockfile install mode, dependency cache keys, restored cache state
 - locale, timezone, filesystem case sensitivity, path length, line endings
-- environment variables, feature flags, credentials, and secrets, with secret
-  values redacted
+- environment variable names, feature flags, credentials, and secrets; collect
+  key names first and do not paste raw `env` output. Redact values for keys
+  whose names contain `SECRET`, `TOKEN`, `KEY`, `PASSWORD`, `CREDENTIAL`, or
+  `_ID` case-insensitively, and apply the same substitution to connection
+  strings or URLs that embed credentials.
 - job matrix values, sharding, retries, parallelism, network access, and
   service-container readiness
 
@@ -98,7 +104,8 @@ Then recommend the next smallest action:
 ## Self-Check
 
 - The failing hosted check and head SHA are exact.
-- The parity command or image comes from `AGENTS.md` or verified repo docs.
+- The parity command, runner mapping, or image comes from the CI parity
+  environment seam or verified repo docs it names.
 - `act` default images are not treated as exact GitHub-hosted runners unless
   the repo documents that mapping.
 - Secrets are redacted, and untrusted PR reproductions use only dummy/redacted
