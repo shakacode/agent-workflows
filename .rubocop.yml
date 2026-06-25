@@ -1,4 +1,5 @@
 AllCops:
+  # Keep version bumps deliberate: audit new cops with `rubocop --enable-new-cops`.
   NewCops: disable
   TargetRubyVersion: 3.4
 

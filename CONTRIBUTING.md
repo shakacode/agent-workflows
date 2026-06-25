@@ -7,10 +7,9 @@ focused, and easy for consumer repos to adopt.
 
 - Start from the current `main` branch and keep each PR focused on one workflow,
   helper, or documentation concern.
-- Run `bin/validate` before opening or updating a PR.
-- Run `rubocop` after Ruby helper or test changes. The repo pins double-quoted
-  Ruby strings in `.rubocop.yml`; do not autocorrect the tree unless the PR is
-  explicitly a formatting cleanup.
+- Run `bin/validate` before opening or updating a PR. It includes the pinned
+  RuboCop check; do not autocorrect the tree unless the PR is explicitly a
+  formatting cleanup.
 - Review changed Markdown manually for stale paths, broken links, and accidental
   consumer-repo assumptions.
 
