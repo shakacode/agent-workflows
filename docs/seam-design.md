@@ -52,7 +52,8 @@ Each adopting repo owns a section named `## Agent Workflow Configuration` in
 - local validation command
 - CI change detector
 - hosted-CI trigger and labels
-- CI parity environment, runner image, or reproduction guide
+- CI parity environment, runner image, reproduction guide, and secret redaction
+  patterns
 - benchmark labels
 - follow-up issue prefix
 - changelog path, policy, and entry format

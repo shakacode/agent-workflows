@@ -59,6 +59,8 @@ omit the queue summary and note that queue state is unavailable.
 6. Shape the batch into independent worker lanes. Cap each batch at 8 items when files or risk overlap, or 10 fully independent items; otherwise propose a smaller first batch. For multiple concurrent batches, keep this as a per-batch cap and apply the target repo's coordination-backend rules before launching.
 7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Do not launch workers yet.
 8. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
+   If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
+   resolves the spec tasks into exact GitHub targets before running.
 
 ## Direct `$pr-batch` Flow
 
