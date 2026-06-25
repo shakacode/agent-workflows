@@ -57,6 +57,7 @@ ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
+ruby skills/pr-batch/bin/agent-coord-bounded-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
 
