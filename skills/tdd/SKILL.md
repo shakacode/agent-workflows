@@ -20,7 +20,7 @@ RED -> GREEN -> REFACTOR -> repeat
    - For a feature, start with the smallest user-visible or public-interface behavior.
    - Prefer tests through public interfaces and real code paths over tests coupled to private implementation details.
 2. RED: write one failing test.
-   - Run the repo's relevant test command (see `AGENTS.md` → **Agent Workflow Configuration** → **Tests**).
+   - Run the repo's relevant test command (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key).
    - Confirm the test fails for the right reason: the missing behavior or reproduced bug.
    - If it fails because of a typo, missing import, bad fixture, or harness problem, fix the test setup before touching production code.
    - If it passes immediately, stop. The test describes existing behavior; tighten or replace it until you have watched the intended failure.
@@ -40,5 +40,5 @@ RED -> GREEN -> REFACTOR -> repeat
 - Never refactor while RED.
 - Never batch-write all tests before implementation; use vertical slices.
 - Never claim a bug is fixed until the regression test failed before the fix and passed after it.
-- When a direct automated regression test is not practical, document why, then use the closest useful local verification named in `AGENTS.md` → **Agent Workflow Configuration** → **Tests** before and after changing behavior.
-- Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration** → **Pre-push local validation**) in addition to the targeted tests used during the loop.
+- When a direct automated regression test is not practical, document why, then use the closest useful local verification (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key) before and after changing behavior.
+- Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration**, **Pre-push local validation** key) in addition to the targeted tests used during the loop.

@@ -933,7 +933,7 @@ For first-class red-green-refactor workflow instructions, invoke `$tdd`; if skil
 
 Before fixing a bug or behavior regression, verify the incorrect behavior where possible.
 
-- When implementing new behavior or reproducing a bug, prefer a test-first loop: write a failing test first, then the production change; follow `$tdd` for the full red-green-refactor discipline.
+- When implementing new behavior, changing existing behavior, or reproducing a bug, prefer a test-first loop: write a failing test first, then the production change; follow `$tdd` for the full red-green-refactor discipline.
 - If a direct automated regression test is not practical, document why and use the closest useful local verification before and after the change.
 - If the change affects developer workflow, locally exercise that workflow rather than relying only on unit tests.
 - For app-facing behavior, do minimal manual testing through the relevant package-specific test apps when appropriate.
