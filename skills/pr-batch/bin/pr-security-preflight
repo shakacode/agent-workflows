@@ -532,6 +532,12 @@ def high_risk_files(files)
   end
 end
 
+PARTICIPANT_NODES_FRAGMENT = <<~GRAPHQL
+  login
+  url
+  __typename
+GRAPHQL
+
 PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   __typename
   ... on IssueComment { author { login } }
@@ -599,7 +605,9 @@ def participant_connection_page_query(graph_field)
           participants(first:100, after:$after) {
             totalCount
             pageInfo { hasNextPage endCursor }
-            nodes { login url __typename }
+            nodes {
+              #{PARTICIPANT_NODES_FRAGMENT}
+            }
           }
         }
       }
@@ -652,7 +660,10 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
     return if pages_fetched >= max_pages
 
     cursor = connection.dig("pageInfo", "endCursor")
-    return if cursor.to_s.empty? || seen_cursors.include?(cursor)
+    if cursor.to_s.empty? || seen_cursors.include?(cursor)
+      connection["nodes"] = nil
+      return
+    end
 
     seen_cursors << cursor
     page_graph = begin
@@ -663,7 +674,9 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
         query: connection_page_query(graph_field, connection_name),
         variables: { after: cursor }
       )
-    rescue StandardError
+    rescue StandardError => e
+      warn "WARN: could not fetch #{connection_name} page (#{owner}/#{name}##{number}): " \
+           "#{e.message.lines.first&.strip}"
       connection["nodes"] = nil
       return
     end
@@ -962,7 +975,9 @@ pr_query = <<~GRAPHQL
         participants(first:100) {
           totalCount
           pageInfo { hasNextPage endCursor }
-          nodes { login url __typename }
+          nodes {
+            #{PARTICIPANT_NODES_FRAGMENT}
+          }
         }
         timelineItems(first:100) {
           totalCount
@@ -987,7 +1002,9 @@ issue_query = <<~GRAPHQL
         participants(first:100) {
           totalCount
           pageInfo { hasNextPage endCursor }
-          nodes { login url __typename }
+          nodes {
+            #{PARTICIPANT_NODES_FRAGMENT}
+          }
         }
         timelineItems(first:100) {
           totalCount

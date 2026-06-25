@@ -146,9 +146,21 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
       refute status.success?, out
       assert_equal 2, status.exitstatus, out
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "WARN: could not fetch timelineItems page (owner/repo#123): gh api graphql"
       assert_includes out, "timelineItems nodes unavailable; reported total_count=101"
       refute_includes out, "RuntimeError"
-      refute_includes out, "gh api graphql failed"
+    end
+  end
+
+  def test_paginated_timeline_cursor_cycle_blocks_as_unavailable
+    with_fake_gh("paginated-timeline-cursor-cycle") do |env, trust_config_path, log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "timelineItems nodes unavailable; reported total_count=101"
+      assert_equal 2, graphql_call_count(log_path)
     end
   end
 
@@ -538,7 +550,7 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
         case "$1" in
           reaction-only-participant|trusted-hidden-participant|trusted-bot-participant|human-bot-basename-participant|\
           paginated-timeline|paginated-timeline-missing-page-info|paginated-timeline-page-fetch-failure|\
-          paginated-timeline-partial-error|paginated-participants)
+          paginated-timeline-cursor-cycle|paginated-timeline-partial-error|paginated-participants)
             return 0
             ;;
           *)
@@ -640,13 +652,17 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_page_cap_first)}
           fi
-        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-page-fetch-failure" ] || [ "$mode" = "paginated-timeline-partial-error" ]; then
+        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-page-fetch-failure" ] || [ "$mode" = "paginated-timeline-cursor-cycle" ] || [ "$mode" = "paginated-timeline-partial-error" ]; then
           if printf '%s\\n' "$*" | grep -q 'after=timeline-page-1'; then
             if [ "$mode" = "paginated-timeline-missing-page-info" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_missing_page_info)}
             elif [ "$mode" = "paginated-timeline-page-fetch-failure" ]; then
               printf 'simulated gh failure\\n' >&2
               exit 1
+            elif [ "$mode" = "paginated-timeline-cursor-cycle" ]; then
+              cat <<'JSON'
+      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":101,"pageInfo":{"hasNextPage":true,"endCursor":"timeline-page-1"},"nodes":[{"__typename":"IssueComment","author":{"login":"justin808"}}]}}}}}
+      JSON
             elif [ "$mode" = "paginated-timeline-partial-error" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_partial_error)}
             else
