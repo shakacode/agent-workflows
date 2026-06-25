@@ -1,0 +1,25 @@
+# Changelog
+
+All notable changes to this portable workflow pack are documented here.
+
+<!-- Version headers intentionally use `###` and categories use `####` to match skills/update-changelog/SKILL.md. -->
+
+### [Unreleased]
+
+### [0.1.0] - 2026-06-24
+
+#### Added
+
+- **Add the Validate GitHub Actions workflow to run `bin/validate` on pull requests and pushes to `main`.** [PR 4](https://github.com/shakacode/agent-workflows/pull/4) by [justin808](https://github.com/justin808).
+
+#### Changed
+
+- **Port generic `pr-security-preflight` review-thread resolution and untrusted-interaction decomposition from a consumer repo while keeping repo-specific hosted-CI metadata recognition out of the portable pack.** [PR 5](https://github.com/shakacode/agent-workflows/pull/5) by [justin808](https://github.com/justin808).
+
+#### Fixed
+
+- **Fix `agent-workflow-seam-doctor` under `LANG=C` / `LC_ALL=C` by reading `AGENTS.md` as UTF-8 and scrubbing invalid bytes before seam validation.** [PR 1](https://github.com/shakacode/agent-workflows/pull/1) by [justin808](https://github.com/justin808).
+- **Harden `agent-workflows-status` and `pr-security-preflight` under non-UTF-8 locales by forcing UTF-8 at metadata, version, git-output, and GitHub JSON boundaries.** [PR 3](https://github.com/shakacode/agent-workflows/pull/3) by [justin808](https://github.com/justin808).
+
+[unreleased]: https://github.com/shakacode/agent-workflows/compare/v0.1.0...main
+[0.1.0]: https://github.com/shakacode/agent-workflows/releases/tag/v0.1.0

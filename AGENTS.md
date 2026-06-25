@@ -13,8 +13,8 @@ and push repository-specific policy into each consumer repo's `AGENTS.md` seam.
 - **Hosted-CI trigger**: `n/a`.
 - **Benchmark labels**: `n/a`.
 - **Follow-up issue prefix**: `Follow-up:`.
-- **Changelog**: `n/a`; user-visible package releases may add one later.
-- **Lint / format**: `bin/validate` plus Markdown review for changed docs.
+- **Changelog**: `CHANGELOG.md`.
+- **Lint / format**: `bin/validate` (includes RuboCop) plus Markdown review for changed docs.
 - **Merge ledger**: `n/a`.
 - **Docs checks**: `bin/validate` and manual link/path review for changed docs.
 - **Tests**: helper tests invoked by `bin/validate`.

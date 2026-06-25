@@ -2,6 +2,7 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+RUBOCOP_VERSION=$(tr -d '[:space:]' < .rubocop-version)
 
 echo "== skill frontmatter =="
 ruby - <<'RUBY'
@@ -58,5 +59,23 @@ bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
+
+echo "== rubocop ${RUBOCOP_VERSION} =="
+RUBOCOP_VERSION="${RUBOCOP_VERSION}" ruby - <<'RUBY'
+version = ENV.fetch("RUBOCOP_VERSION")
+
+begin
+  gem "rubocop", version
+  require "rubocop"
+rescue Gem::LoadError => e
+  warn "Install RuboCop #{version}: gem install rubocop -v #{version} --no-document"
+  warn e.message
+  exit 1
+end
+
+actual = RuboCop::Version::STRING
+abort "Expected RuboCop #{version}, got #{actual}" unless actual == version
+RUBY
+rubocop "_${RUBOCOP_VERSION}_"
 
 echo "PASS agent-workflows validation"

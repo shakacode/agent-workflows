@@ -20,5 +20,18 @@ jobs:
         with:
           ruby-version: "3.4"
 
+      - name: Resolve gem cache path
+        id: gem-cache
+        run: echo "dir=$(gem env gemdir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache RuboCop gems
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.gem-cache.outputs.dir }}
+          key: ${{ runner.os }}-ruby-3.4-rubocop-${{ hashFiles('.rubocop-version') }}
+
+      - name: Install RuboCop
+        run: gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document
+
       - name: Run pack validation (bin/validate)
         run: bin/validate
