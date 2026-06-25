@@ -532,7 +532,7 @@ def high_risk_files(files)
   end
 end
 
-PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL.freeze
+PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   __typename
   ... on IssueComment { author { login } }
   ... on PullRequestReview { author { login } }
@@ -549,7 +549,7 @@ PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL.freeze
   }
 GRAPHQL
 
-ISSUE_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL.freeze
+ISSUE_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   __typename
   ... on IssueComment { author { login } }
   ... on CrossReferencedEvent { actor { login } }
@@ -571,17 +571,14 @@ def fetch_target_graph(owner:, name:, number:, query:, variables: {})
     "-f",
     "name=#{name}",
     "-F",
-    "number=#{number}",
+    "number=#{number}"
   ]
   # Cursor pagination variables are GraphQL String values; keep numeric variables
   # on explicit typed flags like the `number` argument above.
   variables.each do |key, value|
     args.concat(["-f", "#{key}=#{value}"])
   end
-  args.concat([
-    "-f",
-    "query=#{query}"
-  ])
+  args.concat(["-f", "query=#{query}"])
   run_gh_json(*args)
 end
 
