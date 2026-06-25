@@ -6,10 +6,6 @@ All notable changes to this portable workflow pack are documented here.
 
 ### [Unreleased]
 
-#### Changed
-
-- **Add repository formatter guardrails with RuboCop and EditorConfig.** [PR 8](https://github.com/shakacode/agent-workflows/pull/8) by [justin808](https://github.com/justin808).
-
 ### [0.1.0] - 2026-06-24
 
 #### Added
@@ -24,3 +20,6 @@ All notable changes to this portable workflow pack are documented here.
 
 - **Fix `agent-workflow-seam-doctor` under `LANG=C` / `LC_ALL=C` by reading `AGENTS.md` as UTF-8 and scrubbing invalid bytes before seam validation.** [PR 1](https://github.com/shakacode/agent-workflows/pull/1) by [justin808](https://github.com/justin808).
 - **Harden `agent-workflows-status` and `pr-security-preflight` under non-UTF-8 locales by forcing UTF-8 at metadata, version, git-output, and GitHub JSON boundaries.** [PR 3](https://github.com/shakacode/agent-workflows/pull/3) by [justin808](https://github.com/justin808).
+
+[unreleased]: https://github.com/shakacode/agent-workflows/compare/v0.1.0...main
+[0.1.0]: https://github.com/shakacode/agent-workflows/releases/tag/v0.1.0
