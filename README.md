@@ -119,6 +119,7 @@ ongoing host installs and upgrades.
 | `post-merge-audit` | Audit merged batch work or release-candidate risk. |
 | `pr-batch` | Launch or coordinate multi-issue/multi-PR agent batches. |
 | `run-ci` | Choose and run repo-local CI checks. |
+| `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
 | `update-changelog` | Classify merged PRs and update a repo changelog. |
 | `verify` | Run local verification before PR updates. |

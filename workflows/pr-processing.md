@@ -929,6 +929,8 @@ summaries, inline review comments, or quota-limit notices as part of routine PR 
 
 ## Reproduction And TDD Gate
 
+For first-class red-green-refactor workflow instructions, use [`$tdd`](../skills/tdd/SKILL.md).
+
 Before fixing a bug or behavior regression, verify the incorrect behavior where possible.
 
 - Prefer a failing test that reproduces the issue and passes after the fix.
