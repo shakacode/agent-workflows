@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Drive a portable red-green-refactor workflow for features and bug fixes. Use when implementing behavior with test-driven development, reproducing a bug as a failing test before fixing it, or when the user asks for TDD, test-first, or red-green-refactor discipline.
+description: Drive a portable red-green-refactor workflow for features, bug fixes, and changes to existing behavior. Use when implementing behavior with test-driven development, reproducing a bug as a failing test before fixing it, changing the semantics of existing code, or when the user asks for TDD, test-first, or red-green-refactor discipline.
 ---
 
 # Test-Driven Development
@@ -20,10 +20,10 @@ RED -> GREEN -> REFACTOR -> repeat
    - For a feature, start with the smallest user-visible or public-interface behavior.
    - Prefer tests through public interfaces and real code paths over tests coupled to private implementation details.
 2. RED: write one failing test.
-   - Run the repo's relevant test command (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key).
+   - Run the new test with the repo's narrowest relevant test invocation (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key; if that key names a broad suite, narrow it using the repo's test framework convention).
    - Confirm the test fails for the right reason: the missing behavior or reproduced bug.
    - If it fails because of a typo, missing import, bad fixture, or harness problem, fix the test setup before touching production code.
-   - If it passes immediately, stop. The test describes existing behavior; tighten or replace it until you have watched the intended failure.
+   - If it passes immediately, do not proceed to GREEN: the test describes existing behavior; tighten or replace it until you have watched the intended failure.
 3. GREEN: write the smallest production change that makes that test pass.
    - Do not add production code before a failing test exists.
    - Do not add speculative behavior for future tests.
@@ -43,6 +43,12 @@ RED -> GREEN -> REFACTOR -> repeat
 - Only when a direct automated regression test is not practical, document why, then use the closest useful local verification (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key) to capture before and after behavior.
 - Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration**, **Pre-push local validation** key) in addition to the targeted tests used during the loop.
 
+## Before Pushing
+
+- If the change affects a developer workflow, exercise that workflow with the repo's relevant local verification rather than relying only on unit tests.
+- If the change affects app-facing behavior, do minimal manual verification through the repo's relevant local app or manual-test surface when appropriate.
+- Try to run the same relevant local tests that CI would run for the changed area before pushing.
+
 ## Done
 
-The loop is complete when each observable behavior specified in the task or issue has passing test coverage, or documented closest-useful verification only when a direct automated regression test is not practical, and the pre-push validation passes clean. Report the behaviors implemented, the tests added, any fallback verification rationale and result, and the result of the pre-push validation.
+The loop is complete when each observable behavior specified in the task or issue has passing test coverage, or documented before-and-after closest-useful verification only when a direct automated regression test is not practical, and the pre-push validation passes clean. Report the behaviors implemented, the tests added, any fallback verification rationale and before/after result, and the result of the pre-push validation.
