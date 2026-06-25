@@ -108,7 +108,8 @@ Then recommend the next smallest action:
   environment seam or verified repo docs it names.
 - `act` default images are not treated as exact GitHub-hosted runners unless
   the repo documents that mapping.
-- Secrets are redacted, and untrusted PR reproductions use only dummy/redacted
-  secrets unless the trust boundary is verified.
+- Secrets are redacted per the key-name list in the Environment Diff section,
+  and untrusted PR reproductions use only dummy/redacted secrets unless the
+  trust boundary is verified.
 - Repo-specific commands, labels, branches, paths, and release trackers are not
   hardcoded in this shared skill.
