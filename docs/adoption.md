@@ -89,6 +89,11 @@ Portable shared skills resolve every repo-specific value through this section.
 Anything marked `n/a` means the matching shared guidance degrades to "do the
 equivalent manually"; the workflow structure still transfers.
 
+Optional: a repo may add `- **Default simplify model**: n/a` or a concrete
+model name when it wants `/simplify` to pin a model. The seam doctor does not
+require this key; when absent or `n/a`, shared guidance omits the `--model`
+flag.
+
 ## Seam Validation
 
 Run the seam doctor after adding or changing the seam:

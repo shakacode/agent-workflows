@@ -60,6 +60,7 @@ Each adopting repo owns a section named `## Agent Workflow Configuration` in
 - lint, format, build, type, docs, and test commands
 - merge ledger
 - review gate
+- optional default simplify model, when the repo wants `/simplify` to pin one
 - approval-exempt change categories
 - coordination backend
 
