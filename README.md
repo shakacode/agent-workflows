@@ -118,7 +118,9 @@ ongoing host installs and upgrades.
 | `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
 | `post-merge-audit` | Audit merged batch work or release-candidate risk. |
 | `pr-batch` | Launch or coordinate multi-issue/multi-PR agent batches. |
+| `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
 | `run-ci` | Choose and run repo-local CI checks. |
+| `spec` | Turn vague implementation intent into requirements, design, and tasks. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
 | `update-changelog` | Classify merged PRs and update a repo changelog. |

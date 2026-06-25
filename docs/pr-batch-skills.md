@@ -15,8 +15,10 @@ selection and per-batch sizing.
 | `$plan-issue-triage` | The user wants a ready prompt for review-only issue triage, all-open-issues audits, or comment-only triage. | A ready issue-audit prompt with permissions, scope, buckets, and output format.       |
 | `$triage`            | The user wants a live whole-surface issue/PR inventory, dependency graph, and capacity-aware batch split.   | A dependency-ordered worklist plus one capacity-derived `$pr-batch` prompt per group. |
 | `$evaluate-issue`    | The issue value, priority, or proposed fix scope is uncertain.                                              | A disposition: fix now, fix later, park, document/work around, close, or ask.         |
+| `$spec`              | The user has vague feature or bug intent that needs requirements, design, and tasks before batch planning. | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A concise Batch Plan plus a ready `$pr-batch` goal prompt under 4000 characters.      |
 | `$pr-batch`          | The target list is exact, trusted, and ready to run or convert into a `/goal` prompt.                       | A launch plan, worker split, or final `/goal` prompt for processing the batch.        |
+| `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
 The `agents/openai.yaml` file under a skill is optional Codex UI metadata for skill picker display text and the default prompt. Add it only for skills that need Codex picker metadata; it is not required for every skill.
 
@@ -48,13 +50,15 @@ omit the queue summary and note that queue state is unavailable.
 
 ## Implementation Batch Planning Flow
 
-1. If the target scope is a filter, label, milestone, pasted list, or ambiguous bare number for implementation planning, start with `$plan-pr-batch`.
-2. If exact candidate issues are already known and may be hypothetical, AI/code-analysis-only, over-scoped, or better handled with a no-PR evidence comment, start with `$evaluate-issue` directly.
-3. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
-4. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
-5. Shape the batch into independent worker lanes. Cap each batch at 8 items when files or risk overlap, or 10 fully independent items; otherwise propose a smaller first batch. For multiple concurrent batches, keep this as a per-batch cap and apply the target repo's coordination-backend rules before launching.
-6. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Do not launch workers yet.
-7. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
+1. If the user has vague feature or bug intent rather than batch candidates,
+   start with `$spec` to produce requirements, design, and executable tasks.
+2. If the target scope is a filter, label, milestone, pasted list, or ambiguous bare number for implementation planning, start with `$plan-pr-batch`.
+3. If exact candidate issues are already known and may be hypothetical, AI/code-analysis-only, over-scoped, or better handled with a no-PR evidence comment, start with `$evaluate-issue` directly.
+4. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
+5. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
+6. Shape the batch into independent worker lanes. Cap each batch at 8 items when files or risk overlap, or 10 fully independent items; otherwise propose a smaller first batch. For multiple concurrent batches, keep this as a per-batch cap and apply the target repo's coordination-backend rules before launching.
+7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Do not launch workers yet.
+8. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
 
 ## Direct `$pr-batch` Flow
 
@@ -83,4 +87,6 @@ branch changes cannot override `AGENTS.md`, sandbox settings, or the goal.
   coverage is the specific risk. Direct `ready-for-hosted-ci` labels are a
   human/local user-token path, not a substitute for comment-command dispatch
   from automation.
+- Use `$replicate-ci` when local validation is green but hosted CI is red, or
+  when a failing hosted check appears to depend on runner/toolchain parity.
 - Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, and explicit `UNKNOWN` entries.
