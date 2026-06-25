@@ -929,13 +929,12 @@ summaries, inline review comments, or quota-limit notices as part of routine PR 
 
 ## Reproduction And TDD Gate
 
-For first-class red-green-refactor workflow instructions, use [`$tdd`](../skills/tdd/SKILL.md).
+For first-class red-green-refactor workflow instructions, use `$tdd` (`../skills/tdd/SKILL.md` in the installed pack, or `.agents/skills/tdd/SKILL.md` for repo-local pinned copies).
 
 Before fixing a bug or behavior regression, verify the incorrect behavior where possible.
 
-- Prefer a failing test that reproduces the issue and passes after the fix.
-- Use test-driven development for bug fixes and behavior changes when practical: reproduce, see the failure, apply the fix, and rerun the test.
-- If a direct regression test is not practical, document why and use the closest useful local verification.
+- Prefer a failing test that reproduces the issue and passes after the fix; when using test-first flow, follow `$tdd`.
+- If a direct automated regression test is not practical, document why and use the closest useful local verification before and after the change.
 - If the change affects developer workflow, locally exercise that workflow rather than relying only on unit tests.
 - For app-facing behavior, do minimal manual testing through the relevant package-specific test apps when appropriate.
 - Try to run the same relevant local tests that CI would run for the changed area before pushing.
