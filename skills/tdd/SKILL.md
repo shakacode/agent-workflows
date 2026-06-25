@@ -39,6 +39,6 @@ RED -> GREEN -> REFACTOR -> repeat
 
 - Never refactor while RED.
 - Never batch-write all tests before implementation; use vertical slices.
-- Never claim a bug is fixed until the regression test failed before the fix and passed after it.
+- Never claim a bug is fixed until either the regression test failed before the fix and passed after it, or documented fallback verification captured the before and after behavior when direct automated regression testing is not practical.
 - When a direct automated regression test is not practical, document why, then use the closest useful local verification (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key) before and after changing behavior.
 - Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration**, **Pre-push local validation** key) in addition to the targeted tests used during the loop.
