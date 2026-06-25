@@ -213,3 +213,8 @@ the session must avoid network access.
   `--host codex` or `--host claude`.
 - `Refusing to replace non-symlink path`: symlink mode will not overwrite a real
   file or directory. Use copy mode or remove the conflicting path deliberately.
+- `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby
+  helper: an older install is running under a non-UTF-8 locale (`LANG=C` /
+  `LC_ALL=C`, common in CI and headless agents). The pack Ruby tools now read
+  text as UTF-8 regardless of locale; run `upgrade-agent-workflows --host <host>`
+  to pick up the fix.

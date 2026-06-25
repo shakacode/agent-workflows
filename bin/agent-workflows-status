@@ -59,7 +59,7 @@ module AgentWorkflowsStatus
     path = metadata_path(target)
     return nil unless File.file?(path)
 
-    JSON.parse(File.read(path))
+    JSON.parse(File.binread(path).force_encoding("UTF-8").scrub)
   rescue JSON::ParserError => e
     raise "invalid metadata #{path}: #{e.message}"
   end
@@ -68,11 +68,13 @@ module AgentWorkflowsStatus
     path = File.join(source, "VERSION")
     return "unknown" unless File.file?(path)
 
-    File.read(path).strip
+    File.binread(path).force_encoding("UTF-8").scrub.strip
   end
 
   def git_output(source, *args)
     output, status = Open3.capture2e("git", "-C", source, *args)
+    # Force UTF-8 so non-ASCII git output (branch/error text) survives LANG=C.
+    output = output.force_encoding("UTF-8").scrub
     return [output.strip, nil] if status.success?
 
     [nil, output.strip]
