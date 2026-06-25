@@ -561,7 +561,15 @@ ISSUE_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
 GRAPHQL
 
 PAGINATED_CONNECTIONS = %w[participants timelineItems].freeze
-MAX_GRAPH_CONNECTION_PAGES = 20
+DEFAULT_MAX_GRAPH_CONNECTION_PAGES = 200
+
+def max_graph_connection_pages
+  value = Integer(
+    ENV.fetch("PR_SECURITY_PREFLIGHT_MAX_PAGES", DEFAULT_MAX_GRAPH_CONNECTION_PAGES.to_s),
+    exception: false
+  )
+  value&.positive? ? value : DEFAULT_MAX_GRAPH_CONNECTION_PAGES
+end
 
 def fetch_target_graph(owner:, name:, number:, query:, variables: {})
   args = [
@@ -639,20 +647,26 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
 
   seen_cursors = Set.new
   pages_fetched = 0
+  max_pages = max_graph_connection_pages
   while connection.dig("pageInfo", "hasNextPage")
-    return if pages_fetched >= MAX_GRAPH_CONNECTION_PAGES
+    return if pages_fetched >= max_pages
 
     cursor = connection.dig("pageInfo", "endCursor")
     return if cursor.to_s.empty? || seen_cursors.include?(cursor)
 
     seen_cursors << cursor
-    page_graph = fetch_target_graph(
-      owner:,
-      name:,
-      number:,
-      query: connection_page_query(graph_field, connection_name),
-      variables: { after: cursor }
-    )
+    page_graph = begin
+      fetch_target_graph(
+        owner:,
+        name:,
+        number:,
+        query: connection_page_query(graph_field, connection_name),
+        variables: { after: cursor }
+      )
+    rescue StandardError
+      connection["nodes"] = nil
+      return
+    end
     pages_fetched += 1
     page_connection = page_graph.dig("data", "repository", graph_field, connection_name)
     unless page_connection.is_a?(Hash)
@@ -667,13 +681,13 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
     end
 
     nodes.concat(page_nodes)
-    connection["totalCount"] = [connection["totalCount"].to_i, page_connection["totalCount"].to_i].max
     page_info = page_connection["pageInfo"]
     unless page_info.is_a?(Hash)
       connection["nodes"] = nil
       return
     end
 
+    connection["totalCount"] = [connection["totalCount"].to_i, page_connection["totalCount"].to_i].max
     connection["pageInfo"] = page_info
   end
 end

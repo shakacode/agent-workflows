@@ -139,6 +139,19 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
     end
   end
 
+  def test_paginated_timeline_page_fetch_failure_blocks_without_crashing
+    with_fake_gh("paginated-timeline-page-fetch-failure") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "timelineItems nodes unavailable; reported total_count=101"
+      refute_includes out, "RuntimeError"
+      refute_includes out, "gh api graphql failed"
+    end
+  end
+
   def test_paginated_timeline_partial_error_blocks_without_crashing
     with_fake_gh("paginated-timeline-partial-error") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -153,7 +166,14 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
 
   def test_paginated_timeline_page_cap_blocks_as_truncated
     with_fake_gh("paginated-timeline-page-cap") do |env, trust_config_path, log_path|
-      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+      out, status = run_script(
+        env.merge("PR_SECURITY_PREFLIGHT_MAX_PAGES" => "20"),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
 
       refute status.success?, out
       assert_equal 2, status.exitstatus, out
@@ -432,7 +452,7 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
         repository: {
           issue: {
             timelineItems: {
-              totalCount: 101,
+              totalCount: 999,
               pageInfo: nil,
               nodes: [{ __typename: "IssueComment", author: { login: "justin808" } }]
             }
@@ -517,7 +537,8 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
       mode_uses_issue_author_payload() {
         case "$1" in
           reaction-only-participant|trusted-hidden-participant|trusted-bot-participant|human-bot-basename-participant|\
-          paginated-timeline|paginated-timeline-missing-page-info|paginated-timeline-partial-error|paginated-participants)
+          paginated-timeline|paginated-timeline-missing-page-info|paginated-timeline-page-fetch-failure|\
+          paginated-timeline-partial-error|paginated-participants)
             return 0
             ;;
           *)
@@ -619,10 +640,13 @@ class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLe
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_page_cap_first)}
           fi
-        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-partial-error" ]; then
+        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-page-fetch-failure" ] || [ "$mode" = "paginated-timeline-partial-error" ]; then
           if printf '%s\\n' "$*" | grep -q 'after=timeline-page-1'; then
             if [ "$mode" = "paginated-timeline-missing-page-info" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_missing_page_info)}
+            elif [ "$mode" = "paginated-timeline-page-fetch-failure" ]; then
+              printf 'simulated gh failure\\n' >&2
+              exit 1
             elif [ "$mode" = "paginated-timeline-partial-error" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_partial_error)}
             else
