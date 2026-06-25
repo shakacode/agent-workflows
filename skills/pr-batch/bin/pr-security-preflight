@@ -652,7 +652,7 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
       query: connection_page_query(graph_field, connection_name),
       variables: { after: cursor }
     )
-    page_connection = page_graph.fetch("data").fetch("repository").fetch(graph_field).fetch(connection_name)
+    page_connection = page_graph.dig("data", "repository", graph_field, connection_name)
     unless page_connection.is_a?(Hash)
       connection["nodes"] = nil
       return
