@@ -45,4 +45,4 @@ RED -> GREEN -> REFACTOR -> repeat
 
 ## Done
 
-The loop is complete when all observable behaviors specified in the task or issue are covered by passing tests and the pre-push validation passes clean. Report the behaviors implemented, the tests added, and the result of the pre-push validation.
+The loop is complete when each observable behavior specified in the task or issue has passing test coverage, or documented closest-useful verification only when a direct automated regression test is not practical, and the pre-push validation passes clean. Report the behaviors implemented, the tests added, any fallback verification rationale and result, and the result of the pre-push validation.
