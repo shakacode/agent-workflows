@@ -532,6 +532,34 @@ def high_risk_files(files)
   end
 end
 
+PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL.freeze
+  __typename
+  ... on IssueComment { author { login } }
+  ... on PullRequestReview { author { login } }
+  ... on CrossReferencedEvent { actor { login } }
+  ... on ReadyForReviewEvent { actor { login } }
+  ... on ReviewRequestedEvent { actor { login } }
+  ... on MentionedEvent { actor { login } }
+  ... on SubscribedEvent { actor { login } }
+  ... on UnsubscribedEvent { actor { login } }
+  ... on ClosedEvent { actor { login } }
+  ... on ReopenedEvent { actor { login } }
+  ... on PullRequestCommit {
+    commit { authors(first:10) { nodes { user { login } } } }
+  }
+GRAPHQL
+
+ISSUE_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL.freeze
+  __typename
+  ... on IssueComment { author { login } }
+  ... on CrossReferencedEvent { actor { login } }
+  ... on MentionedEvent { actor { login } }
+  ... on SubscribedEvent { actor { login } }
+  ... on UnsubscribedEvent { actor { login } }
+  ... on ClosedEvent { actor { login } }
+  ... on ReopenedEvent { actor { login } }
+GRAPHQL
+
 def fetch_target_graph(owner:, name:, number:, query:, variables: {})
   args = [
     "api",
@@ -543,6 +571,8 @@ def fetch_target_graph(owner:, name:, number:, query:, variables: {})
     "-F",
     "number=#{number}",
   ]
+  # Cursor pagination variables are GraphQL String values; keep numeric variables
+  # on explicit typed flags like the `number` argument above.
   variables.each do |key, value|
     args.concat(["-f", "#{key}=#{value}"])
   end
@@ -578,20 +608,7 @@ def pr_timeline_connection_page_query
             totalCount
             pageInfo { hasNextPage endCursor }
             nodes {
-              __typename
-              ... on IssueComment { author { login } }
-              ... on PullRequestReview { author { login } }
-              ... on CrossReferencedEvent { actor { login } }
-              ... on ReadyForReviewEvent { actor { login } }
-              ... on ReviewRequestedEvent { actor { login } }
-              ... on MentionedEvent { actor { login } }
-              ... on SubscribedEvent { actor { login } }
-              ... on UnsubscribedEvent { actor { login } }
-              ... on ClosedEvent { actor { login } }
-              ... on ReopenedEvent { actor { login } }
-              ... on PullRequestCommit {
-                commit { authors(first:10) { nodes { user { login } } } }
-              }
+              #{PR_TIMELINE_NODES_FRAGMENT}
             }
           }
         }
@@ -609,14 +626,7 @@ def issue_timeline_connection_page_query
             totalCount
             pageInfo { hasNextPage endCursor }
             nodes {
-              __typename
-              ... on IssueComment { author { login } }
-              ... on CrossReferencedEvent { actor { login } }
-              ... on MentionedEvent { actor { login } }
-              ... on SubscribedEvent { actor { login } }
-              ... on UnsubscribedEvent { actor { login } }
-              ... on ClosedEvent { actor { login } }
-              ... on ReopenedEvent { actor { login } }
+              #{ISSUE_TIMELINE_NODES_FRAGMENT}
             }
           }
         }
@@ -933,20 +943,7 @@ pr_query = <<~GRAPHQL
           totalCount
           pageInfo { hasNextPage endCursor }
           nodes {
-            __typename
-            ... on IssueComment { author { login } }
-            ... on PullRequestReview { author { login } }
-            ... on CrossReferencedEvent { actor { login } }
-            ... on ReadyForReviewEvent { actor { login } }
-            ... on ReviewRequestedEvent { actor { login } }
-            ... on MentionedEvent { actor { login } }
-            ... on SubscribedEvent { actor { login } }
-            ... on UnsubscribedEvent { actor { login } }
-            ... on ClosedEvent { actor { login } }
-            ... on ReopenedEvent { actor { login } }
-            ... on PullRequestCommit {
-              commit { authors(first:10) { nodes { user { login } } } }
-            }
+            #{PR_TIMELINE_NODES_FRAGMENT}
           }
         }
       }
@@ -971,14 +968,7 @@ issue_query = <<~GRAPHQL
           totalCount
           pageInfo { hasNextPage endCursor }
           nodes {
-            __typename
-            ... on IssueComment { author { login } }
-            ... on CrossReferencedEvent { actor { login } }
-            ... on MentionedEvent { actor { login } }
-            ... on SubscribedEvent { actor { login } }
-            ... on UnsubscribedEvent { actor { login } }
-            ... on ClosedEvent { actor { login } }
-            ... on ReopenedEvent { actor { login } }
+            #{ISSUE_TIMELINE_NODES_FRAGMENT}
           }
         }
       }
