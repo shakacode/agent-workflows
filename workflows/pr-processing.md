@@ -929,7 +929,7 @@ summaries, inline review comments, or quota-limit notices as part of routine PR 
 
 ## Reproduction And TDD Gate
 
-For first-class red-green-refactor workflow instructions, use `.agents/skills/tdd/SKILL.md` when skills are available. A memorable invocation is `$tdd`. For assistants without skill support, use `.agents/workflows/tdd.md`.
+For first-class red-green-refactor workflow instructions, use `$tdd` when skills are available. For assistants without skill support, use the companion TDD workflow prompt.
 
 Before fixing a bug, changing existing behavior, or implementing new behavior, follow the selected TDD entry point where possible.
 

@@ -1,9 +1,9 @@
 # TDD Workflow
 
-Use this workflow when skill invocation is unavailable. The authoritative skill
-lives in `.agents/skills/tdd/SKILL.md`.
+Use this workflow when skill invocation is unavailable. The authoritative
+companion skill lives alongside this workflow in the source pack.
 
-<!-- Keep this workflow in sync with `.agents/skills/tdd/SKILL.md`. -->
+<!-- Keep this workflow in sync with `skills/tdd/SKILL.md`. -->
 
 ## Core Loop
 
@@ -33,13 +33,13 @@ lives in `.agents/skills/tdd/SKILL.md`.
 - Never batch-write all tests before implementation; use vertical slices.
 - Never claim a bug is fixed without evidence: prefer a regression test that failed before the fix and passes after it.
 - Only when a direct automated regression test is not practical, document why, then use the closest useful local verification (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key) to capture before and after behavior.
+- Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration**, **Pre-push local validation** key) in addition to the targeted tests used during the loop.
 
 ## Before Pushing
 
 - If the change affects a developer workflow, exercise that workflow with the repo's relevant local verification (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key) rather than relying only on unit tests.
 - If the change affects app-facing behavior, do minimal manual verification through the repo's relevant local app or manual-test surface when appropriate (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key).
 - Try to run the same relevant local tests that CI would run for the changed area before pushing (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** and **Pre-push local validation** keys).
-- Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration**, **Pre-push local validation** key) in addition to the targeted tests used during the loop.
 
 ## Done
 

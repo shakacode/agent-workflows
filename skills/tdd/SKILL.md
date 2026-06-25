@@ -5,7 +5,7 @@ description: Drive a portable red-green-refactor workflow for features, bug fixe
 
 # Test-Driven Development
 
-<!-- Keep this skill in sync with `.agents/workflows/tdd.md`. -->
+<!-- Keep this skill in sync with `workflows/tdd.md`. -->
 
 Memorable invocation: `$tdd`
 
@@ -19,7 +19,7 @@ RED -> GREEN -> REFACTOR -> repeat
 
 1. Choose one observable behavior.
    - For a bug fix, first express the reported failure as one failing regression test.
-   - For a feature, start with the smallest user-visible or public-interface behavior.
+   - For a feature or behavior change, start with the smallest user-visible or public-interface behavior.
    - Prefer tests through public interfaces and real code paths over tests coupled to private implementation details.
 2. RED: write one failing test.
    - Run the new test with the repo's narrowest relevant test invocation (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key; if that key names a broad suite, narrow it using the repo's test framework convention).
