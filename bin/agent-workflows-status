@@ -96,21 +96,20 @@ module AgentWorkflowsStatus
       return ["version:#{version}", nil]
     end
 
-    if fetch
-      _, fetch_error = git_output(source, "fetch", "--quiet", "--prune", "origin")
-      return [nil, "git fetch failed: #{fetch_error}"] if fetch_error
+    ref =
+      if fetch
+        _, fetch_error = git_output(source, "fetch", "--quiet", "--prune", "origin")
+        return [nil, "git fetch failed: #{fetch_error}"] if fetch_error
 
-      ref = remote_ref_for(source, metadata)
-      revision, error = git_output(source, "rev-parse", ref)
-      return [nil, "git rev-parse #{ref} failed: #{error}"] if error
+        remote_ref_for(source, metadata)
+      else
+        "HEAD"
+      end
 
-      [revision, nil]
-    else
-      revision, error = git_output(source, "rev-parse", "HEAD")
-      return [nil, "git rev-parse HEAD failed: #{error}"] if error
+    revision, error = git_output(source, "rev-parse", ref)
+    return [nil, "git rev-parse #{ref} failed: #{error}"] if error
 
-      [revision, nil]
-    end
+    [revision, nil]
   end
 
   def short_revision(value)
