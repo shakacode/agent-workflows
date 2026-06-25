@@ -249,6 +249,34 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
     end
   end
 
+  def test_filled_ci_parity_reproduction_guide_qualified_value_passes
+    with_repo do |root|
+      seam = REQUIRED_SEAM.merge(
+        "CI parity environment" => "see <reproduction guide URL: https://wiki.example.com/ci>"
+      )
+      write_agents(root, seam)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_plural_runner_images_phrase_is_not_a_ci_parity_placeholder
+    with_repo do |root|
+      seam = REQUIRED_SEAM.merge(
+        "CI parity environment" => "docs mention <runner images> generally"
+      )
+      write_agents(root, seam)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
   def test_blank_separator_stops_wrapped_seam_value
     with_repo do |root|
       write_agents(root)

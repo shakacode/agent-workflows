@@ -55,8 +55,9 @@ module AgentWorkflowSeamDoctor
     )
     [^>\n]*>
   }ix
-  CI_PARITY_SEAM_PLACEHOLDER = /<(?=[^>\n]*(?:CI\ parity\ (?:environment|command)|parity\ environment|runner\ image|reproduction\ guide)(?!\s*:\s*[^>\s]))[^>\n]*>/i
-  CI_PARITY_EXECUTABLE_PLACEHOLDER = /<[^>\n]*(?:CI\ parity\ (?:environment|command)|parity\ environment|runner\ image|reproduction\ guide)[^>\n]*>/i
+  CI_PARITY_KEYWORDS = /(?:CI\ parity\ (?:environment|command)|parity\ environment|runner\ image|reproduction\ guide)/
+  CI_PARITY_SEAM_PLACEHOLDER = /<(?=[^>\n]*#{CI_PARITY_KEYWORDS.source}\b(?!\s*[^>:]*:\s*[^>\s]))[^>\n]*>/i
+  CI_PARITY_EXECUTABLE_PLACEHOLDER = /<[^>\n]*#{CI_PARITY_KEYWORDS.source}\b[^>\n]*>/i
   EXECUTABLE_FENCE_LANGS = ["", "bash", "sh", "shell", "zsh", "ruby", "python", "js", "javascript"].freeze
   COMMAND_LIKE = %r{
     (?:\b(?:act|bash|bundle|codex|gh|git|node|npm|pnpm|rake|ruby|script|sh|yarn)\b) |
