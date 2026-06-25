@@ -6,7 +6,6 @@
 require "json"
 require "optparse"
 
-# rubocop:disable Metrics/ModuleLength
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
   SECTION_HEADING = /^##\s+#{Regexp.escape(SECTION)}\s*$/
@@ -286,7 +285,6 @@ module AgentWorkflowSeamDoctor
     "#{JSON.pretty_generate(payload)}\n"
   end
 end
-# rubocop:enable Metrics/ModuleLength
 
 if $PROGRAM_NAME == __FILE__
   options = { root: Dir.pwd, json: false, shared_roots: [] }

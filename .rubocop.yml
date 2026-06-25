@@ -14,9 +14,6 @@ Layout/LineLength:
 Lint/ScriptPermission:
   Enabled: false
 
-Lint/RedundantCopDisableDirective:
-  Enabled: false
-
 Metrics/AbcSize:
   Enabled: false
 

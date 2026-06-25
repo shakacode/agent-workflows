@@ -59,4 +59,7 @@ ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
 
+echo "== rubocop =="
+rubocop
+
 echo "PASS agent-workflows validation"

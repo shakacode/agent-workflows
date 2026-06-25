@@ -16,7 +16,7 @@ All notable changes to this portable workflow pack are documented here.
 ### Changed
 
 - Ported the generic `pr-security-preflight` review-thread resolution and
-  untrusted-interaction decomposition from `react_on_rails` while keeping
+  untrusted-interaction decomposition from a consumer repo while keeping
   repo-specific hosted-CI metadata recognition out of the portable pack (#5).
 
 ### Fixed

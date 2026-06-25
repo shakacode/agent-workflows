@@ -12,7 +12,7 @@ require "tmpdir"
 
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
 
-class PrSecurityPreflightTest < Minitest::Test # rubocop:disable Metrics/ClassLength
+class PrSecurityPreflightTest < Minitest::Test
   def test_warning_terms_in_trusted_issue_text_do_not_block
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
