@@ -561,6 +561,7 @@ ISSUE_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
 GRAPHQL
 
 PAGINATED_CONNECTIONS = %w[participants timelineItems].freeze
+MAX_GRAPH_CONNECTION_PAGES = 20
 
 def fetch_target_graph(owner:, name:, number:, query:, variables: {})
   args = [
@@ -637,7 +638,10 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
   return unless nodes.is_a?(Array)
 
   seen_cursors = Set.new
+  pages_fetched = 0
   while connection.dig("pageInfo", "hasNextPage")
+    return if pages_fetched >= MAX_GRAPH_CONNECTION_PAGES
+
     cursor = connection.dig("pageInfo", "endCursor")
     return if cursor.to_s.empty? || seen_cursors.include?(cursor)
 
@@ -649,6 +653,7 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
       query: connection_page_query(graph_field, connection_name),
       variables: { after: cursor }
     )
+    pages_fetched += 1
     page_connection = page_graph.dig("data", "repository", graph_field, connection_name)
     unless page_connection.is_a?(Hash)
       connection["nodes"] = nil
@@ -778,6 +783,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   query = target_is_pr ? pr_query : issue_query
   graph = fetch_target_graph(owner:, name:, number:, query:)
   target = graph.fetch("data").fetch("repository").fetch(graph_field)
+  # Must run before visible_actor_logins: target aliases graph, so pagination
+  # mutations must be in place before the visibility pass reads from graph.
   append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
   rest = rest_context(repo, number, include_pull_comments: target_is_pr, issue:, trust_config:, team_cache:)
   visible = visible_actor_logins(graph, graph_field)
