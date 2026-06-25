@@ -929,16 +929,9 @@ summaries, inline review comments, or quota-limit notices as part of routine PR 
 
 ## Reproduction And TDD Gate
 
-For first-class red-green-refactor workflow instructions, use `.agents/skills/tdd/SKILL.md` when skills are available. A memorable invocation is `$tdd`. For assistants without skill support, follow the TDD guidance below.
+For first-class red-green-refactor workflow instructions, use `.agents/skills/tdd/SKILL.md` when skills are available. A memorable invocation is `$tdd`. For assistants without skill support, use `.agents/workflows/tdd.md`.
 
-Before fixing a bug, changing existing behavior, or implementing new behavior, verify the behavior where possible.
-
-- Prefer a test-first loop: write one failing test, confirm it fails for the right reason, make the smallest production change to pass it, then rerun.
-- While following this fallback, never refactor while red, never batch-write all tests before implementation, and never claim a bug is fixed without evidence from before and after the fix.
-- If a direct automated regression test is not practical, document why and use the closest useful local verification before and after the change.
-- If the change affects developer workflow, locally exercise that workflow rather than relying only on unit tests.
-- For app-facing behavior, do minimal manual testing through the relevant package-specific test apps when appropriate.
-- Try to run the same relevant local tests that CI would run for the changed area before pushing.
+Before fixing a bug, changing existing behavior, or implementing new behavior, follow the selected TDD entry point where possible.
 
 ## Local Validation Gate
 

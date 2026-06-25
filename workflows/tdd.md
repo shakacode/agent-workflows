@@ -1,25 +1,15 @@
----
-name: tdd
-description: Drive a portable red-green-refactor workflow for features, bug fixes, and changes to existing behavior. Use when implementing behavior with test-driven development, reproducing a bug as a failing test before fixing it, changing the semantics of existing code, or when the user asks for TDD, test-first, or red-green-refactor discipline.
----
+# TDD Workflow
 
-# Test-Driven Development
+Use this workflow when skill invocation is unavailable. The authoritative skill
+lives in `.agents/skills/tdd/SKILL.md`.
 
-<!-- Keep this skill in sync with `.agents/workflows/tdd.md`. -->
-
-Memorable invocation: `$tdd`
-
-Use this skill to move in small, verified behavior slices:
-
-```text
-RED -> GREEN -> REFACTOR -> repeat
-```
+<!-- Keep this workflow in sync with `.agents/skills/tdd/SKILL.md`. -->
 
 ## Core Loop
 
 1. Choose one observable behavior.
    - For a bug fix, first express the reported failure as one failing regression test.
-   - For a feature, start with the smallest user-visible or public-interface behavior.
+   - For a feature or behavior change, start with the smallest user-visible or public-interface behavior.
    - Prefer tests through public interfaces and real code paths over tests coupled to private implementation details.
 2. RED: write one failing test.
    - Run the new test with the repo's narrowest relevant test invocation (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key; if that key names a broad suite, narrow it using the repo's test framework convention).
@@ -43,13 +33,13 @@ RED -> GREEN -> REFACTOR -> repeat
 - Never batch-write all tests before implementation; use vertical slices.
 - Never claim a bug is fixed without evidence: prefer a regression test that failed before the fix and passes after it.
 - Only when a direct automated regression test is not practical, document why, then use the closest useful local verification (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key) to capture before and after behavior.
-- Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration**, **Pre-push local validation** key) in addition to the targeted tests used during the loop.
 
 ## Before Pushing
 
 - If the change affects a developer workflow, exercise that workflow with the repo's relevant local verification (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key) rather than relying only on unit tests.
 - If the change affects app-facing behavior, do minimal manual verification through the repo's relevant local app or manual-test surface when appropriate (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** key).
 - Try to run the same relevant local tests that CI would run for the changed area before pushing (see `AGENTS.md` → **Agent Workflow Configuration**, **Tests** and **Pre-push local validation** keys).
+- Before handoff or PR creation, run the repo's pre-push local validation (see `AGENTS.md` → **Agent Workflow Configuration**, **Pre-push local validation** key) in addition to the targeted tests used during the loop.
 
 ## Done
 
