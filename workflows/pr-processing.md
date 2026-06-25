@@ -163,10 +163,16 @@ from the live release tracker. The canonical policy is in `AGENTS.md` under
 **Release Mode And Auto-Merge Coordination**; this section keeps only the worker
 path so release rules do not drift.
 
-1. Search for open release gate trackers, usually issues with the existing
-   `release` and `TRACKING` labels or a `Release gate:` title. Also search
-   closed release gate issues updated within the last 7 days before defaulting
-   to `development`.
+If the consumer repo does not define release-mode or release-branching policy in
+`AGENTS.md`, do not invent tracker labels, branch patterns, or forward-port
+rules. Treat ordinary PRs targeting the configured base branch as `development`.
+For release-affecting work, non-base target branches, or any sign that a release
+tracker should exist, report release mode or phase as `UNKNOWN` and ask for the
+repo policy before merge readiness.
+
+1. Search for open release gate trackers using the tracker labels, title prefix,
+   or other search policy from `AGENTS.md`. Also search the repo's configured
+   recently closed tracker window before defaulting to `development`.
 2. Use the canonical `AGENTS.md` tracker-selection rules to choose the
    applicable tracker, then read that tracker's `Agent Release Mode` block and
    classify the mode as `development`, `accelerated-rc`, `strict-rc`, or
@@ -192,20 +198,18 @@ Worker path:
    phase from bounded targeted `agent-coord` status for that branch (available
    only when bounded `agent-coord doctor --json` and targeted status probes exit
    0). If the backend is up but has no published phase entry for that line,
-   derive the phase from the target branch (the same rule below); never treat a
-   missing entry as `beta` for a `release/*` target. If the backend is
-   `UNKNOWN`, derive it: `main` ->
-   `beta`; `release/*` -> `rc`, or `final` when the applicable tracker is in
-   `final-release` mode (the only machine-readable signal in the fallback path;
-   the promotion freeze is normally published via `agent-coord`, which is the
-   tool that is unavailable here).
-2. Apply that phase's gate: `beta` (target `main`) is lowest — confidence note +
-   green required checks. `rc` (target `release/*`) adds adversarial-pr-review and
-   requires zero open MUST-FIX, and only stabilizing fixes belong on `release/*`.
-   `final` is highest — only cherry-picked fully-verified fixes, no new features,
-   and explicit human sign-off on the promotion; no confidence-only auto-merge.
-3. Stabilizing fixes that land on `release/*` must be forward-ported to `main`
-   with `git cherry-pick -x <sha>`; never `git merge release/X.Y.Z` into `main`.
+   derive the phase from the branch rules in `AGENTS.md`; never silently downgrade
+   a release-policy branch to ordinary base-branch handling. If the backend is
+   `UNKNOWN`, treat the configured base branch as ordinary development; derive
+   any other phase only when `AGENTS.md` provides deterministic branch-to-phase
+   rules; otherwise keep the phase `UNKNOWN`.
+2. Apply that phase's gate from `AGENTS.md`: ordinary base-branch development is
+   the lowest gate, release-candidate/stabilization branches add the repo's
+   configured review and fix-scope requirements, and final-release work requires
+   explicit human sign-off rather than confidence-only auto-merge.
+3. When the repo's release policy requires forward-porting from a release branch
+   to the base branch, use the exact forward-port method from `AGENTS.md`; do not
+   substitute a different branch sync strategy.
 4. If the published phase and the tracker disagree, treat it as a
    `release-mode-conflict` per `AGENTS.md`, report it, and do not auto-merge.
 
@@ -663,18 +667,53 @@ workflows. Also apply the merge-endgame debounce and waiver-soak rule under
 **Merge Endgame Debounce And Waiver Soak** before the final merge/readiness
 decision.
 
-After workers finish, the coordinator must keep working through the Coordinator Closeout Lane instead of stopping at PR creation: re-fetch live PR status, wait for current-head checks and reviews, triage/resolve or explicitly waive current unresolved review threads, run the repo's merge ledger in strict mode with explicit changelog classification and P0/P1/P2/Must-Fix dispositions, update stale release-mode classification, refresh the finalized PR-body `Agent Merge Confidence` block when accelerated-RC readiness requires it, request hosted CI when uncertainty remains, re-fetch and wait for the newly requested current-head checks, and merge eligible ready PRs only when `merge_authority` and the current release mode allow it.
+After workers finish, the coordinator must keep working through the Coordinator
+Closeout Lane instead of stopping at PR creation: re-fetch live PR status, wait
+for current-head checks and reviews, triage/resolve or explicitly waive current
+unresolved review threads, run the repo's merge ledger in strict mode with
+explicit changelog classification and severity dispositions, update stale release
+mode from `AGENTS.md` policy, refresh any finalized PR-body confidence block that
+the repo requires, request hosted CI when uncertainty remains, re-fetch and wait
+for the newly requested current-head checks, and merge eligible ready PRs only
+when `merge_authority` and the current release mode allow it. When
+`merge_authority` is `auto_merge_when_gates_pass`, the expected closeout is an
+actual merge plus the required post-merge sweep unless branch protection, release
+policy, tool failure, or another true blocker prevents the mechanical merge.
 
-For blocking questions, stop work on that target, surface a structured question to the coordinator or maintainer, and mark the issue/PR with the agreed pending-question state. Report the question/comment URL as `blocked needing user input`; do not open a speculative PR. For non-blocking questions where you make a decision and continue, record the decision in the PR description before review or merge.
+For blocking questions, stop work on that target, surface a structured question
+to the coordinator or maintainer, and mark the issue/PR with the pending-question
+state from `AGENTS.md` when the repo defines one. Report the question/comment URL
+as `blocked needing user input`; do not open a speculative PR. For non-blocking
+questions where you make a decision and continue, record the decision in the PR
+description before review or merge.
 
-Before final handoff, kill or confirm no stray GitHub polling processes are still running. Final state for every target must be one of: `merged`; `ready-gates-clean` when all readiness gates pass and the next action is a mechanical merge under an already-authorized plan; `ready-no-merge-authority` when all gates pass but `merge_authority` is `none` or `ask` without a merge approval; `waiting-on-checks-or-review`; `external-gate-failing`; `blocked-user-input` with the surfaced question/comment URL; or `no-pr-evidence` with an evidence-backed issue/PR comment URL. Do not report a target `complete` while its merge ledger has any `UNKNOWN` field or `complete_allowed: false`. Split the handoff into `Immediate maintainer attention` and `FYI / decisions made`. Put only true blockers or questions in Immediate. Put non-blocking decisions, no-PR rationales, autonomous nit outcomes, decision-point counts, confidence notes, hosted-CI uncertainty that was already handled by requesting hosted CI, and the per-PR merge-ledger summary in FYI. Final handoff must list branches, PR URLs, issue outcomes, validations, last-known CI state, `merge_authority`, final state, merge-ledger path or JSON artifact, blockers, no-PR comments, and next actions.
+Before final handoff, kill or confirm no stray GitHub polling processes are still
+running. Final state for every target must be one of: `merged`;
+`ready-gates-clean` when all readiness gates pass and the next action is a
+mechanical merge under an already-authorized plan; `ready-no-merge-authority`
+when all gates pass but `merge_authority` is `none` or `ask` without a merge
+approval; `waiting-on-checks-or-review`; `external-gate-failing`;
+`blocked-user-input` with the surfaced question/comment URL; or `no-pr-evidence`
+with an evidence-backed issue/PR comment URL. Do not report a target `complete`
+while its merge ledger has any `UNKNOWN` field or `complete_allowed: false`; do
+not report a QA-required target ready while required QA Evidence is missing,
+stale, blocked, insufficiently scoped, or still `UNKNOWN` except for the
+documented private-state fallback. Split the handoff into `Immediate maintainer
+attention` and `FYI / decisions made`. Put only true blockers or questions in
+Immediate. Put non-blocking decisions, no-PR rationales, autonomous nit outcomes,
+decision-point counts, confidence notes, hosted-CI uncertainty that was already
+handled by requesting hosted CI, QA Evidence or not-required rationale, and the
+per-PR merge-ledger summary in FYI. Final handoff must list branches, PR URLs,
+issue outcomes, validations, last-known CI state, `merge_authority`, final state,
+merge-ledger path or JSON artifact, QA Evidence status, blockers, no-PR comments,
+and next actions.
 ```
 
 ### Question And Decision Handling
 
 Classify every unresolved question before continuing:
 
-- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo uses labels for this workflow, apply `codex-pending-question`. A worker handoff should include the question/comment URL as that target's blocked final state.
+- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
 
 ### Maintainer Attention Contract
@@ -715,14 +754,13 @@ Before merge or final readiness, scan the PR description for the decision log an
 
 > **A handoff is a comment, not a new issue.** Per `AGENTS.md` → _Tracking Issues
 > And Handoffs_: record the handoff below on the relevant parent tracking issue
-> (or the agent-coordination repo if one is in use), or in the batch's own PR
+> (or the coordination backend if one is in use), or in the batch's own PR
 > comment/description when there is no parent umbrella; and append point-in-time
 > audits to the standing release audit ledger in place. Locate that ledger with
-> the release-mode preflight search: open issues with the `release` and
-> `TRACKING` labels, plus `Release gate:` title matches; if no release-gate
+> the release-mode preflight search policy from `AGENTS.md`; if no release-gate
 > ledger exists for a release audit, surface that absence before creating
-> follow-up issues. Never spawn a standalone
-> `Handoff: ...` or `Post-rc.N audit` issue. Close superseded process issues on
+> follow-up issues. Never spawn a standalone handoff or audit issue. Close
+> superseded process issues on
 > sight; closure follows the work, not whoever opened the tracker.
 
 Split batch handoffs into two sections:
@@ -1018,8 +1056,10 @@ The closeout lane is:
    or `UNKNOWN` live state.
 11. After any closeout-lane merge action, run a lightweight sweep for late
     post-merge bot findings before the final batch handoff: confirm the PR landed,
-    check `main` status, and inspect late review/check comments that arrived
-    around or after merge. Route release-relevant findings into the next
+    resolve target and base branch names from PR metadata and `AGENTS.md`, check
+    their live GitHub/CI status, and inspect late review/check comments that
+    arrived around or after merge. Route
+    release-relevant findings into the next
     post-merge audit intake. Reserve the full post-merge audit workflow for
     final-release readiness, suspected bad merges, or a lightweight sweep that
     finds a blocker, failed post-merge check, or credible release-readiness risk.
@@ -1304,7 +1344,11 @@ Use `address-review` for actionable GitHub review comments instead of skimming t
 
 ### Adversarial Review Gate
 
-Use `.agents/skills/adversarial-pr-review/SKILL.md` for high-risk PRs, concurrent batch PRs, suspected bad merges, release-candidate risk, or when the user asks for a Claude/Codex red-team pass. **It is also required (not optional) at the `rc` and `final` phases** — i.e. any PR targeting `release/*` — per the phase-gate table in `AGENTS.md` -> **Release-Train Branching And Phase Gating** and the worker path above. The high-risk triggers in this paragraph are the _additional_ cases where it applies at the `beta` phase (target `main`).
+Use `.agents/skills/adversarial-pr-review/SKILL.md` for high-risk PRs,
+concurrent batch PRs, suspected bad merges, release-candidate risk, or when the
+user asks for a Claude/Codex red-team pass. It is also required in any release
+phase that `AGENTS.md` marks as requiring adversarial review. The high-risk
+triggers in this paragraph are additional cases for ordinary base-branch work.
 
 The adversarial review is report-only by default (it produces findings; it is not itself a merge approval). It must check inline review comments, review timing, missing changelog entries, changed agent instructions, validation gaps, untrusted PR content, and cross-PR interactions. All `BLOCKING` and `DISCUSS` findings must be fixed, explicitly decided, or waived before final readiness.
 
@@ -1390,10 +1434,10 @@ Final-release mode is stricter than accelerated RC. Do not use confidence-only
 auto-merge for final release work; run the post-merge audit, update changelog or
 release notes as needed, and get an explicit maintainer release decision before
 publishing. Confirm required checks on the **SHA being promoted**: for a final
-promotion off `release/X.Y.Z` that is the release-branch / promoted-RC tip, not
-`origin/main` — once post-RC commits have landed on `main`, `main`'s checks are
-green or red independently of the RC being promoted, so validating `main` would
-prove the wrong SHA.
+promotion from a release branch, validate the release-branch or promoted-RC tip,
+not the base branch. Once later commits have landed on the base branch, those
+checks are green or red independently of the release tip being promoted, so
+validating the base branch would prove the wrong SHA.
 
 Auto-merge requires all of the following:
 
@@ -1403,7 +1447,7 @@ Auto-merge requires all of the following:
 - Score is at least `8/10`; `7/10` permits human merge after review, but not auto-merge.
 - Before triggering auto-merge, the merge actor verifies `Finalized by` against the GitHub review record, checks, or git log, not only the PR body text.
 - All GitHub checks for the current head SHA are complete. An empty full `gh pr checks <PR>` list is `UNKNOWN` / not ready. Skipped checks count as complete only when CI selector output explains them or a maintainer explicitly waives them.
-- The GitHub `claude-review` check is complete for the current head SHA, or it failed because of quota exhaustion, hard usage-limit enforcement, provider-reported capacity such as HTTP 503, or persistent HTTP 429 after one 60-second retry, and Cursor Bugbot or Codex review (`codex review --base origin/main`, or the PR's real base branch) completed as the fallback with the same blocker-triage bar and exact error evidence recorded in the PR body.
+- The GitHub `claude-review` check is complete for the current head SHA, or it failed because of quota exhaustion, hard usage-limit enforcement, provider-reported capacity such as HTTP 503, or persistent HTTP 429 after one 60-second retry, and Cursor Bugbot or Codex review (`codex review --base origin/<base>`, or the PR's real base branch) completed as the fallback with the same blocker-triage bar and exact error evidence recorded in the PR body.
 - Any fallback review leaves a named reviewer identity in the GitHub review record or a timestamped PR comment. Before treating the fallback as complete, the merge actor confirms the reviewer is either a named GitHub check/app identity visible in the Checks API for the current head SHA or a collaborator with `write`, `maintain`, or `admin` permission.
 - Claude failures not caused by capacity limits are understood before merge.
 - CodeRabbit approval is not required, but concrete CodeRabbit findings still need normal blocker triage.
@@ -1418,15 +1462,18 @@ Comment tiers (`MUST-FIX`, `DISCUSS`, `OPTIONAL`, `SKIPPED`) are assigned by
 `.agents/skills/address-review/SKILL.md` when skills are available; otherwise use
 `.agents/workflows/address-review.md` as the fallback.
 
-If approved and green but not merging immediately, use the repository's standard `ready-to-merge` label when available.
+If approved and green but not merging immediately, use the repository's standard
+ready-to-merge marker from `AGENTS.md` when available.
 
-After an accelerated RC auto-merge, do a lightweight post-merge check: confirm
-the PR landed on `main`, check `main` status, inspect late review/check comments
-or bot findings that arrived around or after merge, and update the active release
-tracker if one exists. If the merged PR touched `.github/workflows/`, include the
-relevant `actionlint`, `yamllint .github/`, or workflow-selection evidence in the
-post-merge summary before marking it clean. Reserve full post-merge audit for
-final-release readiness, suspected bad merges, or a lightweight sweep that finds
+After a release-mode auto-merge, do a lightweight post-merge check: confirm the
+PR landed on the expected target branch, resolve target and base branch names
+from PR metadata and `AGENTS.md`, check their live GitHub/CI status, inspect late
+review/check comments or bot findings that arrived around or after merge, and
+update the active release tracker if one exists. If
+the merged PR touched workflow configuration, include the repo's lint/docs
+evidence from `AGENTS.md` in the post-merge summary before marking it clean.
+Reserve full post-merge audit for final-release readiness, suspected bad merges,
+or a lightweight sweep that finds
 a blocker, failed post-merge check, or credible release-readiness risk.
 
 ## Multi-PR Landing Plan

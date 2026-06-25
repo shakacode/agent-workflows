@@ -216,8 +216,8 @@ Execution rules:
 - Each subagent must verify current GitHub state before edits and report UNKNOWN for unverifiable facts.
 - For coordination, respect coordination claims and dependencies: stable agent ids, bounded doctor/status, claim before branching, heartbeat at phase changes, and stop on unmet `blocked_on` refs or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence in final handoff.
-- Use local validation, self-review, review-comment, CI, and readiness gates from the repo workflow. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or a later explicit approval exists, current release mode permits it, and confidence/readiness gates pass; document confidence data in the PR description.
-- Final handoff must include links, tests, blockers, next action, confidence or UNKNOWN facts, `merge_authority`, and explicit final-state sections: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
+- Use local validation, self-review, review-comment, CI, and readiness gates. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; with `auto_merge_when_gates_pass`, done means merged and closed out unless blocked; document confidence data in the PR description.
+- Final handoff must include links, tests, blockers, next action, confidence/UNKNOWN, `merge_authority`, QA Evidence or not-required rationale, and final-state sections: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 ```
 
 ## Common Mistakes
