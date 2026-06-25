@@ -532,8 +532,8 @@ def high_risk_files(files)
   end
 end
 
-def fetch_target_graph(owner:, name:, number:, query:)
-  run_gh_json(
+def fetch_target_graph(owner:, name:, number:, query:, variables: {})
+  args = [
     "api",
     "graphql",
     "-f",
@@ -542,9 +542,135 @@ def fetch_target_graph(owner:, name:, number:, query:)
     "name=#{name}",
     "-F",
     "number=#{number}",
+  ]
+  variables.each do |key, value|
+    args.concat(["-f", "#{key}=#{value}"])
+  end
+  args.concat([
     "-f",
     "query=#{query}"
-  )
+  ])
+  run_gh_json(*args)
+end
+
+def participant_connection_page_query(graph_field)
+  <<~GRAPHQL
+    query($owner:String!, $name:String!, $number:Int!, $after:String!) {
+      repository(owner:$owner, name:$name) {
+        #{graph_field}(number:$number) {
+          participants(first:100, after:$after) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes { login url __typename }
+          }
+        }
+      }
+    }
+  GRAPHQL
+end
+
+def pr_timeline_connection_page_query
+  <<~GRAPHQL
+    query($owner:String!, $name:String!, $number:Int!, $after:String!) {
+      repository(owner:$owner, name:$name) {
+        pullRequest(number:$number) {
+          timelineItems(first:100, after:$after) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              __typename
+              ... on IssueComment { author { login } }
+              ... on PullRequestReview { author { login } }
+              ... on CrossReferencedEvent { actor { login } }
+              ... on ReadyForReviewEvent { actor { login } }
+              ... on ReviewRequestedEvent { actor { login } }
+              ... on MentionedEvent { actor { login } }
+              ... on SubscribedEvent { actor { login } }
+              ... on UnsubscribedEvent { actor { login } }
+              ... on ClosedEvent { actor { login } }
+              ... on ReopenedEvent { actor { login } }
+              ... on PullRequestCommit {
+                commit { authors(first:10) { nodes { user { login } } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  GRAPHQL
+end
+
+def issue_timeline_connection_page_query
+  <<~GRAPHQL
+    query($owner:String!, $name:String!, $number:Int!, $after:String!) {
+      repository(owner:$owner, name:$name) {
+        issue(number:$number) {
+          timelineItems(first:100, after:$after) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              __typename
+              ... on IssueComment { author { login } }
+              ... on CrossReferencedEvent { actor { login } }
+              ... on MentionedEvent { actor { login } }
+              ... on SubscribedEvent { actor { login } }
+              ... on UnsubscribedEvent { actor { login } }
+              ... on ClosedEvent { actor { login } }
+              ... on ReopenedEvent { actor { login } }
+            }
+          }
+        }
+      }
+    }
+  GRAPHQL
+end
+
+def connection_page_query(graph_field, connection_name)
+  case connection_name
+  when "participants"
+    participant_connection_page_query(graph_field)
+  when "timelineItems"
+    graph_field == "pullRequest" ? pr_timeline_connection_page_query : issue_timeline_connection_page_query
+  else
+    raise "Unsupported GraphQL connection: #{connection_name}"
+  end
+end
+
+def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
+  connection = target.fetch(connection_name)
+  nodes = connection["nodes"]
+  return unless nodes.is_a?(Array)
+
+  seen_cursors = Set.new
+  while connection.dig("pageInfo", "hasNextPage")
+    cursor = connection.dig("pageInfo", "endCursor")
+    return if cursor.to_s.empty? || seen_cursors.include?(cursor)
+
+    seen_cursors << cursor
+    page_graph = fetch_target_graph(
+      owner:,
+      name:,
+      number:,
+      query: connection_page_query(graph_field, connection_name),
+      variables: { after: cursor }
+    )
+    page_connection = page_graph.fetch("data").fetch("repository").fetch(graph_field).fetch(connection_name)
+    page_nodes = page_connection["nodes"]
+    unless page_nodes.is_a?(Array)
+      connection["nodes"] = nil
+      return
+    end
+
+    nodes.concat(page_nodes)
+    connection["totalCount"] = [connection["totalCount"].to_i, page_connection["totalCount"].to_i].max
+    connection["pageInfo"] = page_connection["pageInfo"] || {}
+  end
+end
+
+def append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
+  %w[participants timelineItems].each do |connection_name|
+    append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:, connection_name:)
+  end
 end
 
 def connection_coverage_finding(target, connection_name)
@@ -638,6 +764,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   query = target_is_pr ? pr_query : issue_query
   graph = fetch_target_graph(owner:, name:, number:, query:)
   target = graph.fetch("data").fetch("repository").fetch(graph_field)
+  append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
   rest = rest_context(repo, number, include_pull_comments: target_is_pr, issue:, trust_config:, team_cache:)
   visible = visible_actor_logins(graph, graph_field)
   visible.merge(visible_rest_actor_logins(rest))
@@ -799,12 +926,12 @@ pr_query = <<~GRAPHQL
         author { login }
         participants(first:100) {
           totalCount
-          pageInfo { hasNextPage }
+          pageInfo { hasNextPage endCursor }
           nodes { login url __typename }
         }
         timelineItems(first:100) {
           totalCount
-          pageInfo { hasNextPage }
+          pageInfo { hasNextPage endCursor }
           nodes {
             __typename
             ... on IssueComment { author { login } }
@@ -837,12 +964,12 @@ issue_query = <<~GRAPHQL
         author { login }
         participants(first:100) {
           totalCount
-          pageInfo { hasNextPage }
+          pageInfo { hasNextPage endCursor }
           nodes { login url __typename }
         }
         timelineItems(first:100) {
           totalCount
-          pageInfo { hasNextPage }
+          pageInfo { hasNextPage endCursor }
           nodes {
             __typename
             ... on IssueComment { author { login } }
