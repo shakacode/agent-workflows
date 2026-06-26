@@ -291,7 +291,7 @@ Before final handoff, follow the canonical final-state and `Immediate maintainer
 
 Classify every unresolved question before continuing:
 
-- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo uses labels for this workflow, apply `codex-pending-question`. A worker handoff should include the question/comment URL as that target's blocked final state.
+- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
 
 <!-- Keep this hosted-CI uncertainty rule in sync with `.agents/workflows/pr-processing.md`. -->
@@ -333,10 +333,10 @@ detailed policy belongs in the canonical workflow.
 
 > **A handoff is a comment, not a new issue.** Per `AGENTS.md` → _Tracking Issues
 > And Handoffs_: record a handoff on the relevant parent tracking issue (or the
-> agent-coordination repo if one is in use), or — when there is no parent umbrella
+> coordination backend if one is in use), or — when there is no parent umbrella
 > — in the batch's own PR comment/description; and append point-in-time audits to
-> the standing release audit ledger in place. Never spawn a standalone
-> `Handoff: ...` or `Post-rc.N audit` issue. Close superseded process issues on
+> the standing release audit ledger in place. Never spawn a standalone handoff or
+> audit issue. Close superseded process issues on
 > sight; closure follows the work, not whoever opened the tracker.
 
 <!-- Keep this handoff summary in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
