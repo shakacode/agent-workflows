@@ -71,6 +71,8 @@ Portable shared skills resolve every repo-specific value through this section.
 - **Pre-push local validation**: <local validation command, or "n/a">.
 - **CI change detector**: <CI change detector command, or "n/a">.
 - **Hosted-CI trigger**: <hosted-CI trigger, or "n/a">.
+- **CI parity environment**: <CI parity command, runner image, reproduction guide, or "n/a">.
+- **Secret redaction patterns**: <repo-specific CI parity redaction patterns, or "conservative default">.
 - **Benchmark labels**: <benchmark labels, or "n/a">.
 - **Follow-up issue prefix**: <follow-up prefix, for example `Follow-up:`>.
 - **Changelog**: <changelog path and policy, or "n/a">.

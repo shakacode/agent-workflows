@@ -9,6 +9,7 @@ resolves a consumer repo seam when scanned as an installed shared root.
 - **Pre-push local validation**: `bin/ci-local`.
 - **CI change detector**: `script/ci-changes-detector origin/main`.
 - **Hosted-CI trigger**: comment command `+ci-run-hosted`; label `ready-for-hosted-ci`.
+- **CI parity environment**: `script/ci-parity --job <job>`; GitHub Actions use documented `act` runner mappings.
 - **Benchmark labels**: `benchmark` and `hosted-ci-no-benchmarks`.
 - **Follow-up issue prefix**: `Follow-up:`.
 - **Changelog**: `CHANGELOG.md`; user-visible entries only.

@@ -11,6 +11,8 @@ and push repository-specific policy into each consumer repo's `AGENTS.md` seam.
 - **Pre-push local validation**: `bin/validate`.
 - **CI change detector**: `n/a`.
 - **Hosted-CI trigger**: `n/a`.
+- **CI parity environment**: `n/a`; consumer repos may name an `act` mapping, runner image, or reproduction guide.
+- **Secret redaction patterns**: conservative default; consumer repos may define repo-specific CI parity redaction patterns.
 - **Benchmark labels**: `n/a`.
 - **Follow-up issue prefix**: `Follow-up:`.
 - **Changelog**: `CHANGELOG.md`.

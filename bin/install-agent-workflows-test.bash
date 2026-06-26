@@ -50,6 +50,7 @@ write_consumer_agents() {
 - **Pre-push local validation**: bin/validate.
 - **CI change detector**: n/a.
 - **Hosted-CI trigger**: n/a.
+- **CI parity environment**: n/a.
 - **Benchmark labels**: n/a.
 - **Follow-up issue prefix**: Follow-up:.
 - **Changelog**: n/a.

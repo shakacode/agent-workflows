@@ -8,6 +8,8 @@ argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
 
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 
+If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.
+
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
 `.agents/workflows/...` files when they exist; otherwise use the installed
