@@ -22,6 +22,7 @@ and push repository-specific policy into each consumer repo's `AGENTS.md` seam.
 - **Tests**: helper tests invoked by `bin/validate`.
 - **Build / type checks**: `n/a`.
 - **Review gate**: independent code review for non-trivial workflow or helper changes.
+- **Default simplify model**: `n/a`.
 - **Approval-exempt change categories**: docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable.
 - **Coordination backend**: consumer repos choose their backend in their own seam; this repo does not require one.
 

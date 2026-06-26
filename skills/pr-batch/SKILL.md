@@ -174,9 +174,18 @@ not escalate behavior-preserving optional nits, batch real questions into one
 decision block per lane, self-verify machine-checkable claims before escalation,
 and include decision-point counts plus confidence notes in handoffs.
 
-Run `git fetch --prune origin main` first, confirm the expected repo root, verify repo-local workflow files, and verify any nested repo paths before assigning work. Classify each target as an implementation PR, combined investigation PR, deliberate no-PR evidence comment, or product-decision blocker.
+Resolve the base branch from `AGENTS.md`, run `git fetch --prune origin
+<base-branch>` first, confirm the expected repo root, verify repo-local workflow
+files, and verify any nested repo paths before assigning work. Classify each
+target as an implementation PR, combined investigation PR, deliberate no-PR
+evidence comment, or product-decision blocker.
 
-For issue targets, create one focused branch and PR unless exact same-file overlap makes a bundle safer. Start new issue branches from updated origin/main. For existing PR, review-fix, or merge-readiness targets, work on the existing PR head branch and do not create replacement PRs; if the branch cannot be updated safely, report the blocker. Follow local validation, pre-push review/simplify, CI backpressure, and merge-readiness gates.
+For issue targets, create one focused branch and PR unless exact same-file
+overlap makes a bundle safer. Start new issue branches from the updated base
+branch in `AGENTS.md`. For existing PR, review-fix, or merge-readiness targets,
+work on the existing PR head branch and do not create replacement PRs; if the
+branch cannot be updated safely, report the blocker. Follow local validation,
+pre-push review/simplify, CI backpressure, and merge-readiness gates.
 
 Every PR body must include a self-contained why/rationale summary. Link the
 target issue when one exists, but do not make reviewers open the issue to
@@ -202,17 +211,12 @@ controls. For lockfile changes, include Dependabot ecosystem and
 directory/directories compatibility and the lockfile content-diff evidence
 required by the Handoff Contract in `.agents/skills/pr-batch/SKILL.md`.
 
-For high-risk cases above, run Claude's `/simplify` after all required review passes for that case are clean, including Claude Code review when required, and before the final push or readiness report.
-
-<!-- Keep this /simplify block in sync with .agents/workflows/pr-processing.md and the Goal Prompt Template below. -->
-
-- Preferred invocation: `claude -p '/simplify origin/<base>' --model <default-simplify-model> --max-budget-usd 20`, substituting the Default simplify model from `AGENTS.md`, adjusting `<base>` to the PR's real base branch, and using it only when that command targets the current branch diff. This maintainer-requested default pins Opus for deep simplification; update it only by maintainer request and do not silently substitute another model.
-- Fallback target form: if the preferred command cannot target the diff correctly, use the local Claude-supported range form, such as `/simplify origin/<base>...HEAD`. The target must be the PR/branch diff, for example `origin/main...HEAD`, not an empty uncommitted diff.
-- Mode: do not use plan mode unless the surrounding workflow explicitly requires a no-edit review-only run.
-- Acceptance: treat `/simplify` output as advisory. Accept only simplifications that reduce real complexity without changing behavior or widening scope; reject speculative rewrites, style churn, broad abstractions, and changes outside the PR's target issue/scope.
-- Validation loop: if accepted simplifications change files, rerun targeted validation and the review/simplify gate as appropriate.
-- Skip evidence: if `/simplify` is unavailable, times out, hits budget, rejects the pinned model flag, or cannot target the PR diff correctly, record it as skipped with exact evidence instead of blocking indefinitely.
-- Evidence/churn notes: record the primary review gate, Claude review pass if run or skipped, whether `/simplify` was run/skipped/accepted/rejected and why, and any automated review findings waived, deferred, or classified as noise.
+For high-risk cases above, apply the canonical `/simplify` policy from the
+resolved `workflows/pr-processing.md` **Pre-Push AI Review And Simplify Gate**
+section: run it after required review passes when the tooling is available,
+target the real branch diff, accept only behavior-preserving complexity
+reductions, rerun targeted validation after accepted changes, and record
+run/skip/accept/reject evidence.
 
 Before merge, verify the current head SHA, then wait for requested or configured
 review agents such as Claude, CodeRabbit, Greptile, Cursor Bugbot, and Codex
