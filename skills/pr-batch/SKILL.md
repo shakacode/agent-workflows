@@ -112,9 +112,12 @@ Before implementation or worker launch, produce:
    - likely outcome: implementation PR, combined investigation PR, no-PR evidence comment, or product-decision blocker
    - assigned machine or worker
 6. The selected `merge_authority` value and how it affects final closeout.
-7. A permission and trust preflight result.
-8. A conflict check for overlapping files or dependent PRs.
-9. A final `/goal` prompt when the user asked for Goal mode.
+7. The Batch QA Lane decision from `.agents/workflows/pr-processing.md`:
+   required lane/owner/scope or `not required` with rationale, plus final QA
+   Evidence expectations.
+8. A permission and trust preflight result.
+9. A conflict check for overlapping files or dependent PRs.
+10. A final `/goal` prompt when the user asked for Goal mode.
 
 If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the `/goal` prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 
@@ -155,10 +158,16 @@ Targets: <exact issue/PR list>.
 Lane: <machine/worker ownership and exclusions>.
 Mode: spawn worker subagents only after the target list and lane split are confirmed.
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
+Batch QA Lane: <required lane/owner/scope/private-state or not required rationale>.
 Coordination: follow `.agents/workflows/pr-processing.md` under Coordination
 State and Worker Rules before creating worktrees or branches. Include stable
 agent ids, bounded targeted `agent-coord status` / claim outcomes, batch ids,
 dependency refs, and any `UNKNOWN` state in every worker lane and handoff.
+When the Batch QA Lane section requires QA, declare a `qa` lane with stable owner
+and claim/heartbeat expectations when the private backend is available. If
+private state is unavailable, record QA claim/heartbeat state as `UNKNOWN` and
+use allowed fallback evidence. Require the final QA Evidence block in the
+handoff; if QA is not required, record the rationale in that block.
 Attention contract: follow `AGENTS.md` under Maintainer Attention Contract and
 `.agents/workflows/pr-processing.md` under Maintainer Attention Contract. Do
 not escalate behavior-preserving optional nits, batch real questions into one
@@ -333,9 +342,15 @@ Use the canonical Batch Handoff Format in
 **Immediate maintainer attention** for true blockers and questions only, and
 **FYI / decisions made** for decisions, validations, review state, hosted-CI
 requests already handled, no-PR rationales, autonomous nit outcomes,
-confidence notes, decision-point counts per PR, and per-PR merge-ledger summaries.
+confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
+merge-ledger summaries.
 Do not call a target `complete` while its ledger has `UNKNOWN` fields or
 `complete_allowed: false`.
+Do not report a batch that requires QA as ready while required QA
+coverage/scope evidence is missing, stale, scope-mismatched, `blocked`,
+`in_progress`, `unknown`, or still `UNKNOWN`; the only allowed fallback is a QA
+lane whose private coordination claim/heartbeat is `UNKNOWN` while documented QA
+evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
 split final states from `.agents/workflows/pr-processing.md`.
 
@@ -391,8 +406,8 @@ coordinator owns the live re-fetch, current-head checks and review-thread triage
 per-PR merge-ledger run, stale release-mode classification updates and the finalized PR-body
 `Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
 distinct), hosted-CI request and waitback when uncertainty remains, and any
-authorized ready/merge action, and the late post-merge bot-finding sweep before
-final batch handoff.
+authorized ready/merge action, required QA Evidence verification, and the late
+post-merge bot-finding sweep before final batch handoff.
 
 When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
 target is merged + closed out (or a true blocker / no-PR with evidence), not

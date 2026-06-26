@@ -95,7 +95,15 @@ The resolver is read-only. It resolves the default release-candidate base, the h
    Keep PR-range inclusion separate from worked-issue coverage so no-PR,
    blocked, parked, and unmerged lanes are still evaluated.
 
-Show included worked issues, included PRs, excluded near-matches, base/head SHAs, coordination status evidence, and assumptions. Ask for confirmation before deep audit unless the user explicitly asks to proceed without confirmation.
+After the scope algorithm identifies the batch or reports an `UNKNOWN` scope,
+collect any QA lane and QA Evidence block for that batch. Do not use missing QA
+state to shrink the worked-issue scope; report it as a QA coverage finding or
+`UNKNOWN` fact instead.
+
+Show included worked issues, included PRs, collected QA lanes and QA Evidence
+blocks, excluded near-matches, base/head SHAs, coordination status evidence, and
+assumptions. Ask for confirmation before deep audit unless the user explicitly
+asks to proceed without confirmation.
 
 ## Audit Checks
 
@@ -114,31 +122,47 @@ For each included PR:
   reproducible artifact or justified missing-artifact caveat, internal consistency, production-environment
   caveats, and refutable-conclusion handling.
 - Validation: compare changed areas with the validation evidence in the PR body or comments.
+- QA evidence: verify required QA Evidence exists, records `Tested at` with the
+  PR/head SHA or audited range it applies to, is current for that head/range,
+  covers the changed surfaces, and does not leave release-blocking findings
+  untriaged. If private coordination claim/heartbeat state is `UNKNOWN`, verify
+  the documented fallback evidence is otherwise complete and names a concrete QA
+  owner and branch/worktree before treating QA coverage as satisfied.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.
 - Decision log: inspect any `Codex Decision Log` or equivalent section and verify the decisions still hold after the merge.
 
-For each worked issue from coordination state or advisory `codex-claim`
-recovery rows, including no-PR, blocked, parked, done-unmerged, or still-open
-lanes:
+For each worked issue, QA lane, or advisory `codex-claim` recovery row from
+coordination state, including no-PR, blocked, parked, done-unmerged, or
+still-open lanes:
 
-- Intent coverage: compare the issue intent and acceptance criteria with the PR
-  diff, no-PR evidence comment, branch state, or blocker note.
+- Intent coverage: compare the issue or QA-lane intent with the PR diff, no-PR
+  evidence comment, QA evidence, branch state, or blocker note.
 - Final state: verify whether the issue was merged, closed, parked, blocked,
-  left open intentionally, or remains `UNKNOWN`.
+  left open intentionally, or remains `UNKNOWN`; for QA lanes, verify whether
+  the QA coverage status is `satisfied`, `blocked`, `waived`, healthy
+  `in_progress`, `not_applicable` when QA was not required, or `unknown`.
 - Handoff expectations: check validation evidence, decision-point count,
-  confidence notes, review/comment triage, and any Process Gap Disposition
-  fields required by `.agents/workflows/pr-processing.md`.
+  confidence notes, QA evidence, review/comment triage, and any Process Gap
+  Disposition fields required by `.agents/workflows/pr-processing.md`.
 - Classification: reuse the intent-achievement classes from
   `.agents/workflows/continuous-evaluation-loop.md` (`in_progress`,
   `realized`, `partial`, `missed`, `regressed`, `stalled`, or `unknown`) and
-  explain any `UNKNOWN` evidence needed to resolve the issue outcome.
-- Post-merge intake: record healthy `in_progress` lanes and evidenced
-  `realized` outcomes in the worked-issue table as no-action items; route
+  explain any `UNKNOWN` evidence needed to resolve the issue outcome. For QA
+  lanes, use the QA-coverage result `satisfied`, `blocked`, `waived`,
+  `in_progress`, `not_applicable`, or `unknown` from
+  `.agents/workflows/pr-processing.md`.
+- Post-merge intake: record healthy `in_progress` worked-issue lanes,
+  evidenced `realized` worked-issue outcomes, evidenced `satisfied` or `waived`
+  QA lanes, and evidenced `not_applicable` QA omissions in the coverage table as
+  no-action items; treat required QA lanes still `in_progress` during readiness
+  or release audits as QA coverage findings; route
   `stalled` lanes back to the batch coordinator as resume/reassign/drop
   decisions unless the user explicitly approves tracking the stalled lane as an
   issue; route every other non-OK worked-issue class (`partial`, `missed`,
-  `regressed`, or `unknown`), merged or not, into the issue plan or an explicit
-  coordinator action that names the missing evidence or decision.
+  `regressed`, or `unknown`), merged or not, and every non-OK QA coverage
+  outcome (`blocked`, `unknown`, or release-audit `in_progress`) into the issue
+  plan or an explicit coordinator action that names the missing evidence or
+  decision.
 
 ## Codex And Claude Coordination
 
@@ -185,11 +209,13 @@ lane was evaluated, even when the issue produced no merged PR:
 The audit should usually produce an issue plan for non-OK findings, but not create issues until approval.
 
 - **No issue**: for `OK`, duplicate findings, findings fully resolved by the
-  audit evidence, evidenced `realized` lanes, or healthy `in_progress` lanes;
-  include `realized` and `in_progress` lanes in the worked-issue coverage table
-  so the coordinator can see they were checked.
+  audit evidence, evidenced `realized` lanes, healthy `in_progress`
+  worked-issue lanes, evidenced `satisfied` or `waived` QA lanes, or evidenced
+  QA omissions marked `not_applicable`; include those rows in the
+  worked-issue/QA-lane coverage table so the coordinator can see they were
+  checked.
 - **Changelog only**: for missing changelog entries; prefer one bundled changelog issue or a recommendation to run `/update-changelog`, not one issue per entry.
-- **One child issue**: for each independently actionable fix PR, revert consideration, maintainer question, follow-up task, or non-OK worked-issue outcome (`partial`, `missed`, `regressed`, or `unknown`) that needs follow-up.
+- **One child issue**: for each independently actionable fix PR, revert consideration, maintainer question, follow-up task, non-OK worked-issue outcome (`partial`, `missed`, `regressed`, or `unknown`), or non-OK QA coverage outcome (`blocked`, `unknown`, or release-audit `in_progress`) that needs follow-up.
 - **Parent issue**: create one parent issue only to group two or more related
   _child fix_ issues from the same audit. Do **not** create a standalone
   audit-snapshot tracker (a `Post-<range> audit` / `Post-rc.N catch-up audit`
@@ -234,15 +260,17 @@ Only the coordinator should create issues. Independent Codex and Claude audits s
 Return high-risk findings first, then:
 
 1. Review-gate violations, including PRs merged before requested reviews finished, before actionable review findings were triaged, or with AI review systems incorrectly counted as approval gates.
-2. Missing changelog candidates, with a single recommendation to run `/update-changelog` when any are found.
-3. Cross-PR interaction risks.
-4. A deduped issue plan with parent/child recommendations and fingerprints.
-5. A worked-issue coverage table with issue number, coordination lane/branch,
-   linked PR or no-PR/blocker evidence, final state, intent-achievement
-   classification, and `UNKNOWN` facts (see the example in
-   `.agents/workflows/post-merge-audit.md`).
-6. A PR-by-PR table.
-7. Exact commands and data sources used, including bounded `agent-coord status`
+2. QA coverage findings, including missing, stale, insufficiently scoped, or
+   still-`UNKNOWN` required QA evidence.
+3. Missing changelog candidates, with a single recommendation to run `/update-changelog` when any are found.
+4. Cross-PR interaction risks.
+5. A deduped issue plan with parent/child recommendations and fingerprints.
+6. A worked-issue/QA-lane coverage table with issue number or QA lane id,
+   coordination lane/branch, linked PR or no-PR/blocker/QA evidence, final
+   state, issue intent-achievement or QA-coverage classification, and `UNKNOWN`
+   facts (see the example in `.agents/workflows/post-merge-audit.md`).
+7. A PR-by-PR table.
+8. Exact commands and data sources used, including bounded `agent-coord status`
    output for the named batch or the exact reason coordination state was
    `UNKNOWN`.
 

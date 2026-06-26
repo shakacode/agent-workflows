@@ -68,6 +68,10 @@ Plan a PR batch
      Coordinators must create or update the private backend
      `batches/<batch-id>.json` with those lane refs before dependent workers
      start; otherwise targeted batch status cannot report `blocked_on` lanes.
+   - Apply `.agents/workflows/pr-processing.md` under **Batch QA Lane**. Record
+     whether QA is required, which subset qualifies, the planned owner/lane, and
+     final QA Evidence expectations. If QA is omitted for low-risk work, record
+     `not required` plus the rationale.
    - Build a File-touch map for the batch: list the paths each item changes or
      intends to affect, including creates, deletes, and renames. Never guess
      paths.
@@ -160,6 +164,7 @@ Plan a PR batch
 - `merge_authority`:
 - Concurrent activity and dependency status:
 - Coordination hooks, including backend claim exclusions:
+- Batch QA Lane decision and QA Evidence expectations:
 - Verification expectations:
 - Prompt sizing: `Goal prompt character count: N characters`; note any split fallback and keep omitted item
   details here, not in the goal prompt.
@@ -178,6 +183,7 @@ Preflight first: if this session cannot run workers without blocking approval pr
 Repository: OWNER/REPO
 Batch objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
+Batch QA Lane: <required owner/scope or not required rationale>.
 Scope summary: [one paragraph: compact titles, sequencing, dependencies, exclusions, and path ownership for this batch. Keep bulky evidence, long validation notes, and later-batch details outside this prompt.]
 File-touch map (one line per item; pick the applicable format):
 - PR/Issue #N -> changed/affected paths, including create/delete/rename (owner: lane/name)
@@ -209,6 +215,7 @@ Execution rules:
 - Sequenced lanes may share declared files only in the stated order.
 - Each subagent must verify current GitHub state before edits and report UNKNOWN for unverifiable facts.
 - For coordination, respect coordination claims and dependencies: stable agent ids, bounded doctor/status, claim before branching, heartbeat at phase changes, and stop on unmet `blocked_on` refs or dependency `UNKNOWN`.
+- Apply Batch QA Lane; include QA Evidence in final handoff.
 - Use local validation, self-review, review-comment, CI, and readiness gates from the repo workflow. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or a later explicit approval exists, current release mode permits it, and confidence/readiness gates pass; document confidence data in the PR description.
 - Final handoff must include links, tests, blockers, next action, confidence or UNKNOWN facts, `merge_authority`, and explicit final-state sections: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 ```
