@@ -170,6 +170,15 @@ class AgentCoordBoundedTest < Minitest::Test
     end
   end
 
+  def test_process_alive_treats_eperm_as_alive
+    original_kill = Process.method(:kill)
+    Process.define_singleton_method(:kill) { |*| raise Errno::EPERM }
+
+    assert process_alive?(1234)
+  ensure
+    Process.define_singleton_method(:kill, original_kill) if original_kill
+  end
+
   private
 
   def run_script(env, *)
@@ -206,5 +215,7 @@ class AgentCoordBoundedTest < Minitest::Test
     true
   rescue Errno::ESRCH
     false
+  rescue Errno::EPERM
+    true
   end
 end
