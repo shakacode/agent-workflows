@@ -339,6 +339,29 @@ def suspicious_added_lines(diff, pattern:)
   end
 end
 
+def pr_source_actor_logins(target)
+  logins = Set.new
+  logins << target.dig("author", "login")
+
+  Array(target.dig("timelineItems", "nodes")).each do |item|
+    next unless item["__typename"] == "PullRequestCommit"
+
+    item.dig("commit", "authors", "nodes")&.each do |author|
+      logins << author.dig("user", "login")
+    end
+  end
+
+  logins.delete(nil)
+  logins
+end
+
+def trusted_pr_source?(repo, target, trust_config:, team_cache:)
+  logins = pr_source_actor_logins(target)
+  return false if logins.empty?
+
+  logins.all? { |login| trusted_actor?(repo, login, trust_config, team_cache) }
+end
+
 def suspicious_issue_text(rest_context, repo, trust_config:, team_cache:, pattern:)
   findings = []
   issue = rest_context.fetch(:issue)
@@ -421,16 +444,16 @@ def warnings_not_already_blocking(suspicious_warnings, suspicious)
   suspicious_warnings.reject { |finding| blocking_locations.include?(finding.fetch(:location)) }
 end
 
-def suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trust_config:, team_cache:)
-  suspicious = suspicious_text_findings(
+def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:, trust_config:, team_cache:)
+  suspicious = []
+  suspicious_warnings = suspicious_text_findings(
     rest:,
     target_is_pr:,
     repo:,
     trust_config:,
     team_cache:,
     pattern: BLOCKING_SUSPICIOUS_PATTERN
-  )
-  suspicious_warnings = suspicious_text_findings(
+  ) + suspicious_text_findings(
     rest:,
     target_is_pr:,
     repo:,
@@ -441,7 +464,12 @@ def suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trust_c
 
   if target_is_pr
     diff = run_gh("pr", "diff", number.to_s, "--repo", repo)
-    suspicious.concat(suspicious_added_lines(diff, pattern: DIFF_SUSPICIOUS_PATTERN))
+    diff_findings = suspicious_added_lines(diff, pattern: DIFF_SUSPICIOUS_PATTERN)
+    if trusted_pr_source?(repo, target, trust_config:, team_cache:)
+      suspicious_warnings.concat(diff_findings)
+    else
+      suspicious.concat(diff_findings)
+    end
   end
 
   suspicious_warnings = warnings_not_already_blocking(suspicious_warnings, suspicious)
@@ -823,7 +851,15 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     visible.merge(reaction_users(repo, number, rest_context: rest, include_pull_comments: target_is_pr))
   end
   files = target_is_pr ? changed_files(repo, number) : []
-  suspicious_findings = suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trust_config:, team_cache:)
+  suspicious_findings = suspicious_findings_for_target(
+    repo:,
+    number:,
+    rest:,
+    target:,
+    target_is_pr:,
+    trust_config:,
+    team_cache:
+  )
   untrusted_interactions = untrusted_interaction_findings(
     rest,
     repo,

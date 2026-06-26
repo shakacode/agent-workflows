@@ -26,21 +26,32 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_blocking_terms_in_trusted_issue_text_block_and_suppress_duplicate_warning
+  def test_blocking_terms_in_trusted_issue_text_warn_without_blocking
     with_fake_gh("blocking-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
 
-      refute status.success?, out
-      assert_equal 2, status.exitstatus, out
-      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
-      assert_includes out, "- #123: suspicious text"
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
       assert_includes out, "issue body by justin808"
-      assert_includes out, "Suspicious text warnings: none"
+      assert_includes out, "Suspicious text findings: none"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
   end
 
-  def test_suspicious_terms_in_pr_diff_block_and_fetch_diff_once
+  def test_suspicious_terms_in_trusted_pr_diff_warn_and_fetch_diff_once
     with_fake_gh("warning-diff") do |env, trust_config_path, log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, ".github/workflows/test.yml (diff output line"
+      assert_includes out, "Suspicious text findings: none"
+      assert_equal 1, full_diff_call_count(log_path)
+    end
+  end
+
+  def test_suspicious_terms_in_untrusted_pr_diff_still_block
+    with_fake_gh("untrusted-warning-diff") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
 
       refute status.success?, out
@@ -48,8 +59,6 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "- #123: suspicious text"
       assert_includes out, ".github/workflows/test.yml (diff output line"
-      assert_includes out, "Suspicious text warnings: none"
-      assert_equal 1, full_diff_call_count(log_path)
     end
   end
 
@@ -339,30 +348,28 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_trusted_bot_review_comment_resolved_by_untrusted_user_blocks
+  def test_trusted_bot_review_comment_resolved_by_untrusted_user_warns_without_blocking
     with_fake_gh("untrusted-resolver-trusted-bot-review-comment") do |env, trust_config_path, _log_path|
       trust_coderabbit(trust_config_path)
 
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
 
-      refute status.success?, out
-      assert_equal 2, status.exitstatus
-      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
-      assert_includes out, "- #123: suspicious text"
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "Suspicious text findings: none"
       assert_includes out, "review comment 901 by coderabbitai[bot]"
     end
   end
 
-  def test_unresolved_trusted_bot_review_comment_with_suspicious_text_blocks
+  def test_unresolved_trusted_bot_review_comment_with_suspicious_text_warns_without_blocking
     with_fake_gh("unresolved-trusted-bot-review-comment") do |env, trust_config_path, _log_path|
       trust_coderabbit(trust_config_path)
 
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
 
-      refute status.success?, out
-      assert_equal 2, status.exitstatus
-      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
-      assert_includes out, "- #123: suspicious text"
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "Suspicious text findings: none"
       assert_includes out, "review comment 901 by coderabbitai[bot]"
     end
   end
@@ -560,7 +567,7 @@ class PrSecurityPreflightTest < Minitest::Test
       }
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "untrusted-warning-diff" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -610,6 +617,10 @@ class PrSecurityPreflightTest < Minitest::Test
         elif [ "$mode" = "warning-diff" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
+      JSON
+        elif [ "$mode" = "untrusted-warning-diff" ]; then
+          cat <<'JSON'
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"unknown-user"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"unknown-user"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
           cat <<'JSON'
