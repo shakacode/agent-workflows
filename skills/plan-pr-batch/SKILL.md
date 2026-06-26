@@ -183,7 +183,7 @@ Preflight first: if this session cannot run workers without blocking approval pr
 Repository: OWNER/REPO
 Batch objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
-Batch QA: <required owner/scope or not required rationale>.
+Batch QA Lane: <required owner/scope or not required rationale>.
 Scope summary: [one paragraph: compact titles, sequencing, dependencies, exclusions, and path ownership for this batch. Keep bulky evidence, long validation notes, and later-batch details outside this prompt.]
 File-touch map (one line per item; pick the applicable format):
 - PR/Issue #N -> changed/affected paths, including create/delete/rename (owner: lane/name)

@@ -517,9 +517,9 @@ owner or incomplete QA evidence without a concrete release-blocking finding is
 `unknown`, not a separate QA `stalled` status; it still maps to release-blocking
 `blocked` and needs coordinator action to resume, reassign, drop, or recover
 evidence. Valid QA lane final states in worked-issue/QA-lane coverage tables are
-`done`, `blocked`, `not_applicable`, or `UNKNOWN`; the classification column
-records the QA coverage result such as `satisfied`, `waived`, `blocked`, or
-`unknown`.
+`done`, `blocked`, `waived`, `not_applicable`, or `UNKNOWN`; the classification
+column records the QA coverage result such as `satisfied`, `waived`, `blocked`,
+or `unknown`.
 
 ### Plan To Goal Handoff
 
@@ -758,9 +758,9 @@ Do not report a PR/target as `complete` while the repo's merge ledger in strict
 mode reports `UNKNOWN` fields, review-thread/review-object violations, or
 `complete_allowed: false`. Do not report any batch that requires QA as ready
 while required QA coverage/scope evidence is missing, stale, scope-mismatched,
-marked `blocked`, `in_progress`, or `unknown`, or still `UNKNOWN`; a QA lane
-whose only `UNKNOWN` is private coordination claim/heartbeat state may use the
-documented fallback evidence.
+marked `blocked`, release-audit `in_progress`, or `unknown`, or still `UNKNOWN`;
+a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
+use the documented fallback evidence.
 
 ### Coordination State
 
@@ -989,8 +989,8 @@ The closeout lane is:
 6. Verify the batch QA evidence when the Batch QA Lane section requires QA, or
    verify the `not required` rationale for low-risk batches. Audit and release
    decisions must treat missing, stale, insufficiently scoped, blocked,
-   `in_progress`, `unknown`, surface-mismatched, or still-`UNKNOWN` QA
-   coverage/scope evidence as a readiness blocker until fixed, waived, or
+   release-audit `in_progress`, `unknown`, surface-mismatched, or still-`UNKNOWN`
+   QA coverage/scope evidence as a readiness blocker until fixed, waived, or
    carried as an explicit blocker. A QA lane whose only `UNKNOWN` is private
    coordination claim/heartbeat state may use the documented fallback evidence.
 7. Refresh stale release-mode classification from the release tracker when
