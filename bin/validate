@@ -46,11 +46,17 @@ echo "== status unit tests =="
 ruby bin/agent-workflows-status-test.rb
 ruby bin/agent-workflows-trust-audit-test.rb
 
+echo "== push-downstream unit tests =="
+ruby bin/push-downstream-test.rb
+
 echo "== installer/status/upgrade tests =="
 bash bin/install-agent-workflows-test.bash
 
 echo "== fixture seam validation =="
 bin/agent-workflow-seam-doctor --root test/fixtures/consumer-repo --shared .
+
+echo "== downstream registry dry-run =="
+bin/push-downstream --config downstream.yml >/dev/null
 
 echo "== helper tests =="
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb

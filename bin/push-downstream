@@ -1,0 +1,312 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Sync the managed `## Agent Workflow Configuration` seam into downstream
+# consumer repositories listed in downstream.yml, preserving each repo's own
+# seam values.
+
+require "open3"
+require "optparse"
+require "tmpdir"
+require "yaml"
+
+load File.expand_path("agent-workflow-seam-doctor", __dir__)
+
+module PushDownstream
+  module_function
+
+  SECTION_TITLE = AgentWorkflowSeamDoctor::SECTION
+  COMMIT_TITLE = "Add Agent Workflow Configuration seam to AGENTS.md"
+
+  def load_config(path)
+    data = YAML.safe_load(File.read(path), aliases: false) || {}
+    defaults = data["defaults"] || {}
+    (data["repos"] || []).map do |entry|
+      merged = defaults.merge(entry)
+      owner = merged.fetch("owner")
+      repo = merged.fetch("repo")
+      {
+        owner: owner,
+        repo: repo,
+        nwo: "#{owner}/#{repo}",
+        base_branch: merged.fetch("base_branch"),
+        pr_branch: merged.fetch("pr_branch"),
+        enabled: merged.fetch("enabled", true),
+        tier: merged["tier"]
+      }
+    end
+  end
+
+  def select_repos(repos, only: nil, include_disabled: false)
+    if only && !only.empty?
+      repos.select { |repo| only.include?(repo[:repo]) || only.include?(repo[:nwo]) }
+    elsif include_disabled
+      repos
+    else
+      repos.select { |repo| repo[:enabled] }
+    end
+  end
+
+  KEY_BULLET = /^-\s+\*\*(.+?)\*\*:(.*)$/
+
+  def reconcile(text, base_branch:)
+    lines = text.lines
+    start = lines.index { |line| line.match?(AgentWorkflowSeamDoctor::SECTION_HEADING) }
+    return append_section(text, base_branch) if start.nil?
+
+    finish = ((start + 1)...lines.length).find { |index| lines[index].match?(/^##\s+/) } || lines.length
+    existing = parse_existing_values(lines[(start + 1)...finish])
+
+    before = lines[0...start].join
+    rebuilt = render_section(existing, base_branch)
+    after = lines[finish..].join
+    trailing = after.empty? ? "" : "\n"
+
+    before + rebuilt + trailing + after
+  end
+
+  def parse_existing_values(section_lines)
+    values = {}
+    current = nil
+    buffer = +""
+
+    section_lines.each do |line|
+      if (match = line.match(KEY_BULLET))
+        values[current] = buffer if current
+        current = match[1].strip
+        buffer = +match[2]
+      elsif current && line.match?(/^\s{2,}\S/)
+        buffer << "\n" << line.chomp
+      elsif current
+        values[current] = buffer
+        current = nil
+      end
+    end
+    values[current] = buffer if current
+    values
+  end
+
+  def append_section(text, base_branch)
+    separator =
+      if text.empty? || text.end_with?("\n\n")
+        ""
+      elsif text.end_with?("\n")
+        "\n"
+      else
+        "\n\n"
+      end
+    text + separator + render_section({}, base_branch)
+  end
+
+  def render_section(existing_values, base_branch)
+    out = +"## #{SECTION_TITLE}\n\n"
+    out << managed_preamble << "\n\n"
+    AgentWorkflowSeamDoctor::REQUIRED_KEYS.each do |key|
+      value = existing_values[key] || " #{default_value(key, base_branch)}"
+      out << "- **#{key}**:#{value}\n"
+    end
+    existing_values.each do |key, raw|
+      next if AgentWorkflowSeamDoctor::REQUIRED_KEYS.include?(key)
+
+      out << "- **#{key}**:#{raw}\n"
+    end
+    out
+  end
+
+  def default_value(key, base_branch)
+    key == "Base branch" ? "`#{base_branch}`." : "n/a"
+  end
+
+  def run_local(root, base_branch:, apply:)
+    agents_path = File.join(root, "AGENTS.md")
+    unless File.file?(agents_path)
+      warn "missing AGENTS.md: #{agents_path}"
+      return 1
+    end
+
+    current = File.read(agents_path)
+    updated = reconcile(current, base_branch: base_branch)
+
+    if updated == current
+      puts "already current: #{agents_path}"
+      return 0
+    end
+
+    unless apply
+      puts "would update AGENTS.md seam: #{agents_path} (re-run with --apply to write)"
+      return 0
+    end
+
+    File.write(agents_path, updated)
+    issues = AgentWorkflowSeamDoctor.check(root)
+    print AgentWorkflowSeamDoctor.format_text(issues)
+    issues.empty? ? 0 : 1
+  end
+
+  def run_registry(config_path, only:, include_disabled:, apply:)
+    repos = select_repos(load_config(config_path), only: only, include_disabled: include_disabled)
+    if repos.empty?
+      puts "no downstream repos selected"
+      return 0
+    end
+
+    unless apply
+      puts "Planned downstream seam sync (#{repos.length} repo(s)); " \
+           "re-run with --apply to clone, reconcile, validate, and open PRs:"
+      repos.each { |repo| puts "- #{repo[:nwo]} (base #{repo[:base_branch]} -> branch #{repo[:pr_branch]})" }
+      return 0
+    end
+
+    failures = repos.count { |repo| !sync_repo(repo) }
+    failures.zero? ? 0 : 1
+  end
+
+  def sync_repo(repo)
+    Dir.mktmpdir("push-downstream-sync") do |dir|
+      clone = File.join(dir, repo[:repo])
+      unless system("git", "clone", "--depth", "1", "--branch", repo[:base_branch],
+                    "https://github.com/#{repo[:nwo]}.git", clone, out: File::NULL, err: File::NULL)
+        warn "FAIL #{repo[:nwo]}: clone of #{repo[:base_branch]} failed"
+        return false
+      end
+
+      agents_path = File.join(clone, "AGENTS.md")
+      unless File.file?(agents_path)
+        warn "FAIL #{repo[:nwo]}: no AGENTS.md"
+        return false
+      end
+
+      current = File.read(agents_path)
+      updated = reconcile(current, base_branch: repo[:base_branch])
+      if updated == current
+        puts "UP_TO_DATE #{repo[:nwo]}"
+        return true
+      end
+
+      File.write(agents_path, updated)
+      issues = AgentWorkflowSeamDoctor.check(clone)
+      unless issues.empty?
+        warn "FAIL #{repo[:nwo]}: seam doctor: #{issues.join('; ')}"
+        return false
+      end
+
+      open_pull_request(repo, clone)
+    end
+  end
+
+  def open_pull_request(repo, clone)
+    branch = repo[:pr_branch]
+    unless git(clone, "checkout", "-b", branch)
+      warn "FAIL #{repo[:nwo]}: could not create branch #{branch}"
+      return false
+    end
+
+    git(clone, "add", "AGENTS.md")
+    unless git(clone, "-c", "commit.gpgsign=false", "commit", "-m", COMMIT_TITLE)
+      warn "FAIL #{repo[:nwo]}: commit failed"
+      return false
+    end
+
+    unless git(clone, "push", "origin", "HEAD:#{branch}") ||
+           git(clone, "push", "--force-with-lease", "origin", "HEAD:#{branch}")
+      warn "FAIL #{repo[:nwo]}: push failed"
+      return false
+    end
+
+    url = existing_pr_url(repo, branch) || create_pr(repo, branch)
+    if url.to_s.empty?
+      warn "FAIL #{repo[:nwo]}: PR create failed"
+      return false
+    end
+
+    puts "PR #{repo[:nwo]} #{url}"
+    true
+  end
+
+  def git(dir, *)
+    system("git", "-C", dir, *, out: File::NULL, err: File::NULL)
+  end
+
+  def existing_pr_url(repo, branch)
+    out, status = Open3.capture2(
+      "gh", "pr", "list", "--repo", repo[:nwo], "--head", branch,
+      "--base", repo[:base_branch], "--state", "open", "--json", "url", "--jq", ".[0].url"
+    )
+    status.success? ? out.strip : nil
+  end
+
+  def create_pr(repo, branch)
+    out, status = Open3.capture2(
+      "gh", "pr", "create", "--repo", repo[:nwo], "--base", repo[:base_branch],
+      "--head", branch, "--title", COMMIT_TITLE, "--body", pr_body
+    )
+    status.success? ? out.strip.lines.last.to_s.strip : nil
+  end
+
+  def pr_body
+    <<~BODY
+      ## Summary
+
+      - add the `## Agent Workflow Configuration` seam to `AGENTS.md`
+      - resolve this repo's base branch, validation, CI, changelog, review-gate, and
+        coordination values so portable shared agent-workflow skills can run here
+      - values stay repo-owned; replace any remaining `n/a` entries with real commands
+
+      Generated by `bin/push-downstream` from
+      [`shakacode/agent-workflows`](https://github.com/shakacode/agent-workflows).
+
+      ## Validation
+
+      - `agent-workflow-seam-doctor --root . --shared <agent-workflows-root>`
+    BODY
+  end
+
+  def managed_preamble
+    <<~MARKDOWN.chomp
+      Portable shared skills resolve every repo-specific value through this section.
+      Adopting repos replace these values with their own and validate the seam with
+      `agent-workflow-seam-doctor` (add `--shared <agent-workflows-root>` when checking
+      user-installed shared skills outside the checkout). The shared source lives at
+      [`shakacode/agent-workflows`](https://github.com/shakacode/agent-workflows).
+    MARKDOWN
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  options = {
+    config: File.expand_path("../downstream.yml", __dir__),
+    root: nil,
+    only: nil,
+    include_disabled: false,
+    apply: false,
+    base_branch: "main"
+  }
+
+  OptionParser.new do |opts|
+    opts.banner = "Usage: push-downstream [--root DIR | --config FILE] [--only a,b] [--all] [--apply]"
+    opts.on("--root DIR", "Reconcile one local checkout instead of the registry") { |value| options[:root] = value }
+    opts.on("--config FILE", "Downstream registry YAML (default: downstream.yml)") { |value| options[:config] = value }
+    opts.on("--only a,b", Array, "Restrict to these repo names") { |value| options[:only] = value }
+    opts.on("--all", "Include repos marked enabled: false") { options[:include_disabled] = true }
+    opts.on("--apply", "Apply changes (write files; push branches and open PRs)") { options[:apply] = true }
+    opts.on("--base-branch NAME", "Base branch for --root mode (default: main)") { |value| options[:base_branch] = value }
+    opts.on("-h", "--help", "Show help") do
+      puts opts
+      exit 0
+    end
+  end.parse!
+
+  code =
+    if options[:root]
+      PushDownstream.run_local(options[:root], base_branch: options[:base_branch], apply: options[:apply])
+    else
+      PushDownstream.run_registry(
+        options[:config],
+        only: options[:only],
+        include_disabled: options[:include_disabled],
+        apply: options[:apply]
+      )
+    end
+
+  exit code
+end

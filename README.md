@@ -29,7 +29,8 @@ plus a validated repo seam are the default.
 | --- | --- |
 | `skills/` | Agent skill folders. Copy or symlink these under a Codex or Claude skill root. |
 | `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
-| `bin/` | Install, status, upgrade, and validation helpers. |
+| `bin/` | Install, status, upgrade, validation, and downstream-sync helpers. |
+| `downstream.yml` | Registry of consumer repos for `bin/push-downstream`. |
 | `docs/` | Adoption, seam design, and operator guidance. |
 | `examples/` | Example consumer-repo configuration snippets. |
 | `test/fixtures/consumer-repo/` | Minimal fixture used by `bin/validate`. |
@@ -105,6 +106,22 @@ See [docs/adoption.md](docs/adoption.md) for the full adoption guide,
 [docs/seam-design.md](docs/seam-design.md) for the design rationale, and
 [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 ongoing host installs and upgrades.
+
+## Downstream Seam Sync
+
+`bin/push-downstream` rolls the managed `## Agent Workflow Configuration` seam
+into the consumer repos listed in `downstream.yml`, one PR per repo, while
+leaving each repo's seam values repo-owned. Plan first, then apply a canary
+before fanning out:
+
+```bash
+bin/push-downstream                               # plan every enabled repo
+bin/push-downstream --only shakapacker --apply    # clone, reconcile, validate, open one PR
+bin/push-downstream --apply                       # fan out to all enabled repos
+```
+
+See [docs/downstream-sync.md](docs/downstream-sync.md) for the registry schema,
+the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
 
 ## Skill Inventory
 

@@ -1,0 +1,41 @@
+# Downstream consumer repositories for shakacode/agent-workflows.
+#
+# `bin/push-downstream` syncs the managed `## Agent Workflow Configuration`
+# section into each repo's AGENTS.md and opens one PR per repo. Each repo OWNS
+# its seam values; this registry only lists targets and light metadata. See
+# docs/downstream-sync.md.
+#
+# Out of scope by design:
+#   - shakacode/react_on_rails: the hand-authored reference seam.
+#   - private/business repos and archived repos.
+
+defaults:
+  owner: shakacode
+  base_branch: main
+  pr_branch: agent-workflows/seam-sync
+  enabled: true
+
+repos:
+  # Libraries and tools
+  - { repo: shakapacker, tier: library }
+  - { repo: react_on_rails_rsc, tier: library }
+  - { repo: shakaperf, tier: library }
+  - { repo: agent-coordination-dashboard, tier: library }
+
+  # Sites
+  - { repo: reactonrails.com, tier: site }
+  - { repo: shakastack-com, tier: site }
+
+  # Starter
+  - { repo: react-on-rails-starter-tanstack, tier: starter }
+
+  # Demos and examples
+  - { repo: react-on-rails-demo-gumroad-rsc, tier: demo }
+  - { repo: react_on_rails-demo-octochangelog-on-rails-pro, tier: demo }
+  - { repo: react-on-rails-demo-hacker-news-rsc, tier: demo }
+  - { repo: react-on-rails-demo-flagship, tier: demo }
+  - { repo: react-on-rails-demo-marketplace-rsc, tier: demo }
+  - { repo: react-on-rails-example-open-flights, tier: demo }
+  - { repo: react-on-rails-example-migration, tier: demo }
+  - { repo: react-webpack-rails-tutorial, tier: demo, base_branch: master }
+  - { repo: react-on-rails-demo-ssr-hmr, tier: demo, base_branch: master }
