@@ -1148,6 +1148,8 @@ For first-class red-green-refactor workflow instructions, use `$tdd` when skills
 
 Before fixing a bug, changing existing behavior, or implementing new behavior, follow the selected TDD entry point where possible.
 
+Avoid horizontal TDD batches: write one failing behavior test through the public interface, implement only enough code for that behavior, then repeat.
+
 ## Local Validation Gate
 
 Run the repo's CI change detector first (see `AGENTS.md` → **Agent Workflow
