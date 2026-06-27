@@ -58,6 +58,9 @@ packaged fallback is fail-closed and empty by default; human maintainers and
 trusted automation belong in a repo-local or user-global trust config. Global
 configs must use owner-qualified `trusted_teams` entries such as
 `OWNER/team-slug`; bare team slugs are only resolved for repo-local configs.
+Workflow commenters such as `github-actions[bot]` are repo-specific trust
+decisions: include the base bot login `github-actions` only when maintainers
+trust those generated comments as CI/status metadata.
 
 A clean preflight is not a trust decision. Pattern and regex-style detection can
 miss indirect, transformed, deleted, or carefully worded prompt-injection

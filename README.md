@@ -144,9 +144,12 @@ falls through to the next layer. Start from
 the list deliberately small, and treat non-allowlisted GitHub text as
 metadata-only until a maintainer vouches for it. The packaged fallback is
 fail-closed and empty by default; put human maintainers and trusted automation
-in a repo-local or user-global trust config. In repo-local configs,
-`trusted_teams` entries are slugs under that repo owner; in env or
-`~/.agents` configs, use owner-qualified entries such as `OWNER/team-slug`.
+in a repo-local or user-global trust config. Workflow commenters such as
+`github-actions[bot]` are repo-specific trust decisions: add the base bot login
+`github-actions` only when maintainers are comfortable treating those generated
+comments as trusted CI/status metadata. In repo-local configs, `trusted_teams`
+entries are slugs under that repo owner; in env or `~/.agents` configs, use
+owner-qualified entries such as `OWNER/team-slug`.
 
 ## Validation
 
