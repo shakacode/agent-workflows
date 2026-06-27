@@ -6,6 +6,10 @@ All notable changes to this portable workflow pack are documented here.
 
 ### [Unreleased]
 
+#### Fixed
+
+- **Fix `pr-security-preflight` trust config inheritance so repo-local, user-global, environment, and fail-closed packaged allowlists resolve predictably.** [PR 20](https://github.com/shakacode/agent-workflows/pull/20) by [justin808](https://github.com/justin808).
+
 ### [0.1.0] - 2026-06-24
 
 #### Added
