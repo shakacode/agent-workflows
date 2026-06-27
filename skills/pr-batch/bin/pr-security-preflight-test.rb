@@ -14,6 +14,282 @@ require "tmpdir"
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
 
 class PrSecurityPreflightTest < Minitest::Test
+  def test_missing_repo_config_uses_env_global_config
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      global_config = File.join(dir, "global-trusted-github-actors.yml")
+      FileUtils.mkdir_p([consumer_root, home])
+      write_trust_config(global_config, trusted_users: ["justin808"])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => global_config, "HOME" => home),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_global_config_ignores_unqualified_team_slugs
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      global_config = File.join(dir, "global-trusted-github-actors.yml")
+      FileUtils.mkdir_p([consumer_root, home])
+      write_trust_config(global_config, trusted_users: [], trusted_teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => global_config, "HOME" => home),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
+  def test_global_config_allows_owner_qualified_team_slugs
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      global_config = File.join(dir, "global-trusted-github-actors.yml")
+      FileUtils.mkdir_p([consumer_root, home])
+      write_trust_config(global_config, trusted_users: [], trusted_teams: ["owner/maintainers"])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => global_config, "HOME" => home),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_repo_local_config_allows_unqualified_team_slugs
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p([consumer_root, home])
+      system("git", "-C", consumer_root, "init", "--quiet")
+      write_trust_config(repo_config, trusted_users: [], trusted_teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => home),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_explicit_trust_config_flag_takes_precedence
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      explicit_config = File.join(dir, "explicit-trusted-github-actors.yml")
+      env_config = File.join(dir, "global-trusted-github-actors.yml")
+      home_config = File.join(dir, "home", ".agents", "trusted-github-actors.yml")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      write_trust_config(explicit_config, trusted_users: [])
+      write_trust_config(env_config, trusted_users: ["justin808"])
+      write_trust_config(home_config, trusted_users: ["justin808"])
+      write_trust_config(repo_config, trusted_users: ["justin808"])
+
+      out, status = run_script(
+        env.merge(
+          "AGENT_WORKFLOWS_TRUST_CONFIG" => env_config,
+          "HOME" => File.join(dir, "home")
+        ),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        explicit_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
+  def test_missing_explicit_trust_config_falls_through_to_repo_local_config
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      missing_explicit_config = File.join(dir, "missing-trusted-github-actors.yml")
+      env_config = File.join(dir, "global-trusted-github-actors.yml")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      write_trust_config(env_config, trusted_users: [])
+      write_trust_config(repo_config, trusted_users: ["justin808"])
+
+      out, status = run_script(
+        env.merge(
+          "AGENT_WORKFLOWS_TRUST_CONFIG" => env_config,
+          "HOME" => File.join(dir, "home")
+        ),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        missing_explicit_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_repo_local_config_takes_precedence_over_global_configs
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      env_config = File.join(dir, "global-trusted-github-actors.yml")
+      home_config = File.join(dir, "home", ".agents", "trusted-github-actors.yml")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      write_trust_config(env_config, trusted_users: [])
+      write_trust_config(home_config, trusted_users: [])
+      write_trust_config(repo_config, trusted_users: ["justin808"])
+
+      out, status = run_script(
+        env.merge(
+          "AGENT_WORKFLOWS_TRUST_CONFIG" => env_config,
+          "HOME" => File.join(dir, "home")
+        ),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_empty_repo_local_config_is_not_treated_as_absent
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      env_config = File.join(dir, "global-trusted-github-actors.yml")
+      home_config = File.join(dir, "home", ".agents", "trusted-github-actors.yml")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      write_trust_config(env_config, trusted_users: ["justin808"])
+      write_trust_config(home_config, trusted_users: ["justin808"])
+      write_trust_config(repo_config, trusted_users: [])
+
+      out, status = run_script(
+        env.merge(
+          "AGENT_WORKFLOWS_TRUST_CONFIG" => env_config,
+          "HOME" => File.join(dir, "home")
+        ),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
+  def test_repo_local_config_is_resolved_from_git_root_when_run_from_subdirectory
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      subdirectory = File.join(consumer_root, "nested", "path")
+      env_config = File.join(dir, "global-trusted-github-actors.yml")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(subdirectory)
+      system("git", "-C", consumer_root, "init", "--quiet")
+      write_trust_config(env_config, trusted_users: ["justin808"])
+      write_trust_config(repo_config, trusted_users: [])
+
+      out, status = run_script(
+        env.merge(
+          "AGENT_WORKFLOWS_TRUST_CONFIG" => env_config,
+          "HOME" => File.join(dir, "home")
+        ),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: subdirectory
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
+  def test_missing_repo_and_env_config_uses_home_global_config
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      home_config = File.join(home, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      write_trust_config(home_config, trusted_users: ["justin808"])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => home),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_missing_user_configs_use_empty_packaged_default_and_fail_closed
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      FileUtils.mkdir_p([consumer_root, home])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => home),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
   def test_warning_terms_in_trusted_issue_text_do_not_block
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -376,8 +652,26 @@ class PrSecurityPreflightTest < Minitest::Test
 
   private
 
-  def run_script(env, *)
-    Open3.capture2e(env, "ruby", SCRIPT, *)
+  def run_script(env, *args, chdir: nil)
+    options = {}
+    options[:chdir] = chdir if chdir
+
+    Open3.capture2e(env, "ruby", SCRIPT, *args, options)
+  end
+
+  def write_trust_config(path, trusted_users:, trusted_bots: [], trusted_teams: [])
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, <<~YAML)
+      trusted_users:#{yaml_list(trusted_users)}
+      trusted_bots:#{yaml_list(trusted_bots)}
+      trusted_teams:#{yaml_list(trusted_teams)}
+    YAML
+  end
+
+  def yaml_list(values)
+    return " []" if values.empty?
+
+    "\n#{values.map { |value| "  - #{value}" }.join("\n")}"
   end
 
   def trust_coderabbit(trust_config_path)
@@ -409,7 +703,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}",
         "PREFLIGHT_TEST_MODE" => mode
       }
-      yield env, trust_config_path, log_path
+      yield env, trust_config_path, log_path, dir
     end
   end
 
@@ -742,6 +1036,11 @@ class PrSecurityPreflightTest < Minitest::Test
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/collaborators/justin808/permission" ]; then
         printf '{"permission":"admin"}'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "orgs/owner/teams/maintainers/memberships/justin808" ]; then
+        printf '{"state":"active"}'
         exit 0
       fi
 

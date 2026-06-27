@@ -129,11 +129,27 @@ ongoing host installs and upgrades.
 
 ## Trust Configuration
 
-The `pr-batch` security preflight reads a consumer repo allowlist from
-`.agents/trusted-github-actors.yml` by default. Start from
+The `pr-batch` security preflight resolves its GitHub actor allowlist in this
+order:
+
+1. `--trust-config PATH`;
+2. repo-local `.agents/trusted-github-actors.yml`;
+3. `$AGENT_WORKFLOWS_TRUST_CONFIG`;
+4. user-global `~/.agents/trusted-github-actors.yml`;
+5. packaged `skills/pr-batch/trusted-github-actors.yml`.
+
+A present empty file is honored as an intentional local policy; an absent file
+falls through to the next layer. Start from
 [examples/trusted-github-actors.yml](examples/trusted-github-actors.yml), keep
 the list deliberately small, and treat non-allowlisted GitHub text as
-metadata-only until a maintainer vouches for it.
+metadata-only until a maintainer vouches for it. The packaged fallback is
+fail-closed and empty by default; put human maintainers and trusted automation
+in a repo-local or user-global trust config. Workflow commenters such as
+`github-actions[bot]` are repo-specific trust decisions: add the base bot login
+`github-actions` only when maintainers are comfortable treating those generated
+comments as trusted CI/status metadata. In repo-local configs, `trusted_teams`
+entries are slugs under that repo owner; in env or `~/.agents` configs, use
+owner-qualified entries such as `OWNER/team-slug`.
 
 ## Validation
 

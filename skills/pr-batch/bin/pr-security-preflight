@@ -15,7 +15,7 @@ options = {
   repo: nil,
   fail_on_high_risk_files: false,
   include_reactions: false,
-  trust_config: ".agents/trusted-github-actors.yml"
+  trust_config: nil
 }
 
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
@@ -136,13 +136,66 @@ def normalized_bot_login(login)
   normalized_login(login).delete_suffix("[bot]")
 end
 
-def load_trust_config(path)
+DEFAULT_TRUST_CONFIG = ".agents/trusted-github-actors.yml"
+HOME_TRUST_CONFIG = "~/.agents/trusted-github-actors.yml"
+PACKAGED_TRUST_CONFIG = File.expand_path("../trusted-github-actors.yml", __dir__)
+USER_TRUST_CONFIG_ENV = "AGENT_WORKFLOWS_TRUST_CONFIG"
+
+def resolved_trust_config(explicit_path)
+  return { path: explicit_path, global: false } if explicit_path && File.exist?(File.expand_path(explicit_path))
+
+  repo_path = repo_trust_config_path
+  return { path: repo_path, global: false } if File.exist?(repo_path)
+
+  env_path = ENV[USER_TRUST_CONFIG_ENV].to_s
+  return { path: env_path, global: true } if !env_path.empty? && File.exist?(File.expand_path(env_path))
+
+  home_path = File.expand_path(HOME_TRUST_CONFIG)
+  return { path: home_path, global: true } if File.exist?(home_path)
+
+  { path: PACKAGED_TRUST_CONFIG, global: false }
+end
+
+def repo_trust_config_path
+  root = git_toplevel || Dir.pwd
+  File.join(root, DEFAULT_TRUST_CONFIG)
+end
+
+def git_toplevel
+  stdout, = Open3.capture3("git", "rev-parse", "--show-toplevel")
+  root = stdout.strip
+  root unless root.empty?
+rescue StandardError
+  nil
+end
+
+def normalized_team_entry(value, require_owner:)
+  owner_or_slug, slug = value.to_s.split("/", 2)
+  return if owner_or_slug.empty?
+
+  if slug
+    return if slug.empty?
+
+    { owner: normalized_login(owner_or_slug), slug: }
+  elsif require_owner
+    nil
+  else
+    { owner: nil, slug: owner_or_slug }
+  end
+end
+
+def normalized_trusted_teams(values, require_owner:)
+  Array(values).filter_map { |value| normalized_team_entry(value, require_owner:) }
+end
+
+def load_trust_config(path:, global:)
+  path = File.expand_path(path)
   data = File.exist?(path) ? YAML.safe_load_file(path, aliases: false) || {} : {}
 
   {
     path:,
     trusted_bots: Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) },
-    trusted_teams: Array(data["trusted_teams"]).map(&:to_s),
+    trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
 end
@@ -161,11 +214,16 @@ rescue StandardError => e
 end
 
 def trusted_team_member?(repo, login, trust_config, team_cache)
-  owner = repo.split("/", 2).first
-  trust_config.fetch(:trusted_teams).any? do |team_slug|
-    cache_key = [owner, team_slug, normalized_login(login)]
+  repo_owner = repo.split("/", 2).first
+  normalized_repo_owner = normalized_login(repo_owner)
+  trust_config.fetch(:trusted_teams).any? do |team|
+    team_owner = team.fetch(:owner) || repo_owner
+    next false unless normalized_login(team_owner) == normalized_repo_owner
+
+    team_slug = team.fetch(:slug)
+    cache_key = [normalized_repo_owner, team_slug, normalized_login(login)]
     team_cache[cache_key] ||= begin
-      membership = run_gh_json("api", "orgs/#{owner}/teams/#{team_slug}/memberships/#{login}")
+      membership = run_gh_json("api", "orgs/#{team_owner}/teams/#{team_slug}/memberships/#{login}")
       membership.fetch("state") == "active"
     rescue StandardError
       false
@@ -1057,7 +1115,7 @@ GRAPHQL
 overall_blockers = []
 permission_cache = {}
 team_cache = {}
-trust_config = load_trust_config(options.fetch(:trust_config))
+trust_config = load_trust_config(**resolved_trust_config(options.fetch(:trust_config)))
 
 ARGV.each do |arg|
   number = Integer(arg, exception: false)

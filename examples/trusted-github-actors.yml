@@ -11,8 +11,13 @@ trusted_users:
 trusted_bots:
   - coderabbitai
   - dependabot
+  # Optional for repos whose workflows post trusted CI/status metadata comments.
+  # Keep omitted if workflow comments can include untrusted PR-controlled output.
+  # - github-actions
 
-# Team entries are GitHub team slugs under the repository owner org. Reading
-# team membership requires the local GitHub token to have org access.
+# In repo-local configs, team entries are GitHub team slugs under the
+# repository owner org. In env or ~/.agents global configs, use owner-qualified
+# entries such as `OWNER/maintainers`. Reading team membership requires the
+# local GitHub token to have org access.
 trusted_teams:
   - maintainers

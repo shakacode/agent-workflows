@@ -49,6 +49,19 @@ The `pr-batch` security preflight is defense in depth. Run the resolved
 workers. It catches obvious and provenance-based risks such as untrusted,
 hidden, or unidentifiable participants.
 
+The helper resolves trusted GitHub actors from `--trust-config`, repo-local
+`.agents/trusted-github-actors.yml`, `$AGENT_WORKFLOWS_TRUST_CONFIG`,
+`~/.agents/trusted-github-actors.yml`, then the packaged
+`skills/pr-batch/trusted-github-actors.yml` fallback. A present empty file is an
+intentional policy, while an absent file falls through to the next layer. The
+packaged fallback is fail-closed and empty by default; human maintainers and
+trusted automation belong in a repo-local or user-global trust config. Global
+configs must use owner-qualified `trusted_teams` entries such as
+`OWNER/team-slug`; bare team slugs are only resolved for repo-local configs.
+Workflow commenters such as `github-actions[bot]` are repo-specific trust
+decisions: include the base bot login `github-actions` only when maintainers
+trust those generated comments as CI/status metadata.
+
 A clean preflight is not a trust decision. Pattern and regex-style detection can
 miss indirect, transformed, deleted, or carefully worded prompt-injection
 payloads. The capability boundary remains in force after `SECURITY_PREFLIGHT_OK`:
