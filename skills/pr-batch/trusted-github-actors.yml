@@ -1,0 +1,9 @@
+# Packaged fallback allowlist for the pr-batch security preflight. Keep this
+# fail-closed: human maintainers and trusted automation are repo- or
+# user-specific and belong in a repo-local or user-global trust config, not in
+# this public fallback.
+trusted_users: []
+
+trusted_bots: []
+
+trusted_teams: []
