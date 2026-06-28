@@ -147,7 +147,9 @@ module PushDownstream
 
   def reconcile_agents(agents_path, base_branch)
     existed = File.file?(agents_path)
-    current = existed ? File.read(agents_path) : NEW_AGENTS_HEADER
+    # Read as UTF-8 regardless of locale; a non-UTF-8 default external encoding
+    # (e.g. LANG=C) otherwise crashes match? on non-ASCII bytes in AGENTS.md.
+    current = existed ? File.binread(agents_path).force_encoding("UTF-8").scrub : NEW_AGENTS_HEADER
     [existed, current, reconcile(current, base_branch: base_branch)]
   end
 

@@ -256,6 +256,25 @@ class PushDownstreamCliTest < Minitest::Test
     end
   end
 
+  def test_local_reconciles_non_ascii_agents_under_ascii_locale
+    Dir.mktmpdir("push-downstream-cli") do |root|
+      agents = File.join(root, "AGENTS.md")
+      # Real AGENTS.md files carry non-ASCII bytes (em dashes, arrows). Reading
+      # under a non-UTF-8 locale must not crash the reconcile.
+      File.write(agents, "# AGENTS.md\n\nReact on Rails → SSR — overview.\n\n## Commands\n")
+
+      out, status = Open3.capture2e(
+        { "LC_ALL" => "C", "LANG" => "C" }, "ruby", SCRIPT, "--root", root, "--apply"
+      )
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+      body = File.read(agents, encoding: "UTF-8")
+      assert_includes body, "## Agent Workflow Configuration"
+      assert_includes body, "React on Rails → SSR — overview."
+    end
+  end
+
   def test_registry_dry_run_lists_enabled_targets
     Dir.mktmpdir("push-downstream-registry") do |dir|
       config = File.join(dir, "downstream.yml")
