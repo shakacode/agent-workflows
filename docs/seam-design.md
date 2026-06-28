@@ -37,7 +37,7 @@ consumer repo
   .agents/bin/docs                    optional docs check entry point
   .agents/bin/ci-detect               optional CI routing entry point
   .agents/agent-workflow.yml          non-command policy
-  AGENTS.md                           human guidance plus pointer section
+  AGENTS.md                           pointer section; no workflow policy
   CLAUDE.md                           optional thin import of @AGENTS.md
 ```
 
