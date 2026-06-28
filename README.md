@@ -113,6 +113,7 @@ ongoing host installs and upgrades.
 | `address-review` | Fetch and triage GitHub PR review comments. |
 | `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
 | `autoreview` | Run a structured second-model local diff review. |
+| `continue` | Resume an in-progress task with a structured checkpoint. |
 | `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
 | `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
 | `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
@@ -121,6 +122,7 @@ ongoing host installs and upgrades.
 | `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
 | `run-ci` | Choose and run repo-local CI checks. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
+| `status` | Report tight progress (done/next/blocked) without starting new work. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
 | `update-changelog` | Classify merged PRs and update a repo changelog. |
