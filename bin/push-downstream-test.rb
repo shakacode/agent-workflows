@@ -323,6 +323,20 @@ class PushDownstreamCliTest < Minitest::Test
     end
   end
 
+  def test_local_apply_validates_already_current_seam
+    Dir.mktmpdir("push-downstream-cli") do |root|
+      agents = File.join(root, "AGENTS.md")
+      current = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main")
+      File.write(agents, "#{current}- **Custom command**: <unit command>\n")
+
+      out, status = run_cli("--root", root, "--apply")
+
+      refute status.success?, out
+      assert_includes out, "FAIL agent workflow seam"
+      assert_includes out, "unresolved Agent Workflow Configuration value for key: Custom command"
+    end
+  end
+
   def test_local_creates_agents_when_missing_on_apply
     Dir.mktmpdir("push-downstream-cli") do |root|
       out, status = run_cli("--root", root, "--apply")
@@ -549,6 +563,34 @@ class PushDownstreamCliTest < Minitest::Test
       end
 
       assert_includes out, "UP_TO_DATE local/example"
+    end
+  end
+
+  def test_registry_apply_validates_up_to_date_base_before_success
+    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
+      remote = File.join(dir, "remote.git")
+      seed = File.join(dir, "seed")
+      clone = File.join(dir, "clone")
+      repo = { nwo: "local/example", base_branch: "main", pr_branch: "agent-workflows/seam-sync" }
+      current = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main")
+
+      system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
+      system("git", "clone", remote, seed, out: File::NULL, err: File::NULL)
+      configure_git(seed)
+      File.write(File.join(seed, "AGENTS.md"), "#{current}- **Custom command**: <unit command>\n")
+      system("git", "-C", seed, "add", "AGENTS.md", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "commit", "-m", "base", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "branch", "-M", "main", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
+      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
+             out: File::NULL, err: File::NULL)
+
+      _out, err = capture_io do
+        refute PushDownstream.sync_clone(repo, clone, {})
+      end
+
+      assert_includes err, "seam doctor"
+      assert_includes err, "Custom command"
     end
   end
 

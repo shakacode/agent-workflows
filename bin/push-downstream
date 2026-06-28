@@ -159,6 +159,12 @@ module PushDownstream
     existed, current, updated = reconcile_agents(agents_path, base_branch)
 
     if existed && updated == current
+      issues = AgentWorkflowSeamDoctor.check(root)
+      unless issues.empty?
+        print AgentWorkflowSeamDoctor.format_text(issues)
+        return 1
+      end
+
       puts "already current: #{agents_path}"
       return 0
     end
@@ -237,22 +243,33 @@ module PushDownstream
     agents_path = File.join(clone, "AGENTS.md")
     existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed.merge(branch_seed))
     if existed && updated == current
+      return false unless valid_sync_clone?(repo, clone)
+
       puts "UP_TO_DATE #{repo[:nwo]}"
       return true
     end
     if remote_current && updated == remote_current
+      write_utf8(agents_path, updated) unless updated == current
+      return false unless valid_sync_clone?(repo, clone)
+
       puts "UP_TO_DATE #{repo[:nwo]}"
       return ensure_pull_request(repo, repo[:pr_branch])
     end
 
     write_utf8(agents_path, updated)
-    issues = AgentWorkflowSeamDoctor.check(clone)
-    unless issues.empty?
-      warn "FAIL #{repo[:nwo]}: seam doctor: #{issues.join('; ')}"
-      return false
-    end
+    return false unless valid_sync_clone?(repo, clone)
 
     open_pull_request(repo, clone, expected_head: expected_head)
+  end
+
+  def valid_sync_clone?(repo, clone)
+    issues = AgentWorkflowSeamDoctor.check(clone)
+    if issues.empty?
+      true
+    else
+      warn "FAIL #{repo[:nwo]}: seam doctor: #{issues.join('; ')}"
+      false
+    end
   end
 
   def open_pull_request(repo, clone, expected_head: nil)
