@@ -241,7 +241,7 @@ trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit 
 
 "$install_script" --host "$host" --target "$target" --mode "$mode"
 
-if ((${#consumer_roots[@]})); then
+if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
   for consumer_root in "${consumer_roots[@]}"; do
     "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$source"
   done
