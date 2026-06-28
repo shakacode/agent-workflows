@@ -463,6 +463,7 @@ class PushDownstreamCliTest < Minitest::Test
       configure_git(clone)
       File.write(File.join(clone, "AGENTS.md"), "# AGENTS.md\n\nupdated sync branch\n")
       expected_head = PushDownstream.fetch_remote_branch_head(clone, branch)
+      assert expected_head, "expected remote sync branch to be visible"
 
       out = nil
       with_pr_url_stub("https://example.test/pr") do
@@ -523,6 +524,7 @@ class PushDownstreamCliTest < Minitest::Test
       before = rev_parse(seed, branch)
       system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
              out: File::NULL, err: File::NULL)
+      assert PushDownstream.fetch_remote_branch_head(clone, branch), "expected remote sync branch to be visible"
 
       out = nil
       with_pr_url_stub("https://example.test/pr") do
@@ -554,6 +556,7 @@ class PushDownstreamCliTest < Minitest::Test
       system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
       system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
              out: File::NULL, err: File::NULL)
+      assert PushDownstream.fetch_remote_branch_head(clone, branch), "expected remote sync branch to be visible"
 
       out = nil
       without_open_pr_stub do
@@ -607,6 +610,7 @@ class PushDownstreamCliTest < Minitest::Test
              out: File::NULL, err: File::NULL)
       configure_git(clone)
       expected_head = PushDownstream.fetch_remote_branch_head(clone, branch)
+      assert expected_head, "expected remote sync branch to be visible"
       File.write(File.join(clone, "AGENTS.md"), "# AGENTS.md\n\nupdated sync branch\n")
 
       system("git", "-C", seed, "checkout", branch, out: File::NULL, err: File::NULL)
