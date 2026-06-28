@@ -105,16 +105,23 @@ review tooling described in the intro. If neither engine exists in the current e
 tell the user which review engines are missing instead of improvising a different review scope. Pick
 the command that matches Step 1:
 
+**Reasoning effort.** Run review at `high` effort by default — it is the cost-effective depth for
+routine diffs and never stalls the loop. Escalate to `xhigh` only for the high-risk categories in
+the second-pass section below. Pass effort with `-c model_reasoning_effort=...` (the key mirrors
+`config.toml`); override the per-environment default by exporting `CODEX_REVIEW_EFFORT`.
+
 ```bash
+effort="${CODEX_REVIEW_EFFORT:-high}"   # set to xhigh for high-risk diffs (see "High-risk second pass")
+
 # Dirty local patch, including staged, unstaged, and untracked files.
-codex review --uncommitted
+codex review -c model_reasoning_effort="$effort" --uncommitted
 
 # Branch or PR diff.
 base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main)
-codex review --base "origin/$base"
+codex review -c model_reasoning_effort="$effort" --base "origin/$base"
 
 # Single commit.
-codex review --commit <sha>
+codex review -c model_reasoning_effort="$effort" --commit <sha>
 ```
 
 Prefer explicit target selection over custom focus text. Some Codex CLI versions reject a custom
@@ -125,7 +132,7 @@ When the installed CLI accepts focus text with the selected target flag, keep th
 Step 1 and append the prompt there:
 
 ```bash
-codex review --base "origin/$base" "Focus on performance- or framework-sensitive regressions (per AGENTS.md), generated output, and repo workflow correctness."
+codex review -c model_reasoning_effort="$effort" --base "origin/$base" "Focus on performance- or framework-sensitive regressions (per AGENTS.md), generated output, and repo workflow correctness."
 ```
 
 For longer instructions, create an ignored scratch file, for example
@@ -134,7 +141,7 @@ path. Read from stdin only when the selected review engine supports that mode wi
 target:
 
 ```bash
-codex review --base "origin/$base" - < .context/autoreview-focus.md   # create this ignored scratch file first
+codex review -c model_reasoning_effort="$effort" --base "origin/$base" - < .context/autoreview-focus.md   # create this ignored scratch file first
 ```
 
 Never silently switch the engine the user asked for. If the requested engine hits model
@@ -144,7 +151,8 @@ capacity, retry the same engine a few times rather than swapping it.
 
 For high-risk changes in the `AGENTS.md` hosted-CI-ready, force-full hosted-CI, or benchmark
 categories (labels per `AGENTS.md` → **Agent Workflow Configuration**), or when the user asks
-for a panel/second model, run one additional review after the primary review is clean:
+for a panel/second model: first set `effort="xhigh"` in Step 3 so the **primary** review runs at
+full depth, then run one additional review after the primary review is clean:
 
 - If the primary review used `codex review`, use Claude review tooling if it is available in the
   current environment, such as `/code-review` or `/code-review ultra`.
