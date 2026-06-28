@@ -236,13 +236,13 @@ module PushDownstream
 
     agents_path = File.join(clone, "AGENTS.md")
     existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed.merge(branch_seed))
-    if remote_current && updated == remote_current
-      puts "UP_TO_DATE #{repo[:nwo]}"
-      return ensure_pull_request(repo, repo[:pr_branch])
-    end
     if existed && updated == current
       puts "UP_TO_DATE #{repo[:nwo]}"
       return true
+    end
+    if remote_current && updated == remote_current
+      puts "UP_TO_DATE #{repo[:nwo]}"
+      return ensure_pull_request(repo, repo[:pr_branch])
     end
 
     write_utf8(agents_path, updated)

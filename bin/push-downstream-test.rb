@@ -524,6 +524,34 @@ class PushDownstreamCliTest < Minitest::Test
     end
   end
 
+  def test_registry_apply_skips_pr_when_base_is_current_and_sync_branch_still_exists
+    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
+      remote = File.join(dir, "remote.git")
+      seed = File.join(dir, "seed")
+      clone = File.join(dir, "clone")
+      branch = "agent-workflows/seam-sync"
+      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
+      branch_body = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main", seed: { "Tests" => "operator edits." })
+
+      create_remote_with_sync_branch(remote, seed, branch, branch_body)
+      system("git", "-C", seed, "checkout", "main", out: File::NULL, err: File::NULL)
+      File.write(File.join(seed, "AGENTS.md"), branch_body)
+      system("git", "-C", seed, "commit", "-am", "base synced", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
+      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
+             out: File::NULL, err: File::NULL)
+
+      out = nil
+      without_open_pr_stub do
+        out, = capture_io do
+          assert PushDownstream.sync_clone(repo, clone, {})
+        end
+      end
+
+      assert_includes out, "UP_TO_DATE local/example"
+    end
+  end
+
   def test_registry_apply_refuses_to_overwrite_concurrent_sync_branch_update
     Dir.mktmpdir("push-downstream-existing-branch") do |dir|
       remote = File.join(dir, "remote.git")
@@ -639,6 +667,28 @@ class PushDownstreamCliTest < Minitest::Test
 
     yield
     refute created, "existing PR should be reused"
+  ensure
+    PushDownstream.define_singleton_method(:existing_pr_url) do |repo, branch|
+      original_existing_pr_url.call(repo, branch)
+    end
+    PushDownstream.define_singleton_method(:create_pr) do |repo, branch|
+      original_create_pr.call(repo, branch)
+    end
+  end
+
+  def without_open_pr_stub
+    original_existing_pr_url = PushDownstream.method(:existing_pr_url)
+    original_create_pr = PushDownstream.method(:create_pr)
+    created = false
+
+    PushDownstream.define_singleton_method(:existing_pr_url) { |_repo, _branch| nil }
+    PushDownstream.define_singleton_method(:create_pr) do |_repo, _branch|
+      created = true
+      nil
+    end
+
+    yield
+    refute created, "already-synced base should not create a PR"
   ensure
     PushDownstream.define_singleton_method(:existing_pr_url) do |repo, branch|
       original_existing_pr_url.call(repo, branch)
