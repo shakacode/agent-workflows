@@ -45,8 +45,7 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    (an orphaned process, an HTTP 500 vs 200, a hydration mismatch, a cache key collision, an exit code).
 3. **Choose the cheapest faithful reproduction**, in this order:
    - **Full app run** when feasible — highest fidelity. This often means the repo's integration test
-     app(s) plus the end-to-end/browser test command (see `AGENTS.md` → **Agent Workflow
-     Configuration**) for browser-visible behavior, plus any repo-specific e2e/manual-testing docs.
+     app(s) plus `.agents/bin/test` and any repo-specific e2e/manual-testing docs for browser-visible behavior.
    - **Minimal faithful harness** when the full app is too heavy to stand up quickly (needs a license,
      real bundles, a renderer, external services). Build it on the **same real API** the product uses and
      label it mechanism-level. For example, drive the same underlying runtime/process API the product
@@ -87,8 +86,7 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
   against expectation; for behavioral output, boot the generated app.
 - **Caching / dedupe / digests**: construct the colliding or repeated inputs and assert hit/miss and that
   failed renders are not cached.
-- **Types-only changes**: usually covered by the repo's type-check command (see `AGENTS.md` → **Agent
-  Workflow Configuration**); behavioral reproduction is normally not warranted — say so rather than staging
+- **Types-only changes**: usually covered by `.agents/bin/build` or the repo's documented type-check command; behavioral reproduction is normally not warranted — say so rather than staging
   a fake one.
 
 ## Environment notes

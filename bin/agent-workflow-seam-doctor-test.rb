@@ -13,26 +13,66 @@ SCRIPT = File.expand_path("agent-workflow-seam-doctor", __dir__)
 load SCRIPT
 
 module AgentWorkflowSeamDoctorTestHelpers
-  REQUIRED_SEAM = AgentWorkflowSeamDoctor::REQUIRED_KEYS.to_h do |key|
-    [key, "configured #{key.downcase}."]
-  end.freeze
+  POLICY = {
+    "base_branch" => "main",
+    "follow_up_prefix" => "Follow-up:",
+    "review_gate" => "AI reviewers are advisory; merge gate is green checks plus resolved threads.",
+    "approval_exempt" => "docs and workflow text when portable.",
+    "coordination_backend" => "public claim-comment fallback.",
+    "changelog" => "CHANGELOG.md; user-visible changes only.",
+    "benchmark_labels" => "n/a",
+    "merge_ledger" => "n/a",
+    "ci_parity_environment" => "n/a",
+    "hosted_ci_trigger" => "n/a",
+    "ci_change_detector" => "n/a"
+  }.freeze
 
   def with_repo
     Dir.mktmpdir("agent-workflow-seam-doctor-test") do |dir|
+      FileUtils.mkdir_p(File.join(dir, ".agents/bin"))
       FileUtils.mkdir_p(File.join(dir, ".agents/skills/example"))
       FileUtils.mkdir_p(File.join(dir, ".agents/workflows"))
       yield dir
     end
   end
 
-  def write_agents(root, seam = REQUIRED_SEAM)
-    body = +"# AGENTS.md\n\n"
-    body << "## Agent Workflow Configuration\n\n"
-    seam.each do |key, value|
-      body << "- **#{key}**: #{value}\n"
-    end
-    body << "\n## Commands\n"
-    File.write(File.join(root, "AGENTS.md"), body)
+  def write_agents(root, section = AgentWorkflowSeamDoctor::POINTER_SECTION)
+    File.write(File.join(root, "AGENTS.md"), "# AGENTS.md\n\n#{section}\n\n## Commands\n")
+  end
+
+  def write_policy(root, values = POLICY)
+    File.write(File.join(root, ".agents/agent-workflow.yml"), "#{values.to_yaml}\n")
+  end
+
+  def write_bin_readme(root)
+    File.write(File.join(root, ".agents/bin/README.md"), <<~MARKDOWN)
+      # Agent Workflow Scripts
+
+      | Script | Purpose | This repo runs |
+      | --- | --- | --- |
+      | `validate` | Pre-push gate | `bundle exec rake` |
+      | `test` | Run tests | `bundle exec rspec` |
+    MARKDOWN
+  end
+
+  def write_script(root, name, body = "exec bundle exec #{name}\n")
+    path = File.join(root, ".agents/bin", name)
+    File.write(path, <<~BASH)
+      #!/usr/bin/env bash
+      set -euo pipefail
+      cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+      #{body}
+    BASH
+    File.chmod(0o755, path)
+    path
+  end
+
+  def write_valid_binstub_contract(root)
+    write_agents(root)
+    write_policy(root)
+    write_bin_readme(root)
+    write_script(root, "validate", "exec bundle exec rake\n")
+    write_script(root, "test", "exec bundle exec rspec \"$@\"\n")
   end
 
   def write_skill(root, content)
@@ -48,18 +88,18 @@ module AgentWorkflowSeamDoctorTestHelpers
   end
 end
 
-class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
+class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
 
-  def test_complete_seam_without_executable_placeholders_passes
+  def test_complete_binstub_contract_passes
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ---
         name: example
         ---
 
-        Use the repo's follow-up issue prefix from `AGENTS.md`.
+        Run `.agents/bin/validate` before pushing.
       MARKDOWN
 
       out, status = run_doctor(root)
@@ -69,8 +109,12 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
     end
   end
 
-  def test_missing_seam_section_fails
+  def test_missing_pointer_section_fails
     with_repo do |root|
+      write_policy(root)
+      write_bin_readme(root)
+      write_script(root, "validate")
+      write_script(root, "test")
       File.write(File.join(root, "AGENTS.md"), "# AGENTS.md\n\n## Commands\n")
       write_skill(root, "No commands here.\n")
 
@@ -81,54 +125,79 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
     end
   end
 
-  def test_missing_required_seam_keys_fail
+  def test_missing_core_script_fails
     with_repo do |root|
-      seam = REQUIRED_SEAM.dup
-      seam.delete("Tests")
-      write_agents(root, seam)
+      write_agents(root)
+      write_policy(root)
+      write_bin_readme(root)
+      write_script(root, "validate")
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root)
 
       refute status.success?
-      assert_includes out, "missing Agent Workflow Configuration key: Tests"
+      assert_includes out, "missing core script: .agents/bin/test"
     end
   end
 
-  def test_unresolved_extra_seam_key_values_fail
+  def test_non_executable_core_script_fails
     with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "Secret redaction patterns" => "<repo-specific CI parity redaction patterns>"
-      )
-      write_agents(root, seam)
+      write_valid_binstub_contract(root)
+      File.chmod(0o644, File.join(root, ".agents/bin/test"))
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root)
 
       refute status.success?
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: Secret redaction patterns"
+      assert_includes out, "core script is not executable: .agents/bin/test"
     end
   end
 
-  def test_unresolved_seam_value_fails
+  def test_non_executable_optional_script_fails
     with_repo do |root|
-      seam = REQUIRED_SEAM.merge("Base branch" => "<main branch>.")
-      write_agents(root, seam)
+      write_valid_binstub_contract(root)
+      write_script(root, "lint", "exec bundle exec rubocop\n")
+      File.chmod(0o644, File.join(root, ".agents/bin/lint"))
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root)
 
       refute status.success?
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: Base branch"
+      assert_includes out, "script is not executable: .agents/bin/lint"
     end
   end
 
-  def test_wrapped_seam_values_pass
+  def test_script_without_repo_root_cd_fails
     with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "Tests" => "`bundle exec rake run_rspec`,\n  `pnpm run test`, and targeted e2e commands."
-      )
-      write_agents(root, seam)
+      write_valid_binstub_contract(root)
+      path = File.join(root, ".agents/bin/test")
+      File.write(path, <<~BASH)
+        #!/usr/bin/env bash
+        set -euo pipefail
+        exec bundle exec rspec
+      BASH
+      File.chmod(0o755, path)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "script does not cd to repo root: .agents/bin/test"
+    end
+  end
+
+  def test_composed_script_root_preamble_passes
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      path = File.join(root, ".agents/bin/validate")
+      File.write(path, <<~BASH)
+        #!/usr/bin/env bash
+        set -euo pipefail
+        root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+        cd "$root"
+        "$root/.agents/bin/test"
+      BASH
+      File.chmod(0o755, path)
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root)
@@ -138,182 +207,110 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
     end
   end
 
-  def test_nested_bullet_seam_values_pass
+  def test_bash_syntax_error_fails
     with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "Tests" => "\n  - **Unit**: `bundle exec rake run_rspec:gem`\n  - **E2E**: `pnpm test:e2e`"
-      )
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      assert status.success?, out
-    end
-  end
-
-  def test_embedded_placeholder_in_wrapped_seam_value_fails
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "Tests" => "\n  - unit: <unit command>\n  - e2e: `pnpm test:e2e`"
-      )
-      write_agents(root, seam)
+      write_valid_binstub_contract(root)
+      path = File.join(root, ".agents/bin/test")
+      File.write(path, <<~BASH)
+        #!/usr/bin/env bash
+        set -euo pipefail
+        cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+        if true
+      BASH
+      File.chmod(0o755, path)
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root)
 
       refute status.success?
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: Tests"
+      assert_includes out, "script has bash syntax error: .agents/bin/test"
     end
   end
 
-  def test_template_style_placeholder_in_seam_value_fails
+  def test_composed_script_missing_sibling_fails
     with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "CI change detector" => "<CI change detector command, or \"n/a\">",
-        "CI parity environment" => "<CI parity command, runner image, reproduction guide, or \"n/a\">",
-        "Benchmark labels" => "<benchmark labels, or \"n/a\">"
-      )
-      write_agents(root, seam)
+      write_valid_binstub_contract(root)
+      path = File.join(root, ".agents/bin/validate")
+      File.write(path, <<~BASH)
+        #!/usr/bin/env bash
+        set -euo pipefail
+        root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+        cd "$root"
+        "$root/.agents/bin/lint"
+        "$root/.agents/bin/test"
+      BASH
+      File.chmod(0o755, path)
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root)
 
       refute status.success?
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: CI change detector"
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: CI parity environment"
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: Benchmark labels"
+      assert_includes out, "script references missing sibling script: .agents/bin/validate -> .agents/bin/lint"
     end
   end
 
-  def test_standalone_ci_parity_placeholder_in_seam_value_fails
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge("CI parity environment" => "<runner image>")
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      refute status.success?
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: CI parity environment"
-    end
-  end
-
-  def test_ci_parity_placeholder_variants_in_seam_value_fail
-    with_repo do |root|
-      [
-        "<runner image, or \"n/a\">",
-        "<runner image for act>",
-        "<reproduction guide URL>",
-        "<GitHub runner image>",
-        "<local reproduction guide URL>",
-        "<runner image:>",
-        "<reproduction guide: >",
-        "<runner image, optional: value>"
-      ].each do |placeholder|
-        seam = REQUIRED_SEAM.merge("CI parity environment" => placeholder)
-        write_agents(root, seam)
-        write_skill(root, "No commands here.\n")
-
-        out, status = run_doctor(root)
-
-        refute status.success?, placeholder
-        assert_includes out, "unresolved Agent Workflow Configuration value for key: CI parity environment"
-      end
-    end
-  end
-
-  def test_filled_ci_parity_command_value_passes
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "CI parity environment" => "<CI parity command: bin/ci-parity>"
-      )
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      assert status.success?, out
-    end
-  end
-
-  def test_filled_ci_parity_runner_image_with_prefix_value_passes
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "CI parity environment" => "act with <GitHub runner image: ghcr.io/catthehacker/ubuntu:act-22.04>"
-      )
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      assert status.success?, out
-    end
-  end
-
-  def test_filled_ci_parity_runner_image_value_passes
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "CI parity environment" => "act with <runner image: ghcr.io/catthehacker/ubuntu:act-22.04>"
-      )
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      assert status.success?, out
-    end
-  end
-
-  def test_filled_ci_parity_reproduction_guide_qualified_value_passes
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "CI parity environment" => "see <reproduction guide URL: https://wiki.example.com/ci>"
-      )
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      assert status.success?, out
-    end
-  end
-
-  def test_plural_runner_images_phrase_is_not_a_ci_parity_placeholder
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge(
-        "CI parity environment" => "docs mention <runner images> generally"
-      )
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      assert status.success?, out
-    end
-  end
-
-  def test_blank_separator_stops_wrapped_seam_value
+  def test_missing_policy_file_fails
     with_repo do |root|
       write_agents(root)
-      agents_path = File.join(root, "AGENTS.md")
-      body = File.read(agents_path)
-      body.sub!(
-        "- **Tests**: configured tests.\n",
-        "- **Tests**: configured tests.\n\n  orphaned indentation after the key.\n"
-      )
-      File.write(agents_path, body)
+      write_bin_readme(root)
+      write_script(root, "validate")
+      write_script(root, "test")
       write_skill(root, "No commands here.\n")
 
-      config = AgentWorkflowSeamDoctor.parse_config(File.read(agents_path))
+      out, status = run_doctor(root)
 
-      assert_equal "configured tests.", config.fetch("Tests")
+      refute status.success?
+      assert_includes out, "missing policy config: .agents/agent-workflow.yml"
+    end
+  end
+
+  def test_missing_required_policy_key_fails
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      values = POLICY.dup
+      values.delete("review_gate")
+      write_policy(root, values)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "missing policy key: review_gate"
+    end
+  end
+
+  def test_unresolved_policy_value_fails
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("ci_parity_environment" => "<runner image>"))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "unresolved policy value for key: ci_parity_environment"
+    end
+  end
+
+  def test_invalid_policy_yaml_fails
+    with_repo do |root|
+      write_agents(root)
+      write_bin_readme(root)
+      write_script(root, "validate")
+      write_script(root, "test")
+      File.write(File.join(root, ".agents/agent-workflow.yml"), "base_branch: [\n")
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid policy config: .agents/agent-workflow.yml"
     end
   end
 
   def test_json_output_format
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root, "--json")
@@ -328,6 +325,10 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
   def test_json_output_format_on_failure
     with_repo do |root|
       File.write(File.join(root, "AGENTS.md"), "# AGENTS.md\n\n## Commands\n")
+      write_policy(root)
+      write_bin_readme(root)
+      write_script(root, "validate")
+      write_script(root, "test")
       write_skill(root, "No commands here.\n")
 
       out, status = run_doctor(root, "--json")
@@ -338,18 +339,6 @@ class AgentWorkflowSeamDoctorConfigTest < Minitest::Test
       refute_empty parsed.fetch("issues")
     end
   end
-
-  def test_not_applicable_seam_value_passes
-    with_repo do |root|
-      seam = REQUIRED_SEAM.merge("Coordination backend" => "n/a")
-      write_agents(root, seam)
-      write_skill(root, "No commands here.\n")
-
-      out, status = run_doctor(root)
-
-      assert status.success?, out
-    end
-  end
 end
 
 class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
@@ -357,7 +346,7 @@ class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
 
   def test_executable_angle_placeholder_in_code_fence_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         gh issue create --title "<follow-up prefix> Review feedback from PR #123"
@@ -374,7 +363,7 @@ class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
 
   def test_executable_placeholder_for_broader_seam_key_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         <docs checks>
@@ -390,7 +379,7 @@ class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
 
   def test_executable_placeholder_in_titled_code_fence_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash title="copyable"
         gh issue create --title "<follow-up prefix> Review feedback from PR #123"
@@ -410,7 +399,7 @@ class AgentWorkflowSeamDoctorFenceTest < Minitest::Test
 
   def test_executable_placeholder_in_tilde_code_fence_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ~~~bash
         gh issue create --title "<follow-up prefix> Review feedback from PR #123"
@@ -426,7 +415,7 @@ class AgentWorkflowSeamDoctorFenceTest < Minitest::Test
 
   def test_executable_placeholder_in_long_code_fence_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ````bash
         gh issue create --title "<follow-up prefix> Review feedback from PR #123"
@@ -442,7 +431,7 @@ class AgentWorkflowSeamDoctorFenceTest < Minitest::Test
 
   def test_mismatched_fence_delimiter_does_not_close_executable_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         ~~~
@@ -463,7 +452,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_shorter_closing_fence_does_not_close_long_executable_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ````bash
         ```
@@ -480,7 +469,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_shorter_closing_tilde_fence_does_not_close_long_tilde_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ~~~~bash
         ~~~
@@ -497,7 +486,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_longer_closing_fence_closes_long_executable_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ````bash
         echo ok
@@ -513,7 +502,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_longer_closing_tilde_fence_closes_long_tilde_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ~~~~bash
         echo ok
@@ -529,7 +518,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_closing_fence_with_info_string_stays_inside_executable_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ````bash
         ````bash
@@ -546,7 +535,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_crlf_closing_fence_closes_executable_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "```bash\r\necho ok\r\n```\r\n<follow-up prefix>\r\n")
 
       out, status = run_doctor(root)
@@ -557,7 +546,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_spaced_info_string_on_long_non_executable_fence_is_not_executable
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```` markdown
         <follow-up prefix>
@@ -572,7 +561,7 @@ class AgentWorkflowSeamDoctorFenceLengthTest < Minitest::Test
 
   def test_spaced_info_string_on_long_executable_fence_is_executable
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```` bash
         gh issue create --title "<follow-up prefix> Review feedback from PR #123"
@@ -592,7 +581,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_four_space_indented_fence_does_not_open_executable_fence
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "    ```bash\n    gh issue create --title \"<follow-up prefix> Review feedback\"\n    ```\n")
 
       out, status = run_doctor(root)
@@ -603,7 +592,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_inline_code_in_executable_fence_is_not_reported_twice
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         `gh issue create --title "<follow-up prefix> Review"`
@@ -619,7 +608,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_executable_ci_parity_placeholder_in_code_fence_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         act -P ubuntu-latest=<runner image>
@@ -635,7 +624,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_filled_ci_parity_runner_image_in_code_fence_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         act -P ubuntu-latest=<runner image: ghcr.io/catthehacker/ubuntu:act-22.04>
@@ -651,7 +640,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_executable_filled_ci_parity_command_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         <CI parity command: bin/ci-parity>
@@ -667,7 +656,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_inline_ci_parity_placeholder_command_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "Run `act -P ubuntu-latest=<reproduction guide URL>`.\n")
 
       out, status = run_doctor(root)
@@ -679,7 +668,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_executable_compound_placeholder_is_reported_once
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         echo <hosted CI runner image>
@@ -695,7 +684,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_inline_act_event_command_placeholder_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "Run `act pull_request -P ubuntu-latest=<runner image>`.\n")
 
       out, status = run_doctor(root)
@@ -707,7 +696,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_inline_act_prose_does_not_make_placeholder_executable
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "Use `act on this finding <runner image>` when documenting parity.\n")
 
       out, status = run_doctor(root)
@@ -718,7 +707,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_non_executable_fence_placeholder_is_allowed
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```text
         <follow-up prefix>
@@ -733,7 +722,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_task_input_placeholder_in_command_is_allowed
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, <<~MARKDOWN)
         ```bash
         bundle exec rspec <test_file>
@@ -748,7 +737,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_workflow_placeholder_is_scanned
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
       write_workflow(root, "`gh issue create --title \"<follow-up prefix> Review\"`\n")
 
@@ -761,7 +750,7 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
   def test_invalid_utf8_markdown_does_not_crash_scanner
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
       File.binwrite(File.join(root, ".agents/skills/example/invalid.md"), "Latin-1 byte: \xE9\n")
 
@@ -777,7 +766,7 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
 
   def test_shared_root_placeholder_is_scanned
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
 
       Dir.mktmpdir("agent-workflow-shared-root") do |shared_root|
@@ -799,7 +788,7 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
 
   def test_missing_shared_root_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
       missing_root = File.join(root, "missing-shared-root")
 
@@ -812,7 +801,7 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
 
   def test_shared_root_without_skill_or_workflow_markdown_fails
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
 
       Dir.mktmpdir("agent-workflow-shared-root") do |shared_root|
@@ -828,7 +817,7 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
 
   def test_shared_root_general_markdown_is_not_scanned
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
 
       Dir.mktmpdir("agent-workflow-shared-root") do |shared_root|
@@ -845,7 +834,7 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
 
   def test_installed_skill_root_is_scanned
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
 
       Dir.mktmpdir("agent-workflow-installed-skills") do |shared_root|
@@ -866,7 +855,7 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
 
   def test_multiple_shared_roots_are_scanned
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
 
       Dir.mktmpdir("agent-workflow-shared-root-a") do |shared_root_a|
@@ -891,7 +880,7 @@ class AgentWorkflowSeamDoctorSharedRootTest < Minitest::Test
 
   def test_prose_angle_placeholder_is_allowed
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       write_skill(root, "Use title `<follow-up prefix> Review feedback from PR #N` after resolving the seam.\n")
 
       out, status = run_doctor(root)
@@ -906,7 +895,7 @@ class AgentWorkflowSeamDoctorEncodingTest < Minitest::Test
 
   def test_non_ascii_agents_md_parses_under_ascii_locale
     with_repo do |root|
-      write_agents(root)
+      write_valid_binstub_contract(root)
       agents_path = File.join(root, "AGENTS.md")
       body = File.read(agents_path)
       # A real AGENTS.md carries non-ASCII bytes (em dashes, arrows). Reading it

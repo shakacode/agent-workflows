@@ -1,63 +1,65 @@
-# Seam value presets for bin/push-downstream.
+# Binstub contract presets for bin/push-downstream.
 #
-# Each downstream repo's seam value resolves through three layers, last wins:
-#   1. defaults    - org-uniform values applied to every repo
-#   2. presets[<name>] - archetype command defaults, selected per repo via `preset:`
+# Each downstream repo resolves through three layers, last wins:
+#   1. defaults
+#   2. presets[<name>], selected per repo via `preset:`
 #   3. per-repo `overrides:` in downstream.yml
-# `Base branch` is seeded from the registry. Anything still unset renders as n/a.
 #
-# These only SEED a fresh seam; on re-runs the tool preserves each repo's own
-# edits (repo-owned values win). Keep presets conservative: assert only what is
-# genuinely common to the archetype, and prefer n/a over a guessed command.
+# `commands` render executable `.agents/bin/<name>` wrappers. `policy` renders
+# `.agents/agent-workflow.yml`. Existing repo-authored scripts and policy values
+# win on re-runs; presets only seed missing contract pieces.
 
-# Org-uniform keys (identical across the fleet).
 defaults:
-  Coordination backend: "private `shakacode/agent-coordination` (claims/heartbeats namespaced by full repo name)."
-  Follow-up issue prefix: "`Follow-up:`."
-  Benchmark labels: "n/a."
-  Merge ledger: "n/a."
-  CI parity environment: "n/a — reproduce CI-only failures from the matching job in `.github/workflows/**`."
-  Docs checks: "n/a."
-  Review gate: "AI reviewers are advisory, not blocking unless they confirm a blocker; merge gate is the full `gh pr checks` list green (not `--required`) + all threads resolved + `mergeable` clean."
-  Approval-exempt change categories: "at batch closeout, auto-merge ready low-risk PRs that pass the merge gate; keep high-risk (CI/workflow, build-config, dependency or runtime bumps, broad refactors, release) maintainer-gated."
+  policy:
+    follow_up_prefix: "Follow-up:"
+    coordination_backend: "private shakacode/agent-coordination (claims/heartbeats namespaced by full repo name)"
+    review_gate: "AI reviewers are advisory unless they confirm a blocker; merge gate is the full `gh pr checks` list green (not --required) + all threads resolved + mergeable clean"
+    approval_exempt: "at batch closeout, auto-merge ready low-risk PRs that pass the merge gate; keep high-risk (CI/workflow, build-config, dependency or runtime bumps, broad refactors, release) maintainer-gated"
+    benchmark_labels: "n/a"
+    merge_ledger: "n/a"
+    ci_parity_environment: "n/a — reproduce CI-only failures from the matching job in .github/workflows/**"
+    hosted_ci_trigger: "n/a — CI runs on every PR if configured"
+    ci_change_detector: "n/a"
+    changelog: "n/a"
 
 presets:
-  # TypeScript / Node npm package (e.g. react_on_rails_rsc).
-  ts-package:
-    Pre-push local validation: "`yarn build && yarn test` (tsc typecheck + jest)."
-    Tests: "`yarn test`."
-    Build / type checks: "`yarn build` (runs `tsc`; this is the typecheck)."
-    Lint / format: "n/a — eslint/prettier are not wired into a blocking gate; do not run them as a gate."
-    Hosted-CI trigger: "n/a — CI runs on every PR; no manual trigger or `+ci-*` commands."
-    CI change detector: "n/a — run the full suite."
-    Changelog: "`/CHANGELOG.md` — Keep-a-Changelog; user-visible changes only."
-
-  # Ruby gem (e.g. shakapacker).
   ruby-gem:
-    Pre-push local validation: "`bundle exec rake`."
-    Tests: "`bundle exec rspec`."
-    Build / type checks: "n/a."
-    Lint / format: "`bundle exec rubocop` (autocorrect with `-A`)."
-    Hosted-CI trigger: "n/a — CI runs on every PR."
-    CI change detector: "n/a — run the full suite."
-    Changelog: "`CHANGELOG.md` — Keep-a-Changelog; user-visible changes only."
+    commands:
+      setup: bundle install
+      validate: bundle exec rake
+      test: bundle exec rspec "$@"
+      lint: bundle exec rubocop "$@"
+    policy:
+      changelog: "CHANGELOG.md — Keep-a-Changelog; user-visible changes only"
+      hosted_ci_trigger: "n/a — CI runs on every PR"
 
-  # React on Rails demo / example app. Commands vary per app — override per repo.
+  ts-package:
+    commands:
+      setup: yarn install
+      validate:
+        compose: [build, test]
+      test: yarn test "$@"
+      build: yarn build
+    policy:
+      changelog: "CHANGELOG.md — Keep-a-Changelog; user-visible changes only"
+      hosted_ci_trigger: "n/a — CI runs on every PR; no manual trigger or `+ci-*` commands"
+
   ror-demo:
-    Pre-push local validation: "n/a — run the app's documented test/build before pushing."
-    Tests: "n/a — see the repo README."
-    Build / type checks: "n/a."
-    Lint / format: "n/a."
-    Hosted-CI trigger: "n/a — CI runs on every PR if configured."
-    CI change detector: "n/a — run the full suite."
-    Changelog: "n/a."
+    commands:
+      setup: bundle install
+      validate: bundle exec rake
+      test: bundle exec rspec "$@"
+    policy:
+      changelog: "n/a"
+      hosted_ci_trigger: "n/a — CI runs on every PR if configured"
 
-  # Marketing / docs site. Build tool varies (Next/Gatsby/custom) — override per repo.
   site:
-    Pre-push local validation: "n/a — run the documented build before pushing."
-    Tests: "n/a."
-    Build / type checks: "n/a — use the repo's documented build command."
-    Lint / format: "n/a."
-    Hosted-CI trigger: "n/a — CI runs on every PR if configured."
-    CI change detector: "n/a — run the full suite."
-    Changelog: "n/a."
+    commands:
+      setup: yarn install
+      validate:
+        compose: [build, test]
+      test: yarn test "$@"
+      build: yarn build
+    policy:
+      changelog: "n/a"
+      hosted_ci_trigger: "n/a — CI runs on every PR if configured"

@@ -43,20 +43,23 @@ This is the portable core. Hold it regardless of which engine runs.
 - Be patient. `codex review` runs an external model and can take several minutes on a large diff. Progress that looks quiet is usually still working; do not kill it before about 5 minutes unless it has clearly errored.
 - Do not launch multiple reviewers by default. One selected engine, one structured result, then verify it.
 - A gated second-engine pass is appropriate only when the user asks or the diff falls into the
-  `AGENTS.md` high-risk / hosted-CI-ready / force-full hosted-CI / benchmark categories (labels
-  per `AGENTS.md` → **Agent Workflow Configuration**). Run it after the primary review is
+  high-risk / hosted-CI-ready / force-full hosted-CI / benchmark categories described by
+  `.agents/agent-workflow.yml`. Run it after the primary review is
   clean, keep it to one extra pass, and verify its findings the same way.
 - If you reject a finding as intentional/not worth fixing, add a brief inline code comment only when it documents a real invariant or ownership decision a future reviewer should know.
 - **Do not push just to review.** Push only when the user asked for push/ship/PR. Follow `AGENTS.md` git boundaries (never force-push `main`/`master`).
 
 ## Step 1 - Pick the target
 
-Inspect what changed and choose the diff scope. Base branch in this repo is `origin/main`.
+Inspect what changed and choose the diff scope. Resolve the base branch from
+`.agents/agent-workflow.yml` key `base_branch`, or from PR metadata when a PR is
+open.
 
 ```bash
+base=$(ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
 git status --short --untracked-files=all
-git diff --name-only origin/main...HEAD
-git diff --stat origin/main...HEAD
+git diff --name-only "origin/$base...HEAD"
+git diff --stat "origin/$base...HEAD"
 git diff --stat
 git diff --cached --stat
 git ls-files --others --exclude-standard
@@ -65,12 +68,12 @@ git ls-files --others --exclude-standard
 - **Dirty local work** (unstaged/staged/untracked in the working tree): review the working
   tree with `codex review --uncommitted`. Use this only when there is an actual local patch; a clean local review just proves
   there is no local patch, not that the branch is good.
-- **Branch / PR work** (committed, maybe pushed): review the branch diff against its base with
-  `codex review --base origin/main` or the PR's real base.
-  If an open PR exists, use its real base instead of assuming `main`:
+- **Branch / PR work** (committed, maybe pushed): review the branch diff against its configured
+  base with `codex review --base "origin/$base"` or the PR's real base.
+  If an open PR exists, use its real base instead of assuming the configured value:
 
   ```bash
-  base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main)
+  base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
   git diff "origin/$base...HEAD" --stat
   ```
 
@@ -78,20 +81,21 @@ git ls-files --others --exclude-standard
   branch review, or run two reviews: one branch review for committed changes and one
   `--uncommitted` review for staged/unstaged/untracked local changes. Staging alone does not put
   changes into the branch diff. Do not let untracked files fall out of scope.
-- **Single landed commit** (already on `main`, or one commit in a stack): review that commit's
-  diff (`git show <sha>`). Reviewing clean `main` against `origin/main` is an empty diff after
-  push; point at the commit instead.
+- **Single landed commit** (already on the configured base branch, or one commit in a stack): review
+  that commit's diff (`git show <sha>`). Reviewing a clean base branch against its remote is an
+  empty diff after push; point at the commit instead.
 
 Tell the user which target you picked and why.
 
 ## Step 2 - Format and lint first
 
 Formatting that moves line locations will stale the review and the engine's line references.
-Use `AGENTS.md` and `/verify` for the actual check set. Before a closeout review:
+Use `AGENTS.md`, `.agents/bin/README.md`, and `/verify` for the actual check set. Before a closeout review:
 
-- Run `git diff --check origin/main...HEAD` for committed branch content, plus `git diff --check`
-  and `git diff --cached --check` when there is local dirty work.
-- Run the repo's format/autofix command (see `AGENTS.md` → **Agent Workflow Configuration**) when
+- Resolve the PR/configured base from Step 1, then run `git diff --check origin/$base...HEAD` for
+  committed branch content, plus `git diff --check` and `git diff --cached --check` when there is
+  local dirty work.
+- Run the repo's format/autofix command or `.agents/bin/lint` when
   formatting or autocorrectable lint failures are present or likely; let those autofix tools make
   formatting/autocorrect changes instead of hand-formatting.
 - Run the narrow lint/test checks that cover the changed surface. Before committing, include the
@@ -110,7 +114,7 @@ the command that matches Step 1:
 codex review --uncommitted
 
 # Branch or PR diff.
-base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || echo main)
+base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
 codex review --base "origin/$base"
 
 # Single commit.
@@ -142,8 +146,8 @@ capacity, retry the same engine a few times rather than swapping it.
 
 ### High-risk second pass
 
-For high-risk changes in the `AGENTS.md` hosted-CI-ready, force-full hosted-CI, or benchmark
-categories (labels per `AGENTS.md` → **Agent Workflow Configuration**), or when the user asks
+For high-risk changes in the hosted-CI-ready, force-full hosted-CI, or benchmark
+categories described by `.agents/agent-workflow.yml`, or when the user asks
 for a panel/second model, run one additional review after the primary review is clean:
 
 - If the primary review used `codex review`, use Claude review tooling if it is available in the
@@ -166,7 +170,7 @@ For each finding the engine returns:
    broad rewrites; note briefly why.
 3. Fix accepted findings with the smallest correct change at the right boundary.
 4. Rerun the **targeted** tests for the changed surface, then rerun the review. Use `/verify`'s
-   Scope Guide and the repo's commands/tests (see `AGENTS.md`) to pick the narrowest covering
+   Scope Guide and `.agents/bin/README.md` to pick the narrowest covering
    tests for the changed surface, e.g. the unit spec for a library-code change, the
    integration/app spec for an integration change, and the package test plus type-check/lint for
    touched TypeScript. Also rerun any signature/type validation when typed interfaces changed.
@@ -190,9 +194,9 @@ Report:
 - review engine used (`codex review` or the available Claude review command)
 - tests/proof run, with pass/fail
 - findings accepted vs rejected, briefly why
-- PR label recommendation from `AGENTS.md` (none, the hosted-CI-ready label, the force-full
-  hosted-CI label, a benchmark label, or a valid combination of these — exact label names per
-  `AGENTS.md` → **Agent Workflow Configuration**) when the work is headed to a PR
+- PR label recommendation from `.agents/agent-workflow.yml` (none, the hosted-CI-ready label,
+  the force-full hosted-CI label, a benchmark label, or a valid combination of these) when the
+  work is headed to a PR
 - the final clean review result, or why a remaining finding was consciously left unfixed
 
 Do not run another review solely to improve the report wording. If the final review came back

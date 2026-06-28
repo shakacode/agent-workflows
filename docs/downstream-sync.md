@@ -1,114 +1,147 @@
-# Downstream Seam Sync
+# Downstream Binstub Sync
 
-Use `bin/push-downstream` to roll the managed `## Agent Workflow Configuration`
-seam into the consumer repositories listed in `downstream.yml`, one pull request
-per repo. This is the repeatable, version-controlled form of consumer adoption
-(see [adoption.md](adoption.md)); it never copies skill or workflow content into
-a repo.
+Use `bin/push-downstream` to roll the agent-workflow binstub contract into the
+consumer repositories listed in `downstream.yml`, one pull request per repo.
+The command never copies shared skill or workflow content into a consumer repo.
 
 ## What It Manages
 
-The command owns the seam's *structure* and leaves the *values* to each repo:
+`bin/push-downstream` owns the scaffold shape:
 
-| `bin/push-downstream` owns (rewrites) | The repo owns (preserved) |
-| --- | --- |
-| The section preamble and pointer to this pack | Every key's value |
-| Which required keys are present, and their order | Extra optional keys the repo added |
+- `.agents/bin/<name>` wrappers for standard commands
+- `.agents/bin/README.md`, refreshed on every run
+- `.agents/agent-workflow.yml`, with missing policy keys seeded
+- the `## Agent Workflow Configuration` pointer section in `AGENTS.md`
+- a thin `CLAUDE.md` importing `@AGENTS.md`, only when `CLAUDE.md` is absent
 
-The required keys come straight from `AgentWorkflowSeamDoctor::REQUIRED_KEYS`, so
-the command and `agent-workflow-seam-doctor` can never drift. On first adoption a
-key with no repo value is seeded as `n/a` (which the seam doctor accepts); the
-base branch is seeded from the registry. Re-running only refreshes the managed
-preamble and fills newly added keys — existing values, including multi-line
-ones, are kept verbatim. Reconcile is idempotent: an already-current repo is a
-no-op.
+Repos own the implementation details. Re-running the command preserves existing
+script bodies and existing YAML values; it only adds missing scripts and missing
+policy keys. A rich existing `CLAUDE.md` is never clobbered. The PR body/stdout
+records a follow-up to consolidate it later.
 
-When a repo has no `AGENTS.md` at all, the command creates a minimal one (a
-title plus the managed seam) so the portable skills have a seam to resolve. A
-repo that keeps its agent policy in `CLAUDE.md` should still treat `AGENTS.md` as
-canonical over time; consolidating the two is follow-up work, not something this
-command does.
+## Consumer Contract
 
-## The Registry
+Each adopting repo exposes commands through executable wrappers:
 
-`downstream.yml` lists targets and light metadata only:
+```text
+.agents/bin/setup
+.agents/bin/validate
+.agents/bin/test
+.agents/bin/lint
+.agents/bin/build
+.agents/bin/docs
+.agents/bin/ci-detect
+```
+
+`validate` and `test` are core scripts and must exist. Other scripts are
+optional; absence means that capability is n/a in that repo. Every wrapper must
+be Bash, `set -euo pipefail`, and `cd` to the repo root before running the real
+command. Composed wrappers, such as `validate = lint + test`, compute `root`
+once and call sibling scripts by absolute path.
+
+Non-command policy lives in `.agents/agent-workflow.yml`. Required keys are:
 
 ```yaml
-defaults:
-  owner: shakacode
-  base_branch: main
-  pr_branch: agent-workflows/seam-sync
-  enabled: true
+base_branch: main
+follow_up_prefix: "Follow-up:"
+review_gate: "..."
+approval_exempt: "..."
+coordination_backend: "..."
+changelog: "..."
+benchmark_labels: "n/a"
+merge_ledger: "n/a"
+ci_parity_environment: "n/a"
+hosted_ci_trigger: "n/a"
+ci_change_detector: "n/a"
+```
+
+Use `n/a` for unavailable policy. Add repo-specific keys such as
+`secret_redaction_patterns` when they are part of that repo's policy.
+
+`AGENTS.md` contains only the pointer:
+
+```markdown
+## Agent Workflow Configuration
+
+Portable shared skills resolve this repo's commands and policy through:
+- **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
+- **Policy / config** — `.agents/agent-workflow.yml`.
+```
+
+## Presets And Overrides
+
+`seam-presets.yml` has two top-level sections:
+
+- `defaults.commands` / `defaults.policy`
+- `presets.<name>.commands` / `presets.<name>.policy`
+
+`downstream.yml` selects a preset per repo and may override either area:
+
+```yaml
 repos:
-  - { repo: shakapacker, preset: ruby-gem }
-  - { repo: react-webpack-rails-tutorial, preset: ror-demo, base_branch: master }
+  - repo: shakapacker
+    preset: ruby-gem
+    overrides:
+      commands:
+        test: yarn test --runInBand
+      policy:
+        hosted_ci_trigger: "n/a — CI runs on every PR"
 ```
 
-`shakacode/react_on_rails` is intentionally absent — it is the hand-authored
-reference seam. Private and archived repos are out of scope.
-
-## Seam Value Adapter
-
-Each seam value is resolved through three layers, last wins, then seeded into a
-fresh seam (existing repo-owned values still win on re-runs):
-
-1. **`defaults`** in `seam-presets.yml` — org-uniform values (coordination
-   backend, follow-up prefix, review gate, `n/a` keys) applied to every repo.
-2. **`presets[<name>]`** — archetype command defaults, chosen per repo via
-   `preset:` (`ts-package`, `ruby-gem`, `ror-demo`, `site`).
-3. **per-repo `overrides:`** in `downstream.yml` — the idiosyncrasies a preset
-   can't know, e.g. RSC's `NODE_CONDITIONS=react-server` test note.
+Command values can be strings or composed scripts:
 
 ```yaml
-# downstream.yml
-- repo: react_on_rails_rsc
-  preset: ts-package
-  overrides:
-    Tests: "`yarn test`; single file `yarn jest <path>`, prefix NODE_CONDITIONS=react-server for *.rsc.test.*."
+validate:
+  compose: [build, test]
 ```
 
-Keep presets conservative — assert only what is genuinely common to the
-archetype, and prefer `n/a` over a guessed command, since a wrong preset value
-propagates to every repo using it. The seam doctor and PR review remain the
-gates. A future `--reseed` mode could re-assert changed preset values onto keys
-a repo has not customized.
+Keep presets conservative. Before opening a consumer PR, verify every generated
+wrapper points to a command or task that actually exists in that repo (`rake -T`,
+`package.json`, referenced `bin/` files, etc.). `bash -n` is syntax-only.
 
 ## Usage
 
-Plan only (default; no clones, no network writes):
+Plan only, with no clones and no network writes:
 
 ```bash
-bin/push-downstream                      # plan every enabled repo
-bin/push-downstream --only shakapacker   # plan one repo
+bin/push-downstream
+bin/push-downstream --only shakapacker
 ```
 
-Apply (clone the base branch, reconcile, validate with the seam doctor, push
-`agent-workflows/seam-sync`, and open one PR per repo):
+Apply to a canary first, then fan out:
 
 ```bash
-bin/push-downstream --only shakapacker --apply   # canary one repo first
-bin/push-downstream --apply                       # fan out to all enabled repos
+bin/push-downstream --only shakapacker --apply
+bin/push-downstream --apply
 ```
 
-Reconcile a single local checkout without the registry or network:
+Reconcile one local checkout without the registry or network:
 
 ```bash
-bin/push-downstream --root /path/to/consumer/repo            # show planned change
-bin/push-downstream --root /path/to/consumer/repo --apply    # write AGENTS.md
+bin/push-downstream --root /path/to/consumer/repo
+bin/push-downstream --root /path/to/consumer/repo --apply
 ```
 
 | Flag | Effect |
 | --- | --- |
 | `--config FILE` | Registry path (default `downstream.yml`). |
+| `--presets FILE` | Preset path (default `seam-presets.yml`). |
 | `--root DIR` | Reconcile one checkout instead of the registry; no network. |
 | `--only a,b` | Restrict to named repos (selects even if `enabled: false`). |
 | `--all` | Include repos marked `enabled: false`. |
 | `--apply` | Perform writes; in registry mode, push branches and open PRs. |
 | `--base-branch NAME` | Base branch for `--root` mode (default `main`). |
 
-## Values Still Need Authoring
+## Validation
 
-The command guarantees a valid, current, seam-doctor-passing section, but it
-cannot infer a repo's real test, lint, or CI commands. After the scaffold PR is
-open, replace the remaining `n/a` entries with that repo's real values — by hand
-or with an inspection pass — and the seam doctor will confirm completeness.
+After generation, run:
+
+```bash
+agent-workflow-seam-doctor --root /path/to/consumer/repo --shared /path/to/agent-workflows
+```
+
+For a local source-pack change, run:
+
+```bash
+bin/validate
+```

@@ -1,14 +1,15 @@
 # Downstream consumer repositories for shakacode/agent-workflows.
 #
-# `bin/push-downstream` syncs the managed `## Agent Workflow Configuration`
-# section into each repo's AGENTS.md (creating AGENTS.md when absent) and opens
-# one PR per repo. Seam values are seeded via the adapter — global defaults +
-# the named `preset:` (see seam-presets.yml) + any per-repo `overrides:` — and
-# stay repo-owned after adoption. See docs/downstream-sync.md.
+# `bin/push-downstream` syncs the binstub contract into each repo:
+#   - `.agents/bin/<name>` command wrappers
+#   - `.agents/bin/README.md`
+#   - `.agents/agent-workflow.yml`
+#   - a thin pointer section in `AGENTS.md`
+#   - a thin `CLAUDE.md` only when absent
 #
-# Out of scope by design:
-#   - shakacode/react_on_rails: the hand-authored reference seam.
-#   - private/business repos and archived repos.
+# Presets live in seam-presets.yml and are intentionally conservative. Before
+# opening a consumer PR, verify that every wrapped command/task exists in that
+# target repo.
 
 defaults:
   owner: shakacode
@@ -17,23 +18,41 @@ defaults:
   enabled: true
 
 repos:
-  # TypeScript / Node packages
   - repo: react_on_rails_rsc
     preset: ts-package
     enabled: false   # adopted via canary PR shakacode/react_on_rails_rsc#133
     overrides:
-      Tests: "`yarn test` (`test:rsc` + `test:non-rsc`); single file `yarn jest <path>`, prefix `NODE_CONDITIONS=react-server` for `*.rsc.test.*`."
+      commands:
+        test: yarn test "$@"
+      policy:
+        changelog: "/CHANGELOG.md — Keep-a-Changelog; user-visible changes only; reference-style PR links"
+        hosted_ci_trigger: "n/a — the unit-tests workflow runs on every PR; no +ci-* commands"
 
-  # Ruby gems
-  - { repo: shakapacker, preset: ruby-gem }
+  - repo: shakapacker
+    preset: ruby-gem
+    overrides:
+      commands:
+        setup: |
+          bundle install
+          yarn install
+        validate:
+          compose: [lint, test]
+        test: |
+          bundle exec rake test
+          yarn test --runInBand
+        lint: |
+          bundle exec rubocop "$@"
+          yarn lint
+        build: |
+          yarn build
+          yarn type-check
+
   - { repo: shakaperf, preset: ruby-gem }
 
-  # Sites / dashboards
   - { repo: agent-coordination-dashboard, preset: site }
   - { repo: reactonrails.com, preset: site }
   - { repo: shakastack-com, preset: site }
 
-  # React on Rails demo / example apps
   - { repo: react-on-rails-starter-tanstack, preset: ror-demo }
   - { repo: react-on-rails-demo-gumroad-rsc, preset: ror-demo }
   - { repo: react_on_rails-demo-octochangelog-on-rails-pro, preset: ror-demo }

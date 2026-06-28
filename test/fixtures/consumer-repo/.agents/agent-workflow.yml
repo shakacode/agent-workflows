@@ -1,0 +1,12 @@
+---
+base_branch: main
+follow_up_prefix: "Follow-up:"
+review_gate: "codex review before non-trivial workflow changes"
+approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures"
+coordination_backend: "public claim-comment fallback"
+changelog: "CHANGELOG.md; user-visible changes only"
+benchmark_labels: "n/a"
+merge_ledger: "n/a"
+ci_parity_environment: "n/a"
+hosted_ci_trigger: "n/a"
+ci_change_detector: "n/a"

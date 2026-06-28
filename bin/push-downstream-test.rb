@@ -9,121 +9,47 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
+require "shellwords"
 require "tmpdir"
+require "yaml"
 
 SCRIPT = File.expand_path("push-downstream", __dir__)
 DOCTOR = File.expand_path("agent-workflow-seam-doctor", __dir__)
 load SCRIPT
 
-class PushDownstreamReconcileTest < Minitest::Test
-  def test_reconcile_inserts_complete_seam_when_missing
-    original = "# AGENTS.md\n\n## Commands\n\nRun the thing.\n"
-
-    result = PushDownstream.reconcile(original, base_branch: "main")
-
-    # Existing content is preserved verbatim.
-    assert_includes result, "## Commands"
-    assert_includes result, "Run the thing."
-
-    # The managed section is added with every required key.
-    assert_includes result, "## Agent Workflow Configuration"
-    AgentWorkflowSeamDoctor::REQUIRED_KEYS.each do |key|
-      assert_includes result, "- **#{key}**:", "missing seam key #{key}"
-    end
-
-    # Base branch is seeded from the argument; unspecified keys default to n/a.
-    assert_match(/- \*\*Base branch\*\*: .*main/, result)
-    assert_match(%r{- \*\*Tests\*\*: n/a}, result)
-  end
-
-  def test_reconcile_preserves_existing_values_and_fills_missing_keys
-    agents = <<~MARKDOWN
+class PushDownstreamPointerTest < Minitest::Test
+  def test_reconcile_pointer_replaces_only_agent_workflow_section
+    original = <<~MARKDOWN
       # AGENTS.md
 
-      ## Agent Workflow Configuration
-
-      Stale preamble that the command should replace.
-
-      - **Base branch**: `develop` (compare via `origin/develop`).
-      - **Tests**: `bundle exec rspec`.
-
-      ## Commands
-
-      Run things.
-    MARKDOWN
-
-    result = PushDownstream.reconcile(agents, base_branch: "main")
-
-    # Repo-owned values survive verbatim, even though base_branch arg differs.
-    assert_includes result, "- **Base branch**: `develop` (compare via `origin/develop`)."
-    assert_includes result, "- **Tests**: `bundle exec rspec`."
-    # Missing required keys are filled with n/a.
-    assert_match(%r{- \*\*Coordination backend\*\*: n/a}, result)
-    # The section is reconciled in place, not duplicated.
-    assert_equal 1, result.scan("## Agent Workflow Configuration").length
-    # Content outside the section is preserved.
-    assert_includes result, "## Commands"
-    assert_includes result, "Run things."
-  end
-
-  def test_reconcile_preserves_multiline_wrapped_values
-    agents = <<~MARKDOWN
-      # AGENTS.md
-
-      ## Agent Workflow Configuration
-
-      - **Tests**: `bundle exec rspec`,
-        `pnpm run test`, and targeted e2e commands.
-
-      ## Commands
-    MARKDOWN
-
-    result = PushDownstream.reconcile(agents, base_branch: "main")
-
-    assert_includes result, "- **Tests**: `bundle exec rspec`,\n  `pnpm run test`, and targeted e2e commands."
-  end
-
-  def test_reconcile_preserves_extra_optional_keys_after_required
-    agents = <<~MARKDOWN
-      # AGENTS.md
+      Intro policy.
 
       ## Agent Workflow Configuration
 
       - **Base branch**: `main`.
-      - **Default simplify model**: claude-opus-4-8.
+      - **Tests**: `bundle exec rspec`.
 
       ## Commands
+
+      Keep this section.
     MARKDOWN
 
-    result = PushDownstream.reconcile(agents, base_branch: "main")
+    result = PushDownstream.reconcile_agents_pointer(original)
 
-    assert_includes result, "- **Default simplify model**: claude-opus-4-8."
-    # Optional keys are kept, but after the canonical required block.
-    assert_operator result.index("Default simplify model"), :>, result.index("Coordination backend")
+    assert_includes result, "Intro policy."
+    assert_includes result, "## Commands\n\nKeep this section."
+    assert_equal 1, result.scan("## Agent Workflow Configuration").length
+    assert_includes result, AgentWorkflowSeamDoctor::POINTER_SECTION
+    refute_includes result, "- **Tests**: `bundle exec rspec`."
   end
 
-  def test_reconcile_is_idempotent
-    [
-      "# AGENTS.md\n\n## Commands\n\nRun.\n",
-      "# AGENTS.md\n\n## Agent Workflow Configuration\n\n- **Tests**: `rspec`.\n\n## Commands\n"
-    ].each do |agents|
-      once = PushDownstream.reconcile(agents, base_branch: "main")
-      twice = PushDownstream.reconcile(once, base_branch: "main")
+  def test_reconcile_pointer_appends_when_missing
+    original = "# AGENTS.md\n\n## Commands\n\nRun the thing.\n"
 
-      assert_equal once, twice, "not idempotent for: #{agents.inspect}"
-    end
-  end
+    result = PushDownstream.reconcile_agents_pointer(original)
 
-  def test_reconciled_output_passes_seam_doctor
-    Dir.mktmpdir("push-downstream-doctor") do |root|
-      reconciled = PushDownstream.reconcile("# AGENTS.md\n\n## Commands\n", base_branch: "main")
-      File.write(File.join(root, "AGENTS.md"), reconciled)
-
-      out, status = Open3.capture2e(RbConfig.ruby, DOCTOR, "--root", root)
-
-      assert status.success?, out
-      assert_includes out, "PASS"
-    end
+    assert_includes result, "Run the thing."
+    assert_includes result, AgentWorkflowSeamDoctor::POINTER_SECTION
   end
 end
 
@@ -159,8 +85,6 @@ class PushDownstreamConfigTest < Minitest::Test
       assert_equal "main", first.fetch(:base_branch)
       assert_equal "agent-workflows/seam-sync", first.fetch(:pr_branch)
       assert_equal true, first.fetch(:enabled)
-
-      # A per-repo base_branch overrides the default.
       assert_equal "master", repos.fetch(1).fetch(:base_branch)
     end
   end
@@ -181,106 +105,410 @@ class PushDownstreamConfigTest < Minitest::Test
 
       assert_equal(["alpha"], PushDownstream.select_repos(repos).map { |repo| repo.fetch(:repo) })
       assert_equal(%w[alpha beta], PushDownstream.select_repos(repos, include_disabled: true).map { |repo| repo.fetch(:repo) })
-      # An explicit --only name selects a repo even when disabled.
       assert_equal(["beta"], PushDownstream.select_repos(repos, only: ["beta"]).map { |repo| repo.fetch(:repo) })
     end
   end
 end
 
 class PushDownstreamAdapterTest < Minitest::Test
-  def with_file(name, body)
-    Dir.mktmpdir("push-downstream-adapter") do |dir|
-      path = File.join(dir, name)
-      File.write(path, body)
-      yield path
-    end
-  end
-
-  def test_load_config_carries_preset_and_overrides
-    yaml = <<~YAML
-      defaults:
-        owner: shakacode
-        base_branch: main
-        pr_branch: agent-workflows/seam-sync
-      repos:
-        - repo: rsc
-          preset: ts-package
-          overrides:
-            Tests: "`yarn test` with conditions."
-    YAML
-
-    with_file("downstream.yml", yaml) do |path|
-      repo = PushDownstream.load_config(path).fetch(0)
-
-      assert_equal "ts-package", repo.fetch(:preset)
-      assert_equal({ "Tests" => "`yarn test` with conditions." }, repo.fetch(:overrides))
-    end
-  end
-
-  def test_load_presets_reads_defaults_and_named_presets
-    yaml = <<~YAML
-      defaults:
-        Coordination backend: shared backend.
-      presets:
-        ts-package:
-          Tests: "`yarn test`."
-    YAML
-
-    with_file("seam-presets.yml", yaml) do |path|
-      presets = PushDownstream.load_presets(path)
-
-      assert_equal "shared backend.", presets.fetch("defaults").fetch("Coordination backend")
-      assert_equal "`yarn test`.", presets.fetch("presets").fetch("ts-package").fetch("Tests")
-    end
-  end
-
-  def test_resolve_values_layers_defaults_preset_and_overrides
+  def test_resolve_contract_layers_defaults_preset_and_overrides
     presets = {
-      "defaults" => { "Coordination backend" => "shared backend.", "Benchmark labels" => "n/a." },
-      "presets" => { "ts-package" => { "Tests" => "`yarn test`.", "Benchmark labels" => "n/a (pkg)." } }
+      "defaults" => {
+        "commands" => { "validate" => "echo default-validate", "test" => "echo default-test" },
+        "policy" => { "follow_up_prefix" => "Follow-up:", "benchmark_labels" => "n/a" }
+      },
+      "presets" => {
+        "ts-package" => {
+          "commands" => { "validate" => { "compose" => %w[build test] }, "build" => "yarn build" },
+          "policy" => { "benchmark_labels" => "n/a (package)", "hosted_ci_trigger" => "n/a" }
+        }
+      }
     }
     repo = {
       repo: "rsc", base_branch: "main", preset: "ts-package",
-      overrides: { "Tests" => "`yarn test:all`." }
+      overrides: {
+        "commands" => { "test" => "yarn test --runInBand" },
+        "policy" => { "hosted_ci_trigger" => "CI runs on every PR" }
+      }
     }
 
-    values = PushDownstream.resolve_values(repo, presets)
+    contract = PushDownstream.resolve_contract(repo, presets)
 
-    assert_equal "shared backend.", values["Coordination backend"] # global default
-    assert_equal "n/a (pkg).", values["Benchmark labels"]          # preset beats default
-    assert_equal "`yarn test:all`.", values["Tests"]               # override beats preset
-    assert_equal "`main`.", values["Base branch"]                  # seeded from base_branch
+    assert_equal({ "compose" => %w[build test] }, contract.fetch(:commands).fetch("validate"))
+    assert_equal "yarn build", contract.fetch(:commands).fetch("build")
+    assert_equal "yarn test --runInBand", contract.fetch(:commands).fetch("test")
+    assert_equal "main", contract.fetch(:policy).fetch("base_branch")
+    assert_equal "n/a (package)", contract.fetch(:policy).fetch("benchmark_labels")
+    assert_equal "CI runs on every PR", contract.fetch(:policy).fetch("hosted_ci_trigger")
   end
 
-  def test_resolve_values_unknown_preset_raises
+  def test_resolve_contract_unknown_preset_raises
     error = assert_raises(RuntimeError) do
-      PushDownstream.resolve_values(
-        { repo: "x", base_branch: "main", preset: "nope" }, { "presets" => {} }
+      PushDownstream.resolve_contract(
+        { repo: "x", base_branch: "main", preset: "nope", overrides: {} },
+        { "presets" => {} }
       )
     end
+
     assert_match(/unknown preset: nope/, error.message)
   end
+end
 
-  def test_reconcile_seeds_unset_keys_but_preserves_existing
-    agents = "# AGENTS.md\n\n## Agent Workflow Configuration\n\n- **Tests**: `existing`.\n\n## End\n"
-    seed = { "Tests" => "`seeded`.", "Lint / format" => "`rubocop`." }
+class PushDownstreamScaffoldTest < Minitest::Test
+  CONTRACT = {
+    commands: {
+      "setup" => "bundle install",
+      "validate" => { "compose" => %w[lint test] },
+      "test" => "bundle exec rspec \"$@\"",
+      "lint" => "bundle exec rubocop \"$@\""
+    },
+    policy: {
+      "base_branch" => "main",
+      "follow_up_prefix" => "Follow-up:",
+      "review_gate" => "AI reviewers are advisory.",
+      "approval_exempt" => "docs and workflow text.",
+      "coordination_backend" => "public claim-comment fallback.",
+      "changelog" => "CHANGELOG.md; user-visible changes only.",
+      "benchmark_labels" => "n/a",
+      "merge_ledger" => "n/a",
+      "ci_parity_environment" => "n/a",
+      "hosted_ci_trigger" => "n/a",
+      "ci_change_detector" => "n/a"
+    }
+  }.freeze
 
-    result = PushDownstream.reconcile(agents, base_branch: "main", seed: seed)
+  def test_apply_scaffold_generates_binstubs_policy_readme_agents_and_claude
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      File.write(File.join(root, "AGENTS.md"), "# AGENTS.md\n\n## Commands\n")
 
-    assert_includes result, "- **Tests**: `existing`."        # repo-owned wins over seed
-    assert_includes result, "- **Lint / format**: `rubocop`." # seed fills an unset key
-    assert_match(%r{- \*\*Docs checks\*\*: n/a}, result) # unseeded -> n/a
+      result = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert result.changed?
+      assert_empty result.follow_ups
+      assert File.executable?(File.join(root, ".agents/bin/validate"))
+      assert File.executable?(File.join(root, ".agents/bin/test"))
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"'
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, 'root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"'
+      assert_includes validate, '"$root/.agents/bin/lint"'
+      assert_includes File.read(File.join(root, ".agents/bin/README.md")), "| `lint` | Lint / format | `bundle exec rubocop \"$@\"` |"
+      assert_equal CONTRACT.fetch(:policy), YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
+      assert_includes File.read(File.join(root, "AGENTS.md")), AgentWorkflowSeamDoctor::POINTER_SECTION
+      assert_equal PushDownstream::THIN_CLAUDE, File.read(File.join(root, "CLAUDE.md"))
+
+      out, status = Open3.capture2e("ruby", DOCTOR, "--root", root)
+      assert status.success?, out
+    end
   end
 
-  def test_reconcile_creates_seam_from_seed_values
-    seed = { "Tests" => "`yarn test`.", "Coordination backend" => "shared backend." }
+  def test_script_content_preserves_leading_env_assignment
+    content = PushDownstream.script_content(
+      "test",
+      'RAILS_ENV=test ruby -e "exit ENV.fetch(%q[RAILS_ENV]) == %q[test] ? 0 : 1"'
+    )
 
-    result = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main", seed: seed)
+    refute_includes content, "exec RAILS_ENV=test"
+    assert_includes content, 'RAILS_ENV=test ruby -e "exit ENV.fetch(%q[RAILS_ENV]) == %q[test] ? 0 : 1"'
+  end
 
-    assert_includes result, "- **Tests**: `yarn test`."
-    assert_includes result, "- **Coordination backend**: shared backend."
-    assert_match(/- \*\*Base branch\*\*: .*main/, result) # base branch default still applies
-    assert_match(%r{- \*\*Docs checks\*\*: n/a}, result) # unseeded -> n/a
+  def test_apply_scaffold_preserves_repo_owned_scripts_policy_and_claude
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      test_script = File.join(root, ".agents/bin/test")
+      File.write(test_script, <<~BASH)
+        #!/usr/bin/env bash
+        set -euo pipefail
+        cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+        exec script/custom-test "$@"
+      BASH
+      File.chmod(0o755, test_script)
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents/agent-workflow.yml"), {
+        "base_branch" => "develop",
+        "follow_up_prefix" => "Custom:"
+      }.to_yaml)
+      File.write(File.join(root, "CLAUDE.md"), "# Rich Claude rules\n\nKeep me.\n")
+
+      result = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert result.changed?
+      assert_includes File.read(test_script), "script/custom-test"
+      policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
+      assert_equal "develop", policy.fetch("base_branch")
+      assert_equal "Custom:", policy.fetch("follow_up_prefix")
+      assert_equal "AI reviewers are advisory.", policy.fetch("review_gate")
+      assert_equal "# Rich Claude rules\n\nKeep me.\n", File.read(File.join(root, "CLAUDE.md"))
+      assert_equal ["existing CLAUDE.md preserved; consolidate it to import @AGENTS.md"], result.follow_ups
+    end
+  end
+
+  def test_apply_scaffold_migrates_legacy_agents_command_values
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
+        # AGENTS.md
+
+        ## Agent Workflow Configuration
+
+        - **Base branch**: `develop`.
+        - **Pre-push local validation**: `bin/validate`.
+        - **CI change detector**: `script/ci-changes-detector`.
+        - **Lint / format**: `bundle exec rubocop "$@"`.
+        - **Docs checks**: n/a.
+        - **Tests**: `bundle exec rspec "$@"`.
+        - **Build / type checks**: n/a.
+
+        ## Commands
+      MARKDOWN
+
+      PushDownstream.reconcile_scaffold(root, PushDownstream.default_local_contract("main"))
+
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), "exec bin/validate"
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec bundle exec rspec "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/lint")), 'exec bundle exec rubocop "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/ci-detect")), "exec script/ci-changes-detector"
+      refute File.exist?(File.join(root, ".agents/bin/build"))
+      refute File.exist?(File.join(root, ".agents/bin/docs"))
+      refute_includes File.read(File.join(root, ".agents/bin/validate")),
+                      "Configure this repo full local validation"
+      assert_includes File.read(File.join(root, ".agents/bin/README.md")),
+                      "| `validate` | Pre-push gate | `bin/validate` |"
+
+      out, status = Open3.capture2e("ruby", DOCTOR, "--root", root)
+      assert status.success?, out
+    end
+  end
+
+  def test_apply_scaffold_migrates_legacy_agents_policy_values
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
+        # AGENTS.md
+
+        ## Agent Workflow Configuration
+
+        - **Base branch**: `develop`.
+        - **CI parity environment**: exact runner image docs.
+        - **Secret redaction patterns**: redact TOKEN and SECRET.
+        - **Follow-up issue prefix**: Follow-up:
+        - **Changelog**: CHANGELOG.md; keep a changelog.
+        - **Review gate**: codex review.
+        - **Approval-exempt change categories**: docs.
+        - **Coordination backend**: private backend.
+
+        ## Commands
+      MARKDOWN
+
+      PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
+      assert_equal "develop", policy.fetch("base_branch")
+      assert_equal "exact runner image docs.", policy.fetch("ci_parity_environment")
+      assert_equal "redact TOKEN and SECRET.", policy.fetch("secret_redaction_patterns")
+      assert_equal "Follow-up:", policy.fetch("follow_up_prefix")
+      assert_equal "CHANGELOG.md; keep a changelog.", policy.fetch("changelog")
+      assert_equal "codex review.", policy.fetch("review_gate")
+      assert_equal "docs.", policy.fetch("approval_exempt")
+      assert_equal "private backend.", policy.fetch("coordination_backend")
+    end
+  end
+
+  def test_apply_scaffold_migrates_multiline_legacy_policy_values
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
+        # AGENTS.md
+
+        ## Agent Workflow Configuration
+
+        - **Review gate**: primary review.
+          secondary review for risky changes.
+        - **Approval-exempt change categories**:
+          - docs
+          - workflow text
+
+        ## Commands
+      MARKDOWN
+
+      PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
+      assert_equal "primary review. secondary review for risky changes.", policy.fetch("review_gate")
+      assert_equal "- docs - workflow text", policy.fetch("approval_exempt")
+    end
+  end
+
+  def test_readme_describes_preserved_repo_owned_script_body
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      test_script = File.join(root, ".agents/bin/test")
+      File.write(test_script, <<~BASH)
+        #!/usr/bin/env bash
+        set -euo pipefail
+        cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+        exec script/custom-test "$@"
+      BASH
+      File.chmod(0o755, test_script)
+
+      PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes readme, "| `test` | Run tests | `exec script/custom-test \"$@\"` |"
+    end
+  end
+
+  def test_reconcile_scaffold_is_idempotent
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      first = PushDownstream.reconcile_scaffold(root, CONTRACT)
+      second = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert first.changed?
+      refute second.changed?
+    end
+  end
+
+  def test_reconcile_scaffold_refreshes_managed_script_when_contract_changes
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      PushDownstream.reconcile_scaffold(root, CONTRACT)
+      changed_contract = Marshal.load(Marshal.dump(CONTRACT))
+      changed_contract[:commands]["test"] = "bundle exec rake test"
+
+      result = PushDownstream.reconcile_scaffold(root, changed_contract)
+
+      assert result.changed?
+      assert_includes File.read(File.join(root, ".agents/bin/test")), "exec bundle exec rake test"
+      assert_includes File.read(File.join(root, ".agents/bin/README.md")), "| `test` | Run tests | `bundle exec rake test` |"
+    end
+  end
+
+  def test_reconcile_scaffold_removes_stale_managed_optional_script
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      contract_with_build = Marshal.load(Marshal.dump(CONTRACT))
+      contract_with_build[:commands]["build"] = "yarn build"
+      PushDownstream.reconcile_scaffold(root, contract_with_build)
+
+      result = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert result.changed?
+      refute File.exist?(File.join(root, ".agents/bin/build"))
+      assert_includes File.read(File.join(root, ".agents/bin/README.md")), "| `build` | Build / type-check | n/a |"
+    end
+  end
+
+  def test_reconcile_scaffold_reports_chmod_only_repairs
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      PushDownstream.reconcile_scaffold(root, CONTRACT)
+      path = File.join(root, ".agents/bin/test")
+      File.chmod(0o644, path)
+
+      result = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert result.changed?
+      assert File.executable?(path)
+    end
+  end
+
+  def test_reconcile_scaffold_exposes_missing_composed_child_to_seam_doctor
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      broken_contract = Marshal.load(Marshal.dump(CONTRACT))
+      broken_contract[:commands].delete("lint")
+
+      PushDownstream.reconcile_scaffold(root, broken_contract)
+      out, status = Open3.capture2e("ruby", DOCTOR, "--root", root)
+
+      refute status.success?
+      assert_includes out, "script references missing sibling script: .agents/bin/validate -> .agents/bin/lint"
+    end
+  end
+end
+
+class PushDownstreamGitTest < Minitest::Test
+  CONTRACT = PushDownstreamScaffoldTest::CONTRACT
+
+  def test_checkout_sync_branch_uses_existing_remote_branch_when_present
+    Dir.mktmpdir("push-downstream-git") do |dir|
+      remote = File.join(dir, "remote.git")
+      seed = File.join(dir, "seed")
+      clone = File.join(dir, "clone")
+      system("git", "init", "--bare", remote, out: File::NULL)
+      system("git", "clone", remote, seed, out: File::NULL)
+      system("git", "-C", seed, "config", "user.email", "test@example.com")
+      system("git", "-C", seed, "config", "user.name", "Test")
+      File.write(File.join(seed, "README.md"), "base\n")
+      system("git", "-C", seed, "add", "README.md")
+      system("git", "-C", seed, "commit", "-m", "base", out: File::NULL)
+      system("git", "-C", seed, "branch", "-M", "main")
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+      system("git", "-C", seed, "checkout", "-b", "agent-workflows/seam-sync", out: File::NULL)
+      File.write(File.join(seed, "branch.txt"), "remote branch\n")
+      system("git", "-C", seed, "add", "branch.txt")
+      system("git", "-C", seed, "commit", "-m", "sync branch", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "agent-workflows/seam-sync", out: File::NULL)
+      system("git", "clone", "--branch", "main", remote, clone, out: File::NULL)
+
+      repo = { pr_branch: "agent-workflows/seam-sync" }
+      assert_equal :existing_remote, PushDownstream.checkout_sync_branch(repo, clone)
+
+      assert_equal "agent-workflows/seam-sync", `git -C #{clone.shellescape} branch --show-current`.strip
+      assert_equal "remote branch\n", File.read(File.join(clone, "branch.txt"))
+    end
+  end
+
+  def test_sync_repo_creates_pr_for_current_remote_branch_without_open_pr
+    Dir.mktmpdir("push-downstream-git") do |dir|
+      remote, seed = seed_remote(dir)
+      system("git", "-C", seed, "checkout", "-b", "agent-workflows/seam-sync", out: File::NULL)
+      PushDownstream.reconcile_scaffold(seed, CONTRACT)
+      system("git", "-C", seed, "add", ".")
+      system("git", "-C", seed, "commit", "-m", "sync branch", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "agent-workflows/seam-sync", out: File::NULL)
+
+      repo = {
+        repo: "consumer",
+        nwo: "local/consumer",
+        base_branch: "main",
+        pr_branch: "agent-workflows/seam-sync",
+        remote_url: remote
+      }
+      created = []
+      create_pr = lambda do |called_repo, branch, follow_ups|
+        created << [called_repo, branch, follow_ups]
+        "https://example.test/pr/1"
+      end
+
+      with_module_stub(PushDownstream, :existing_pr_url, ->(_repo, _branch) {}) do
+        with_module_stub(PushDownstream, :create_pr, create_pr) do
+          out, = capture_io { assert PushDownstream.sync_repo(repo, CONTRACT) }
+
+          assert_includes out, "PR local/consumer https://example.test/pr/1"
+        end
+      end
+
+      assert_equal [[repo, "agent-workflows/seam-sync", []]], created
+    end
+  end
+
+  private
+
+  def seed_remote(dir)
+    remote = File.join(dir, "remote.git")
+    seed = File.join(dir, "seed")
+    system("git", "init", "--bare", remote, out: File::NULL)
+    system("git", "clone", remote, seed, out: File::NULL)
+    system("git", "-C", seed, "config", "user.email", "test@example.com")
+    system("git", "-C", seed, "config", "user.name", "Test")
+    File.write(File.join(seed, "README.md"), "base\n")
+    system("git", "-C", seed, "add", "README.md")
+    system("git", "-C", seed, "commit", "-m", "base", out: File::NULL)
+    system("git", "-C", seed, "branch", "-M", "main")
+    system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+    [remote, seed]
+  end
+
+  def with_module_stub(mod, name, replacement)
+    singleton = mod.singleton_class
+    original = mod.method(name)
+    singleton.define_method(name, replacement)
+    yield
+  ensure
+    singleton.define_method(name, original)
   end
 end
 
@@ -291,31 +519,24 @@ class PushDownstreamCliTest < Minitest::Test
 
   def test_local_dry_run_reports_change_without_writing
     Dir.mktmpdir("push-downstream-cli") do |root|
-      agents = File.join(root, "AGENTS.md")
-      original = "# AGENTS.md\n\n## Commands\n"
-      File.write(agents, original)
-
       out, status = run_cli("--root", root)
 
       assert status.success?, out
-      assert_includes out, "would update"
-      # Dry-run must not touch the file.
-      assert_equal original, File.read(agents)
+      assert_includes out, "would reconcile binstub scaffold"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
     end
   end
 
-  def test_local_apply_writes_seam_and_is_idempotent
+  def test_local_apply_creates_contract_and_is_idempotent
     Dir.mktmpdir("push-downstream-cli") do |root|
-      agents = File.join(root, "AGENTS.md")
-      File.write(agents, "# AGENTS.md\n\n## Commands\n")
-
       out, status = run_cli("--root", root, "--apply")
 
       assert status.success?, out
       assert_includes out, "PASS"
-      assert_includes File.read(agents), "## Agent Workflow Configuration"
+      assert File.file?(File.join(root, ".agents/bin/validate"))
+      assert File.file?(File.join(root, ".agents/agent-workflow.yml"))
+      assert File.file?(File.join(root, "AGENTS.md"))
 
-      # Re-applying is a no-op.
       out2, status2 = run_cli("--root", root, "--apply")
 
       assert status2.success?, out2
@@ -323,39 +544,16 @@ class PushDownstreamCliTest < Minitest::Test
     end
   end
 
-  def test_local_apply_validates_already_current_seam
+  def test_local_apply_validates_preserved_repo_owned_scripts
     Dir.mktmpdir("push-downstream-cli") do |root|
-      agents = File.join(root, "AGENTS.md")
-      current = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main")
-      File.write(agents, "#{current}- **Custom command**: <unit command>\n")
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      File.write(File.join(root, ".agents/bin/test"), "echo missing strict mode\n")
 
       out, status = run_cli("--root", root, "--apply")
 
       refute status.success?, out
       assert_includes out, "FAIL agent workflow seam"
-      assert_includes out, "unresolved Agent Workflow Configuration value for key: Custom command"
-    end
-  end
-
-  def test_local_creates_agents_when_missing_on_apply
-    Dir.mktmpdir("push-downstream-cli") do |root|
-      out, status = run_cli("--root", root, "--apply")
-
-      assert status.success?, out
-      assert_includes out, "PASS"
-      agents = File.join(root, "AGENTS.md")
-      assert File.file?(agents), "AGENTS.md should be created"
-      assert_includes File.read(agents), "## Agent Workflow Configuration"
-    end
-  end
-
-  def test_local_dry_run_reports_create_without_writing
-    Dir.mktmpdir("push-downstream-cli") do |root|
-      out, status = run_cli("--root", root)
-
-      assert status.success?, out
-      assert_includes out, "would create"
-      refute File.exist?(File.join(root, "AGENTS.md")), "dry-run must not create the file"
+      assert_includes out, "script does not enable strict bash mode: .agents/bin/test"
     end
   end
 
@@ -390,22 +588,37 @@ class PushDownstreamCliTest < Minitest::Test
   def test_registry_dry_run_lists_enabled_targets
     Dir.mktmpdir("push-downstream-registry") do |dir|
       config = File.join(dir, "downstream.yml")
+      presets = File.join(dir, "seam-presets.yml")
       File.write(config, <<~YAML)
         defaults:
           owner: shakacode
           base_branch: main
           pr_branch: agent-workflows/seam-sync
         repos:
-          - { repo: alpha }
-          - { repo: beta, enabled: false }
+          - { repo: alpha, preset: ruby-gem }
+          - { repo: beta, preset: ruby-gem, enabled: false }
+      YAML
+      File.write(presets, <<~YAML)
+        defaults:
+          commands:
+            validate: echo validate
+            test: echo test
+          policy:
+            follow_up_prefix: "Follow-up:"
+        presets:
+          ruby-gem:
+            commands:
+              validate: bundle exec rake
+              test: bundle exec rspec
+            policy:
+              hosted_ci_trigger: n/a
       YAML
 
-      out, status = run_cli("--config", config)
+      out, status = run_cli("--config", config, "--presets", presets)
 
       assert status.success?, out
       assert_includes out, "shakacode/alpha"
       assert_includes out, "agent-workflows/seam-sync"
-      # Disabled repos are not planned unless --include-disabled.
       refute_includes out, "shakacode/beta"
     end
   end
@@ -434,313 +647,6 @@ class PushDownstreamCliTest < Minitest::Test
       assert all_status.success?, all_out
       assert_includes all_out, "shakacode/alpha"
       assert_includes all_out, "shakacode/beta"
-    end
-  end
-
-  def test_registry_apply_updates_existing_remote_sync_branch
-    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
-      remote = File.join(dir, "remote.git")
-      seed = File.join(dir, "seed")
-      clone = File.join(dir, "clone")
-      branch = "agent-workflows/seam-sync"
-      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
-
-      system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
-      system("git", "clone", remote, seed, out: File::NULL, err: File::NULL)
-      configure_git(seed)
-      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n")
-      system("git", "-C", seed, "add", "AGENTS.md", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "commit", "-m", "base", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "branch", "-M", "main", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "checkout", "-b", branch, out: File::NULL, err: File::NULL)
-      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n\nexisting sync branch\n")
-      system("git", "-C", seed, "commit", "-am", "existing sync", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "push", "origin", branch, out: File::NULL, err: File::NULL)
-
-      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
-             out: File::NULL, err: File::NULL)
-      configure_git(clone)
-      File.write(File.join(clone, "AGENTS.md"), "# AGENTS.md\n\nupdated sync branch\n")
-      expected_head = PushDownstream.fetch_remote_branch_head(clone, branch)
-      assert expected_head, "expected remote sync branch to be visible"
-
-      out = nil
-      with_pr_url_stub("https://example.test/pr") do
-        out, = capture_io do
-          assert PushDownstream.open_pull_request(repo, clone, expected_head: expected_head)
-        end
-      end
-      assert_includes out, "https://example.test/pr"
-
-      system("git", "-C", seed, "fetch", "origin", branch, out: File::NULL, err: File::NULL)
-      remote_body, status = Open3.capture2("git", "-C", seed, "show", "origin/#{branch}:AGENTS.md")
-      assert status.success?, remote_body
-      assert_includes remote_body, "updated sync branch"
-    end
-  end
-
-  def test_remote_sync_branch_values_seed_current_base_reconcile
-    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
-      remote = File.join(dir, "remote.git")
-      seed = File.join(dir, "seed")
-      clone = File.join(dir, "clone")
-      branch = "agent-workflows/seam-sync"
-
-      create_remote_with_sync_branch(
-        remote, seed, branch,
-        "# AGENTS.md\n\n## Agent Workflow Configuration\n\n- **Tests**: operator edits,\n  wrapped continuation.\n"
-      )
-      system("git", "-C", seed, "checkout", "main", out: File::NULL, err: File::NULL)
-      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n\ncurrent base content\n")
-      system("git", "-C", seed, "commit", "-am", "base update", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
-      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
-             out: File::NULL, err: File::NULL)
-
-      assert PushDownstream.fetch_remote_branch_head(clone, branch)
-      branch_seed = PushDownstream.remote_agents_seed(clone, branch)
-      assert_equal "operator edits,\n  wrapped continuation.", branch_seed.fetch("Tests")
-      _existed, current, updated = PushDownstream.reconcile_agents(
-        File.join(clone, "AGENTS.md"), "main", branch_seed
-      )
-
-      assert_includes current, "current base content"
-      assert_includes updated, "current base content"
-      assert_includes updated, "- **Tests**: operator edits,\n  wrapped continuation."
-    end
-  end
-
-  def test_registry_apply_reuses_up_to_date_existing_remote_sync_branch
-    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
-      remote = File.join(dir, "remote.git")
-      seed = File.join(dir, "seed")
-      clone = File.join(dir, "clone")
-      branch = "agent-workflows/seam-sync"
-      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
-      branch_body = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main", seed: { "Tests" => "operator edits." })
-
-      create_remote_with_sync_branch(remote, seed, branch, branch_body)
-      before = rev_parse(seed, branch)
-      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
-             out: File::NULL, err: File::NULL)
-      assert PushDownstream.fetch_remote_branch_head(clone, branch), "expected remote sync branch to be visible"
-
-      out = nil
-      with_pr_url_stub("https://example.test/pr") do
-        out, = capture_io do
-          assert PushDownstream.sync_clone(repo, clone, {})
-        end
-      end
-
-      assert_includes out, "UP_TO_DATE local/example"
-      assert_includes out, "https://example.test/pr"
-      system("git", "-C", seed, "fetch", "origin", branch, out: File::NULL, err: File::NULL)
-      assert_equal before, rev_parse(seed, "origin/#{branch}")
-    end
-  end
-
-  def test_registry_apply_skips_pr_when_base_is_current_and_sync_branch_still_exists
-    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
-      remote = File.join(dir, "remote.git")
-      seed = File.join(dir, "seed")
-      clone = File.join(dir, "clone")
-      branch = "agent-workflows/seam-sync"
-      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
-      branch_body = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main", seed: { "Tests" => "operator edits." })
-
-      create_remote_with_sync_branch(remote, seed, branch, branch_body)
-      system("git", "-C", seed, "checkout", "main", out: File::NULL, err: File::NULL)
-      File.write(File.join(seed, "AGENTS.md"), branch_body)
-      system("git", "-C", seed, "commit", "-am", "base synced", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
-      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
-             out: File::NULL, err: File::NULL)
-      assert PushDownstream.fetch_remote_branch_head(clone, branch), "expected remote sync branch to be visible"
-
-      out = nil
-      without_open_pr_stub do
-        out, = capture_io do
-          assert PushDownstream.sync_clone(repo, clone, {})
-        end
-      end
-
-      assert_includes out, "UP_TO_DATE local/example"
-    end
-  end
-
-  def test_registry_apply_validates_up_to_date_base_before_success
-    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
-      remote = File.join(dir, "remote.git")
-      seed = File.join(dir, "seed")
-      clone = File.join(dir, "clone")
-      repo = { nwo: "local/example", base_branch: "main", pr_branch: "agent-workflows/seam-sync" }
-      current = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main")
-
-      system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
-      system("git", "clone", remote, seed, out: File::NULL, err: File::NULL)
-      configure_git(seed)
-      File.write(File.join(seed, "AGENTS.md"), "#{current}- **Custom command**: <unit command>\n")
-      system("git", "-C", seed, "add", "AGENTS.md", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "commit", "-m", "base", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "branch", "-M", "main", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
-      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
-             out: File::NULL, err: File::NULL)
-
-      _out, err = capture_io do
-        refute PushDownstream.sync_clone(repo, clone, {})
-      end
-
-      assert_includes err, "seam doctor"
-      assert_includes err, "Custom command"
-    end
-  end
-
-  def test_registry_apply_refuses_to_overwrite_concurrent_sync_branch_update
-    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
-      remote = File.join(dir, "remote.git")
-      seed = File.join(dir, "seed")
-      clone = File.join(dir, "clone")
-      branch = "agent-workflows/seam-sync"
-      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
-
-      create_remote_with_sync_branch(remote, seed, branch, "# AGENTS.md\n\nexisting sync branch\n")
-      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
-             out: File::NULL, err: File::NULL)
-      configure_git(clone)
-      expected_head = PushDownstream.fetch_remote_branch_head(clone, branch)
-      assert expected_head, "expected remote sync branch to be visible"
-      File.write(File.join(clone, "AGENTS.md"), "# AGENTS.md\n\nupdated sync branch\n")
-
-      system("git", "-C", seed, "checkout", branch, out: File::NULL, err: File::NULL)
-      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n\nconcurrent update\n")
-      system("git", "-C", seed, "commit", "-am", "concurrent update", out: File::NULL, err: File::NULL)
-      system("git", "-C", seed, "push", "origin", branch, out: File::NULL, err: File::NULL)
-
-      with_pr_url_stub("https://example.test/pr") do
-        _out, err = capture_io do
-          refute PushDownstream.open_pull_request(repo, clone, expected_head: expected_head)
-        end
-        assert_includes err, "push failed"
-      end
-
-      system("git", "-C", seed, "fetch", "origin", branch, out: File::NULL, err: File::NULL)
-      remote_body, status = Open3.capture2("git", "-C", seed, "show", "origin/#{branch}:AGENTS.md")
-      assert status.success?, remote_body
-      assert_includes remote_body, "concurrent update"
-      refute_includes remote_body, "updated sync branch"
-    end
-  end
-
-  def test_open_pull_request_creates_pr_when_no_existing_pr_url
-    repo = { nwo: "local/example", base_branch: "main", pr_branch: "agent-workflows/seam-sync" }
-    created = false
-    original_git = PushDownstream.method(:git)
-    original_current_branch = PushDownstream.method(:current_branch?)
-    original_push_branch = PushDownstream.method(:push_branch)
-    original_existing_pr_url = PushDownstream.method(:existing_pr_url)
-    original_create_pr = PushDownstream.method(:create_pr)
-
-    PushDownstream.define_singleton_method(:git) { |_dir, *_args| true }
-    PushDownstream.define_singleton_method(:current_branch?) { |_clone, _branch| false }
-    PushDownstream.define_singleton_method(:push_branch) { |_clone, _branch, **_kwargs| true }
-    assert_nil PushDownstream.normalize_url("")
-    assert_nil PushDownstream.normalize_url("null")
-
-    PushDownstream.define_singleton_method(:existing_pr_url) { |_repo, _branch| nil }
-    PushDownstream.define_singleton_method(:create_pr) do |_repo, _branch|
-      created = true
-      "https://example.test/new-pr"
-    end
-
-    out, = capture_io { assert PushDownstream.open_pull_request(repo, "/tmp/example") }
-
-    assert created, "missing existing PR should create a new PR"
-    assert_includes out, "https://example.test/new-pr"
-  ensure
-    PushDownstream.define_singleton_method(:git) { |dir, *args| original_git.call(dir, *args) }
-    PushDownstream.define_singleton_method(:current_branch?) do |clone, branch|
-      original_current_branch.call(clone, branch)
-    end
-    PushDownstream.define_singleton_method(:push_branch) do |clone, branch, expected_head: nil|
-      original_push_branch.call(clone, branch, expected_head: expected_head)
-    end
-    PushDownstream.define_singleton_method(:existing_pr_url) do |repo_arg, branch_arg|
-      original_existing_pr_url.call(repo_arg, branch_arg)
-    end
-    PushDownstream.define_singleton_method(:create_pr) do |repo_arg, branch_arg|
-      original_create_pr.call(repo_arg, branch_arg)
-    end
-  end
-
-  def create_remote_with_sync_branch(remote, seed, branch, sync_body)
-    system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
-    system("git", "clone", remote, seed, out: File::NULL, err: File::NULL)
-    configure_git(seed)
-    File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n")
-    system("git", "-C", seed, "add", "AGENTS.md", out: File::NULL, err: File::NULL)
-    system("git", "-C", seed, "commit", "-m", "base", out: File::NULL, err: File::NULL)
-    system("git", "-C", seed, "branch", "-M", "main", out: File::NULL, err: File::NULL)
-    system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
-    system("git", "-C", seed, "checkout", "-b", branch, out: File::NULL, err: File::NULL)
-    File.write(File.join(seed, "AGENTS.md"), sync_body)
-    system("git", "-C", seed, "commit", "-am", "existing sync", out: File::NULL, err: File::NULL)
-    system("git", "-C", seed, "push", "origin", branch, out: File::NULL, err: File::NULL)
-  end
-
-  def configure_git(dir)
-    system("git", "-C", dir, "config", "user.email", "agent@example.test", out: File::NULL, err: File::NULL)
-    system("git", "-C", dir, "config", "user.name", "Agent Test", out: File::NULL, err: File::NULL)
-  end
-
-  def rev_parse(dir, ref)
-    out, status = Open3.capture2("git", "-C", dir, "rev-parse", ref)
-    assert status.success?, out
-    out.strip
-  end
-
-  def with_pr_url_stub(url)
-    original_existing_pr_url = PushDownstream.method(:existing_pr_url)
-    original_create_pr = PushDownstream.method(:create_pr)
-    created = false
-
-    PushDownstream.define_singleton_method(:existing_pr_url) { |_repo, _branch| url }
-    PushDownstream.define_singleton_method(:create_pr) do |_repo, _branch|
-      created = true
-      nil
-    end
-
-    yield
-    refute created, "existing PR should be reused"
-  ensure
-    PushDownstream.define_singleton_method(:existing_pr_url) do |repo, branch|
-      original_existing_pr_url.call(repo, branch)
-    end
-    PushDownstream.define_singleton_method(:create_pr) do |repo, branch|
-      original_create_pr.call(repo, branch)
-    end
-  end
-
-  def without_open_pr_stub
-    original_existing_pr_url = PushDownstream.method(:existing_pr_url)
-    original_create_pr = PushDownstream.method(:create_pr)
-    created = false
-
-    PushDownstream.define_singleton_method(:existing_pr_url) { |_repo, _branch| nil }
-    PushDownstream.define_singleton_method(:create_pr) do |_repo, _branch|
-      created = true
-      nil
-    end
-
-    yield
-    refute created, "already-synced base should not create a PR"
-  ensure
-    PushDownstream.define_singleton_method(:existing_pr_url) do |repo, branch|
-      original_existing_pr_url.call(repo, branch)
-    end
-    PushDownstream.define_singleton_method(:create_pr) do |repo, branch|
-      original_create_pr.call(repo, branch)
     end
   end
 end

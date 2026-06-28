@@ -4,31 +4,39 @@
 # Validate that portable agent workflows can resolve their repo-specific seam.
 
 require "json"
+require "open3"
 require "optparse"
+require "yaml"
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
   SECTION_HEADING = /^##\s+#{Regexp.escape(SECTION)}\s*$/
-  REQUIRED_KEYS = [
-    "Base branch",
-    "Pre-push local validation",
-    "CI change detector",
-    "Hosted-CI trigger",
-    "CI parity environment",
-    "Benchmark labels",
-    "Follow-up issue prefix",
-    "Changelog",
-    "Lint / format",
-    "Merge ledger",
-    "Docs checks",
-    "Tests",
-    "Build / type checks",
-    "Review gate",
-    "Approval-exempt change categories",
-    "Coordination backend"
-  ].freeze
-  CONFIG_KEY_PATTERN = /^-\s+\*\*(.+?)\*\*:\s*(.*)$/
+  POINTER_SECTION = <<~MARKDOWN.chomp
+    ## Agent Workflow Configuration
 
+    Portable shared skills resolve this repo's commands and policy through:
+    - **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
+    - **Policy / config** — `.agents/agent-workflow.yml`.
+  MARKDOWN
+  COMMANDS_DIR = ".agents/bin"
+  COMMAND_README = ".agents/bin/README.md"
+  POLICY_CONFIG = ".agents/agent-workflow.yml"
+  STANDARD_SCRIPTS = %w[setup validate test lint build docs ci-detect].freeze
+  CORE_SCRIPTS = %w[validate test].freeze
+  ROOT_RESOLUTION = 'CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd'
+  REQUIRED_POLICY_KEYS = %w[
+    base_branch
+    follow_up_prefix
+    review_gate
+    approval_exempt
+    coordination_backend
+    changelog
+    benchmark_labels
+    merge_ledger
+    ci_parity_environment
+    hosted_ci_trigger
+    ci_change_detector
+  ].freeze
   SEAM_PLACEHOLDER = %r{
     <[^>\n]*
     (?:
@@ -76,13 +84,10 @@ module AgentWorkflowSeamDoctor
 
     # Read as UTF-8 regardless of locale; a non-UTF-8 default external encoding
     # (e.g. LANG=C) otherwise crashes the parser on non-ASCII bytes in AGENTS.md.
-    config = parse_config(File.binread(agents_path).force_encoding("UTF-8").scrub)
-    if config.nil?
-      issues << "missing AGENTS.md section: #{SECTION}"
-    else
-      issues.concat(missing_key_issues(config))
-      issues.concat(unresolved_extra_key_issues(config))
-    end
+    agents_text = File.binread(agents_path).force_encoding("UTF-8").scrub
+    issues.concat(pointer_section_issues(agents_text))
+    issues.concat(binstub_issues(root))
+    issues.concat(policy_issues(root))
 
     issues.concat(shared_root_issues(shared_roots))
 
@@ -93,36 +98,127 @@ module AgentWorkflowSeamDoctor
     issues
   end
 
-  def parse_config(text)
+  def pointer_section_issues(text)
     section = extract_section(text)
-    return nil if section.nil?
+    if section.nil?
+      return ["missing AGENTS.md section: #{SECTION}"]
+    end
 
-    config = {}
-    current_key = nil
+    actual = "## #{SECTION}\n#{section}".rstrip
+    return [] if actual == POINTER_SECTION
 
-    section.each_line do |line|
-      if (match = line.match(CONFIG_KEY_PATTERN))
-        current_key = match[1].strip
-        config[current_key] = match[2].strip
-        next
-      end
+    ["AGENTS.md section does not match binstub pointer: #{SECTION}"]
+  end
 
-      if config_continuation?(line, current_key)
-        config[current_key] = [config[current_key], line.strip].reject(&:empty?).join(" ")
-      elsif config_key_finished?(line)
-        current_key = nil
+  def binstub_issues(root)
+    issues = []
+    commands_dir = File.join(root, COMMANDS_DIR)
+    unless File.directory?(commands_dir)
+      return ["missing commands directory: #{COMMANDS_DIR}"]
+    end
+
+    readme = File.join(root, COMMAND_README)
+    issues << "missing commands README: #{COMMAND_README}" unless File.file?(readme)
+
+    CORE_SCRIPTS.each do |script|
+      path = File.join(root, COMMANDS_DIR, script)
+      unless File.file?(path)
+        issues << "missing core script: #{COMMANDS_DIR}/#{script}"
       end
     end
 
-    config
+    script_names = STANDARD_SCRIPTS.select { |script| File.file?(File.join(root, COMMANDS_DIR, script)) }
+    script_names.each do |script|
+      issues.concat(script_issues(root, script))
+    end
+
+    issues
   end
 
-  def config_continuation?(line, current_key)
-    current_key && line.match?(/^\s{2,}\S/) && !line.match?(CONFIG_KEY_PATTERN)
+  def script_issues(root, script)
+    relative = "#{COMMANDS_DIR}/#{script}"
+    path = File.join(root, relative)
+    issues = []
+
+    unless File.executable?(path)
+      issues << if CORE_SCRIPTS.include?(script)
+                  "core script is not executable: #{relative}"
+                else
+                  "script is not executable: #{relative}"
+                end
+    end
+
+    content = File.binread(path).force_encoding("UTF-8").scrub
+    issues << "script is not a bash wrapper: #{relative}" unless content.start_with?("#!/usr/bin/env bash\n")
+    issues << "script does not enable strict bash mode: #{relative}" unless content.include?("set -euo pipefail")
+    issues << "script does not cd to repo root: #{relative}" unless script_cd_to_root?(content)
+    issues.concat(missing_sibling_script_issues(root, relative, content))
+
+    _out, status = Open3.capture2e("bash", "-n", path)
+    issues << "script has bash syntax error: #{relative}" unless status.success?
+
+    issues
   end
 
-  def config_key_finished?(line)
-    line.strip.empty? || !line.match?(/^\s{2,}\S/)
+  def missing_sibling_script_issues(root, relative, content)
+    content.scan(%r{\$(?:root|\{root\})/\.agents/bin/([A-Za-z0-9_.-]+)}).flatten.uniq.filter_map do |script|
+      next if File.file?(File.join(root, COMMANDS_DIR, script))
+
+      "script references missing sibling script: #{relative} -> #{COMMANDS_DIR}/#{script}"
+    end
+  end
+
+  def script_cd_to_root?(content)
+    return false unless content.include?(ROOT_RESOLUTION)
+
+    content.include?('cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"') ||
+      content.include?('cd "$root"') ||
+      content.include?('cd "${root}"')
+  end
+
+  def policy_issues(root)
+    path = File.join(root, POLICY_CONFIG)
+    return ["missing policy config: #{POLICY_CONFIG}"] unless File.file?(path)
+
+    config = load_policy_config(path)
+    return ["invalid policy config: #{POLICY_CONFIG}"] unless config.is_a?(Hash)
+
+    issues = []
+    REQUIRED_POLICY_KEYS.each do |key|
+      if !config.key?(key)
+        issues << "missing policy key: #{key}"
+      elsif unresolved_policy_value?(config[key])
+        issues << "unresolved policy value for key: #{key}"
+      end
+    end
+
+    config.each do |key, value|
+      next if REQUIRED_POLICY_KEYS.include?(key)
+      next unless unresolved_policy_value?(value)
+
+      issues << "unresolved policy value for key: #{key}"
+    end
+
+    issues
+  rescue Psych::Exception
+    ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def load_policy_config(path)
+    YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false) || {}
+  end
+
+  def unresolved_policy_value?(value)
+    case value
+    when String
+      unresolved_template_value?(value)
+    when Array
+      value.empty? || value.any? { |entry| unresolved_policy_value?(entry) }
+    when Hash
+      value.empty? || value.any? { |key, entry| unresolved_policy_value?(key.to_s) || unresolved_policy_value?(entry) }
+    else
+      value.nil?
+    end
   end
 
   def extract_section(text)
@@ -137,26 +233,6 @@ module AgentWorkflowSeamDoctor
       body << line
     end
     body.join
-  end
-
-  def missing_key_issues(config)
-    REQUIRED_KEYS.filter_map do |key|
-      value = config[key]
-      if value.nil?
-        "missing #{SECTION} key: #{key}"
-      elsif unresolved_template_value?(value)
-        "unresolved #{SECTION} value for key: #{key}"
-      end
-    end
-  end
-
-  def unresolved_extra_key_issues(config)
-    config.filter_map do |key, value|
-      next if REQUIRED_KEYS.include?(key)
-      next unless unresolved_template_value?(value)
-
-      "unresolved #{SECTION} value for key: #{key}"
-    end
   end
 
   def unresolved_template_value?(value)

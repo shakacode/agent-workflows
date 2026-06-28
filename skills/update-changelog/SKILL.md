@@ -6,7 +6,7 @@ argument-hint: '[classification-sweep BASE_REF..TARGET_REF|release|rc|beta|versi
 
 # Update Changelog
 
-You are helping to add an entry to the repo's changelog (see `AGENTS.md` → **Agent Workflow Configuration**).
+You are helping to add an entry to the repo's changelog. Resolve the changelog path and base branch from `.agents/agent-workflow.yml` (`changelog` and `base_branch`).
 
 ## Arguments
 
@@ -103,11 +103,11 @@ Use `classification-sweep` before every RC/release changelog edit, and whenever 
 
 ### Exact PR-Listing Command
 
-Set `BASE_REF` to the previous release tag or lower bound and `TARGET_REF` to the release tag, the configured base branch from `AGENTS.md`, or another upper bound being audited. Then run the committed `changelog-merged-prs` helper to list merged PRs in first-parent order. It extracts PR numbers from squash titles (the `(#NNNN)` suffix) and `Merge pull request #NNNN` subjects, falls back to GitHub's commit-to-PR API for commits that lack an inline PR number, dedups by PR number, and emits an explicit `UNKNOWN` row for any commit that still cannot be mapped.
+Set `BASE_REF` to the previous release tag or lower bound and `TARGET_REF` to the release tag, the configured base branch from `.agents/agent-workflow.yml`, or another upper bound being audited. Then run the committed `changelog-merged-prs` helper to list merged PRs in first-parent order. It extracts PR numbers from squash titles (the `(#NNNN)` suffix) and `Merge pull request #NNNN` subjects, falls back to GitHub's commit-to-PR API for commits that lack an inline PR number, dedups by PR number, and emits an explicit `UNKNOWN` row for any commit that still cannot be mapped.
 
 ```bash
 BASE_REF="${BASE_REF:?set BASE_REF, e.g. v17.0.0.rc.1}"
-BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from AGENTS.md -> Agent Workflow Configuration}"
+BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from .agents/agent-workflow.yml base_branch}"
 TARGET_REF="${TARGET_REF:?set TARGET_REF, e.g. v17.0.0.rc.2 or origin/${BASE_BRANCH}}"
 UPDATE_CHANGELOG_SKILL_DIR="${UPDATE_CHANGELOG_SKILL_DIR:-.agents/skills/update-changelog}"
 
@@ -145,7 +145,7 @@ Allowed `Result` values for mapped PRs are exactly:
 Use `UNKNOWN` only for unmapped commit rows emitted by the helper; resolve or report those rows before finishing.
 
 Allowed `Category` values are repo-specific: use exactly those defined in the repo's
-changelog classification taxonomy (see `AGENTS.md` → **Changelog**). Copy them exactly as
+changelog classification taxonomy (see the `changelog` policy in `.agents/agent-workflow.yml` and the existing changelog). Copy them exactly as
 listed there, including spaces, hyphens, and casing.
 
 Each row needs a one-line reason specific enough for review. Avoid generic reasons like "not user-visible" unless the row also says why.
@@ -156,7 +156,7 @@ Each row needs a one-line reason specific enough for review. Avoid generic reaso
 - Use `entry-needed` for scope-specific runtime changes (for example a commercial/Pro tier) that affect users of that scope — observable runtime behavior, compatibility, generated config, or logging/error changes. A scope-only change is still user-visible to users of that scope.
 - Use `entry-needed` for `perf-reliability` when the PR changes runtime performance, removes blocking work, improves production recovery, or makes user-visible failures diagnosable. For example, a PR that moves manifest signature checks from synchronous filesystem calls to async checks is `entry-needed`.
 - Use `no-entry` for docs-only, tests-only, formatting, lint, internal refactors, CI, benchmark harnesses, release automation, agent/process docs, and other contributor-only changes. Keep docs-only PRs as `entry-needed` when they correct incorrect public behavior documentation; classify those by the public surface they document, per the repo's taxonomy.
-- Categorize by the primary surface changed, not by the changelog section it might eventually use, using the category definitions in the repo's changelog classification taxonomy (`AGENTS.md` → **Changelog**). A performance/reliability category, where the repo defines one, applies regardless of result: use `entry-needed` when the change directly benefits users at runtime (such as removing blocking work from the render path) and `no-entry` for internal benchmark harnesses or regression tooling.
+- Categorize by the primary surface changed, not by the changelog section it might eventually use, using the category definitions in the repo's changelog policy and existing changelog. A performance/reliability category, where the repo defines one, applies regardless of result: use `entry-needed` when the change directly benefits users at runtime (such as removing blocking work from the render path) and `no-entry` for internal benchmark harnesses or regression tooling.
 
 ### Reverts and Re-Runs
 
@@ -166,7 +166,7 @@ When a revert lands in the selected RC/release window, re-run the sweep or revis
 
 ### Entry Format
 
-Each changelog entry MUST follow the repo's exact entry format (the PR-and-author link format defined by the repo's changelog; see `AGENTS.md` → **Agent Workflow Configuration**). Match the existing entries in the changelog and follow these portable structural rules:
+Each changelog entry MUST follow the repo's exact entry format (the PR-and-author link format defined by the repo's changelog policy in `.agents/agent-workflow.yml`). Match the existing entries in the changelog and follow these portable structural rules:
 
 - Start with a dash followed by a space
 - Use **bold** for the main description
@@ -216,13 +216,13 @@ Entries should be organized under these section headings **in the following orde
 
 **Prefer standard headings.** Only use custom headings when the change needs more specific categorization.
 
-**Tagged entries**: When the repo's changelog defines an inline scope tag (such as a `**[Pro]**` prefix; see `AGENTS.md` → **Agent Workflow Configuration**), apply it within the standard category sections (e.g., `- **[Pro]** **Feature name**: Description...`). Do NOT create separate per-tag subsections.
+**Tagged entries**: When the repo's changelog policy defines an inline scope tag (such as a `**[Pro]**` prefix), apply it within the standard category sections (e.g., `- **[Pro]** **Feature name**: Description...`). Do NOT create separate per-tag subsections.
 
 **Only include section headings that have entries.**
 
 ### Version Stamping with the Repo's Changelog Task
 
-When this command is invoked with `release`, `rc`, `beta`, or an explicit version (e.g., `16.5.0.rc.10`), **use the repo's changelog version-stamping task** (the changelog header/diff-link stamping task documented in `AGENTS.md` → **Agent Workflow Configuration**) to stamp the version header after adding entries, passing the mode (`release`, `rc`, or `beta`) or an explicit version.
+When this command is invoked with `release`, `rc`, `beta`, or an explicit version (e.g., `16.5.0.rc.10`), **use the repo's changelog version-stamping task** documented by that repo's changelog policy to stamp the version header after adding entries, passing the mode (`release`, `rc`, or `beta`) or an explicit version.
 
 The version-stamping task handles:
 
@@ -276,7 +276,7 @@ The format at the bottom should be:
 [16.2.0.beta.19]: https://github.com/<owner>/<repo>/compare/v16.1.1...v16.2.0.beta.19
 ```
 
-Replace `main` with the base branch value from `AGENTS.md` → **Agent Workflow Configuration** when the repo uses a different base branch.
+Replace `main` with the `base_branch` value from `.agents/agent-workflow.yml` when the repo uses a different base branch.
 
 When a new version is released:
 
@@ -297,7 +297,7 @@ When a new version is released:
 
 #### Step 1: Fetch and read current state
 
-- Resolve `BASE_BRANCH` from `AGENTS.md` -> **Agent Workflow Configuration**, then run `git fetch origin "${BASE_BRANCH}"` to ensure you have the latest commits
+- Resolve `BASE_BRANCH` from `.agents/agent-workflow.yml` key `base_branch`, then run `git fetch origin "${BASE_BRANCH}"` to ensure you have the latest commits
 - After fetching, use `origin/${BASE_BRANCH}` for all comparisons, not the local base branch
 - Read the current changelog to understand the existing structure
 
@@ -332,10 +332,10 @@ When a new version is released:
 
 #### Step 3: Add new entries for post-tag commits
 
-1. Resolve `BASE_BRANCH` from `AGENTS.md` -> **Agent Workflow Configuration**, then run `git log --oneline "LATEST_TAG..origin/${BASE_BRANCH}"` to find commits after the latest tag (LATEST_TAG is the most recent git tag, i.e., the same one identified in Step 2)
+1. Resolve `BASE_BRANCH` from `.agents/agent-workflow.yml` key `base_branch`, then run `git log --oneline "LATEST_TAG..origin/${BASE_BRANCH}"` to find commits after the latest tag (LATEST_TAG is the most recent git tag, i.e., the same one identified in Step 2)
 2. Extract PR numbers: `git log --oneline "LATEST_TAG..origin/${BASE_BRANCH}" | grep -oE "#[0-9]+" | sort -u`
 3. If Step 2 found no missing tagged versions, verify no tag is ahead of the base branch: `git log --oneline "origin/${BASE_BRANCH}..LATEST_TAG"` should be empty. If not, entries in "Unreleased" may belong to that tagged version — Step 2 should have caught this, so re-check.
-4. For each PR number, check if it's already in the changelog: `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from AGENTS.md -> Agent Workflow Configuration}"; grep "PR ${PR_NUMBER:?set PR_NUMBER}" "${CHANGELOG_PATH}"`
+4. For each PR number, check if it's already in the changelog: `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"; grep "PR ${PR_NUMBER:?set PR_NUMBER}" "${CHANGELOG_PATH}"`
 5. For PRs not yet in the changelog:
    - Get PR details: `gh pr view NUMBER --json title,body,author` (add `--repo OWNER/REPO` when not in the repo)
    - **Never ask the user for PR details** - get them from git history or the GitHub API
@@ -387,7 +387,7 @@ If no argument was passed, skip this step -- entries stay in `### [Unreleased]`.
    - Verify the working tree only has changelog changes; if there are other uncommitted changes, warn the user and stop
    - Verify the current branch is `main` (`git branch --show-current`); if not, warn the user and stop
    - Create a feature branch (e.g., `changelog-16.4.0.rc.10`)
-   - Stage only the changelog after resolving the repo's changelog path from `AGENTS.md`: set `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from AGENTS.md}"`, run `git add "${CHANGELOG_PATH}"`, and commit with message `Update changelog for VERSION` (using the stamped version)
+   - Stage only the changelog after resolving the repo's changelog path from `.agents/agent-workflow.yml`: set `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"`, run `git add "${CHANGELOG_PATH}"`, and commit with message `Update changelog for VERSION` (using the stamped version)
    - Push and open a PR with the changelog diff as the body
    - If the push or PR creation fails, the changelog is already stamped locally — fix the issue (e.g., authentication, branch protection), then run `git push -u origin <branch>` and `gh pr create` manually
    - Remind the user to run the repo's release task (no args) after merge to publish and auto-create the GitHub release
@@ -479,7 +479,7 @@ When releasing from prerelease to a stable version (e.g., `v16.5.0.rc.1` -> `v16
 
 4. **Performance/security improvements affecting all users**
 
-**Scope-tag tagging:** When the repo's changelog defines an inline scope tag (such as `**[Pro]**`; see `AGENTS.md` → **Agent Workflow Configuration**), scope-tagged changes stay in the changelog with that inline tag — do NOT drop them just because they only apply to that scope. Apply the same REMOVE/KEEP rules above based on whether they're prerelease-only iteration vs user-facing changes that ship to users of that scope.
+**Scope-tag tagging:** When the repo's changelog policy defines an inline scope tag (such as `**[Pro]**`), scope-tagged changes stay in the changelog with that inline tag — do NOT drop them just because they only apply to that scope. Apply the same REMOVE/KEEP rules above based on whether they're prerelease-only iteration vs user-facing changes that ship to users of that scope.
 
 #### Step 4: Investigation process for each entry
 
@@ -497,10 +497,10 @@ Read the resulting stable section as if you're a user upgrading from the previou
 
 ## Examples
 
-Run this command to see real formatting examples from the codebase after resolving the repo's changelog path from `AGENTS.md`:
+Run this command to see real formatting examples from the codebase after resolving the repo's changelog path from `.agents/agent-workflow.yml`:
 
 ```bash
-CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from AGENTS.md}"
+CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"
 grep -A 3 "^#### " "${CHANGELOG_PATH}" | head -30
 ```
 

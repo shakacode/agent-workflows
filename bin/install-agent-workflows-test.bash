@@ -40,29 +40,52 @@ new_source_repo() {
 
 write_consumer_agents() {
   local root="$1"
-  mkdir -p "$root"
+  mkdir -p "$root/.agents/bin"
   cat > "$root/AGENTS.md" <<'AGENTS'
 # AGENTS.md
 
 ## Agent Workflow Configuration
 
-- **Base branch**: main.
-- **Pre-push local validation**: bin/validate.
-- **CI change detector**: n/a.
-- **Hosted-CI trigger**: n/a.
-- **CI parity environment**: n/a.
-- **Benchmark labels**: n/a.
-- **Follow-up issue prefix**: Follow-up:.
-- **Changelog**: n/a.
-- **Lint / format**: bin/validate.
-- **Merge ledger**: n/a.
-- **Docs checks**: n/a.
-- **Tests**: bin/validate.
-- **Build / type checks**: n/a.
-- **Review gate**: n/a.
-- **Approval-exempt change categories**: docs.
-- **Coordination backend**: n/a.
+Portable shared skills resolve this repo's commands and policy through:
+- **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
+- **Policy / config** — `.agents/agent-workflow.yml`.
 AGENTS
+  cat > "$root/.agents/agent-workflow.yml" <<'YAML'
+---
+base_branch: main
+follow_up_prefix: "Follow-up:"
+review_gate: "n/a"
+approval_exempt: "docs"
+coordination_backend: "n/a"
+changelog: "n/a"
+benchmark_labels: "n/a"
+merge_ledger: "n/a"
+ci_parity_environment: "n/a"
+hosted_ci_trigger: "n/a"
+ci_change_detector: "n/a"
+YAML
+  cat > "$root/.agents/bin/README.md" <<'MARKDOWN'
+# Agent Workflow Scripts
+
+| Script | Purpose | This repo runs |
+| --- | --- | --- |
+| `validate` | Pre-push gate | `.agents/bin/test` |
+| `test` | Run tests | `true` |
+MARKDOWN
+  cat > "$root/.agents/bin/test" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+exec true
+BASH
+  cat > "$root/.agents/bin/validate" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+cd "$root"
+"$root/.agents/bin/test"
+BASH
+  chmod +x "$root/.agents/bin/test" "$root/.agents/bin/validate"
 }
 
 test_codex_host_install_writes_helpers_and_metadata() {
