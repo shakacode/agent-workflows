@@ -464,6 +464,78 @@ class PushDownstreamCliTest < Minitest::Test
     end
   end
 
+  def test_prepare_work_branch_reads_existing_remote_sync_branch
+    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
+      remote = File.join(dir, "remote.git")
+      seed = File.join(dir, "seed")
+      clone = File.join(dir, "clone")
+      branch = "agent-workflows/seam-sync"
+
+      create_remote_with_sync_branch(remote, seed, branch, "# AGENTS.md\n\noperator edits\n")
+      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
+             out: File::NULL, err: File::NULL)
+
+      assert PushDownstream.prepare_work_branch(clone, branch)
+
+      body = File.read(File.join(clone, "AGENTS.md"))
+      assert_includes body, "operator edits"
+    end
+  end
+
+  def test_open_pull_request_creates_pr_when_no_existing_pr_url
+    repo = { nwo: "local/example", base_branch: "main", pr_branch: "agent-workflows/seam-sync" }
+    created = false
+    original_git = PushDownstream.method(:git)
+    original_current_branch = PushDownstream.method(:current_branch?)
+    original_push_branch = PushDownstream.method(:push_branch)
+    original_existing_pr_url = PushDownstream.method(:existing_pr_url)
+    original_create_pr = PushDownstream.method(:create_pr)
+
+    PushDownstream.define_singleton_method(:git) { |_dir, *_args| true }
+    PushDownstream.define_singleton_method(:current_branch?) { |_clone, _branch| false }
+    PushDownstream.define_singleton_method(:push_branch) { |_clone, _branch| true }
+    assert_nil PushDownstream.normalize_url("")
+    assert_nil PushDownstream.normalize_url("null")
+
+    PushDownstream.define_singleton_method(:existing_pr_url) { |_repo, _branch| nil }
+    PushDownstream.define_singleton_method(:create_pr) do |_repo, _branch|
+      created = true
+      "https://example.test/new-pr"
+    end
+
+    out, = capture_io { assert PushDownstream.open_pull_request(repo, "/tmp/example") }
+
+    assert created, "missing existing PR should create a new PR"
+    assert_includes out, "https://example.test/new-pr"
+  ensure
+    PushDownstream.define_singleton_method(:git) { |dir, *args| original_git.call(dir, *args) }
+    PushDownstream.define_singleton_method(:current_branch?) do |clone, branch|
+      original_current_branch.call(clone, branch)
+    end
+    PushDownstream.define_singleton_method(:push_branch) { |clone, branch| original_push_branch.call(clone, branch) }
+    PushDownstream.define_singleton_method(:existing_pr_url) do |repo_arg, branch_arg|
+      original_existing_pr_url.call(repo_arg, branch_arg)
+    end
+    PushDownstream.define_singleton_method(:create_pr) do |repo_arg, branch_arg|
+      original_create_pr.call(repo_arg, branch_arg)
+    end
+  end
+
+  def create_remote_with_sync_branch(remote, seed, branch, sync_body)
+    system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
+    system("git", "clone", remote, seed, out: File::NULL, err: File::NULL)
+    configure_git(seed)
+    File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n")
+    system("git", "-C", seed, "add", "AGENTS.md", out: File::NULL, err: File::NULL)
+    system("git", "-C", seed, "commit", "-m", "base", out: File::NULL, err: File::NULL)
+    system("git", "-C", seed, "branch", "-M", "main", out: File::NULL, err: File::NULL)
+    system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
+    system("git", "-C", seed, "checkout", "-b", branch, out: File::NULL, err: File::NULL)
+    File.write(File.join(seed, "AGENTS.md"), sync_body)
+    system("git", "-C", seed, "commit", "-am", "existing sync", out: File::NULL, err: File::NULL)
+    system("git", "-C", seed, "push", "origin", branch, out: File::NULL, err: File::NULL)
+  end
+
   def configure_git(dir)
     system("git", "-C", dir, "config", "user.email", "agent@example.test", out: File::NULL, err: File::NULL)
     system("git", "-C", dir, "config", "user.name", "Agent Test", out: File::NULL, err: File::NULL)

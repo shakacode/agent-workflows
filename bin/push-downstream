@@ -224,6 +224,7 @@ module PushDownstream
         warn "FAIL #{repo[:nwo]}: clone of #{repo[:base_branch]} failed"
         return false
       end
+      return false unless prepare_work_branch(clone, repo[:pr_branch])
 
       agents_path = File.join(clone, "AGENTS.md")
       existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed)
@@ -245,7 +246,7 @@ module PushDownstream
 
   def open_pull_request(repo, clone)
     branch = repo[:pr_branch]
-    unless git(clone, "checkout", "-b", branch)
+    unless current_branch?(clone, branch) || git(clone, "checkout", "-b", branch)
       warn "FAIL #{repo[:nwo]}: could not create branch #{branch}"
       return false
     end
@@ -269,6 +270,19 @@ module PushDownstream
 
     puts "PR #{repo[:nwo]} #{url}"
     true
+  end
+
+  def prepare_work_branch(clone, branch)
+    if fetch_remote_branch_head(clone, branch)
+      git(clone, "checkout", "-B", branch, "refs/remotes/origin/#{branch}")
+    else
+      git(clone, "checkout", "-b", branch)
+    end
+  end
+
+  def current_branch?(clone, branch)
+    out, status = Open3.capture2("git", "-C", clone, "branch", "--show-current")
+    status.success? && out.strip == branch
   end
 
   def push_branch(clone, branch)
@@ -301,7 +315,7 @@ module PushDownstream
       "gh", "pr", "list", "--repo", repo[:nwo], "--head", branch,
       "--base", repo[:base_branch], "--state", "open", "--json", "url", "--jq", ".[0].url"
     )
-    status.success? ? out.strip : nil
+    normalize_url(status.success? ? out.strip : nil)
   end
 
   def create_pr(repo, branch)
@@ -309,7 +323,12 @@ module PushDownstream
       "gh", "pr", "create", "--repo", repo[:nwo], "--base", repo[:base_branch],
       "--head", branch, "--title", COMMIT_TITLE, "--body", pr_body
     )
-    status.success? ? out.strip.lines.last.to_s.strip : nil
+    normalize_url(status.success? ? out.strip.lines.last.to_s.strip : nil)
+  end
+
+  def normalize_url(value)
+    value = value.to_s.strip
+    value.empty? || value == "null" ? nil : value
   end
 
   def pr_body
