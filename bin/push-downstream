@@ -17,6 +17,7 @@ module PushDownstream
 
   SECTION_TITLE = AgentWorkflowSeamDoctor::SECTION
   COMMIT_TITLE = "Add Agent Workflow Configuration seam to AGENTS.md"
+  NEW_AGENTS_HEADER = "# AGENTS.md\n"
 
   def load_config(path)
     data = YAML.safe_load(File.read(path), aliases: false) || {}
@@ -118,29 +119,36 @@ module PushDownstream
   end
 
   def run_local(root, base_branch:, apply:)
-    agents_path = File.join(root, "AGENTS.md")
-    unless File.file?(agents_path)
-      warn "missing AGENTS.md: #{agents_path}"
+    unless File.directory?(root)
+      warn "missing directory: #{root}"
       return 1
     end
 
-    current = File.read(agents_path)
-    updated = reconcile(current, base_branch: base_branch)
+    agents_path = File.join(root, "AGENTS.md")
+    existed, current, updated = reconcile_agents(agents_path, base_branch)
 
-    if updated == current
+    if existed && updated == current
       puts "already current: #{agents_path}"
       return 0
     end
 
+    verb = existed ? "update" : "create"
     unless apply
-      puts "would update AGENTS.md seam: #{agents_path} (re-run with --apply to write)"
+      puts "would #{verb} AGENTS.md seam: #{agents_path} (re-run with --apply to write)"
       return 0
     end
 
     File.write(agents_path, updated)
     issues = AgentWorkflowSeamDoctor.check(root)
     print AgentWorkflowSeamDoctor.format_text(issues)
+    puts "#{verb}d AGENTS.md seam: #{agents_path}"
     issues.empty? ? 0 : 1
+  end
+
+  def reconcile_agents(agents_path, base_branch)
+    existed = File.file?(agents_path)
+    current = existed ? File.read(agents_path) : NEW_AGENTS_HEADER
+    [existed, current, reconcile(current, base_branch: base_branch)]
   end
 
   def run_registry(config_path, only:, include_disabled:, apply:)
@@ -171,14 +179,8 @@ module PushDownstream
       end
 
       agents_path = File.join(clone, "AGENTS.md")
-      unless File.file?(agents_path)
-        warn "FAIL #{repo[:nwo]}: no AGENTS.md"
-        return false
-      end
-
-      current = File.read(agents_path)
-      updated = reconcile(current, base_branch: repo[:base_branch])
-      if updated == current
+      existed, current, updated = reconcile_agents(agents_path, repo[:base_branch])
+      if existed && updated == current
         puts "UP_TO_DATE #{repo[:nwo]}"
         return true
       end

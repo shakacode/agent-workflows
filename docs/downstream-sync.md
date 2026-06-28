@@ -23,6 +23,12 @@ preamble and fills newly added keys — existing values, including multi-line
 ones, are kept verbatim. Reconcile is idempotent: an already-current repo is a
 no-op.
 
+When a repo has no `AGENTS.md` at all, the command creates a minimal one (a
+title plus the managed seam) so the portable skills have a seam to resolve. A
+repo that keeps its agent policy in `CLAUDE.md` should still treat `AGENTS.md` as
+canonical over time; consolidating the two is follow-up work, not something this
+command does.
+
 ## The Registry
 
 `downstream.yml` lists targets and light metadata only:

@@ -225,12 +225,34 @@ class PushDownstreamCliTest < Minitest::Test
     end
   end
 
-  def test_missing_agents_md_errors
+  def test_local_creates_agents_when_missing_on_apply
+    Dir.mktmpdir("push-downstream-cli") do |root|
+      out, status = run_cli("--root", root, "--apply")
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+      agents = File.join(root, "AGENTS.md")
+      assert File.file?(agents), "AGENTS.md should be created"
+      assert_includes File.read(agents), "## Agent Workflow Configuration"
+    end
+  end
+
+  def test_local_dry_run_reports_create_without_writing
     Dir.mktmpdir("push-downstream-cli") do |root|
       out, status = run_cli("--root", root)
 
+      assert status.success?, out
+      assert_includes out, "would create"
+      refute File.exist?(File.join(root, "AGENTS.md")), "dry-run must not create the file"
+    end
+  end
+
+  def test_local_errors_when_root_directory_missing
+    Dir.mktmpdir("push-downstream-cli") do |root|
+      out, status = run_cli("--root", File.join(root, "does-not-exist"))
+
       refute status.success?
-      assert_includes out, "missing AGENTS.md"
+      assert_includes out, "missing directory"
     end
   end
 
