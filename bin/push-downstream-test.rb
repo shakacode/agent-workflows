@@ -8,6 +8,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("push-downstream", __dir__)
@@ -118,7 +119,7 @@ class PushDownstreamReconcileTest < Minitest::Test
       reconciled = PushDownstream.reconcile("# AGENTS.md\n\n## Commands\n", base_branch: "main")
       File.write(File.join(root, "AGENTS.md"), reconciled)
 
-      out, status = Open3.capture2e("ruby", DOCTOR, "--root", root)
+      out, status = Open3.capture2e(RbConfig.ruby, DOCTOR, "--root", root)
 
       assert status.success?, out
       assert_includes out, "PASS"
@@ -285,7 +286,7 @@ end
 
 class PushDownstreamCliTest < Minitest::Test
   def run_cli(*)
-    Open3.capture2e("ruby", SCRIPT, *)
+    Open3.capture2e(RbConfig.ruby, SCRIPT, *)
   end
 
   def test_local_dry_run_reports_change_without_writing
@@ -361,7 +362,7 @@ class PushDownstreamCliTest < Minitest::Test
       File.write(agents, "# AGENTS.md\n\nReact on Rails → SSR — overview.\n\n## Commands\n")
 
       out, status = Open3.capture2e(
-        { "LC_ALL" => "C", "LANG" => "C" }, "ruby", SCRIPT, "--root", root, "--apply"
+        { "LC_ALL" => "C", "LANG" => "C" }, RbConfig.ruby, SCRIPT, "--root", root, "--apply"
       )
 
       assert status.success?, out
@@ -392,6 +393,33 @@ class PushDownstreamCliTest < Minitest::Test
       assert_includes out, "agent-workflows/seam-sync"
       # Disabled repos are not planned unless --include-disabled.
       refute_includes out, "shakacode/beta"
+    end
+  end
+
+  def test_registry_dry_run_honors_only_and_all_flags
+    Dir.mktmpdir("push-downstream-registry") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        defaults:
+          owner: shakacode
+          base_branch: main
+          pr_branch: agent-workflows/seam-sync
+        repos:
+          - { repo: alpha }
+          - { repo: beta, enabled: false }
+      YAML
+
+      only_out, only_status = run_cli("--config", config, "--only", "beta")
+
+      assert only_status.success?, only_out
+      assert_includes only_out, "shakacode/beta"
+      refute_includes only_out, "shakacode/alpha"
+
+      all_out, all_status = run_cli("--config", config, "--all")
+
+      assert all_status.success?, all_out
+      assert_includes all_out, "shakacode/alpha"
+      assert_includes all_out, "shakacode/beta"
     end
   end
 end
