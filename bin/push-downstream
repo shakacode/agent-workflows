@@ -224,10 +224,11 @@ module PushDownstream
         warn "FAIL #{repo[:nwo]}: clone of #{repo[:base_branch]} failed"
         return false
       end
-      return false unless prepare_work_branch(clone, repo[:pr_branch])
+      expected_head = fetch_remote_branch_head(clone, repo[:pr_branch])
+      branch_seed = expected_head ? remote_agents_seed(clone, repo[:pr_branch]) : {}
 
       agents_path = File.join(clone, "AGENTS.md")
-      existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed)
+      existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed.merge(branch_seed))
       if existed && updated == current
         puts "UP_TO_DATE #{repo[:nwo]}"
         return true
@@ -240,11 +241,11 @@ module PushDownstream
         return false
       end
 
-      open_pull_request(repo, clone)
+      open_pull_request(repo, clone, expected_head: expected_head)
     end
   end
 
-  def open_pull_request(repo, clone)
+  def open_pull_request(repo, clone, expected_head: nil)
     branch = repo[:pr_branch]
     unless current_branch?(clone, branch) || git(clone, "checkout", "-b", branch)
       warn "FAIL #{repo[:nwo]}: could not create branch #{branch}"
@@ -257,7 +258,7 @@ module PushDownstream
       return false
     end
 
-    unless push_branch(clone, branch)
+    unless push_branch(clone, branch, expected_head: expected_head)
       warn "FAIL #{repo[:nwo]}: push failed"
       return false
     end
@@ -272,28 +273,18 @@ module PushDownstream
     true
   end
 
-  def prepare_work_branch(clone, branch)
-    if fetch_remote_branch_head(clone, branch)
-      git(clone, "checkout", "-B", branch, "refs/remotes/origin/#{branch}")
-    else
-      git(clone, "checkout", "-b", branch)
-    end
-  end
-
   def current_branch?(clone, branch)
     out, status = Open3.capture2("git", "-C", clone, "branch", "--show-current")
     status.success? && out.strip == branch
   end
 
-  def push_branch(clone, branch)
+  def push_branch(clone, branch, expected_head: nil)
     return true if git(clone, "push", "origin", "HEAD:#{branch}")
-
-    expected = fetch_remote_branch_head(clone, branch)
-    return false if expected.nil?
+    return false if expected_head.nil?
 
     git(
       clone, "push",
-      "--force-with-lease=refs/heads/#{branch}:#{expected}",
+      "--force-with-lease=refs/heads/#{branch}:#{expected_head}",
       "origin", "HEAD:#{branch}"
     )
   end
@@ -304,6 +295,13 @@ module PushDownstream
 
     out, status = Open3.capture2("git", "-C", clone, "rev-parse", "--verify", ref)
     status.success? ? out.strip : nil
+  end
+
+  def remote_agents_seed(clone, branch)
+    out, status = Open3.capture2("git", "-C", clone, "show", "refs/remotes/origin/#{branch}:AGENTS.md")
+    return {} unless status.success?
+
+    AgentWorkflowSeamDoctor.parse_config(out.force_encoding("UTF-8").scrub) || {}
   end
 
   def git(dir, *)

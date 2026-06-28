@@ -448,11 +448,12 @@ class PushDownstreamCliTest < Minitest::Test
              out: File::NULL, err: File::NULL)
       configure_git(clone)
       File.write(File.join(clone, "AGENTS.md"), "# AGENTS.md\n\nupdated sync branch\n")
+      expected_head = PushDownstream.fetch_remote_branch_head(clone, branch)
 
       out = nil
       with_pr_url_stub("https://example.test/pr") do
         out, = capture_io do
-          assert PushDownstream.open_pull_request(repo, clone)
+          assert PushDownstream.open_pull_request(repo, clone, expected_head: expected_head)
         end
       end
       assert_includes out, "https://example.test/pr"
@@ -464,21 +465,68 @@ class PushDownstreamCliTest < Minitest::Test
     end
   end
 
-  def test_prepare_work_branch_reads_existing_remote_sync_branch
+  def test_remote_sync_branch_values_seed_current_base_reconcile
     Dir.mktmpdir("push-downstream-existing-branch") do |dir|
       remote = File.join(dir, "remote.git")
       seed = File.join(dir, "seed")
       clone = File.join(dir, "clone")
       branch = "agent-workflows/seam-sync"
 
-      create_remote_with_sync_branch(remote, seed, branch, "# AGENTS.md\n\noperator edits\n")
+      create_remote_with_sync_branch(
+        remote, seed, branch,
+        "# AGENTS.md\n\n## Agent Workflow Configuration\n\n- **Tests**: operator edits.\n"
+      )
+      system("git", "-C", seed, "checkout", "main", out: File::NULL, err: File::NULL)
+      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n\ncurrent base content\n")
+      system("git", "-C", seed, "commit", "-am", "base update", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
       system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
              out: File::NULL, err: File::NULL)
 
-      assert PushDownstream.prepare_work_branch(clone, branch)
+      assert PushDownstream.fetch_remote_branch_head(clone, branch)
+      branch_seed = PushDownstream.remote_agents_seed(clone, branch)
+      _existed, current, updated = PushDownstream.reconcile_agents(
+        File.join(clone, "AGENTS.md"), "main", branch_seed
+      )
 
-      body = File.read(File.join(clone, "AGENTS.md"))
-      assert_includes body, "operator edits"
+      assert_includes current, "current base content"
+      assert_includes updated, "current base content"
+      assert_includes updated, "- **Tests**: operator edits."
+    end
+  end
+
+  def test_registry_apply_refuses_to_overwrite_concurrent_sync_branch_update
+    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
+      remote = File.join(dir, "remote.git")
+      seed = File.join(dir, "seed")
+      clone = File.join(dir, "clone")
+      branch = "agent-workflows/seam-sync"
+      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
+
+      create_remote_with_sync_branch(remote, seed, branch, "# AGENTS.md\n\nexisting sync branch\n")
+      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
+             out: File::NULL, err: File::NULL)
+      configure_git(clone)
+      expected_head = PushDownstream.fetch_remote_branch_head(clone, branch)
+      File.write(File.join(clone, "AGENTS.md"), "# AGENTS.md\n\nupdated sync branch\n")
+
+      system("git", "-C", seed, "checkout", branch, out: File::NULL, err: File::NULL)
+      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n\nconcurrent update\n")
+      system("git", "-C", seed, "commit", "-am", "concurrent update", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "push", "origin", branch, out: File::NULL, err: File::NULL)
+
+      with_pr_url_stub("https://example.test/pr") do
+        _out, err = capture_io do
+          refute PushDownstream.open_pull_request(repo, clone, expected_head: expected_head)
+        end
+        assert_includes err, "push failed"
+      end
+
+      system("git", "-C", seed, "fetch", "origin", branch, out: File::NULL, err: File::NULL)
+      remote_body, status = Open3.capture2("git", "-C", seed, "show", "origin/#{branch}:AGENTS.md")
+      assert status.success?, remote_body
+      assert_includes remote_body, "concurrent update"
+      refute_includes remote_body, "updated sync branch"
     end
   end
 
@@ -493,7 +541,7 @@ class PushDownstreamCliTest < Minitest::Test
 
     PushDownstream.define_singleton_method(:git) { |_dir, *_args| true }
     PushDownstream.define_singleton_method(:current_branch?) { |_clone, _branch| false }
-    PushDownstream.define_singleton_method(:push_branch) { |_clone, _branch| true }
+    PushDownstream.define_singleton_method(:push_branch) { |_clone, _branch, **_kwargs| true }
     assert_nil PushDownstream.normalize_url("")
     assert_nil PushDownstream.normalize_url("null")
 
@@ -512,7 +560,9 @@ class PushDownstreamCliTest < Minitest::Test
     PushDownstream.define_singleton_method(:current_branch?) do |clone, branch|
       original_current_branch.call(clone, branch)
     end
-    PushDownstream.define_singleton_method(:push_branch) { |clone, branch| original_push_branch.call(clone, branch) }
+    PushDownstream.define_singleton_method(:push_branch) do |clone, branch, expected_head: nil|
+      original_push_branch.call(clone, branch, expected_head: expected_head)
+    end
     PushDownstream.define_singleton_method(:existing_pr_url) do |repo_arg, branch_arg|
       original_existing_pr_url.call(repo_arg, branch_arg)
     end
