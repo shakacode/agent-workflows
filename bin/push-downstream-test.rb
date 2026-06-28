@@ -422,4 +422,72 @@ class PushDownstreamCliTest < Minitest::Test
       assert_includes all_out, "shakacode/beta"
     end
   end
+
+  def test_registry_apply_updates_existing_remote_sync_branch
+    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
+      remote = File.join(dir, "remote.git")
+      seed = File.join(dir, "seed")
+      clone = File.join(dir, "clone")
+      branch = "agent-workflows/seam-sync"
+      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
+
+      system("git", "init", "--bare", remote, out: File::NULL, err: File::NULL)
+      system("git", "clone", remote, seed, out: File::NULL, err: File::NULL)
+      configure_git(seed)
+      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n")
+      system("git", "-C", seed, "add", "AGENTS.md", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "commit", "-m", "base", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "branch", "-M", "main", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "checkout", "-b", branch, out: File::NULL, err: File::NULL)
+      File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n\nexisting sync branch\n")
+      system("git", "-C", seed, "commit", "-am", "existing sync", out: File::NULL, err: File::NULL)
+      system("git", "-C", seed, "push", "origin", branch, out: File::NULL, err: File::NULL)
+
+      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
+             out: File::NULL, err: File::NULL)
+      configure_git(clone)
+      File.write(File.join(clone, "AGENTS.md"), "# AGENTS.md\n\nupdated sync branch\n")
+
+      out = nil
+      with_pr_url_stub("https://example.test/pr") do
+        out, = capture_io do
+          assert PushDownstream.open_pull_request(repo, clone)
+        end
+      end
+      assert_includes out, "https://example.test/pr"
+
+      system("git", "-C", seed, "fetch", "origin", branch, out: File::NULL, err: File::NULL)
+      remote_body, status = Open3.capture2("git", "-C", seed, "show", "origin/#{branch}:AGENTS.md")
+      assert status.success?, remote_body
+      assert_includes remote_body, "updated sync branch"
+    end
+  end
+
+  def configure_git(dir)
+    system("git", "-C", dir, "config", "user.email", "agent@example.test", out: File::NULL, err: File::NULL)
+    system("git", "-C", dir, "config", "user.name", "Agent Test", out: File::NULL, err: File::NULL)
+  end
+
+  def with_pr_url_stub(url)
+    original_existing_pr_url = PushDownstream.method(:existing_pr_url)
+    original_create_pr = PushDownstream.method(:create_pr)
+    created = false
+
+    PushDownstream.define_singleton_method(:existing_pr_url) { |_repo, _branch| url }
+    PushDownstream.define_singleton_method(:create_pr) do |_repo, _branch|
+      created = true
+      nil
+    end
+
+    yield
+    refute created, "existing PR should be reused"
+  ensure
+    PushDownstream.define_singleton_method(:existing_pr_url) do |repo, branch|
+      original_existing_pr_url.call(repo, branch)
+    end
+    PushDownstream.define_singleton_method(:create_pr) do |repo, branch|
+      original_create_pr.call(repo, branch)
+    end
+  end
 end

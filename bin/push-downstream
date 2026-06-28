@@ -256,8 +256,7 @@ module PushDownstream
       return false
     end
 
-    unless git(clone, "push", "origin", "HEAD:#{branch}") ||
-           git(clone, "push", "--force-with-lease", "origin", "HEAD:#{branch}")
+    unless push_branch(clone, branch)
       warn "FAIL #{repo[:nwo]}: push failed"
       return false
     end
@@ -270,6 +269,27 @@ module PushDownstream
 
     puts "PR #{repo[:nwo]} #{url}"
     true
+  end
+
+  def push_branch(clone, branch)
+    return true if git(clone, "push", "origin", "HEAD:#{branch}")
+
+    expected = fetch_remote_branch_head(clone, branch)
+    return false if expected.nil?
+
+    git(
+      clone, "push",
+      "--force-with-lease=refs/heads/#{branch}:#{expected}",
+      "origin", "HEAD:#{branch}"
+    )
+  end
+
+  def fetch_remote_branch_head(clone, branch)
+    ref = "refs/remotes/origin/#{branch}"
+    return nil unless git(clone, "fetch", "origin", "+refs/heads/#{branch}:#{ref}")
+
+    out, status = Open3.capture2("git", "-C", clone, "rev-parse", "--verify", ref)
+    status.success? ? out.strip : nil
   end
 
   def git(dir, *)
