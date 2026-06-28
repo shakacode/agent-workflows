@@ -186,6 +186,103 @@ class PushDownstreamConfigTest < Minitest::Test
   end
 end
 
+class PushDownstreamAdapterTest < Minitest::Test
+  def with_file(name, body)
+    Dir.mktmpdir("push-downstream-adapter") do |dir|
+      path = File.join(dir, name)
+      File.write(path, body)
+      yield path
+    end
+  end
+
+  def test_load_config_carries_preset_and_overrides
+    yaml = <<~YAML
+      defaults:
+        owner: shakacode
+        base_branch: main
+        pr_branch: agent-workflows/seam-sync
+      repos:
+        - repo: rsc
+          preset: ts-package
+          overrides:
+            Tests: "`yarn test` with conditions."
+    YAML
+
+    with_file("downstream.yml", yaml) do |path|
+      repo = PushDownstream.load_config(path).fetch(0)
+
+      assert_equal "ts-package", repo.fetch(:preset)
+      assert_equal({ "Tests" => "`yarn test` with conditions." }, repo.fetch(:overrides))
+    end
+  end
+
+  def test_load_presets_reads_defaults_and_named_presets
+    yaml = <<~YAML
+      defaults:
+        Coordination backend: shared backend.
+      presets:
+        ts-package:
+          Tests: "`yarn test`."
+    YAML
+
+    with_file("seam-presets.yml", yaml) do |path|
+      presets = PushDownstream.load_presets(path)
+
+      assert_equal "shared backend.", presets.fetch("defaults").fetch("Coordination backend")
+      assert_equal "`yarn test`.", presets.fetch("presets").fetch("ts-package").fetch("Tests")
+    end
+  end
+
+  def test_resolve_values_layers_defaults_preset_and_overrides
+    presets = {
+      "defaults" => { "Coordination backend" => "shared backend.", "Benchmark labels" => "n/a." },
+      "presets" => { "ts-package" => { "Tests" => "`yarn test`.", "Benchmark labels" => "n/a (pkg)." } }
+    }
+    repo = {
+      repo: "rsc", base_branch: "main", preset: "ts-package",
+      overrides: { "Tests" => "`yarn test:all`." }
+    }
+
+    values = PushDownstream.resolve_values(repo, presets)
+
+    assert_equal "shared backend.", values["Coordination backend"] # global default
+    assert_equal "n/a (pkg).", values["Benchmark labels"]          # preset beats default
+    assert_equal "`yarn test:all`.", values["Tests"]               # override beats preset
+    assert_equal "`main`.", values["Base branch"]                  # seeded from base_branch
+  end
+
+  def test_resolve_values_unknown_preset_raises
+    error = assert_raises(RuntimeError) do
+      PushDownstream.resolve_values(
+        { repo: "x", base_branch: "main", preset: "nope" }, { "presets" => {} }
+      )
+    end
+    assert_match(/unknown preset: nope/, error.message)
+  end
+
+  def test_reconcile_seeds_unset_keys_but_preserves_existing
+    agents = "# AGENTS.md\n\n## Agent Workflow Configuration\n\n- **Tests**: `existing`.\n\n## End\n"
+    seed = { "Tests" => "`seeded`.", "Lint / format" => "`rubocop`." }
+
+    result = PushDownstream.reconcile(agents, base_branch: "main", seed: seed)
+
+    assert_includes result, "- **Tests**: `existing`."        # repo-owned wins over seed
+    assert_includes result, "- **Lint / format**: `rubocop`." # seed fills an unset key
+    assert_match(%r{- \*\*Docs checks\*\*: n/a}, result) # unseeded -> n/a
+  end
+
+  def test_reconcile_creates_seam_from_seed_values
+    seed = { "Tests" => "`yarn test`.", "Coordination backend" => "shared backend." }
+
+    result = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main", seed: seed)
+
+    assert_includes result, "- **Tests**: `yarn test`."
+    assert_includes result, "- **Coordination backend**: shared backend."
+    assert_match(/- \*\*Base branch\*\*: .*main/, result) # base branch default still applies
+    assert_match(%r{- \*\*Docs checks\*\*: n/a}, result) # unseeded -> n/a
+  end
+end
+
 class PushDownstreamCliTest < Minitest::Test
   def run_cli(*)
     Open3.capture2e("ruby", SCRIPT, *)

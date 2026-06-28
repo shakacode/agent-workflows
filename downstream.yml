@@ -1,9 +1,10 @@
 # Downstream consumer repositories for shakacode/agent-workflows.
 #
 # `bin/push-downstream` syncs the managed `## Agent Workflow Configuration`
-# section into each repo's AGENTS.md and opens one PR per repo. Each repo OWNS
-# its seam values; this registry only lists targets and light metadata. See
-# docs/downstream-sync.md.
+# section into each repo's AGENTS.md (creating AGENTS.md when absent) and opens
+# one PR per repo. Seam values are seeded via the adapter — global defaults +
+# the named `preset:` (see seam-presets.yml) + any per-repo `overrides:` — and
+# stay repo-owned after adoption. See docs/downstream-sync.md.
 #
 # Out of scope by design:
 #   - shakacode/react_on_rails: the hand-authored reference seam.
@@ -16,26 +17,30 @@ defaults:
   enabled: true
 
 repos:
-  # Libraries and tools
-  - { repo: shakapacker, tier: library }
-  - { repo: react_on_rails_rsc, tier: library }
-  - { repo: shakaperf, tier: library }
-  - { repo: agent-coordination-dashboard, tier: library }
+  # TypeScript / Node packages
+  - repo: react_on_rails_rsc
+    preset: ts-package
+    enabled: false   # adopted via canary PR shakacode/react_on_rails_rsc#133
+    overrides:
+      Tests: "`yarn test` (`test:rsc` + `test:non-rsc`); single file `yarn jest <path>`, prefix `NODE_CONDITIONS=react-server` for `*.rsc.test.*`."
 
-  # Sites
-  - { repo: reactonrails.com, tier: site }
-  - { repo: shakastack-com, tier: site }
+  # Ruby gems
+  - { repo: shakapacker, preset: ruby-gem }
+  - { repo: shakaperf, preset: ruby-gem }
 
-  # Starter
-  - { repo: react-on-rails-starter-tanstack, tier: starter }
+  # Sites / dashboards
+  - { repo: agent-coordination-dashboard, preset: site }
+  - { repo: reactonrails.com, preset: site }
+  - { repo: shakastack-com, preset: site }
 
-  # Demos and examples
-  - { repo: react-on-rails-demo-gumroad-rsc, tier: demo }
-  - { repo: react_on_rails-demo-octochangelog-on-rails-pro, tier: demo }
-  - { repo: react-on-rails-demo-hacker-news-rsc, tier: demo }
-  - { repo: react-on-rails-demo-flagship, tier: demo }
-  - { repo: react-on-rails-demo-marketplace-rsc, tier: demo }
-  - { repo: react-on-rails-example-open-flights, tier: demo }
-  - { repo: react-on-rails-example-migration, tier: demo }
-  - { repo: react-webpack-rails-tutorial, tier: demo, base_branch: master }
-  - { repo: react-on-rails-demo-ssr-hmr, tier: demo, base_branch: master }
+  # React on Rails demo / example apps
+  - { repo: react-on-rails-starter-tanstack, preset: ror-demo }
+  - { repo: react-on-rails-demo-gumroad-rsc, preset: ror-demo }
+  - { repo: react_on_rails-demo-octochangelog-on-rails-pro, preset: ror-demo }
+  - { repo: react-on-rails-demo-hacker-news-rsc, preset: ror-demo }
+  - { repo: react-on-rails-demo-flagship, preset: ror-demo }
+  - { repo: react-on-rails-demo-marketplace-rsc, preset: ror-demo }
+  - { repo: react-on-rails-example-open-flights, preset: ror-demo }
+  - { repo: react-on-rails-example-migration, preset: ror-demo }
+  - { repo: react-webpack-rails-tutorial, preset: ror-demo, base_branch: master }
+  - { repo: react-on-rails-demo-ssr-hmr, preset: ror-demo, base_branch: master }

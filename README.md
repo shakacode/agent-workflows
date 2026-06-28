@@ -31,6 +31,7 @@ plus a validated repo seam are the default.
 | `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
 | `bin/` | Install, status, upgrade, validation, and downstream-sync helpers. |
 | `downstream.yml` | Registry of consumer repos for `bin/push-downstream`. |
+| `seam-presets.yml` | Seam value adapter: org defaults + archetype presets. |
 | `docs/` | Adoption, seam design, and operator guidance. |
 | `examples/` | Example consumer-repo configuration snippets. |
 | `test/fixtures/consumer-repo/` | Minimal fixture used by `bin/validate`. |

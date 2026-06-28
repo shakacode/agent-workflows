@@ -33,9 +33,33 @@ module PushDownstream
         base_branch: merged.fetch("base_branch"),
         pr_branch: merged.fetch("pr_branch"),
         enabled: merged.fetch("enabled", true),
-        tier: merged["tier"]
+        tier: merged["tier"],
+        preset: merged["preset"],
+        overrides: merged["overrides"] || {}
       }
     end
+  end
+
+  def load_presets(path)
+    YAML.safe_load(File.read(path), aliases: false) || {}
+  end
+
+  # Resolve each seam value through defaults -> preset -> per-repo overrides,
+  # then seed the base branch. Used to fill a fresh seam; existing repo-owned
+  # values still win during reconcile.
+  def resolve_values(repo, presets)
+    values = {}
+    values.merge!(presets["defaults"] || {}) if presets
+    if repo[:preset]
+      named = (presets || {})["presets"] || {}
+      preset = named[repo[:preset]]
+      raise "unknown preset: #{repo[:preset]}" if preset.nil?
+
+      values.merge!(preset)
+    end
+    values.merge!(repo[:overrides]) if repo[:overrides]
+    values["Base branch"] ||= "`#{repo[:base_branch]}`."
+    values
   end
 
   def select_repos(repos, only: nil, include_disabled: false)
@@ -50,16 +74,16 @@ module PushDownstream
 
   KEY_BULLET = /^-\s+\*\*(.+?)\*\*:(.*)$/
 
-  def reconcile(text, base_branch:)
+  def reconcile(text, base_branch:, seed: {})
     lines = text.lines
     start = lines.index { |line| line.match?(AgentWorkflowSeamDoctor::SECTION_HEADING) }
-    return append_section(text, base_branch) if start.nil?
+    return append_section(text, base_branch, seed) if start.nil?
 
     finish = ((start + 1)...lines.length).find { |index| lines[index].match?(/^##\s+/) } || lines.length
     existing = parse_existing_values(lines[(start + 1)...finish])
 
     before = lines[0...start].join
-    rebuilt = render_section(existing, base_branch)
+    rebuilt = render_section(existing, seed, base_branch)
     after = lines[finish..].join
     trailing = after.empty? ? "" : "\n"
 
@@ -87,7 +111,7 @@ module PushDownstream
     values
   end
 
-  def append_section(text, base_branch)
+  def append_section(text, base_branch, seed)
     separator =
       if text.empty? || text.end_with?("\n\n")
         ""
@@ -96,22 +120,29 @@ module PushDownstream
       else
         "\n\n"
       end
-    text + separator + render_section({}, base_branch)
+    text + separator + render_section({}, seed, base_branch)
   end
 
-  def render_section(existing_values, base_branch)
+  def render_section(existing_values, seed, base_branch)
     out = +"## #{SECTION_TITLE}\n\n"
     out << managed_preamble << "\n\n"
     AgentWorkflowSeamDoctor::REQUIRED_KEYS.each do |key|
-      value = existing_values[key] || " #{default_value(key, base_branch)}"
-      out << "- **#{key}**:#{value}\n"
+      out << "- **#{key}**:#{value_for(key, existing_values, seed, base_branch)}\n"
     end
-    existing_values.each do |key, raw|
-      next if AgentWorkflowSeamDoctor::REQUIRED_KEYS.include?(key)
-
-      out << "- **#{key}**:#{raw}\n"
+    extra_keys = (existing_values.keys + seed.keys).uniq - AgentWorkflowSeamDoctor::REQUIRED_KEYS
+    extra_keys.each do |key|
+      out << "- **#{key}**:#{value_for(key, existing_values, seed, base_branch)}\n"
     end
     out
+  end
+
+  # Repo-owned existing values win; otherwise seed (adapter) values; otherwise the
+  # default. Existing values keep their raw leading space; seed/default add one.
+  def value_for(key, existing_values, seed, base_branch)
+    return existing_values[key] if existing_values.key?(key)
+    return " #{seed[key]}" if seed.key?(key)
+
+    " #{default_value(key, base_branch)}"
   end
 
   def default_value(key, base_branch)
@@ -145,33 +176,40 @@ module PushDownstream
     issues.empty? ? 0 : 1
   end
 
-  def reconcile_agents(agents_path, base_branch)
+  def reconcile_agents(agents_path, base_branch, seed = {})
     existed = File.file?(agents_path)
     # Read as UTF-8 regardless of locale; a non-UTF-8 default external encoding
     # (e.g. LANG=C) otherwise crashes match? on non-ASCII bytes in AGENTS.md.
     current = existed ? File.binread(agents_path).force_encoding("UTF-8").scrub : NEW_AGENTS_HEADER
-    [existed, current, reconcile(current, base_branch: base_branch)]
+    [existed, current, reconcile(current, base_branch: base_branch, seed: seed)]
   end
 
-  def run_registry(config_path, only:, include_disabled:, apply:)
+  def run_registry(config_path, presets_path, only:, include_disabled:, apply:)
     repos = select_repos(load_config(config_path), only: only, include_disabled: include_disabled)
     if repos.empty?
       puts "no downstream repos selected"
       return 0
     end
 
+    presets = File.file?(presets_path) ? load_presets(presets_path) : {}
+    # Resolve every repo up front so an unknown preset fails before any writes.
+    seeds = repos.to_h { |repo| [repo[:repo], resolve_values(repo, presets)] }
+
     unless apply
       puts "Planned downstream seam sync (#{repos.length} repo(s)); " \
            "re-run with --apply to clone, reconcile, validate, and open PRs:"
-      repos.each { |repo| puts "- #{repo[:nwo]} (base #{repo[:base_branch]} -> branch #{repo[:pr_branch]})" }
+      repos.each do |repo|
+        label = repo[:preset] ? " [#{repo[:preset]}]" : ""
+        puts "- #{repo[:nwo]}#{label} (base #{repo[:base_branch]} -> branch #{repo[:pr_branch]})"
+      end
       return 0
     end
 
-    failures = repos.count { |repo| !sync_repo(repo) }
+    failures = repos.count { |repo| !sync_repo(repo, seeds[repo[:repo]]) }
     failures.zero? ? 0 : 1
   end
 
-  def sync_repo(repo)
+  def sync_repo(repo, seed)
     Dir.mktmpdir("push-downstream-sync") do |dir|
       clone = File.join(dir, repo[:repo])
       unless system("git", "clone", "--depth", "1", "--branch", repo[:base_branch],
@@ -181,7 +219,7 @@ module PushDownstream
       end
 
       agents_path = File.join(clone, "AGENTS.md")
-      existed, current, updated = reconcile_agents(agents_path, repo[:base_branch])
+      existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed)
       if existed && updated == current
         puts "UP_TO_DATE #{repo[:nwo]}"
         return true
@@ -279,6 +317,7 @@ end
 if $PROGRAM_NAME == __FILE__
   options = {
     config: File.expand_path("../downstream.yml", __dir__),
+    presets: File.expand_path("../seam-presets.yml", __dir__),
     root: nil,
     only: nil,
     include_disabled: false,
@@ -290,6 +329,7 @@ if $PROGRAM_NAME == __FILE__
     opts.banner = "Usage: push-downstream [--root DIR | --config FILE] [--only a,b] [--all] [--apply]"
     opts.on("--root DIR", "Reconcile one local checkout instead of the registry") { |value| options[:root] = value }
     opts.on("--config FILE", "Downstream registry YAML (default: downstream.yml)") { |value| options[:config] = value }
+    opts.on("--presets FILE", "Seam preset YAML (default: seam-presets.yml)") { |value| options[:presets] = value }
     opts.on("--only a,b", Array, "Restrict to these repo names") { |value| options[:only] = value }
     opts.on("--all", "Include repos marked enabled: false") { options[:include_disabled] = true }
     opts.on("--apply", "Apply changes (write files; push branches and open PRs)") { options[:apply] = true }
@@ -306,6 +346,7 @@ if $PROGRAM_NAME == __FILE__
     else
       PushDownstream.run_registry(
         options[:config],
+        options[:presets],
         only: options[:only],
         include_disabled: options[:include_disabled],
         apply: options[:apply]

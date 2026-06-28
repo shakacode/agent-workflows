@@ -40,12 +40,38 @@ defaults:
   pr_branch: agent-workflows/seam-sync
   enabled: true
 repos:
-  - { repo: shakapacker, tier: library }
-  - { repo: react-webpack-rails-tutorial, tier: demo, base_branch: master }
+  - { repo: shakapacker, preset: ruby-gem }
+  - { repo: react-webpack-rails-tutorial, preset: ror-demo, base_branch: master }
 ```
 
 `shakacode/react_on_rails` is intentionally absent — it is the hand-authored
 reference seam. Private and archived repos are out of scope.
+
+## Seam Value Adapter
+
+Each seam value is resolved through three layers, last wins, then seeded into a
+fresh seam (existing repo-owned values still win on re-runs):
+
+1. **`defaults`** in `seam-presets.yml` — org-uniform values (coordination
+   backend, follow-up prefix, review gate, `n/a` keys) applied to every repo.
+2. **`presets[<name>]`** — archetype command defaults, chosen per repo via
+   `preset:` (`ts-package`, `ruby-gem`, `ror-demo`, `site`).
+3. **per-repo `overrides:`** in `downstream.yml` — the idiosyncrasies a preset
+   can't know, e.g. RSC's `NODE_CONDITIONS=react-server` test note.
+
+```yaml
+# downstream.yml
+- repo: react_on_rails_rsc
+  preset: ts-package
+  overrides:
+    Tests: "`yarn test`; single file `yarn jest <path>`, prefix NODE_CONDITIONS=react-server for *.rsc.test.*."
+```
+
+Keep presets conservative — assert only what is genuinely common to the
+archetype, and prefer `n/a` over a guessed command, since a wrong preset value
+propagates to every repo using it. The seam doctor and PR review remain the
+gates. A future `--reseed` mode could re-assert changed preset values onto keys
+a repo has not customized.
 
 ## Usage
 
