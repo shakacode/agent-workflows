@@ -224,25 +224,35 @@ module PushDownstream
         warn "FAIL #{repo[:nwo]}: clone of #{repo[:base_branch]} failed"
         return false
       end
-      expected_head = fetch_remote_branch_head(clone, repo[:pr_branch])
-      branch_seed = expected_head ? remote_agents_seed(clone, repo[:pr_branch]) : {}
 
-      agents_path = File.join(clone, "AGENTS.md")
-      existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed.merge(branch_seed))
-      if existed && updated == current
-        puts "UP_TO_DATE #{repo[:nwo]}"
-        return true
-      end
-
-      write_utf8(agents_path, updated)
-      issues = AgentWorkflowSeamDoctor.check(clone)
-      unless issues.empty?
-        warn "FAIL #{repo[:nwo]}: seam doctor: #{issues.join('; ')}"
-        return false
-      end
-
-      open_pull_request(repo, clone, expected_head: expected_head)
+      sync_clone(repo, clone, seed)
     end
+  end
+
+  def sync_clone(repo, clone, seed)
+    expected_head = fetch_remote_branch_head(clone, repo[:pr_branch])
+    remote_current = expected_head ? remote_agents_text(clone, repo[:pr_branch]) : nil
+    branch_seed = remote_current ? seed_values(remote_current) : {}
+
+    agents_path = File.join(clone, "AGENTS.md")
+    existed, current, updated = reconcile_agents(agents_path, repo[:base_branch], seed.merge(branch_seed))
+    if remote_current && updated == remote_current
+      puts "UP_TO_DATE #{repo[:nwo]}"
+      return ensure_pull_request(repo, repo[:pr_branch])
+    end
+    if existed && updated == current
+      puts "UP_TO_DATE #{repo[:nwo]}"
+      return true
+    end
+
+    write_utf8(agents_path, updated)
+    issues = AgentWorkflowSeamDoctor.check(clone)
+    unless issues.empty?
+      warn "FAIL #{repo[:nwo]}: seam doctor: #{issues.join('; ')}"
+      return false
+    end
+
+    open_pull_request(repo, clone, expected_head: expected_head)
   end
 
   def open_pull_request(repo, clone, expected_head: nil)
@@ -263,6 +273,10 @@ module PushDownstream
       return false
     end
 
+    ensure_pull_request(repo, branch)
+  end
+
+  def ensure_pull_request(repo, branch)
     url = existing_pr_url(repo, branch) || create_pr(repo, branch)
     if url.to_s.empty?
       warn "FAIL #{repo[:nwo]}: PR create failed"
@@ -298,10 +312,28 @@ module PushDownstream
   end
 
   def remote_agents_seed(clone, branch)
-    out, status = Open3.capture2("git", "-C", clone, "show", "refs/remotes/origin/#{branch}:AGENTS.md")
-    return {} unless status.success?
+    text = remote_agents_text(clone, branch)
+    text ? seed_values(text) : {}
+  end
 
-    AgentWorkflowSeamDoctor.parse_config(out.force_encoding("UTF-8").scrub) || {}
+  def remote_agents_text(clone, branch)
+    out, status = Open3.capture2("git", "-C", clone, "show", "refs/remotes/origin/#{branch}:AGENTS.md")
+    return nil unless status.success?
+
+    out.force_encoding("UTF-8").scrub
+  end
+
+  def seed_values(text)
+    existing_values(text).transform_values { |value| value.sub(/\A /, "") }
+  end
+
+  def existing_values(text)
+    lines = text.lines
+    start = lines.index { |line| line.match?(AgentWorkflowSeamDoctor::SECTION_HEADING) }
+    return {} if start.nil?
+
+    finish = ((start + 1)...lines.length).find { |index| lines[index].match?(/^##\s+/) } || lines.length
+    parse_existing_values(lines[(start + 1)...finish])
   end
 
   def git(dir, *)

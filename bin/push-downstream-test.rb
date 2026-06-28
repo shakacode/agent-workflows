@@ -474,7 +474,7 @@ class PushDownstreamCliTest < Minitest::Test
 
       create_remote_with_sync_branch(
         remote, seed, branch,
-        "# AGENTS.md\n\n## Agent Workflow Configuration\n\n- **Tests**: operator edits.\n"
+        "# AGENTS.md\n\n## Agent Workflow Configuration\n\n- **Tests**: operator edits,\n  wrapped continuation.\n"
       )
       system("git", "-C", seed, "checkout", "main", out: File::NULL, err: File::NULL)
       File.write(File.join(seed, "AGENTS.md"), "# AGENTS.md\n\ncurrent base content\n")
@@ -485,13 +485,42 @@ class PushDownstreamCliTest < Minitest::Test
 
       assert PushDownstream.fetch_remote_branch_head(clone, branch)
       branch_seed = PushDownstream.remote_agents_seed(clone, branch)
+      assert_equal "operator edits,\n  wrapped continuation.", branch_seed.fetch("Tests")
       _existed, current, updated = PushDownstream.reconcile_agents(
         File.join(clone, "AGENTS.md"), "main", branch_seed
       )
 
       assert_includes current, "current base content"
       assert_includes updated, "current base content"
-      assert_includes updated, "- **Tests**: operator edits."
+      assert_includes updated, "- **Tests**: operator edits,\n  wrapped continuation."
+    end
+  end
+
+  def test_registry_apply_reuses_up_to_date_existing_remote_sync_branch
+    Dir.mktmpdir("push-downstream-existing-branch") do |dir|
+      remote = File.join(dir, "remote.git")
+      seed = File.join(dir, "seed")
+      clone = File.join(dir, "clone")
+      branch = "agent-workflows/seam-sync"
+      repo = { nwo: "local/example", base_branch: "main", pr_branch: branch }
+      branch_body = PushDownstream.reconcile("# AGENTS.md\n", base_branch: "main", seed: { "Tests" => "operator edits." })
+
+      create_remote_with_sync_branch(remote, seed, branch, branch_body)
+      before = rev_parse(seed, branch)
+      system("git", "clone", "--depth", "1", "--branch", "main", "file://#{remote}", clone,
+             out: File::NULL, err: File::NULL)
+
+      out = nil
+      with_pr_url_stub("https://example.test/pr") do
+        out, = capture_io do
+          assert PushDownstream.sync_clone(repo, clone, {})
+        end
+      end
+
+      assert_includes out, "UP_TO_DATE local/example"
+      assert_includes out, "https://example.test/pr"
+      system("git", "-C", seed, "fetch", "origin", branch, out: File::NULL, err: File::NULL)
+      assert_equal before, rev_parse(seed, "origin/#{branch}")
     end
   end
 
@@ -589,6 +618,12 @@ class PushDownstreamCliTest < Minitest::Test
   def configure_git(dir)
     system("git", "-C", dir, "config", "user.email", "agent@example.test", out: File::NULL, err: File::NULL)
     system("git", "-C", dir, "config", "user.name", "Agent Test", out: File::NULL, err: File::NULL)
+  end
+
+  def rev_parse(dir, ref)
+    out, status = Open3.capture2("git", "-C", dir, "rev-parse", ref)
+    assert status.success?, out
+    out.strip
   end
 
   def with_pr_url_stub(url)
