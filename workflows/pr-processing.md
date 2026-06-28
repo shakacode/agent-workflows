@@ -601,15 +601,15 @@ target as an implementation PR, combined investigation PR, deliberate no-PR
 evidence comment, or product-decision blocker.
 
 For issue targets, create one focused branch and PR unless exact same-file
-overlap makes a bundle safer. Start new issue branches from the base branch in
-`AGENTS.md` and target that base by default. When the consumer repo's release
-policy says a stabilizing fix belongs on a release branch, branch from and open
-the PR against that release branch, then apply the repo's forward-port policy
-from `AGENTS.md`; do not rely on someone noticing the fix needs a later
-forward-port. For existing PR, review-fix, or merge-readiness targets, work on
-the existing PR head branch and do not create replacement PRs; if the branch
-cannot be updated safely, report the blocker. Follow local validation,
-pre-push review/simplify, CI backpressure, and merge-readiness gates.
+overlap makes a bundle safer. Start new issue branches from the base branch
+resolved from `.agents/agent-workflow.yml` and target that base by default. When
+the consumer repo's release policy says a stabilizing fix belongs on a release
+branch, branch from and open the PR against that release branch, then apply the
+repo's forward-port policy from `AGENTS.md`; do not rely on someone noticing the
+fix needs a later forward-port. For existing PR, review-fix, or merge-readiness
+targets, work on the existing PR head branch and do not create replacement PRs;
+if the branch cannot be updated safely, report the blocker. Follow local
+validation, pre-push review/simplify, CI backpressure, and merge-readiness gates.
 
 For non-trivial, high-risk, hosted-CI-labeled, force-full, benchmark-labeled,
 workflow/build-config, dependency/runtime-version, or broad refactor PRs (labels per `.agents/agent-workflow.yml`), commit the intended

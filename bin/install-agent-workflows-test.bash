@@ -212,6 +212,25 @@ test_upgrade_reinstalls_new_source_revision() {
   assert_contains "$output" "UP_TO_DATE"
 }
 
+test_upgrade_without_consumer_roots_succeeds() {
+  local tmp source target output
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >/tmp/install-agent-workflows-test.out
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --no-fetch 2>&1)"
+
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  assert_not_contains "$output" "unbound variable"
+}
+
 test_upgrade_reports_missing_source_as_check_failed() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -284,6 +303,7 @@ main() {
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
+    test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_upgrade_validates_consumer_root_after_install

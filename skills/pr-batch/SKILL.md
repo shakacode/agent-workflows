@@ -184,11 +184,12 @@ target as an implementation PR, combined investigation PR, deliberate no-PR
 evidence comment, or product-decision blocker.
 
 For issue targets, create one focused branch and PR unless exact same-file
-overlap makes a bundle safer. Start new issue branches from the updated base
-branch in `AGENTS.md`. For existing PR, review-fix, or merge-readiness targets,
-work on the existing PR head branch and do not create replacement PRs; if the
-branch cannot be updated safely, report the blocker. Follow local validation,
-pre-push review/simplify, CI backpressure, and merge-readiness gates.
+overlap makes a bundle safer. Start new issue branches from the base branch
+resolved from `.agents/agent-workflow.yml` and target that base by default. For
+existing PR, review-fix, or merge-readiness targets, work on the existing PR head
+branch and do not create replacement PRs; if the branch cannot be updated
+safely, report the blocker. Follow local validation, pre-push review/simplify,
+CI backpressure, and merge-readiness gates.
 
 Every PR body must include a self-contained why/rationale summary. Link the
 target issue when one exists, but do not make reviewers open the issue to

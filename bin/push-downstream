@@ -240,7 +240,8 @@ module PushDownstream
     command = command.to_s
     lines = command.lines.map(&:chomp).reject(&:empty?)
     return lines if lines.length > 1
-    return [command] if command.include?("&&") || command.include?(";") || command.start_with?("(")
+    return [command] if command.match?(/[|&;<>]/)
+    return [command] if command.start_with?("(", "{")
     return [command] if command.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
 
     ["exec #{command}"]
@@ -444,7 +445,7 @@ module PushDownstream
     end
 
     presets = File.file?(presets_path) ? load_presets(presets_path) : {}
-    contracts = repos.to_h { |repo| [repo[:repo], resolve_contract(repo, presets)] }
+    contracts = repos.to_h { |repo| [repo[:nwo], resolve_contract(repo, presets)] }
 
     unless apply
       puts "Planned downstream binstub sync (#{repos.length} repo(s)); " \
@@ -456,7 +457,7 @@ module PushDownstream
       return 0
     end
 
-    failures = repos.count { |repo| !sync_repo(repo, contracts.fetch(repo[:repo])) }
+    failures = repos.count { |repo| !sync_repo(repo, contracts.fetch(repo[:nwo])) }
     failures.zero? ? 0 : 1
   end
 
@@ -476,14 +477,19 @@ module PushDownstream
       end
 
       result = reconcile_scaffold(clone, contract)
+      issues = AgentWorkflowSeamDoctor.check(clone)
       unless result.changed?
+        unless issues.empty?
+          warn "FAIL #{repo[:nwo]}: seam doctor: #{issues.join('; ')}"
+          return false
+        end
+
         return ensure_pull_request(repo, result.follow_ups) if branch_state == :existing_remote
 
         puts "UP_TO_DATE #{repo[:nwo]}"
         return true
       end
 
-      issues = AgentWorkflowSeamDoctor.check(clone)
       unless issues.empty?
         warn "FAIL #{repo[:nwo]}: seam doctor: #{issues.join('; ')}"
         return false

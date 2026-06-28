@@ -108,6 +108,51 @@ class PushDownstreamConfigTest < Minitest::Test
       assert_equal(["beta"], PushDownstream.select_repos(repos, only: ["beta"]).map { |repo| repo.fetch(:repo) })
     end
   end
+
+  def test_registry_apply_keys_contracts_by_full_repo_identity
+    yaml = <<~YAML
+      defaults:
+        base_branch: main
+        pr_branch: agent-workflows/seam-sync
+      repos:
+        - owner: owner-a
+          repo: app
+          overrides:
+            commands:
+              validate: echo owner-a
+        - owner: owner-b
+          repo: app
+          overrides:
+            commands:
+              validate: echo owner-b
+    YAML
+
+    with_config(yaml) do |path|
+      calls = []
+      sync_repo = lambda do |repo, contract|
+        calls << [repo.fetch(:nwo), contract.fetch(:commands).fetch("validate")]
+        true
+      end
+
+      with_module_stub(PushDownstream, :sync_repo, sync_repo) do
+        assert_equal 0, PushDownstream.run_registry(path, File.join(File.dirname(path), "missing.yml"),
+                                                    only: nil, include_disabled: false, apply: true)
+      end
+
+      assert_equal [["owner-a/app", "echo owner-a"], ["owner-b/app", "echo owner-b"]], calls
+    end
+  end
+
+  private
+
+  def with_module_stub(mod, name, replacement)
+    singleton = mod.singleton_class
+    original = mod.method(name)
+    singleton.define_method(name, replacement)
+    yield
+  ensure
+    singleton.define_method(name, original)
+  end
 end
 
 class PushDownstreamAdapterTest < Minitest::Test
@@ -196,7 +241,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       assert_includes File.read(File.join(root, "AGENTS.md")), AgentWorkflowSeamDoctor::POINTER_SECTION
       assert_equal PushDownstream::THIN_CLAUDE, File.read(File.join(root, "CLAUDE.md"))
 
-      out, status = Open3.capture2e("ruby", DOCTOR, "--root", root)
+      out, status = Open3.capture2e(RbConfig.ruby, DOCTOR, "--root", root)
       assert status.success?, out
     end
   end
@@ -209,6 +254,19 @@ class PushDownstreamScaffoldTest < Minitest::Test
 
     refute_includes content, "exec RAILS_ENV=test"
     assert_includes content, 'RAILS_ENV=test ruby -e "exit ENV.fetch(%q[RAILS_ENV]) == %q[test] ? 0 : 1"'
+  end
+
+  def test_script_content_preserves_shell_operator_commands
+    {
+      "pipeline" => "bin/validate | tee validate.log",
+      "redirect" => "bin/validate > validate.log",
+      "fallback" => "bin/validate || bin/test"
+    }.each_value do |command|
+      content = PushDownstream.script_content("validate", command)
+
+      assert_includes content, command
+      refute_includes content, "exec #{command}"
+    end
   end
 
   def test_apply_scaffold_preserves_repo_owned_scripts_policy_and_claude
@@ -273,7 +331,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       assert_includes File.read(File.join(root, ".agents/bin/README.md")),
                       "| `validate` | Pre-push gate | `bin/validate` |"
 
-      out, status = Open3.capture2e("ruby", DOCTOR, "--root", root)
+      out, status = Open3.capture2e(RbConfig.ruby, DOCTOR, "--root", root)
       assert status.success?, out
     end
   end
@@ -411,7 +469,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       broken_contract[:commands].delete("lint")
 
       PushDownstream.reconcile_scaffold(root, broken_contract)
-      out, status = Open3.capture2e("ruby", DOCTOR, "--root", root)
+      out, status = Open3.capture2e(RbConfig.ruby, DOCTOR, "--root", root)
 
       refute status.success?
       assert_includes out, "script references missing sibling script: .agents/bin/validate -> .agents/bin/lint"
@@ -482,6 +540,38 @@ class PushDownstreamGitTest < Minitest::Test
       end
 
       assert_equal [[repo, "agent-workflows/seam-sync", []]], created
+    end
+  end
+
+  def test_sync_repo_validates_unchanged_existing_remote_branch_before_reusing_pr
+    Dir.mktmpdir("push-downstream-git") do |dir|
+      remote, seed = seed_remote(dir)
+      system("git", "-C", seed, "checkout", "-b", "agent-workflows/seam-sync", out: File::NULL)
+      FileUtils.mkdir_p(File.join(seed, ".agents/bin"))
+      File.write(File.join(seed, ".agents/bin/test"), "echo missing strict mode\n")
+      File.chmod(0o755, File.join(seed, ".agents/bin/test"))
+      PushDownstream.reconcile_scaffold(seed, CONTRACT)
+      system("git", "-C", seed, "add", ".")
+      system("git", "-C", seed, "commit", "-m", "invalid current sync branch", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "agent-workflows/seam-sync", out: File::NULL)
+
+      repo = {
+        repo: "consumer",
+        nwo: "local/consumer",
+        base_branch: "main",
+        pr_branch: "agent-workflows/seam-sync",
+        remote_url: remote
+      }
+      create_pr = ->(_repo, _branch, _follow_ups) { flunk "should not create or reuse a PR for invalid seam" }
+
+      with_module_stub(PushDownstream, :existing_pr_url, ->(_repo, _branch) {}) do
+        with_module_stub(PushDownstream, :create_pr, create_pr) do
+          _out, err = capture_io { refute PushDownstream.sync_repo(repo, CONTRACT) }
+
+          assert_includes err, "FAIL local/consumer: seam doctor:"
+          assert_includes err, "script does not enable strict bash mode: .agents/bin/test"
+        end
+      end
     end
   end
 
