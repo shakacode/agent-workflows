@@ -338,6 +338,87 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_acknowledged_risks_allow_exact_target_suspicious_diff_blocker
+    with_fake_gh("untrusted-warning-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:suspicious-text,untrusted-participants",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "Acknowledged security preflight findings:"
+      assert_includes out, "- #123: suspicious text"
+      assert_includes out, "- #123: untrusted, hidden, or unidentifiable participant(s)"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_partial_acknowledgement_prints_audit_record_before_blocking
+    with_fake_gh("untrusted-warning-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:suspicious-text",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: suspicious text"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED\n- #123: untrusted, hidden, or unidentifiable participant(s)"
+      assert_operator out.index("Acknowledged security preflight findings:"), :<, out.index("SECURITY_PREFLIGHT_BLOCKED")
+    end
+  end
+
+  def test_high_risk_files_acknowledgement_warns_without_fail_on_high_risk_files
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:high-risk-files",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "WARN: high-risk-files acknowledgement has no effect unless --fail-on-high-risk-files is set"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_acknowledgement_for_target_outside_scan_list_warns
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "132:suspicious-text",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "WARN: acknowledgement target(s) not in scan list: #132"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
   def test_participant_findings_header_includes_hidden_participants
     with_fake_gh("untrusted-participant") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -346,6 +427,27 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_equal 2, status.exitstatus
       assert_includes out, "Untrusted or hidden participant findings:"
       assert_includes out, "unknown-user"
+    end
+  end
+
+  def test_acknowledged_risk_allows_exact_target_participant_blocker
+    with_fake_gh("untrusted-participant") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:untrusted-participants",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "Acknowledged security preflight findings:"
+      assert_includes out, "- #123: untrusted, hidden, or unidentifiable participant(s)"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
   end
 

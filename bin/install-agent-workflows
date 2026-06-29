@@ -30,6 +30,7 @@ metadata_name=".agent-workflows-install.json"
 bin_helpers=(
   agent-workflow-seam-doctor
   agent-workflows-status
+  agent-workflows-trust-audit
   install-agent-workflows
   upgrade-agent-workflows
 )

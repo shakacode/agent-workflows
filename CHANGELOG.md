@@ -6,8 +6,15 @@ All notable changes to this portable workflow pack are documented here.
 
 ### [Unreleased]
 
+#### Added
+
+- **Add `agent-workflows-trust-audit` to check recent merged PRs against `pr-security-preflight` and draft candidate repo-local trust entries for maintainer review.**
+- **Document the trust/preflight operating model, including global vs repo-local trust, audit flow, acknowledgement policy, and security tradeoffs.**
+
 #### Fixed
 
+- **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
+- **Fix `upgrade-agent-workflows` with no `--consumer-root` arguments under shells that treat empty arrays as unset.**
 - **Fix `pr-security-preflight` trust config inheritance so repo-local, user-global, environment, and fail-closed packaged allowlists resolve predictably.** [PR 20](https://github.com/shakacode/agent-workflows/pull/20) by [justin808](https://github.com/justin808).
 
 ### [0.1.0] - 2026-06-24

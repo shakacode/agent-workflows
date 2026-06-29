@@ -76,6 +76,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
+  assert_file "$target/bin/agent-workflows-trust-audit"
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
@@ -90,6 +91,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/skills/pr-batch/SKILL.md"
   assert_file "$tmp/.claude/workflows/pr-processing.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
+  assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
 }
 
 test_copy_mode_preserves_unrelated_agent_files() {
@@ -119,6 +121,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/skills/pr-batch"
   assert_symlink "$target/workflows"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
+  assert_symlink "$target/bin/agent-workflows-trust-audit"
   assert_file "$target/.agent-workflows-install.json"
 }
 

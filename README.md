@@ -69,8 +69,8 @@ The installer copies:
 - install metadata to `<target>/.agent-workflows-install.json`.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-status`, and `upgrade-agent-workflows` available as normal
-commands.
+`agent-workflows-status`, `agent-workflows-trust-audit`, and
+`upgrade-agent-workflows` available as normal commands.
 
 See [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 host selection, status states, upgrades, rollback behavior, and Codex/Claude
@@ -150,6 +150,26 @@ in a repo-local or user-global trust config. Workflow commenters such as
 comments as trusted CI/status metadata. In repo-local configs, `trusted_teams`
 entries are slugs under that repo owner; in env or `~/.agents` configs, use
 owner-qualified entries such as `OWNER/team-slug`.
+
+For a one-off maintainer waiver, rerun the exact target with
+`--acknowledge-risk NUMBER:risk-id[,risk-id]` instead of broadening the trust
+config. Valid risk ids are `github-api-coverage`, `high-risk-files`,
+`suspicious-text`, `untrusted-interactions`, and `untrusted-participants`.
+
+To audit a repo's current trust config against recently merged PRs:
+
+```bash
+agent-workflows-trust-audit --repo OWNER/REPO --limit 10 \
+  --trust-config /path/to/trusted-github-actors.yml
+```
+
+The audit reports candidate repo-local `trusted_users` and `trusted_bots` from
+the sample, but it does not write trust config. Historical merged PRs are
+evidence for maintainer review, not automatic authority.
+
+See [docs/trust-and-preflight.md](docs/trust-and-preflight.md) for the
+recommended trust-config split, audit workflow, acknowledgement policy, and
+security tradeoffs.
 
 ## Validation
 
