@@ -952,6 +952,9 @@ using a paused or operator-restart reason if the backend supports it. If it is
 using only the public `codex-claim` fallback, refresh the existing claim comment
 with an extended `expires_at` instead, leaving `status: in_progress` so the
 fallback remains an active advisory lock.
+If this lane holds no claim of any kind, skip the claim-preservation write and
+proceed directly to the handoff reply; do not acquire a new claim during this
+pause.
 If claim state cannot be checked or refreshed, report it as UNKNOWN in the
 handoff. If claim state fails for another independent non-timeout setup/auth
 reason, report UNKNOWN and stop rather than releasing unilaterally.
@@ -979,7 +982,7 @@ Reply with a restart handoff:
 - Safety: whether it is safe to quit Codex now, and any cleanup needed before
   resuming or relaunching.
 
-After completing the heartbeat/claim writes above and sending this handoff
+After completing the heartbeat/claim write above and sending this handoff
 reply, do not run more tools or continue work until I explicitly resume.
 ```
 
