@@ -952,9 +952,14 @@ using a paused or operator-restart reason if the backend supports it. If it is
 using only the public `codex-claim` fallback, refresh the existing claim comment
 with an extended `expires_at` instead, leaving `status: in_progress` so the
 fallback remains an active advisory lock.
+If claim state cannot be checked or refreshed, report it as UNKNOWN in the
+handoff. If claim state fails for another independent non-timeout setup/auth
+reason, report UNKNOWN and stop rather than releasing unilaterally.
 
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
+If this batch or lane is explicitly cancelled, follow the batch cancellation
+protocol instead of this pause flow.
 
 Reply with a restart handoff:
 - Role and lane: coordinator, worker, or QA; batch id; target(s); stable
@@ -974,22 +979,14 @@ Reply with a restart handoff:
 - Safety: whether it is safe to quit Codex now, and any cleanup needed before
   resuming or relaunching.
 
-After this handoff, do not run more tools or continue work until I explicitly
-resume.
+After completing the heartbeat/claim writes above and sending this handoff
+reply, do not run more tools or continue work until I explicitly resume.
 ```
 
-If this lane owns a private backend claim and the backend supports a paused or
-blocked heartbeat reason, the worker should refresh its own heartbeat with an
-paused or operator-restart reason before stopping. If the lane is using only the
-structured public `codex-claim` fallback, refresh the existing claim comment
-with an extended `expires_at` before stopping, leaving `status: in_progress` so
-the fallback remains an active advisory lock. If claim state cannot be checked or
-updated, report it as `UNKNOWN`; do not release a claim or delete a worktree
-because Codex is restarting. If the worker observes explicit coordinator
-cancellation, follow the
-[Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol. If
-claim state fails for another independent non-timeout setup/auth reason, report
-it as `UNKNOWN` and stop rather than releasing unilaterally.
+The pasted prompt is the complete pause instruction: it permits only bounded
+status checks plus the claim-preservation write before the handoff. Explicit
+coordinator cancellation switches to the
+[Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol.
 
 After relaunch, reopen each paused persistent thread and resume from its
 handoff. For an in-process worker or subagent that cannot be reopened after its
