@@ -897,6 +897,69 @@ claim/heartbeat state. Use claim comments only to recover context when the
 private claim could not be started, definitively failed before mutation, or was
 explicitly mirrored.
 
+### Pausing For A Codex App Restart
+
+Use this when the operator needs to quit and relaunch the Codex desktop app but
+expects the same coordinator and worker lanes to resume afterward. This is a
+pause, not cancellation: workers preserve their claims, worktrees, branches, and
+local changes unless the coordinator explicitly cancels the batch or lane.
+
+Before quitting Codex, paste this prompt into every active coordinator, worker,
+and QA-lane thread:
+
+```text
+Pause for Codex app restart now.
+
+Do not start new targets, spawn workers, create branches or worktrees, push,
+request CI, poll reviews, merge, or make repo changes. Run only the minimal
+read-only local, GitHub, and coordination status checks needed for the handoff,
+plus one normal heartbeat/status update if this lane already owns a claim. Then
+stop using tools.
+
+Preserve any current claim and worktree unless I explicitly say this batch or
+lane is cancelled. Do not run `agent-coord release` for a normal app restart.
+
+Reply with a restart handoff:
+- Role and lane: coordinator, worker, or QA; batch id; target(s); stable
+  agent/thread id.
+- Repo state: repo path, worktree path, branch, upstream, HEAD SHA, PR/issue
+  URLs.
+- Local changes: staged, unstaged, and untracked files; unpushed commits;
+  stashes.
+- Coordination: claim holder, last heartbeat/status, `blocked_on`/`depends_on`,
+  cancellation state, and any UNKNOWN facts.
+- Work state: last completed step, current safe checkpoint, in-flight operation,
+  and next resume step.
+- Remote state: pushed branches/PRs, last-known CI/review state, and hosted
+  polling still needed.
+- Running processes: commands, servers, PIDs, watchers, or pollers, and whether
+  they were stopped or must be restarted after Codex relaunch.
+- Safety: whether it is safe to quit Codex now, and any cleanup needed before
+  resuming or relaunching.
+
+After this handoff, do not run more tools or continue work until I explicitly
+resume.
+```
+
+If the backend supports a paused or blocked heartbeat reason, the worker may
+refresh its own heartbeat with an operator-restart reason before stopping. If
+the backend state cannot be checked or updated, report it as `UNKNOWN`; do not
+release a claim or delete a worktree solely because Codex is restarting.
+
+After relaunch, reopen each paused thread and resume from its handoff. The first
+resume action is bounded status recovery: re-check the worktree, branch, HEAD
+SHA, uncommitted changes, current PR/check state, and private claim/heartbeat
+state before continuing. Refresh the heartbeat at the resumed state before
+editing, pushing, or starting the next target.
+
+For new batches after a restart, start fresh coordinator and worker sessions
+from a checkout that already contains the desired `.agents/skills/...` and
+`.agents/workflows/...` files. Do not reuse a paused worker to run a new batch
+or to pick up updated workflow text; skills and workflow instructions are read
+at process/session start. Let healthy paused batches finish on their loaded
+instructions, or use the cancellation protocol below when a batch must be
+restarted with new rules, targets, or branch names.
+
 ### Worker Rules
 
 When worker subagents are explicitly authorized:
