@@ -984,13 +984,19 @@ observes explicit coordinator cancellation, follow the
 claim state fails for another independent non-timeout setup/auth reason, report
 it as `UNKNOWN` and stop rather than releasing unilaterally.
 
-After relaunch, reopen each paused thread and resume from its handoff. The first
-resume action is bounded status recovery: re-check the worktree, branch, HEAD
-SHA, uncommitted changes, current PR/check state, and private claim/heartbeat
-state before continuing. If bounded status shows the claim is stale or dead but
-still held by this same stable agent/thread id with no cancellation or
-reassignment, refresh the heartbeat at the resumed state before editing,
-pushing, or starting the next target. If the holder changed, cancellation or
+After relaunch, reopen each paused persistent thread and resume from its
+handoff. For an in-process worker or subagent that cannot be reopened after its
+host process exits, the coordinator starts a replacement worker session from the
+saved handoff instead of assuming the old worker will resume. The first resume
+or replacement action is bounded status recovery: re-check the worktree, branch,
+HEAD SHA, uncommitted changes, current PR/check state, and private
+claim/heartbeat state before continuing. If bounded status shows the claim is
+stale or dead but still held by this same stable agent/thread id with no
+cancellation or reassignment, refresh the heartbeat at the resumed state before
+editing, pushing, or starting the next target. A replacement worker with a new
+stable agent/thread id must stop after status recovery until the coordinator
+reconciles or reassigns the private claim; it must not edit or push while the
+backend still names the old holder. If the holder changed, cancellation or
 reassignment is present, or ownership is `UNKNOWN`, stop and report the conflict;
 do not refresh the heartbeat or continue work until the coordinator resolves it.
 
