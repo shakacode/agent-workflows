@@ -981,7 +981,7 @@ If this lane owns a private backend claim and the backend supports a paused or
 blocked heartbeat reason, the worker should refresh its own heartbeat with an
 operator-restart reason before stopping. If the lane is using only the
 structured public `codex-claim` fallback, refresh the existing claim comment
-with a new short `expires_at` before stopping. If claim state cannot be checked
+with an extended `expires_at` before stopping. If claim state cannot be checked
 or updated, report it as `UNKNOWN`; do not release a claim or delete a worktree
 because Codex is restarting. If the worker observes explicit coordinator
 cancellation, follow the
@@ -994,16 +994,21 @@ handoff. For an in-process worker or subagent that cannot be reopened after its
 host process exits, the coordinator starts a replacement worker session from the
 saved handoff instead of assuming the old worker will resume. The first resume
 or replacement action is bounded status recovery: re-check the worktree, branch,
-HEAD SHA, uncommitted changes, current PR/check state, and private
-claim/heartbeat state before continuing. If bounded status shows the claim is
-stale or dead but still held by this same stable agent/thread id with no
-cancellation or reassignment, refresh the heartbeat at the resumed state before
-editing, pushing, or starting the next target. A replacement worker with a new
+HEAD SHA, uncommitted changes, current PR/check state, and either private
+claim/heartbeat state or active public `codex-claim` fallback comments before
+continuing. If bounded status shows a private backend claim is stale or dead but
+still held by this same stable agent/thread id with no cancellation or
+reassignment, refresh the heartbeat at the resumed state before editing, pushing,
+or starting the next target. For a public fallback lane, refresh this lane's
+existing claim comment before editing only when no conflicting unexpired
+`codex-claim` comment exists on the same target. A replacement worker with a new
 stable agent/thread id must stop after status recovery until the coordinator
-reconciles or reassigns the private claim; it must not edit or push while the
-backend still names the old holder. If the holder changed, cancellation or
-reassignment is present, or ownership is `UNKNOWN`, stop and report the conflict;
-do not refresh the heartbeat or continue work until the coordinator resolves it.
+reconciles or reassigns the private claim or public fallback claim; it must not
+edit or push while the backend or active public fallback still names the old
+holder. If the holder changed, cancellation or reassignment is present, or
+ownership is `UNKNOWN`, stop and report the conflict; do not refresh the
+heartbeat or public fallback claim, and do not continue work until the
+coordinator resolves it.
 
 For new batches after a restart, start fresh coordinator and worker sessions
 from a checkout that already contains the desired `.agents/skills/...` and
