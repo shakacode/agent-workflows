@@ -92,6 +92,7 @@ module AgentWorkflowsTrustAudit
   def parse_preflight_output(output)
     actors = Hash.new { |hash, key| hash[key] = empty_actor(key) }
     risks = []
+    blocked_summary = false
     current_number = nil
     section = nil
 
@@ -104,13 +105,21 @@ module AgentWorkflowsTrustAudit
         section = :participants
       when %r{^\s+Untrusted comment/review queue:}
         section = :interactions
+      when /^SECURITY_PREFLIGHT_BLOCKED\b/
+        blocked_summary = true
+        section = nil
+      when /^SECURITY_PREFLIGHT_OK\b/
+        blocked_summary = false
+        section = nil
+      when /^Acknowledged security preflight findings:/
+        section = :acknowledged
       when /^\s+\S.*:$/
         section = nil unless line.include?("Untrusted")
       end
 
       parse_participant_line(line, actors, current_number) if section == :participants
       parse_interaction_line(line, actors, current_number) if section == :interactions
-      parse_risk_line(line, risks)
+      parse_risk_line(line, risks) if blocked_summary
     end
 
     { actors:, risks: }
@@ -146,7 +155,9 @@ module AgentWorkflowsTrustAudit
 
     number = match[1].to_i
     message = match[2].strip
-    risk_id = RISK_MESSAGES.fetch(message, "unknown")
+    risk_id = RISK_MESSAGES[message]
+    warn "WARN: unknown pr-security-preflight risk message: #{message}" unless risk_id
+    risk_id ||= "unknown"
     risks << { number:, message:, risk_id: }
   end
 
