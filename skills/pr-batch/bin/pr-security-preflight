@@ -1237,6 +1237,11 @@ ARGV.each do |arg|
 end
 
 if overall_blockers.any?
+  if acknowledged_findings.any?
+    puts "Acknowledged security preflight findings:"
+    acknowledged_findings.each { |finding| puts "- #{finding}" }
+    puts
+  end
   puts "SECURITY_PREFLIGHT_BLOCKED"
   overall_blockers.each { |blocker| puts "- #{blocker}" }
   exit 2

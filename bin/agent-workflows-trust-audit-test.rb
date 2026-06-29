@@ -92,6 +92,21 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
     end
   end
 
+  def test_json_preflight_operational_failure_suppresses_candidates
+    with_fake_commands("partial-error") do |env, preflight_path|
+      out, status = run_script(env, preflight_path, "--json")
+      payload = JSON.parse(out)
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_equal "PREFLIGHT_ERROR", payload.fetch("preflight_status")
+      assert_equal true, payload.fetch("candidate_trust").fetch("unavailable")
+      assert_empty payload.dig("candidate_trust", "trusted_users")
+      assert_empty payload.dig("candidate_trust", "trusted_bots")
+      assert_empty payload.fetch("manual_review_actors")
+    end
+  end
+
   private
 
   def run_script(env, preflight_path, *extra_args)
@@ -211,12 +226,16 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
                unknown_risk_output
              when "error"
                "gh auth failed\n"
+             when "partial-error"
+               blocked_output
              else
                blocked_output
              end
     exit_status = if %w[ok acknowledged].include?(mode)
                     0
                   elsif mode == "error"
+                    1
+                  elsif mode == "partial-error"
                     1
                   else
                     2

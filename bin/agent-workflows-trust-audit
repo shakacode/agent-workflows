@@ -295,6 +295,30 @@ module AgentWorkflowsTrustAudit
 
   def json_payload(repo:, prs:, trust_config:, preflight_status:, preflight_output:, parsed:)
     candidate_data = candidates(parsed)
+    candidate_trust = if preflight_error?(preflight_status)
+                        { trusted_users: [], trusted_bots: [], trusted_teams: [], unavailable: true }
+                      else
+                        {
+                          trusted_users: format_set(candidate_data.fetch(:trusted_users)),
+                          trusted_bots: format_set(candidate_data.fetch(:trusted_bots)),
+                          trusted_teams: []
+                        }
+                      end
+    manual_review_actors = if preflight_error?(preflight_status)
+                             []
+                           else
+                             candidate_data.fetch(:manual_review).map do |entry|
+                               actor = entry.fetch(:actor)
+                               {
+                                 login: entry.fetch(:login),
+                                 permissions: format_set(actor.fetch(:permissions)),
+                                 prs: format_set(actor.fetch(:prs)),
+                                 interactions: format_set(actor.fetch(:interactions)),
+                                 urls: format_set(actor.fetch(:urls))
+                               }
+                             end
+                           end
+
     {
       repo:,
       prs: prs.map { |pr| pr.slice("number", "title", "url", "mergedAt") },
@@ -302,21 +326,8 @@ module AgentWorkflowsTrustAudit
       preflight_status: preflight_status_label(preflight_status),
       preflight_exit_status: preflight_status,
       risks: parsed.fetch(:risks),
-      candidate_trust: {
-        trusted_users: format_set(candidate_data.fetch(:trusted_users)),
-        trusted_bots: format_set(candidate_data.fetch(:trusted_bots)),
-        trusted_teams: []
-      },
-      manual_review_actors: candidate_data.fetch(:manual_review).map do |entry|
-        actor = entry.fetch(:actor)
-        {
-          login: entry.fetch(:login),
-          permissions: format_set(actor.fetch(:permissions)),
-          prs: format_set(actor.fetch(:prs)),
-          interactions: format_set(actor.fetch(:interactions)),
-          urls: format_set(actor.fetch(:urls))
-        }
-      end,
+      candidate_trust:,
+      manual_review_actors:,
       preflight_output:
     }
   end

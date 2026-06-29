@@ -360,6 +360,27 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_partial_acknowledgement_prints_audit_record_before_blocking
+    with_fake_gh("untrusted-warning-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:suspicious-text",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "Acknowledged security preflight findings:\n- #123: suspicious text"
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED\n- #123: untrusted, hidden, or unidentifiable participant(s)"
+      assert_operator out.index("Acknowledged security preflight findings:"), :<, out.index("SECURITY_PREFLIGHT_BLOCKED")
+    end
+  end
+
   def test_high_risk_files_acknowledgement_warns_without_fail_on_high_risk_files
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(

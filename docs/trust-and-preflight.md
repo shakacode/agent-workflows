@@ -40,7 +40,7 @@ that machine:
 ```yaml
 trusted_users:
   # Add humans whose comments/reviews you trust across repos on this machine.
-  - your-github-login
+  - your-username
 
 trusted_bots:
   # Add only review or dependency automation you intentionally use and trust

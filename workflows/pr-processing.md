@@ -115,6 +115,8 @@ assign that PR to a worker until a maintainer explicitly acknowledges the risk
 with `--acknowledge-risk NUMBER:risk-id[,risk-id]` or removes the target from
 the batch. Valid risk ids are `github-api-coverage`, `high-risk-files`,
 `suspicious-text`, `untrusted-interactions`, and `untrusted-participants`.
+`high-risk-files` is only blocking, and therefore only meaningfully
+acknowledgeable, when preflight is run with `--fail-on-high-risk-files`.
 
 Fetch inline PR review comments separately; `gh pr view --json comments` is not
 enough for review-thread comments:
