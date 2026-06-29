@@ -360,6 +360,25 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_high_risk_files_acknowledgement_warns_without_fail_on_high_risk_files
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "123:high-risk-files",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "WARN: high-risk-files acknowledgement has no effect unless --fail-on-high-risk-files is set"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
   def test_participant_findings_header_includes_hidden_participants
     with_fake_gh("untrusted-participant") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")

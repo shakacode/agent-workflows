@@ -101,6 +101,11 @@ end
 
 parser.parse!(ARGV)
 
+if !options[:fail_on_high_risk_files] &&
+   options.fetch(:acknowledged_risks).values.any? { |risks| risks.include?("high-risk-files") }
+  warn "WARN: high-risk-files acknowledgement has no effect unless --fail-on-high-risk-files is set"
+end
+
 if ARGV.empty?
   warn parser
   exit 64

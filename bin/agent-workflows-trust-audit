@@ -41,6 +41,7 @@ module AgentWorkflowsTrustAudit
   end
 
   def merged_prs(repo, limit)
+    fetch_limit = [limit * 5, 100].max
     run_gh_json(
       "pr",
       "list",
@@ -49,10 +50,10 @@ module AgentWorkflowsTrustAudit
       "--state",
       "merged",
       "--limit",
-      limit.to_s,
+      fetch_limit.to_s,
       "--json",
       "number,title,url,mergedAt"
-    )
+    ).sort_by { |pr| pr.fetch("mergedAt", "") }.reverse.first(limit)
   end
 
   def default_preflight_path
@@ -65,7 +66,7 @@ module AgentWorkflowsTrustAudit
     args.concat(numbers.map(&:to_s))
 
     output, status = Open3.capture2e(*args)
-    [output.force_encoding("UTF-8").scrub, status.exitstatus]
+    [output.force_encoding("UTF-8").scrub, status.exitstatus || 1]
   end
 
   def normalized_login(login)
@@ -167,9 +168,9 @@ module AgentWorkflowsTrustAudit
     manual_review = []
 
     parsed.fetch(:actors).each do |login, actor|
-      if bot_login?(login)
+      if bot_login?(login) && visible_actor_evidence?(actor)
         trusted_bots << normalized_bot_login(login)
-      elsif trusted_user_candidate?(actor)
+      elsif trusted_user_candidate?(actor) && visible_actor_evidence?(actor)
         trusted_users << login
       else
         manual_review << { login:, actor: }
@@ -184,6 +185,25 @@ module AgentWorkflowsTrustAudit
     permissions.any? { |permission| TRUSTED_USER_PERMISSIONS.include?(permission) }
   end
 
+  def visible_actor_evidence?(actor)
+    actor.fetch(:urls).any? || actor.fetch(:interactions).any? { |kind| kind != "participant" }
+  end
+
+  def preflight_status_label(status)
+    case status
+    when 0
+      "SECURITY_PREFLIGHT_OK"
+    when 2
+      "SECURITY_PREFLIGHT_BLOCKED"
+    else
+      "PREFLIGHT_ERROR"
+    end
+  end
+
+  def preflight_error?(status)
+    !status.zero? && status != 2
+  end
+
   def format_set(values)
     values.to_a.sort
   end
@@ -193,18 +213,31 @@ module AgentWorkflowsTrustAudit
     puts "Repository: #{repo}"
     puts "Merged PR sample: #{prs.map { |pr| "##{pr.fetch('number')}" }.join(', ')}"
     puts "Trust config: #{trust_config || '(preflight default resolution)'}"
-    puts "Preflight status: #{preflight_status.zero? ? 'SECURITY_PREFLIGHT_OK' : 'SECURITY_PREFLIGHT_BLOCKED'}"
+    puts "Preflight status: #{preflight_status_label(preflight_status)}"
     puts
 
-    print_risks(parsed.fetch(:risks))
-    print_candidate_yaml(candidate_data)
-    print_manual_review(candidate_data.fetch(:manual_review))
+    print_risks(parsed.fetch(:risks), preflight_status:)
+    if preflight_error?(preflight_status)
+      puts "Candidate repo-local trust entries: unavailable because preflight did not complete."
+      puts
+      puts "Manual-review actors: unavailable because preflight did not complete."
+      puts
+    else
+      print_candidate_yaml(candidate_data)
+      print_manual_review(candidate_data.fetch(:manual_review))
+    end
 
     puts "Raw preflight output:"
     puts preflight_output
   end
 
-  def print_risks(risks)
+  def print_risks(risks, preflight_status:)
+    if preflight_error?(preflight_status)
+      puts "Blocking risks: unavailable because preflight did not complete"
+      puts
+      return
+    end
+
     if risks.empty?
       puts "Blocking risks: none"
     else
@@ -266,7 +299,8 @@ module AgentWorkflowsTrustAudit
       repo:,
       prs: prs.map { |pr| pr.slice("number", "title", "url", "mergedAt") },
       trust_config:,
-      preflight_status: preflight_status.zero? ? "SECURITY_PREFLIGHT_OK" : "SECURITY_PREFLIGHT_BLOCKED",
+      preflight_status: preflight_status_label(preflight_status),
+      preflight_exit_status: preflight_status,
       risks: parsed.fetch(:risks),
       candidate_trust: {
         trusted_users: format_set(candidate_data.fetch(:trusted_users)),
@@ -323,7 +357,7 @@ module AgentWorkflowsTrustAudit
       )
     end
 
-    preflight_status.zero? ? 0 : 2
+    preflight_status.zero? ? 0 : preflight_status
   end
 end
 

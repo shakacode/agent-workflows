@@ -17,13 +17,17 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
 
       refute status.success?, out
       assert_equal 2, status.exitstatus
-      assert_includes out, "Merged PR sample: #363, #347"
+      assert_includes out, "Merged PR sample: #347, #363"
       assert_includes out, "Preflight status: SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "  - #363: untrusted-interactions"
       assert_includes out, "  - ihabadham"
       assert_includes out, "  - chatgpt-codex-connector"
       assert_includes out, "  - greptile-apps"
       assert_includes out, "  - Copilot: permission=none"
+      assert_includes out, "  - hiddenbot[bot]: permission=unknown; prs=#363; interactions=participant"
+      assert_includes out, "  - write-only-user: permission=write; prs=#347; interactions=participant"
+      refute_includes out, "  - hiddenbot\n"
+      refute_includes out, "  - write-only-user\n"
     end
   end
 
@@ -71,6 +75,20 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
       assert_includes payload.dig("candidate_trust", "trusted_users"), "ihabadham"
       assert_includes payload.dig("candidate_trust", "trusted_bots"), "greptile-apps"
       assert_equal ["untrusted-interactions"], payload.fetch("risks").map { |risk| risk.fetch("risk_id") }.uniq
+      assert_includes payload.fetch("manual_review_actors").map { |actor| actor.fetch("login") }, "hiddenbot[bot]"
+    end
+  end
+
+  def test_preflight_operational_failure_is_not_reported_as_security_block
+    with_fake_commands("error") do |env, preflight_path|
+      out, status = run_script(env, preflight_path)
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_includes out, "Preflight status: PREFLIGHT_ERROR"
+      assert_includes out, "Blocking risks: unavailable because preflight did not complete"
+      assert_includes out, "Candidate repo-local trust entries: unavailable"
+      refute_includes out, "Preflight status: SECURITY_PREFLIGHT_BLOCKED"
     end
   end
 
@@ -115,8 +133,8 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
       if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         cat <<'JSON'
       [
-        {"number":363,"title":"Deploy review app","url":"https://github.com/owner/repo/pull/363","mergedAt":"2026-06-01T00:00:00Z"},
-        {"number":347,"title":"Docs update","url":"https://github.com/owner/repo/pull/347","mergedAt":"2026-05-01T00:00:00Z"}
+        {"number":363,"title":"Deploy review app","url":"https://github.com/owner/repo/pull/363","mergedAt":"2026-05-01T00:00:00Z"},
+        {"number":347,"title":"Docs update","url":"https://github.com/owner/repo/pull/347","mergedAt":"2026-06-01T00:00:00Z"}
       ]
       JSON
         exit 0
@@ -158,6 +176,7 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
         URL: https://github.com/owner/repo/pull/363
         Untrusted or hidden participant findings:
           - Copilot: no visible comment/review/commit/reaction trail; not in trusted actor allowlist; permission=none
+          - hiddenbot[bot]: no visible comment/review/commit/reaction trail; not in trusted actor allowlist; permission=unknown
         Untrusted comment/review queue:
           - greptile-apps[bot] issue comment (https://github.com/owner/repo/pull/363#issuecomment-1)
           - chatgpt-codex-connector[bot] review comment (https://github.com/owner/repo/pull/363#discussion_r1)
@@ -166,6 +185,7 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
         URL: https://github.com/owner/repo/pull/347
         Untrusted or hidden participant findings:
           - ihabadham: not in trusted actor allowlist; permission=write
+          - write-only-user: no visible comment/review/commit/reaction trail; not in trusted actor allowlist; permission=write
         Untrusted comment/review queue:
           - ihabadham issue comment (https://github.com/owner/repo/pull/347#issuecomment-2)
 
@@ -189,10 +209,18 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
                acknowledged_output
              when "unknown-risk"
                unknown_risk_output
+             when "error"
+               "gh auth failed\n"
              else
                blocked_output
              end
-    exit_status = %w[ok acknowledged].include?(mode) ? 0 : 2
+    exit_status = if %w[ok acknowledged].include?(mode)
+                    0
+                  elsif mode == "error"
+                    1
+                  else
+                    2
+                  end
 
     <<~SH
       #!/usr/bin/env bash

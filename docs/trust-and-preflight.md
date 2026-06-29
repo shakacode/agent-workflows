@@ -39,13 +39,14 @@ that machine:
 
 ```yaml
 trusted_users:
-  - justin808
+  # Add humans whose comments/reviews you trust across repos on this machine.
+  - your-github-login
 
 trusted_bots:
-  - coderabbitai
-  - dependabot
-  - greptile-apps
-  - chatgpt-codex-connector
+  # Add only review or dependency automation you intentionally use and trust
+  # across repos. Use the base bot login without the trailing "[bot]".
+  - your-review-bot
+  - your-dependency-bot
 
 trusted_teams: []
 ```
@@ -57,10 +58,7 @@ trusted_users: []
 
 trusted_bots:
   # Add only when this repo treats workflow comments as trusted metadata.
-  - github-actions
-  # Add only when this repo uses GitHub Advanced Security review comments as
-  # trusted metadata.
-  - github-advanced-security
+  - repo-workflow-bot
 
 trusted_teams:
   - maintainers
@@ -117,6 +115,11 @@ Valid risk ids:
 Do not acknowledge a category because it is noisy. Acknowledge only the exact PR
 and exact printed finding that a maintainer has accepted for that run. Keep the
 acknowledged findings in the handoff.
+
+`high-risk-files` is informational unless the preflight is run with
+`--fail-on-high-risk-files`. A `high-risk-files` acknowledgement without that
+flag is ignored and the helper warns, because there is no blocking risk to
+waive.
 
 ## Security Tradeoffs
 
