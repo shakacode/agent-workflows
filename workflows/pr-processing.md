@@ -897,6 +897,40 @@ claim/heartbeat state. Use claim comments only to recover context when the
 private claim could not be started, definitively failed before mutation, or was
 explicitly mirrored.
 
+### Worker Rules
+
+When worker subagents are explicitly authorized:
+
+- Assign one target or one disjoint lane per worker.
+- Acquire the lane's `agent-coord claim` before creating the worker worktree or
+  branch when the backend is available. If bounded doctor/status is degraded
+  and the lane is exact and independent, the coordinator may provide a
+  successful direct claim result before worker launch. Use an advisory
+  public-claim URL only when the private claim could not be started or
+  definitively failed with a non-timeout setup/auth error before mutation. If
+  the claim is refused, the worker reports the holder and heartbeat liveness,
+  then stops that lane.
+- Give each worker a separate worktree and branch. For in-process subagents
+  (Claude Code `Agent`/`Workflow` tools), "separate worktree" means passing
+  `isolation: 'worktree'`. Never run two file-editing workers in the same working
+  directory at the same time; sharing one checkout corrupts the git index,
+  branch, and working tree as workers overwrite each other.
+- Tell workers they are not alone in the codebase and must not revert others' edits.
+- Keep write scopes disjoint unless the main agent serializes integration.
+- Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
+  PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
+- For a worker lane with `depends_on`, check bounded `agent-coord status` at
+  lane start and before rebase or push. If dependencies are unmet, the worker
+  reports the `blocked_on` refs, sets heartbeat `--status blocked`, and moves
+  to another independent lane instead of pushing dependent work.
+- If bounded `agent-coord status` cannot be checked for a worker lane with
+  `depends_on`, treat dependency state as `UNKNOWN` and stop that lane instead
+  of using claim-only mode or advisory fallback.
+- If a worker lane declares `depends_on` but bounded `agent-coord status` shows no
+  matching batch state for that lane, treat dependency state as `UNKNOWN` and
+  stop to report the missing private batch file.
+- The main agent owns final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
+
 ### Pausing For A Codex App Restart
 
 Use this when the operator needs to quit and relaunch the Codex desktop app but
@@ -968,40 +1002,6 @@ at process/session start. Let healthy paused batches finish on their loaded
 instructions, or use the
 [Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol when
 a batch must be restarted with new rules, targets, or branch names.
-
-### Worker Rules
-
-When worker subagents are explicitly authorized:
-
-- Assign one target or one disjoint lane per worker.
-- Acquire the lane's `agent-coord claim` before creating the worker worktree or
-  branch when the backend is available. If bounded doctor/status is degraded
-  and the lane is exact and independent, the coordinator may provide a
-  successful direct claim result before worker launch. Use an advisory
-  public-claim URL only when the private claim could not be started or
-  definitively failed with a non-timeout setup/auth error before mutation. If
-  the claim is refused, the worker reports the holder and heartbeat liveness,
-  then stops that lane.
-- Give each worker a separate worktree and branch. For in-process subagents
-  (Claude Code `Agent`/`Workflow` tools), "separate worktree" means passing
-  `isolation: 'worktree'`. Never run two file-editing workers in the same working
-  directory at the same time; sharing one checkout corrupts the git index,
-  branch, and working tree as workers overwrite each other.
-- Tell workers they are not alone in the codebase and must not revert others' edits.
-- Keep write scopes disjoint unless the main agent serializes integration.
-- Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
-  PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
-- For a worker lane with `depends_on`, check bounded `agent-coord status` at
-  lane start and before rebase or push. If dependencies are unmet, the worker
-  reports the `blocked_on` refs, sets heartbeat `--status blocked`, and moves
-  to another independent lane instead of pushing dependent work.
-- If bounded `agent-coord status` cannot be checked for a worker lane with
-  `depends_on`, treat dependency state as `UNKNOWN` and stop that lane instead
-  of using claim-only mode or advisory fallback.
-- If a worker lane declares `depends_on` but bounded `agent-coord status` shows no
-  matching batch state for that lane, treat dependency state as `UNKNOWN` and
-  stop to report the missing private batch file.
-- The main agent owns final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 
 ### Cancelling Or Stopping A Batch
 
