@@ -12,9 +12,11 @@ For a Codex desktop app restart, do not treat healthy in-flight batches as
 cancelled. Use the restart pause prompt in
 [Pausing For A Codex App Restart](../workflows/pr-processing.md#pausing-for-a-codex-app-restart):
 workers should hand off their current state, preserve claims and worktrees, and
-stop using tools until explicitly resumed. Launch fresh workers for new batches.
-When an in-flight batch must pick up updated workflow text, first cancel the
-affected batch or lane through the
+stop using tools until explicitly resumed. Launch fresh coordinator and worker
+sessions for new batches from a checkout that already contains the desired
+`.agents/skills/...` and `.agents/workflows/...` files. When an in-flight batch
+must pick up updated workflow text, first cancel the affected batch or lane
+through the
 [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
 protocol before relaunching.
 
