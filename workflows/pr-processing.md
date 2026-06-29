@@ -945,10 +945,12 @@ and QA-lane thread:
 Pause for Codex app restart now.
 
 Do not start new targets, spawn workers, create branches or worktrees, push,
-request CI, poll reviews, merge, or make repo changes. Run only the minimal
-read-only local, GitHub, and coordination status checks needed for the handoff.
-If this lane already owns a claim, also send one heartbeat update, using a
-paused or operator-restart reason if the backend supports it.
+request CI, poll reviews, merge, or change repository files. Limit work to the
+minimal status checks and claim-preservation write needed for the handoff.
+If this lane already owns a private backend claim, send one heartbeat update,
+using a paused or operator-restart reason if the backend supports it. If it is
+using only the public `codex-claim` fallback, refresh the existing claim comment
+with an extended `expires_at` instead.
 
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
@@ -975,12 +977,14 @@ After this handoff, do not run more tools or continue work until I explicitly
 resume.
 ```
 
-If this lane owns a claim and the backend supports a paused or blocked heartbeat
-reason, the worker should refresh its own heartbeat with an operator-restart
-reason before stopping. If the backend state cannot be checked or updated,
-report it as `UNKNOWN`; do not release a claim or delete a worktree because
-Codex is restarting. If the worker observes explicit coordinator cancellation,
-follow the
+If this lane owns a private backend claim and the backend supports a paused or
+blocked heartbeat reason, the worker should refresh its own heartbeat with an
+operator-restart reason before stopping. If the lane is using only the
+structured public `codex-claim` fallback, refresh the existing claim comment
+with a new short `expires_at` before stopping. If claim state cannot be checked
+or updated, report it as `UNKNOWN`; do not release a claim or delete a worktree
+because Codex is restarting. If the worker observes explicit coordinator
+cancellation, follow the
 [Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol. If
 claim state fails for another independent non-timeout setup/auth reason, report
 it as `UNKNOWN` and stop rather than releasing unilaterally.

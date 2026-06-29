@@ -13,8 +13,10 @@ cancelled. Use the restart pause prompt in
 [Pausing For A Codex App Restart](../workflows/pr-processing.md#pausing-for-a-codex-app-restart):
 workers should hand off their current state, preserve claims and worktrees, and
 stop using tools until explicitly resumed. Launch fresh workers for new batches.
-When an in-flight batch must pick up updated workflow text, first cancel or
-relaunch it through the canonical stopping protocol.
+When an in-flight batch must pick up updated workflow text, first cancel the
+affected batch or lane through the
+[Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
+protocol before relaunching.
 
 ## Skill Roles
 
