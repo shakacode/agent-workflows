@@ -931,18 +931,18 @@ When worker subagents are explicitly authorized:
   stop to report the missing private batch file.
 - The main agent owns final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 
-### Pausing For A Codex App Restart
+### Pausing For An Agent-Runner Restart
 
-Use this when the operator needs to quit and relaunch the Codex desktop app but
-expects the same coordinator and worker lanes to resume afterward. This is a
+Use this when the operator needs to restart an agent app, runner, or session host
+but expects the same coordinator and worker lanes to resume afterward. This is a
 pause, not cancellation: workers preserve their claims, worktrees, branches, and
 local changes unless the coordinator explicitly cancels the batch or lane.
 
-Before quitting Codex, paste this prompt into every active coordinator, worker,
-and QA-lane thread:
+Before quitting the agent runner, paste this prompt into every active
+coordinator, worker, and QA-lane thread:
 
 ```text
-Pause for Codex app restart now.
+Pause for agent-runner restart now.
 
 Do not start new targets, spawn workers, create branches or worktrees, push,
 request CI, poll reviews, merge, or change repository files. Limit work to the
@@ -950,8 +950,9 @@ minimal status checks and claim-preservation write needed for the handoff.
 If this lane already owns a private backend claim, send one heartbeat update,
 using a paused or operator-restart reason if the backend supports it. If it is
 using only the public `codex-claim` fallback, refresh the existing claim comment
-with an extended `expires_at` instead, leaving `status: in_progress` so the
-fallback remains an active advisory lock.
+with `expires_at` set 4 hours from now, or to a later explicit operator restart
+deadline, leaving `status: in_progress` so the fallback remains an active
+advisory lock.
 If this lane holds no claim of any kind, skip the claim-preservation write and
 proceed directly to the handoff reply; do not acquire a new claim during this
 pause.
@@ -978,12 +979,13 @@ Reply with a restart handoff:
 - Remote state: pushed branches/PRs, last-known CI/review state, and hosted
   polling still needed.
 - Running processes: commands, servers, PIDs, watchers, or pollers, and whether
-  they were stopped or must be restarted after Codex relaunch.
-- Safety: whether it is safe to quit Codex now, and any cleanup needed before
-  resuming or relaunching.
+  they were stopped or must be restarted after the agent-runner relaunch.
+- Safety: whether it is safe to quit the agent runner now, and any cleanup
+  needed before resuming or relaunching.
 
-After completing the heartbeat/claim write above and sending this handoff
-reply, do not run more tools or continue work until I explicitly resume.
+After the claim-preservation step above (or immediately, if this lane held no
+claim), send this handoff reply and then do not run more tools or continue work
+until I explicitly resume.
 ```
 
 The pasted prompt is the complete pause instruction: it permits only bounded

@@ -389,11 +389,11 @@ final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 
 ## Pausing Or Stopping A Batch
 
-### Normal Codex App Restart
+### Normal Agent-Runner Restart
 
-For an ordinary Codex desktop app restart where the same lanes should resume
+For an ordinary agent-runner restart where the same lanes should resume
 afterward, use the canonical
-[Pausing For A Codex App Restart](../../workflows/pr-processing.md#pausing-for-a-codex-app-restart)
+[Pausing For An Agent-Runner Restart](../../workflows/pr-processing.md#pausing-for-an-agent-runner-restart)
 prompt. Preserve claims and worktrees, and do not release or cancel a lane
 unless the coordinator explicitly cancels it.
 
