@@ -241,9 +241,11 @@ trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit 
 
 "$install_script" --host "$host" --target "$target" --mode "$mode"
 
-for consumer_root in "${consumer_roots[@]}"; do
-  "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$source"
-done
+if ((${#consumer_roots[@]})); then
+  for consumer_root in "${consumer_roots[@]}"; do
+    "$target/bin/agent-workflow-seam-doctor" --root "$consumer_root" --shared "$source"
+  done
+fi
 
 completed=true
 trap - ERR

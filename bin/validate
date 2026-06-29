@@ -44,6 +44,7 @@ ruby bin/agent-workflow-seam-doctor-test.rb
 
 echo "== status unit tests =="
 ruby bin/agent-workflows-status-test.rb
+ruby bin/agent-workflows-trust-audit-test.rb
 
 echo "== installer/status/upgrade tests =="
 bash bin/install-agent-workflows-test.bash

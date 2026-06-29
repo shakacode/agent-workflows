@@ -74,6 +74,7 @@ The installer writes:
 - `<target>/workflows/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflows-status`
+- `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`

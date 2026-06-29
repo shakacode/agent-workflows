@@ -12,6 +12,7 @@ require "timeout"
 require "yaml"
 
 options = {
+  acknowledged_risks: Hash.new { |hash, key| hash[key] = Set.new },
   repo: nil,
   fail_on_high_risk_files: false,
   include_reactions: false,
@@ -19,6 +20,30 @@ options = {
 }
 
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
+ACKNOWLEDGEABLE_RISKS = Set.new(
+  %w[
+    github-api-coverage
+    high-risk-files
+    suspicious-text
+    untrusted-interactions
+    untrusted-participants
+  ]
+).freeze
+
+def parse_acknowledged_risk(spec)
+  number_text, risk_text = spec.to_s.split(":", 2)
+  number = Integer(number_text, exception: false)
+  risks = risk_text.to_s.split(",").map(&:strip).reject(&:empty?)
+  unknown_risks = risks.reject { |risk| ACKNOWLEDGEABLE_RISKS.include?(risk) }
+
+  if number.nil? || risks.empty? || unknown_risks.any?
+    valid = ACKNOWLEDGEABLE_RISKS.to_a.sort.join(", ")
+    raise OptionParser::InvalidArgument,
+          "#{spec.inspect}; expected NUMBER:risk-id[,risk-id] with risk ids: #{valid}"
+  end
+
+  [number, risks]
+end
 
 BLOCKING_SUSPICIOUS_PATTERN = /
   ignore\s+(all|previous|above|system|developer)|
@@ -52,9 +77,17 @@ DIFF_SUSPICIOUS_PATTERN = Regexp.union(BLOCKING_SUSPICIOUS_PATTERN, WARNING_SUSP
 
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: pr-security-preflight [--repo OWNER/REPO] [--trust-config PATH] " \
-                "[--include-reactions] [--fail-on-high-risk-files] NUMBER [...]"
+                "[--acknowledge-risk NUMBER:RISK[,RISK]] [--include-reactions] " \
+                "[--fail-on-high-risk-files] NUMBER [...]"
   opts.on("--repo OWNER/REPO", "GitHub repository, defaulting to gh repo view") { |repo| options[:repo] = repo }
   opts.on("--trust-config PATH", "Trusted GitHub actor allowlist") { |path| options[:trust_config] = path }
+  acknowledge_help = "Maintainer-acknowledged exact-target risk. " \
+                     "Format NUMBER:risk-id[,risk-id]; valid risk ids: " \
+                     "#{ACKNOWLEDGEABLE_RISKS.to_a.sort.join(', ')}."
+  opts.on("--acknowledge-risk SPEC", acknowledge_help) do |spec|
+    number, risks = parse_acknowledged_risk(spec)
+    options[:acknowledged_risks][number].merge(risks)
+  end
   include_reactions_help = "Fetch reaction users as visible actors (extra GitHub API calls). " \
                            "Without this flag, reaction-only users already present in GitHub participants " \
                            "appear as hidden participants and block the batch."
@@ -1007,17 +1040,66 @@ def print_suspicious_findings(findings)
   print_findings_list(findings, "Suspicious text findings")
 end
 
-def record_blockers(result, overall_blockers, fail_on_high_risk_files:)
-  number = result.fetch(:number)
-  overall_blockers << "##{number}: GitHub API coverage truncated" if result.fetch(:graph_coverage_findings).any?
-  if result.fetch(:participant_findings).any?
-    overall_blockers << "##{number}: untrusted, hidden, or unidentifiable participant(s)"
+def record_blocker(number, risk_id, message, overall_blockers, acknowledged_findings, acknowledged_risks)
+  if acknowledged_risks.fetch(number, Set.new).include?(risk_id)
+    acknowledged_findings << message
+  else
+    overall_blockers << message
   end
-  overall_blockers << "##{number}: untrusted comment/review author(s)" if result.fetch(:untrusted_interactions).any?
-  overall_blockers << "##{number}: suspicious text" if result.fetch(:suspicious).any?
+end
+
+def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:)
+  number = result.fetch(:number)
+  if result.fetch(:graph_coverage_findings).any?
+    record_blocker(
+      number,
+      "github-api-coverage",
+      "##{number}: GitHub API coverage truncated",
+      overall_blockers,
+      acknowledged_findings,
+      acknowledged_risks
+    )
+  end
+  if result.fetch(:participant_findings).any?
+    record_blocker(
+      number,
+      "untrusted-participants",
+      "##{number}: untrusted, hidden, or unidentifiable participant(s)",
+      overall_blockers,
+      acknowledged_findings,
+      acknowledged_risks
+    )
+  end
+  if result.fetch(:untrusted_interactions).any?
+    record_blocker(
+      number,
+      "untrusted-interactions",
+      "##{number}: untrusted comment/review author(s)",
+      overall_blockers,
+      acknowledged_findings,
+      acknowledged_risks
+    )
+  end
+  if result.fetch(:suspicious).any?
+    record_blocker(
+      number,
+      "suspicious-text",
+      "##{number}: suspicious text",
+      overall_blockers,
+      acknowledged_findings,
+      acknowledged_risks
+    )
+  end
   return if result.fetch(:risky_files).empty? || !fail_on_high_risk_files
 
-  overall_blockers << "##{number}: high-risk files changed"
+  record_blocker(
+    number,
+    "high-risk-files",
+    "##{number}: high-risk files changed",
+    overall_blockers,
+    acknowledged_findings,
+    acknowledged_risks
+  )
 end
 
 def print_suspicious_warning_findings(findings)
@@ -1035,7 +1117,7 @@ def print_file_findings(result)
   end
 end
 
-def print_scan_result(result, overall_blockers, fail_on_high_risk_files:)
+def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:)
   target_label = result.fetch(:target_is_pr) ? "PR" : "Issue"
   target = result.fetch(:target)
 
@@ -1048,7 +1130,13 @@ def print_scan_result(result, overall_blockers, fail_on_high_risk_files:)
   print_suspicious_findings(result.fetch(:suspicious))
   print_suspicious_warning_findings(result.fetch(:suspicious_warnings))
   print_file_findings(result)
-  record_blockers(result, overall_blockers, fail_on_high_risk_files:)
+  record_blockers(
+    result,
+    overall_blockers,
+    acknowledged_findings:,
+    acknowledged_risks:,
+    fail_on_high_risk_files:
+  )
 
   puts
 end
@@ -1113,6 +1201,7 @@ issue_query = <<~GRAPHQL
 GRAPHQL
 
 overall_blockers = []
+acknowledged_findings = []
 permission_cache = {}
 team_cache = {}
 trust_config = load_trust_config(**resolved_trust_config(options.fetch(:trust_config)))
@@ -1133,13 +1222,24 @@ ARGV.each do |arg|
     trust_config:,
     team_cache:
   )
-  print_scan_result(result, overall_blockers, fail_on_high_risk_files: options[:fail_on_high_risk_files])
+  print_scan_result(
+    result,
+    overall_blockers,
+    acknowledged_findings:,
+    acknowledged_risks: options.fetch(:acknowledged_risks),
+    fail_on_high_risk_files: options[:fail_on_high_risk_files]
+  )
 end
 
 if overall_blockers.any?
   puts "SECURITY_PREFLIGHT_BLOCKED"
   overall_blockers.each { |blocker| puts "- #{blocker}" }
   exit 2
+end
+
+if acknowledged_findings.any?
+  puts "Acknowledged security preflight findings:"
+  acknowledged_findings.each { |finding| puts "- #{finding}" }
 end
 
 puts "SECURITY_PREFLIGHT_OK"
