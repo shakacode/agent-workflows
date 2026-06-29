@@ -944,13 +944,18 @@ resume.
 If the backend supports a paused or blocked heartbeat reason, the worker may
 refresh its own heartbeat with an operator-restart reason before stopping. If
 the backend state cannot be checked or updated, report it as `UNKNOWN`; do not
-release a claim or delete a worktree solely because Codex is restarting.
+release a claim or delete a worktree because Codex is restarting. If the worker
+observes explicit coordinator cancellation, follow the cancellation protocol
+below. If claim state fails for another independent non-timeout setup/auth
+reason, report it as `UNKNOWN` and stop rather than releasing unilaterally.
 
 After relaunch, reopen each paused thread and resume from its handoff. The first
 resume action is bounded status recovery: re-check the worktree, branch, HEAD
 SHA, uncommitted changes, current PR/check state, and private claim/heartbeat
-state before continuing. Refresh the heartbeat at the resumed state before
-editing, pushing, or starting the next target.
+state before continuing. If bounded status shows the claim is stale or dead,
+stop and report the conflicting holder; do not refresh the heartbeat or continue
+work until the coordinator resolves the conflict. Refresh the heartbeat at the
+resumed state before editing, pushing, or starting the next target.
 
 For new batches after a restart, start fresh coordinator and worker sessions
 from a checkout that already contains the desired `.agents/skills/...` and

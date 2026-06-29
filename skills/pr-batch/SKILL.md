@@ -387,13 +387,13 @@ multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 
-## Stopping A Batch
+## Pausing Or Stopping A Batch
 
 For an ordinary Codex app restart where the same lanes should resume afterward,
 use the canonical
 [Pausing For A Codex App Restart](../../workflows/pr-processing.md#pausing-for-a-codex-app-restart)
 prompt. Preserve claims and worktrees, and do not release or cancel a lane
-unless the coordinator explicitly decides to relaunch it.
+unless the coordinator explicitly cancels or relaunches it.
 
 To stop an in-flight batch — for example to relaunch it with updated skills,
 workflow rules, or targets — follow the canonical
