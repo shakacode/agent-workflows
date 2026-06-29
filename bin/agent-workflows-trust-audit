@@ -4,6 +4,10 @@
 require "json"
 require "open3"
 require "optparse"
+# Ruby versions before 3.2 do not load Set by default.
+# rubocop:disable Lint/RedundantRequireStatement
+require "set"
+# rubocop:enable Lint/RedundantRequireStatement
 
 module AgentWorkflowsTrustAudit
   DEFAULT_LIMIT = 10
