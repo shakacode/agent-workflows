@@ -975,7 +975,7 @@ After this handoff, do not run more tools or continue work until I explicitly
 resume.
 ```
 
-If the backend supports a paused or blocked heartbeat reason, the worker may
+If the backend supports a paused or blocked heartbeat reason, the worker should
 refresh its own heartbeat with an operator-restart reason before stopping. If
 the backend state cannot be checked or updated, report it as `UNKNOWN`; do not
 release a claim or delete a worktree because Codex is restarting. If the worker

@@ -389,8 +389,8 @@ final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 
 ## Pausing Or Stopping A Batch
 
-For an ordinary Codex app restart where the same lanes should resume afterward,
-use the canonical
+For an ordinary Codex or Claude Code app restart where the same lanes should
+resume afterward, use the canonical
 [Pausing For A Codex App Restart](../../workflows/pr-processing.md#pausing-for-a-codex-app-restart)
 prompt. Preserve claims and worktrees, and do not release or cancel a lane
 unless the coordinator explicitly cancels or relaunches it.
