@@ -395,7 +395,7 @@ For an ordinary Codex desktop app restart where the same lanes should resume
 afterward, use the canonical
 [Pausing For A Codex App Restart](../../workflows/pr-processing.md#pausing-for-a-codex-app-restart)
 prompt. Preserve claims and worktrees, and do not release or cancel a lane
-unless the coordinator explicitly cancels or relaunches it.
+unless the coordinator explicitly cancels it.
 
 ### Cancellation Or Relaunch
 

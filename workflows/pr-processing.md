@@ -975,11 +975,12 @@ After this handoff, do not run more tools or continue work until I explicitly
 resume.
 ```
 
-If the backend supports a paused or blocked heartbeat reason, the worker should
-refresh its own heartbeat with an operator-restart reason before stopping. If
-the backend state cannot be checked or updated, report it as `UNKNOWN`; do not
-release a claim or delete a worktree because Codex is restarting. If the worker
-observes explicit coordinator cancellation, follow the
+If this lane owns a claim and the backend supports a paused or blocked heartbeat
+reason, the worker should refresh its own heartbeat with an operator-restart
+reason before stopping. If the backend state cannot be checked or updated,
+report it as `UNKNOWN`; do not release a claim or delete a worktree because
+Codex is restarting. If the worker observes explicit coordinator cancellation,
+follow the
 [Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol. If
 claim state fails for another independent non-timeout setup/auth reason, report
 it as `UNKNOWN` and stop rather than releasing unilaterally.
