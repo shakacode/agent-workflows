@@ -912,9 +912,9 @@ Pause for Codex app restart now.
 
 Do not start new targets, spawn workers, create branches or worktrees, push,
 request CI, poll reviews, merge, or make repo changes. Run only the minimal
-read-only local, GitHub, and coordination status checks needed for the handoff,
-plus one normal heartbeat/status update if this lane already owns a claim. Then
-stop using tools.
+read-only local, GitHub, and coordination status checks needed for the handoff.
+If this lane already owns a claim, also send one heartbeat update, using a
+paused or operator-restart reason if the backend supports it.
 
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
@@ -945,25 +945,29 @@ If the backend supports a paused or blocked heartbeat reason, the worker may
 refresh its own heartbeat with an operator-restart reason before stopping. If
 the backend state cannot be checked or updated, report it as `UNKNOWN`; do not
 release a claim or delete a worktree because Codex is restarting. If the worker
-observes explicit coordinator cancellation, follow the cancellation protocol
-below. If claim state fails for another independent non-timeout setup/auth
-reason, report it as `UNKNOWN` and stop rather than releasing unilaterally.
+observes explicit coordinator cancellation, follow the
+[Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol. If
+claim state fails for another independent non-timeout setup/auth reason, report
+it as `UNKNOWN` and stop rather than releasing unilaterally.
 
 After relaunch, reopen each paused thread and resume from its handoff. The first
 resume action is bounded status recovery: re-check the worktree, branch, HEAD
 SHA, uncommitted changes, current PR/check state, and private claim/heartbeat
-state before continuing. If bounded status shows the claim is stale or dead,
-stop and report the conflicting holder; do not refresh the heartbeat or continue
-work until the coordinator resolves the conflict. Refresh the heartbeat at the
-resumed state before editing, pushing, or starting the next target.
+state before continuing. If bounded status shows the claim is stale or dead but
+still held by this same stable agent/thread id with no cancellation or
+reassignment, refresh the heartbeat at the resumed state before editing,
+pushing, or starting the next target. If the holder changed, cancellation or
+reassignment is present, or ownership is `UNKNOWN`, stop and report the conflict;
+do not refresh the heartbeat or continue work until the coordinator resolves it.
 
 For new batches after a restart, start fresh coordinator and worker sessions
 from a checkout that already contains the desired `.agents/skills/...` and
 `.agents/workflows/...` files. Do not reuse a paused worker to run a new batch
 or to pick up updated workflow text; skills and workflow instructions are read
 at process/session start. Let healthy paused batches finish on their loaded
-instructions, or use the cancellation protocol below when a batch must be
-restarted with new rules, targets, or branch names.
+instructions, or use the
+[Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol when
+a batch must be restarted with new rules, targets, or branch names.
 
 ### Worker Rules
 
