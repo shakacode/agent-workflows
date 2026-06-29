@@ -12,8 +12,8 @@ SCRIPT = File.expand_path("agent-workflows-trust-audit", __dir__)
 
 class AgentWorkflowsTrustAuditTest < Minitest::Test
   def test_blocked_preflight_suggests_bot_and_write_user_candidates
-    with_fake_commands("blocked") do |env, preflight_path|
-      out, status = run_script(env, preflight_path)
+    with_fake_commands("blocked") do |env, preflight_path, trust_config_path|
+      out, status = run_script(env, preflight_path, trust_config_path:)
 
       refute status.success?, out
       assert_equal 2, status.exitstatus
@@ -32,8 +32,8 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
   end
 
   def test_clean_preflight_exits_successfully
-    with_fake_commands("ok") do |env, preflight_path|
-      out, status = run_script(env, preflight_path)
+    with_fake_commands("ok") do |env, preflight_path, trust_config_path|
+      out, status = run_script(env, preflight_path, trust_config_path:)
 
       assert status.success?, out
       assert_includes out, "Preflight status: SECURITY_PREFLIGHT_OK"
@@ -44,8 +44,8 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
   end
 
   def test_acknowledged_findings_are_not_reported_as_blocking_risks
-    with_fake_commands("acknowledged") do |env, preflight_path|
-      out, status = run_script(env, preflight_path)
+    with_fake_commands("acknowledged") do |env, preflight_path, trust_config_path|
+      out, status = run_script(env, preflight_path, trust_config_path:)
 
       assert status.success?, out
       assert_includes out, "Preflight status: SECURITY_PREFLIGHT_OK"
@@ -55,8 +55,8 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
   end
 
   def test_unknown_blocking_risk_message_warns
-    with_fake_commands("unknown-risk") do |env, preflight_path|
-      out, status = run_script(env, preflight_path)
+    with_fake_commands("unknown-risk") do |env, preflight_path, trust_config_path|
+      out, status = run_script(env, preflight_path, trust_config_path:)
 
       refute status.success?, out
       assert_includes out, "WARN: unknown pr-security-preflight risk message: renamed risk text"
@@ -65,8 +65,8 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
   end
 
   def test_json_output_contains_candidates
-    with_fake_commands("blocked") do |env, preflight_path|
-      out, status = run_script(env, preflight_path, "--json")
+    with_fake_commands("blocked") do |env, preflight_path, trust_config_path|
+      out, status = run_script(env, preflight_path, "--json", trust_config_path:)
       payload = JSON.parse(out)
 
       refute status.success?, out
@@ -80,8 +80,8 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
   end
 
   def test_preflight_operational_failure_is_not_reported_as_security_block
-    with_fake_commands("error") do |env, preflight_path|
-      out, status = run_script(env, preflight_path)
+    with_fake_commands("error") do |env, preflight_path, trust_config_path|
+      out, status = run_script(env, preflight_path, trust_config_path:)
 
       refute status.success?, out
       assert_equal 1, status.exitstatus
@@ -93,8 +93,8 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
   end
 
   def test_json_preflight_operational_failure_suppresses_candidates
-    with_fake_commands("partial-error") do |env, preflight_path|
-      out, status = run_script(env, preflight_path, "--json")
+    with_fake_commands("partial-error") do |env, preflight_path, trust_config_path|
+      out, status = run_script(env, preflight_path, "--json", trust_config_path:)
       payload = JSON.parse(out)
 
       refute status.success?, out
@@ -109,7 +109,7 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
 
   private
 
-  def run_script(env, preflight_path, *extra_args)
+  def run_script(env, preflight_path, *extra_args, trust_config_path: "/tmp/trusted.yml")
     Open3.capture2e(
       env,
       "ruby",
@@ -119,7 +119,7 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
       "--limit",
       "2",
       "--trust-config",
-      "/tmp/trusted.yml",
+      trust_config_path,
       "--preflight",
       preflight_path,
       *extra_args
@@ -136,7 +136,7 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
       FileUtils.chmod(0o755, preflight_path)
 
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
-      yield env, preflight_path
+      yield env, preflight_path, File.join(dir, "trusted.yml")
     end
   end
 

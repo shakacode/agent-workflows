@@ -120,7 +120,7 @@ module AgentWorkflowsTrustAudit
     normalized_login(login).end_with?("[bot]")
   end
 
-  def empty_actor(_login)
+  def empty_actor
     {
       interactions: Set.new,
       permissions: Set.new,
@@ -130,7 +130,7 @@ module AgentWorkflowsTrustAudit
   end
 
   def parse_preflight_output(output)
-    actors = Hash.new { |hash, key| hash[key] = empty_actor(key) }
+    actors = Hash.new { |hash, key| hash[key] = empty_actor }
     risks = []
     blocked_summary = false
     current_number = nil
@@ -141,9 +141,9 @@ module AgentWorkflowsTrustAudit
       when /^(?:PR|Issue) #(\d+)/
         current_number = Regexp.last_match(1).to_i
         section = nil
-      when /^\s+Untrusted or hidden participant findings:/
+      when /^\s+Untrusted or hidden participant findings:\s*$/
         section = :participants
-      when %r{^\s+Untrusted comment/review queue:}
+      when %r{^\s+Untrusted comment/review queue:\s*$}
         section = :interactions
       when /^SECURITY_PREFLIGHT_BLOCKED\b/
         blocked_summary = true
@@ -159,7 +159,7 @@ module AgentWorkflowsTrustAudit
 
       parse_participant_line(line, actors, current_number) if section == :participants
       parse_interaction_line(line, actors, current_number) if section == :interactions
-      parse_risk_line(line, risks) if blocked_summary
+      parse_risk_line(line, risks) if blocked_summary && section != :acknowledged
     end
 
     { actors:, risks: }
