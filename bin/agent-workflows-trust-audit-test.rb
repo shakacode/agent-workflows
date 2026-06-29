@@ -145,13 +145,44 @@ class AgentWorkflowsTrustAuditTest < Minitest::Test
       #!/usr/bin/env bash
       set -euo pipefail
 
-      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1" ]; then
         cat <<'JSON'
       [
-        {"number":363,"title":"Deploy review app","url":"https://github.com/owner/repo/pull/363","mergedAt":"2026-05-01T00:00:00Z"},
-        {"number":347,"title":"Docs update","url":"https://github.com/owner/repo/pull/347","mergedAt":"2026-06-01T00:00:00Z"}
+        {
+          "number":363,
+          "title":"Deploy review app",
+          "html_url":"https://github.com/owner/repo/pull/363",
+          "merged_at":"2026-05-01T00:00:00Z",
+          "updated_at":"2026-06-02T00:00:00Z"
+        },
+        {
+          "number":999,
+          "title":"Closed unmerged",
+          "html_url":"https://github.com/owner/repo/pull/999",
+          "merged_at":null,
+          "updated_at":"2026-06-01T12:00:00Z"
+        },
+        {
+          "number":347,
+          "title":"Docs update",
+          "html_url":"https://github.com/owner/repo/pull/347",
+          "merged_at":"2026-06-01T00:00:00Z",
+          "updated_at":"2026-06-01T00:00:00Z"
+        },
+        {
+          "number":301,
+          "title":"Older merged",
+          "html_url":"https://github.com/owner/repo/pull/301",
+          "merged_at":"2026-04-01T00:00:00Z",
+          "updated_at":"2026-04-01T00:00:00Z"
+        }
       ]
       JSON
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=2" ]; then
+        printf '[]'
         exit 0
       fi
 

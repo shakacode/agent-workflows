@@ -400,6 +400,25 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_acknowledgement_for_target_outside_scan_list_warns
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--acknowledge-risk",
+        "132:suspicious-text",
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "WARN: acknowledgement target(s) not in scan list: #132"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
   def test_participant_findings_header_includes_hidden_participants
     with_fake_gh("untrusted-participant") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")

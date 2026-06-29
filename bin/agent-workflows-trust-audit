@@ -8,9 +8,11 @@ require "optparse"
 # rubocop:disable Lint/RedundantRequireStatement
 require "set"
 # rubocop:enable Lint/RedundantRequireStatement
+require "time"
 
 module AgentWorkflowsTrustAudit
   DEFAULT_LIMIT = 10
+  MAX_CLOSED_PR_PAGES = 20
   TRUSTED_USER_PERMISSIONS = Set.new(%w[admin maintain write]).freeze
   RISK_MESSAGES = {
     "GitHub API coverage truncated" => "github-api-coverage",
@@ -41,19 +43,56 @@ module AgentWorkflowsTrustAudit
   end
 
   def merged_prs(repo, limit)
-    fetch_limit = [limit * 5, 100].max
+    merged = []
+    page = 1
+
+    loop do
+      prs = closed_pr_page(repo, page)
+      break if prs.empty?
+
+      merged.concat(prs.filter_map { |pr| merged_pr_summary(pr) })
+      sorted = sort_by_merged_at(merged)
+      break if enough_merged_prs?(sorted, prs, limit)
+
+      page += 1
+      if page > MAX_CLOSED_PR_PAGES
+        warn "WARN: reached #{MAX_CLOSED_PR_PAGES} closed PR pages before proving merged PR sample completeness"
+        break
+      end
+    end
+
+    sort_by_merged_at(merged).first(limit)
+  end
+
+  def closed_pr_page(repo, page)
     run_gh_json(
-      "pr",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "merged",
-      "--limit",
-      fetch_limit.to_s,
-      "--json",
-      "number,title,url,mergedAt"
-    ).sort_by { |pr| pr.fetch("mergedAt", "") }.reverse.first(limit)
+      "api",
+      "repos/#{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=#{page}"
+    )
+  end
+
+  def merged_pr_summary(pull_request)
+    merged_at = pull_request["merged_at"]
+    return unless merged_at
+
+    {
+      "number" => pull_request.fetch("number"),
+      "title" => pull_request.fetch("title"),
+      "url" => pull_request.fetch("html_url"),
+      "mergedAt" => merged_at
+    }
+  end
+
+  def sort_by_merged_at(prs)
+    prs.sort_by { |pr| Time.iso8601(pr.fetch("mergedAt")) }.reverse
+  end
+
+  def enough_merged_prs?(sorted_merged, fetched_page, limit)
+    return false if sorted_merged.length < limit
+
+    nth_merged_at = Time.iso8601(sorted_merged.fetch(limit - 1).fetch("mergedAt"))
+    oldest_updated_at = fetched_page.filter_map { |pr| pr["updated_at"] }.map { |value| Time.iso8601(value) }.min
+    oldest_updated_at && oldest_updated_at < nth_merged_at
   end
 
   def default_preflight_path
@@ -115,7 +154,7 @@ module AgentWorkflowsTrustAudit
       when /^Acknowledged security preflight findings:/
         section = :acknowledged
       when /^\s+\S.*:$/
-        section = nil unless line.include?("Untrusted")
+        section = nil
       end
 
       parse_participant_line(line, actors, current_number) if section == :participants

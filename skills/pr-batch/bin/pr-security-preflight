@@ -111,6 +111,15 @@ if ARGV.empty?
   exit 64
 end
 
+target_numbers = ARGV.filter_map { |arg| Integer(arg, exception: false) }.to_set
+unused_acknowledgement_targets = options.fetch(:acknowledged_risks).keys.reject do |number|
+  target_numbers.include?(number)
+end
+if unused_acknowledgement_targets.any?
+  warn "WARN: acknowledgement target(s) not in scan list: " \
+       "#{unused_acknowledgement_targets.sort.map { |number| "##{number}" }.join(', ')}"
+end
+
 def run_gh(*args)
   stdout = nil
   stderr = nil
