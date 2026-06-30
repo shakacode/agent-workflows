@@ -8,8 +8,10 @@ repositories, use the target repo's coordination backend plus
 dependencies, cancellation, and handoff rules. This file stays focused on skill
 selection and per-batch sizing.
 
-For restart, pause, and cancellation procedures, see
-[workflows/pr-processing.md](../workflows/pr-processing.md).
+For restart and pause procedures, see
+[Pausing For An Agent-Runner Restart](../workflows/pr-processing.md#pausing-for-an-agent-runner-restart);
+for cancellation, see
+[Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch).
 
 ## Skill Roles
 
