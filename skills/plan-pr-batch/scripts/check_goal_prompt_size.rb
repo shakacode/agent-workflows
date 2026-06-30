@@ -3,9 +3,41 @@
 
 GOAL_PROMPT_CHAR_LIMIT = 4_000
 TEXT_FENCE = "```text\n"
+REPO_ROOT = File.expand_path("../../..", __dir__)
+
+CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
+  Resume batch processing now.
+
+  Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+TEXT
+
+CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
+  "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
+  "determine the exact targets from the visible request, pasted handoff, PR URLs, GitHub shorthand refs, or final-bucket table",
+  "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs.",
+  "Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.",
+  "Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.",
+  "If extracted targets have mixed states, split internally by action type: checks/review polling, conflict recovery, draft/product-decision blockers, and excluded/deferred items.",
+  "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
+  "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
+  "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
+  "Terminal states allowed: `merged`, `ready-no-merge-authority`, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
+  "Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state."
+].freeze
+
+PRESSURE_SCENARIOS = [
+  "A handoff containing final buckets for PRs #4259, #4260, #4277, #4278, and #4282 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.",
+  "A mixed-state handoff containing #4283, #4281, #4268, #4266, and #4264 splits checks/review polling from draft/product-decision blockers and conflict recovery.",
+  "A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.",
+  "A normal resume prompt routes to bounded status recovery, not cancellation/relaunch."
+].freeze
 
 def abort_with_failure(message)
   abort "FAIL: #{message}"
+end
+
+def read_repo_file(path)
+  File.read(File.join(REPO_ROOT, path), encoding: "UTF-8")
 end
 
 def extract_goal_prompt_template(skill_text)
@@ -48,6 +80,7 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
+workflow_text = read_repo_file("workflows/pr-processing.md")
 
 required_skill_rule_phrases = [
   "Goal prompt character count:",
@@ -76,6 +109,22 @@ end
 required_prompt_phrases.each do |phrase|
   unless prompt_template.include?(phrase)
     abort_with_failure("Goal prompt template is missing required phrase: #{phrase}")
+  end
+end
+
+unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
+  abort_with_failure("canonical workflow is missing the exact restart resume snippet")
+end
+
+CANONICAL_CONTINUATION_SNIPPET_PHRASES.each do |phrase|
+  unless workflow_text.include?(phrase)
+    abort_with_failure("canonical workflow continuation snippet is missing phrase: #{phrase}")
+  end
+end
+
+PRESSURE_SCENARIOS.each do |scenario|
+  unless workflow_text.include?(scenario)
+    abort_with_failure("canonical workflow is missing pressure scenario: #{scenario}")
   end
 end
 
