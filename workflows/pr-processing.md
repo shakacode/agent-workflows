@@ -938,6 +938,12 @@ but expects the same coordinator and worker lanes to resume afterward. This is a
 pause, not cancellation: workers preserve their claims, worktrees, branches, and
 local changes unless the coordinator explicitly cancels the batch or lane.
 
+If the restart is meant to make an in-flight batch pick up updated skills,
+workflow rules, targets, or branch names, do not use this pause flow; use
+[Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) before
+relaunching the batch. The pause flow is only for resuming the same lanes under
+the instructions they already loaded.
+
 Before quitting the agent runner, paste this prompt into every active
 coordinator, worker, and QA-lane thread:
 
@@ -948,17 +954,18 @@ Do not start new targets, spawn workers, create branches or worktrees, push,
 request CI, poll reviews, merge, or change repository files. Limit work to the
 minimal status checks and claim-preservation write needed for the handoff.
 If this lane already owns a private backend claim, send one heartbeat update,
-using a paused or operator-restart reason if the backend supports it. If it is
-using only the public `codex-claim` fallback, refresh the existing claim comment
-with `expires_at` set 4 hours from now, or to a later explicit operator restart
-deadline, leaving `status: in_progress` so the fallback remains an active
-advisory lock.
+using a paused or operator-restart reason if the backend supports it; otherwise
+send a plain heartbeat preserving the current status. If it is using only the
+public `codex-claim` fallback, refresh the existing claim comment with
+`expires_at` extended by the same lease window already used for that fallback
+claim, capped at 4 hours from now, leaving `status: in_progress` so the fallback
+remains an active advisory lock.
 If this lane holds no claim of any kind, skip the claim-preservation write and
 proceed directly to the handoff reply; do not acquire a new claim during this
 pause.
 If claim state cannot be checked or refreshed, report it as UNKNOWN in the
-handoff. If claim state fails for another independent non-timeout setup/auth
-reason, report UNKNOWN and stop rather than releasing unilaterally.
+handoff. If the failure is a setup or auth error, not a transient timeout, also
+stop after sending the handoff rather than releasing unilaterally.
 
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
@@ -985,13 +992,23 @@ Reply with a restart handoff:
 
 After the claim-preservation step above (or immediately, if this lane held no
 claim), send this handoff reply and then do not run more tools or continue work
-until I explicitly resume.
+until I explicitly resume with "Resume batch processing now."
 ```
 
 The pasted prompt is the complete pause instruction: it permits only bounded
 status checks plus the claim-preservation write before the handoff. Explicit
 coordinator cancellation switches to the
 [Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol.
+
+After the runner relaunches, explicitly resume each paused persistent thread
+with this companion prompt:
+
+```text
+Resume batch processing now.
+
+Re-read your restart handoff and run the bounded status recovery in the workflow
+before editing, pushing, polling, or starting any new target.
+```
 
 After relaunch, reopen each paused persistent thread and resume from its
 handoff. For an in-process worker or subagent that cannot be reopened after its
