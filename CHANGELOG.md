@@ -9,6 +9,7 @@ All notable changes to this portable workflow pack are documented here.
 #### Added
 
 - **Add `agent-workflows-trust-audit` to check recent merged PRs against `pr-security-preflight` and draft candidate repo-local trust entries for maintainer review.**
+- **Add `trusted_metadata_bots` so workflow/status bot comments can be audited as metadata without becoming actionable trusted instructions.**
 - **Document the trust/preflight operating model, including global vs repo-local trust, audit flow, acknowledgement policy, and security tradeoffs.**
 
 #### Fixed
