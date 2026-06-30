@@ -194,7 +194,7 @@ def resolved_trust_config(explicit_path, repo:)
     expanded = File.expand_path(explicit_path)
     abort "Trust config not found: #{expanded}" unless File.exist?(expanded)
 
-    return { path: expanded, global: !path_inside_git_root?(expanded, repo:) }
+    return { path: expanded, global: !explicit_trust_config_repo_local?(expanded, repo) }
   end
 
   repo_path = repo_trust_config_path
@@ -219,19 +219,26 @@ def repo_trust_config_path
   File.join(root, DEFAULT_TRUST_CONFIG)
 end
 
-def git_toplevel
-  stdout, = Open3.capture3("git", "rev-parse", "--show-toplevel")
+def git_toplevel(chdir: nil)
+  args = ["git"]
+  args.push("-C", chdir) if chdir
+  args.concat(["rev-parse", "--show-toplevel"])
+  stdout, = Open3.capture3(*args)
   root = stdout.strip
   root unless root.empty?
 rescue StandardError
   nil
 end
 
-def path_inside_git_root?(path, repo:)
-  root = git_toplevel
+def explicit_trust_config_repo_local?(path, repo)
+  root = git_toplevel(chdir: File.dirname(path))
   return false unless root
-  return false unless git_root_matches_repo?(root, repo)
+  return false unless path_inside_git_root?(path, root:)
 
+  git_root_matches_repo?(root, repo)
+end
+
+def path_inside_git_root?(path, root:)
   expanded_root = canonical_path(root)
   expanded_path = canonical_path(path)
   expanded_path == expanded_root ||

@@ -157,6 +157,33 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_explicit_repo_local_trust_config_uses_config_checkout_when_launched_elsewhere
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      launch_root = File.join(dir, "launcher")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p([consumer_root, launch_root])
+      init_git_remote(consumer_root, "owner/repo")
+
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: launch_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
   def test_explicit_trust_config_in_mismatched_repo_is_global
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       other_root = File.join(dir, "other")
