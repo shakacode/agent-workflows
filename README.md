@@ -122,7 +122,7 @@ ongoing host installs and upgrades.
 | `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
 | `run-ci` | Choose and run repo-local CI checks. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
-| `status` | Report tight progress (done/next/blocked) without starting new work. |
+| `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
 | `update-changelog` | Classify merged PRs and update a repo changelog. |

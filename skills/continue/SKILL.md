@@ -23,5 +23,5 @@ for what to continue.
   the conversation, open files, or git state.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
-- End with a short status line: what changed, how it was verified, what is left. Use `/status` to
-  produce that report without starting new work.
+- End with a short status line: what changed, how it was verified, and what is left -- without
+  starting new work.
