@@ -23,5 +23,6 @@ for what to continue.
   the conversation, open files, or git state.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
-- End with a short status line: what changed, how it was verified, and what is left -- without
-  starting new work.
+- End with a short status line using the same generic labels as a status report: Done, In progress,
+  Blocked / needs input, and Next. Treat this closing summary as a report of the resumed work, not as
+  a separate trigger to start additional work beyond step 4.
