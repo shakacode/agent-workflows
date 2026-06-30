@@ -948,8 +948,8 @@ If a thread has already exited before the operator can paste this prompt, treat
 it as a dead-thread case after restart: the coordinator starts a replacement
 worker from the last known handoff state rather than expecting that thread to
 resume. For public fallback claims, the prompt's `expires_at` extension is a
-template; consumer repos with a configured fallback lease cap should adjust the
-extension to match that policy before pasting.
+template; consumer repos with a configured fallback lease cap should verify the
+4-hour default matches that policy before pasting.
 
 Before quitting the agent runner, paste this prompt into every active
 coordinator, worker, and QA-lane thread:
@@ -968,6 +968,8 @@ public `codex-claim` fallback, refresh the existing claim comment with
 claim, capped at the repo's configured public fallback lease maximum or 4 hours
 from now when no repo-specific cap is configured, leaving `status: in_progress`
 so the fallback remains an active advisory lock.
+If the heartbeat or public fallback refresh fails with a transient error, treat
+claim state as UNKNOWN in the handoff; do not report the claim as preserved.
 If this lane holds no claim of any kind, skip the claim-preservation write and
 proceed directly to the handoff reply; do not acquire a new claim during this
 pause.
@@ -978,8 +980,9 @@ either case.
 
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
-If this batch or lane is explicitly cancelled, follow the batch cancellation
-protocol instead of this pause flow.
+If this batch or lane is explicitly cancelled, follow the
+Cancelling Or Stopping A Batch protocol in the installed `pr-processing.md`
+workflow instead of this pause flow.
 
 Reply with a restart handoff:
 - Role and lane: coordinator, worker, or QA; batch id; target(s); stable
@@ -1009,6 +1012,8 @@ status checks plus the claim-preservation write before the handoff. Explicit
 coordinator cancellation switches to the
 [Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol.
 
+#### Bounded Status Recovery
+
 After the runner relaunches, explicitly resume each paused persistent thread
 with this companion prompt:
 
@@ -1016,8 +1021,9 @@ with this companion prompt:
 Resume batch processing now.
 
 Re-read your restart handoff and run the bounded status recovery steps described
-under "Pausing For An Agent-Runner Restart" in `workflows/pr-processing.md`
-before editing, pushing, polling, or starting any new target.
+under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md`
+workflow (`.agents/workflows/pr-processing.md` in consumer repos) before editing,
+pushing, polling, or starting any new target.
 ```
 
 After relaunch, reopen each paused persistent thread and resume from its
