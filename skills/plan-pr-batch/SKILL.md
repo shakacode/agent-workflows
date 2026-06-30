@@ -10,6 +10,10 @@ Create verified scope and a goal prompt for `$pr-batch`. Do not implement items 
 
 If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.
 
+If the user is asking whether existing PRs are ready to merge, what manual
+testing remains, or how to sequence open PR merges, route to
+`$merge-readiness-audit` instead of producing an implementation batch plan.
+
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
 `.agents/workflows/...` files when they exist; otherwise use the installed
