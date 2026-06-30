@@ -9,7 +9,7 @@ dependencies, cancellation, and handoff rules. This file stays focused on skill
 selection and per-batch sizing.
 
 For clipboard-ready restart prompts, see
-[docs/agent-runner-restarts.md](agent-runner-restarts.md). For the canonical
+[agent-runner-restarts.md](agent-runner-restarts.md). For the canonical
 batch pause procedure, see
 [Pausing For An Agent-Runner Restart](../workflows/pr-processing.md#pausing-for-an-agent-runner-restart);
 for cancellation, see

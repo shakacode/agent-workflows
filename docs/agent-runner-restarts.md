@@ -56,16 +56,8 @@ running process handoff details.
 
 After restart, paste the companion resume prompt from
 [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery)
-into every paused persistent batch thread:
-
-```text
-Resume batch processing now.
-
-Re-read your restart handoff and run the bounded status recovery steps described
-under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md`
-workflow (`.agents/workflows/pr-processing.md` in consumer repos) before editing,
-pushing, polling, or starting any new target.
-```
+into every paused persistent batch thread. Copy the exact prompt text from that
+section to keep a single authoritative source.
 
 For an in-process worker or subagent that cannot be reopened after its host
 process exits, the coordinator starts a replacement worker from the saved
