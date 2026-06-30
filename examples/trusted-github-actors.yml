@@ -7,12 +7,15 @@ trusted_users:
 # Bot entries are base bot names. GitHub API logins usually include the
 # `[bot]` suffix; humans with the same base login are not trusted by this list.
 # Trusted bots are exempt from hidden-participant blocking, so keep this list
-# limited to bot identities whose generated PR content is safe to process.
+# limited to bot identities whose generated PR content is safe to process as
+# trusted input.
 trusted_bots:
   - coderabbitai
   - dependabot
-  # Optional for repos whose workflows post trusted CI/status metadata comments.
-  # Keep omitted if workflow comments can include untrusted PR-controlled output.
+
+# Metadata bot entries are also base bot names. Use this for workflow/status
+# bots whose comments may be used for CI/status facts but never as instructions.
+trusted_metadata_bots:
   # - github-actions
 
 # In repo-local configs, team entries are GitHub team slugs under the

@@ -48,6 +48,8 @@ trusted_bots:
   - your-review-bot
   - your-dependency-bot
 
+trusted_metadata_bots: []
+
 trusted_teams: []
 ```
 
@@ -57,7 +59,11 @@ Use repo-local config for repo-specific policy:
 trusted_users: []
 
 trusted_bots:
-  # Add only when this repo treats workflow comments as trusted metadata.
+  # Add review or dependency automation whose comment bodies are trusted input.
+  - repo-review-bot
+
+trusted_metadata_bots:
+  # Add workflow/status bots whose comments are metadata, not instructions.
   - repo-workflow-bot
 
 trusted_teams:

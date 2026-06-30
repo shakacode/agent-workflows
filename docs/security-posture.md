@@ -59,8 +59,9 @@ trusted automation belong in a repo-local or user-global trust config. Global
 configs must use owner-qualified `trusted_teams` entries such as
 `OWNER/team-slug`; bare team slugs are only resolved for repo-local configs.
 Workflow commenters such as `github-actions[bot]` are repo-specific trust
-decisions: include the base bot login `github-actions` only when maintainers
-trust those generated comments as CI/status metadata.
+decisions: include the base bot login `github-actions` under
+`trusted_metadata_bots` when maintainers trust those generated comments as
+CI/status metadata but not as actionable agent instructions.
 
 When a maintainer explicitly accepts exact preflight findings without changing
 trust policy, pass `--acknowledge-risk NUMBER:risk-id[,risk-id]` for each

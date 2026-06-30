@@ -238,19 +238,35 @@ end
 def load_trust_config(path:, global:)
   path = File.expand_path(path)
   data = File.exist?(path) ? YAML.safe_load_file(path, aliases: false) || {} : {}
+  trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
+  trusted_metadata_bots = Array(data["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
+  overlapping_bots = trusted_bots & trusted_metadata_bots
+  if overlapping_bots.any?
+    abort "Invalid trust config #{path}: bot(s) listed in both trusted_bots and " \
+          "trusted_metadata_bots: #{overlapping_bots.to_a.sort.join(', ')}"
+  end
 
   {
     path:,
-    trusted_bots: Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) },
+    trusted_bots:,
+    trusted_metadata_bots:,
     trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
 end
 
-def trusted_bot?(login, trust_config)
+def bot_login_in_set?(login, trusted_set)
   normalized = normalized_login(login)
 
-  normalized.end_with?("[bot]") && trust_config.fetch(:trusted_bots).include?(normalized.delete_suffix("[bot]"))
+  normalized.end_with?("[bot]") && trusted_set.include?(normalized.delete_suffix("[bot]"))
+end
+
+def trusted_bot?(login, trust_config)
+  bot_login_in_set?(login, trust_config.fetch(:trusted_bots))
+end
+
+def trusted_metadata_bot?(login, trust_config)
+  bot_login_in_set?(login, trust_config.fetch(:trusted_metadata_bots))
 end
 
 def collaborator_permission(repo, login)
@@ -284,6 +300,10 @@ def trusted_actor?(repo, login, trust_config, team_cache)
   return true if trusted_bot?(login, trust_config)
 
   trusted_team_member?(repo, login, trust_config, team_cache)
+end
+
+def allowed_metadata_actor?(repo, login, trust_config, team_cache)
+  trusted_actor?(repo, login, trust_config, team_cache) || trusted_metadata_bot?(login, trust_config)
 end
 
 RESOLVED_REVIEW_THREADS_QUERY = <<~GRAPHQL
@@ -460,6 +480,12 @@ def pr_source_actor_logins(target)
   logins
 end
 
+def target_source_actor_logins(target)
+  return pr_source_actor_logins(target) if target["headRefOid"]
+
+  Set[target.dig("author", "login")].tap { |logins| logins.delete(nil) }
+end
+
 def trusted_pr_source?(repo, target, trust_config:, team_cache:)
   logins = pr_source_actor_logins(target)
   return false if logins.empty?
@@ -583,7 +609,7 @@ def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:
 end
 
 def untrusted_interaction_finding(repo, author, kind, url, trust_config:, team_cache:)
-  return if trusted_actor?(repo, author, trust_config, team_cache)
+  return if allowed_metadata_actor?(repo, author, trust_config, team_cache)
 
   { author:, kind:, url: }
 end
@@ -634,6 +660,53 @@ def untrusted_interaction_findings(rest_context, repo, include_pull_comments:, t
 
   findings + untrusted_review_comment_findings(rest_context, repo, trust_config:, team_cache:) +
     untrusted_review_findings(rest_context, repo, trust_config:, team_cache:)
+end
+
+def metadata_only_interaction_finding(author, kind, url, trust_config:)
+  return unless trusted_metadata_bot?(author, trust_config)
+
+  { author:, kind:, url: }
+end
+
+def metadata_only_issue_comment_findings(rest_context, trust_config:)
+  rest_context.fetch(:issue_comments).filter_map do |comment|
+    metadata_only_interaction_finding(
+      comment.dig("user", "login"),
+      "issue comment",
+      comment.fetch("html_url"),
+      trust_config:
+    )
+  end
+end
+
+def metadata_only_review_comment_findings(rest_context, trust_config:)
+  rest_context.fetch(:review_comments).filter_map do |comment|
+    metadata_only_interaction_finding(
+      comment.dig("user", "login"),
+      "review comment",
+      comment.fetch("html_url"),
+      trust_config:
+    )
+  end
+end
+
+def metadata_only_review_findings(rest_context, trust_config:)
+  rest_context.fetch(:reviews).filter_map do |review|
+    metadata_only_interaction_finding(
+      review.dig("user", "login"),
+      "pull request review",
+      review.fetch("html_url"),
+      trust_config:
+    )
+  end
+end
+
+def metadata_only_interaction_findings(rest_context, include_pull_comments:, trust_config:)
+  findings = metadata_only_issue_comment_findings(rest_context, trust_config:)
+  return findings unless include_pull_comments
+
+  findings + metadata_only_review_comment_findings(rest_context, trust_config:) +
+    metadata_only_review_findings(rest_context, trust_config:)
 end
 
 def changed_files(repo, pr_number)
@@ -910,14 +983,19 @@ end
 def participant_findings(repo:, target:, visible:, permission_cache:, trust_config:, team_cache:)
   participant_data = participant_logins_and_unknown_count(target)
   findings = unknown_participant_findings(participant_data.fetch(:unknown_count))
+  source_logins = target_source_actor_logins(target)
 
   participant_data.fetch(:participants).each do |login|
     # Trusted bots cannot delete comments, so a hidden bot participant does not
-    # carry the same prompt-injection risk as a hidden human. Skip entirely.
+    # carry the same prompt-injection risk as a hidden human.
     next if trusted_bot?(login, trust_config)
 
-    trusted = trusted_actor?(repo, login, trust_config, team_cache)
     hidden = !visible.include?(login)
+    if trusted_metadata_bot?(login, trust_config) && !hidden && !source_logins.include?(login)
+      next
+    end
+
+    trusted = trusted_actor?(repo, login, trust_config, team_cache)
     # Flag hidden participants, because trusted humans may have deleted content,
     # and any untrusted participant whether visible or hidden.
     next unless hidden || !trusted
@@ -972,6 +1050,11 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     trust_config:,
     team_cache:
   )
+  metadata_only_interactions = metadata_only_interaction_findings(
+    rest,
+    include_pull_comments: target_is_pr,
+    trust_config:
+  )
 
   {
     files:,
@@ -983,6 +1066,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
     target:,
     target_is_pr:,
+    metadata_only_interactions:,
     untrusted_interactions:
   }
 end
@@ -1028,6 +1112,19 @@ def print_untrusted_interactions(findings)
   end
 
   puts "  Untrusted comment/review queue:"
+  findings.first(10).each do |finding|
+    puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
+  end
+  puts "    - ... #{findings.size - 10} more" if findings.size > 10
+end
+
+def print_metadata_only_interactions(findings)
+  if findings.empty?
+    puts "  Metadata-only comment/review queue: none"
+    return
+  end
+
+  puts "  Metadata-only comment/review queue:"
   findings.first(10).each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
@@ -1141,6 +1238,7 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
   print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
   print_untrusted_interactions(result.fetch(:untrusted_interactions))
+  print_metadata_only_interactions(result.fetch(:metadata_only_interactions))
   print_suspicious_findings(result.fetch(:suspicious))
   print_suspicious_warning_findings(result.fetch(:suspicious_warnings))
   print_file_findings(result)
