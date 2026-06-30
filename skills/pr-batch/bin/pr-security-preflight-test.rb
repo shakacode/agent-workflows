@@ -210,6 +210,32 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_explicit_trust_config_in_repo_without_remote_is_global_with_warning
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      no_remote_root = File.join(dir, "no-remote")
+      repo_config = File.join(no_remote_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(no_remote_root)
+      init_git_root(no_remote_root)
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: no_remote_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "WARN: could not determine repo for trust config root"
+      assert_includes out, 'WARN: global trust config ignores unqualified team slug "maintainers"'
+      assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
   def test_explicit_trust_config_flag_takes_precedence
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
@@ -1236,8 +1262,12 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def init_git_remote(root, repo)
-    raise "git init failed in #{root}" unless system("git", "-C", root, "init", "--quiet")
+    init_git_root(root)
     raise "git remote failed in #{root}" unless system("git", "-C", root, "remote", "add", "origin", "https://github.com/#{repo}.git")
+  end
+
+  def init_git_root(root)
+    raise "git init failed in #{root}" unless system("git", "-C", root, "init", "--quiet")
   end
 
   def yaml_list(values)
