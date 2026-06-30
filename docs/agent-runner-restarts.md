@@ -13,11 +13,12 @@ Claude Code, or another agent runner without losing useful handoff state.
   stop.
 - Do not use pause/resume when the goal is to make an in-flight batch pick up
   new skills, workflow text, targets, or branch names. Use the cancellation flow
-  in [workflows/pr-processing.md](../workflows/pr-processing.md#cancelling-or-stopping-a-batch),
+  in [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch),
   then launch a new batch from a checkout that already has the desired files.
 - If a thread already exited before the pause prompt could be pasted, treat it
-  as a dead-thread case. Resume from the last saved handoff and run bounded
-  status recovery before editing, pushing, polling, or starting a new target.
+  as a dead-thread case. Resume from the last saved handoff and run
+  [bounded status recovery](../workflows/pr-processing.md#bounded-status-recovery)
+  before editing, pushing, polling, or starting a new target.
 
 ## Non-Batch Pause Prompt
 
@@ -60,4 +61,7 @@ into every paused persistent batch thread. Copy the exact prompt text from that
 section to keep a single authoritative source.
 
 For the replacement-worker procedure when an in-process worker cannot be
-reopened, see [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery).
+reopened, see
+[Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery).
+Look for the paragraph starting "For an in-process worker or subagent that
+cannot be reopened..."
