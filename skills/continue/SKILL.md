@@ -1,6 +1,7 @@
 ---
 name: continue
 description: Resume an in-progress task with a structured checkpoint instead of a bare "continue", re-establishing what is done, what is next, and how done is verified. Use when resuming work after an interruption, handoff, or a vague "keep going".
+argument-hint: '[focus text or scope]'
 ---
 
 # Continue
@@ -25,6 +26,6 @@ for what to continue.
   the conversation, open files, or git state.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
-- End with a short status line using the same labels as `skills/status/SKILL.md`: Done, In progress,
+- End with a short status line using the same labels as `$status`: Done, In progress,
   Blocked / needs input, and Next. Treat this closing summary as a report of the resumed work, not as
   a separate trigger to start additional work beyond step 4.
