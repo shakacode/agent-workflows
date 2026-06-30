@@ -220,6 +220,26 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trust_config_rejects_bot_overlap
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      File.write(trust_config_path, <<~YAML)
+        trusted_users: []
+        trusted_bots:
+          - github-actions
+        trusted_metadata_bots:
+          - github-actions
+        trusted_teams: []
+      YAML
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_includes out, "Invalid trust config"
+      assert_includes out, "bot(s) listed in both trusted_bots and trusted_metadata_bots: github-actions"
+    end
+  end
+
   def test_repo_local_config_is_resolved_from_git_root_when_run_from_subdirectory
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")

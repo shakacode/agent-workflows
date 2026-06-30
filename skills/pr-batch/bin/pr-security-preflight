@@ -238,11 +238,18 @@ end
 def load_trust_config(path:, global:)
   path = File.expand_path(path)
   data = File.exist?(path) ? YAML.safe_load_file(path, aliases: false) || {} : {}
+  trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
+  trusted_metadata_bots = Array(data["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
+  overlapping_bots = trusted_bots & trusted_metadata_bots
+  if overlapping_bots.any?
+    abort "Invalid trust config #{path}: bot(s) listed in both trusted_bots and " \
+          "trusted_metadata_bots: #{overlapping_bots.to_a.sort.join(', ')}"
+  end
 
   {
     path:,
-    trusted_bots: Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) },
-    trusted_metadata_bots: Array(data["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) },
+    trusted_bots:,
+    trusted_metadata_bots:,
     trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
