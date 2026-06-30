@@ -387,7 +387,19 @@ multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 
-## Stopping A Batch
+## Pausing Or Stopping A Batch
+
+### Normal Agent-Runner Restart
+
+For an ordinary agent-runner restart where the same lanes should resume
+afterward, use the canonical
+[Pausing For An Agent-Runner Restart](../../workflows/pr-processing.md#pausing-for-an-agent-runner-restart)
+prompt and its companion
+[Bounded Status Recovery](../../workflows/pr-processing.md#bounded-status-recovery)
+resume steps. Preserve claims and worktrees, and do not release or cancel a lane
+unless the coordinator explicitly cancels it.
+
+### Cancellation Or Relaunch
 
 To stop an in-flight batch — for example to relaunch it with updated skills,
 workflow rules, or targets — follow the canonical
