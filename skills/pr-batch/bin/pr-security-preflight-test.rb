@@ -74,6 +74,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         explicit_config,
+        "--strict-trust",
         "123",
         chdir: consumer_root
       )
@@ -135,7 +136,7 @@ class PrSecurityPreflightTest < Minitest::Test
       consumer_root = File.join(dir, "consumer")
       repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p(consumer_root)
-      raise "git init failed in #{consumer_root}" unless system("git", "-C", consumer_root, "init", "--quiet")
+      init_git_remote(consumer_root, "owner/repo")
 
       write_trust_config(repo_config, users: [], teams: ["maintainers"])
 
@@ -153,6 +154,32 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_explicit_trust_config_in_mismatched_repo_is_global
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      other_root = File.join(dir, "other")
+      repo_config = File.join(other_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(other_root)
+      init_git_remote(other_root, "attacker/repo")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "--strict-trust",
+        "123",
+        chdir: other_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, 'WARN: global trust config ignores unqualified team slug "maintainers"'
+      assert_includes out, "not in trusted actor allowlist"
     end
   end
 
@@ -470,7 +497,7 @@ class PrSecurityPreflightTest < Minitest::Test
   def test_acknowledged_coverage_does_not_downgrade_diff_warning_when_timeline_is_truncated
     with_fake_gh("truncated-timeline-warning-diff") do |env, trust_config_path, _log_path|
       out, status = run_script(
-        env,
+        env.merge("PR_SECURITY_PREFLIGHT_MAX_PAGES" => "1"),
         "--repo",
         "owner/repo",
         "--trust-config",
@@ -742,6 +769,33 @@ class PrSecurityPreflightTest < Minitest::Test
       refute status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "github-actions[bot]: not in trusted actor allowlist"
+    end
+  end
+
+  def test_metadata_bot_issue_body_is_warning_scanned
+    with_fake_gh("metadata-bot-author-warning-body") do |env, trust_config_path, _log_path|
+      File.write(trust_config_path, <<~YAML)
+        trusted_users: []
+        trusted_bots: []
+        trusted_metadata_bots:
+          - github-actions
+        trusted_teams: []
+      YAML
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "Suspicious text warnings:"
+      assert_includes out, "issue body by github-actions[bot]"
     end
   end
 
@@ -1154,6 +1208,11 @@ class PrSecurityPreflightTest < Minitest::Test
     YAML
   end
 
+  def init_git_remote(root, repo)
+    raise "git init failed in #{root}" unless system("git", "-C", root, "init", "--quiet")
+    raise "git remote failed in #{root}" unless system("git", "-C", root, "remote", "add", "origin", "https://github.com/#{repo}.git")
+  end
+
   def yaml_list(values)
     return " []" if values.empty?
 
@@ -1374,6 +1433,10 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<'JSON'
       {"number":123,"title":"Test issue","html_url":"https://github.com/owner/repo/issues/123","body":"Workflow-authored status issue.","user":{"login":"github-actions[bot]"}}
       JSON
+        elif [ "$mode" = "metadata-bot-author-warning-body" ]; then
+          cat <<JSON
+      {"number":123,"title":"Test issue","html_url":"https://github.com/owner/repo/issues/123","body":"${warning_review_body}","user":{"login":"github-actions[bot]"}}
+      JSON
         elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
@@ -1511,7 +1574,7 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<'JSON'
       {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":"github-actions[bot]","url":"https://github.com/apps/github-actions","__typename":"Bot"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"IssueComment","author":{"login":"github-actions[bot]"}}]}}}}}
       JSON
-        elif [ "$mode" = "metadata-bot-author" ]; then
+        elif [ "$mode" = "metadata-bot-author" ] || [ "$mode" = "metadata-bot-author-warning-body" ]; then
           cat <<'JSON'
       {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"github-actions[bot]"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"github-actions[bot]","url":"https://github.com/apps/github-actions","__typename":"Bot"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
       JSON

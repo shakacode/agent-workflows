@@ -189,12 +189,12 @@ HOME_TRUST_CONFIG = "~/.agents/trusted-github-actors.yml"
 PACKAGED_TRUST_CONFIG = File.expand_path("../trusted-github-actors.yml", __dir__)
 USER_TRUST_CONFIG_ENV = "AGENT_WORKFLOWS_TRUST_CONFIG"
 
-def resolved_trust_config(explicit_path)
+def resolved_trust_config(explicit_path, repo:)
   if explicit_path
     expanded = File.expand_path(explicit_path)
     abort "Trust config not found: #{expanded}" unless File.exist?(expanded)
 
-    return { path: expanded, global: !path_inside_git_root?(expanded) }
+    return { path: expanded, global: !path_inside_git_root?(expanded, repo:) }
   end
 
   repo_path = repo_trust_config_path
@@ -227,14 +227,49 @@ rescue StandardError
   nil
 end
 
-def path_inside_git_root?(path)
+def path_inside_git_root?(path, repo:)
   root = git_toplevel
   return false unless root
+  return false unless git_root_matches_repo?(root, repo)
 
   expanded_root = canonical_path(root)
   expanded_path = canonical_path(path)
   expanded_path == expanded_root ||
     expanded_path.start_with?("#{expanded_root}#{File::SEPARATOR}")
+end
+
+def git_remote_urls(root)
+  stdout, = Open3.capture3("git", "-C", root, "remote", "-v")
+  stdout.lines.filter_map do |line|
+    _name, rest = line.split(/\s+/, 2)
+    next unless rest
+
+    url, kind = rest.split(/\s+/, 2)
+    url.strip if kind&.strip == "(fetch)"
+  end.uniq
+rescue StandardError
+  []
+end
+
+def github_repo_from_remote_url(url)
+  normalized = url.to_s.sub(/\.git\z/, "")
+  if (match = normalized.match(%r{\Ahttps://github\.com/([^/]+/[^/]+)\z}i))
+    match[1]
+  elsif (match = normalized.match(%r{\Agit@github\.com:([^/]+/[^/]+)\z}i))
+    match[1]
+  elsif (match = normalized.match(%r{\Assh://git@github\.com/([^/]+/[^/]+)\z}i))
+    match[1]
+  end
+end
+
+def git_root_matches_repo?(root, repo)
+  remote_repos = git_remote_urls(root).filter_map { |url| github_repo_from_remote_url(url) }
+  if remote_repos.empty?
+    warn "WARN: could not determine repo for trust config root #{root.inspect}; treating explicit trust config as global"
+    return false
+  end
+
+  remote_repos.any? { |remote_repo| remote_repo.casecmp(repo).zero? }
 end
 
 def canonical_path(path)
@@ -531,7 +566,7 @@ def suspicious_issue_text(rest_context, repo, trust_config:, team_cache:, patter
   issue = rest_context.fetch(:issue)
 
   issue_author = issue.dig("user", "login")
-  if trusted_actor?(repo, issue_author, trust_config, team_cache) && (issue["body"] || "").match?(pattern)
+  if allowed_metadata_actor?(repo, issue_author, trust_config, team_cache) && (issue["body"] || "").match?(pattern)
     findings << { location: "issue body", author: issue_author, url: issue.fetch("html_url") }
   end
 
@@ -1398,7 +1433,7 @@ overall_blockers = []
 acknowledged_findings = []
 permission_cache = {}
 team_cache = {}
-trust_config = load_trust_config(**resolved_trust_config(options.fetch(:trust_config)))
+trust_config = load_trust_config(**resolved_trust_config(options.fetch(:trust_config), repo:))
 
 ARGV.each do |arg|
   number = Integer(arg, exception: false)
