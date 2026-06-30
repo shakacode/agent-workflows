@@ -16,8 +16,8 @@ limit tool use to the minimal status checks and claim-preservation write needed
 for the handoff, then stop until explicitly resumed. Launch fresh coordinator and
 worker sessions for new batches from a checkout that already contains the
 desired `.agents/skills/...` and `.agents/workflows/...` files. When an
-in-flight batch must pick up updated workflow text, first cancel the affected
-batch or lane through the
+in-flight batch must pick up updated skills, workflow rules, targets, or branch
+names, first cancel the affected batch or lane through the
 [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
 protocol before relaunching.
 

@@ -964,8 +964,9 @@ If this lane holds no claim of any kind, skip the claim-preservation write and
 proceed directly to the handoff reply; do not acquire a new claim during this
 pause.
 If claim state cannot be checked or refreshed, report it as UNKNOWN in the
-handoff. If the failure is a setup or auth error, not a transient timeout, also
-stop after sending the handoff rather than releasing unilaterally.
+handoff. If the failure is a setup or auth error rather than a transient timeout,
+also stop after sending the handoff. Do not release the claim unilaterally in
+either case.
 
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
@@ -1006,8 +1007,9 @@ with this companion prompt:
 ```text
 Resume batch processing now.
 
-Re-read your restart handoff and run the bounded status recovery in the workflow
-before editing, pushing, polling, or starting any new target.
+Re-read your restart handoff and run the bounded status recovery steps described
+under "Pausing For An Agent-Runner Restart" in the workflow before editing,
+pushing, polling, or starting any new target.
 ```
 
 After relaunch, reopen each paused persistent thread and resume from its
