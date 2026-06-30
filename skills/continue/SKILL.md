@@ -29,7 +29,8 @@ for what to continue.
   the conversation, open files, or git state.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
-- End with a short status line using the companion status format: Done, In progress, Blocked / needs
-  input, and Next. If there is nothing blocked, say "nothing blocked". Keep this line aligned with
-  `status/SKILL.md` when editing either skill. Treat this closing summary as a report of the resumed
-  work, not as a separate trigger to start additional work beyond step 5.
+- End with a short status block using the companion status format: Done (note whether verified or
+  awaiting verification), In progress, Blocked / needs input, and Next. If there is nothing blocked,
+  say "nothing blocked". Keep this block aligned with `status/SKILL.md` when editing either skill.
+  Treat this closing summary as a report of the resumed work, not as a separate trigger to start
+  additional work beyond step 5.
