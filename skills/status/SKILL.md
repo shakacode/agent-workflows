@@ -16,6 +16,6 @@ Report:
   unblock. If nothing, say "nothing blocked".
 - **Next** - the next one to three concrete steps, without starting them.
 
-Keep it to roughly ten lines. If you are waiting on a long-running command or a background agent,
-name it and the signal you are waiting for. Do not start new long-running work solely to produce a
-richer status report.
+Keep it concise: one to three lines per section. If you are waiting on a long-running command or a
+background agent, name it and the signal you are waiting for. Do not start new long-running work
+solely to produce a richer status report.

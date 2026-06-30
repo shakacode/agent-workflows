@@ -29,5 +29,6 @@ for what to continue.
   the conversation, open files, or git state.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
-- End with a `$status` report. Treat this closing summary as a report of the resumed work, not as a
-  separate trigger to start additional work beyond step 5.
+- End with a `$status` report when that companion skill is installed; otherwise use the same four
+  sections directly: Done, In progress, Blocked / needs input, and Next. Treat this closing summary
+  as a report of the resumed work, not as a separate trigger to start additional work beyond step 5.
