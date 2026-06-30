@@ -10,7 +10,7 @@ All notable changes to this portable workflow pack are documented here.
 
 - **Add `agent-workflows-trust-audit` to check recent merged PRs against `pr-security-preflight` and draft candidate repo-local trust entries for maintainer review.**
 - **Document the trust/preflight operating model, including global vs repo-local trust, audit flow, acknowledgement policy, and security tradeoffs.**
-- **Document bounded inline Claude Code review as a fallback when hosted Claude review checks are queued, stale, or unavailable.**
+- **Document bounded inline Claude Code review as a fallback when hosted Claude review checks are stale or fail for capacity/quota reasons.**
 
 #### Fixed
 
