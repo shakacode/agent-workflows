@@ -16,8 +16,8 @@ repeat:
    proceed; do not stop to ask unless you are genuinely blocked.
 2. **What is next** - List the remaining steps to reach done, then pick the next concrete one.
 3. **Definition of done** - Restate the overall success criteria in one line, plus the command or
-   test that will verify it.
-4. Continue working on the next step.
+   test that will verify it. If there is no runnable check, state how completion will be confirmed.
+4. Continue working on **that one next step only**. Stop after completing it.
 
 If the user supplied focus text or arguments, treat it as additional direction or a narrowed scope
 for what to continue.
@@ -26,6 +26,6 @@ for what to continue.
   the conversation, open files, or git state.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
-- End with a short status line using the same labels as `$status`: Done, In progress,
-  Blocked / needs input, and Next. Treat this closing summary as a report of the resumed work, not as
-  a separate trigger to start additional work beyond step 4.
+- End with a short status line using these labels: Done, In progress, Blocked / needs input, and
+  Next. If there is nothing blocked, say "nothing blocked". Treat this closing summary as a report of
+  the resumed work, not as a separate trigger to start additional work beyond step 4.

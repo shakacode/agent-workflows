@@ -9,8 +9,8 @@ Give a tight status update on the current work. **Do not start new work.**
 
 Report:
 
-- **Done** - what is complete and verified. Cite files, commits, or test results, and only claim
-  "verified" if the check was actually run.
+- **Done** - what is complete. Note whether it has been verified, cite the check result when one
+  exists, or mark it as done and awaiting verification when a check has not run yet.
 - **In progress** - what is mid-way through.
 - **Blocked / needs input** - anything that genuinely needs a decision, credentials, or an external
   unblock. If nothing, say "nothing blocked".
