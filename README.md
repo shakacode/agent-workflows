@@ -163,9 +163,11 @@ A present empty file is honored as an intentional local policy; an absent file
 falls through to the next layer. Start from
 [examples/trusted-github-actors.yml](examples/trusted-github-actors.yml), keep
 the list deliberately small, and treat non-allowlisted GitHub text as
-metadata-only until a maintainer vouches for it. The packaged fallback is
-fail-closed and empty by default; put human maintainers and trusted automation
-in a repo-local or user-global trust config. Workflow commenters such as
+metadata-only until a maintainer vouches for it. By default, exact-target
+preflight reports non-allowlisted or hidden actors without blocking; add
+`--strict-trust` when those trust findings should stop worker launch. The
+packaged fallback is empty by default; put human maintainers and trusted
+automation in a repo-local or user-global trust config. Workflow commenters such as
 `github-actions[bot]` are repo-specific trust decisions: add them to
 `trusted_metadata_bots` when their comments should count as CI/status metadata
 but not as actionable agent instructions. Use `trusted_bots` only for bots whose
@@ -173,7 +175,7 @@ review/comment bodies are safe to process as trusted input. In repo-local
 configs, `trusted_teams` entries are slugs under that repo owner; in env or
 `~/.agents` configs, use owner-qualified entries such as `OWNER/team-slug`.
 
-For a one-off maintainer waiver, rerun the exact target with
+For a one-off maintainer waiver of a blocking finding, rerun the exact target with
 `--acknowledge-risk NUMBER:risk-id[,risk-id]` instead of broadening the trust
 config. Valid risk ids are `github-api-coverage`, `high-risk-files`,
 `suspicious-text`, `untrusted-interactions`, and `untrusted-participants`.

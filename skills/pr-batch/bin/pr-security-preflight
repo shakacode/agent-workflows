@@ -16,6 +16,7 @@ options = {
   repo: nil,
   fail_on_high_risk_files: false,
   include_reactions: false,
+  strict_trust: false,
   trust_config: nil
 }
 
@@ -75,7 +76,7 @@ WARNING_SUSPICIOUS_PATTERN = /
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: pr-security-preflight [--repo OWNER/REPO] [--trust-config PATH] " \
                 "[--acknowledge-risk NUMBER:RISK[,RISK]] [--include-reactions] " \
-                "[--fail-on-high-risk-files] NUMBER [...]"
+                "[--strict-trust] [--fail-on-high-risk-files] NUMBER [...]"
   opts.on("--repo OWNER/REPO", "GitHub repository, defaulting to gh repo view") { |repo| options[:repo] = repo }
   opts.on("--trust-config PATH", "Trusted GitHub actor allowlist") { |path| options[:trust_config] = path }
   acknowledge_help = "Maintainer-acknowledged exact-target risk. " \
@@ -87,9 +88,12 @@ parser = OptionParser.new do |opts|
   end
   include_reactions_help = "Fetch reaction users as visible actors (extra GitHub API calls). " \
                            "Without this flag, reaction-only users already present in GitHub participants " \
-                           "appear as hidden participants and block the batch."
+                           "appear as hidden participants and block when --strict-trust is set."
   opts.on("--include-reactions", include_reactions_help) do
     options[:include_reactions] = true
+  end
+  opts.on("--strict-trust", "Exit non-zero on non-allowlisted or hidden actor findings") do
+    options[:strict_trust] = true
   end
   opts.on("--fail-on-high-risk-files", "Exit non-zero when high-risk surfaces changed") do
     options[:fail_on_high_risk_files] = true
@@ -1201,7 +1205,8 @@ def record_blocker(number, risk_id, message, overall_blockers, acknowledged_find
   end
 end
 
-def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:)
+def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:,
+                    strict_trust:)
   number = result.fetch(:number)
   if result.fetch(:graph_coverage_findings).any?
     record_blocker(
@@ -1213,7 +1218,7 @@ def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledg
       acknowledged_risks
     )
   end
-  if result.fetch(:participant_findings).any?
+  if strict_trust && result.fetch(:participant_findings).any?
     record_blocker(
       number,
       "untrusted-participants",
@@ -1223,7 +1228,7 @@ def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledg
       acknowledged_risks
     )
   end
-  if result.fetch(:untrusted_interactions).any?
+  if strict_trust && result.fetch(:untrusted_interactions).any?
     record_blocker(
       number,
       "untrusted-interactions",
@@ -1270,7 +1275,8 @@ def print_file_findings(result)
   end
 end
 
-def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:)
+def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:,
+                      strict_trust:)
   target_label = result.fetch(:target_is_pr) ? "PR" : "Issue"
   target = result.fetch(:target)
 
@@ -1289,7 +1295,8 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
     overall_blockers,
     acknowledged_findings:,
     acknowledged_risks:,
-    fail_on_high_risk_files:
+    fail_on_high_risk_files:,
+    strict_trust:
   )
 
   puts
@@ -1381,7 +1388,8 @@ ARGV.each do |arg|
     overall_blockers,
     acknowledged_findings:,
     acknowledged_risks: options.fetch(:acknowledged_risks),
-    fail_on_high_risk_files: options[:fail_on_high_risk_files]
+    fail_on_high_risk_files: options[:fail_on_high_risk_files],
+    strict_trust: options[:strict_trust]
   )
 end
 
