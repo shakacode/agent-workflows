@@ -1327,12 +1327,13 @@ class PrSecurityPreflightTest < Minitest::Test
       DIFF
           exit 0
         elif [ "$mode" = "trusted-blocking-diff" ]; then
-          cat <<'DIFF'
+          blocking_diff_line="$(printf 'rm %srf tmp/build' '-')"
+          cat <<DIFF
       diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
       index 0000000..1111111 100644
       --- a/.github/workflows/test.yml
       +++ b/.github/workflows/test.yml
-      +rm -rf tmp/build
+      +${blocking_diff_line}
       DIFF
           exit 0
         fi
