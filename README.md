@@ -200,7 +200,8 @@ upgrade-agent-workflows --host codex --consumer-root /path/to/consumer/repo
 
 Long-running agents keep whatever skill text they already loaded. Let active
 batches finish unless they are blocked by old workflow instructions; use the new
-pack for new batches or a small canary run first. See
-[docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
+pack for new batches or a small canary run first. For restart handoff prompts,
+see [docs/agent-runner-restarts.md](docs/agent-runner-restarts.md); for
 `UP_TO_DATE`, `UPGRADE_AVAILABLE`, `NOT_INSTALLED`, and `CHECK_FAILED` status
-semantics plus network-use notes.
+semantics and network-use notes, see
+[docs/installation-and-upgrades.md](docs/installation-and-upgrades.md).

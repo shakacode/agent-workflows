@@ -8,7 +8,9 @@ repositories, use the target repo's coordination backend plus
 dependencies, cancellation, and handoff rules. This file stays focused on skill
 selection and per-batch sizing.
 
-For restart and pause procedures, see
+For non-batch restart prompts and batch restart guidance, see
+[agent-runner-restarts.md](agent-runner-restarts.md). For the canonical
+batch pause procedure, see
 [Pausing For An Agent-Runner Restart](../workflows/pr-processing.md#pausing-for-an-agent-runner-restart);
 for cancellation, see
 [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch).
