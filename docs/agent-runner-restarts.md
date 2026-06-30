@@ -63,5 +63,5 @@ section to keep a single authoritative source.
 For the replacement-worker procedure when an in-process worker cannot be
 reopened, see
 [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery).
-Look for the paragraph starting "For an in-process worker or subagent that
-cannot be reopened..."
+Look for the sentence beginning "For an in-process worker or subagent that
+cannot be reopened after its host process exits..."
