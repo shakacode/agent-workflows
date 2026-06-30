@@ -15,8 +15,11 @@ Claude Code, or another agent runner without losing useful handoff state.
   new skills, workflow text, targets, or branch names. Use the cancellation flow
   in [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch),
   then launch a new batch from a checkout that already has the desired files.
-- If a thread already exited before the pause prompt could be pasted, treat it
-  as a dead-thread case. Resume from the last saved handoff and run
+- If a non-batch thread already exited before the pause prompt could be pasted,
+  resume from the last saved handoff and re-check branch, HEAD, local changes,
+  and running processes before editing or pushing.
+- If a batch lane already exited before the pause prompt could be pasted, resume
+  from the last saved handoff and run
   [bounded status recovery](../workflows/pr-processing.md#bounded-status-recovery)
   before editing, pushing, polling, or starting a new target.
 
@@ -63,5 +66,3 @@ section to keep a single authoritative source.
 For the replacement-worker procedure when an in-process worker cannot be
 reopened, see
 [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery).
-Look for the sentence beginning "For an in-process worker or subagent that
-cannot be reopened after its host process exits..."
