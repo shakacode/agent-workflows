@@ -114,7 +114,7 @@ class PrSecurityPreflightTest < Minitest::Test
       home = File.join(dir, "home")
       repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p([consumer_root, home])
-      system("git", "-C", consumer_root, "init", "--quiet")
+      init_git_root(consumer_root)
       write_trust_config(repo_config, users: [], teams: ["maintainers"])
 
       out, status = run_script(
@@ -184,6 +184,83 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_explicit_repo_local_trust_config_accepts_github_enterprise_remotes
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      ghes_urls = [
+        "https://github.company.example/owner/repo.git",
+        "git@github.company.example:owner/repo.git",
+        "ssh://git@github.company.example/owner/repo.git"
+      ]
+
+      ghes_urls.each_with_index do |remote_url, index|
+        consumer_root = File.join(dir, "consumer-#{index}")
+        repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+        FileUtils.mkdir_p(consumer_root)
+        init_git_remote(consumer_root, "owner/repo", url: remote_url)
+        write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+        out, status = run_script(
+          env,
+          "--repo",
+          "owner/repo",
+          "--trust-config",
+          repo_config,
+          "123",
+          chdir: consumer_root
+        )
+
+        assert status.success?, out
+        assert_includes out, "SECURITY_PREFLIGHT_OK"
+        refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+        refute_includes out, "WARN: global trust config ignores unqualified team slug"
+      end
+    end
+  end
+
+  def test_run_script_clears_inherited_git_environment
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      outer_root = File.join(dir, "outer")
+      consumer_root = File.join(dir, "consumer")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p([outer_root, consumer_root])
+      init_git_root(outer_root)
+      init_git_remote(consumer_root, "owner/repo")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("GIT_DIR" => File.join(outer_root, ".git"), "GIT_WORK_TREE" => outer_root),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_git_helpers_clear_inherited_git_environment
+    with_fake_gh("warning-issue") do |_env, _trust_config_path, _log_path, dir|
+      outer_root = File.join(dir, "outer")
+      consumer_root = File.join(dir, "consumer")
+      FileUtils.mkdir_p([outer_root, consumer_root])
+      init_git_root(outer_root)
+
+      with_env("GIT_DIR" => File.join(outer_root, ".git"), "GIT_WORK_TREE" => outer_root) do
+        init_git_remote(consumer_root, "owner/repo")
+      end
+
+      assert File.directory?(File.join(consumer_root, ".git"))
+      remotes, status = Open3.capture2e(clean_git_env, "git", "-C", consumer_root, "remote", "-v")
+      assert status.success?, remotes
+      assert_includes remotes, "https://github.com/owner/repo.git"
+    end
+  end
+
   def test_explicit_trust_config_in_mismatched_repo_is_global
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       other_root = File.join(dir, "other")
@@ -230,7 +307,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
       refute status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
-      assert_includes out, "WARN: could not determine repo for trust config root"
+      assert_includes out, "WARN: could not determine repo from remotes for trust config working tree"
       assert_includes out, 'WARN: global trust config ignores unqualified team slug "maintainers"'
       assert_includes out, "not in trusted actor allowlist"
     end
@@ -422,7 +499,7 @@ class PrSecurityPreflightTest < Minitest::Test
       env_config = File.join(dir, "global-trusted-github-actors.yml")
       repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p(subdirectory)
-      system("git", "-C", consumer_root, "init", "--quiet")
+      init_git_root(consumer_root)
       write_trust_config(env_config, users: ["justin808"])
       write_trust_config(repo_config, users: [])
 
@@ -1184,6 +1261,52 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_resolved_metadata_bot_self_resolved_warning_review_comment_does_not_warn
+    with_fake_gh("resolved-metadata-bot-self-warning-review-comment") do |env, trust_config_path, _log_path|
+      File.write(trust_config_path, <<~YAML)
+        trusted_users:
+          - justin808
+        trusted_bots: []
+        trusted_metadata_bots:
+          - coderabbitai
+        trusted_teams: []
+      YAML
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "Metadata-only comment/review queue:"
+      assert_includes out, "coderabbitai[bot] review comment"
+      assert_includes out, "Suspicious text findings: none"
+      assert_includes out, "Suspicious text warnings: none"
+      refute_includes out, "review comment 901 by coderabbitai[bot]"
+    end
+  end
+
+  def test_resolved_metadata_bot_self_resolved_blocking_review_comment_still_warns
+    with_fake_gh("resolved-metadata-bot-self-blocking-review-comment") do |env, trust_config_path, _log_path|
+      File.write(trust_config_path, <<~YAML)
+        trusted_users:
+          - justin808
+        trusted_bots: []
+        trusted_metadata_bots:
+          - coderabbitai
+        trusted_teams: []
+      YAML
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "Metadata-only comment/review queue:"
+      assert_includes out, "coderabbitai[bot] review comment"
+      assert_includes out, "Suspicious text findings: none"
+      assert_includes out, "Suspicious text warnings:"
+      assert_includes out, "review comment 901 by coderabbitai[bot]"
+    end
+  end
+
   def test_trusted_bot_review_comment_resolved_by_untrusted_user_warns_without_blocking
     with_fake_gh("untrusted-resolver-trusted-bot-review-comment") do |env, trust_config_path, _log_path|
       trust_coderabbit(trust_config_path)
@@ -1247,7 +1370,7 @@ class PrSecurityPreflightTest < Minitest::Test
     options = {}
     options[:chdir] = chdir if chdir
 
-    child_env = { "GIT_DIR" => nil, "GIT_WORK_TREE" => nil }.merge(env)
+    child_env = env.merge(clean_git_env)
     Open3.capture2e(child_env, "ruby", SCRIPT, *args, options)
   end
 
@@ -1261,13 +1384,29 @@ class PrSecurityPreflightTest < Minitest::Test
     YAML
   end
 
-  def init_git_remote(root, repo)
+  def init_git_remote(root, repo, url: "https://github.com/#{repo}.git")
     init_git_root(root)
-    raise "git remote failed in #{root}" unless system("git", "-C", root, "remote", "add", "origin", "https://github.com/#{repo}.git")
+    raise "git remote failed in #{root}" unless system(clean_git_env, "git", "-C", root, "remote", "add", "origin", url)
   end
 
   def init_git_root(root)
-    raise "git init failed in #{root}" unless system("git", "-C", root, "init", "--quiet")
+    raise "git init failed in #{root}" unless system(clean_git_env, "git", "-C", root, "init", "--quiet")
+  end
+
+  def clean_git_env
+    { "GIT_DIR" => nil, "GIT_WORK_TREE" => nil }
+  end
+
+  def with_env(values)
+    previous = values.to_h { |key, _value| [key, ENV.fetch(key, nil)] }
+    values.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
+    yield
+  ensure
+    previous.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
   end
 
   def yaml_list(values)
@@ -1466,7 +1605,7 @@ class PrSecurityPreflightTest < Minitest::Test
       }
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -1512,6 +1651,10 @@ class PrSecurityPreflightTest < Minitest::Test
             cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"resolvedBy":{"login":"justin808"},"comments":{"nodes":[{"databaseId":901}]}}]}}}}}
       JSON
+          elif [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+            cat <<'JSON'
+      {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"resolvedBy":{"login":"coderabbitai[bot]"},"comments":{"nodes":[{"databaseId":901}]}}]}}}}}
+      JSON
           elif [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ]; then
             cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"resolvedBy":{"login":"unknown-user"},"comments":{"nodes":[{"databaseId":901}]}}]}}}}}
@@ -1525,7 +1668,7 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
@@ -1666,9 +1809,13 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<JSON
       [[{"id":901,"html_url":"https://github.com/owner/repo/pull/123#discussion_r901","user":{"login":"coderabbitai[bot]"},"body":"${blocked_review_body}"}]]
       JSON
-        elif [ "$mode" = "resolved-metadata-bot-warning-review-comment" ]; then
+        elif [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ]; then
           cat <<JSON
       [[{"id":901,"html_url":"https://github.com/owner/repo/pull/123#discussion_r901","user":{"login":"coderabbitai[bot]"},"body":"${warning_review_body}"}]]
+      JSON
+        elif [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+          cat <<JSON
+      [[{"id":901,"html_url":"https://github.com/owner/repo/pull/123#discussion_r901","user":{"login":"coderabbitai[bot]"},"body":"${blocked_review_body}"}]]
       JSON
         else
           printf '[[]]'
@@ -1715,7 +1862,7 @@ class PrSecurityPreflightTest < Minitest::Test
       if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
         for arg in "$@"; do
           if [ "$arg" = "--name-only" ]; then
-            if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ]; then
+            if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
               printf 'docs/safe.md\n'
               exit 0
             fi
@@ -1723,7 +1870,7 @@ class PrSecurityPreflightTest < Minitest::Test
             exit 0
           fi
         done
-        if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ]; then
+        if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'DIFF'
       diff --git a/docs/safe.md b/docs/safe.md
       index 0000000..1111111 100644
