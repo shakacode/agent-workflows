@@ -5,7 +5,8 @@ Reusable agent workflow skills for ShakaCode repositories.
 This repository contains portable Codex/Claude-facing workflows for PR batches,
 review triage, merge readiness, changelog updates, CI routing, and audit loops.
 The shared files provide process. Each adopting repository keeps its concrete
-commands and policy in `AGENTS.md` under `## Agent Workflow Configuration`.
+commands in `.agents/bin/` and non-command policy in `.agents/agent-workflow.yml`.
+Its `AGENTS.md` has a short pointer section named `## Agent Workflow Configuration`.
 
 ## Why This Exists
 
@@ -15,8 +16,8 @@ it. The default model is:
 
 - install this shared workflow pack once in the user's or agent's normal skill
   home;
-- add a small, repo-owned seam to each consumer repo's `AGENTS.md`;
-- validate that installed workflows can resolve the consumer repo's seam;
+- add repo-owned `.agents/bin/` wrappers and `.agents/agent-workflow.yml`;
+- validate that installed workflows can resolve the consumer repo's contract;
 - keep repo-specific skills and overrides in the consumer repo only when needed.
 
 This is deliberately not a subtree-first model. Repos may pin local copies when
@@ -29,7 +30,9 @@ plus a validated repo seam are the default.
 | --- | --- |
 | `skills/` | Agent skill folders. Copy or symlink these under a Codex or Claude skill root. |
 | `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
-| `bin/` | Install, status, upgrade, and validation helpers. |
+| `bin/` | Install, status, upgrade, validation, and downstream-sync helpers. |
+| `downstream.yml` | Registry of consumer repos for `bin/push-downstream`. |
+| `seam-presets.yml` | Seam value adapter: org defaults + archetype presets. |
 | `docs/` | Adoption, seam design, and operator guidance. |
 | `examples/` | Example consumer-repo configuration snippets. |
 | `test/fixtures/consumer-repo/` | Minimal fixture used by `bin/validate`. |
@@ -80,11 +83,12 @@ notes.
 
 In each repository that should use these workflows:
 
-1. Add or update `AGENTS.md`.
-2. Add an `## Agent Workflow Configuration` section with the real repo values.
-3. Add repo-local skills only for domain-specific workflows or intentional
+1. Add or update `.agents/bin/` command wrappers.
+2. Add `.agents/agent-workflow.yml` with the repo's non-command policy.
+3. Add the `## Agent Workflow Configuration` pointer section to `AGENTS.md`.
+4. Add repo-local skills only for domain-specific workflows or intentional
    overrides.
-4. Validate the seam from the consumer repo:
+5. Validate the contract from the consumer repo:
 
    ```bash
    agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
@@ -98,13 +102,28 @@ In each repository that should use these workflows:
      --shared "$HOME/src/agent-workflows"
    ```
 
-5. Dry-run one workflow, such as `$plan-pr-batch` or `$address-review`, without
+6. Dry-run one workflow, such as `$plan-pr-batch` or `$address-review`, without
    making code changes.
 
 See [docs/adoption.md](docs/adoption.md) for the full adoption guide,
 [docs/seam-design.md](docs/seam-design.md) for the design rationale, and
 [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 ongoing host installs and upgrades.
+
+## Downstream Seam Sync
+
+`bin/push-downstream` rolls the binstub contract into the consumer repos listed
+in `downstream.yml`, one PR per repo, while preserving repo-owned scripts and
+policy values. Plan first, then apply a canary before fanning out:
+
+```bash
+bin/push-downstream                               # plan every enabled repo
+bin/push-downstream --only shakapacker --apply    # clone, reconcile, validate, open one PR
+bin/push-downstream --apply                       # fan out to all enabled repos
+```
+
+See [docs/downstream-sync.md](docs/downstream-sync.md) for the registry schema,
+the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
 
 ## Skill Inventory
 

@@ -1,28 +1,27 @@
 ---
 name: verify
-description: Run a local verification loop for the current branch before creating or updating a PR, selecting checks from AGENTS.md and changed files. Use when asked to verify, test, or prepare PR changes.
+description: Run a local verification loop for the current branch before creating or updating a PR, selecting checks from the repo's binstub contract and changed files. Use when asked to verify, test, or prepare PR changes.
 ---
 
 # Verify Command
 
 Run a local verification loop for the current branch before creating or updating a PR.
 
-Use `/verify` for local pre-PR checks. Use `/run-ci` when you need the repo's CI change detector (see `AGENTS.md` →
-**Agent Workflow Configuration**) or want to reproduce CI job selection locally.
+Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/ci-detect` or want to reproduce CI job selection locally.
 
 ## Instructions
 
-1. Read `AGENTS.md` first. It is the canonical source for required commands, formatting, boundaries, and repository safety rules.
-2. Resolve `BASE_BRANCH` from `AGENTS.md` -> **Agent Workflow Configuration**, then inspect the current branch diff
+1. Read `AGENTS.md` first. It is the canonical source for boundaries and repository safety rules. Read `.agents/bin/README.md` and `.agents/agent-workflow.yml` for workflow commands and policy.
+2. Resolve `BASE_BRANCH` from `.agents/agent-workflow.yml` key `base_branch`, then inspect the current branch diff
    with `git status --short`, `git diff --name-only "origin/${BASE_BRANCH}...HEAD"`, and
    `git diff --stat "origin/${BASE_BRANCH}...HEAD"`.
 3. Decide the required verification set that covers the changed surface area using the **Scope Guide** below. Always
-   include the repo's mandatory pre-commit lint gate (see `AGENTS.md` → **Agent Workflow Configuration**) before
+   include `.agents/bin/lint` when present, and always include `.agents/bin/validate` before
    creating a commit, even when the changed surface is documentation-only, because that gate can scan all files of its
    language, not just changed or staged ones, so docs-only commits can still expose pre-existing offenses that CI will
    catch.
 4. Run each command in order and stop on the first failure. Report the failing command, the relevant error output, and the next fix to attempt.
-5. For formatting failures (auto-fixable formatter or lint offenses), run the repo's format/autofix command (see `AGENTS.md` → **Agent Workflow Configuration**); do not manually edit formatting-only changes.
+5. For formatting failures (auto-fixable formatter or lint offenses), run the repo's documented autofix command or `.agents/bin/lint` mode when it supports fixes; do not manually edit formatting-only changes.
 6. After one or more edits for a failure, restart at the failed command and continue forward. Track a loop counter per
    command:
    - Increment the counter when the same command fails on the same first item (test name, lint offense, or formatter
@@ -40,9 +39,9 @@ Use this order unless the changed files make a narrower or broader set clearly a
 
 1. Formatting and whitespace:
    - `git diff --check "origin/${BASE_BRANCH}...HEAD"` for committed branch content before creating or updating a PR; detects trailing whitespace and conflict markers, not source formatting
-   - the repo's formatter check (see `AGENTS.md` → **Agent Workflow Configuration**)
+   - `.agents/bin/lint` when present, or the repo's documented formatter check
 2. Mandatory pre-commit gate:
-   - the repo's mandatory pre-commit lint gate - **mandatory gate before every commit**; see Instructions step 3 for why this still applies to documentation-only commits; it lints the source languages it covers, not Markdown or YAML
+   - `.agents/bin/validate` - **mandatory gate before every commit/PR update**; see Instructions step 3 for why this still applies to documentation-only commits
 3. Ruby (or the repo's equivalent backend language):
    - the repo's type/signature validation command when signatures or public APIs changed
    - the repo's targeted unit-test command for the changed backend behavior

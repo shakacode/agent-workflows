@@ -37,8 +37,8 @@ Plan a PR batch
    - For every bare number, run both `gh pr view N` and `gh issue view N` when type is ambiguous.
    - For filters, run focused `gh pr list` or `gh issue list` commands and keep the query in the report.
    - Record title, URL, state, branch/author for PRs, labels, linked PR/issue refs, and blockers. If a fact cannot be verified, write `UNKNOWN`.
-   - Treat the repo's private coordination backend (see `AGENTS.md` →
-     **Agent Workflow Configuration**) as available when bounded
+   - Treat the repo's private coordination backend (see `coordination_backend`
+     in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve the
      `pr-batch` skill directory, then run
      `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <resolved-owner/repo> --target <issue-or-pr> --json`
@@ -203,7 +203,7 @@ Items:
   Done when: final state is reported using the requested `merge_authority` and the split states from pr-batch, with PR/no-PR evidence or documented no-fix rationale.
 
 Execution rules:
-- Resolve the base branch from `AGENTS.md` -> Agent Workflow Configuration and run `git fetch --prune origin <base-branch>` first. Verify the installed or repo-local `$pr-batch` skill and `pr-processing.md` workflow are available before launching workers; if neither can be resolved, stop and report repo workflow state as `UNKNOWN`.
+- Resolve the base branch from `.agents/agent-workflow.yml` key `base_branch` and run `git fetch --prune origin <base-branch>` first. Verify the installed or repo-local `$pr-batch` skill and `pr-processing.md` workflow are available before launching workers; if neither can be resolved, stop and report repo workflow state as `UNKNOWN`.
 - Follow the resolved `$pr-batch` "Goal Prompt Template"; if skill autoloading is unavailable, copy its safety, review, /simplify, CI, and readiness gates before running.
 - Dispatch one subagent per independent item; group dependent items only when shared context is required. Dispatch only the current file-disjoint wave. Hold serial and `UNKNOWN`
   discovery lanes until no active editor lane can collide with them.

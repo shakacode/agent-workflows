@@ -1,0 +1,65 @@
+# Downstream consumer repositories for shakacode/agent-workflows.
+#
+# `bin/push-downstream` syncs the binstub contract into each repo:
+#   - `.agents/bin/<name>` command wrappers
+#   - `.agents/bin/README.md`
+#   - `.agents/agent-workflow.yml`
+#   - a thin pointer section in `AGENTS.md`
+#   - a thin `CLAUDE.md` only when absent
+#
+# Presets live in seam-presets.yml and are intentionally conservative. Before
+# opening a consumer PR, verify that every wrapped command/task exists in that
+# target repo.
+
+defaults:
+  owner: shakacode
+  base_branch: main
+  pr_branch: agent-workflows/seam-sync
+  enabled: true
+
+repos:
+  - repo: react_on_rails_rsc
+    preset: ts-package
+    enabled: false   # adopted via canary PR shakacode/react_on_rails_rsc#133
+    overrides:
+      commands:
+        test: yarn test "$@"
+      policy:
+        changelog: "/CHANGELOG.md — Keep-a-Changelog; user-visible changes only; reference-style PR links"
+        hosted_ci_trigger: "n/a — the unit-tests workflow runs on every PR; no +ci-* commands"
+
+  - repo: shakapacker
+    preset: ruby-gem
+    overrides:
+      commands:
+        setup: |
+          bundle install
+          yarn install
+        validate:
+          compose: [lint, test]
+        test: |
+          bundle exec rake test
+          yarn test --runInBand
+        lint: |
+          bundle exec rubocop "$@"
+          yarn lint
+        build: |
+          yarn build
+          yarn type-check
+
+  - { repo: shakaperf, preset: ruby-gem }
+
+  - { repo: agent-coordination-dashboard, preset: site }
+  - { repo: reactonrails.com, preset: site }
+  - { repo: shakastack-com, preset: site }
+
+  - { repo: react-on-rails-starter-tanstack, preset: ror-demo }
+  - { repo: react-on-rails-demo-gumroad-rsc, preset: ror-demo }
+  - { repo: react_on_rails-demo-octochangelog-on-rails-pro, preset: ror-demo }
+  - { repo: react-on-rails-demo-hacker-news-rsc, preset: ror-demo }
+  - { repo: react-on-rails-demo-flagship, preset: ror-demo }
+  - { repo: react-on-rails-demo-marketplace-rsc, preset: ror-demo }
+  - { repo: react-on-rails-example-open-flights, preset: ror-demo }
+  - { repo: react-on-rails-example-migration, preset: ror-demo }
+  - { repo: react-webpack-rails-tutorial, preset: ror-demo, base_branch: master }
+  - { repo: react-on-rails-demo-ssr-hmr, preset: ror-demo, base_branch: master }

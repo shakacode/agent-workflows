@@ -7,17 +7,18 @@ every repository.
 ## Installation Model
 
 The shared pack belongs in the user or agent home. Each consumer repository
-keeps its own policy in `AGENTS.md` under `## Agent Workflow Configuration`.
-The shared skills read that seam at runtime, so the same installed pack can work
-across repositories with different branches, CI commands, labels, changelog
-rules, and review gates.
+keeps command wrappers in `.agents/bin/`, non-command policy in
+`.agents/agent-workflow.yml`, and a short pointer in `AGENTS.md` under
+`## Agent Workflow Configuration`. The shared skills read that contract at
+runtime, so the same installed pack can work across repositories with different
+branches, CI commands, labels, changelog rules, and review gates.
 
 Repository-pinned copies are still allowed when a platform cannot load installed
 skills, but they are the exception. The default path is:
 
 1. Clone this repository.
 2. Install it into the host that will run the skills.
-3. Validate each consumer repo seam.
+3. Validate each consumer repo contract.
 4. Dry-run one workflow before launching a real batch.
 
 ## Host Targets

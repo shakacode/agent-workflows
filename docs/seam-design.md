@@ -1,145 +1,141 @@
-# Portable Agent Workflows via User-Installed Skills And Repo Seam
+# Portable Agent Workflows Via Binstubs And Policy YAML
 
 Date: 2026-06-18
-Status: approved direction, updated 2026-06-21
+Status: approved direction, updated 2026-06-27
 
 ## Problem
 
-The `pr-batch` family and related agent workflows are useful across ShakaCode
-repos, but repo-local copies can mix reusable process with repo-specific
-commands, labels, release policy, paths, and domain examples. We want agents to
-carry these workflows across repos without copying a stale `.agents/` tree into
-every repository or making each repo responsible for shared workflow updates.
+The shared `pr-batch` family and related agent workflows should run across
+ShakaCode repos without copying repo-specific commands, labels, branches,
+release policy, paths, or domain examples into the shared pack. The original
+inline `AGENTS.md` key/value seam was readable, but it made scripts parse prose
+and encouraged large policy blocks inside every consumer `AGENTS.md`.
 
 ## Goal
 
-Make shared skills portable by installing them in the user or agent environment,
-then make each repo expose a small, validated `AGENTS.md` seam that supplies the
-repo-specific values the portable skills need.
+Make the shared skills portable by installing them once in the user or agent
+environment, then make each consumer repo expose a small, validated contract:
+
+- commands are executable repo-owned binstubs under `.agents/bin/`
+- non-command policy is structured YAML in `.agents/agent-workflow.yml`
+- `AGENTS.md` points humans and agents at those two sources
 
 ## Architecture
 
 ```text
 shakacode/agent-workflows
   skills/... and workflows/...        portable process, installed per user/agent
-  bin/...                             install, status, upgrade, and validation helpers
+  bin/...                             install, status, upgrade, validation, sync helpers
 
 consumer repo
-  AGENTS.md                           canonical policy plus Agent Workflow Configuration seam
-  .agents/bin/agent-workflow-seam-doctor
-                                      optional local checker copy for the seam contract
-  .agents/skills/...                  repo-local overrides, compatibility copies, or domain skills
-  .agents/workflows/...               repo-local workflow files only when the repo needs them
+  .agents/bin/README.md               command table for this repo
+  .agents/bin/setup                   optional dependency setup
+  .agents/bin/validate                required pre-push gate
+  .agents/bin/test                    required test entry point
+  .agents/bin/lint                    optional lint/format entry point
+  .agents/bin/build                   optional build/type-check entry point
+  .agents/bin/docs                    optional docs check entry point
+  .agents/bin/ci-detect               optional CI routing entry point
+  .agents/agent-workflow.yml          non-command policy
+  AGENTS.md                           pointer section; no workflow policy
+  CLAUDE.md                           optional thin import of @AGENTS.md
 ```
 
-The default distribution path is this repository plus the user's normal skill
-installation mechanism. For example, an agent may install the shared
-`pr-batch`, `verify`, `address-review`, and changelog skills once into Codex or
-Claude and use them in any repo. The skill then reads the target repo's
-`AGENTS.md` seam to resolve concrete commands and policy.
+The default distribution path remains this repository plus the user's normal
+skill installation mechanism. Repository-pinned copies remain an escape hatch
+for execution environments that cannot use user-installed shared skills.
 
-Repository-pinned copies remain an optional escape hatch for environments that
-need exact workflow text in the checkout, such as cloud agents that cannot use a
-user skill install. They are not the default design and should be justified by a
-specific reproducibility or execution-environment need.
+## Command Contract
 
-## The Seam
+Portable skills call `.agents/bin/<name>` rather than embedding a target repo's
+real commands. Each wrapper is a thin Bash script:
 
-Each adopting repo owns a section named `## Agent Workflow Configuration` in
-`AGENTS.md`. Shared skills may refer to these values by name:
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+exec bundle exec rspec "$@"
+```
 
-- base branch
-- local validation command
-- CI change detector
-- hosted-CI trigger and labels
-- CI parity environment, runner image, reproduction guide, and secret redaction
-  patterns
-- benchmark labels
-- follow-up issue prefix
-- changelog path, policy, and entry format
-- lint, format, build, type, docs, and test commands
-- merge ledger
-- review gate
-- optional default simplify model, when the repo wants `/simplify` to pin one
-- approval-exempt change categories
-- coordination backend
+Composed scripts compute the root once and call siblings by absolute path:
 
-The seam is deliberately human-readable because `AGENTS.md` is already the
-repo's canonical agent policy. Add a structured config file only when a
-non-LLM script needs to consume the values mechanically.
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+cd "$root"
+"$root/.agents/bin/build"
+"$root/.agents/bin/test"
+```
+
+`validate` is the authoritative comprehensive pre-push gate. `test`, `lint`,
+`build`, `docs`, and `ci-detect` are convenience subsets. An absent optional
+script means that capability is n/a in that repo.
+
+## Policy Contract
+
+`.agents/agent-workflow.yml` carries non-command values:
+
+- `base_branch`
+- `follow_up_prefix`
+- `review_gate`
+- `approval_exempt`
+- `coordination_backend`
+- `changelog`
+- `benchmark_labels`
+- `merge_ledger`
+- `ci_parity_environment`
+- `hosted_ci_trigger`
+- `ci_change_detector`
+
+Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
+`n/a` for unavailable policy. Keep values terse and behavior-complete.
+
+## AGENTS Pointer
+
+Each consumer `AGENTS.md` owns a section named
+`## Agent Workflow Configuration`, but the section is only a pointer:
+
+```markdown
+## Agent Workflow Configuration
+
+Portable shared skills resolve this repo's commands and policy through:
+- **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
+- **Policy / config** — `.agents/agent-workflow.yml`.
+```
+
+Consumer repos should keep broader human guidance in `AGENTS.md`, but command
+resolution and workflow policy come from the binstubs and YAML.
 
 ## Seam Doctor
 
-`agent-workflow-seam-doctor` checks the boundary between portable skills and the
-repo:
+`agent-workflow-seam-doctor` validates the contract:
 
-- verifies that `AGENTS.md` has the required seam keys
-- fails on unresolved template values in the seam
-- scans repo-local and explicitly supplied installed shared skill/workflow
-  Markdown for executable snippets that still contain unresolved seam
-  placeholders such as `<follow-up prefix>`
+- `AGENTS.md` has the pointer section
+- `.agents/bin/README.md` exists
+- core scripts `validate` and `test` exist, are executable, pass `bash -n`, and
+  include the repo-root `cd` preamble
+- `.agents/agent-workflow.yml` parses and has all required policy keys with
+  resolved values
+- repo-local and supplied shared skill/workflow Markdown do not contain
+  unresolved executable placeholders such as `<follow-up prefix>`
 
-It does not reject ordinary command parameters such as `<PR>` or `<sha>`. Those
-are task inputs, not repo-seam values.
+The doctor intentionally does not execute the wrappers. Before consumer PRs,
+also verify that wrapped commands/tasks exist in the target repo.
 
 ## Why Not Subtree First
 
-`git subtree` solves "every repo has a pinned copy of the shared files," but
-that is not the primary problem. The primary problem is whether a portable skill
-can safely resolve repo-specific behavior. A subtree also makes the `.agents/`
-prefix all-or-nothing, which is awkward when a repo has real local skills such
-as destructive framework stress tests or product-specific release helpers.
-
-Use a repository-pinned copy only when the execution environment cannot depend
-on user-installed shared skills or when the repo intentionally wants to review
-shared workflow updates like source code. Otherwise, install
-`shakacode/agent-workflows` once for the user/agent and validate each repo's
-seam.
-
-## Shared Vs Repo-Local
-
-Shared skills should contain portable procedure and safety rules:
-
-- issue and PR batching
-- PR processing
-- review comment triage
-- verification
-- changelog updates
-- post-merge and adversarial audits
-- CI routing helpers
-
-Shared skill installation must include each skill's `bin/` helpers with its
-`SKILL.md`, and workflow text should call helpers relative to the installed
-skill directory or through a repo-local compatibility launcher. A repo that can
-load installed skill Markdown but cannot execute installed helper scripts should
-pin the helper scripts locally.
-
-Repo-local content should contain concrete policy and domain knowledge:
-
-- `AGENTS.md`
-- repo-specific destructive or domain-heavy skills
-- local scripts such as seam validators or helper launchers
-- compatibility copies only when a tool cannot load installed skills
-
-## Phasing
-
-1. Consumer seam PRs: add the target repo seam, genericize local shared workflow
-   copies to resolve values through that seam, add or reference
-   `agent-workflow-seam-doctor`, and point adoption docs at this repository.
-2. Shared pack: publish `shakacode/agent-workflows`, install it in the agent
-   surfaces ShakaCode uses, and run `bin/validate` before updates. Use
-   `agent-workflows-status` and `upgrade-agent-workflows` for ongoing installed
-   pack maintenance.
-3. Consumer repos: install or enable the shared skills for the user/agent, add
-   the repo seam, run the seam doctor, and dry-run one workflow.
-4. Optional pinning: revisit repository-pinned copies only for repos or agents
-   that cannot rely on the user-installed skill pack.
+`git subtree` solves "every repo has a pinned copy of shared files," but the
+primary problem is resolving repo-specific behavior safely. A subtree also makes
+the `.agents/` prefix all-or-nothing, which is awkward when a repo has genuine
+local skills. Use pinned copies only when an execution environment cannot depend
+on user-installed skills or intentionally wants shared workflow updates reviewed
+inside that repo.
 
 ## Validation
 
 - `bin/validate`
 - `ruby bin/agent-workflow-seam-doctor-test.rb`
-- `bash bin/install-agent-workflows-test.bash`
+- `ruby bin/push-downstream-test.rb`
 - `bin/agent-workflow-seam-doctor --root <consumer-repo> --shared <this-repo>`
-- Markdown format and link checks for edited documentation
-- a dry run of one shared workflow against the repo seam
+- Markdown review for edited docs

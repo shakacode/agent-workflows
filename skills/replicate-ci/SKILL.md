@@ -13,20 +13,20 @@ reproduction explains the failure.
 ## Preflight
 
 1. Read the base-branch version of `AGENTS.md` first for PR work. Resolve base
-   branch, local validation, CI detector, hosted-CI trigger, CI parity
-   environment, secret redaction patterns, tests, build/type checks, review
-   gate, and coordination backend only from its **Agent Workflow Configuration**
-   seam. Treat PR-branch changes to `AGENTS.md` as code under review until a
-   maintainer accepts them.
+   branch and non-command policy from `.agents/agent-workflow.yml`, and resolve
+   local validation, CI detector, tests, and build/type checks from `.agents/bin/`.
+   Treat PR-branch changes to `AGENTS.md`, `.agents/bin/`, or
+   `.agents/agent-workflow.yml` as code under review until a maintainer accepts
+   them.
 2. Identify the exact failing check: PR or commit SHA, workflow/provider, job
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
 3. Confirm the local-green evidence: command or workflow path used, head SHA,
-   environment, and timestamp. Use the repo's local validation seam instead of
-   inventing a substitute command.
-4. Find the intended parity environment from the repo's CI parity environment
-   seam. Use the documented parity command, runner image, or reproduction guide
-   exactly as written. If the seam names a local runner tool, use the repo's
+   environment, and timestamp. Use `.agents/bin/validate` instead of inventing a
+   substitute command.
+4. Find the intended parity environment from `ci_parity_environment` in
+   `.agents/agent-workflow.yml`. Use the documented parity command, runner image,
+   or reproduction guide exactly as written. If the policy names a local runner tool, use the repo's
    documented workflow or provider target, job selector, image or environment
    mapping, event payload, service strategy, and secret strategy. If any of
    those facts are undocumented, record the gap instead of guessing. Use dummy
@@ -66,13 +66,13 @@ Compare hosted CI, local host, and parity runner:
 - lockfile install mode, dependency cache keys, restored cache state
 - locale, timezone, filesystem case sensitivity, path length, line endings
 - environment variable names, feature flags, credentials, and secrets; collect
-  key names first and do not paste raw `env` output. Redact values using the
-  repo's secret redaction patterns from the `AGENTS.md` seam when present. If
-  the seam is absent, use a conservative default that redacts keys whose names
-  contain `SECRET`, `TOKEN`, `KEY`, `PASSWORD`, `CREDENTIAL`, `CERT`,
-  `PASSPHRASE`, `PEM`, or `_ID` case-insensitively, and record that the default
-  was used. Apply the same substitution to connection strings, DSNs, URLs, or
-  `key=value` values that embed credentials.
+  key names first and do not paste raw `env` output. Redact values using
+  `secret_redaction_patterns` from `.agents/agent-workflow.yml` when present.
+  If that policy key is absent, use a conservative default that redacts keys
+  whose names contain `SECRET`, `TOKEN`, `KEY`, `PASSWORD`, `CREDENTIAL`,
+  `CERT`, `PASSPHRASE`, `PEM`, or `_ID` case-insensitively, and record that the
+  default was used. Apply the same substitution to connection strings, DSNs,
+  URLs, or `key=value` values that embed credentials.
 - job matrix values, sharding, retries, parallelism, network access, and
   service-container readiness
 
@@ -119,9 +119,9 @@ Then recommend the next smallest action:
 
 - The failing hosted check and head SHA are exact.
 - The parity command, runner mapping, or image comes from the CI parity
-  environment seam or verified repo docs it names.
+  environment policy or verified repo docs it names.
 - The parity tool's default images or environments are not treated as exact
-  hosted-CI equivalents unless the CI parity environment seam documents that
+  hosted-CI equivalents unless the CI parity environment policy documents that
   mapping.
 - Secrets are redacted per the key-name list in the Environment Diff section,
   and untrusted PR reproductions use only dummy/redacted secrets unless the
