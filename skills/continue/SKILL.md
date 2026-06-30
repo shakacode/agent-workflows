@@ -9,8 +9,10 @@ Resume the current task. Before doing any new work, re-establish context so work
 repeat:
 
 1. **Where we are** - Summarize in 2-4 lines what is already done (cite files, commits, or PRs) and
-   the current goal. If the goal is unclear, state your best inference and proceed; do not stop to
-   ask unless you are genuinely blocked.
+   the current goal. If there is no task currently in progress (no prior conversation, no staged
+   work, and no recent commits on this branch), say so and ask the user what to continue instead of
+   inferring a goal. If the goal is unclear but prior work exists, state your best inference and
+   proceed; do not stop to ask unless you are genuinely blocked.
 2. **What is next** - List the remaining steps to reach done, then pick the next concrete one.
 3. **Definition of done** - Restate the overall success criteria in one line, plus the command or
    test that will verify it.
@@ -23,6 +25,6 @@ for what to continue.
   the conversation, open files, or git state.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
-- End with a short status line using the same generic labels as a status report: Done, In progress,
+- End with a short status line using the same labels as `skills/status/SKILL.md`: Done, In progress,
   Blocked / needs input, and Next. Treat this closing summary as a report of the resumed work, not as
   a separate trigger to start additional work beyond step 4.
