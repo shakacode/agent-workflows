@@ -944,6 +944,13 @@ workflow rules, targets, or branch names, do not use this pause flow; use
 relaunching the batch. The pause flow is only for resuming the same lanes under
 the instructions they already loaded.
 
+If a thread has already exited before the operator can paste this prompt, treat
+it as a dead-thread case after restart: the coordinator starts a replacement
+worker from the last known handoff state rather than expecting that thread to
+resume. For public fallback claims, the prompt's `expires_at` extension is a
+template; consumer repos with a configured fallback lease cap should adjust the
+extension to match that policy before pasting.
+
 Before quitting the agent runner, paste this prompt into every active
 coordinator, worker, and QA-lane thread:
 
@@ -958,8 +965,9 @@ using a paused or operator-restart reason if the backend supports it; otherwise
 send a plain heartbeat preserving the current status. If it is using only the
 public `codex-claim` fallback, refresh the existing claim comment with
 `expires_at` extended by the same lease window already used for that fallback
-claim, capped at 4 hours from now, leaving `status: in_progress` so the fallback
-remains an active advisory lock.
+claim, capped at the repo's configured public fallback lease maximum or 4 hours
+from now when no repo-specific cap is configured, leaving `status: in_progress`
+so the fallback remains an active advisory lock.
 If this lane holds no claim of any kind, skip the claim-preservation write and
 proceed directly to the handoff reply; do not acquire a new claim during this
 pause.
@@ -1008,8 +1016,8 @@ with this companion prompt:
 Resume batch processing now.
 
 Re-read your restart handoff and run the bounded status recovery steps described
-under "Pausing For An Agent-Runner Restart" in the workflow before editing,
-pushing, polling, or starting any new target.
+under "Pausing For An Agent-Runner Restart" in `workflows/pr-processing.md`
+before editing, pushing, polling, or starting any new target.
 ```
 
 After relaunch, reopen each paused persistent thread and resume from its
