@@ -300,6 +300,30 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_default_https_port_in_gh_host_matches_enterprise_remote
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-default-port")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo", url: "https://github.company.example:443/owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.company.example:443"),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
   def test_explicit_repo_local_trust_config_accepts_common_remote_forms
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       remote_urls = [

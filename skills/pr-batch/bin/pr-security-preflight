@@ -308,7 +308,7 @@ rescue StandardError
 end
 
 def normalized_github_host(host)
-  host.to_s.downcase
+  host.to_s.downcase.sub(/:443\z/, "")
 end
 
 def expected_github_host
@@ -348,7 +348,7 @@ def github_remote_from_remote_url(url)
   normalized = url.to_s.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
   return uri_remote_from_remote_url(normalized) if normalized.match?(%r{\A(?:https?|ssh)://}i)
 
-  match = normalized.match(%r{\A[^@/:/\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
+  match = normalized.match(%r{\A[^@/:\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
   return unless match
 
   { host: normalized_remote_host(normalized_github_host(match[1])), repo: match[2] }
@@ -360,7 +360,7 @@ def git_root_matches_repo?(root, repo, github_host:)
     remote[:repo] if remote && remote[:host] == github_host
   end
   if remote_repos.empty?
-    warn "WARN: could not determine repo from remotes for trust config working tree #{root.inspect}; treating explicit trust config as global"
+    warn "WARN: could not determine repo from remotes for trust config working tree #{root.inspect}; treating trust config as global"
     return false
   end
 
