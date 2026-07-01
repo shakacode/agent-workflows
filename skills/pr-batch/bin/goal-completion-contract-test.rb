@@ -9,14 +9,16 @@ PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 
 TEXT_FENCE = "```text\n"
+CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
+PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
 
 def read_repo_file(path)
   File.read(path, encoding: "UTF-8")
 end
 
-def extract_goal_prompt_template(skill_text)
-  heading_index = skill_text.index("## Goal Prompt for pr-batch")
-  raise "missing Goal Prompt for pr-batch section" unless heading_index
+def extract_goal_prompt_template(skill_text, heading)
+  heading_index = skill_text.index(heading)
+  raise "missing #{heading} section" unless heading_index
 
   fence_start = skill_text.index(TEXT_FENCE, heading_index)
   raise "missing text fence in Goal Prompt section" unless fence_start
@@ -38,13 +40,14 @@ class GoalCompletionContractTest < Minitest::Test
     @workflow = read_repo_file(WORKFLOW_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
-    @plan_goal_prompt = extract_goal_prompt_template(@plan_pr_batch_skill)
+    @pr_batch_goal_prompt = extract_goal_prompt_template(@pr_batch_skill, "## Goal Prompt Template")
+    @plan_goal_prompt = extract_goal_prompt_template(@plan_pr_batch_skill, "## Goal Prompt for pr-batch")
   end
 
   def test_canonical_contract_is_present_in_workflow_and_goal_sources
     {
       "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "Goal Mode Completion Contract", label
@@ -56,20 +59,35 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_skill_prose_points_to_canonical_contract_instead_of_pasting_it
+    assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_LINK, "skills/pr-batch/SKILL.md"
+    assert_equal 1, @pr_batch_skill.scan(PENDING_CHECKS_PRESSURE).length,
+                 "skills/pr-batch/SKILL.md should keep the detailed pressure scenario only in the dispatch prompt"
+  end
+
+  def test_dispatch_prompt_contracts_stay_byte_for_byte_aligned
+    pr_batch_contract = @pr_batch_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first
+    plan_contract = @plan_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first
+
+    refute_nil pr_batch_contract, "skills/pr-batch goal prompt is missing the contract line"
+    refute_nil plan_contract, "skills/plan-pr-batch goal prompt is missing the contract line"
+    assert_equal pr_batch_contract, plan_contract
+  end
+
   def test_pending_hosted_checks_pressure_scenario_is_not_complete
     {
       "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert_text_includes text, "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE", label
+      assert_text_includes text, PENDING_CHECKS_PRESSURE, label
     end
   end
 
   def test_ready_no_merge_authority_is_terminal_only_without_merge_authority
     {
       "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "`ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging", label
@@ -79,7 +97,7 @@ class GoalCompletionContractTest < Minitest::Test
   def test_auto_merge_done_means_merged_or_blocked
     {
       "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it", label

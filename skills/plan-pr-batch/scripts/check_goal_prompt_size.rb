@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 GOAL_PROMPT_CHAR_LIMIT = 4_000
+GOAL_PROMPT_MIN_HEADROOM = 300
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
@@ -200,6 +201,13 @@ if template_chars >= GOAL_PROMPT_CHAR_LIMIT
   abort_with_failure("goal prompt template is #{template_chars} chars, must stay under #{GOAL_PROMPT_CHAR_LIMIT}")
 end
 
+template_headroom = GOAL_PROMPT_CHAR_LIMIT - template_chars
+if template_headroom < GOAL_PROMPT_MIN_HEADROOM
+  abort_with_failure(
+    "goal prompt template has #{template_headroom} chars of headroom, must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
+  )
+end
+
 bulky_items = (1..12).map do |number|
   <<~ITEM.chomp
     - Issue ##{number}: https://github.com/shakacode/react_on_rails/issues/#{number}
@@ -233,5 +241,6 @@ end
 
 puts "All checks passed."
 puts "goal_prompt_template_chars=#{template_chars}"
+puts "goal_prompt_template_headroom=#{template_headroom}"
 puts "oversized_candidate_chars=#{oversized_candidate.length}"
 puts "split_fallback_goal_prompt_chars=#{fallback_chars}"

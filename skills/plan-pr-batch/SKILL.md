@@ -188,9 +188,9 @@ Preflight first: if workers would block on approvals, stop and report the requir
 Repository: OWNER/REPO
 Batch objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. The overall goal is incomplete while any target has pending, missing, or untriaged current-head CI or review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix to terminal or report NOT COMPLETE/blocked with resume steps after a watch window or real blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI/configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume steps after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <required owner/scope or not required rationale>.
-Scope summary: [compact titles, sequencing, dependencies, exclusions, path ownership; keep bulky evidence outside.]
+Scope summary: [compact titles, sequencing, dependencies, exclusions, path ownership; bulky evidence outside.]
 File-touch map:
 - PR/Issue #N -> changed/affected paths incl create/delete/rename (owner: lane/name)
 - PR/Issue #N -> summarized path pattern(s) plus collision-relevant exact paths/renames/deletes (owner: lane/name)
@@ -209,14 +209,14 @@ Items:
 
 Execution rules:
 - Resolve `base_branch` from `.agents/agent-workflow.yml`, fetch/prune it, and verify repo root plus `$pr-batch`/`pr-processing.md`; if unresolved, stop with workflow state `UNKNOWN`.
-- Follow the resolved `$pr-batch` "Goal Prompt Template"; if skill autoloading is unavailable, copy its safety, review, /simplify, CI, and readiness gates.
+- Follow the resolved `$pr-batch` template; if skill autoloading is unavailable, copy its safety, review, /simplify, CI, and readiness gates.
 - Dispatch one subagent per independent item/current file-disjoint wave; hold serial and `UNKNOWN` discovery lanes until no active editor lane can collide.
 - Workers edit only owned File-touch map paths. If an `UNKNOWN`, unlisted, or other-lane path is needed, stop and wait for an updated map or coordinator confirmation.
 - Sequenced lanes may share declared files only in the stated order.
 - Each subagent must verify current GitHub state before edits and report UNKNOWN for unverifiable facts.
-- For coordination, respect coordination claims and dependencies: stable agent ids, bounded doctor/status, claim before branching, heartbeat at phase changes, and stop on unmet `blocked_on` refs or dependency `UNKNOWN`.
+- For coordination, respect coordination claims and dependencies: stable ids, bounded doctor/status, claim before branching, heartbeat at phase changes, and stop on unmet `blocked_on` refs or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence in final handoff.
-- Use local validation, self-review, review-comment, CI, and readiness gates. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; with `auto_merge_when_gates_pass`, done means merged and closed out unless blocked; document confidence data in the PR description.
+- Use local validation, self-review, review-comment, CI, and readiness gates. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
 - Final handoff must include links, tests, blockers, next action, confidence/UNKNOWN, `merge_authority`, QA Evidence or not-required rationale, and final-state sections: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 ```
 
