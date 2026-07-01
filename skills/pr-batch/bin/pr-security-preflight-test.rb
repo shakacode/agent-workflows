@@ -289,6 +289,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config,
+        "--strict-trust",
         "123",
         chdir: dir,
         clear_git_env: false
@@ -320,6 +321,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config,
+        "--strict-trust",
         "123",
         chdir: dir,
         clear_git_env: false
@@ -390,6 +392,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         repo_config,
+        "--strict-trust",
         "123",
         chdir: no_remote_root
       )
