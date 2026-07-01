@@ -38,6 +38,16 @@ def extract_goal_prompt_template(skill_text, heading, end_heading: /^##\s+/)
   section_body[0...fence_offsets.first]
 end
 
+def extract_markdown_section(text, heading, end_heading: /^###\s+/)
+  heading_index = text.index(heading)
+  raise "missing #{heading} section" unless heading_index
+
+  body_start = heading_index + heading.length
+  next_heading = text.match(end_heading, body_start)
+  body_end = next_heading ? next_heading.begin(0) : text.length
+  text[body_start...body_end]
+end
+
 def contract_line(text)
   text.lines.grep(/^Goal Mode Completion Contract:/).first&.chomp
 end
@@ -51,6 +61,7 @@ class GoalCompletionContractTest < Minitest::Test
     @workflow = read_repo_file(WORKFLOW_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
+    @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
     @workflow_goal_prompt = extract_goal_prompt_template(
       @workflow,
       "### Plan To Goal Handoff",
@@ -62,7 +73,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_canonical_contract_is_present_in_workflow_and_goal_sources
     {
-      "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-processing.md canonical contract" => @workflow_contract_section,
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
@@ -83,7 +94,7 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_canonical_and_dispatch_prompt_contracts_stay_byte_for_byte_aligned
-    workflow_contract = contract_line(@workflow)
+    workflow_contract = contract_line(@workflow_contract_section)
     workflow_goal_contract = contract_line(@workflow_goal_prompt)
     pr_batch_contract = @pr_batch_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first
     plan_contract = @plan_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first

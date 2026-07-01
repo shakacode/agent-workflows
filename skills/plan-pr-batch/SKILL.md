@@ -211,10 +211,10 @@ Execution rules:
 - Resolve `base_branch` from `.agents/agent-workflow.yml`, fetch/prune it, and verify repo root plus `$pr-batch`/`pr-processing.md`; if unresolved, stop with workflow state `UNKNOWN`.
 - Follow the resolved `$pr-batch` template; if skill autoloading is unavailable, copy its safety, review, /simplify, CI, and readiness gates.
 - Dispatch one subagent per independent item/file-disjoint wave; hold serial and `UNKNOWN` discovery lanes until no active editor lane can collide.
-- Workers edit only owned File-touch map paths. If an `UNKNOWN`, unlisted, or other-lane path is needed, stop and wait for an updated map or coordinator confirmation.
+- Workers edit only owned File-touch map paths. If an `UNKNOWN`, unlisted, or other-lane path is needed, stop, report paths, and wait for an updated map or coordinator confirmation.
 - Sequenced lanes may share declared files only in the stated order.
 - Each subagent must verify current GitHub state before edits and report UNKNOWN for unverifiable facts.
-- For coordination, respect coordination claims and dependencies: stable ids, bounded doctor/status, claim before branching, heartbeat at phase changes, and stop on unmet `blocked_on` refs or dependency `UNKNOWN`.
+- For coordination, respect coordination claims and dependencies: stable ids, bounded status, claim before branching, heartbeat at phases, and stop on unmet `blocked_on` refs or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence in final handoff.
 - Use validation, self-review, review-comment, CI, and readiness gates. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
 - Final handoff must include links, tests, blockers, next action, confidence/UNKNOWN, `merge_authority`, QA Evidence or not-required rationale, and final-state sections: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.

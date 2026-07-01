@@ -795,19 +795,6 @@ Split batch handoffs into two sections:
   outcomes, confidence notes, decision-point counts per PR, already-answered
   questions, and a per-PR merge-ledger table or JSON artifact path.
 
-### Goal Mode Completion Contract
-
-Use this canonical dispatch line verbatim in PR-batch goal prompts:
-
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
-
-Pressure checks:
-
-- A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
-- `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
-- With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
-- A normal agent-runner restart uses pause/resume handoff, not cancellation/relaunch; updated skills, targets, or workflow rules require cancellation and relaunch.
-
 Every target must use one explicit final state:
 
 - `merged`: PR landed and any required closeout sweep is complete.
@@ -838,6 +825,18 @@ while required QA coverage/scope evidence is missing, stale, scope-mismatched,
 marked `blocked`, release-audit `in_progress`, or `unknown`, or still `UNKNOWN`;
 a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
 use the documented fallback evidence.
+
+### Goal Mode Completion Contract
+
+Use this canonical dispatch line verbatim in PR-batch goal prompts:
+
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+
+Pressure checks:
+
+- A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
+- `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
+- With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 
 ### Coordination State
 
