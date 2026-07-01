@@ -243,6 +243,34 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_script_git_probes_clear_inherited_git_environment
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      outer_root = File.join(dir, "outer")
+      consumer_root = File.join(dir, "consumer")
+      launch_root = File.join(dir, "launcher")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p([outer_root, consumer_root, launch_root])
+      init_git_root(outer_root)
+      init_git_remote(consumer_root, "owner/repo")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("GIT_DIR" => File.join(outer_root, ".git"), "GIT_WORK_TREE" => outer_root),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: launch_root,
+        clear_git_env: false
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
   def test_git_helpers_clear_inherited_git_environment
     with_fake_gh("warning-issue") do |_env, _trust_config_path, _log_path, dir|
       outer_root = File.join(dir, "outer")
@@ -1366,11 +1394,11 @@ class PrSecurityPreflightTest < Minitest::Test
 
   private
 
-  def run_script(env, *args, chdir: nil)
+  def run_script(env, *args, chdir: nil, clear_git_env: true)
     options = {}
     options[:chdir] = chdir if chdir
 
-    child_env = env.merge(clean_git_env)
+    child_env = clear_git_env ? env.merge(clean_git_env) : env
     Open3.capture2e(child_env, "ruby", SCRIPT, *args, options)
   end
 
@@ -1394,7 +1422,16 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def clean_git_env
-    { "GIT_DIR" => nil, "GIT_WORK_TREE" => nil }
+    %w[
+      GIT_ALTERNATE_OBJECT_DIRECTORIES
+      GIT_COMMON_DIR
+      GIT_DIR
+      GIT_INDEX_FILE
+      GIT_NAMESPACE
+      GIT_OBJECT_DIRECTORY
+      GIT_PREFIX
+      GIT_WORK_TREE
+    ].to_h { |name| [name, nil] }
   end
 
   def with_env(values)
