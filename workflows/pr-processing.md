@@ -1103,8 +1103,8 @@ Final handoff must include detected target list, links, tests, blockers, next ac
 
 Pressure scenarios this prompt must satisfy:
 
-- A handoff containing final buckets for PRs #4259, #4260, #4277, #4278, and #4282 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.
-- A mixed-state handoff containing #4283, #4281, #4268, #4266, and #4264 splits checks/review polling from draft/product-decision blockers and conflict recovery.
+- A handoff containing final buckets for placeholder PRs #101, #102, #103, #104, and #105 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.
+- A mixed-state handoff containing placeholder PRs #201, #202, #203, #204, and #205 splits checks/review polling from draft/product-decision blockers and conflict recovery.
 - A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.
 - A normal resume prompt routes to bounded status recovery, not cancellation/relaunch.
 

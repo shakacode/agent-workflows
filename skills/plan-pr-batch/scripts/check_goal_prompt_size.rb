@@ -26,10 +26,23 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
 ].freeze
 
 PRESSURE_SCENARIOS = [
-  "A handoff containing final buckets for PRs #4259, #4260, #4277, #4278, and #4282 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.",
-  "A mixed-state handoff containing #4283, #4281, #4268, #4266, and #4264 splits checks/review polling from draft/product-decision blockers and conflict recovery.",
+  "A handoff containing final buckets for placeholder PRs #101, #102, #103, #104, and #105 extracts exactly those five targets and excludes explicitly deferred/excluded PRs.",
+  "A mixed-state handoff containing placeholder PRs #201, #202, #203, #204, and #205 splits checks/review polling from draft/product-decision blockers and conflict recovery.",
   "A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.",
   "A normal resume prompt routes to bounded status recovery, not cancellation/relaunch."
+].freeze
+
+CONSUMER_SPECIFIC_EXAMPLE_REFS = %w[
+  #4259
+  #4260
+  #4277
+  #4278
+  #4282
+  #4283
+  #4281
+  #4268
+  #4266
+  #4264
 ].freeze
 
 def abort_with_failure(message)
@@ -38,6 +51,14 @@ end
 
 def read_repo_file(path)
   File.read(File.join(REPO_ROOT, path), encoding: "UTF-8")
+end
+
+def require_phrases(text, phrases, label)
+  phrases.each do |phrase|
+    unless text.include?(phrase)
+      abort_with_failure("#{label} is missing phrase: #{phrase}")
+    end
+  end
 end
 
 def extract_goal_prompt_template(skill_text)
@@ -81,6 +102,7 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
+restart_docs_text = read_repo_file("docs/agent-runner-restarts.md")
 
 required_skill_rule_phrases = [
   "Goal prompt character count:",
@@ -101,30 +123,24 @@ required_prompt_phrases = [
   "report UNKNOWN"
 ]
 
-required_skill_rule_phrases.each do |phrase|
-  # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
-  abort_with_failure("SKILL.md is missing required prompt-sizing phrase: #{phrase}") unless skill_text.include?(phrase)
-end
-
-required_prompt_phrases.each do |phrase|
-  unless prompt_template.include?(phrase)
-    abort_with_failure("Goal prompt template is missing required phrase: #{phrase}")
-  end
-end
+# These phrases live in the broader skill rules, not necessarily inside the prompt fence.
+require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
+require_phrases(prompt_template, required_prompt_phrases, "Goal prompt template")
 
 unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("canonical workflow is missing the exact restart resume snippet")
 end
 
-CANONICAL_CONTINUATION_SNIPPET_PHRASES.each do |phrase|
-  unless workflow_text.include?(phrase)
-    abort_with_failure("canonical workflow continuation snippet is missing phrase: #{phrase}")
-  end
+unless restart_docs_text.include?(CANONICAL_RESUME_SNIPPET)
+  abort_with_failure("restart docs resume snippet drifted from the canonical workflow snippet")
 end
 
-PRESSURE_SCENARIOS.each do |scenario|
-  unless workflow_text.include?(scenario)
-    abort_with_failure("canonical workflow is missing pressure scenario: #{scenario}")
+require_phrases(workflow_text, CANONICAL_CONTINUATION_SNIPPET_PHRASES, "canonical workflow continuation snippet")
+require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure scenarios")
+
+CONSUMER_SPECIFIC_EXAMPLE_REFS.each do |ref|
+  if workflow_text.include?(ref)
+    abort_with_failure("canonical workflow pressure scenarios contain consumer-specific example ref: #{ref}")
   end
 end
 
