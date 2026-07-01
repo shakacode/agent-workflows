@@ -2,7 +2,7 @@
 # frozen_string_literal: true
 
 GOAL_PROMPT_CHAR_LIMIT = 4_000
-GOAL_PROMPT_MIN_HEADROOM = 200
+GOAL_PROMPT_MIN_HEADROOM = 100
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"

@@ -208,9 +208,9 @@ Items:
   Done when: final state follows requested `merge_authority` and pr-batch split states, with PR/no-PR evidence or no-fix rationale.
 
 Execution rules:
-- Resolve `base_branch` from `.agents/agent-workflow.yml`, fetch/prune it, and verify repo root plus `$pr-batch`/`pr-processing.md`; if unresolved, stop with workflow state `UNKNOWN`.
+- Resolve `base_branch` from `.agents/agent-workflow.yml`; run `git fetch --prune origin <base-branch>`; verify installed or repo-local `$pr-batch` and `pr-processing.md` before launch; if unresolved, stop with workflow state `UNKNOWN`.
 - Follow the resolved `$pr-batch` template; if skill autoloading is unavailable, copy its safety, review, /simplify, CI, and readiness gates.
-- Dispatch one subagent per independent item/current file-disjoint wave; group dependent items only when shared context is required; hold serial and `UNKNOWN` lanes until no active editor lane can collide.
+- Dispatch one subagent per independent item, but only for the current file-disjoint wave. Group dependent items only when shared context is required; hold serial and `UNKNOWN` lanes until no active editor lane can collide.
 - Workers edit only owned File-touch map paths. If an `UNKNOWN`, unlisted, or other-lane path is needed, stop, report paths, and wait for an updated map or coordinator confirmation.
 - Sequenced lanes may share declared files only in the stated order.
 - Each subagent must verify current GitHub state before edits and report UNKNOWN for unverifiable facts.
