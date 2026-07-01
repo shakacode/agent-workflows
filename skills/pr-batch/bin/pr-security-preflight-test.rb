@@ -1483,31 +1483,24 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def clean_git_env
-    env = %w[
-      GIT_ALTERNATE_OBJECT_DIRECTORIES
-      GIT_COMMON_DIR
-      GIT_CONFIG
-      GIT_CONFIG_COUNT
-      GIT_CONFIG_PARAMETERS
-      GIT_DIR
-      GIT_GRAFT_FILE
-      GIT_IMPLICIT_WORK_TREE
-      GIT_INDEX_FILE
-      GIT_NAMESPACE
-      GIT_NO_REPLACE_OBJECTS
-      GIT_OBJECT_DIRECTORY
-      GIT_PREFIX
-      GIT_REPLACE_REF_BASE
-      GIT_SHALLOW_FILE
-      GIT_WORK_TREE
+    names = git_local_env_vars + %w[
+      GIT_CEILING_DIRECTORIES
       GIT_CONFIG_GLOBAL
       GIT_CONFIG_NOSYSTEM
       GIT_CONFIG_SYSTEM
-    ].to_h { |name| [name, nil] }
+    ]
+    env = names.uniq.to_h { |name| [name, nil] }
     ENV.each_key do |name|
       env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
     end
     env
+  end
+
+  def git_local_env_vars
+    stdout, _stderr, status = Open3.capture3("git", "rev-parse", "--local-env-vars")
+    raise "git rev-parse --local-env-vars failed" unless status.success?
+
+    stdout.lines.map(&:strip).reject(&:empty?)
   end
 
   def with_env(values)
