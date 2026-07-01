@@ -11,13 +11,22 @@ The command never copies shared skill or workflow content into a consumer repo.
 - `.agents/bin/<name>` wrappers for standard commands
 - `.agents/bin/README.md`, refreshed on every run
 - `.agents/agent-workflow.yml`, with missing policy keys seeded
+- `.agents/trusted-github-actors.yml`, when a trust block is configured
 - the `## Agent Workflow Configuration` pointer section in `AGENTS.md`
 - a thin `CLAUDE.md` importing `@AGENTS.md`, only when `CLAUDE.md` is absent
 
 Repos own the implementation details. Re-running the command preserves existing
 script bodies and existing YAML values; it only adds missing scripts and missing
-policy keys. A rich existing `CLAUDE.md` is never clobbered. The PR body/stdout
-records a follow-up to consolidate it later.
+policy keys. Configured trust entries are appended to existing repo-local trust
+lists, never to the packaged fallback. Trust layers are additive across
+defaults, presets, and per-repo overrides, so `trust: {}` does not clear entries
+from earlier layers. Omit `trust` to leave repo-local trust unmanaged; set
+`trust: {}` only when no earlier layer contributes trust and you want an empty
+fail-closed repo-local allowlist written. When new trust entries are appended,
+the YAML is normalized and rewritten; keep durable security rationale in docs or
+review notes rather than relying only on comments inside that YAML. A rich
+existing `CLAUDE.md` is never clobbered. The PR body/stdout records a follow-up
+to consolidate it later.
 
 ## Consumer Contract
 
@@ -58,6 +67,13 @@ ci_change_detector: "n/a"
 Use `n/a` for unavailable policy. Add repo-specific keys such as
 `secret_redaction_patterns` when they are part of that repo's policy.
 
+Repo-local trust lives in `.agents/trusted-github-actors.yml` and follows the
+same resolution order as `pr-security-preflight`: `--trust-config`, repo-local
+config, `$AGENT_WORKFLOWS_TRUST_CONFIG`, `~/.agents/trusted-github-actors.yml`,
+then the packaged empty fallback. Use `trusted_users` for repo maintainers,
+`trusted_bots` for bots whose bodies are trusted input, `trusted_metadata_bots`
+for CI/status comment authors, and repo-owner team slugs in `trusted_teams`.
+
 `AGENTS.md` contains only the pointer:
 
 ```markdown
@@ -72,8 +88,8 @@ Portable shared skills resolve this repo's commands and policy through:
 
 `seam-presets.yml` has two top-level sections:
 
-- `defaults.commands` / `defaults.policy`
-- `presets.<name>.commands` / `presets.<name>.policy`
+- `defaults.commands` / `defaults.policy` / `defaults.trust`
+- `presets.<name>.commands` / `presets.<name>.policy` / `presets.<name>.trust`
 
 `downstream.yml` selects a preset per repo and may override either area:
 
@@ -86,6 +102,9 @@ repos:
         test: yarn test --runInBand
       policy:
         hosted_ci_trigger: "n/a — CI runs on every PR"
+      trust:
+        trusted_users:
+          - maintainer-login
 ```
 
 Command values can be strings or composed scripts:
@@ -122,6 +141,21 @@ bin/push-downstream --root /path/to/consumer/repo
 bin/push-downstream --root /path/to/consumer/repo --apply
 ```
 
+Seed a repo-local trust config locally:
+
+```bash
+bin/push-downstream \
+  --root /path/to/consumer/repo \
+  --apply \
+  --base-branch main \
+  --trusted-user maintainer-login
+```
+
+That command creates or updates `.agents/agent-workflow.yml` with
+`base_branch: main` and appends `maintainer-login` to
+`.agents/trusted-github-actors.yml`. Configure the generated `.agents/bin/*`
+wrappers before relying on them for real validation.
+
 | Flag | Effect |
 | --- | --- |
 | `--config FILE` | Registry path (default `downstream.yml`). |
@@ -131,6 +165,10 @@ bin/push-downstream --root /path/to/consumer/repo --apply
 | `--all` | Include repos marked `enabled: false`. |
 | `--apply` | Perform writes; in registry mode, push branches and open PRs. |
 | `--base-branch NAME` | Base branch for `--root` mode (default `main`). |
+| `--trusted-user LOGIN` | Seed a repo-local trusted user in `--root` mode; repeatable. |
+| `--trusted-bot LOGIN` | Seed a repo-local trusted bot base login in `--root` mode; repeatable. |
+| `--trusted-metadata-bot LOGIN` | Seed a repo-local metadata-only bot base login in `--root` mode; repeatable. |
+| `--trusted-team SLUG` | Seed a repo-local trusted team slug in `--root` mode; repeatable. |
 
 ## Validation
 

@@ -16,7 +16,8 @@ it. The default model is:
 
 - install this shared workflow pack once in the user's or agent's normal skill
   home;
-- add repo-owned `.agents/bin/` wrappers and `.agents/agent-workflow.yml`;
+- add repo-owned `.agents/bin/` wrappers, `.agents/agent-workflow.yml`, and
+  `.agents/trusted-github-actors.yml` when PR-batch trust is needed;
 - validate that installed workflows can resolve the consumer repo's contract;
 - keep repo-specific skills and overrides in the consumer repo only when needed.
 
@@ -105,10 +106,12 @@ In each repository that should use these workflows:
 
 1. Add or update `.agents/bin/` command wrappers.
 2. Add `.agents/agent-workflow.yml` with the repo's non-command policy.
-3. Add the `## Agent Workflow Configuration` pointer section to `AGENTS.md`.
-4. Add repo-local skills only for domain-specific workflows or intentional
+3. Add `.agents/trusted-github-actors.yml` for repo-specific maintainers,
+   trusted review bots, metadata-only workflow bots, or trusted teams.
+4. Add the `## Agent Workflow Configuration` pointer section to `AGENTS.md`.
+5. Add repo-local skills only for domain-specific workflows or intentional
    overrides.
-5. Validate the contract from the consumer repo:
+6. Validate the contract from the consumer repo:
 
    ```bash
    agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
@@ -122,7 +125,7 @@ In each repository that should use these workflows:
      --shared "$HOME/src/agent-workflows"
    ```
 
-6. Dry-run one workflow, such as `$plan-pr-batch` or `$address-review`, without
+7. Dry-run one workflow, such as `$plan-pr-batch` or `$address-review`, without
    making code changes.
 
 See [docs/adoption.md](docs/adoption.md) for the full adoption guide,
@@ -143,7 +146,8 @@ bin/push-downstream --apply                       # fan out to all enabled repos
 ```
 
 See [docs/downstream-sync.md](docs/downstream-sync.md) for the registry schema,
-the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
+the managed-vs-repo-owned boundary, trust seeding, and
+`--root`/`--only`/`--all` usage.
 
 ## Skill Inventory
 
