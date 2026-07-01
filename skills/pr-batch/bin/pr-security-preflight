@@ -170,9 +170,9 @@ rescue StandardError => e
   { repo:, github_host: inferred_github_host_from_local_git(repo) || expected_github_host }
 end
 
-def repo_info_from_payload(payload, fallback_repo: nil)
+def repo_info_from_payload(payload)
   remote = github_remote_from_remote_url(payload["url"])
-  repo = fallback_repo.nil? ? payload.fetch("nameWithOwner") : payload.fetch("nameWithOwner", fallback_repo)
+  repo = payload.fetch("nameWithOwner")
 
   {
     repo:,
@@ -349,6 +349,8 @@ def remote_url_host(host, port, scheme:)
   return if normalized.empty?
 
   default_port_match = case scheme
+                       when "http"
+                         port == 80
                        when "https"
                          port == 443
                        when "ssh"
