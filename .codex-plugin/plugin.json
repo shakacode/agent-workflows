@@ -1,7 +1,7 @@
 {
   "name": "agent-workflows",
   "version": "0.1.0",
-  "description": "Reusable agent workflow skills for ShakaCode repositories.",
+  "description": "Portable Codex and Claude workflow pack for ShakaCode repositories.",
   "author": {
     "name": "ShakaCode",
     "url": "https://github.com/shakacode"
@@ -18,8 +18,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "ShakaCode Agent Workflows",
-    "shortDescription": "Reusable Codex workflows for PR batches, reviews, CI, and audits.",
-    "longDescription": "Reusable Codex skills for PR batch planning, review triage, merge readiness, changelog updates, CI routing, and audit loops. Consumer repositories supply their own local policy seam.",
+    "shortDescription": "Portable Codex and Claude workflows for PR batches, reviews, CI, and audits.",
+    "longDescription": "Portable Codex and Claude skills for PR batch planning, review triage, merge readiness, changelog updates, CI routing, and audit loops. Consumer repositories supply their own local agent workflow contract.",
     "developerName": "ShakaCode",
     "category": "Productivity",
     "capabilities": [
