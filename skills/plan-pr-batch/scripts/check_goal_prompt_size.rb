@@ -157,6 +157,7 @@ required_prompt_phrases = [
   "report NOT COMPLETE",
   "merge_authority:",
   "merge only when `merge_authority` is `auto_merge_when_gates_pass`",
+  "explicit merge approval",
   "ready-no-merge-authority",
   "document confidence data in the PR description",
   "verify current GitHub state before edits",
