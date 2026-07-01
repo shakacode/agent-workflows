@@ -203,7 +203,7 @@ class PrSecurityPreflightTest < Minitest::Test
         write_trust_config(repo_config, users: [], teams: ["maintainers"])
 
         out, status = run_script(
-          env,
+          env.merge("GH_HOST" => "github.company.example"),
           "--repo",
           "owner/repo",
           "--trust-config",
@@ -217,6 +217,32 @@ class PrSecurityPreflightTest < Minitest::Test
         refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
         refute_includes out, "WARN: global trust config ignores unqualified team slug"
       end
+    end
+  end
+
+  def test_explicit_trust_config_in_same_path_wrong_host_is_global
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      other_root = File.join(dir, "gitlab")
+      repo_config = File.join(other_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(other_root)
+      init_git_remote(other_root, "owner/repo", url: "https://gitlab.example/owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "--strict-trust",
+        "123",
+        chdir: other_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "WARN: could not determine repo from remotes"
+      assert_includes out, 'WARN: global trust config ignores unqualified team slug "maintainers"'
     end
   end
 
