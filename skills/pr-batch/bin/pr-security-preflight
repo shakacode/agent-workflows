@@ -11,6 +11,8 @@ require "set"
 require "timeout"
 require "yaml"
 
+require_relative "../lib/git_probe_env"
+
 options = {
   acknowledged_risks: Hash.new { |hash, key| hash[key] = Set.new },
   repo: nil,
@@ -188,47 +190,9 @@ DEFAULT_TRUST_CONFIG = ".agents/trusted-github-actors.yml"
 HOME_TRUST_CONFIG = "~/.agents/trusted-github-actors.yml"
 PACKAGED_TRUST_CONFIG = File.expand_path("../trusted-github-actors.yml", __dir__)
 USER_TRUST_CONFIG_ENV = "AGENT_WORKFLOWS_TRUST_CONFIG"
-GIT_LOCAL_ENV_VARS_FALLBACK = %w[
-  GIT_ALTERNATE_OBJECT_DIRECTORIES
-  GIT_COMMON_DIR
-  GIT_CONFIG
-  GIT_CONFIG_COUNT
-  GIT_CONFIG_PARAMETERS
-  GIT_DIR
-  GIT_GRAFT_FILE
-  GIT_IMPLICIT_WORK_TREE
-  GIT_INDEX_FILE
-  GIT_NAMESPACE
-  GIT_NO_REPLACE_OBJECTS
-  GIT_OBJECT_DIRECTORY
-  GIT_PREFIX
-  GIT_REPLACE_REF_BASE
-  GIT_SHALLOW_FILE
-  GIT_WORK_TREE
-].freeze
-GIT_PROBE_EXTRA_ENV_VARS = %w[
-  GIT_CEILING_DIRECTORIES
-  GIT_CONFIG_GLOBAL
-  GIT_CONFIG_NOSYSTEM
-  GIT_CONFIG_SYSTEM
-].freeze
-
-def git_local_env_vars
-  @git_local_env_vars ||= begin
-    stdout, _stderr, status = Open3.capture3("git", "rev-parse", "--local-env-vars")
-    names = status.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
-    names.empty? ? GIT_LOCAL_ENV_VARS_FALLBACK : names
-  rescue StandardError
-    GIT_LOCAL_ENV_VARS_FALLBACK
-  end
-end
 
 def git_probe_env
-  (git_local_env_vars + GIT_PROBE_EXTRA_ENV_VARS).uniq.to_h { |name| [name, nil] }.tap do |env|
-    ENV.each_key do |name|
-      env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
-    end
-  end
+  PrBatchGitProbeEnv.probe_env
 end
 
 def resolved_trust_config(explicit_path, repo:)
@@ -314,7 +278,7 @@ end
 
 def github_repo_from_remote_url(url)
   normalized = url.to_s.strip.sub(/\.git\z/i, "")
-  match = normalized.match(%r{\A(?:https?://[^/]+/|ssh://git@[^/]+/|git@[^:]+:)([^/]+/[^/]+)\z}i)
+  match = normalized.match(%r{\A(?:https?://[^/]+/|ssh://[^@/]+@[^/]+/|[^@/:]+@[^:]+:)([^/]+/[^/]+)\z}i)
   match[1] if match
 end
 
@@ -330,7 +294,7 @@ end
 
 def canonical_path(path)
   File.realpath(path)
-rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
+rescue SystemCallError
   File.expand_path(path)
 end
 

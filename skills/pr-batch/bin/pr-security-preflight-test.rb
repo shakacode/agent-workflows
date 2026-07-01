@@ -11,6 +11,8 @@ require "open3"
 require "shellwords"
 require "tmpdir"
 
+require_relative "../lib/git_probe_env"
+
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
 
 class PrSecurityPreflightTest < Minitest::Test
@@ -189,7 +191,8 @@ class PrSecurityPreflightTest < Minitest::Test
       ghes_urls = [
         "https://github.company.example/owner/repo.git",
         "git@github.company.example:owner/repo.git",
-        "ssh://git@github.company.example/owner/repo.git"
+        "ssh://git@github.company.example/owner/repo.git",
+        "ssh://deploy@github.company.example/owner/repo.git"
       ]
 
       ghes_urls.each_with_index do |remote_url, index|
@@ -1486,24 +1489,7 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def clean_git_env
-    names = git_local_env_vars + %w[
-      GIT_CEILING_DIRECTORIES
-      GIT_CONFIG_GLOBAL
-      GIT_CONFIG_NOSYSTEM
-      GIT_CONFIG_SYSTEM
-    ]
-    env = names.uniq.to_h { |name| [name, nil] }
-    ENV.each_key do |name|
-      env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
-    end
-    env
-  end
-
-  def git_local_env_vars
-    stdout, _stderr, status = Open3.capture3("git", "rev-parse", "--local-env-vars")
-    raise "git rev-parse --local-env-vars failed" unless status.success?
-
-    stdout.lines.map(&:strip).reject(&:empty?)
+    PrBatchGitProbeEnv.probe_env
   end
 
   def with_env(values)
