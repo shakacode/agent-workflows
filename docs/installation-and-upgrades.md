@@ -8,10 +8,12 @@ every repository.
 
 The shared pack belongs in the user or agent home. Each consumer repository
 keeps command wrappers in `.agents/bin/`, non-command policy in
-`.agents/agent-workflow.yml`, and a short pointer in `AGENTS.md` under
-`## Agent Workflow Configuration`. The shared skills read that contract at
-runtime, so the same installed pack can work across repositories with different
-branches, CI commands, labels, changelog rules, and review gates.
+`.agents/agent-workflow.yml`, durable PR-batch actor trust in
+`.agents/trusted-github-actors.yml` when needed, and a short pointer in
+`AGENTS.md` under `## Agent Workflow Configuration`. The shared skills read
+that contract at runtime, so the same installed pack can work across
+repositories with different branches, CI commands, labels, changelog rules,
+review gates, and trust policies.
 
 Repository-pinned copies are still allowed when a platform cannot load installed
 skills, but they are the exception. The default path is:

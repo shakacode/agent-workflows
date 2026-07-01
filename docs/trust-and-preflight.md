@@ -82,6 +82,24 @@ Repo-local `trusted_teams` entries are team slugs under the repo owner. Global
 trust configs must use `OWNER/team-slug` entries, and only entries whose owner
 matches the scanned repo owner are honored.
 
+For `shakacode/react_on_rails`, bootstrap repo-local config with
+`base_branch: main` in `.agents/agent-workflow.yml` and `justin808` in
+`.agents/trusted-github-actors.yml`:
+
+```yaml
+trusted_users:
+  - justin808
+
+trusted_bots: []
+trusted_metadata_bots: []
+trusted_teams: []
+```
+
+The matching examples live under
+[`examples/react_on_rails/.agents/`](../examples/react_on_rails/.agents/). Use
+a trusted team instead only after verifying the exact GitHub team slug and
+membership.
+
 ## Auditing Before Editing Trust
 
 Use `agent-workflows-trust-audit` before adding repo-local trust entries:

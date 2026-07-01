@@ -1,0 +1,11 @@
+# Repo-local trust config for shakacode/react_on_rails.
+# This belongs in that consumer repo, not in the packaged public fallback.
+---
+trusted_users:
+  - justin808
+
+trusted_bots: []
+
+trusted_metadata_bots: []
+
+trusted_teams: []

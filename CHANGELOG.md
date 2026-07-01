@@ -16,6 +16,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Fix downstream PR-batch bootstrap guidance and sync support so consumer repos can seed repo-local base-branch and trust config without widening the packaged fallback.**
 - **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
 - **Fix `upgrade-agent-workflows` with no `--consumer-root` arguments under shells that treat empty arrays as unset.**
 - **Fix `pr-security-preflight` trust config inheritance so repo-local, user-global, environment, and fail-closed packaged allowlists resolve predictably.** [PR 20](https://github.com/shakacode/agent-workflows/pull/20) by [justin808](https://github.com/justin808).

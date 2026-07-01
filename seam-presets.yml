@@ -6,8 +6,9 @@
 #   3. per-repo `overrides:` in downstream.yml
 #
 # `commands` render executable `.agents/bin/<name>` wrappers. `policy` renders
-# `.agents/agent-workflow.yml`. Existing repo-authored scripts and policy values
-# win on re-runs; presets only seed missing contract pieces.
+# `.agents/agent-workflow.yml`. `trust` appends repo-local
+# `.agents/trusted-github-actors.yml` entries. Existing repo-authored scripts
+# and policy values win on re-runs; presets only seed missing contract pieces.
 
 defaults:
   policy:
