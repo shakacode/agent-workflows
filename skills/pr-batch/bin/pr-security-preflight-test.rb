@@ -220,6 +220,63 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_inferred_github_enterprise_host_marks_explicit_trust_config_repo_local
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo", url: "https://github.company.example/owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("PREFLIGHT_TEST_REPO_URL" => "https://github.company.example/owner/repo"),
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_explicit_repo_local_trust_config_accepts_common_https_remote_forms
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      remote_urls = [
+        "https://user@github.com/owner/repo.git",
+        "https://x-access-token:TOKEN@github.com/owner/repo.git",
+        "https://github.com/owner/repo/",
+        "https://github.com/owner/repo.git/"
+      ]
+
+      remote_urls.each_with_index do |remote_url, index|
+        consumer_root = File.join(dir, "consumer-#{index}")
+        repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+        FileUtils.mkdir_p(consumer_root)
+        init_git_remote(consumer_root, "owner/repo", url: remote_url)
+        write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+        out, status = run_script(
+          env,
+          "--repo",
+          "owner/repo",
+          "--trust-config",
+          repo_config,
+          "123",
+          chdir: consumer_root
+        )
+
+        assert status.success?, out
+        assert_includes out, "SECURITY_PREFLIGHT_OK"
+        refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+        refute_includes out, "WARN: global trust config ignores unqualified team slug"
+      end
+    end
+  end
+
   def test_explicit_trust_config_in_same_path_wrong_host_is_global
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       other_root = File.join(dir, "gitlab")
@@ -269,6 +326,34 @@ class PrSecurityPreflightTest < Minitest::Test
       assert status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_git_remote_url_newline_cannot_inject_matching_remote
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_root(consumer_root)
+      newline_url = "https://gitlab.example/owner/repo.git\nremote.evil.url https://github.com/owner/repo.git"
+      system(clean_git_env, "git", "-C", consumer_root, "config", "--local", "remote.origin.url", newline_url)
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "--strict-trust",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "WARN: global trust config ignores unqualified team slug"
+      assert_includes out, "not in trusted actor allowlist"
     end
   end
 
@@ -1742,6 +1827,12 @@ class PrSecurityPreflightTest < Minitest::Test
             ;;
         esac
       }
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        repo_url="${PREFLIGHT_TEST_REPO_URL:-https://github.com/owner/repo}"
+        printf '{"nameWithOwner":"owner/repo","url":"%s"}\\n' "$repo_url"
+        exit 0
+      fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
         if [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
