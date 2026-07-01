@@ -171,9 +171,10 @@ end
 
 def repo_info_from_payload(payload, fallback_repo: nil)
   remote = github_remote_from_remote_url(payload["url"])
+  repo = fallback_repo.nil? ? payload.fetch("nameWithOwner") : payload.fetch("nameWithOwner", fallback_repo)
 
   {
-    repo: payload.fetch("nameWithOwner", fallback_repo),
+    repo:,
     github_host: remote&.fetch(:host) || expected_github_host
   }
 end
@@ -308,7 +309,7 @@ rescue StandardError
 end
 
 def normalized_github_host(host)
-  host.to_s.downcase.sub(/:443\z/, "")
+  host.to_s.downcase.sub(/:(443|80)\z/, "")
 end
 
 def expected_github_host
@@ -318,7 +319,7 @@ end
 def normalized_remote_host(host)
   # GitHub documents ssh.github.com:443 for SSH-over-HTTPS clones; trust checks
   # should still compare those remotes against github.com API scans.
-  host == "ssh.github.com:443" ? "github.com" : host
+  %w[ssh.github.com ssh.github.com:443].include?(host) ? "github.com" : host
 end
 
 def remote_url_host(host, port, scheme:)
@@ -326,7 +327,8 @@ def remote_url_host(host, port, scheme:)
   return if normalized.empty?
 
   default_port = { "http" => 80, "https" => 443, "ssh" => 22 }.fetch(scheme)
-  normalized_remote_host(port && port != default_port ? "#{normalized}:#{port}" : normalized)
+  default_port_match = port == default_port || (scheme == "ssh" && port == 443)
+  normalized_remote_host(port && !default_port_match ? "#{normalized}:#{port}" : normalized)
 end
 
 def uri_remote_from_remote_url(normalized)
@@ -340,7 +342,7 @@ def uri_remote_from_remote_url(normalized)
   return unless host
 
   { host:, repo: }
-rescue URI::InvalidURIError
+rescue URI::Error
   nil
 end
 

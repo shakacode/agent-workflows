@@ -324,6 +324,54 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_default_http_port_in_gh_host_matches_enterprise_remote
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-http-default-port")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo", url: "http://github.company.example:80/owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.company.example:80"),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_enterprise_ssh_over_https_port_matches_gh_host_default_https_port
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-ssh-default-port")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo", url: "ssh://deploy@github.company.example:443/owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.company.example:443"),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
   def test_explicit_repo_local_trust_config_accepts_common_remote_forms
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       remote_urls = [
@@ -381,6 +429,41 @@ class PrSecurityPreflightTest < Minitest::Test
       assert status.success?, out
       assert_includes out, "WARN: could not resolve GitHub host via gh repo view for \"owner/repo\""
       assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_malformed_remote_port_does_not_crash_preflight
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-bad-port")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_root(consumer_root)
+      system(
+        clean_git_env,
+        "git",
+        "-C",
+        consumer_root,
+        "config",
+        "--local",
+        "remote.origin.url",
+        "https://github.com:99999999999/owner/repo.git"
+      )
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "--strict-trust",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      refute_includes out, "InvalidComponentError"
     end
   end
 
