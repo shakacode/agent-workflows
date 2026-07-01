@@ -337,6 +337,24 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_git_probe_env_preserves_protected_config_sources_for_safe_directory
+    env = PrBatchGitProbeEnv.probe_env(
+      "GIT_CONFIG_GLOBAL" => "/tmp/global-gitconfig",
+      "GIT_CONFIG_SYSTEM" => "/tmp/system-gitconfig",
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_COUNT" => "1",
+      "GIT_CONFIG_KEY_0" => "remote.origin.url",
+      "GIT_CONFIG_VALUE_0" => "https://github.com/owner/repo.git"
+    )
+
+    refute env.key?("GIT_CONFIG_GLOBAL")
+    refute env.key?("GIT_CONFIG_SYSTEM")
+    refute env.key?("GIT_CONFIG_NOSYSTEM")
+    assert_nil env["GIT_CONFIG_COUNT"]
+    assert_nil env["GIT_CONFIG_KEY_0"]
+    assert_nil env["GIT_CONFIG_VALUE_0"]
+  end
+
   def test_git_helpers_clear_inherited_git_environment
     with_fake_gh("warning-issue") do |_env, _trust_config_path, _log_path, dir|
       outer_root = File.join(dir, "outer")

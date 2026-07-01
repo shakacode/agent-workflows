@@ -24,9 +24,6 @@ module PrBatchGitProbeEnv
 
   EXTRA_ENV_VARS = %w[
     GIT_CEILING_DIRECTORIES
-    GIT_CONFIG_GLOBAL
-    GIT_CONFIG_NOSYSTEM
-    GIT_CONFIG_SYSTEM
   ].freeze
 
   module_function
