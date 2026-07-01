@@ -206,11 +206,11 @@ def resolved_trust_config(explicit_path, repo:, github_host:)
     expanded = File.expand_path(explicit_path)
     abort "Trust config not found: #{expanded}" unless File.exist?(expanded)
 
-    return { path: expanded, global: !explicit_trust_config_repo_local?(expanded, repo, github_host:) }
+    return { path: expanded, global: !trust_config_repo_local?(expanded, repo, github_host:) }
   end
 
   repo_path = repo_trust_config_path
-  return { path: repo_path, global: false } if File.exist?(repo_path)
+  return { path: repo_path, global: !trust_config_repo_local?(repo_path, repo, github_host:) } if File.exist?(repo_path)
 
   env_path = ENV[USER_TRUST_CONFIG_ENV].to_s
   unless env_path.empty?
@@ -243,7 +243,7 @@ rescue StandardError
   nil
 end
 
-def explicit_trust_config_repo_local?(path, repo, github_host:)
+def trust_config_repo_local?(path, repo, github_host:)
   root = git_toplevel(chdir: File.dirname(path))
   return false unless root
   return false unless path_inside_git_root?(path, root:)
@@ -286,7 +286,7 @@ rescue StandardError
 end
 
 def normalized_github_host(host)
-  host.to_s.downcase.sub(/:\d+\z/, "")
+  host.to_s.downcase
 end
 
 def expected_github_host
@@ -295,8 +295,8 @@ end
 
 def github_remote_from_remote_url(url)
   normalized = url.to_s.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
-  match = normalized.match(%r{\Ahttps?://(?:[^@/\s]+@)?([^/:/\s]+)(?::\d+)?/([^/\s]+/[^/\s]+)\z}i) ||
-          normalized.match(%r{\Assh://(?:[^@/\s]+@)?([^/:/\s]+)(?::\d+)?/([^/\s]+/[^/\s]+)\z}i) ||
+  match = normalized.match(%r{\Ahttps?://(?:[^@/\s]+@)?([^/\s]+)/([^/\s]+/[^/\s]+)\z}i) ||
+          normalized.match(%r{\Assh://(?:[^@/\s]+@)?([^/\s]+)/([^/\s]+/[^/\s]+)\z}i) ||
           normalized.match(%r{\A[^@/:/\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
   return unless match
 

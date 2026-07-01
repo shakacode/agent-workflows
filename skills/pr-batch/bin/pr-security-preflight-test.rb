@@ -116,7 +116,7 @@ class PrSecurityPreflightTest < Minitest::Test
       home = File.join(dir, "home")
       repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p([consumer_root, home])
-      init_git_root(consumer_root)
+      init_git_remote(consumer_root, "owner/repo")
       write_trust_config(repo_config, users: [], teams: ["maintainers"])
 
       out, status = run_script(
@@ -225,11 +225,11 @@ class PrSecurityPreflightTest < Minitest::Test
       consumer_root = File.join(dir, "consumer")
       repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
       FileUtils.mkdir_p(consumer_root)
-      init_git_remote(consumer_root, "owner/repo", url: "https://github.company.example/owner/repo.git")
+      init_git_remote(consumer_root, "owner/repo", url: "https://github.company.example:8443/owner/repo.git")
       write_trust_config(repo_config, users: [], teams: ["maintainers"])
 
       out, status = run_script(
-        env.merge("PREFLIGHT_TEST_REPO_URL" => "https://github.company.example/owner/repo"),
+        env.merge("PREFLIGHT_TEST_REPO_URL" => "https://github.company.example:8443/owner/repo"),
         "--trust-config",
         repo_config,
         "123",
@@ -240,6 +240,38 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_explicit_repo_local_trust_config_accepts_port_qualified_enterprise_remotes
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      remote_urls = [
+        "https://github.company.example:8443/owner/repo.git",
+        "ssh://deploy@github.company.example:8443/owner/repo.git"
+      ]
+
+      remote_urls.each_with_index do |remote_url, index|
+        consumer_root = File.join(dir, "consumer-port-#{index}")
+        repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+        FileUtils.mkdir_p(consumer_root)
+        init_git_remote(consumer_root, "owner/repo", url: remote_url)
+        write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+        out, status = run_script(
+          env.merge("GH_HOST" => "github.company.example:8443"),
+          "--repo",
+          "owner/repo",
+          "--trust-config",
+          repo_config,
+          "123",
+          chdir: consumer_root
+        )
+
+        assert status.success?, out
+        assert_includes out, "SECURITY_PREFLIGHT_OK"
+        refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+        refute_includes out, "WARN: global trust config ignores unqualified team slug"
+      end
     end
   end
 
@@ -274,6 +306,32 @@ class PrSecurityPreflightTest < Minitest::Test
         refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
         refute_includes out, "WARN: global trust config ignores unqualified team slug"
       end
+    end
+  end
+
+  def test_explicit_trust_config_in_same_host_wrong_port_is_global
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      wrong_port_root = File.join(dir, "wrong-port")
+      repo_config = File.join(wrong_port_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(wrong_port_root)
+      init_git_remote(wrong_port_root, "owner/repo", url: "https://github.company.example/owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.company.example:8443"),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "--strict-trust",
+        "123",
+        chdir: wrong_port_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "WARN: could not determine repo from remotes"
+      assert_includes out, 'WARN: global trust config ignores unqualified team slug "maintainers"'
     end
   end
 
@@ -326,6 +384,30 @@ class PrSecurityPreflightTest < Minitest::Test
       assert status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
+  def test_implicit_trust_config_in_mismatched_repo_is_global
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      other_root = File.join(dir, "other")
+      repo_config = File.join(other_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(other_root)
+      init_git_remote(other_root, "attacker/repo")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--strict-trust",
+        "123",
+        chdir: other_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, 'WARN: global trust config ignores unqualified team slug "maintainers"'
+      assert_includes out, "not in trusted actor allowlist"
     end
   end
 
