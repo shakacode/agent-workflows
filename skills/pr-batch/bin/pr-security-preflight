@@ -191,16 +191,28 @@ USER_TRUST_CONFIG_ENV = "AGENT_WORKFLOWS_TRUST_CONFIG"
 GIT_LOCAL_ENV_VARS = %w[
   GIT_ALTERNATE_OBJECT_DIRECTORIES
   GIT_COMMON_DIR
+  GIT_CONFIG
+  GIT_CONFIG_COUNT
+  GIT_CONFIG_PARAMETERS
   GIT_DIR
+  GIT_GRAFT_FILE
+  GIT_IMPLICIT_WORK_TREE
   GIT_INDEX_FILE
   GIT_NAMESPACE
+  GIT_NO_REPLACE_OBJECTS
   GIT_OBJECT_DIRECTORY
   GIT_PREFIX
+  GIT_REPLACE_REF_BASE
+  GIT_SHALLOW_FILE
   GIT_WORK_TREE
 ].freeze
 
 def git_probe_env
-  GIT_LOCAL_ENV_VARS.to_h { |name| [name, nil] }
+  GIT_LOCAL_ENV_VARS.to_h { |name| [name, nil] }.tap do |env|
+    ENV.each_key do |name|
+      env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
+    end
+  end
 end
 
 def resolved_trust_config(explicit_path, repo:)

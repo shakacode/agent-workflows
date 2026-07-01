@@ -271,6 +271,36 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_script_git_probes_clear_injected_git_config_remotes
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      unrelated_root = File.join(dir, "unrelated")
+      trust_config = File.join(unrelated_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(unrelated_root)
+      init_git_root(unrelated_root)
+      write_trust_config(trust_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge(
+          "GIT_CONFIG_COUNT" => "1",
+          "GIT_CONFIG_KEY_0" => "remote.origin.url",
+          "GIT_CONFIG_VALUE_0" => "https://github.com/owner/repo.git"
+        ),
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config,
+        "123",
+        chdir: dir,
+        clear_git_env: false
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "WARN: global trust config ignores unqualified team slug"
+      assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
   def test_git_helpers_clear_inherited_git_environment
     with_fake_gh("warning-issue") do |_env, _trust_config_path, _log_path, dir|
       outer_root = File.join(dir, "outer")
@@ -1422,16 +1452,28 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def clean_git_env
-    %w[
+    env = %w[
       GIT_ALTERNATE_OBJECT_DIRECTORIES
       GIT_COMMON_DIR
+      GIT_CONFIG
+      GIT_CONFIG_COUNT
+      GIT_CONFIG_PARAMETERS
       GIT_DIR
+      GIT_GRAFT_FILE
+      GIT_IMPLICIT_WORK_TREE
       GIT_INDEX_FILE
       GIT_NAMESPACE
+      GIT_NO_REPLACE_OBJECTS
       GIT_OBJECT_DIRECTORY
       GIT_PREFIX
+      GIT_REPLACE_REF_BASE
+      GIT_SHALLOW_FILE
       GIT_WORK_TREE
     ].to_h { |name| [name, nil] }
+    ENV.each_key do |name|
+      env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
+    end
+    env
   end
 
   def with_env(values)
