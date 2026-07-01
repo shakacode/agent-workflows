@@ -16,7 +16,7 @@ def read_repo_file(path)
   File.read(path, encoding: "UTF-8")
 end
 
-def extract_goal_prompt_template(skill_text, heading)
+def extract_goal_prompt_template(skill_text, heading, end_heading: /^##\s+/)
   heading_index = skill_text.index(heading)
   raise "missing #{heading} section" unless heading_index
 
@@ -24,7 +24,7 @@ def extract_goal_prompt_template(skill_text, heading)
   raise "missing text fence in Goal Prompt section" unless fence_start
 
   fence_body_start = fence_start + TEXT_FENCE.length
-  next_heading = skill_text.match(/^##\s+/, fence_body_start)
+  next_heading = skill_text.match(end_heading, fence_body_start)
   section_end = next_heading ? next_heading.begin(0) : skill_text.length
   section_body = skill_text[fence_body_start...section_end]
   fence_offsets = []
@@ -51,6 +51,11 @@ class GoalCompletionContractTest < Minitest::Test
     @workflow = read_repo_file(WORKFLOW_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
+    @workflow_goal_prompt = extract_goal_prompt_template(
+      @workflow,
+      "### Plan To Goal Handoff",
+      end_heading: /^###\s+/
+    )
     @pr_batch_goal_prompt = extract_goal_prompt_template(@pr_batch_skill, "## Goal Prompt Template")
     @plan_goal_prompt = extract_goal_prompt_template(@plan_pr_batch_skill, "## Goal Prompt for pr-batch")
   end
@@ -58,6 +63,7 @@ class GoalCompletionContractTest < Minitest::Test
   def test_canonical_contract_is_present_in_workflow_and_goal_sources
     {
       "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
@@ -78,12 +84,15 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_canonical_and_dispatch_prompt_contracts_stay_byte_for_byte_aligned
     workflow_contract = contract_line(@workflow)
+    workflow_goal_contract = contract_line(@workflow_goal_prompt)
     pr_batch_contract = @pr_batch_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first
     plan_contract = @plan_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first
 
     refute_nil workflow_contract, "workflows/pr-processing.md is missing the canonical contract line"
+    refute_nil workflow_goal_contract, "workflows/pr-processing.md goal prompt is missing the contract line"
     refute_nil pr_batch_contract, "skills/pr-batch goal prompt is missing the contract line"
     refute_nil plan_contract, "skills/plan-pr-batch goal prompt is missing the contract line"
+    assert_equal workflow_contract, workflow_goal_contract
     assert_equal workflow_contract, pr_batch_contract.chomp
     assert_equal workflow_contract, plan_contract.chomp
   end
@@ -108,6 +117,7 @@ class GoalCompletionContractTest < Minitest::Test
   def test_pending_hosted_checks_pressure_scenario_is_not_complete
     {
       "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
@@ -118,6 +128,7 @@ class GoalCompletionContractTest < Minitest::Test
   def test_ready_no_merge_authority_is_terminal_only_without_merge_authority
     {
       "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
@@ -128,6 +139,7 @@ class GoalCompletionContractTest < Minitest::Test
   def test_auto_merge_done_means_merged_or_blocked
     {
       "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
