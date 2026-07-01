@@ -47,15 +47,17 @@ replaces ordinary least-privilege controls.
 The `pr-batch` security preflight is defense in depth. Run the resolved
 `pr-security-preflight` helper before assigning public issue or PR targets to
 workers. It catches obvious and provenance-based risks such as untrusted,
-hidden, or unidentifiable participants.
+hidden, or unidentifiable participants. By default those actor-trust findings
+are reported as exact-target audit context; add `--strict-trust` when they
+should block worker launch.
 
 The helper resolves trusted GitHub actors from `--trust-config`, repo-local
 `.agents/trusted-github-actors.yml`, `$AGENT_WORKFLOWS_TRUST_CONFIG`,
 `~/.agents/trusted-github-actors.yml`, then the packaged
 `skills/pr-batch/trusted-github-actors.yml` fallback. A present empty file is an
 intentional policy, while an absent file falls through to the next layer. The
-packaged fallback is fail-closed and empty by default; human maintainers and
-trusted automation belong in a repo-local or user-global trust config. Global
+packaged fallback is empty by default; human maintainers and trusted automation
+belong in a repo-local or user-global trust config. Global
 configs must use `OWNER/team-slug` entries, and only entries whose owner matches
 the scanned repo owner are honored. Bare team slugs are only resolved for
 repo-local configs.
@@ -64,7 +66,7 @@ decisions: include the base bot login `github-actions` under
 `trusted_metadata_bots` when maintainers trust those generated comments as
 CI/status metadata but not as actionable agent instructions.
 
-When a maintainer explicitly accepts exact preflight findings without changing
+When a maintainer explicitly accepts exact blocking preflight findings without changing
 trust policy, pass `--acknowledge-risk NUMBER:risk-id[,risk-id]` for each
 target and risk category. This downgrades only the named categories for that
 exact target and still reports the acknowledged findings in the preflight
