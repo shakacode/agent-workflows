@@ -153,7 +153,7 @@ required_skill_rule_phrases = [
 
 required_prompt_phrases = [
   "Goal Mode Completion Contract",
-  "waiting-on-checks-or-review` is not an overall Goal-mode terminal state",
+  "`waiting-on-checks-or-review` is not an overall Goal-mode terminal state",
   "report NOT COMPLETE",
   "merge_authority:",
   "merge only when `merge_authority` is `auto_merge_when_gates_pass`",
