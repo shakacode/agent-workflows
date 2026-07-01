@@ -21,7 +21,7 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
   "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
   "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
-  "Terminal states allowed: `merged`, `ready-no-merge-authority`, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
+  "Terminal states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
   "Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state."
 ].freeze
 
@@ -51,6 +51,13 @@ end
 
 def read_repo_file(path)
   File.read(File.join(REPO_ROOT, path), encoding: "UTF-8")
+end
+
+def read_optional_repo_file(path)
+  full_path = File.join(REPO_ROOT, path)
+  return nil unless File.exist?(full_path)
+
+  File.read(full_path, encoding: "UTF-8")
 end
 
 def extract_section(text, start_marker, end_heading)
@@ -112,7 +119,7 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
-restart_docs_text = read_repo_file("docs/agent-runner-restarts.md")
+restart_docs_text = read_optional_repo_file("docs/agent-runner-restarts.md")
 pressure_scenario_text = extract_section(
   workflow_text,
   "Pressure scenarios this prompt must satisfy:",
@@ -146,7 +153,11 @@ unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("canonical workflow is missing the exact restart resume snippet")
 end
 
-unless restart_docs_text.include?(CANONICAL_RESUME_SNIPPET)
+if File.exist?(File.join(REPO_ROOT, "bin/validate")) && restart_docs_text.nil?
+  abort_with_failure("source checkout is missing docs/agent-runner-restarts.md for resume snippet drift check")
+end
+
+if restart_docs_text && !restart_docs_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("restart docs resume snippet drifted from the canonical workflow snippet")
 end
 
