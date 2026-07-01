@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 GOAL_PROMPT_CHAR_LIMIT = 4_000
+# Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
+SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 REPO_ROOT = File.expand_path("../../..", __dir__)
 
@@ -69,15 +71,6 @@ def read_optional_repo_file(path)
   File.read(full_path, encoding: "UTF-8")
 end
 
-def source_checkout?
-  agents_text = read_optional_repo_file("AGENTS.md")
-  return false unless agents_text&.include?("shakacode/agent-workflows")
-
-  %w[README.md CHANGELOG.md bin/install-agent-workflows].all? do |path|
-    File.exist?(File.join(REPO_ROOT, path))
-  end
-end
-
 def extract_section(text, start_marker, end_heading)
   start_index = text.index(start_marker)
   abort_with_failure("missing section marker: #{start_marker}") unless start_index
@@ -138,7 +131,7 @@ skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
 restart_docs_text = read_optional_repo_file("docs/agent-runner-restarts.md")
-source_checkout = source_checkout?
+enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
 pressure_scenario_text = extract_section(
   workflow_text,
   "Pressure scenarios this prompt must satisfy:",
@@ -172,12 +165,14 @@ unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("canonical workflow is missing the exact restart resume snippet")
 end
 
-if source_checkout && restart_docs_text.nil?
-  abort_with_failure("source checkout is missing docs/agent-runner-restarts.md for resume snippet drift check")
-end
+if enforce_restart_docs_drift
+  if restart_docs_text.nil?
+    abort_with_failure("source checkout is missing docs/agent-runner-restarts.md for resume snippet drift check")
+  end
 
-if restart_docs_text && !restart_docs_text.include?(CANONICAL_RESUME_SNIPPET)
-  abort_with_failure("restart docs resume snippet drifted from the canonical workflow snippet")
+  unless restart_docs_text.include?(CANONICAL_RESUME_SNIPPET)
+    abort_with_failure("restart docs resume snippet drifted from the canonical workflow snippet")
+  end
 end
 
 require_phrases(workflow_text, CANONICAL_CONTINUATION_SNIPPET_PHRASES, "canonical workflow continuation snippet")

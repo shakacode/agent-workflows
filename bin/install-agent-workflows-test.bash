@@ -105,17 +105,19 @@ test_codex_host_install_writes_helpers_and_metadata() {
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
 }
 
-test_installed_prompt_guard_ignores_unrelated_target_validate() {
+test_installed_prompt_guard_ignores_unowned_docs_and_validate() {
   local tmp target output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  mkdir -p "$target/docs"
   cat > "$target/bin/validate" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
 exit 0
 BASH
+  printf 'Unrelated local docs.\n' > "$target/docs/agent-runner-restarts.md"
   chmod +x "$target/bin/validate"
 
   set +e
@@ -318,7 +320,7 @@ test_upgrade_validates_consumer_root_after_install() {
 main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
-    test_installed_prompt_guard_ignores_unrelated_target_validate
+    test_installed_prompt_guard_ignores_unowned_docs_and_validate
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files
     test_symlink_mode_links_skills_workflows_and_helpers
