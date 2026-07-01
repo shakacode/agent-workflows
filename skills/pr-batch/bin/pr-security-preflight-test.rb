@@ -1710,6 +1710,20 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_missing_pr_author_coverage_blocks_diff_warning_downgrade
+    with_fake_gh("missing-pr-author-warning-diff") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "target author nodes unavailable; reported total_count=1"
+      assert_includes out, "- #123: GitHub API coverage truncated"
+      assert_includes out, "- #123: suspicious text"
+      refute_includes out, "Suspicious text warnings:\n    - .github/workflows/test.yml"
+    end
+  end
+
   def test_paginated_participants_are_merged_before_visibility_and_coverage_checks
     with_fake_gh("paginated-participants") do |env, trust_config_path, log_path|
       trust_coderabbit(trust_config_path)
@@ -2243,7 +2257,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -2321,6 +2335,10 @@ class PrSecurityPreflightTest < Minitest::Test
         elif [ "$mode" = "unknown-commit-author" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":null}]}}}]}}}}}
+      JSON
+        elif [ "$mode" = "missing-pr-author-warning-diff" ]; then
+          cat <<'JSON'
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":null,"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "untrusted-warning-diff" ]; then
           cat <<'JSON'

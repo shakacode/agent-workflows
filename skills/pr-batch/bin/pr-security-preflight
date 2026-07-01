@@ -1168,12 +1168,22 @@ def connection_coverage_finding(target, connection_name)
 end
 
 def graph_coverage_findings(target)
-  PAGINATED_CONNECTIONS.filter_map { |connection_name| connection_coverage_finding(target, connection_name) } +
-    commit_author_coverage_findings(target)
+  [
+    target_author_coverage_finding(target),
+    *PAGINATED_CONNECTIONS.filter_map { |connection_name| connection_coverage_finding(target, connection_name) },
+    *commit_author_coverage_findings(target)
+  ].compact
+end
+
+def target_author_coverage_finding(target)
+  return unless target.dig("author", "login").to_s.empty?
+
+  { connection: "target author", fetched_count: 0, reason: "nodes unavailable", total_count: 1 }
 end
 
 def source_actor_coverage_findings(target)
   [
+    target_author_coverage_finding(target),
     connection_coverage_finding(target, "timelineItems"),
     *commit_author_coverage_findings(target)
   ].compact
