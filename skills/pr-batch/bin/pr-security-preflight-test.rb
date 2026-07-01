@@ -10,6 +10,7 @@ require "minitest/autorun"
 require "open3"
 require "shellwords"
 require "tmpdir"
+require "yaml"
 
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
 
@@ -327,6 +328,97 @@ class PrSecurityPreflightTest < Minitest::Test
       refute status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "not in trusted actor allowlist"
+    end
+  end
+
+  def test_repo_local_fixture_trust_allows_react_on_rails_maintainer_targets_in_strict_trust
+    with_fake_gh("react-on-rails-maintainer-targets") do |env, _trust_config_path, _log_path, dir|
+      trust_config_path = File.join(dir, "react-on-rails-trusted-github-actors.yml")
+      write_trust_config(trust_config_path, users: ["justin808"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "shakacode/react_on_rails",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "4286",
+        "4287",
+        "4294",
+        "4297"
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      refute_includes out, "untrusted, hidden, or unidentifiable participant(s)"
+      refute_includes out, "untrusted comment/review author(s)"
+      assert_equal 4, out.scan("Untrusted or hidden participant findings: none").length
+      assert_equal 4, out.scan("Untrusted comment/review queue: none").length
+    end
+  end
+
+  def test_react_on_rails_example_fixture_allows_documented_exact_target_command
+    with_fake_gh("react-on-rails-maintainer-targets") do |env, _trust_config_path, _log_path|
+      trust_config_path = File.expand_path(
+        "../../../examples/react_on_rails/.agents/trusted-github-actors.yml",
+        __dir__
+      )
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "shakacode/react_on_rails",
+        "--trust-config",
+        trust_config_path,
+        "4286",
+        "4287",
+        "4294",
+        "4297"
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_equal 4, out.scan("Untrusted or hidden participant findings: none").length
+      assert_equal 4, out.scan("Untrusted comment/review queue: none").length
+    end
+  end
+
+  def test_packaged_fallback_stays_empty_and_blocks_react_on_rails_maintainer_targets_in_strict_trust
+    with_fake_gh("react-on-rails-maintainer-targets") do |env, _trust_config_path, _log_path, dir|
+      packaged_config = YAML.safe_load_file(
+        File.expand_path("../trusted-github-actors.yml", __dir__),
+        aliases: false
+      )
+      assert_equal [], packaged_config.fetch("trusted_users")
+      assert_equal [], packaged_config.fetch("trusted_bots")
+      assert_equal [], packaged_config.fetch("trusted_metadata_bots")
+      assert_equal [], packaged_config.fetch("trusted_teams")
+
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      FileUtils.mkdir_p([consumer_root, home])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => home),
+        "--repo",
+        "shakacode/react_on_rails",
+        "--strict-trust",
+        "4286",
+        "4287",
+        "4294",
+        "4297",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #4286: untrusted, hidden, or unidentifiable participant(s)"
+      assert_includes out, "- #4286: untrusted comment/review author(s)"
+      assert_includes out, "justin808 issue comment"
     end
   end
 
@@ -1199,6 +1291,27 @@ class PrSecurityPreflightTest < Minitest::Test
         esac
       }
 
+      react_on_rails_target_number() {
+        case "$1" in
+          4286|4287|4294|4297)
+            return 0
+            ;;
+          *)
+            return 1
+            ;;
+        esac
+      }
+
+      if [ "$mode" = "react-on-rails-maintainer-targets" ] && [ "$1" = "api" ] && [[ "$2" == repos/shakacode/react_on_rails/issues/* ]]; then
+        number="${2##*/}"
+        if react_on_rails_target_number "$number"; then
+          cat <<JSON
+      {"number":${number},"title":"Maintainer target ${number}","html_url":"https://github.com/shakacode/react_on_rails/issues/${number}","body":"Maintainer-scoped batch target.","user":{"login":"justin808"}}
+      JSON
+          exit 0
+        fi
+      fi
+
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
         if [ "$mode" = "warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ]; then
           cat <<'JSON'
@@ -1237,7 +1350,15 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
-        if [[ "$*" == *"reviewThreads"* ]]; then
+        if [ "$mode" = "react-on-rails-maintainer-targets" ]; then
+          number="$(printf '%s\\n' "$*" | sed -n 's/.*number=\\([0-9][0-9]*\\).*/\\1/p')"
+          if react_on_rails_target_number "$number"; then
+            cat <<JSON
+      {"data":{"repository":{"issue":{"number":${number},"title":"Maintainer target ${number}","url":"https://github.com/shakacode/react_on_rails/issues/${number}","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"IssueComment","author":{"login":"justin808"}}]}}}}}
+      JSON
+            exit 0
+          fi
+        elif [[ "$*" == *"reviewThreads"* ]]; then
           if [ "$mode" = "resolved-trusted-bot-review-comment" ]; then
             cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"resolvedBy":{"login":"justin808"},"comments":{"nodes":[{"databaseId":901}]}}]}}}}}
@@ -1371,6 +1492,17 @@ class PrSecurityPreflightTest < Minitest::Test
 
       # These fake responses model `gh api --paginate --slurp`, which wraps
       # raw GitHub REST pages in an outer array. An empty first page is `[[]]`.
+      if [ "$mode" = "react-on-rails-maintainer-targets" ] && [ "$1" = "api" ] && [[ "$2" == repos/shakacode/react_on_rails/issues/*/comments?per_page=100 ]]; then
+        comments_path="${2%/comments?per_page=100}"
+        number="${comments_path##*/}"
+        if react_on_rails_target_number "$number"; then
+          cat <<JSON
+      [[{"id":${number}01,"html_url":"https://github.com/shakacode/react_on_rails/issues/${number}#issuecomment-${number}01","user":{"login":"justin808"},"body":"Maintainer follow-up for ${number}."}]]
+      JSON
+          exit 0
+        fi
+      fi
+
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123/comments?per_page=100" ]; then
         if [ "$mode" = "metadata-bot-comment" ]; then
           cat <<JSON
@@ -1400,6 +1532,11 @@ class PrSecurityPreflightTest < Minitest::Test
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/reviews?per_page=100" ]; then
         printf '[[]]'
+        exit 0
+      fi
+
+      if [ "$mode" = "react-on-rails-maintainer-targets" ] && [ "$1" = "api" ] && [ "$2" = "repos/shakacode/react_on_rails/collaborators/justin808/permission" ]; then
+        printf '{"permission":"admin"}'
         exit 0
       fi
 
