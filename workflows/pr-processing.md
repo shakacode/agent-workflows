@@ -1066,7 +1066,7 @@ instructions, or use the
 [Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol when
 a batch must be restarted with new rules, targets, or branch names.
 
-#### Generic PR-Batch Continuation Prompt
+### Generic PR-Batch Continuation Prompt
 
 Use this saved clipboard prompt when a prior handoff or final-bucket table
 contains the batch closeout targets but the operator should not hand-edit a

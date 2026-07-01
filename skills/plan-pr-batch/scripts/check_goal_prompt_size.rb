@@ -32,17 +32,17 @@ PRESSURE_SCENARIOS = [
   "A normal resume prompt routes to bounded status recovery, not cancellation/relaunch."
 ].freeze
 
-CONSUMER_SPECIFIC_EXAMPLE_REFS = %w[
-  #4259
-  #4260
-  #4277
-  #4278
-  #4282
-  #4283
-  #4281
-  #4268
-  #4266
-  #4264
+ALLOWED_PRESSURE_SCENARIO_REFS = %w[
+  #101
+  #102
+  #103
+  #104
+  #105
+  #201
+  #202
+  #203
+  #204
+  #205
 ].freeze
 
 def abort_with_failure(message)
@@ -51,6 +51,16 @@ end
 
 def read_repo_file(path)
   File.read(File.join(REPO_ROOT, path), encoding: "UTF-8")
+end
+
+def extract_section(text, start_marker, end_heading)
+  start_index = text.index(start_marker)
+  abort_with_failure("missing section marker: #{start_marker}") unless start_index
+
+  body_start = start_index + start_marker.length
+  end_match = text.match(end_heading, body_start)
+  body_end = end_match ? end_match.begin(0) : text.length
+  text[body_start...body_end]
 end
 
 def require_phrases(text, phrases, label)
@@ -103,6 +113,11 @@ skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
 restart_docs_text = read_repo_file("docs/agent-runner-restarts.md")
+pressure_scenario_text = extract_section(
+  workflow_text,
+  "Pressure scenarios this prompt must satisfy:",
+  /^###\s+/
+)
 
 required_skill_rule_phrases = [
   "Goal prompt character count:",
@@ -138,10 +153,11 @@ end
 require_phrases(workflow_text, CANONICAL_CONTINUATION_SNIPPET_PHRASES, "canonical workflow continuation snippet")
 require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure scenarios")
 
-CONSUMER_SPECIFIC_EXAMPLE_REFS.each do |ref|
-  if workflow_text.include?(ref)
-    abort_with_failure("canonical workflow pressure scenarios contain consumer-specific example ref: #{ref}")
-  end
+unexpected_pressure_refs = pressure_scenario_text.scan(/#\d+/).uniq - ALLOWED_PRESSURE_SCENARIO_REFS
+unless unexpected_pressure_refs.empty?
+  abort_with_failure(
+    "canonical workflow pressure scenarios contain non-placeholder refs: #{unexpected_pressure_refs.join(', ')}"
+  )
 end
 
 if prompt_template.match?(/Batch Plan/i)
