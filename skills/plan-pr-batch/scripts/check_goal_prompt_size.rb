@@ -67,6 +67,15 @@ def read_optional_repo_file(path)
   File.read(full_path, encoding: "UTF-8")
 end
 
+def source_checkout?
+  agents_text = read_optional_repo_file("AGENTS.md")
+  return false unless agents_text&.include?("shakacode/agent-workflows")
+
+  %w[README.md CHANGELOG.md bin/install-agent-workflows].all? do |path|
+    File.exist?(File.join(REPO_ROOT, path))
+  end
+end
+
 def extract_section(text, start_marker, end_heading)
   start_index = text.index(start_marker)
   abort_with_failure("missing section marker: #{start_marker}") unless start_index
@@ -127,6 +136,7 @@ skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
 restart_docs_text = read_optional_repo_file("docs/agent-runner-restarts.md")
+source_checkout = source_checkout?
 pressure_scenario_text = extract_section(
   workflow_text,
   "Pressure scenarios this prompt must satisfy:",
@@ -160,7 +170,7 @@ unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("canonical workflow is missing the exact restart resume snippet")
 end
 
-if File.exist?(File.join(REPO_ROOT, "bin/validate")) && restart_docs_text.nil?
+if source_checkout && restart_docs_text.nil?
   abort_with_failure("source checkout is missing docs/agent-runner-restarts.md for resume snippet drift check")
 end
 
