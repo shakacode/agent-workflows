@@ -331,7 +331,7 @@ def inferred_github_host_from_local_git(repo)
 end
 
 def normalized_github_host(host)
-  host.to_s.downcase.sub(/:(443|80)\z/, "")
+  host.to_s.downcase
 end
 
 def expected_github_host
@@ -348,8 +348,14 @@ def remote_url_host(host, port, scheme:)
   normalized = normalized_github_host(host)
   return if normalized.empty?
 
-  default_port = { "http" => 80, "https" => 443, "ssh" => 22 }.fetch(scheme)
-  default_port_match = port == default_port || (scheme == "ssh" && port == 443)
+  default_port_match = case scheme
+                       when "https"
+                         port == 443
+                       when "ssh"
+                         port == 22
+                       else
+                         false
+                       end
   normalized_remote_host(port && !default_port_match ? "#{normalized}:#{port}" : normalized)
 end
 
@@ -363,7 +369,7 @@ def uri_remote_from_remote_url(normalized)
   host = remote_url_host(uri.host, uri.port, scheme: uri.scheme)
   return unless host
 
-  { host:, repo: }
+  { host:, port: uri.port, repo:, scheme: uri.scheme }
 rescue URI::Error
   nil
 end
@@ -378,10 +384,34 @@ def github_remote_from_remote_url(url)
   { host: normalized_remote_host(normalized_github_host(match[1])), repo: match[2] }
 end
 
+def host_port(host)
+  host.to_s.match(/\A(.+):(\d+)\z/)&.then { |match| [match[1], match[2].to_i] }
+end
+
+def remote_matches_github_host?(remote, github_host)
+  github_host_port = host_port(github_host)
+  return remote[:host] == github_host unless github_host_port
+
+  github_base_host, github_port = github_host_port
+  return true if remote[:host] == github_host
+  return false unless remote[:host] == github_base_host
+
+  case remote[:scheme]
+  when "http"
+    github_port == 80 && remote[:port] == 80
+  when "https"
+    github_port == 443 && remote[:port] == 443
+  when "ssh"
+    github_port == 443 && remote[:port] == 443
+  else
+    false
+  end
+end
+
 def git_root_matches_repo?(root, repo, github_host:)
   remote_repos = git_remote_urls(root).filter_map do |url|
     remote = github_remote_from_remote_url(url)
-    remote[:repo] if remote && remote[:host] == github_host
+    remote[:repo] if remote && remote_matches_github_host?(remote, github_host)
   end
   if remote_repos.empty?
     warn "WARN: could not determine repo from remotes for trust config working tree #{root.inspect}; treating trust config as global"

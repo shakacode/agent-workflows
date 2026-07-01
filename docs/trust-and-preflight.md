@@ -42,6 +42,15 @@ for untrusted discovery, high-concurrency launches that require fail-closed
 actor trust, or any run where those findings should require a maintainer
 acknowledgement before workers start.
 
+When `--repo OWNER/REPO` is passed without `GH_HOST`, `pr-security-preflight`
+uses `gh repo view OWNER/REPO` once to infer the GitHub host for repo-local
+trust-config classification. If that lookup fails, it falls back to a unique
+matching local git remote host when one is available, then to `github.com`.
+Local git probes are bounded by timeout environment variables:
+`PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS` for the preflight helper and
+`PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS` for the shared git-probe environment
+helper; both default to 10 seconds.
+
 ## Recommended Config Split
 
 Use the user-global config for stable actors that are trusted across repos on
