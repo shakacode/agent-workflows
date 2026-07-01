@@ -9,6 +9,11 @@ argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 
 If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.
+If the user asks to continue PR-batch closeout from a pasted handoff,
+final-bucket table, PR URLs, or GitHub shorthand refs, route to `$pr-batch` and
+the canonical [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt)
+in the installed `pr-processing.md` workflow instead of turning the handoff into
+broad discovery.
 
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
@@ -223,6 +228,8 @@ Execution rules:
 ## Common Mistakes
 
 - Do not infer PR vs issue from a bare number.
+- Do not broaden a continuation handoff into all open PRs, labels, milestones,
+  or inferred related work; use only exact visible refs or ask for the target list.
 - Do not batch unrelated risky changes just because they are small.
 - Do not hide missing GitHub data; say `UNKNOWN`.
 - Do not guess file paths; record unverifiable paths as `UNKNOWN` and treat that
@@ -237,5 +244,5 @@ Execution rules:
 After editing this skill's goal prompt rules or template, run:
 
 ```bash
-ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ```

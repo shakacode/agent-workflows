@@ -60,8 +60,18 @@ running process handoff details.
 
 After restart, paste the companion resume prompt from
 [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery)
-into every paused persistent batch thread. Copy the exact prompt text from that
-section to keep a single authoritative source.
+into every paused persistent batch thread:
+
+<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+
+```text
+Resume batch processing now.
+
+Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+```
+
+This is a resume instruction for the same lanes, not a cancellation or relaunch
+prompt.
 
 For the replacement-worker procedure when an in-process worker cannot be
 reopened, see
