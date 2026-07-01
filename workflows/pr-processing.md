@@ -1075,7 +1075,7 @@ target list for each batch:
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
-First, determine the exact targets from the visible request, pasted handoff, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
+First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
 If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list. Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.
 
@@ -1095,7 +1095,7 @@ Goal completion contract:
 - Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.
 - If CI/reviews are pending, keep polling and triaging until they settle. If a check fails, inspect and fix if in scope.
 - If only a real external blocker remains after a bounded watch/retry window, report NOT COMPLETE with exact blocker, evidence, and resume command; do not call the goal complete.
-- Terminal states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
+- Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done means merged and closed out unless a true blocker prevents it.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state.

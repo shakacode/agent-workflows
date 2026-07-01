@@ -13,15 +13,16 @@ TEXT
 
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
-  "determine the exact targets from the visible request, pasted handoff, PR URLs, GitHub shorthand refs, or final-bucket table",
-  "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs.",
+  "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
+  "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
+  "If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear.",
   "Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.",
   "Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.",
   "If extracted targets have mixed states, split internally by action type: checks/review polling, conflict recovery, draft/product-decision blockers, and excluded/deferred items.",
   "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
   "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
   "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
-  "Terminal states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
+  "Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
   "Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state."
 ].freeze
 
