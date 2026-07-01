@@ -11,9 +11,9 @@ Create verified scope and a goal prompt for `$pr-batch`. Do not implement items 
 If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.
 If the user asks to continue PR-batch closeout from a pasted handoff,
 final-bucket table, PR URLs, or GitHub shorthand refs, route to `$pr-batch` and
-the canonical Generic PR-Batch Continuation Prompt in the installed
-`pr-processing.md` workflow (`../../workflows/pr-processing.md`)
-instead of turning the handoff into broad discovery.
+the canonical [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt)
+in the installed `pr-processing.md` workflow instead of turning the handoff into
+broad discovery.
 
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
