@@ -51,6 +51,7 @@ prompt_template = extract_goal_prompt_template(skill_text)
 
 required_skill_rule_phrases = [
   "Goal prompt character count:",
+  "including the `/goal` line",
   "If the measured prompt is 4000 characters or more",
   "output only the first ready goal",
   "bulky detail stays in the Batch Plan",
@@ -59,6 +60,7 @@ required_skill_rule_phrases = [
 ]
 
 required_prompt_phrases = [
+  "/goal\nUse $pr-batch to complete this batch with subagents.",
   "merge_authority:",
   "merge only when `merge_authority` is `auto_merge_when_gates_pass`",
   "ready-no-merge-authority",
@@ -77,6 +79,10 @@ required_prompt_phrases.each do |phrase|
   unless prompt_template.include?(phrase)
     abort_with_failure("Goal prompt template is missing required phrase: #{phrase}")
   end
+end
+
+unless prompt_template.start_with?("/goal\nUse $pr-batch to complete this batch with subagents.\n")
+  abort_with_failure("Goal prompt template must start with /goal followed by the $pr-batch invocation")
 end
 
 if prompt_template.match?(/Batch Plan/i)
