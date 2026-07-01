@@ -458,6 +458,10 @@ def allowed_metadata_actor?(repo, login, trust_config, team_cache)
   trusted_actor?(repo, login, trust_config, team_cache) || trusted_metadata_bot?(login, trust_config)
 end
 
+def trusted_metadata_text?(repo, author, text, trust_config:, team_cache:, pattern:)
+  allowed_metadata_actor?(repo, author, trust_config, team_cache) && text.to_s.match?(pattern)
+end
+
 RESOLVED_REVIEW_THREADS_QUERY = <<~GRAPHQL
   query($owner:String!, $name:String!, $number:Int!, $after:String) {
     repository(owner:$owner, name:$name) {
@@ -651,17 +655,14 @@ def suspicious_issue_text(rest_context, repo, trust_config:, team_cache:, patter
   findings = []
   issue = rest_context.fetch(:issue)
 
-  # Every suspicious-text source must first prove the author is trusted metadata;
-  # otherwise untrusted text could create trusted-looking blockers or warnings.
   issue_author = issue.dig("user", "login")
-  if allowed_metadata_actor?(repo, issue_author, trust_config, team_cache) && (issue["body"] || "").match?(pattern)
+  if trusted_metadata_text?(repo, issue_author, issue["body"], trust_config:, team_cache:, pattern:)
     findings << { location: "issue body", author: issue_author, url: issue.fetch("html_url") }
   end
 
   rest_context.fetch(:issue_comments).each do |comment|
     author = comment.dig("user", "login")
-    next unless allowed_metadata_actor?(repo, author, trust_config, team_cache)
-    next unless (comment["body"] || "").match?(pattern)
+    next unless trusted_metadata_text?(repo, author, comment["body"], trust_config:, team_cache:, pattern:)
 
     findings << {
       location: "issue comment #{comment.fetch('id')}",
@@ -679,7 +680,6 @@ def suspicious_pr_review_comments(rest_context, repo, trust_config:, team_cache:
 
   rest_context.fetch(:review_comments).each do |comment|
     author = comment.dig("user", "login")
-    next unless allowed_metadata_actor?(repo, author, trust_config, team_cache)
 
     # Resolved trusted-bot review comments are historical review metadata. Keep
     # unresolved/current bot findings visible, preserve blocking-pattern warnings,
@@ -688,7 +688,7 @@ def suspicious_pr_review_comments(rest_context, repo, trust_config:, team_cache:
       (trusted_bot?(author, trust_config) || trusted_metadata_bot?(author, trust_config)) &&
       resolved_review_comment_ids.include?(comment["id"])
     next if resolved_comment_from_known_bot && pattern != BLOCKING_SUSPICIOUS_PATTERN
-    next unless (comment["body"] || "").match?(pattern)
+    next unless trusted_metadata_text?(repo, author, comment["body"], trust_config:, team_cache:, pattern:)
 
     findings << {
       location: "review comment #{comment.fetch('id')}",
@@ -705,8 +705,7 @@ def suspicious_pr_reviews(rest_context, repo, trust_config:, team_cache:, patter
 
   rest_context.fetch(:reviews).each do |review|
     author = review.dig("user", "login")
-    next unless allowed_metadata_actor?(repo, author, trust_config, team_cache)
-    next unless (review["body"] || "").match?(pattern)
+    next unless trusted_metadata_text?(repo, author, review["body"], trust_config:, team_cache:, pattern:)
 
     findings << {
       location: "pull request review #{review.fetch('id')}",
