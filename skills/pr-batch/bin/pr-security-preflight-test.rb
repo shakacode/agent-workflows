@@ -455,6 +455,37 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_port_qualified_gh_host_matches_standard_ssh_checkout
+    with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
+      remote_urls = [
+        "git@github.company.example:owner/repo.git",
+        "ssh://git@github.company.example/owner/repo.git"
+      ]
+
+      remote_urls.each_with_index do |remote_url, index|
+        consumer_root = File.join(dir, "consumer-api-port-ssh-#{index}")
+        repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+        FileUtils.mkdir_p(consumer_root)
+        init_git_remote(consumer_root, "owner/repo", url: remote_url)
+        write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+        out, status = run_script(
+          env.merge("GH_HOST" => "github.company.example:8443"),
+          "--repo",
+          "owner/repo",
+          "--trust-config",
+          repo_config,
+          "123",
+          chdir: consumer_root
+        )
+
+        assert status.success?, out
+        assert_includes out, "SECURITY_PREFLIGHT_OK"
+        refute_includes out, "WARN: global trust config ignores unqualified team slug"
+      end
+    end
+  end
+
   def test_enterprise_ssh_over_https_port_matches_gh_host_default_https_port
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer-ssh-default-port")

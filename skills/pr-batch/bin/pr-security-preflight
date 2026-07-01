@@ -405,7 +405,7 @@ def remote_matches_github_host?(remote, github_host)
   when "https"
     github_port == 443 && remote[:port] == 443
   when "ssh"
-    [22, 443].include?(github_port) && remote[:port] == github_port
+    remote[:port] == 22 || (github_port == 443 && remote[:port] == 443)
   else
     false
   end
