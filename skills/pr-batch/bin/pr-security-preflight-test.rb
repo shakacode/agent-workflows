@@ -788,6 +788,32 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_gh_repo_view_clears_inherited_git_environment
+    with_fake_gh("repo-view-requires-clean-git-env") do |env, _trust_config_path, _log_path, dir|
+      outer_root = File.join(dir, "outer")
+      consumer_root = File.join(dir, "consumer")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p([outer_root, consumer_root])
+      init_git_root(outer_root)
+      init_git_remote(consumer_root, "owner/repo")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env.merge("GIT_DIR" => File.join(outer_root, ".git"), "GIT_WORK_TREE" => outer_root),
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root,
+        clear_git_env: false
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "fake gh saw inherited git env"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
   def test_script_git_probes_clear_injected_git_config_remotes
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       unrelated_root = File.join(dir, "unrelated")
@@ -2249,6 +2275,10 @@ class PrSecurityPreflightTest < Minitest::Test
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
         if [ "$mode" = "repo-view-failure" ]; then
           printf 'simulated repo view failure\\n' >&2
+          exit 1
+        fi
+        if [ "$mode" = "repo-view-requires-clean-git-env" ] && [ "$3" = "--json" ] && { [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; }; then
+          printf 'fake gh saw inherited git env\\n' >&2
           exit 1
         fi
         repo_url="${PREFLIGHT_TEST_REPO_URL:-https://github.com/owner/repo}"

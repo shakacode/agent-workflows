@@ -131,7 +131,7 @@ def run_gh(*args)
   status = nil
 
   Timeout.timeout(GH_TIMEOUT_SECONDS) do
-    stdout, stderr, status = Open3.capture3("gh", *args)
+    stdout, stderr, status = Open3.capture3(git_probe_env, "gh", *args)
   end
 
   # Force UTF-8 so non-ASCII gh output (issue bodies, author names) survives LANG=C.
