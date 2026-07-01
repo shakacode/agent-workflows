@@ -24,11 +24,22 @@ def extract_goal_prompt_template(skill_text, heading)
   raise "missing text fence in Goal Prompt section" unless fence_start
 
   fence_body_start = fence_start + TEXT_FENCE.length
-  section_body = skill_text[fence_body_start..]
-  fence_end = section_body.index(/^```\s*$/)
-  raise "missing closing fence in Goal Prompt section" unless fence_end
+  next_heading = skill_text.match(/^##\s+/, fence_body_start)
+  section_end = next_heading ? next_heading.begin(0) : skill_text.length
+  section_body = skill_text[fence_body_start...section_end]
+  fence_offsets = []
+  section_body.scan(/^```\s*$/) { fence_offsets << Regexp.last_match.begin(0) }
 
-  section_body[0...fence_end]
+  raise "missing closing fence in Goal Prompt section" if fence_offsets.empty?
+  if fence_offsets.length > 1
+    raise "goal prompt template contains a nested bare fence line; use a non-text fence type instead"
+  end
+
+  section_body[0...fence_offsets.first]
+end
+
+def contract_line(text)
+  text.lines.grep(/^Goal Mode Completion Contract:/).first&.chomp
 end
 
 def assert_text_includes(text, phrase, label)
@@ -65,13 +76,33 @@ class GoalCompletionContractTest < Minitest::Test
                  "skills/pr-batch/SKILL.md should keep the detailed pressure scenario only in the dispatch prompt"
   end
 
-  def test_dispatch_prompt_contracts_stay_byte_for_byte_aligned
+  def test_canonical_and_dispatch_prompt_contracts_stay_byte_for_byte_aligned
+    workflow_contract = contract_line(@workflow)
     pr_batch_contract = @pr_batch_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first
     plan_contract = @plan_goal_prompt.lines.grep(/^Goal Mode Completion Contract:/).first
 
+    refute_nil workflow_contract, "workflows/pr-processing.md is missing the canonical contract line"
     refute_nil pr_batch_contract, "skills/pr-batch goal prompt is missing the contract line"
     refute_nil plan_contract, "skills/plan-pr-batch goal prompt is missing the contract line"
-    assert_equal pr_batch_contract, plan_contract
+    assert_equal workflow_contract, pr_batch_contract.chomp
+    assert_equal workflow_contract, plan_contract.chomp
+  end
+
+  def test_goal_prompt_extractor_rejects_nested_bare_fence_lines
+    skill_text = <<~TEXT
+      ## Goal Prompt Template
+
+      ```text
+      Use $pr-batch.
+      ```
+      stray prose
+      ```
+
+      ## Next Section
+    TEXT
+
+    error = assert_raises(RuntimeError) { extract_goal_prompt_template(skill_text, "## Goal Prompt Template") }
+    assert_match(/nested bare fence/, error.message)
   end
 
   def test_pending_hosted_checks_pressure_scenario_is_not_complete

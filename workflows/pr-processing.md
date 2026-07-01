@@ -796,14 +796,9 @@ Split batch handoffs into two sections:
 
 ### Goal Mode Completion Contract
 
-Goal mode is terminal only when the whole batch is terminal, not when each
-target has merely reported a useful per-target state. Do not mark the overall
-goal complete while any target is `waiting-on-checks-or-review`, has pending, missing, or untriaged current-head CI or configured review agents, has
-unresolved current-head review threads, has fixable failures, or has `UNKNOWN`
-state. `waiting-on-checks-or-review` is not an overall Goal-mode terminal state:
-keep polling, triaging, and fixing until it becomes a terminal final state, or
-report NOT COMPLETE / blocked with exact resume instructions after an explicit
-watch window or a real external blocker.
+Use this canonical dispatch line verbatim in PR-batch goal prompts:
+
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 
 Pressure checks:
 
