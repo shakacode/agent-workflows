@@ -29,22 +29,21 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   ledger that records completed audit coverage.
 - Run Codex and Claude independently first. Do not give either agent the other agent's report until both reports are complete.
 - During independent audits, agents may draft issue bodies but must not create issues, comments, labels, fixes, reverts, branches, or PRs.
-- Use one coordinator to compare reports, dedupe findings, and propose the issue plan.
-- Create GitHub issues only after the user approves the deduped issue plan. For
-  release-gate audits, append the approved audit report to the release-gate
-  audit ledger first.
+- Use one coordinator to compare reports, dedupe findings, finalize the issue plan, and create follow-up issues.
+- Create follow-up issues by default unless the user explicitly asks for report-only or no issue creation. For
+  release-gate audits, append the audit report to the release-gate audit ledger
+  first.
 - If a required release-gate ledger append fails, do not create issues; report
   the exact command/API error and the ledger issue or permission needed to
-  unblock issue creation. The approved audit report remains valid; retry the
+  unblock issue creation. The audit report remains valid; retry the
   ledger append after the permission, quota, or transient API issue is resolved
-  without regenerating the audit unless the base, head, or approved report
-  changed.
+  without regenerating the audit unless the base, head, or report changed.
 - If multiple child issues are needed, create one parent issue for the audit
   and one child issue per independently actionable fix/revert/question. For
   release-gate audits, include the release-gate audit ledger comment URL in
-  every approved parent or child issue created from the audit. For non-release
+  every parent or child issue created from the audit. For non-release
   audits with no ledger, record
-  `Audit ledger: not applicable (non-release audit)` in approved issue bodies.
+  `Audit ledger: not applicable (non-release audit)` in issue bodies.
 - Before creating any issue, search existing open issues for the affected PR number and the hidden fingerprint.
 - When the current visible chat, active goal, restart handoff, or immediately
   preceding batch closeout names exactly one just-run batch, default to it. If
@@ -270,7 +269,7 @@ Then audit each known worked issue, QA lane, or advisory `codex-claim` row for:
   merged or not, prepare a post-merge audit issue-plan entry or an explicit
   coordinator action naming the missing evidence or decision; for non-OK QA
   coverage outcomes (`blocked`, `unknown`, or release-audit `in_progress`),
-  prepare a post-merge audit issue-plan entry or approved coordinator action
+  prepare a post-merge audit issue-plan entry or explicit coordinator action
   naming the missing evidence, fix, waiver, or decision
 
 Also audit each included merged PR for:
@@ -310,7 +309,9 @@ Classify each PR:
 - needs fix PR
 - needs revert consideration
 
-For every non-OK finding, include a draft issue entry but do not create it:
+For every non-OK finding, include a draft issue entry. Independent audit agents
+must not create it; the coordinator creates follow-up issues by default unless
+the user explicitly asked for report-only/no issue creation:
 - proposed title
 - parent/child recommendation
 - fingerprint
@@ -326,8 +327,10 @@ Return high-risk findings first, then review-gate violations, QA coverage
 findings, missing changelog candidates, cross-PR interaction risks, the issue
 plan, an audit scope/coverage table, a worked-issue/QA-lane coverage table, a
 PR-by-PR table, and exact commands/data sources. Include any remaining
-`UNKNOWN` facts and the command or permission needed to resolve them. Do not
-make code changes, comments, labels, issues, reverts, or PRs without approval.
+`UNKNOWN` facts and the command or permission needed to resolve them. Do not make
+code changes, comments, labels, issues, reverts, or PRs from the independent
+audit. The coordinator creates follow-up issues by default after dedupe unless
+the user opted out.
 The audit scope/coverage table must include audit mode, base/head range,
 included PRs, excluded range PRs, durable audit coverage marker/ledger status
 where available, and any `UNKNOWN` coverage facts. The worked-issue/QA-lane
@@ -410,25 +413,26 @@ Return:
 9. recommended next actions, including a coordinator resume/reassign/drop
    decision for `stalled` lanes instead of defaulting to issue creation
 
-Do not create issues or PRs yet.
+Create follow-up issues by default unless the user explicitly asks for report-only or no issue creation. Do not create issues directly from this comparison prompt; continue with the Default Issue Creation Prompt below to apply duplicate-search, release-gate ledger, and label rules. Do not create fix PRs from this comparison prompt.
 ```
 
-## Approved Issue Creation Prompt
+## Default Issue Creation Prompt
 
-Use only after the user approves the deduped issue plan.
+Use after the coordinator dedupes the issue plan, unless the user explicitly
+asked for report-only or no issue creation.
 
 ```text
-Create GitHub issues from this approved post-merge audit issue plan.
+Create GitHub issues from this deduped post-merge audit issue plan.
 
 Rules:
 - Search existing open issues for each fingerprint and affected PR number before creating anything.
 - Do not create duplicate child issues. If an issue already exists, link it in the parent issue plan instead.
 - If there are two or more related child issues, create one parent issue first.
 - Create one child issue per independently actionable fix PR, revert
-  consideration, maintainer question, follow-up task, or approved non-OK
+  consideration, maintainer question, follow-up task, or non-OK
   worked-issue/QA coverage follow-up.
 - For release-gate audits, append the audit report to the release-gate audit
-  ledger before creating approved follow-up issues; include the resulting ledger
+  ledger before creating follow-up issues; include the resulting ledger
   comment URL in every parent and child issue body.
 - If a required release-gate ledger append fails, do not create parent or child
   issues. Report the exact command/API error and the ledger issue, permission,
@@ -437,7 +441,7 @@ Rules:
   `Audit ledger: not applicable (non-release audit)` in every parent and child
   issue body.
 - For missing changelog findings, prefer one bundled changelog issue or recommend `/update-changelog`; do not create one issue per missing entry unless explicitly approved.
-- For process findings, preserve the approved Process Gap Disposition fields:
+- For process findings, preserve the deduped Process Gap Disposition fields:
   `Mechanism target`, `Motivating miss`, `Replay evidence or park reason`, and
   `Non-goal`.
 - Include the hidden `post-merge-audit-finding` fingerprint in every child issue body.
@@ -449,7 +453,7 @@ After creation, return:
 - child issue URLs
 - skipped duplicates with existing issue URLs
 - changelog recommendation
-- any issue from the approved plan that could not be created
+- any issue from the deduped plan that could not be created
 ```
 
 ## Claude PR Review Handoff Prompt

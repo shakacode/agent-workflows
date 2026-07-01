@@ -1880,11 +1880,12 @@ deep audit because modes imply different scope and base selection.
      findings untriaged
 9. Flag user-visible changes missing from the repo's changelog; if any are found, recommend running `/update-changelog` before the next release candidate.
 10. Produce a deduped issue plan for non-OK findings:
+   - Create follow-up issues by default unless the user explicitly asks for report-only or no issue creation.
    - no issue for OK, duplicates, fully resolved findings, evidenced `realized`
      worked-issue lanes, evidenced `satisfied` or `waived` QA lanes, evidenced
      `not_applicable` QA omissions, or healthy `in_progress` worked-issue lanes
    - one bundled changelog issue or a `/update-changelog` recommendation for missing changelog entries
-   - one child issue or approved coordinator action per independently actionable
+   - one child issue or explicit coordinator action per independently actionable
      fix PR, revert consideration, maintainer question, follow-up task, non-OK
      worked-issue outcome (`partial`, `missed`, `regressed`, or `unknown`), or
      non-OK QA coverage outcome (`blocked`, `unknown`, or release-audit
@@ -1899,14 +1900,14 @@ deep audit because modes imply different scope and base selection.
    - for process findings, include the Process Gap Disposition fields above,
      especially `Mechanism target` and `Replay evidence or park reason`, before
      filing issues
-   - for release-gate audits, after user approval, append the audit report to
-     the release-gate audit ledger before creating issues, then include the
-     resulting ledger comment URL in every approved parent or child issue body;
+   - for release-gate audits, append the audit report to the release-gate audit
+     ledger before creating issues, then include the resulting ledger comment
+     URL in every parent or child issue body;
      if the required ledger append fails, do not create issues and report the
      exact command/API error plus the ledger issue, permission, or retry needed
    - for non-release audits with no release-gate ledger, include
-     `Audit ledger: not applicable (non-release audit)` in every approved parent
-     or child issue body
+     `Audit ledger: not applicable (non-release audit)` in every parent or
+     child issue body
 11. Return high-risk findings first, then review-gate violations, QA coverage
     findings, missing changelog candidates, cross-PR risks, the issue plan, an
     audit scope/coverage table (audit mode, base/head range, included PRs,
@@ -1917,7 +1918,9 @@ deep audit because modes imply different scope and base selection.
     classification, `UNKNOWN` facts), a PR-by-PR table, and exact
     commands/data sources.
 
-Do not create fixes, issues, comments, labels, changelog edits, reverts, or PRs
-until the user approves the audit report and issue plan. For release-gate
-audits, also append the approved audit report to the release-gate ledger
-successfully before issue creation.
+Do not create fixes, labels, changelog edits, reverts, or PRs. Do not create
+unrelated comments; the release-gate ledger append is allowed when required
+before issue creation. Create follow-up issues by default unless the user
+explicitly asked for report-only or no issue creation, there are no issue-worthy
+findings, or issue creation is blocked. For release-gate audits, append the
+audit report to the release-gate ledger successfully before issue creation.

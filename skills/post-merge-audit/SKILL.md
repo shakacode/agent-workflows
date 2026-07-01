@@ -17,7 +17,7 @@ $post-merge-audit
 Audit merged PRs since the last release candidate
 ```
 
-Use `.agents/workflows/post-merge-audit.md` for reusable copy-paste prompts, including independent Codex/Claude audits, comparison, approved issue creation, and Claude PR review handoff prompts.
+Use `.agents/workflows/post-merge-audit.md` for reusable copy-paste prompts, including independent Codex/Claude audits, comparison, default issue creation, and Claude PR review handoff prompts.
 
 ## Scope Gate
 
@@ -224,8 +224,8 @@ When using both Codex and Claude:
 1. Give each agent the same audit id, base, head, and independent audit prompt.
 2. Do not share one agent's report with the other until both reports are complete.
 3. Instruct both agents to draft issue entries only. They must not create issues, comments, labels, branches, fixes, reverts, or PRs during the independent audit.
-4. Use one coordinator to compare both reports, verify disagreements against git/GitHub evidence, dedupe findings, and propose the issue plan.
-5. Create GitHub issues only after the user approves the deduped issue plan.
+4. Use one coordinator to compare both reports, verify disagreements against git/GitHub evidence, dedupe findings, and finalize the issue plan.
+5. Create follow-up issues by default unless the user explicitly asks for report-only or no issue creation. The coordinator creates those issues after deduping the plan, subject to the ledger, duplicate-search, and label rules below.
 
 ## Finding Classification
 
@@ -259,7 +259,12 @@ lane was evaluated, even when the issue produced no merged PR:
 
 ## Issue Plan
 
-The audit should usually produce an issue plan for non-OK findings, but not create issues until approval.
+Create follow-up issues by default unless the user explicitly asks for report-only or no issue creation.
+
+The audit should produce a deduped issue plan for non-OK findings and, when the
+current run is the coordinator run, create the planned follow-up issues before
+completion. Independent Codex and Claude audits still draft issue entries only;
+the coordinator owns dedupe and issue creation.
 
 - **No issue**: for `OK`, duplicate findings, findings fully resolved by the
   audit evidence, evidenced `realized` lanes, healthy `in_progress`
@@ -275,13 +280,13 @@ The audit should usually produce an issue plan for non-OK findings, but not crea
   issue): per `AGENTS.md` → _Tracking Issues And Handoffs_, the audit report is
   a point-in-time snapshot. For release-gate audits, append that snapshot to the
   standing release audit ledger in place and include the ledger comment URL in
-  every approved parent or child issue created from the audit. Locate the ledger
+  every parent or child issue created from the audit. Locate the ledger
   with the release-mode preflight search: open issues with the `release` and
   `TRACKING` labels, plus `Release gate:` title matches. If no release-gate
   ledger exists for a release audit, surface that absence as a blocker before
   creating follow-up issues. For non-release audits with no release-gate ledger, record
-  `Audit ledger: not applicable (non-release audit)` in every approved parent or
-  child issue. Genuine non-OK findings still become real child issues; only the
+  `Audit ledger: not applicable (non-release audit)` in every parent or child
+  issue. Genuine non-OK findings still become real child issues; only the
   snapshot/report is what goes to the ledger instead of a new issue.
 
 For process findings, the issue plan must include a Process Gap Disposition
@@ -294,7 +299,7 @@ before issue creation:
   why no mechanism is worth building now.
 - `Non-goal`: the broad prose-only rule this finding must not become.
 
-Before creating an approved issue, search existing open issues for the affected PR number and hidden fingerprint:
+Before creating any issue, search existing open issues for the affected PR number and hidden fingerprint:
 
 ```markdown
 <!-- post-merge-audit-finding v1
@@ -330,4 +335,8 @@ Return high-risk findings first, then:
    output for the named batch or the exact reason coordination state was
    `UNKNOWN`.
 
-Do not create fixes, comments, labels, issues, changelog edits, reverts, or PRs until the user approves the audit report.
+Do not create fixes, labels, changelog edits, reverts, or PRs. Do not create
+unrelated comments; the release-gate ledger append is allowed when required
+before issue creation. Do not create follow-up issues only when the user
+explicitly asked for report-only/no issue creation, issue creation is blocked,
+or there are no issue-worthy findings.
