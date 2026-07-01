@@ -11,6 +11,8 @@ CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
 TEXT
 
+# Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
+# Keep phrase checks here in sync when that source prompt changes.
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
