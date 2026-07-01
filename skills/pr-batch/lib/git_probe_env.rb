@@ -1,8 +1,11 @@
 # frozen_string_literal: true
 
 require "open3"
+require "timeout"
 
 module PrBatchGitProbeEnv
+  GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS", "10"))
+
   # Keep this fallback in sync with `git rev-parse --local-env-vars` for the
   # oldest supported Git; it is used only when the dynamic query fails.
   LOCAL_ENV_VARS_FALLBACK = %w[
@@ -32,7 +35,9 @@ module PrBatchGitProbeEnv
 
   def local_env_vars
     @local_env_vars ||= begin
-      stdout, _stderr, status = Open3.capture3("git", "rev-parse", "--local-env-vars")
+      stdout, _stderr, status = Timeout.timeout(GIT_TIMEOUT_SECONDS) do
+        Open3.capture3("git", "rev-parse", "--local-env-vars")
+      end
       names = status.success? ? stdout.force_encoding("UTF-8").scrub.lines.map(&:strip).reject(&:empty?) : []
       names.empty? ? LOCAL_ENV_VARS_FALLBACK : names
     rescue StandardError

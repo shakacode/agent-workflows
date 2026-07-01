@@ -432,6 +432,31 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_repo_option_host_resolution_failure_infers_enterprise_host_from_local_git
+    with_fake_gh("repo-view-failure") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-ghes-fallback")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo", url: "https://github.company.example:8443/owner/repo.git")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "WARN: could not resolve GitHub host via gh repo view for \"owner/repo\""
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "WARN: global trust config ignores unqualified team slug"
+    end
+  end
+
   def test_malformed_remote_port_does_not_crash_preflight
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer-bad-port")
