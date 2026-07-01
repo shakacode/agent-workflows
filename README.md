@@ -1,17 +1,23 @@
 # ShakaCode Agent Workflows
 
-Reusable agent workflow skills for ShakaCode repositories.
+Portable Codex and Claude workflow pack for ShakaCode repositories.
 
-This repository contains portable Codex/Claude-facing workflows for PR batches,
-review triage, merge readiness, changelog updates, CI routing, and audit loops.
-The shared files provide process. Each adopting repository keeps its concrete
-commands and policy in `AGENTS.md` under `## Agent Workflow Configuration`.
+This repository packages reusable agent skills, workflow prompts, and helper
+scripts for PR batches, review triage, merge readiness, CI routing, changelog
+updates, and audit loops.
+
+The shared pack provides process. Each adopting repository keeps its concrete
+commands, labels, branch policy, hosted-CI rules, and local safety boundaries in
+`AGENTS.md` under `## Agent Workflow Configuration`.
 
 ## Why This Exists
 
-Agent workflows are useful across repos, but copying a full `.agents/` tree into
-every checkout creates drift and accidentally carries repo-specific policy with
-it. The default model is:
+Agent workflows get more useful as they become consistent across repos, but
+copying a full `.agents/` tree into every checkout creates drift and can carry
+repo-specific policy into the wrong place. This pack keeps reusable process in
+one install and makes each consumer repo expose a small policy seam.
+
+The default model is:
 
 - install this shared workflow pack once in the user's or agent's normal skill
   home;
@@ -22,6 +28,19 @@ it. The default model is:
 This is deliberately not a subtree-first model. Repos may pin local copies when
 their execution environment cannot load installed skills, but installed skills
 plus a validated repo seam are the default.
+
+## What You Get
+
+- Portable Codex and Claude skills for planning, running, reviewing, and
+  verifying agent-assisted PR work.
+- A repo seam contract so shared workflows can resolve base branches,
+  validation commands, hosted-CI triggers, changelog policy, review gates, and
+  coordination backends from `AGENTS.md`.
+- Installer, status, upgrade, trust-audit, and seam-doctor helpers under `bin/`.
+- Security preflight for public issue and PR batches so untrusted GitHub text
+  cannot quietly become agent instructions.
+- Site-ready Markdown docs under the
+  [ShakaCode Agent Workflow Playbook](docs/README.md).
 
 ## Repository Layout
 
@@ -36,7 +55,7 @@ plus a validated repo seam are the default.
 
 ## Quick Start
 
-Clone the shared pack:
+Clone the workflow pack:
 
 ```bash
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
@@ -105,6 +124,20 @@ See [docs/adoption.md](docs/adoption.md) for the full adoption guide,
 [docs/seam-design.md](docs/seam-design.md) for the design rationale, and
 [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 ongoing host installs and upgrades.
+
+## Documentation
+
+The docs for this pack are the
+[ShakaCode Agent Workflow Playbook](docs/README.md). Start there when deciding
+which workflow to use, how to install the pack, how to adopt it in a consumer
+repo, or how to validate the `AGENTS.md` seam.
+
+This repo does not need a separate docs site before the playbook has a larger
+external audience. The current best next step is to keep the canonical docs in
+`docs/` and make them easy to publish later. If search, navigation, or public
+onboarding become important, a lightweight Docusaurus site at
+`agent-workflows.shakacode.com` would fit the same source-controlled Markdown
+model used by other ShakaCode docs sites.
 
 ## Skill Inventory
 
