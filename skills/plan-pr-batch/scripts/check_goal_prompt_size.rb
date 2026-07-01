@@ -144,7 +144,8 @@ required_skill_rule_phrases = [
   "output only the first ready goal",
   "bulky detail stays in the Batch Plan",
   "Keep bulky evidence",
-  "outside the prompt"
+  "outside the prompt",
+  "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
 ]
 
 required_prompt_phrases = [

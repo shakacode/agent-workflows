@@ -244,5 +244,5 @@ Execution rules:
 After editing this skill's goal prompt rules or template, run:
 
 ```bash
-ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ```
