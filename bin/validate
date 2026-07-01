@@ -62,6 +62,7 @@ echo "== helper tests =="
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
 bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
