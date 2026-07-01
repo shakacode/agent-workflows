@@ -307,7 +307,8 @@ class PrSecurityPreflightTest < Minitest::Test
         "https://x-access-token:TOKEN@github.com/owner/repo.git",
         "https://github.com/owner/repo/",
         "https://github.com/owner/repo.git/",
-        "ssh://git@github.com:22/owner/repo.git"
+        "ssh://git@github.com:22/owner/repo.git",
+        "ssh://git@ssh.github.com:443/owner/repo.git"
       ]
 
       remote_urls.each_with_index do |remote_url, index|
@@ -332,6 +333,30 @@ class PrSecurityPreflightTest < Minitest::Test
         refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
         refute_includes out, "WARN: global trust config ignores unqualified team slug"
       end
+    end
+  end
+
+  def test_repo_option_host_resolution_failure_warns_before_fallback
+    with_fake_gh("repo-view-failure") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo")
+      write_trust_config(repo_config, users: [], teams: ["maintainers"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        repo_config,
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "WARN: could not resolve GitHub host via gh repo view for \"owner/repo\""
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
     end
   end
 
@@ -1937,6 +1962,10 @@ class PrSecurityPreflightTest < Minitest::Test
       }
 
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        if [ "$mode" = "repo-view-failure" ]; then
+          printf 'simulated repo view failure\\n' >&2
+          exit 1
+        fi
         repo_url="${PREFLIGHT_TEST_REPO_URL:-https://github.com/owner/repo}"
         printf '{"nameWithOwner":"owner/repo","url":"%s"}\\n' "$repo_url"
         exit 0

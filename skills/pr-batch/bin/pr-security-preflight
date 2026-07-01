@@ -164,7 +164,8 @@ def repo_option_info(repo)
 
   payload = run_gh_json("repo", "view", repo, "--json", "nameWithOwner,url")
   repo_info_from_payload(payload, fallback_repo: repo).merge(repo:)
-rescue StandardError
+rescue StandardError => e
+  warn "WARN: could not resolve GitHub host via gh repo view for #{repo.inspect}: #{e.message.lines.first&.strip}"
   { repo:, github_host: expected_github_host }
 end
 
@@ -278,6 +279,8 @@ def path_inside_git_root?(path, root:)
 end
 
 def git_remote_urls(root)
+  # Intentionally reads stored remote URLs without applying url.*.insteadOf
+  # rewrites; consumers using mirror rewrites should keep a canonical remote too.
   %w[--local --worktree].flat_map do |scope|
     stdout, _stderr, status = Open3.capture3(
       git_probe_env,
@@ -312,12 +315,18 @@ def expected_github_host
   normalized_github_host(ENV.fetch("GH_HOST", "github.com"))
 end
 
+def normalized_remote_host(host)
+  # GitHub documents ssh.github.com:443 for SSH-over-HTTPS clones; trust checks
+  # should still compare those remotes against github.com API scans.
+  host == "ssh.github.com:443" ? "github.com" : host
+end
+
 def remote_url_host(host, port, scheme:)
   normalized = normalized_github_host(host)
   return if normalized.empty?
 
   default_port = { "http" => 80, "https" => 443, "ssh" => 22 }.fetch(scheme)
-  port && port != default_port ? "#{normalized}:#{port}" : normalized
+  normalized_remote_host(port && port != default_port ? "#{normalized}:#{port}" : normalized)
 end
 
 def uri_remote_from_remote_url(normalized)
@@ -342,7 +351,7 @@ def github_remote_from_remote_url(url)
   match = normalized.match(%r{\A[^@/:/\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
   return unless match
 
-  { host: normalized_github_host(match[1]), repo: match[2] }
+  { host: normalized_remote_host(normalized_github_host(match[1])), repo: match[2] }
 end
 
 def git_root_matches_repo?(root, repo, github_host:)

@@ -3,6 +3,8 @@
 require "open3"
 
 module PrBatchGitProbeEnv
+  # Keep this fallback in sync with `git rev-parse --local-env-vars` for the
+  # oldest supported Git; it is used only when the dynamic query fails.
   LOCAL_ENV_VARS_FALLBACK = %w[
     GIT_ALTERNATE_OBJECT_DIRECTORIES
     GIT_COMMON_DIR
