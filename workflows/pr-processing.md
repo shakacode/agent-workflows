@@ -1030,6 +1030,8 @@ coordinator cancellation switches to the
 After the runner relaunches, explicitly resume each paused persistent thread
 with this companion prompt:
 
+<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+
 ```text
 Resume batch processing now.
 
@@ -1071,6 +1073,8 @@ a batch must be restarted with new rules, targets, or branch names.
 Use this saved clipboard prompt when a prior handoff or final-bucket table
 contains the batch closeout targets but the operator should not hand-edit a
 target list for each batch:
+
+<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
 
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.

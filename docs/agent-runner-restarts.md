@@ -62,6 +62,8 @@ After restart, paste the companion resume prompt from
 [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery)
 into every paused persistent batch thread:
 
+<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+
 ```text
 Resume batch processing now.
 

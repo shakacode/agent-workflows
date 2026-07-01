@@ -96,12 +96,13 @@ When the user asks to continue PR-batch closeout from a pasted handoff,
 final-bucket table, PR URLs, GitHub shorthand refs, or visible request, use the
 canonical
 [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt).
-Extract only explicit PR/issue refs and exclusions from the visible text; if no
-exact targets are visible or the target list is ambiguous, stop and ask for the
-exact list. Do not broaden a continuation request to all open PRs, labels,
-milestones, or inferred related work unless the user explicitly asks for
-discovery. Continue from live GitHub state; treat previous handoffs as stale
-hints only.
+Extract only explicit PR/issue refs presented as target entries or final-bucket
+entries, plus explicit exclusions. Do not treat evidence, blocker, dependency,
+next-action, comment, or example refs as targets; if the target boundary is
+unclear, stop and ask for the exact list. Do not broaden a continuation request
+to all open PRs, labels, milestones, or inferred related work unless the user
+explicitly asks for discovery. Continue from live GitHub state; treat previous
+handoffs as stale hints only.
 
 ## Planning Output
 
