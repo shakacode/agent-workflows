@@ -366,10 +366,11 @@ def uri_remote_from_remote_url(normalized)
   repo = uri.path.to_s.delete_prefix("/")
   return unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
 
-  host = remote_url_host(uri.host, uri.port, scheme: uri.scheme)
+  port = uri.port || (22 if uri.scheme == "ssh")
+  host = remote_url_host(uri.host, port, scheme: uri.scheme)
   return unless host
 
-  { host:, port: uri.port, repo:, scheme: uri.scheme }
+  { host:, port:, repo:, scheme: uri.scheme }
 rescue URI::Error
   nil
 end
@@ -381,7 +382,7 @@ def github_remote_from_remote_url(url)
   match = normalized.match(%r{\A[^@/:\s]+@([^:\s]+):([^/\s]+/[^/\s]+)\z}i)
   return unless match
 
-  { host: normalized_remote_host(normalized_github_host(match[1])), repo: match[2] }
+  { host: normalized_remote_host(normalized_github_host(match[1])), port: 22, repo: match[2], scheme: "ssh" }
 end
 
 def host_port(host)
@@ -402,7 +403,7 @@ def remote_matches_github_host?(remote, github_host)
   when "https"
     github_port == 443 && remote[:port] == 443
   when "ssh"
-    github_port == 443 && remote[:port] == 443
+    [22, 443].include?(github_port) && remote[:port] == github_port
   else
     false
   end
@@ -1523,6 +1524,7 @@ end
 repo_info = options[:repo] ? repo_option_info(options[:repo]) : current_repo_info
 repo = repo_info.fetch(:repo)
 github_host = repo_info.fetch(:github_host)
+ENV["GH_HOST"] = github_host
 owner, name = repo.split("/", 2)
 abort "Repository must be OWNER/REPO, got #{repo.inspect}" unless owner && name && !owner.empty? && !name.empty?
 
