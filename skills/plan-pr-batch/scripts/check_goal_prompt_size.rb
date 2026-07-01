@@ -50,7 +50,10 @@ def abort_with_failure(message)
 end
 
 def read_repo_file(path)
-  File.read(File.join(REPO_ROOT, path), encoding: "UTF-8")
+  full_path = File.join(REPO_ROOT, path)
+  abort_with_failure("#{path} not found at #{full_path}") unless File.exist?(full_path)
+
+  File.read(full_path, encoding: "UTF-8")
 end
 
 def read_optional_repo_file(path)
