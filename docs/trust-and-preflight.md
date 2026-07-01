@@ -32,13 +32,24 @@ The preflight resolves trust in this order:
 5. packaged `skills/pr-batch/trusted-github-actors.yml`
 
 A present empty file is an intentional policy and does not fall through. An
-absent file falls through to the next layer.
+absent file falls through to the next layer, except a missing
+`$AGENT_WORKFLOWS_TRUST_CONFIG` path aborts fail-closed instead of falling
+through.
 
 By default, non-allowlisted comments/reviews and hidden participants are printed
 as audit findings but do not block exact-target preflight. Use `--strict-trust`
 for untrusted discovery, high-concurrency launches that require fail-closed
 actor trust, or any run where those findings should require a maintainer
 acknowledgement before workers start.
+
+When `--repo OWNER/REPO` is passed without `GH_HOST`, `pr-security-preflight`
+uses `gh repo view OWNER/REPO` once to infer the GitHub host for repo-local
+trust-config classification. If that lookup fails, it falls back to a unique
+matching local git remote host when one is available, then to `github.com`.
+Local git probes are bounded by timeout environment variables:
+`PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS` for the preflight helper and
+`PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS` for the shared git-probe environment
+helper; both default to 10 seconds.
 
 ## Recommended Config Split
 
