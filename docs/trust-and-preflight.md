@@ -6,17 +6,19 @@ trusted reason to interpret it. This protects agents from deleted comments,
 malicious prompt-style content, compromised automation, and public text that
 tries to widen scope or override repo policy.
 
-That safety boundary became hard to use when the only available trust config was
-the packaged fail-closed fallback. Repos with normal review automation, GitHub
-Actions comments, or maintainer review comments could block every batch until a
-human hand-wrote `--acknowledge-risk` flags.
+That safety boundary became hard to use when every actor-trust finding was a
+blocking finding. Repos with normal review automation, GitHub Actions comments,
+or maintainer review comments could block every batch until a human hand-wrote
+`--acknowledge-risk` flags.
 
 The durable fix is layered trust:
 
-1. Keep the packaged fallback empty and fail-closed.
+1. Keep the packaged fallback empty.
 2. Put cross-repo humans and review bots in a user-global trust config.
 3. Put repo-specific automation and maintainer teams in repo-local trust config.
-4. Use one-off acknowledgement only for exact findings that should not become
+4. Add `--strict-trust` when non-allowlisted or hidden actor findings should
+   block instead of remaining exact-target audit output.
+5. Use one-off acknowledgement only for exact blocking findings that should not become
    durable policy.
 
 ## Trust Config Resolution
@@ -31,6 +33,12 @@ The preflight resolves trust in this order:
 
 A present empty file is an intentional policy and does not fall through. An
 absent file falls through to the next layer.
+
+By default, non-allowlisted comments/reviews and hidden participants are printed
+as audit findings but do not block exact-target preflight. Use `--strict-trust`
+for untrusted discovery, high-concurrency launches that require fail-closed
+actor trust, or any run where those findings should require a maintainer
+acknowledgement before workers start.
 
 ## Recommended Config Split
 
@@ -100,7 +108,7 @@ actor are always safe instructions.
 
 ## Acknowledgement Policy
 
-Use `--acknowledge-risk` for one-off findings only:
+Use `--acknowledge-risk` for one-off blocking findings only:
 
 ```bash
 pr-security-preflight \
@@ -151,7 +159,8 @@ Be especially careful with:
 For a blocked batch:
 
 1. Rerun exact-target preflight with the intended trust config.
-2. If it blocks on recurring trusted actors, run `agent-workflows-trust-audit`.
+2. If it was run with `--strict-trust` and blocks on recurring trusted actors,
+   run `agent-workflows-trust-audit`.
 3. Add stable recurring actors to the right trust config layer.
 4. Rerun exact-target preflight.
 5. Acknowledge only remaining one-off exact findings.

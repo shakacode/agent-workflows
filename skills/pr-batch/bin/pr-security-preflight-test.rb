@@ -26,6 +26,7 @@ class PrSecurityPreflightTest < Minitest::Test
         env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => global_config, "HOME" => home),
         "--repo",
         "owner/repo",
+        "--strict-trust",
         "123",
         chdir: consumer_root
       )
@@ -48,6 +49,7 @@ class PrSecurityPreflightTest < Minitest::Test
         env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => global_config, "HOME" => home),
         "--repo",
         "owner/repo",
+        "--strict-trust",
         "123",
         chdir: consumer_root
       )
@@ -123,6 +125,7 @@ class PrSecurityPreflightTest < Minitest::Test
         ),
         "--repo",
         "owner/repo",
+        "--strict-trust",
         "--trust-config",
         explicit_config,
         "123",
@@ -183,6 +186,7 @@ class PrSecurityPreflightTest < Minitest::Test
         ),
         "--repo",
         "owner/repo",
+        "--strict-trust",
         "123",
         chdir: consumer_root
       )
@@ -211,6 +215,7 @@ class PrSecurityPreflightTest < Minitest::Test
         ),
         "--repo",
         "owner/repo",
+        "--strict-trust",
         "123",
         chdir: consumer_root
       )
@@ -271,6 +276,7 @@ class PrSecurityPreflightTest < Minitest::Test
         ),
         "--repo",
         "owner/repo",
+        "--strict-trust",
         "123",
         chdir: subdirectory
       )
@@ -303,7 +309,7 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_missing_user_configs_use_empty_packaged_default_and_fail_closed
+  def test_missing_user_configs_use_empty_packaged_default_and_fail_closed_in_strict_trust
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
       home = File.join(dir, "home")
@@ -313,6 +319,7 @@ class PrSecurityPreflightTest < Minitest::Test
         env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => home),
         "--repo",
         "owner/repo",
+        "--strict-trust",
         "123",
         chdir: consumer_root
       )
@@ -391,6 +398,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config_path,
+        "--strict-trust",
         "--acknowledge-risk",
         "123:suspicious-text,untrusted-participants",
         "123"
@@ -413,6 +421,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config_path,
+        "--strict-trust",
         "--acknowledge-risk",
         "123:suspicious-text",
         "123"
@@ -468,14 +477,15 @@ class PrSecurityPreflightTest < Minitest::Test
     with_fake_gh("untrusted-participant") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
 
-      refute status.success?, out
-      assert_equal 2, status.exitstatus
+      assert status.success?, out
       assert_includes out, "Untrusted or hidden participant findings:"
       assert_includes out, "unknown-user"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
   end
 
-  def test_acknowledged_risk_allows_exact_target_participant_blocker
+  def test_strict_trust_blocks_untrusted_participant
     with_fake_gh("untrusted-participant") do |env, trust_config_path, _log_path|
       out, status = run_script(
         env,
@@ -483,6 +493,26 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config_path,
+        "--strict-trust",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: untrusted, hidden, or unidentifiable participant(s)"
+    end
+  end
+
+  def test_acknowledged_risk_allows_exact_target_participant_blocker_in_strict_trust
+    with_fake_gh("untrusted-participant") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
         "--acknowledge-risk",
         "123:untrusted-participants",
         "123"
@@ -498,7 +528,15 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def test_trusted_hidden_participant_blocks
     with_fake_gh("trusted-hidden-participant") do |env, trust_config_path, _log_path|
-      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "123"
+      )
 
       refute status.success?, out
       assert_equal 2, status.exitstatus
@@ -517,7 +555,15 @@ class PrSecurityPreflightTest < Minitest::Test
         trusted_teams: []
       YAML
 
-      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "123"
+      )
 
       refute status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
@@ -548,7 +594,7 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_metadata_bot_target_author_blocks
+  def test_metadata_bot_target_author_blocks_in_strict_trust
     with_fake_gh("metadata-bot-author") do |env, trust_config_path, _log_path|
       File.write(trust_config_path, <<~YAML)
         trusted_users:
@@ -559,7 +605,15 @@ class PrSecurityPreflightTest < Minitest::Test
         trusted_teams: []
       YAML
 
-      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "123"
+      )
 
       refute status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
@@ -567,9 +621,17 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_deleted_account_participant_login_blocks
+  def test_deleted_account_participant_login_blocks_in_strict_trust
     with_fake_gh("deleted-account-participant") do |env, trust_config_path, _log_path|
-      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "123"
+      )
 
       refute status.success?, out
       assert_equal 2, status.exitstatus
@@ -676,6 +738,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config_path,
+        "--strict-trust",
         "123"
       )
 
@@ -765,7 +828,15 @@ class PrSecurityPreflightTest < Minitest::Test
         trusted_teams: []
       YAML
 
-      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "123"
+      )
 
       refute status.success?, out
       assert_equal 2, status.exitstatus
@@ -783,6 +854,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config_path,
+        "--strict-trust",
         "123"
       )
 
@@ -796,6 +868,7 @@ class PrSecurityPreflightTest < Minitest::Test
         "owner/repo",
         "--trust-config",
         trust_config_path,
+        "--strict-trust",
         "--include-reactions",
         "123"
       )
@@ -879,6 +952,37 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       assert_includes out, "Suspicious text findings: none"
       assert_includes out, "review comment 901 by coderabbitai[bot]"
+    end
+  end
+
+  def test_default_mode_reports_untrusted_interactions_without_blocking
+    with_fake_gh("untrusted-comment") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "Untrusted comment/review queue:"
+      assert_includes out, "unknown-user issue comment"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_strict_trust_blocks_untrusted_interactions
+    with_fake_gh("untrusted-comment") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "123"
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #123: untrusted comment/review author(s)"
     end
   end
 
@@ -1271,6 +1375,11 @@ class PrSecurityPreflightTest < Minitest::Test
         if [ "$mode" = "metadata-bot-comment" ]; then
           cat <<JSON
       [[{"id":701,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-701","user":{"login":"github-actions[bot]"},"body":"${blocked_issue_body}"}]]
+      JSON
+          exit 0
+        elif [ "$mode" = "untrusted-comment" ]; then
+          cat <<'JSON'
+      [[{"id":702,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-702","user":{"login":"unknown-user"},"body":"Looks good to me."}]]
       JSON
           exit 0
         fi
