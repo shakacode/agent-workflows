@@ -11,6 +11,8 @@ PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
+DATE_COMMAND = "date +'%m-%d %H:%M'"
 
 def read_repo_file(path)
   File.read(path, encoding: "UTF-8")
@@ -133,6 +135,27 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text, PENDING_CHECKS_PRESSURE, label
+    end
+  end
+
+  def test_goal_prompts_start_with_batch_title
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      assert text.start_with?("#{BATCH_TITLE_LINE}\n"),
+             "#{label} must start with the standard batch title line"
+    end
+  end
+
+  def test_batch_title_instructions_pin_local_date_source
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+    }.each do |label, text|
+      assert_text_includes text, DATE_COMMAND, label
     end
   end
 

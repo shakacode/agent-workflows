@@ -14,6 +14,11 @@ All notable changes to this portable workflow pack are documented here.
 - **Document the trust/preflight operating model, including global vs repo-local trust, audit flow, acknowledgement policy, and security tradeoffs.**
 - **Document bounded inline Claude Code review as a fallback when hosted Claude review checks are stale or fail for capacity/quota reasons, and tighten the human-merge Review Completion Gate so stale older-head checks require a current-head review, maintainer waiver, or qualifying fallback before merge.**
 
+#### Changed
+
+- **Default post-merge audits to the obvious just-run batch before asking for batch confirmation.**
+- **Start pasteable batch prompts with a short title that includes a repository-derived project abbreviation, optional A/B/C split marker, and `MM-DD HH:MM` from the local shell `date` command.**
+
 #### Fixed
 
 - **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
