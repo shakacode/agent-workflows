@@ -1167,10 +1167,10 @@ def connection_coverage_finding(target, connection_name)
   { connection: connection_name, fetched_count: nodes.size, reason: "truncated", total_count: }
 end
 
-def graph_coverage_findings(target)
+def graph_coverage_findings(target, include_target_author:, connections: PAGINATED_CONNECTIONS)
   [
-    target_author_coverage_finding(target),
-    *PAGINATED_CONNECTIONS.filter_map { |connection_name| connection_coverage_finding(target, connection_name) },
+    (target_author_coverage_finding(target) if include_target_author),
+    *connections.filter_map { |connection_name| connection_coverage_finding(target, connection_name) },
     *commit_author_coverage_findings(target)
   ].compact
 end
@@ -1182,11 +1182,7 @@ def target_author_coverage_finding(target)
 end
 
 def source_actor_coverage_findings(target)
-  [
-    target_author_coverage_finding(target),
-    connection_coverage_finding(target, "timelineItems"),
-    *commit_author_coverage_findings(target)
-  ].compact
+  graph_coverage_findings(target, include_target_author: true, connections: ["timelineItems"])
 end
 
 def commit_author_coverage_findings(target)
@@ -1336,7 +1332,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   {
     files:,
     number:,
-    graph_coverage_findings: graph_coverage_findings(target),
+    graph_coverage_findings: graph_coverage_findings(target, include_target_author: target_is_pr),
     participant_findings: participant_findings(repo:, target:, visible:, permission_cache:, trust_config:, team_cache:),
     risky_files: high_risk_files(files),
     suspicious: suspicious_findings.fetch(:suspicious),

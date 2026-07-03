@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require "shellwords"
 require "timeout"
 
 module PrBatchGitProbeEnv
@@ -50,6 +51,48 @@ module PrBatchGitProbeEnv
       source_env.each_key do |name|
         env[name] = nil if name.match?(/\AGIT_CONFIG_(KEY|VALUE)_\d+\z/)
       end
+      preserve_safe_directory_config(env, source_env)
     end
+  end
+
+  def preserve_safe_directory_config(env, source_env)
+    entries = command_scope_safe_directory_entries(source_env)
+    return if entries.empty?
+
+    env["GIT_CONFIG_COUNT"] = entries.size.to_s
+    entries.each_with_index do |value, index|
+      env["GIT_CONFIG_KEY_#{index}"] = "safe.directory"
+      env["GIT_CONFIG_VALUE_#{index}"] = value
+    end
+  end
+
+  def command_scope_safe_directory_entries(source_env)
+    safe_directory_entries_from_count(source_env) + safe_directory_entries_from_parameters(source_env)
+  end
+
+  def safe_directory_entries_from_count(source_env)
+    count = Integer(source_env.fetch("GIT_CONFIG_COUNT", nil), exception: false)
+    return [] unless count&.positive?
+
+    (0...count).filter_map do |index|
+      key = source_env["GIT_CONFIG_KEY_#{index}"]
+      next unless key&.casecmp?("safe.directory")
+
+      source_env.fetch("GIT_CONFIG_VALUE_#{index}", "")
+    end
+  end
+
+  def safe_directory_entries_from_parameters(source_env)
+    parameters = source_env["GIT_CONFIG_PARAMETERS"].to_s
+    return [] if parameters.empty?
+
+    Shellwords.split(parameters).filter_map do |parameter|
+      key, value = parameter.split("=", 2)
+      next unless key&.casecmp?("safe.directory")
+
+      value || ""
+    end
+  rescue ArgumentError
+    []
   end
 end

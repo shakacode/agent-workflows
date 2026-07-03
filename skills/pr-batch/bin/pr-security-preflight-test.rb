@@ -882,17 +882,52 @@ class PrSecurityPreflightTest < Minitest::Test
       "GIT_CONFIG_GLOBAL" => "/tmp/global-gitconfig",
       "GIT_CONFIG_SYSTEM" => "/tmp/system-gitconfig",
       "GIT_CONFIG_NOSYSTEM" => "1",
-      "GIT_CONFIG_COUNT" => "1",
-      "GIT_CONFIG_KEY_0" => "remote.origin.url",
-      "GIT_CONFIG_VALUE_0" => "https://github.com/owner/repo.git"
+      "GIT_CONFIG_COUNT" => "4",
+      "GIT_CONFIG_KEY_0" => "safe.directory",
+      "GIT_CONFIG_VALUE_0" => "*",
+      "GIT_CONFIG_KEY_1" => "safe.directory",
+      "GIT_CONFIG_VALUE_1" => "",
+      "GIT_CONFIG_KEY_2" => "safe.directory",
+      "GIT_CONFIG_VALUE_2" => "/worktree",
+      "GIT_CONFIG_KEY_3" => "remote.origin.url",
+      "GIT_CONFIG_VALUE_3" => "https://github.com/owner/repo.git"
     )
 
     refute env.key?("GIT_CONFIG_GLOBAL")
     refute env.key?("GIT_CONFIG_SYSTEM")
     refute env.key?("GIT_CONFIG_NOSYSTEM")
-    assert_nil env["GIT_CONFIG_COUNT"]
-    assert_nil env["GIT_CONFIG_KEY_0"]
-    assert_nil env["GIT_CONFIG_VALUE_0"]
+    assert_equal "3", env["GIT_CONFIG_COUNT"]
+    assert_equal "safe.directory", env["GIT_CONFIG_KEY_0"]
+    assert_equal "*", env["GIT_CONFIG_VALUE_0"]
+    assert_equal "safe.directory", env["GIT_CONFIG_KEY_1"]
+    assert_equal "", env["GIT_CONFIG_VALUE_1"]
+    assert_equal "safe.directory", env["GIT_CONFIG_KEY_2"]
+    assert_equal "/worktree", env["GIT_CONFIG_VALUE_2"]
+    assert_nil env["GIT_CONFIG_KEY_3"]
+    assert_nil env["GIT_CONFIG_VALUE_3"]
+  end
+
+  def test_git_probe_env_preserves_git_config_parameters_safe_directory_entries
+    parameters = [
+      "'safe.directory'='*'",
+      "'safe.directory'=''",
+      "'safe.directory'='/worktree'",
+      "'remote.origin.url'='https://github.com/owner/repo.git'"
+    ].join(" ")
+    env = PrBatchGitProbeEnv.probe_env(
+      "GIT_CONFIG_PARAMETERS" => parameters
+    )
+
+    assert_nil env["GIT_CONFIG_PARAMETERS"]
+    assert_equal "3", env["GIT_CONFIG_COUNT"]
+    assert_equal "safe.directory", env["GIT_CONFIG_KEY_0"]
+    assert_equal "*", env["GIT_CONFIG_VALUE_0"]
+    assert_equal "safe.directory", env["GIT_CONFIG_KEY_1"]
+    assert_equal "", env["GIT_CONFIG_VALUE_1"]
+    assert_equal "safe.directory", env["GIT_CONFIG_KEY_2"]
+    assert_equal "/worktree", env["GIT_CONFIG_VALUE_2"]
+    assert_nil env["GIT_CONFIG_KEY_3"]
+    assert_nil env["GIT_CONFIG_VALUE_3"]
   end
 
   def test_git_helpers_clear_inherited_git_environment
@@ -1750,6 +1785,16 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_missing_issue_author_does_not_create_graph_coverage_blocker
+    with_fake_gh("missing-issue-author") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "GitHub API coverage findings: none"
+    end
+  end
+
   def test_paginated_participants_are_merged_before_visibility_and_coverage_checks
     with_fake_gh("paginated-participants") do |env, trust_config_path, log_path|
       trust_coderabbit(trust_config_path)
@@ -2315,6 +2360,10 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<JSON
       {"number":123,"title":"Test issue","html_url":"https://github.com/owner/repo/issues/123","body":"${warning_review_body}","user":{"login":"github-actions[bot]"}}
       JSON
+        elif [ "$mode" = "missing-issue-author" ]; then
+          cat <<'JSON'
+      {"number":123,"title":"Test issue","html_url":"https://github.com/owner/repo/issues/123","body":"Safe issue body.","user":null}
+      JSON
         elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
@@ -2389,6 +2438,10 @@ class PrSecurityPreflightTest < Minitest::Test
         elif [ "$mode" = "deleted-account-participant" ]; then
           cat <<'JSON'
       {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":null,"url":"https://github.com/ghost","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
+      JSON
+        elif [ "$mode" = "missing-issue-author" ]; then
+          cat <<'JSON'
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":null,"participants":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
       JSON
         elif [ "$mode" = "missing-participant-nodes" ]; then
           cat <<'JSON'
