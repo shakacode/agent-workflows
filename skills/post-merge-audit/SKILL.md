@@ -6,7 +6,9 @@ argument-hint: '[base tag/commit or range]'
 
 # Post-Merge Audit
 
-Audit merged PRs as a batch before the next release step. Use git and GitHub ground truth, not chat memory.
+Audit merged PRs as a batch before the next release step. Use visible chat only
+to choose the obvious just-run batch default; use git, GitHub, and coordination
+ground truth for every audit fact.
 
 Memorable invocation:
 
@@ -20,7 +22,18 @@ Use `.agents/workflows/post-merge-audit.md` for reusable copy-paste prompts, inc
 ## Scope Gate
 
 Start by resolving the exact audit range and, when auditing a named agent
-batch/run, the exact worked-issue scope:
+batch/run, the exact worked-issue scope.
+
+Default batch selection: when the current visible chat, active goal, restart
+handoff, or immediately preceding batch closeout names exactly one just-run
+batch, default to it. If the visible value is an exact coordination batch id,
+verify it through the known-batch path below. If it is a human label such as
+`Batch E` or an unambiguous target set, treat it as a batch hint: resolve it to
+an exact batch id through bounded coordination discovery, public claim
+`batch:` fields, or GitHub target evidence before using the known-batch path.
+Never pass a label or target set directly to `agent-coord status --batch-id`.
+Ask only when the just-run batch is not obvious, multiple candidates are
+visible, or verified evidence conflicts with the default.
 
 Term: a structured public `codex-claim` comment is a GitHub issue/PR comment
 containing a `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with
@@ -42,8 +55,13 @@ The resolver is read-only. It resolves the default release-candidate base, the h
 4. Worked issue list: for private coordination backend setup and CLI discovery,
    see `docs/coordination-backend.md`. If no
    coordinated batch/run is in scope, record
-   `worked_issue_scope: not applicable`. If batch work is in scope but the
-   batch/run id is unknown:
+   `worked_issue_scope: not applicable`. If batch work is in scope and the
+   current visible chat provides an exact just-run coordination batch id, treat
+   that id as known and do not ask before verification. If the visible chat
+   provides only a batch label or target set, use it as a default batch hint,
+   resolve it to an exact batch id or verified worked-issue list before the
+   known-batch path, and ask only if that resolution is ambiguous. If batch work
+   is in scope but the batch/run id or hint is still unknown:
    - run bounded `agent-coord doctor --json`, then broad `agent-coord status`
      through the resolved `pr-batch` bounded helper only as an audit/discovery read to list
      candidate batch/run ids and lanes
@@ -53,8 +71,9 @@ The resolver is read-only. It resolves the default release-candidate base, the h
 
    If candidate discovery cannot verify backend setup or access,
    `UNKNOWN (setup)` or `UNKNOWN (access)` takes precedence over
-   `UNKNOWN (needs batch confirmation)`; also report that batch id confirmation
-   is still needed after backend recovery. When a batch/run id is known, run
+   `UNKNOWN (needs batch confirmation)`; report that batch id confirmation is
+   still needed after backend recovery only when the id was not already obvious
+   from the current visible chat. When a batch/run id is known, run
    bounded `agent-coord doctor --json` and bounded
    `agent-coord status --batch-id <batch-id> --json`, then inspect the named
    batch entry; use claims, heartbeats, and batch metadata as the primary
@@ -102,8 +121,11 @@ state to shrink the worked-issue scope; report it as a QA coverage finding or
 
 Show included worked issues, included PRs, collected QA lanes and QA Evidence
 blocks, excluded near-matches, base/head SHAs, coordination status evidence, and
-assumptions. Ask for confirmation before deep audit unless the user explicitly
-asks to proceed without confirmation.
+assumptions. Proceed into deep audit without another confirmation when the
+just-run batch was obvious in the current visible chat and verification did not
+surface conflicting scope evidence. Ask first only when the batch is not
+obvious, multiple candidates remain, the named batch is unexpectedly empty while
+lanes appear to exist, or another conflict requires a user choice.
 
 ## Audit Checks
 

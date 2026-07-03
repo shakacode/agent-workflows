@@ -7,6 +7,7 @@ GOAL_PROMPT_MIN_HEADROOM = 100
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 REPO_ROOT = File.expand_path("../../..", __dir__)
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 
 CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Resume batch processing now.
@@ -17,6 +18,7 @@ TEXT
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
 # Keep phrase checks here in sync when that source prompt changes.
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
+  "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.",
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
   "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
@@ -84,6 +86,17 @@ def extract_section(text, start_marker, end_heading)
   text[body_start...body_end]
 end
 
+def extract_first_text_fence_body(text, label)
+  fence_start = text.index(TEXT_FENCE)
+  abort_with_failure("#{label} is missing text fence") unless fence_start
+
+  body_start = fence_start + TEXT_FENCE.length
+  fence_end = text.index(/^```\s*$/, body_start)
+  abort_with_failure("#{label} is missing closing fence") unless fence_end
+
+  text[body_start...fence_end]
+end
+
 def require_phrases(text, phrases, label)
   phrases.each do |phrase|
     unless text.include?(phrase)
@@ -140,8 +153,20 @@ pressure_scenario_text = extract_section(
   "Pressure scenarios this prompt must satisfy:",
   /^###\s+/
 )
+continuation_section = extract_section(
+  workflow_text,
+  "### Generic PR-Batch Continuation Prompt",
+  /^###\s+/
+)
+continuation_prompt = extract_first_text_fence_body(
+  continuation_section,
+  "canonical workflow continuation prompt"
+)
 
 required_skill_rule_phrases = [
+  "Batch title:",
+  "<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
+  "repository abbreviation",
   "Goal prompt character count:",
   "If the measured prompt is 4000 characters or more",
   "output only the first ready goal",
@@ -152,6 +177,8 @@ required_skill_rule_phrases = [
 ]
 
 required_prompt_phrases = [
+  "Batch title:",
+  "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
   "Goal Mode Completion Contract",
   "`waiting-on-checks-or-review` is not an overall Goal-mode terminal state",
   "report NOT COMPLETE",
@@ -185,6 +212,10 @@ end
 
 require_phrases(workflow_text, CANONICAL_CONTINUATION_SNIPPET_PHRASES, "canonical workflow continuation snippet")
 require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure scenarios")
+
+unless continuation_prompt.start_with?("#{CONTINUATION_BATCH_TITLE_LINE}\n")
+  abort_with_failure("canonical workflow continuation prompt must start with the batch title line")
+end
 
 unexpected_pressure_refs = pressure_scenario_text.scan(/#\d+/).uniq - ALLOWED_PRESSURE_SCENARIO_REFS
 unless unexpected_pressure_refs.empty?
