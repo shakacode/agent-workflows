@@ -18,6 +18,12 @@ choices, release tracker state, one-off session memory, or broad prose rules
 that cannot be replayed. Consumer repositories still provide their commands and
 policy through their own `AGENTS.md` seam.
 
+Optional task-observer memory is a staging area for sanitized session
+observations. Promote an observation into this library only after review shows
+that the lesson meets the portability, evidence, specificity, and stability
+rules above. Do not copy raw observation logs, proprietary context, or
+repo-specific session state into `docs/solutions/`.
+
 ## Adding Or Refreshing A Lesson
 
 Create one Markdown file under `docs/solutions/` with YAML frontmatter followed

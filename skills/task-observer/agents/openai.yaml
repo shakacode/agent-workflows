@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Task Observer"
+  short_description: "Capture sanitized skill-improvement observations"
+  default_prompt: "Use $task-observer to capture sanitized observations for later skill or workflow improvement review."

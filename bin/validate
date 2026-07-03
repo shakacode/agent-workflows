@@ -86,6 +86,7 @@ ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb
+ruby skills/task-observer/bin/task-observer-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
 
 echo "== rubocop ${RUBOCOP_VERSION} =="

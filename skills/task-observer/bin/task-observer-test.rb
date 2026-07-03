@@ -1,0 +1,161 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "minitest/autorun"
+require "open3"
+require "tmpdir"
+
+SCRIPT = File.expand_path("task-observer", __dir__)
+
+class TaskObserverTest < Minitest::Test
+  def test_init_and_status_use_codex_memory_root
+    Dir.mktmpdir("task-observer") do |home|
+      out = run!("init", env: { "CODEX_HOME" => home })
+      assert_includes out, "initialized"
+
+      root = File.join(home, "memories", "task-observer")
+      assert_directory root
+      assert_directory File.join(root, "observations")
+      assert_directory File.join(root, "staged-updates")
+
+      status = JSON.parse(run!("status", "--json", env: { "CODEX_HOME" => home }))
+      assert_equal root, status.fetch("memory_root")
+      assert_equal true, status.fetch("initialized")
+      assert_equal 0, status.fetch("observations")
+      assert_equal 0, status.fetch("staged_updates")
+    end
+  end
+
+  def test_append_writes_sanitized_observation_stub
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out = run!(
+        "append",
+        "--kind", "skill-improvement",
+        "--skill", "pr-batch",
+        "--summary", "Worker prompts should preserve dependency state as UNKNOWN when private status degrades.",
+        "--source", "issue-41-test",
+        env: { "CODEX_HOME" => home, "TASK_OBSERVER_TIME" => "2026-07-03T12:00:00Z" }
+      )
+
+      assert_includes out, "appended"
+      record_path = File.join(home, "memories", "task-observer", "observations", "2026-07-03.jsonl")
+      record = JSON.parse(File.read(record_path))
+      assert_equal "skill-improvement", record.fetch("kind")
+      assert_equal "pr-batch", record.fetch("skill")
+      assert_equal "issue-41-test", record.fetch("source")
+      assert_equal "staged-review-only", record.fetch("update_mode")
+      assert_equal "2026-07-03T12:00:00Z", record.fetch("observed_at")
+    end
+  end
+
+  def test_list_reads_observation_stubs
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+      run!(
+        "append",
+        "--kind", "gap",
+        "--summary", "No skill covers a repeated release-note check.",
+        "--source", "test",
+        env: { "CODEX_HOME" => home, "TASK_OBSERVER_TIME" => "2026-07-03T12:00:00Z" }
+      )
+
+      out = run!("list", env: { "CODEX_HOME" => home })
+      assert_includes out, "2026-07-03T12:00:00Z"
+      assert_includes out, "gap"
+      assert_includes out, "No skill covers a repeated release-note check."
+    end
+  end
+
+  def test_append_rejects_sensitive_material
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "Store password=secret-value for the next run.",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "sensitive material"
+    end
+  end
+
+  def test_append_rejects_missing_required_fields_without_stack_trace
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--summary", "A valid sanitized summary.",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "--kind is required"
+      refute_includes out, "KeyError"
+    end
+  end
+
+  def test_append_rejects_stray_arguments
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "gap",
+        "--summary", "Worker",
+        "prompts",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "unexpected append arguments"
+    end
+  end
+
+  def test_append_rejects_private_urls_with_query_strings
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://internal.example.test/report?token=abc",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+    end
+  end
+
+  private
+
+  def run!(*args, env: {})
+    out, status = capture_task_observer(*args, env: env)
+    assert status.success?, out
+    out
+  end
+
+  def capture_task_observer(*args, env: {})
+    full_env = {
+      "PATH" => ENV.fetch("PATH"),
+      "HOME" => ENV.fetch("HOME")
+    }.merge(env)
+    out, status = Open3.capture2e(full_env, "ruby", SCRIPT, *args)
+    [out, status]
+  end
+
+  def assert_directory(path)
+    assert Dir.exist?(path), "Expected #{path} to exist"
+  end
+end
