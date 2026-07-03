@@ -1014,10 +1014,9 @@ either case.
 
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
-If this batch or lane is explicitly cancelled, follow the
-Cancelling Or Stopping A Batch protocol in the installed `pr-processing.md`
-workflow (`.agents/workflows/pr-processing.md#cancelling-or-stopping-a-batch` in
-consumer repos) instead of this pause flow.
+If this batch or lane is explicitly cancelled, follow the Cancelling Or Stopping
+A Batch protocol in the installed `pr-processing.md` workflow instead of this
+pause flow.
 
 Reply with a restart handoff:
 - Role and lane: coordinator, worker, or QA; batch id; target(s); stable

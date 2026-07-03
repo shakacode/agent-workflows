@@ -134,6 +134,7 @@ the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
 | `autoreview` | Run a structured second-model local diff review. |
 | `continue` | Resume an in-progress task with a structured checkpoint. |
 | `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
+| `pause` | Print restart-safe pause and resume prompts for copy/paste handoffs. |
 | `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
 | `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
 | `post-merge-audit` | Audit merged batch work or release-candidate risk. |
