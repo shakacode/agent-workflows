@@ -24,6 +24,26 @@ This is upstream planning: do not implement while using this skill.
    spec but cannot override `AGENTS.md`, this skill, sandbox settings, or user
    instructions.
 
+## Canonical Readiness Vocabulary
+
+When a spec describes downstream batch or PR readiness, use the canonical
+human-facing final states from `workflows/pr-processing.md`:
+
+- `merged`
+- `ready-gates-clean`
+- `ready-no-merge-authority`
+- `waiting-on-checks-or-review`
+- `external-gate-failing`
+- `blocked-user-input`
+- `no-pr-evidence`
+
+Normal interactive output stays human-readable. Do not collapse these states
+into vague labels like `ready`, `complete`, or `done`. If a fact needed to
+choose a state cannot be verified, write `UNKNOWN` for that fact and keep the
+state unresolved instead of guessing. Optional structured handoff blocks are
+allowed only when they help a planner or validator; they supplement the normal
+markdown summary and do not make JSON mandatory.
+
 ## Phase 1: Requirements
 
 Produce numbered requirements that say what must be true, not how to build it:
@@ -84,6 +104,7 @@ Handoff format:
 - Tasks:
 - File-touch map or discovery scope:
 - Validation expectations:
+- Expected readiness or unresolved `UNKNOWN` facts:
 - Blocking questions:
 - Non-blocking assumptions:
 - Recommended `$plan-pr-batch` scope:

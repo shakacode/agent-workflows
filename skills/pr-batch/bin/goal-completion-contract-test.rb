@@ -5,6 +5,7 @@ require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
@@ -17,6 +18,16 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
+CANONICAL_READINESS_STATES = %w[
+  merged
+  ready-gates-clean
+  ready-no-merge-authority
+  waiting-on-checks-or-review
+  external-gate-failing
+  blocked-user-input
+  no-pr-evidence
+].freeze
+READINESS_STATE_KEYS = /\b(?:final_state|readiness_state|target_state):\s*`?([a-z0-9_-]+|UNKNOWN)`?/
 
 def read_repo_file(path)
   File.read(path, encoding: "UTF-8")
@@ -62,9 +73,15 @@ def assert_text_includes(text, phrase, label)
   assert text.include?(phrase), "#{label} is missing required phrase: #{phrase}"
 end
 
+def invalid_readiness_marker_values(text)
+  allowed = CANONICAL_READINESS_STATES + ["UNKNOWN"]
+  text.scan(READINESS_STATE_KEYS).flatten.reject { |value| allowed.include?(value) }.uniq
+end
+
 class GoalCompletionContractTest < Minitest::Test
   def setup
     @workflow = read_repo_file(WORKFLOW_PATH)
+    @spec_skill = read_repo_file(SPEC_SKILL_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
     @triage_skill = read_repo_file(TRIAGE_SKILL_PATH)
@@ -92,6 +109,38 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "unresolved current-head review threads", label
       assert_text_includes text, "UNKNOWN", label
     end
+  end
+
+  def test_canonical_readiness_vocabulary_is_shared_by_planning_skills
+    {
+      "skills/spec/SKILL.md" => extract_markdown_section(@spec_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
+      "skills/plan-pr-batch/SKILL.md" => extract_markdown_section(@plan_pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
+      "skills/pr-batch/SKILL.md" => extract_markdown_section(@pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
+      "workflows/pr-processing.md" => extract_markdown_section(@workflow, "### Batch Handoff Format", end_heading: /^###\s+/)
+    }.each do |label, text|
+      CANONICAL_READINESS_STATES.each do |state|
+        assert_text_includes text, "`#{state}`", label
+      end
+      assert_text_includes text, "UNKNOWN", label
+    end
+  end
+
+  def test_structured_readiness_markers_use_canonical_values
+    skill_text = {
+      "skills/spec/SKILL.md" => @spec_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill
+    }
+
+    skill_text.each do |label, text|
+      invalid_values = invalid_readiness_marker_values(text)
+      assert_empty invalid_values, "#{label} contains invalid structured readiness values: #{invalid_values.join(', ')}"
+    end
+  end
+
+  def test_structured_readiness_marker_validation_rejects_vague_ready
+    invalid_values = invalid_readiness_marker_values("final_state: ready\nreadiness_state: `UNKNOWN`\n")
+    assert_equal ["ready"], invalid_values
   end
 
   def test_skill_prose_points_to_canonical_contract_instead_of_pasting_it

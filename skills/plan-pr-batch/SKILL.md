@@ -209,6 +209,27 @@ Plan a PR batch
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
 
+## Canonical Readiness Vocabulary
+
+Use the same human-facing readiness states as `$pr-batch` and
+`workflows/pr-processing.md`:
+
+- `merged`
+- `ready-gates-clean`
+- `ready-no-merge-authority`
+- `waiting-on-checks-or-review`
+- `external-gate-failing`
+- `blocked-user-input`
+- `no-pr-evidence`
+
+Normal interactive output stays human-readable. Use these states in planning
+notes, done conditions, and final-bucket handoffs instead of vague labels such
+as `ready`, `complete`, or `done`. Preserve explicit `UNKNOWN` for facts that
+cannot be verified, including coordination, file-touch, review, CI, QA, or
+merge-ledger evidence; do not turn unknown evidence into an optimistic state.
+Optional structured handoff blocks may be added when they reduce ambiguity for a
+coordinator or validator, but they are not required and JSON is not mandatory.
+
 ## Batch Plan Format
 
 - Objective:
@@ -225,6 +246,7 @@ Plan a PR batch
 - Coordination hooks, including backend claim exclusions:
 - Batch QA Lane decision and QA Evidence expectations:
 - Verification expectations:
+- Expected readiness states or unresolved `UNKNOWN` facts:
 - Prompt sizing: `Goal prompt character count: N characters (target: codex|claude|generic)`; note any split fallback
   and keep omitted item details here, not in the goal prompt.
 - Open questions:

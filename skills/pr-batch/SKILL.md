@@ -90,6 +90,27 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 10. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
 11. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 
+## Canonical Readiness Vocabulary
+
+Use these canonical human-facing final states for target and batch handoffs:
+
+- `merged`
+- `ready-gates-clean`
+- `ready-no-merge-authority`
+- `waiting-on-checks-or-review`
+- `external-gate-failing`
+- `blocked-user-input`
+- `no-pr-evidence`
+
+Normal interactive output stays human-readable. Do not replace the split states
+with vague labels like `ready`, `complete`, or `done`; each target should land in
+one of the states above, with blockers, links, tests, next action, and
+`merge_authority` evidence attached. Preserve explicit `UNKNOWN` for any fact
+that cannot be verified, including coordination, CI, review, QA, release, or
+merge-ledger evidence. Optional structured handoff blocks are allowed only when
+they make downstream coordination or validation easier; they supplement the
+human-readable handoff and do not make JSON mandatory everywhere.
+
 ## Target Resolution Gate
 
 When the user gives filters instead of exact numbers:
