@@ -14,8 +14,11 @@ If the user is asking whether existing PRs are ready to merge, what manual
 testing remains, or how to sequence open PR merges, use the target repo's
 `AGENTS.md` **Agent Workflow Configuration** pointer to resolve
 `.agents/agent-workflow.yml`, read the `review_gate` policy key, and use the
-repo-local readiness workflow when present or the installed/shared readiness
-workflow fallback instead of producing an implementation batch plan.
+repo-local `pr-processing.md` readiness workflow when present or the
+installed/shared `pr-processing.md` fallback instead of producing an
+implementation batch plan. If the policy key or workflow cannot be resolved,
+report workflow state as `UNKNOWN`; when `pr-processing.md` is resolved, fall
+back to `$pr-batch` CI/review readiness checks there rather than guessing.
 
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
