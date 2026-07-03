@@ -63,6 +63,8 @@ handoffs, Codex/Claude comparison, and output templates.
    - `NON_BLOCKING_DECISION` -> `accepted_fixed`, `deferred`, or
      `waived_by_maintainer`, depending on the evidence.
    - `NOISE` -> `rejected_false_positive` or `rejected_not_actionable`, usually `INFO`.
+   Findings contradicted by current evidence should set `verification.status` to
+   `contradicted` and use a rejection disposition rather than leaving the outcome implicit.
    Mark findings as `verified/current` only after checking the real code and current PR or head
    state. Stale, unverified, or unknown findings remain advisory.
 

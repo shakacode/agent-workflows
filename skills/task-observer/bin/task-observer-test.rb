@@ -138,6 +138,41 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_malformed_query_strings_without_stack_trace
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://example.com/report?foo=%GG",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "invalid URL"
+      refute_includes out, "ArgumentError"
+    end
+  end
+
+  def test_append_rejects_non_iso_observer_time
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "gap",
+        "--summary", "A valid sanitized summary.",
+        "--source", "test",
+        env: { "CODEX_HOME" => home, "TASK_OBSERVER_TIME" => "July 3, 2026" }
+      )
+
+      refute status.success?
+      assert_includes out, "TASK_OBSERVER_TIME must be an ISO 8601 timestamp"
+    end
+  end
+
   private
 
   def run!(*args, env: {})

@@ -8,7 +8,8 @@
 # branch" exits as a named state instead of a generic command failure.
 
 require "json"
-require "open3"
+require "shellwords"
+require "tempfile"
 require "yaml"
 
 module AutoreviewTargetState
@@ -22,6 +23,7 @@ module AutoreviewTargetState
     /could not find.*pull request/i,
     /no pull request.*current branch/i
   ].freeze
+  COMMAND_TIMEOUT_SECONDS = 15
 
   def classify(facts)
     branch = facts.fetch(:branch)
@@ -147,7 +149,7 @@ module AutoreviewTargetState
   def branch_target(base)
     {
       "kind" => "branch",
-      "command" => %(codex review --base "origin/#{base}"),
+      "command" => "codex review --base #{Shellwords.escape("origin/#{base}")}",
       "reason" => "Review committed branch changes against origin/#{base}."
     }
   end
@@ -188,8 +190,8 @@ module AutoreviewTargetState
   end
 
   def git(*args)
-    out, err, status = Open3.capture3("git", *args)
-    [out.force_encoding("UTF-8"), err.force_encoding("UTF-8"), status.exitstatus]
+    out, err, status = capture_command("git", *args)
+    [out.force_encoding("UTF-8"), err.force_encoding("UTF-8"), status]
   rescue Errno::ENOENT
     raise Error, "git is not installed"
   end
@@ -221,8 +223,8 @@ module AutoreviewTargetState
   end
 
   def pr_base
-    out, err, status = Open3.capture3("gh", "pr", "view", "--json", "baseRefName", "--jq", ".baseRefName")
-    return { "state" => "found", "base" => out.strip } if status.success? && !out.strip.empty?
+    out, err, status = capture_command("gh", "pr", "view", "--json", "baseRefName", "--jq", ".baseRefName")
+    return { "state" => "found", "base" => out.strip } if status.zero? && !out.strip.empty?
 
     combined = "#{out}\n#{err}"
     return { "state" => "no_pr", "reason" => combined.strip } if no_pr_output?(combined)
@@ -230,6 +232,70 @@ module AutoreviewTargetState
     { "state" => "unknown", "reason" => combined.strip.empty? ? "gh pr view failed" : combined.strip }
   rescue Errno::ENOENT
     { "state" => "unknown", "reason" => "gh is not installed" }
+  end
+
+  def capture_command(*command, seconds: COMMAND_TIMEOUT_SECONDS)
+    stdout_file = Tempfile.new("autoreview-target-state-out")
+    stderr_file = Tempfile.new("autoreview-target-state-err")
+    pid = Process.spawn(*command, out: stdout_file.path, err: stderr_file.path, pgroup: true)
+    status = wait_for_command(pid, seconds)
+    stdout_file.rewind
+    stderr_file.rewind
+    out = stdout_file.read.force_encoding("UTF-8")
+    err = stderr_file.read.force_encoding("UTF-8")
+    err = "#{command.join(' ')} timed out after #{seconds} seconds" if status == 124 && err.strip.empty?
+    [out, err, status]
+  ensure
+    stdout_file&.close!
+    stderr_file&.close!
+  end
+
+  def wait_for_command(pid, seconds)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    loop do
+      result = Process.waitpid2(pid, Process::WNOHANG)
+      return process_status_code(result.last) if result
+
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        terminate_process(pid)
+        return 124
+      end
+
+      sleep 0.05
+    end
+  end
+
+  def process_status_code(status)
+    status.exitstatus || (status.termsig ? 128 + status.termsig : 1)
+  end
+
+  def terminate_process(pid)
+    signal_process(pid, "TERM")
+    sleep 0.2
+    return if reaped?(pid)
+
+    signal_process(pid, "KILL")
+    Process.waitpid2(pid)
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def reaped?(pid)
+    !!Process.waitpid2(pid, Process::WNOHANG)
+  rescue Errno::ECHILD
+    true
+  end
+
+  def signal_process(pid, signal)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  rescue Errno::EPERM
+    begin
+      Process.kill(signal, pid)
+    rescue Errno::ESRCH
+      nil
+    end
   end
 
   def no_pr_output?(text)

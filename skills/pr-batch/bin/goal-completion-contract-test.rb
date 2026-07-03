@@ -12,6 +12,7 @@ TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 
 TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
+CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
@@ -111,17 +112,23 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_canonical_readiness_vocabulary_is_shared_by_planning_skills
+  def test_workflow_defines_canonical_readiness_vocabulary
+    workflow_text = extract_markdown_section(@workflow, "### Batch Handoff Format", end_heading: /^###\s+/)
+    CANONICAL_READINESS_STATES.each do |state|
+      assert_text_includes workflow_text, "`#{state}`", "workflows/pr-processing.md"
+    end
+    assert_text_includes workflow_text, "UNKNOWN", "workflows/pr-processing.md"
+  end
+
+  def test_planning_skills_link_to_canonical_readiness_vocabulary
     {
       "skills/spec/SKILL.md" => extract_markdown_section(@spec_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
       "skills/plan-pr-batch/SKILL.md" => extract_markdown_section(@plan_pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
-      "skills/pr-batch/SKILL.md" => extract_markdown_section(@pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
-      "workflows/pr-processing.md" => extract_markdown_section(@workflow, "### Batch Handoff Format", end_heading: /^###\s+/)
+      "skills/pr-batch/SKILL.md" => extract_markdown_section(@pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/)
     }.each do |label, text|
-      CANONICAL_READINESS_STATES.each do |state|
-        assert_text_includes text, "`#{state}`", label
-      end
+      assert_text_includes text, CANONICAL_READINESS_LINK, label
       assert_text_includes text, "UNKNOWN", label
+      assert_text_includes text, "JSON is not mandatory", label
     end
   end
 

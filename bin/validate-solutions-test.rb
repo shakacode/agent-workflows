@@ -12,6 +12,8 @@ class ValidateSolutionsTest < Minitest::Test
   def with_solution_root
     Dir.mktmpdir("validate-solutions-test") do |root|
       FileUtils.mkdir_p(File.join(root, "docs/solutions"))
+      FileUtils.mkdir_p(File.join(root, "workflows"))
+      File.write(File.join(root, "workflows/pr-processing.md"), "# Workflow\n")
       yield root
     end
   end
@@ -91,6 +93,14 @@ class ValidateSolutionsTest < Minitest::Test
       failures = ValidateSolutions.validate(root)
       assert_includes failures, "docs/solutions/basic-date.md: date must be ISO 8601 YYYY-MM-DD"
       assert_includes failures, "docs/solutions/datetime.md: date must be ISO 8601 YYYY-MM-DD"
+    end
+  end
+
+  def test_missing_related_file_fails
+    with_solution_root do |root|
+      write_solution(root, "missing-related-file.md", valid_solution.sub("workflows/pr-processing.md", "missing/path.md"))
+
+      assert_includes ValidateSolutions.validate(root), "docs/solutions/missing-related-file.md: related_files not found: missing/path.md"
     end
   end
 end

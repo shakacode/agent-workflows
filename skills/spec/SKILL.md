@@ -27,22 +27,14 @@ This is upstream planning: do not implement while using this skill.
 ## Canonical Readiness Vocabulary
 
 When a spec describes downstream batch or PR readiness, use the canonical
-human-facing final states from `workflows/pr-processing.md`:
-
-- `merged`
-- `ready-gates-clean`
-- `ready-no-merge-authority`
-- `waiting-on-checks-or-review`
-- `external-gate-failing`
-- `blocked-user-input`
-- `no-pr-evidence`
-
-Normal interactive output stays human-readable. Do not collapse these states
+human-facing final states from
+[Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format).
+Normal interactive output stays human-readable. Do not collapse those states
 into vague labels like `ready`, `complete`, or `done`. If a fact needed to
 choose a state cannot be verified, write `UNKNOWN` for that fact and keep the
-state unresolved instead of guessing. Optional structured handoff blocks are
-allowed only when they help a planner or validator; they supplement the normal
-markdown summary and do not make JSON mandatory.
+state unresolved instead of guessing. Optional structured handoff blocks may
+supplement the normal markdown summary only when they help a planner or
+validator; JSON is not mandatory.
 
 ## Phase 1: Requirements
 

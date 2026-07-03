@@ -72,7 +72,7 @@ Use these states when deciding the target. If available, resolve
 `SKILL.md`, then run the read-only helper:
 
 ```bash
-AUTOREVIEW_SKILL_DIR="${AUTOREVIEW_SKILL_DIR:-.agents/skills/autoreview}"
+AUTOREVIEW_SKILL_DIR="${AUTOREVIEW_SKILL_DIR:?set AUTOREVIEW_SKILL_DIR to the installed or repo-local autoreview skill directory}"
 "${AUTOREVIEW_SKILL_DIR}/bin/autoreview-target-state" --text
 ```
 

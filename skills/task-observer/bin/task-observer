@@ -122,17 +122,20 @@ module TaskObserver
 
   def current_time
     value = ENV["TASK_OBSERVER_TIME"].to_s.strip
-    value.empty? ? Time.now.utc : Time.parse(value).utc
+    value.empty? ? Time.now.utc : Time.iso8601(value).utc
   rescue ArgumentError
     raise Error, "TASK_OBSERVER_TIME must be an ISO 8601 timestamp"
   end
 
   def check_privacy!(text)
     return if text.to_s.empty?
+    raise Error, "observation contains an invalid URL; summarize without the URL" if malformed_url_encoding?(text)
 
-    URI.extract(text, %w[http https]).each do |url|
+    URI::DEFAULT_PARSER.extract(text, %w[http https]).each do |url|
       uri = URI.parse(url)
       next if uri.query.to_s.empty?
+
+      raise Error, "observation contains an invalid URL; summarize without the URL" if malformed_query?(uri.query)
 
       query_keys = URI.decode_www_form(uri.query).map { |key, _value| key.downcase }
       private_host = PRIVATE_HOST_PATTERNS.any? { |pattern| uri.host.to_s.match?(pattern) }
@@ -140,13 +143,21 @@ module TaskObserver
       next unless private_host || sensitive_query
 
       raise Error, "observation appears to contain a private URL with sensitive query parameters"
-    rescue URI::InvalidURIError
+    rescue URI::InvalidURIError, ArgumentError
       raise Error, "observation contains an invalid URL; summarize without the URL"
     end
 
     return unless SENSITIVE_PATTERNS.any? { |pattern| text.match?(pattern) }
 
     raise Error, "observation appears to contain sensitive material; summarize without secrets or regulated data"
+  end
+
+  def malformed_query?(query)
+    query.match?(/%(?![0-9A-Fa-f]{2})/)
+  end
+
+  def malformed_url_encoding?(text)
+    text.match?(%r{https?://\S*%(?![0-9A-Fa-f]{2})})
   end
 
   def parse_append_args(args)

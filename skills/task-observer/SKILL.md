@@ -48,7 +48,9 @@ improvement:
 - workflow gaps where `UNKNOWN`, degraded coordination, validation, or review
   state needed clearer handling;
 - simplification opportunities where a skill can remove ceremony or reduce
-  false positives; and
+  false positives;
+- self-improvement notes about this observer skill's own activation, privacy, or
+  staging behavior; and
 - cross-cutting principles that belong in shared pack guidance.
 
 Prefer the smallest observation that can drive later review. Do not copy raw

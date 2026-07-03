@@ -64,7 +64,7 @@ module ValidateSolutions
     frontmatter = parse_frontmatter(text[4...closing], relative)
     return [frontmatter] if frontmatter.is_a?(String)
 
-    failures.concat(validate_required_fields(frontmatter, relative))
+    failures.concat(validate_required_fields(frontmatter, relative, root))
     failures.concat(validate_body(text[(closing + FRONTMATTER_CLOSE.length)..], relative))
     failures
   end
@@ -78,7 +78,7 @@ module ValidateSolutions
     "#{relative}: invalid YAML frontmatter: #{e.message}"
   end
 
-  def validate_required_fields(frontmatter, relative)
+  def validate_required_fields(frontmatter, relative, root)
     failures = []
 
     missing = REQUIRED_FIELDS.reject { |field| frontmatter.key?(field) }
@@ -99,6 +99,9 @@ module ValidateSolutions
         failures << "#{relative}: #{field} must be a list"
       elsif value.any? { |entry| !entry.is_a?(String) || entry.strip.empty? }
         failures << "#{relative}: #{field} entries must be non-empty strings"
+      elsif field == "related_files"
+        missing = value.reject { |entry| File.exist?(File.join(root, entry)) }
+        failures << "#{relative}: related_files not found: #{missing.join(', ')}" unless missing.empty?
       end
     end
 

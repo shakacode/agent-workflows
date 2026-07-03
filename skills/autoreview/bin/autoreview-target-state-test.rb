@@ -3,6 +3,7 @@
 
 require "minitest/autorun"
 require "fileutils"
+require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("autoreview-target-state", __dir__)
@@ -23,7 +24,7 @@ class AutoreviewTargetStateTest < Minitest::Test
     assert_equal "BRANCH_PLUS_DIRTY_LOCAL", result["state"]
     assert_equal "not_ready", result["disposition"]
     assert_equal [
-      %(codex review --base "origin/main"),
+      "codex review --base origin/main",
       "codex review --uncommitted"
     ], commands(result)
   end
@@ -37,7 +38,7 @@ class AutoreviewTargetStateTest < Minitest::Test
     assert_equal "BRANCH_PR_DIFF", result["state"]
     assert_equal "ready", result["disposition"]
     assert_equal "release/1.2", result["base"]
-    assert_equal [%(codex review --base "origin/release/1.2")], commands(result)
+    assert_equal ["codex review --base origin/release/1.2"], commands(result)
   end
 
   def test_no_pr_for_current_branch_is_expected_state
@@ -49,7 +50,7 @@ class AutoreviewTargetStateTest < Minitest::Test
     assert_equal "BRANCH_NO_PR_DIFF", result["state"]
     assert_equal "ready", result["disposition"]
     assert_equal "no_pr", result["pr_state"]
-    assert_equal [%(codex review --base "origin/main")], commands(result)
+    assert_equal ["codex review --base origin/main"], commands(result)
   end
 
   def test_detached_head_is_blocked
@@ -142,6 +143,22 @@ class AutoreviewTargetStateTest < Minitest::Test
         assert_equal "release/2.0", AutoreviewTargetState.configured_base
       end
     end
+  end
+
+  def test_branch_target_shell_escapes_unusual_base_names
+    result = classify(
+      pr: { "state" => "found", "base" => "release/$candidate;rm" },
+      branch_diff: true
+    )
+
+    assert_equal ["codex review --base origin/release/\\$candidate\\;rm"], commands(result)
+  end
+
+  def test_capture_command_times_out
+    _out, err, status = AutoreviewTargetState.capture_command(RbConfig.ruby, "-e", "sleep 2", seconds: 0.1)
+
+    assert_equal 124, status
+    assert_includes err, "timed out after 0.1 seconds"
   end
 
   private
