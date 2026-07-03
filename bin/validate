@@ -61,6 +61,10 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== push-downstream unit tests =="
 ruby bin/push-downstream-test.rb
 
+echo "== solution docs =="
+ruby bin/validate-solutions-test.rb
+ruby bin/validate-solutions
+
 echo "== installer/status/upgrade tests =="
 bash bin/install-agent-workflows-test.bash
 
