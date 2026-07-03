@@ -67,10 +67,31 @@ git diff --cached --stat
 git ls-files --others --exclude-standard
 ```
 
+Use these states when deciding the target. If available, resolve
+`AUTOREVIEW_SKILL_DIR` to the installed or repo-local directory containing this
+`SKILL.md`, then run the read-only helper:
+
+```bash
+AUTOREVIEW_SKILL_DIR="${AUTOREVIEW_SKILL_DIR:-.agents/skills/autoreview}"
+"${AUTOREVIEW_SKILL_DIR}/bin/autoreview-target-state" --text
+```
+
+| State | Trigger | Disposition | Target |
+| --- | --- | --- | --- |
+| `LOCAL_UNTRACKED_ONLY` | Only untracked files are present. | ready | `codex review --uncommitted` |
+| `LOCAL_DIRTY_ONLY` | Staged or unstaged local work is present without committed branch diff. | ready | `codex review --uncommitted` |
+| `BRANCH_PLUS_DIRTY_LOCAL` | Committed branch diff and dirty local work both exist. | not_ready | Commit first, or run both branch and uncommitted reviews; staging alone does not put changes in the branch diff. |
+| `BRANCH_PR_DIFF` | A branch diff exists and `gh pr view` found a PR base. | ready | `codex review --base "origin/$pr_base"` |
+| `BRANCH_NO_PR_DIFF` | A branch diff exists and `gh pr view` reports no PR for the current branch. | ready | `codex review --base "origin/$base"`; this expected non-zero `gh` state is not a failure. |
+| `NO_REVIEW_TARGET` | No dirty work and no committed branch diff. | not_ready | Stop or pick an explicit commit; a clean local review only proves there is no local patch. |
+| `DETACHED_HEAD` | `HEAD` is detached. | blocked | Attach a branch or use `codex review --commit <sha>` intentionally. |
+| `DEFAULT_BRANCH_WITH_LOCAL_COMMITS` | The configured base branch itself has local commits. | blocked | Create a feature branch or review the specific commit explicitly. |
+| `PR_BASE_UNKNOWN` | PR base probing failed for reasons other than "no PR". | UNKNOWN | Resolve `gh` auth/network/state before selecting a branch target. |
+| `BASE_DIFF_UNKNOWN` | Git cannot compare `origin/$base...HEAD`. | UNKNOWN | Fetch or repair the base ref before selecting a branch target. |
+
 <!-- host-branch: available-tool start -->
 - **Dirty local work** (unstaged/staged/untracked in the working tree): review the working
-  tree with `codex review --uncommitted`. Use this only when there is an actual local patch; a clean local review just proves
-  there is no local patch, not that the branch is good.
+  tree with `codex review --uncommitted`. Use this only when there is an actual local patch.
 - **Branch / PR work** (committed, maybe pushed): review the branch diff against its configured
   base with `codex review --base "origin/$base"` or the PR's real base.
   If an open PR exists, use its real base instead of assuming the configured value:
