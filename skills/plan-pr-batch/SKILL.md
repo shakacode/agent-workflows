@@ -126,16 +126,34 @@ Plan a PR batch
 4. Output
    <!-- prompt-size-check: scripts/check_goal_prompt_size.rb pins selected wording in this section. -->
    - Return a concise "Batch Plan" and a fenced "Goal Prompt for pr-batch".
-   - Keep the fenced goal prompt under 4000 characters total, including the `/goal` line, so bulky detail stays in the Batch Plan. Measure it,
-     do not eyeball it: use the guard script below, or pipe only the extracted fence body to a character-counting
-     command such as `ruby -e 'print STDIN.read.length'`. Do not use byte-oriented counts such as `wc -c`.
+   - Determine the prompt target before writing the fenced prompt:
+     an explicit user-requested target wins over host detection; use `codex`
+     when the user asks for Codex or, with no explicit target, the current host
+     is Codex; use `claude` when the user asks for Claude or, with no explicit
+     target, the current host is Claude or Claude Code; otherwise `generic` and
+     report that the host was not detectable.
+   - For the `codex` target, keep the fenced goal prompt under 4000 characters
+     total, including the `/goal` line, so bulky detail stays in the Batch Plan.
+     For the `claude` or `generic` target, omit the `/goal` line and do not
+     apply Codex's strict 4000-character limit; still keep the prompt compact,
+     measured, and free of bulky evidence.
+   - Measure the actual target-specific prompt, do not eyeball it: use the guard
+     script below, or pipe only the extracted fence body to a
+     character-counting command such as `ruby -e 'print STDIN.read.length'`.
+     Do not use byte-oriented counts such as `wc -c`.
    - Use compact one-line item goals, short worker notes, and canonical workflow references instead of copied
      audit evidence, repeated issue text, or long rule explanations.
-   - Before responding, measure only the text inside the goal-prompt fence, including the `/goal` line and excluding the fence lines, and print
-     `Goal prompt character count: N characters` after the fence.
-   - If the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. If it still
+   - Before responding, measure only the text inside the goal-prompt fence,
+     including the `/goal` line for Codex and excluding the fence lines, and
+     print `Goal prompt character count: N characters (target: codex|claude|generic)`
+     after the fence.
+   - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. If it still
      will not fit, split it into smaller goals and output only the first ready goal; list omitted ready items in
      the Batch Plan for later goal prompts.
+   - For Claude or generic targets, do not split solely because the prompt is
+     4000 characters or more. Split only when the prompt is too large for the
+     target host, too bulky to review safely, or would hide ownership and
+     collision boundaries.
    - Measure the actual filled template overhead when the prompt is near the
      character budget; do not rely on a fixed estimate. Prefer splitting into
      multiple goals over trimming the safety, ownership, or review content.
@@ -166,15 +184,17 @@ Plan a PR batch
 - Coordination hooks, including backend claim exclusions:
 - Batch QA Lane decision and QA Evidence expectations:
 - Verification expectations:
-- Prompt sizing: `Goal prompt character count: N characters`; note any split fallback and keep omitted item
-  details here, not in the goal prompt.
+- Prompt sizing: `Goal prompt character count: N characters (target: codex|claude|generic)`; note any split fallback
+  and keep omitted item details here, not in the goal prompt.
 - Open questions:
 
 ## Goal Prompt for pr-batch
 
-Use this template and fill it with the verified items. Keep `/goal` as the
-first line, and keep bulky evidence, long validation notes, and later-batch
-details outside the prompt.
+Use this template and fill it with the verified items. The fenced template below
+shows the Codex variant. For the `codex` target, keep `/goal` as the first line.
+For the `claude` or `generic` target, remove only the `/goal` line so the prompt
+starts with `Use $pr-batch to complete this batch with subagents.` Keep bulky
+evidence, long validation notes, and later-batch details outside the prompt.
 
 ```text
 /goal

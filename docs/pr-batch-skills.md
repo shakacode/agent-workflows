@@ -23,7 +23,7 @@ for cancellation, see
 | `$triage`            | The user wants a live whole-surface issue/PR inventory, dependency graph, and capacity-aware batch split.   | A dependency-ordered worklist plus one capacity-derived `$pr-batch` prompt per group. |
 | `$evaluate-issue`    | A concrete issue, proposed fix, or code-analysis finding has uncertain value, priority, or fix scope.       | A disposition: fix now, fix later, park, document/work around, close, or ask.         |
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
-| `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A concise Batch Plan plus a ready `$pr-batch` goal prompt under 4000 characters.      |
+| `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A concise Batch Plan plus a target-specific ready `$pr-batch` goal prompt.            |
 | `$pr-batch`          | The target list is exact, trusted, and ready to run or convert into a `/goal` prompt.                       | A launch plan, worker split, or final `/goal` prompt for processing the batch.        |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
