@@ -61,10 +61,11 @@ module ValidateSolutions
       return ["#{relative}: unterminated YAML frontmatter"]
     end
 
-    frontmatter = parse_frontmatter(text[4...closing], relative)
+    raw_frontmatter = text[4...closing]
+    frontmatter = parse_frontmatter(raw_frontmatter, relative)
     return [frontmatter] if frontmatter.is_a?(String)
 
-    failures.concat(validate_required_fields(frontmatter, relative, root))
+    failures.concat(validate_required_fields(frontmatter, relative, root, raw_frontmatter))
     failures.concat(validate_body(text[(closing + FRONTMATTER_CLOSE.length)..], relative))
     failures
   end
@@ -78,7 +79,7 @@ module ValidateSolutions
     "#{relative}: invalid YAML frontmatter: #{e.message}"
   end
 
-  def validate_required_fields(frontmatter, relative, root)
+  def validate_required_fields(frontmatter, relative, root, raw_frontmatter)
     failures = []
 
     missing = REQUIRED_FIELDS.reject { |field| frontmatter.key?(field) }
@@ -105,17 +106,30 @@ module ValidateSolutions
       end
     end
 
-    validate_date(frontmatter["date"], relative, failures) if frontmatter.key?("date")
+    validate_date(frontmatter["date"], relative, failures, raw_frontmatter) if frontmatter.key?("date")
     failures
   end
 
-  def validate_date(value, relative, failures)
+  def validate_date(value, relative, failures, raw_frontmatter)
+    raw = raw_date_value(raw_frontmatter)
     normalized = value.is_a?(Date) ? value.iso8601 : value.to_s
-    raise ArgumentError unless normalized.match?(DATE_FORMAT)
+    raise ArgumentError unless raw&.match?(DATE_FORMAT)
+    raise ArgumentError unless normalized == raw
 
     Date.iso8601(normalized)
   rescue ArgumentError
     failures << "#{relative}: date must be ISO 8601 YYYY-MM-DD"
+  end
+
+  def raw_date_value(raw_frontmatter)
+    line = raw_frontmatter.lines.find { |candidate| candidate.match?(/\Adate:/) }
+    return nil unless line
+
+    raw = line.sub(/\Adate:\s*/, "").sub(/\s+#.*\z/, "").strip
+    if (raw.start_with?('"') && raw.end_with?('"')) || (raw.start_with?("'") && raw.end_with?("'"))
+      raw = raw[1...-1]
+    end
+    raw
   end
 
   def validate_body(body, relative)

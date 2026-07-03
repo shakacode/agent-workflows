@@ -96,6 +96,22 @@ class ValidateSolutionsTest < Minitest::Test
     end
   end
 
+  def test_unpadded_yaml_date_fails_before_date_normalization
+    with_solution_root do |root|
+      write_solution(root, "unpadded-date.md", valid_solution.sub('date: "2026-07-02"', "date: 2026-7-2"))
+
+      assert_includes ValidateSolutions.validate(root), "docs/solutions/unpadded-date.md: date must be ISO 8601 YYYY-MM-DD"
+    end
+  end
+
+  def test_unquoted_strict_yaml_date_passes
+    with_solution_root do |root|
+      write_solution(root, "unquoted-date.md", valid_solution.sub('date: "2026-07-02"', "date: 2026-07-02"))
+
+      assert_empty ValidateSolutions.validate(root)
+    end
+  end
+
   def test_missing_related_file_fails
     with_solution_root do |root|
       write_solution(root, "missing-related-file.md", valid_solution.sub("workflows/pr-processing.md", "missing/path.md"))
