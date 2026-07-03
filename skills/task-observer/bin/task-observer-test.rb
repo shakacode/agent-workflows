@@ -27,6 +27,18 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_init_and_status_use_claude_memory_root_when_codex_home_is_unset
+    Dir.mktmpdir("task-observer") do |home|
+      out = run!("init", env: { "CLAUDE_HOME" => home })
+      assert_includes out, "initialized"
+
+      root = File.join(home, "memories", "task-observer")
+      status = JSON.parse(run!("status", "--json", env: { "CLAUDE_HOME" => home }))
+      assert_equal root, status.fetch("memory_root")
+      assert_equal true, status.fetch("initialized")
+    end
+  end
+
   def test_append_writes_sanitized_observation_stub
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -129,6 +141,40 @@ class TaskObserverTest < Minitest::Test
         "append",
         "--kind", "correction",
         "--summary", "See https://internal.example.test/report?token=abc",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+    end
+  end
+
+  def test_append_rejects_private_urls_without_query_strings
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://internal.example.test/report",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+    end
+  end
+
+  def test_append_rejects_sensitive_url_paths
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://example.com/report/password=secret",
         "--source", "test",
         env: { "CODEX_HOME" => home }
       )

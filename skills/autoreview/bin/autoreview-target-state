@@ -38,7 +38,7 @@ module AutoreviewTargetState
 
     if branch_diff == :unknown
       unknown_base_result(base)
-    elsif pr["state"] == "unknown" && branch_diff == true
+    elsif pr["state"] == "unknown"
       unknown_pr_result(pr)
     elsif dirty && branch_diff == true
       branch_plus_dirty_result(base, pr)

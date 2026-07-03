@@ -15,6 +15,7 @@ Default targets:
 Installed paths:
   <target>/skills/*
   <target>/workflows/*
+  <target>/docs/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
@@ -201,9 +202,10 @@ host="${resolved%%:*}"
 target="${resolved#*:}"
 
 if [[ "$mode" = "copy" ]]; then
-  mkdir -p "$target/skills" "$target/workflows" "$target/bin"
+  mkdir -p "$target/skills" "$target/workflows" "$target/docs" "$target/bin"
   copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
   copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
+  copy_children_preserving_unrelated "$repo_root/docs" "$target/docs"
   for helper in "${bin_helpers[@]}"; do
     install -m 0755 "$repo_root/bin/$helper" "$target/bin/$helper"
   done
@@ -211,6 +213,10 @@ else
   mkdir -p "$target/skills" "$target/bin"
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
     echo "Refusing to replace non-symlink path: $target/workflows" >&2
+    exit 1
+  fi
+  if [[ -e "$target/docs" && ! -L "$target/docs" ]]; then
+    echo "Refusing to replace non-symlink path: $target/docs" >&2
     exit 1
   fi
   for skill in "$repo_root"/skills/*; do
@@ -224,6 +230,8 @@ else
   done
   rm -f "$target/workflows"
   ln -sfn "$repo_root/workflows" "$target/workflows"
+  rm -f "$target/docs"
+  ln -sfn "$repo_root/docs" "$target/docs"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -e "$destination" && ! -L "$destination" ]]; then

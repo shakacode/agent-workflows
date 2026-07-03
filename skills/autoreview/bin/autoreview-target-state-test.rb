@@ -114,8 +114,8 @@ class AutoreviewTargetStateTest < Minitest::Test
       branch_diff: false
     )
 
-    assert_equal "NO_REVIEW_TARGET", result["state"]
-    assert_equal "not_ready", result["disposition"]
+    assert_equal "PR_BASE_UNKNOWN", result["state"]
+    assert_equal "UNKNOWN", result["disposition"]
     assert_empty result["review_targets"]
   end
 

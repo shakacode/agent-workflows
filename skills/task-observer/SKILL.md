@@ -86,7 +86,13 @@ Use it for local runs:
 ```bash
 TASK_OBSERVER_SKILL_DIR="${TASK_OBSERVER_SKILL_DIR:-.agents/skills/task-observer}"
 if [ ! -x "$TASK_OBSERVER_SKILL_DIR/bin/task-observer" ]; then
-  TASK_OBSERVER_SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/task-observer"
+  for agent_home in "${CODEX_HOME:-}" "${CLAUDE_HOME:-}" "$HOME/.codex" "$HOME/.claude"; do
+    [ -n "$agent_home" ] || continue
+    if [ -x "$agent_home/skills/task-observer/bin/task-observer" ]; then
+      TASK_OBSERVER_SKILL_DIR="$agent_home/skills/task-observer"
+      break
+    fi
+  done
 fi
 
 "$TASK_OBSERVER_SKILL_DIR/bin/task-observer" init

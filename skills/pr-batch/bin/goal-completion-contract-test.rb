@@ -28,7 +28,7 @@ CANONICAL_READINESS_STATES = %w[
   blocked-user-input
   no-pr-evidence
 ].freeze
-READINESS_STATE_KEYS = /\b(?:final_state|readiness_state|target_state):\s*`?([a-z0-9_-]+|UNKNOWN)`?/
+READINESS_STATE_KEYS = /\b(?:final_state|readiness_state|target_state):\s*`?([A-Za-z0-9_-]+)`?/
 
 def read_repo_file(path)
   File.read(path, encoding: "UTF-8")
@@ -146,8 +146,8 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_structured_readiness_marker_validation_rejects_vague_ready
-    invalid_values = invalid_readiness_marker_values("final_state: ready\nreadiness_state: `UNKNOWN`\n")
-    assert_equal ["ready"], invalid_values
+    invalid_values = invalid_readiness_marker_values("final_state: ready\nreadiness_state: `UNKNOWN`\ntarget_state: Unknown\n")
+    assert_equal %w[ready Unknown], invalid_values
   end
 
   def test_skill_prose_points_to_canonical_contract_instead_of_pasting_it

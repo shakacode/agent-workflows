@@ -107,6 +107,7 @@ The installer writes:
 
 - `<target>/skills/*`
 - `<target>/workflows/*`
+- `<target>/docs/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
@@ -114,8 +115,8 @@ The installer writes:
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`
 
-Copy mode replaces only this pack's skill and workflow names; it preserves
-unrelated files already present in the target agent home.
+Copy mode replaces only this pack's skill, workflow, and docs names; it
+preserves unrelated files already present in the target agent home.
 
 The metadata file records host, mode, source clone, pack version, source
 revision, branch, remote, and install time. The status and upgrade helpers use
@@ -214,7 +215,7 @@ code changes.
 ## Codex And Claude
 
 The skill Markdown is host-neutral. Codex and Claude both use the same
-`skills/`, `workflows/`, and `bin/` layout after installation. Files under
+`skills/`, `workflows/`, `docs/`, and `bin/` layout after installation. Files under
 `skills/*/agents/openai.yaml` are optional Codex UI metadata and are ignored by
 Claude.
 

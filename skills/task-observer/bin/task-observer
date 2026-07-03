@@ -39,9 +39,23 @@ module TaskObserver
     explicit = ENV["TASK_OBSERVER_HOME"].to_s.strip
     return File.expand_path(explicit) unless explicit.empty?
 
+    File.join(agent_home, "memories", "task-observer")
+  end
+
+  def agent_home
     codex_home = ENV["CODEX_HOME"].to_s.strip
-    codex_home = File.join(Dir.home, ".codex") if codex_home.empty?
-    File.join(File.expand_path(codex_home), "memories", "task-observer")
+    return File.expand_path(codex_home) unless codex_home.empty?
+
+    claude_home = ENV["CLAUDE_HOME"].to_s.strip
+    return File.expand_path(claude_home) unless claude_home.empty?
+
+    codex_default = File.join(Dir.home, ".codex")
+    return codex_default if Dir.exist?(codex_default)
+
+    claude_default = File.join(Dir.home, ".claude")
+    return claude_default if Dir.exist?(claude_default)
+
+    codex_default
   end
 
   def init
@@ -133,14 +147,11 @@ module TaskObserver
 
     URI::DEFAULT_PARSER.extract(text, %w[http https]).each do |url|
       uri = URI.parse(url)
-      next if uri.query.to_s.empty?
-
-      raise Error, "observation contains an invalid URL; summarize without the URL" if malformed_query?(uri.query)
-
-      query_keys = URI.decode_www_form(uri.query).map { |key, _value| key.downcase }
       private_host = PRIVATE_HOST_PATTERNS.any? { |pattern| uri.host.to_s.match?(pattern) }
+      sensitive_path = SENSITIVE_PATTERNS.any? { |pattern| decoded_path(uri).match?(pattern) }
+      query_keys = uri.query.to_s.empty? ? [] : URI.decode_www_form(uri.query).map { |key, _value| key.downcase }
       sensitive_query = (query_keys & SENSITIVE_QUERY_KEYS).any?
-      next unless private_host || sensitive_query
+      next unless private_host || sensitive_query || sensitive_path
 
       raise Error, "observation appears to contain a private URL with sensitive query parameters"
     rescue URI::InvalidURIError, ArgumentError
@@ -158,6 +169,12 @@ module TaskObserver
 
   def malformed_url_encoding?(text)
     text.match?(%r{https?://\S*%(?![0-9A-Fa-f]{2})})
+  end
+
+  def decoded_path(uri)
+    URI.decode_www_form_component(uri.path.to_s)
+  rescue ArgumentError
+    raise Error, "observation contains an invalid URL; summarize without the URL"
   end
 
   def parse_append_args(args)
