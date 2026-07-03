@@ -66,8 +66,10 @@ staged/unstaged/untracked changes, unpushed commits, stashes, and running
 processes before editing, pushing, polling, merging, or launching servers.
 
 Reconstruct the current goal from the handoff and this request. Continue only
-from the recorded next resume step after the live state matches the handoff or
-you have reported any mismatch.
+from the recorded next resume step after the live state matches the handoff.
+If live state does not match the handoff, report the mismatch and stop for
+operator direction before editing, pushing, polling, merging, or launching
+servers.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>
