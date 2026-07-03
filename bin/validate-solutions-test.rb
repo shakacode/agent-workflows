@@ -82,4 +82,15 @@ class ValidateSolutionsTest < Minitest::Test
       assert_includes ValidateSolutions.validate(root), "docs/solutions/invalid-date.md: date must be ISO 8601 YYYY-MM-DD"
     end
   end
+
+  def test_iso_basic_and_datetime_dates_fail
+    with_solution_root do |root|
+      write_solution(root, "basic-date.md", valid_solution.sub('date: "2026-07-02"', 'date: "20260702"'))
+      write_solution(root, "datetime.md", valid_solution.sub('date: "2026-07-02"', 'date: "2026-07-02T12:00:00Z"'))
+
+      failures = ValidateSolutions.validate(root)
+      assert_includes failures, "docs/solutions/basic-date.md: date must be ISO 8601 YYYY-MM-DD"
+      assert_includes failures, "docs/solutions/datetime.md: date must be ISO 8601 YYYY-MM-DD"
+    end
+  end
 end

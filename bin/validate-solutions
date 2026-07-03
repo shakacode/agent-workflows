@@ -20,6 +20,7 @@ module ValidateSolutions
   ].freeze
   REQUIRED_FIELDS = (REQUIRED_STRING_FIELDS + REQUIRED_LIST_FIELDS + ["date"]).freeze
   FRONTMATTER_CLOSE = "\n---\n"
+  DATE_FORMAT = /\A\d{4}-\d{2}-\d{2}\z/
 
   module_function
 
@@ -107,6 +108,8 @@ module ValidateSolutions
 
   def validate_date(value, relative, failures)
     normalized = value.is_a?(Date) ? value.iso8601 : value.to_s
+    raise ArgumentError unless normalized.match?(DATE_FORMAT)
+
     Date.iso8601(normalized)
   rescue ArgumentError
     failures << "#{relative}: date must be ISO 8601 YYYY-MM-DD"

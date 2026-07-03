@@ -65,6 +65,10 @@ echo "== solution docs =="
 ruby bin/validate-solutions-test.rb
 ruby bin/validate-solutions
 
+echo "== review finding schema =="
+ruby bin/validate-review-findings-test.rb
+ruby bin/validate-review-findings
+
 echo "== installer/status/upgrade tests =="
 bash bin/install-agent-workflows-test.bash
 
