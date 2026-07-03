@@ -9,8 +9,9 @@ dependencies, cancellation, and handoff rules. This file stays focused on skill
 selection and per-batch sizing.
 
 For non-batch restart prompts and batch restart guidance, see
-[agent-runner-restarts.md](agent-runner-restarts.md). For the canonical
-batch pause procedure, see
+[agent-runner-restarts.md](agent-runner-restarts.md), or use `$pause` to print
+the copy-paste pause and restart prompts directly. For the canonical batch
+pause procedure, see
 [Pausing For An Agent-Runner Restart](../workflows/pr-processing.md#pausing-for-an-agent-runner-restart);
 for cancellation, see
 [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch).
@@ -22,6 +23,7 @@ for cancellation, see
 | `$plan-issue-triage` | The user wants a ready prompt for review-only issue triage, all-open-issues audits, or comment-only triage. | A ready issue-audit prompt with permissions, scope, buckets, and output format.       |
 | `$triage`            | The user wants a live whole-surface issue/PR inventory, dependency graph, and capacity-aware batch split.   | A dependency-ordered worklist plus one capacity-derived `$pr-batch` prompt per group. |
 | `$evaluate-issue`    | A concrete issue, proposed fix, or code-analysis finding has uncertain value, priority, or fix scope.       | A disposition: fix now, fix later, park, document/work around, close, or ask.         |
+| `$pause`             | An operator needs copy-paste prompts to pause an agent thread for runner restart and resume from a handoff. | Non-batch or PR-batch pause prompts plus same-thread and new-chat restart prompts.    |
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A concise Batch Plan plus a ready `$pr-batch` goal prompt under 4000 characters.      |
 | `$pr-batch`          | The target list is exact, trusted, and ready to run or convert into a `/goal` prompt.                       | A launch plan, worker split, or final `/goal` prompt for processing the batch.        |
