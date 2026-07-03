@@ -108,8 +108,9 @@ after phase 1 with a precise blocker.
    `docs/pr-batch-skills.md`, with a stable batch id,
    lane name, agent id, target list, validation expectations, and coordination
    hooks. Put a short `Batch title:` at the top of each pasteable prompt using
-   the repository abbreviation, A/B/C group letter when multiple prompts are
-   created, local `MM-DD HH:MM`, and a descriptive title.
+   a short abbreviation derived from the current repository name, A/B/C group
+   letter when multiple prompts are created, `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell, and a descriptive title.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire an `agent-coord claim` before editing.

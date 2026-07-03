@@ -166,7 +166,8 @@ continuation_prompt = extract_first_text_fence_body(
 required_skill_rule_phrases = [
   "Batch title:",
   "<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
-  "repository abbreviation",
+  "current repository name",
+  "date +'%m-%d %H:%M'",
   "Goal prompt character count:",
   "If the measured prompt is 4000 characters or more",
   "output only the first ready goal",

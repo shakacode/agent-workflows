@@ -554,6 +554,9 @@ The `$pr-batch` skill links to this canonical `Coordination:` paragraph instead
 of duplicating it.
 
 Use this goal prompt shape:
+Before filling the `Batch title:` line, derive `<PROJECT>` from the current
+repository name or maintainer-supplied abbreviation, and run
+`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
 
 ```text
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
@@ -1094,6 +1097,10 @@ contains the batch closeout targets but the operator should not hand-edit a
 target list for each batch:
 
 <!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+
+Before filling the `Batch title:` line, derive `<PROJECT>` from the current
+repository name or maintainer-supplied abbreviation, and run
+`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
 
 ```text
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.
@@ -1710,9 +1717,9 @@ Use this section when reviewing already-merged PRs from concurrent agent work, e
    batch closeout names exactly one just-run batch, default to it. If the
    visible value is an exact coordination batch id, verify it through the
    known-batch path. If it is a human label such as `Batch E` or an unambiguous
-   target set, treat it as a batch hint: resolve it to an exact batch id
-   through bounded coordination discovery, public claim `batch:` fields, or
-   GitHub target evidence before using the known-batch path. Never pass a label
+   target set, treat it as a batch hint: resolve it to an exact batch id or
+   verified worked-issue list through bounded coordination discovery, public
+   claim fields, or GitHub target evidence before proceeding. Never pass a label
    or target set directly to `agent-coord status --batch-id`. Do not ask solely
    to confirm the obvious just-run batch. If batch work is in scope but the
    batch/run id or hint is unknown:

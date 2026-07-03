@@ -35,8 +35,9 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   the visible value is an exact coordination batch id, verify it through
   targeted coordination/GitHub evidence. If it is a human label such as
   `Batch E` or an unambiguous target set, treat it as a batch hint: resolve it
-  to an exact batch id through bounded coordination discovery, public claim
-  `batch:` fields, or GitHub target evidence before using the known-batch path.
+  to an exact batch id or verified worked-issue list through bounded
+  coordination discovery, public claim fields, or GitHub target evidence before
+  proceeding.
   Never pass a label or target set directly to
   `agent-coord status --batch-id`. Do not ask solely to confirm the obvious
   just-run batch. Ask only when the batch is not obvious, multiple candidates
@@ -132,8 +133,8 @@ First, produce the exact worked-issue scope and merged-PR range:
   through the known-batch path without asking solely for confirmation
 - when the current visible chat provides only a batch label or target set, use
   it as a default batch hint, resolve it to an exact batch id or verified
-  worked-issue list before the known-batch path, and ask only if that
-  resolution is ambiguous
+  worked-issue list before the matching known-batch or verified-list path, and
+  ask only if that resolution is ambiguous
 - when batch work is in scope but the batch id and hint are `UNKNOWN`, run bounded
   `agent-coord doctor --json`, then broad `agent-coord status` through the
   resolved `pr-batch` bounded helper only as an audit/discovery read to list candidate

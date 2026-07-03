@@ -17,7 +17,7 @@ All notable changes to this portable workflow pack are documented here.
 #### Changed
 
 - **Default post-merge audits to the obvious just-run batch before asking for batch confirmation.**
-- **Start pasteable batch prompts with a short title that includes the project abbreviation, optional A/B/C split marker, and local `MM-DD HH:MM` timestamp.**
+- **Start pasteable batch prompts with a short title that includes a repository-derived project abbreviation, optional A/B/C split marker, and `MM-DD HH:MM` from the local shell `date` command.**
 
 #### Fixed
 

@@ -73,7 +73,9 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Batch title**: for pasteable batch prompts, derive a short title in the form
    `<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>`, where
-   `<PROJECT>` is the repository abbreviation such as ROR, SP, or CPF.
+   `<PROJECT>` is a short abbreviation derived from the current repository name
+   or a maintainer-supplied abbreviation. Run `date +'%m-%d %H:%M'` in the local
+   shell when creating the prompt, and use that output for `MM-DD HH:MM`.
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
@@ -140,6 +142,9 @@ Before implementation or worker launch, produce:
 10. A final `/goal` prompt when the user asked for Goal mode.
     The top line of each pasteable batch prompt must be
     `Batch title: <PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>`.
+    Derive `<PROJECT>` from the current repository name or maintainer-supplied
+    abbreviation, and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
+    local shell when creating the prompt.
 
 If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the `/goal` prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 

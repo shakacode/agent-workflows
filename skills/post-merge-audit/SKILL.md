@@ -29,8 +29,8 @@ handoff, or immediately preceding batch closeout names exactly one just-run
 batch, default to it. If the visible value is an exact coordination batch id,
 verify it through the known-batch path below. If it is a human label such as
 `Batch E` or an unambiguous target set, treat it as a batch hint: resolve it to
-an exact batch id through bounded coordination discovery, public claim
-`batch:` fields, or GitHub target evidence before using the known-batch path.
+an exact batch id or verified worked-issue list through bounded coordination
+discovery, public claim fields, or GitHub target evidence before proceeding.
 Never pass a label or target set directly to `agent-coord status --batch-id`.
 Ask only when the just-run batch is not obvious, multiple candidates are
 visible, or verified evidence conflicts with the default.
@@ -60,8 +60,8 @@ The resolver is read-only. It resolves the default release-candidate base, the h
    that id as known and do not ask before verification. If the visible chat
    provides only a batch label or target set, use it as a default batch hint,
    resolve it to an exact batch id or verified worked-issue list before the
-   known-batch path, and ask only if that resolution is ambiguous. If batch work
-   is in scope but the batch/run id or hint is still unknown:
+   matching known-batch or verified-list path, and ask only if that resolution is
+   ambiguous. If batch work is in scope but the batch/run id or hint is still unknown:
    - run bounded `agent-coord doctor --json`, then broad `agent-coord status`
      through the resolved `pr-batch` bounded helper only as an audit/discovery read to list
      candidate batch/run ids and lanes

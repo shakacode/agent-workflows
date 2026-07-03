@@ -133,11 +133,10 @@ Plan a PR batch
    - Return a concise "Batch Plan" and a fenced "Goal Prompt for pr-batch".
    - Put a short `Batch title:` at the top of every pasteable batch prompt:
      `<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>`.
-     Derive `<PROJECT>` from the repository abbreviation, such as ROR for
-     `react_on_rails`, SP for `shakapacker`, or CPF for
-     `control-plane-flow`. Include A, B, C, etc. only when creating multiple
-     batch prompts in the same response. Use the local current time for
-     `MM-DD HH:MM`.
+     Derive `<PROJECT>` from the current repository name or maintainer-supplied
+     abbreviation. Include A, B, C, etc. only when creating multiple batch
+     prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
+     when creating the prompt, and use that output for `MM-DD HH:MM`.
    - Keep the fenced goal prompt under 4000 characters total so bulky detail stays in the Batch Plan. Measure it,
      do not eyeball it: use the guard script below, or pipe only the extracted fence body to a character-counting
      command such as `ruby -e 'print STDIN.read.length'`. Do not use byte-oriented counts such as `wc -c`.
