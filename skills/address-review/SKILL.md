@@ -216,21 +216,36 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 ## Mutual Exclusion Gate
 
-Before Step 5, establish exclusive ownership for the target PR. Do this before
-creating todos, presenting an unattended `autopilot` action, committing,
-pushing, posting replies, resolving threads, or posting a summary checkpoint.
-Read-only fetches in Steps 3-4 may run before this gate.
+Before Step 5, establish the applicable ownership gate for the target PR.
+Read-only fetches in Steps 3-4 may run before this gate. For private backends,
+do not create todos, present an unattended `autopilot` action, commit, push,
+post replies, resolve threads, or post a summary checkpoint until the private
+claim gate passes. Public fallback claims are GitHub comments, so do not post
+them merely to triage, run `autopilot`, or execute local-only action `a`; for
+public-fallback repos, Step 5 may proceed after the read-only conflict
+inspection below, but any GitHub-mutating action must post or refresh the
+fallback claim after the user selects that action and before the first branch
+update, push, reply, thread resolution, follow-up issue, or summary/status
+comment.
 
 - If the repo's coordination backend is available per the repo seam, acquire the
   target PR claim with the bounded helper from the resolved `pr-batch` skill
   directory. Use stable `AGENT_ID` and `BATCH_ID` values from the current run
-  when available, and use the normal PR branch name when a branch is known:
+  when available, and use the normal PR branch name when a branch is known. If
+  `AGENT_ID` is not already set, initialize a stable fallback from the current
+  thread/session when possible; set `AGENT_ID` explicitly when running multiple
+  concurrent sessions against the same PR:
 
   ```bash
   PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+  machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
+  AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}" --batch-id "${BATCH_ID}" --branch "${BRANCH_NAME}" --json
+  set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"
+  [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
+  [ -n "${BRANCH_NAME:-}" ] && set -- "$@" --branch "${BRANCH_NAME}"
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json
   ```
 
 - A refused private claim is a hard stop. If the claim returns
@@ -244,14 +259,24 @@ Read-only fetches in Steps 3-4 may run before this gate.
   degraded read evidence in the handoff. If the claim times out, stop with
   `private_state: UNKNOWN (claim outcome)` and reconcile backend state before
   fallback or mutation.
-- Use a structured public `codex-claim` comment only when no backend is
-  configured, or when the private claim cannot be started or definitively fails
-  with a non-timeout setup/auth error before any mutation. Public claim comments
-  are advisory and must not override a private claim refusal or timeout.
+- After any successful private claim, refresh the heartbeat at phase
+  transitions: triage complete, action selected, before and after long-running
+  local fix or validation blocks, before push/reply/resolve/summary work,
+  blocked/resumed states, and final stable stop. Do not let a live address-review
+  run exceed the backend heartbeat TTL without a refresh.
+- Use a structured public `codex-claim` comment only when the repo seam
+  explicitly selects public claim-comment fallback, or when the private claim
+  cannot be started or definitively fails with a non-timeout setup/auth error
+  before any mutation and the repo seam allows that fallback. Public claim
+  comments are advisory and must not override a private claim refusal, timeout,
+  or a repo seam that opts out of coordination.
 - Before posting a fallback claim, inspect recent PR comments for an unexpired
   `codex-claim` block on the same PR. If another active fallback claim exists,
-  stop and report the conflicting comment URL. Otherwise post a PR issue comment
-  using this marker shape:
+  stop GitHub-mutating actions and report the conflicting comment URL;
+  local-only action `a` may still proceed, but it must report that
+  publishing/reply actions remain blocked by the active advisory claim.
+  Otherwise post a PR issue comment using this marker shape only when a
+  GitHub-mutating action is selected:
 
   ```markdown
   <!-- codex-claim v1
@@ -271,9 +296,10 @@ Read-only fetches in Steps 3-4 may run before this gate.
 - At a stable stop, update the private heartbeat or advisory claim state before
   reporting. For private coordination, send a terminal heartbeat and release the
   claim on normal completion; preserve it for blocked or handoff states when the
-  repo workflow requires preservation. For public fallback, supersede the claim
-  by editing it to a terminal status with an expired `expires_at`, or by linking
-  it from the final address-review summary/status comment as superseded.
+  repo workflow requires preservation. For public fallback, edit the claim
+  comment to a terminal status with an expired `expires_at`; a final
+  address-review summary/status comment may link the terminal claim, but it must
+  not be the only cleanup step.
 
 ## Step 5: Triage Comments
 

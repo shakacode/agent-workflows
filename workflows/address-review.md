@@ -142,20 +142,33 @@ Execution flow when terminal access is available:
      `gh api graphql --paginate -f owner="${OWNER}" -f name="${NAME}" -F pr="${PR_NUMBER}" -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { id isResolved comments(first:100) { nodes { id databaseId } } } pageInfo { hasNextPage endCursor } } } } }' | jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[] | {thread_id: .id, is_resolved: .isResolved, comments: [.comments.nodes[] | {node_id: .id, id: .databaseId}]}]'`
    - Use `-F pr=...` intentionally for the GraphQL `Int!` variable; raw `-f pr=...` sends a string.
 
-Before step 5, establish exclusive ownership for the target PR. Read-only
-fetches above may run before this gate, but do not filter into actionable
-triage, present an unattended `autopilot` action, create todos, commit, push,
-post replies, resolve threads, or post summary/status checkpoints until the gate
-passes.
+Before step 5, establish the applicable ownership gate for the target PR.
+Read-only fetches above may run before this gate. For private backends, do not
+filter into actionable triage, present an unattended `autopilot` action, create
+todos, commit, push, post replies, resolve threads, or post summary/status
+checkpoints until the private claim gate passes. Public fallback claims are
+GitHub comments, so do not post them merely to triage, run `autopilot`, or
+execute local-only action `a`; for public-fallback repos, step 5 may proceed
+after the read-only conflict inspection below, but any GitHub-mutating action
+must post or refresh the fallback claim after the user selects that action and
+before the first branch update, push, reply, thread resolution, follow-up issue,
+or summary/status comment.
 
 - If the repo's coordination backend is available per the repo seam, acquire the
   target PR claim with the bounded helper from the resolved `pr-batch` skill
-  directory:
+  directory. If `AGENT_ID` is not already set, initialize a stable fallback from
+  the current thread/session when possible; set `AGENT_ID` explicitly when
+  running multiple concurrent sessions against the same PR:
   ```bash
   PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+  machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
+  AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}" --batch-id "${BATCH_ID}" --branch "${BRANCH_NAME}" --json
+  set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"
+  [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
+  [ -n "${BRANCH_NAME:-}" ] && set -- "$@" --branch "${BRANCH_NAME}"
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json
   ```
 - A refused private claim is a hard stop. If the claim returns
   `CLAIM_REFUSED` / exit code 3, report the holder, heartbeat liveness, and
@@ -168,14 +181,24 @@ passes.
   degraded read evidence. If the claim times out, stop with `private_state:
   UNKNOWN (claim outcome)` and reconcile backend state before fallback or
   mutation.
-- Use a structured public `codex-claim` comment only when no backend is
-  configured, or when the private claim cannot be started or definitively fails
-  with a non-timeout setup/auth error before any mutation. Public claim comments
-  are advisory and must not override a private claim refusal or timeout.
+- After any successful private claim, refresh the heartbeat at phase
+  transitions: triage complete, action selected, before and after long-running
+  local fix or validation blocks, before push/reply/resolve/summary work,
+  blocked/resumed states, and final stable stop. Do not let a live address-review
+  run exceed the backend heartbeat TTL without a refresh.
+- Use a structured public `codex-claim` comment only when the repo seam
+  explicitly selects public claim-comment fallback, or when the private claim
+  cannot be started or definitively fails with a non-timeout setup/auth error
+  before any mutation and the repo seam allows that fallback. Public claim
+  comments are advisory and must not override a private claim refusal, timeout,
+  or a repo seam that opts out of coordination.
 - Before posting a fallback claim, inspect recent PR comments for an unexpired
   `codex-claim` block on the same PR. If another active fallback claim exists,
-  stop and report the conflicting comment URL. Otherwise post a PR issue comment
-  using this marker shape:
+  stop GitHub-mutating actions and report the conflicting comment URL;
+  local-only action `a` may still proceed, but it must report that
+  publishing/reply actions remain blocked by the active advisory claim.
+  Otherwise post a PR issue comment using this marker shape only when a
+  GitHub-mutating action is selected:
   ```markdown
   <!-- codex-claim v1
   batch: <BATCH_ID>
@@ -186,10 +209,17 @@ passes.
   expires_at: <ISO8601_UTC>
   -->
   ```
+  Use any stable session, thread, or machine identifier available; if none is
+  available, use `thread: unavailable`. Set a short bounded advisory lease,
+  usually 2-4 hours for an active review run, and refresh the same comment if
+  continuing beyond that window.
 - At a stable stop, update the private heartbeat or advisory claim state before
   reporting. For private coordination, send a terminal heartbeat and release the
   claim on normal completion; preserve it for blocked or handoff states when the
-  repo workflow requires preservation.
+  repo workflow requires preservation. For public fallback, edit the claim
+  comment to a terminal status with an expired `expires_at`; a final
+  address-review summary/status comment may link the terminal claim, but it must
+  not be the only cleanup step.
 
 5. Filter comments:
    - Never triage prior workflow summary/status comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->` or `<!-- address-review-status -->` on its very first line; only the summary marker is a cutoff checkpoint.
