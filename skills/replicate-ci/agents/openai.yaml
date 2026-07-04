@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Replicate CI"
+  short_description: "Reproduce CI-only failures"
+  default_prompt: "Use $replicate-ci to investigate a hosted CI failure that does not reproduce locally."

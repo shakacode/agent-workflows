@@ -44,11 +44,24 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   audits with no ledger, record
   `Audit ledger: not applicable (non-release audit)` in approved issue bodies.
 - Before creating any issue, search existing open issues for the affected PR number and the hidden fingerprint.
-- When batch work is in scope but the batch/run id was not supplied, record
-  `worked_issue_scope: UNKNOWN (needs batch confirmation)`. If candidate
-  discovery cannot verify backend setup or access, record `UNKNOWN (setup)` or
-  `UNKNOWN (access)` with the exact command/error and report that batch id
-  confirmation is still needed after backend recovery.
+- When the current visible chat, active goal, restart handoff, or immediately
+  preceding batch closeout names exactly one just-run batch, default to it. If
+  the visible value is an exact coordination batch id, verify it through
+  targeted coordination/GitHub evidence. If it is a human label such as
+  `Batch E` or an unambiguous target set, treat it as a batch hint: resolve it
+  to an exact batch id or verified worked-issue list through bounded
+  coordination discovery, public claim fields, or GitHub target evidence before
+  proceeding.
+  Never pass a label or target set directly to
+  `agent-coord status --batch-id`. Do not ask solely to confirm the obvious
+  just-run batch. Ask only when the batch is not obvious, multiple candidates
+  are visible, or verified evidence conflicts with the default.
+- When batch work is in scope but the batch/run id was not supplied and is not
+  obvious from the current visible chat, record `worked_issue_scope: UNKNOWN
+  (needs batch confirmation)`. If candidate discovery cannot verify backend
+  setup or access, record `UNKNOWN (setup)` or `UNKNOWN (access)` with the exact
+  command/error and report that batch id confirmation is still needed after
+  backend recovery.
 - For named batch/run audits, run bounded `agent-coord doctor --json`, then
   bounded `agent-coord status --batch-id <batch-id> --json`, and inspect the
   named batch entry as the primary worked-issue scope when available. If
@@ -111,24 +124,33 @@ Run this separately in Codex and Claude. Do not share one agent's output with th
 Run an independent post-merge audit of merged PRs (and, when a batch id is known, its worked-issue scope)
 for the requested audit mode.
 
-Use git, GitHub, and agent-coord ground truth. Do not rely on prior chat memory.
+Use visible chat only to choose the obvious just-run batch default; use git,
+GitHub, and agent-coord ground truth for every audit fact.
 
 Scope:
 - Repository: <OWNER>/<REPO>
-- Batch id: <BATCH_ID | UNKNOWN | not applicable>
+- Batch id: <BATCH_ID | UNKNOWN | not applicable; default to the obvious just-run exact id, or resolve a visible label/target-set hint first>
 - Audit mode: <completed-batch | release/range | coverage catch-up>
 - Base: resolve the most recent release candidate tag/commit unless I provide one explicitly; for coverage catch-up, use the explicit lower bound I provide
 - Head: current main unless I provide one explicitly
 - Focus: for completed-batch audit, only the verified batch subset; for release/range audit, the selected range; for coverage catch-up, candidate un-audited PRs/commits in the explicit range
 - Audit id: <AUDIT_ID>
 
-BATCH_ID = the known batch run id; UNKNOWN = batch work is in scope but the id
-was not supplied; not applicable = no coordinated batch is in scope.
+BATCH_ID = the known coordination batch run id; UNKNOWN = batch work is in
+scope but no exact id or resolvable visible batch hint was supplied; not
+applicable = no coordinated batch is in scope.
 
 First, produce the exact worked-issue scope, merged-PR range, and audit mode:
 - when no coordinated batch/run is in scope, skip `agent-coord` and record
   `worked_issue_scope: not applicable`
-- when batch work is in scope but the batch id is `UNKNOWN`, run bounded
+- when batch work is in scope and the current visible chat provides an exact
+  just-run coordination batch id, use that id as the default and continue
+  through the known-batch path without asking solely for confirmation
+- when the current visible chat provides only a batch label or target set, use
+  it as a default batch hint, resolve it to an exact batch id or verified
+  worked-issue list before the matching known-batch or verified-list path, and
+  ask only if that resolution is ambiguous
+- when batch work is in scope but the batch id and hint are `UNKNOWN`, run bounded
   `agent-coord doctor --json`, then broad `agent-coord status` through the
   resolved `pr-batch` bounded helper only as an audit/discovery read to list candidate
   batch/run ids and lanes. Record
@@ -210,15 +232,15 @@ collect any QA lane and QA Evidence block for that batch. Do not use missing QA
 state to shrink the worked-issue scope; report it as a QA coverage finding or
 `UNKNOWN` fact instead.
 
-Ask me to confirm the included/excluded worked issues, collected QA lanes and QA
-Evidence blocks, advisory `codex-claim` rows, excluded range PRs, audit coverage
-evidence, and PR range before deep audit unless I explicitly say to proceed.
-When the scope is
-`UNKNOWN (needs batch confirmation)`, ask me to choose the candidate batch/run id
-before any confirmed worked-issue audit.
+Show the included/excluded worked issues, collected QA lanes and QA Evidence
+blocks, advisory `codex-claim` rows, excluded range PRs, audit coverage
+evidence, and PR range before deep audit. Proceed without another confirmation
+when the just-run batch was obvious in the current visible chat and verification
+did not surface conflicting scope evidence. When the scope is
+`UNKNOWN (needs batch confirmation)`, ask me to choose the
+candidate batch/run id before any confirmed worked-issue audit.
 
-After confirmation, audit each known worked issue, QA lane, or advisory
-`codex-claim` row for:
+Then audit each known worked issue, QA lane, or advisory `codex-claim` row for:
 - whether the implementation, no-PR comment, QA evidence, blocker, or parked
   disposition satisfied the issue or QA-lane intent and acceptance criteria
 - whether the final issue state is correct: merged, closed, still open,
