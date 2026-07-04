@@ -1292,10 +1292,15 @@ The closeout lane is:
     post-merge bot findings before the final batch handoff: confirm the PR landed,
     resolve target and base branch names from PR metadata and `.agents/agent-workflow.yml`, check
     their live GitHub/CI status, and inspect late review/check comments that
-    arrived around or after merge. Route
-    release-relevant findings into the next
-    post-merge audit intake. Reserve the full post-merge audit workflow for
-    final-release readiness, suspected bad merges, or a lightweight sweep that
+    arrived around or after merge. Route release-relevant findings into the next
+    post-merge audit intake. For non-trivial coordinated batches, especially
+    high-concurrency, release-affecting, workflow/build/dependency, or QA-lane
+    batches, the coordinator may run the post-merge audit in completed-batch mode
+    once every batch target has a terminal state; that deep audit is scoped to
+    the verified batch subset, with the commit range used as evidence/discovery
+    context. Use coverage catch-up mode for user-requested un-audited PR/commit
+    ranges. Reserve release/range audit for final-release readiness, suspected
+    bad merges, missing or unverified batch scope, or a lightweight sweep that
     finds a blocker, failed post-merge check, or credible release-readiness risk.
 
 ## Self-Review Gate
@@ -1714,9 +1719,12 @@ review/check comments or bot findings that arrived around or after merge, and
 update the active release tracker if one exists. If
 the merged PR touched workflow configuration, include the repo's lint/docs
 evidence from `AGENTS.md` in the post-merge summary before marking it clean.
-Reserve full post-merge audit for final-release readiness, suspected bad merges,
-or a lightweight sweep that finds
-a blocker, failed post-merge check, or credible release-readiness risk.
+Use coverage catch-up mode for user-requested un-audited PR/commit ranges.
+Reserve release/range post-merge audit for final-release readiness, suspected
+bad merges, missing or unverified batch scope, or a lightweight sweep that finds
+a blocker, failed post-merge check, or credible release-readiness risk. For a
+completed coordinated batch with verified scope, use completed-batch audit mode
+so unrelated range PRs remain excluded context.
 
 ## Multi-PR Landing Plan
 
@@ -1732,9 +1740,34 @@ For a manual multi-PR landing plan:
 
 ## Post-Merge Batch Audit
 
-Use this section when reviewing already-merged PRs from concurrent agent work, especially before a release candidate.
+Use this section when reviewing already-merged PRs from concurrent agent work,
+especially after a completed non-trivial batch or before a release candidate.
 
-1. Resolve the base release candidate tag/commit and head SHA.
+Choose the audit mode before deep audit:
+
+- **Completed-batch audit**: use after a coordinated batch reaches terminal
+  states. When `worked_issue_scope` is verified from coordination state, deep
+  audit only the batch worked issues, QA lane, mapped PRs, no-PR evidence,
+  blocker, parked, and done-unmerged lanes. Keep the commit range as the
+  evidence and discovery boundary; list unrelated range PRs as excluded context
+  with their audit coverage status when known, but do not deep-audit them.
+- **Release/range audit**: use before a release candidate/final release,
+  suspected bad merge investigation, or when no verified batch subset exists.
+  Deep audit the selected range's candidate PRs and advisory worked-issue rows.
+- **Coverage catch-up**: use when the user asks for un-audited PRs or commits
+  in a specific range. Prefer the explicit `BASE..HEAD` range and subtract only
+  durable audit coverage markers/ledger rows that prove prior completed audit
+  coverage. If no durable coverage record exists, report coverage as `UNKNOWN`
+  instead of treating `to_audit` as definitive.
+
+If the audit mode itself is ambiguous, ask the user to choose the mode before
+deep audit because modes imply different scope and base selection.
+
+1. Resolve the base tag/commit and head SHA. For release/range audit this is
+   usually the base release candidate tag/commit and current head. For
+   completed-batch audit, prefer the user-supplied or batch-recorded range that
+   covers the batch merges. For coverage catch-up, use the explicit range the
+   user supplied.
 2. Resolve worked-issue scope from coordination state when coordinated batch
    work is in scope. If no coordinated batch/run is in scope, record
    `worked_issue_scope: not applicable`. If batch work is in scope and the
@@ -1804,16 +1837,21 @@ Use this section when reviewing already-merged PRs from concurrent agent work, e
    not classify PRs as included/excluded batch work from PR links or heuristics.
    Use advisory public `codex-claim` rows from step 2 for possible no-PR,
    blocked, parked, and done-unmerged lanes, but keep those rows marked
-   `UNKNOWN` until coordination state is recovered.
+   `UNKNOWN` until coordination state is recovered. In completed-batch audit
+   mode, the verified batch subset is the deep-audit PR scope and unrelated
+   range PRs remain excluded context unless the user switches to release/range
+   audit.
 4. After the scope algorithm identifies the batch or reports an `UNKNOWN` scope,
    collect any QA lane and QA Evidence block for that batch. Do not use missing
    QA state to shrink the worked-issue scope; report it as a QA coverage finding
    or `UNKNOWN` fact instead.
 5. Show included and excluded worked issues, collected QA lanes and QA Evidence
-   blocks, advisory public `codex-claim` rows, and the PR range before deep
-   audit. Proceed without another confirmation when the just-run batch was
-   obvious in the current visible chat and verification did not surface
-   conflicting scope evidence. When the scope is
+   blocks, advisory public `codex-claim` rows, excluded range PRs, audit
+   coverage evidence, and the PR range before deep audit. Proceed without
+   another confirmation when the just-run batch was obvious in the current
+   visible chat and verification did not surface conflicting scope evidence or
+   audit-mode ambiguity. When the audit mode is ambiguous, ask the user to
+   choose the mode before deep audit. When the scope is
    `UNKNOWN (needs batch confirmation)`, ask the user to choose the candidate
    batch/run id before any confirmed worked-issue audit.
 6. For each known worked issue, QA lane, or advisory public `codex-claim` row,
@@ -1870,11 +1908,14 @@ Use this section when reviewing already-merged PRs from concurrent agent work, e
      `Audit ledger: not applicable (non-release audit)` in every approved parent
      or child issue body
 11. Return high-risk findings first, then review-gate violations, QA coverage
-    findings, missing changelog candidates, cross-PR risks, the issue plan, a
-    worked-issue/QA-lane coverage table (issue number or QA lane id,
-    coordination lane/branch, linked PR or no-PR/blocker/QA evidence, final
-    state, intent-achievement or QA-coverage classification, `UNKNOWN` facts), a
-    PR-by-PR table, and exact commands/data sources.
+    findings, missing changelog candidates, cross-PR risks, the issue plan, an
+    audit scope/coverage table (audit mode, base/head range, included PRs,
+    excluded range PRs, durable audit coverage marker/ledger status where
+    available, and `UNKNOWN` coverage facts), a worked-issue/QA-lane coverage
+    table (issue number or QA lane id, coordination lane/branch, linked PR or
+    no-PR/blocker/QA evidence, final state, intent-achievement or QA-coverage
+    classification, `UNKNOWN` facts), a PR-by-PR table, and exact
+    commands/data sources.
 
 Do not create fixes, issues, comments, labels, changelog edits, reverts, or PRs
 until the user approves the audit report and issue plan. For release-gate
