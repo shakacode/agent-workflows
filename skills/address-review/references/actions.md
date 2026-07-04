@@ -190,8 +190,8 @@ and remote heads plus likely concurrent ownership conflict, and do not
 force-push, rebase-and-push over, or otherwise replace another agent's commits
 without explicit maintainer or coordinator direction. If a maintainer or
 coordinator directs the run to continue after reconciling the remote head, rerun
-Step 4 review-data fetch and Step 5 triage from that new head before any further
-push, reply, thread resolution, or summary checkpoint.
+Step 4 review-data fetch, Step 5 filtering, and Step 6 triage from that new head
+before any further push, reply, thread resolution, or summary checkpoint.
 
 Converge the review loop, don't chase it: every push re-triggers the configured review bots on the new head and produces a fresh batch of comments. Batch all code fixes into a single push; resolve purely advisory threads (style, dead-code, "consider…", informational, positive) in-thread with a reply — **without a new commit**, since resolving a thread does not re-trigger reviews while a push does. Never resolve a confirmed blocker by reply alone. See [Review-Loop Convergence](../../../workflows/pr-processing.md#review-loop-convergence-push-amplification).
 
