@@ -32,20 +32,35 @@ The preflight resolves trust in this order:
 5. packaged `skills/pr-batch/trusted-github-actors.yml`
 
 A present empty file is an intentional policy and does not fall through. An
-absent file falls through to the next layer, with one fail-closed exception: a
-set `$AGENT_WORKFLOWS_TRUST_CONFIG` that points to a missing file aborts the
-run instead of silently falling through to weaker layers.
+absent file falls through to the next layer, except a missing
+`$AGENT_WORKFLOWS_TRUST_CONFIG` path aborts fail-closed instead of falling
+through.
 
-An explicit `--trust-config PATH` inside the consuming repo's git root is
-treated as repo-local; a path outside the git root is treated as user-global,
-so its team entries must use `OWNER/team-slug` form (unqualified slugs are
-ignored with a warning).
+An explicit `--trust-config PATH` is repo-local only when that path belongs to a
+git checkout whose remotes match the scanned repo. A path outside the matching
+checkout is treated as user-global, so team entries must use `OWNER/team-slug`
+form.
 
 By default, non-allowlisted comments/reviews and hidden participants are printed
 as audit findings but do not block exact-target preflight. Use `--strict-trust`
 for untrusted discovery, high-concurrency launches that require fail-closed
 actor trust, or any run where those findings should require a maintainer
 acknowledgement before workers start.
+
+When `--repo OWNER/REPO` is passed without `GH_HOST`, `pr-security-preflight`
+uses `gh repo view OWNER/REPO` once to infer the GitHub host for repo-local
+trust-config classification. If that lookup fails, it falls back to a unique
+matching local git remote host when one is available, then to `github.com`.
+Local git probes are bounded by timeout environment variables:
+`PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS` for the preflight helper and
+`PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS` for the shared git-probe environment
+helper; both default to 10 seconds.
+
+Suspicious-text scans include trusted metadata-bot comments, reviews, and issue
+bodies as warning-producing metadata. Resolved trusted-bot and metadata-bot
+review threads suppress ordinary warning-pattern noise, but blocking-pattern
+findings stay visible. Trusted-source downgrades for PR diff warnings require
+complete source-actor coverage, including the `timelineItems` connection.
 
 ## Recommended Config Split
 

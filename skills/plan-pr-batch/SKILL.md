@@ -15,6 +15,22 @@ the canonical [Generic PR-Batch Continuation Prompt](../../workflows/pr-processi
 in the installed `pr-processing.md` workflow instead of turning the handoff into
 broad discovery.
 
+If the user is asking whether existing PRs are ready to merge, what manual
+testing remains, or how to sequence open PR merges, use the target repo's
+`AGENTS.md` **Agent Workflow Configuration** pointer to resolve
+`.agents/agent-workflow.yml` when present, then read the policy keys the
+readiness workflow requires, including `review_gate` and `merge_ledger`. If the
+repo documents workflow configuration inline, read the full `AGENTS.md`
+**Agent Workflow Configuration** section, including `Review gate` and the other
+policy values the readiness workflow asks for. Use the repo-local
+`pr-processing.md` readiness workflow when present or the installed/shared
+`pr-processing.md` fallback instead of producing an implementation batch plan.
+If a required policy value cannot be resolved but `pr-processing.md` can,
+continue with that workflow's **Merge Readiness Gate** and report that policy
+value as `UNKNOWN`; do not invoke `$pr-batch` as a substitute for reading the
+readiness workflow. If the workflow cannot be resolved, report workflow state as
+`UNKNOWN` rather than guessing.
+
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
 `.agents/workflows/...` files when they exist; otherwise use the installed
@@ -156,10 +172,11 @@ Plan a PR batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
-     total, including the `/goal` line, so bulky detail stays in the Batch Plan.
-     For the `claude` or `generic` target, omit the `/goal` line and do not
-     apply Codex's strict 4000-character limit; still keep the prompt compact,
-     measured, under 8000 characters, and free of bulky evidence.
+     total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
+     For the `claude` or `generic` target, do not prepend the Codex-only
+     `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
+     Still keep the prompt compact, measured, under 8000 characters, and free of
+     bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
      script below, or pipe only the extracted fence body to a
      character-counting command such as `ruby -e 'print STDIN.read.length'`.
@@ -167,7 +184,7 @@ Plan a PR batch
    - Use compact one-line item goals, short worker notes, and canonical workflow references instead of copied
      audit evidence, repeated issue text, or long rule explanations.
    - Before responding, measure only the text inside the goal-prompt fence,
-     including the `/goal` line for Codex and excluding the fence lines, and
+     including the `/goal` line for Codex and excluding the fence lines, and <!-- host-allow: codex-only -->
      print `Goal prompt character count: N characters (target: codex|claude|generic)`
      after the fence.
    - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. If it still
@@ -215,13 +232,12 @@ Plan a PR batch
 ## Goal Prompt for pr-batch
 
 Use this template and fill it with the verified items. The fenced template below
-shows the Codex variant. For the `codex` target, keep `/goal` as the first line.
-For the `claude` or `generic` target, remove only the `/goal` line so the prompt
-starts with `Use $pr-batch to complete this batch with subagents.`
+is the shared prompt body. For the `codex` target, prepend only the `/goal` line <!-- host-allow: codex-only -->
+before this body. For the `claude` or `generic` target, use the body as-is so the
+prompt starts with `Use $pr-batch to complete this batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
 
 ```text
-/goal
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 
