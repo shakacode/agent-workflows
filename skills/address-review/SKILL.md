@@ -272,7 +272,7 @@ before mutating GitHub or the branch.
   target PR; do not continue with triage, branch changes, pushes, replies,
   resolutions, summaries, or public fallback.
 - If bounded doctor/status is degraded but this is an exact independent
-  address-review assignment with no `depends_on` refs, a coordinator may try the
+  address-review assignment with no dependency refs, a coordinator may try the
   bounded claim directly by setting `ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1` for
   that command only. If that direct claim succeeds, proceed with
   `private_state: claim-only`, immediately rerun the Step 4 fetch when any
@@ -524,7 +524,8 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 - For actions other than `a`, always reply to comments after addressing them to close the feedback loop
 - For actions other than `a` and inspect-only bare `o`, post a new marked PR summary comment after completing an action only when Step 10's cutoff guard is satisfied; otherwise post a non-cutoff status comment and require `check all reviews` on the next run
 - After triage, always offer rationale replies for selected `SKIPPED`/declined items; `f` requires explicit confirmation before skipped-item replies/resolution, while `f+i` and `m` include skipped-item handling in the chosen action flow
-- Use the Git push confirmation rule above before running `git push`
+- Use the Git push confirmation rule in `references/actions.md` before running
+  `git push`
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate
   GitHub state or the PR branch; if both backend coordination and public
   fallback are explicitly disabled, the skill assumes a single-operator run

@@ -150,7 +150,7 @@ claim gate passes. If Steps 3-4 fetched review data before a private claim,
 rerun the Step 4 fetch after the claim succeeds and use the post-claim data for
 Step 5. Public fallback claims are GitHub comments,
 so do not post them merely to triage, run `autopilot`, or execute local-only
-action `a`; for public-fallback repos, step 5 may proceed after the read-only
+action `a`; for public-fallback repos, Step 5 may proceed after the read-only
 conflict inspection below, but any GitHub-mutating action must post or refresh
 the fallback claim after the user selects that action and before the first
 branch update, push, reply, thread resolution, follow-up issue, or summary/status
