@@ -55,7 +55,7 @@ One worker's slice of a batch: a named owner plus its targets and dependencies.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
 
 **Thread handle**:
-The short memorable identifier that appears both in a chat's title and coordination records, so an operator can match dashboard rows or handoff notes to chat-sidebar threads.
+The short memorable identifier shared by coordination records and handoff notes, so an operator can match a worker session to its lane.
 _Avoid_: thread name (ambiguous between chat title and backend field), session name
 
 **Drain**:
@@ -82,6 +82,7 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 - "status" was used for three different things — resolved: **Worker phase** (worker progress), heartbeat status (the raw field), and lane status (batch-file field) are distinct; prefer **Worker phase** in prose.
 - Some older shared docs still say "heartbeat status" for phase-like values such as blocked, done, or cancelled — treat that as legacy wording. When updating those docs, prefer **Worker phase** for progress and **Live/Stale/Dead** for liveness.
+- **Lane identity**, **Instance**, and **Generation** describe optional fenced replacement semantics. When a backend contract omits those fields, do not require them unless that backend advertises explicit **Supersede (claim operation)** or fencing support.
 - "stuck" was used for both **Wedged** and **Dead** — resolved: they need different operator responses (inspect or hard escape vs dead-threshold takeover or explicit **Supersede (claim operation)**), so the vague word is avoided.
 - "restart" previously mixed ordinary agent-runner resume prompts with backend-fenced replacement — resolved: use restart/resume handoffs for the former, and **Supersede (claim operation)** only for explicit same-lane replacement when the backend supports fencing.
 - "supersede" also appears in CI/review triage for superseded workflow rows — resolved: **Supersede (claim operation)** is only the same-lane ownership replacement; use "superseded check row" or similar in CI contexts.
