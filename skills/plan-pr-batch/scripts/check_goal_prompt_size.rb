@@ -2,11 +2,14 @@
 # frozen_string_literal: true
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
-CLAUDE_GENERIC_RECOMMENDED_CHAR_LIMIT = 8_000
+CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 100
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
+GOAL_LINE = "/goal"
+INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
+CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 
@@ -146,7 +149,7 @@ def prompt_for_target(prompt_template, target)
   when :codex
     prompt_template
   when :claude, :generic
-    prompt_template.sub(%r{\A/goal\n}, "")
+    prompt_template.sub(/\A#{Regexp.escape(GOAL_LINE)}\n/, "")
   else
     abort_with_failure("unknown prompt target: #{target.inspect}")
   end
@@ -177,20 +180,25 @@ continuation_prompt = extract_first_text_fence_body(
 
 required_skill_rule_phrases = [
   "Determine the prompt target",
-  "an explicit user-requested target wins over host detection",
+  "the agent host/chat where the generated prompt will be pasted",
+  "destination wins over host detection",
+  "Codex prompt or Codex goal",
+  "Claude prompt/chat",
   "After the target-specific invocation line",
   "Batch title:",
   "<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
   "current repository name",
   "date +'%m-%d %H:%M'",
-  "Goal prompt character count:",
+  "Goal prompt character count: N characters (target: codex|claude|generic)",
   "target-specific prompt",
   "including the `/goal` line",
-  "`claude` when the user asks for Claude",
+  "remove only the `/goal` line",
   "apply Codex's strict 4000-character limit",
+  "under 8000 characters",
   "For Codex, if the measured prompt is 4000 characters or more",
   "For Claude or generic targets, do not split solely because the prompt is",
   "output only the first ready goal",
+  "If the Codex prompt will not fit",
   "bulky detail stays in the Batch Plan",
   "Keep bulky evidence",
   "outside the prompt",
@@ -198,7 +206,7 @@ required_skill_rule_phrases = [
 ]
 
 required_codex_prompt_phrases = [
-  "/goal\nUse $pr-batch to complete this batch with subagents."
+  CODEX_PROMPT_START
 ]
 
 required_all_prompt_phrases = [
@@ -267,20 +275,20 @@ required_all_prompt_phrases.each do |phrase|
   end
 end
 
-unless codex_prompt_template.start_with?("/goal\nUse $pr-batch to complete this batch with subagents.\n")
+unless codex_prompt_template.start_with?(CODEX_PROMPT_START)
   abort_with_failure("Goal prompt template must start with /goal followed by the $pr-batch invocation")
 end
 
-unless claude_prompt_template.start_with?("Use $pr-batch to complete this batch with subagents.\n")
+unless claude_prompt_template.start_with?("#{INVOCATION_LINE}\n")
   abort_with_failure("Claude goal prompt template must omit /goal and start with the $pr-batch invocation")
 end
 
-unless generic_prompt_template.start_with?("Use $pr-batch to complete this batch with subagents.\n")
+unless generic_prompt_template.start_with?("#{INVOCATION_LINE}\n")
   abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
 end
 
-if claude_prompt_template.start_with?("/goal") || generic_prompt_template.start_with?("/goal")
-  abort_with_failure("Claude/generic goal prompt templates must not start with /goal")
+if claude_prompt_template.include?(GOAL_LINE) || generic_prompt_template.include?(GOAL_LINE)
+  abort_with_failure("Claude/generic goal prompt templates must not include /goal")
 end
 
 prompt_templates_by_target.each do |target, target_prompt_template|
@@ -303,11 +311,11 @@ generic_template_chars = generic_prompt_template.length
   claude: claude_template_chars,
   generic: generic_template_chars
 }.each do |target, chars|
-  next if chars < CLAUDE_GENERIC_RECOMMENDED_CHAR_LIMIT
+  next if chars < CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
 
   abort_with_failure(
     "#{target.capitalize} goal prompt template is #{chars} chars, " \
-    "must stay under #{CLAUDE_GENERIC_RECOMMENDED_CHAR_LIMIT}"
+    "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
   )
 end
 
@@ -341,8 +349,13 @@ unless codex_oversized_candidate.length >= CODEX_GOAL_PROMPT_CHAR_LIMIT
 end
 
 claude_oversized_candidate = with_items(claude_prompt_template, bulky_items)
-unless claude_oversized_candidate.length >= CODEX_GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure("Claude oversized fixture did not exercise the relaxed Codex character limit")
+unless claude_oversized_candidate.length >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure("Claude oversized fixture did not exceed #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT} chars")
+end
+
+generic_oversized_candidate = with_items(generic_prompt_template, bulky_items)
+unless generic_oversized_candidate.length >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure("Generic oversized fixture did not exceed #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT} chars")
 end
 
 codex_fallback_prompt = with_items(codex_prompt_template, first_ready_item)
@@ -365,11 +378,22 @@ if claude_fallback_prompt.match?(/Batch Plan/i)
   abort_with_failure("Claude fallback prompt must be self-contained and not depend on Batch Plan context")
 end
 
+generic_fallback_prompt = with_items(generic_prompt_template, first_ready_item)
+if generic_fallback_prompt.match?(/Batch Plan/i)
+  abort_with_failure("Generic fallback prompt must be self-contained and not depend on Batch Plan context")
+end
+
 claude_fallback_chars = claude_fallback_prompt.length
-if claude_fallback_chars >= CLAUDE_GENERIC_RECOMMENDED_CHAR_LIMIT
+generic_fallback_chars = generic_fallback_prompt.length
+{
+  claude: claude_fallback_chars,
+  generic: generic_fallback_chars
+}.each do |target, chars|
+  next if chars < CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+
   abort_with_failure(
-    "Claude fallback prompt is #{claude_fallback_chars} chars, " \
-    "must stay under #{CLAUDE_GENERIC_RECOMMENDED_CHAR_LIMIT}"
+    "#{target.capitalize} fallback prompt is #{chars} chars, " \
+    "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
   )
 end
 
@@ -380,5 +404,7 @@ puts "claude_goal_prompt_template_chars=#{claude_template_chars}"
 puts "generic_goal_prompt_template_chars=#{generic_template_chars}"
 puts "codex_oversized_candidate_chars=#{codex_oversized_candidate.length}"
 puts "claude_oversized_candidate_chars=#{claude_oversized_candidate.length}"
+puts "generic_oversized_candidate_chars=#{generic_oversized_candidate.length}"
 puts "codex_split_fallback_goal_prompt_chars=#{codex_fallback_chars}"
 puts "claude_split_fallback_goal_prompt_chars=#{claude_fallback_chars}"
+puts "generic_split_fallback_goal_prompt_chars=#{generic_fallback_chars}"

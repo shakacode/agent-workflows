@@ -139,13 +139,13 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_goal_prompts_start_with_batch_title
+  def test_goal_prompts_put_batch_title_after_target_invocation
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt
     }.each do |label, text|
       assert text.start_with?("#{BATCH_TITLE_LINE}\n"),
-             "#{label} must start with the standard batch title line"
+             "#{label} must put the standard batch title line at the target-specific start"
     end
 
     assert @plan_goal_prompt.start_with?(PLAN_PR_BATCH_CODEX_PREFIX),

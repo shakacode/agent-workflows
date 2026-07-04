@@ -66,11 +66,12 @@ omit the queue summary and note that queue state is unavailable.
 4. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
 5. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
 6. Shape the batch into independent worker lanes. Cap each batch at 8 items when files or risk overlap, or 10 fully independent items; otherwise propose a smaller first batch. For multiple concurrent batches, keep this as a per-batch cap and apply the target repo's coordination-backend rules before launching.
-7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Put a short
-   `Batch title:` at the top of each pasteable prompt, using a short
-   abbreviation derived from the current repository name, A/B/C when multiple
-   prompts are produced, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the local
-   shell, and a descriptive title. Do not launch workers yet.
+7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
+   the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
+   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
+   line using a repository abbreviation, A/B/C when multiple prompts are
+   produced, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the local shell, and a
+   descriptive title. Do not launch workers yet.
 8. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
    resolves the spec tasks into exact GitHub targets before running.

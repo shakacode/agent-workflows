@@ -131,12 +131,15 @@ Plan a PR batch
 4. Output
    <!-- prompt-size-check: scripts/check_goal_prompt_size.rb pins selected wording in this section. -->
    - Return a concise "Batch Plan" and a fenced "Goal Prompt for pr-batch".
-   - Determine the prompt target before writing the fenced prompt:
-     an explicit user-requested target wins over host detection; use `codex`
-     when the user asks for Codex or, with no explicit target, the current host
-     is Codex; use `claude` when the user asks for Claude or, with no explicit
-     target, the current host is Claude or Claude Code; otherwise `generic` and
-     report that the host was not detectable.
+   - Determine the prompt target before writing the fenced prompt. The target is
+     the agent host/chat where the generated prompt will be pasted, not the
+     worker model or subagent implementation. An explicit user-requested paste
+     destination wins over host detection; use `codex` when the user asks for a
+     Codex prompt or Codex goal, or with no explicit paste target, the current
+     host is Codex. Use `claude` when the user asks for a Claude prompt/chat, or
+     with no explicit paste target, the current host is Claude or Claude Code.
+     Otherwise use `generic`; report when the host was not detectable or when no
+     target-specific wrapper is available for the detected host.
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
      `<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>`.
@@ -148,7 +151,7 @@ Plan a PR batch
      total, including the `/goal` line, so bulky detail stays in the Batch Plan.
      For the `claude` or `generic` target, omit the `/goal` line and do not
      apply Codex's strict 4000-character limit; still keep the prompt compact,
-     measured, and free of bulky evidence.
+     measured, under 8000 characters, and free of bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
      script below, or pipe only the extracted fence body to a
      character-counting command such as `ruby -e 'print STDIN.read.length'`.
@@ -176,7 +179,7 @@ Plan a PR batch
      collision-relevant exact paths inline. If compression would hide a collision
      or make ownership unclear, mark the item `UNKNOWN` and run it serially.
    - Keep each filled entry terse (target ~150 chars for `Worker notes` and `Done when`). The worker reads the issue/PR URL for full detail; push evidence and audit notes to the Batch Plan instead.
-   - If the batch will not fit, split it into smaller goals and output only the first ready goal.
+   - If the Codex prompt will not fit, split it into smaller goals and output only the first ready goal.
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
@@ -263,7 +266,7 @@ Execution rules:
 - Do not omit links; use GitHub URLs for every item.
 - Do not put full audit evidence in the goal prompt; put bulky details in the Batch Plan outside the goal.
 - Do not fan out items that change the same path as parallel worktrees; they will conflict — sequence them or split into a later batch.
-- Do not eyeball the goal-prompt length; apply the Output-section size gate and split into smaller goals if it is over budget.
+- Do not eyeball the goal-prompt length; apply the Output-section size gate and split Codex prompts into smaller goals if they are over budget.
 
 ## Self-Check
 
