@@ -132,8 +132,10 @@ Return:
   lanes.
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
 - Up to one non-empty, per-batch-capped, capacity-derived group per available
-  lane, each with a ready `$pr-batch` prompt within the `$pr-batch` prompt size
-  limit; report idle slots or remaining backlog/next wave separately.
+  lane, each with a ready `$pr-batch` prompt within the target-specific prompt
+  size limit: Codex 4 000 characters including `/goal`; Claude/generic under
+  8 000 measured characters. Report idle slots or remaining backlog/next wave
+  separately.
 - Per-inbox queue summary when backend queue state is available: next-up items,
   in-flight items, blocked/lost-heartbeat items, and `UNKNOWN` state. If the
   installed backend does not support queue state, omit this section and note that
