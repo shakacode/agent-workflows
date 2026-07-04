@@ -327,7 +327,10 @@ Return high-risk findings first, then:
    still-`UNKNOWN` required QA evidence.
 3. Missing changelog candidates, with a single recommendation to run `/update-changelog` when any are found.
 4. Cross-PR interaction risks.
-5. A deduped issue plan with parent/child recommendations and fingerprints.
+5. A deduped issue plan with parent/child recommendations, fingerprints, and
+   issue-creation accounting: parent issue URL if created, child issue URLs,
+   skipped duplicates with existing issue URLs, changelog recommendation, and
+   any planned issue that could not be created.
 6. An audit scope/coverage table with audit mode, base/head range, included PRs,
    excluded range PRs, durable audit coverage marker/ledger status where
    available, and any `UNKNOWN` coverage facts.

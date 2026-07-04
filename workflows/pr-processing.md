@@ -1918,14 +1918,16 @@ deep audit because modes imply different scope and base selection.
      `Audit ledger: not applicable (non-release audit)` in every parent or
      child issue body
 11. Return high-risk findings first, then review-gate violations, QA coverage
-    findings, missing changelog candidates, cross-PR risks, the issue plan, an
-    audit scope/coverage table (audit mode, base/head range, included PRs,
-    excluded range PRs, durable audit coverage marker/ledger status where
-    available, and `UNKNOWN` coverage facts), a worked-issue/QA-lane coverage
-    table (issue number or QA lane id, coordination lane/branch, linked PR or
-    no-PR/blocker/QA evidence, final state, intent-achievement or QA-coverage
-    classification, `UNKNOWN` facts), a PR-by-PR table, and exact
-    commands/data sources.
+    findings, missing changelog candidates, cross-PR risks, the issue plan plus
+    issue-creation accounting: parent issue URL if created, child issue URLs,
+    skipped duplicates with existing issue URLs, changelog recommendation, and
+    any planned issue that could not be created, an audit scope/coverage table
+    (audit mode, base/head range, included PRs, excluded range PRs, durable audit
+    coverage marker/ledger status where available, and `UNKNOWN` coverage
+    facts), a worked-issue/QA-lane coverage table (issue number or QA lane id,
+    coordination lane/branch, linked PR or no-PR/blocker/QA evidence, final
+    state, intent-achievement or QA-coverage classification, `UNKNOWN` facts), a
+    PR-by-PR table, and exact commands/data sources.
 
 Do not create fixes, labels, changelog edits, reverts, or PRs. Do not create
 unrelated comments; the release-gate ledger append is allowed when required
