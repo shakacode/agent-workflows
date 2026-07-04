@@ -1,6 +1,6 @@
 # Address Review Prompt
 
-Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow.
+Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow and that command is unavailable.
 
 ## How to Use
 
@@ -22,7 +22,7 @@ If the assistant has terminal access with `gh`, it should execute the workflow d
 ````text
 Act as a pull request review triage assistant.
 
-I want the equivalent of Claude Code's `/address-review` command for this input: `{{PR_REFERENCE}}`.
+I want the equivalent of Claude Code's `/address-review` command, using this prompt as the fallback when that command is unavailable, for this input: `{{PR_REFERENCE}}`.
 
 Your job is to fetch GitHub PR review comments, triage them, and wait for my instruction before making code changes unless I initiated the run with `autopilot`.
 

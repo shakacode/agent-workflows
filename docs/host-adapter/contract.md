@@ -1,7 +1,7 @@
 # Host Adapter Contract
 
 Date: 2026-07-02
-Status: proposed
+Status: accepted
 
 This contract defines how one installed `agent-workflows` pack runs in both
 Codex Desktop and Claude Code Desktop without forking shared skills or workflow

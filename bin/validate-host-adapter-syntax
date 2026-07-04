@@ -22,10 +22,11 @@ CODEX_ONLY_TOKENS = [
   "/goal"
 ].freeze
 
-AVAILABLE_TOOL_TOKENS = [
-  "`codex review",
-  "codex review --",
-  "/simplify"
+AVAILABLE_TOOL_PATTERNS = [
+  { pattern: /`codex review|codex review --/, label: "codex review" },
+  { pattern: %r{(?:`|^|\s)/address-review(?:\s|`|$)}, label: "/address-review" },
+  { pattern: %r{(?:`|^|\s)/code-review(?:\s|`|$)}, label: "/code-review" },
+  { pattern: %r{(?:`|^|\s)/simplify(?:\s|`|$)}, label: "/simplify" }
 ].freeze
 
 AVAILABILITY_WORDS = [
@@ -136,15 +137,15 @@ def validate_available_tools(path, text)
 
   lines.each_with_index do |line, index|
     line_downcased = line.downcase
-    AVAILABLE_TOOL_TOKENS.each do |token|
-      next unless line_downcased.include?(token)
+    AVAILABLE_TOOL_PATTERNS.each do |tool|
+      next unless line_downcased.match?(tool.fetch(:pattern))
       next if allowed.include?(index)
 
       window_start = [index - 3, 0].max
       window_end = [index + 3, lines.length - 1].min
       context = lines[window_start..window_end].join.downcase
       has_context = AVAILABILITY_WORDS.any? { |word| context.include?(word) }
-      failures << "#{path}:#{index + 1}: #{token} needs availability-check or fallback language" unless has_context
+      failures << "#{path}:#{index + 1}: #{tool.fetch(:label)} needs availability-check or fallback language" unless has_context
     end
   end
 

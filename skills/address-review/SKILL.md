@@ -281,7 +281,7 @@ the autonomous nit rule. Bare `o` presents optional items for selection only.
 `f+i` and `m` may bundle optional items that remain useful outside the immediate
 PR review context, but must exclude weak "could consider" suggestions.
 
-`autopilot` is an initiation mode, not a post-triage menu choice. Initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
+`autopilot` is an initiation mode, not a post-triage menu choice. When the host exposes `/address-review` as an available slash command, initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
 
 Do not post the PR summary checkpoint during this triage-only phase. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
@@ -807,6 +807,8 @@ Do not automatically merge. Signal readiness (or non-readiness) and let the user
 
 # Example Usage
 
+<!-- host-branch: available-tool start -->
+
 ```text
 /address-review https://github.com/org/repo/pull/12345#pullrequestreview-123456789
 /address-review https://github.com/org/repo/pull/12345#issuecomment-123456789
@@ -817,6 +819,8 @@ Do not automatically merge. Signal readiness (or non-readiness) and let the user
 /address-review 12345 check all reviews
 /address-review https://github.com/org/repo/pull/12345 check all reviews
 ```
+
+<!-- host-branch: available-tool end -->
 
 # Example Output
 

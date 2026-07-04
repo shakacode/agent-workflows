@@ -56,6 +56,15 @@ class HostAdapterSyntaxTest < Minitest::Test
     assert_includes stderr, "/goal must be inside a codex-only host branch"
   end
 
+  def test_single_line_codex_allow_marker_permits_goal
+    File.write(File.join(@tmp, "workflows/demo.md"), "Use `/goal` here. <!-- host-allow: codex-only -->\n")
+
+    stdout, stderr, status = run_validator
+
+    assert status.success?, stderr
+    assert_includes stdout, "PASS host adapter syntax"
+  end
+
   def test_worktree_pair_must_include_both_hosts
     path = File.join(@tmp, "skills/demo/SKILL.md")
     text = File.read(path).sub(" and `isolation: 'worktree'`", "")
@@ -83,6 +92,24 @@ class HostAdapterSyntaxTest < Minitest::Test
 
     refute status.success?
     assert_includes stderr, "codex review needs availability-check"
+  end
+
+  def test_host_specific_slash_command_needs_fallback_language
+    path = File.join(@tmp, "skills/demo/SKILL.md")
+    text = <<~MARKDOWN
+      ---
+      name: demo
+      description: Demo.
+      ---
+
+      Run `/address-review`.
+    MARKDOWN
+    File.write(path, text)
+
+    _stdout, stderr, status = run_validator
+
+    refute status.success?
+    assert_includes stderr, "/address-review needs availability-check"
   end
 
   def test_host_branch_markers_must_be_balanced
