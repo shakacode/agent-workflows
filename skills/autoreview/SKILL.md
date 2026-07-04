@@ -156,10 +156,8 @@ For high-risk changes in the hosted-CI-ready, force-full hosted-CI, or benchmark
 categories described by `.agents/agent-workflow.yml`, or when the user asks
 for a panel/second model, run one additional review after the primary review is clean:
 
-- If the primary review used `codex review`, use Claude review tooling if it is available in the
-  current environment, such as `/code-review` or `/code-review ultra`.
-- If the primary review used Claude review tooling, use `codex review` with the same target and
-  any focus instructions the installed CLI supports.
+- If the primary review used `codex review`, use available Claude review tooling such as `/code-review` or `/code-review ultra`.
+- If the primary review used Claude review tooling, use `codex review` when the current environment makes it available, with the same target and any focus instructions the installed CLI supports.
 - If no second engine is available, say so and continue with the clean primary review plus local
   verification.
 

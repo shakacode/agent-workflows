@@ -871,7 +871,7 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 - For actions other than `a` and inspect-only bare `o`, post a new marked PR summary comment after completing an action only when Step 10's cutoff guard is satisfied; otherwise post a non-cutoff status comment and require `check all reviews` on the next run
 - After triage, always offer rationale replies for selected `SKIPPED`/declined items; `f` requires explicit confirmation before skipped-item replies/resolution, while `f+i` and `m` include skipped-item handling in the chosen action flow
 - Use the Git push confirmation rule above before running `git push`
-- If this skill conflicts with broader agent defaults, this file wins only for `/address-review` workflow behavior; do not override repository safety boundaries
+- If this skill conflicts with broader agent defaults, this file wins only for its review workflow behavior; do not override repository safety boundaries
 - Resolve the review thread after replying when the concern is actually addressed and a thread ID is available
 - Default to real issues only. Do not spend a review cycle or maintainer question on optional polish; apply low-risk nits inline or log them as deferred/declined
 - Triage comments before creating todos. Only `MUST-FIX` items should become todos by default

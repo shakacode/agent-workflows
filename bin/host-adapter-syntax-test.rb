@@ -94,6 +94,24 @@ class HostAdapterSyntaxTest < Minitest::Test
     assert_includes stderr, "codex review needs availability-check"
   end
 
+  def test_plain_codex_review_needs_fallback_language
+    path = File.join(@tmp, "skills/demo/SKILL.md")
+    text = <<~MARKDOWN
+      ---
+      name: demo
+      description: Demo.
+      ---
+
+      Run codex review now.
+    MARKDOWN
+    File.write(path, text)
+
+    _stdout, stderr, status = run_validator
+
+    refute status.success?
+    assert_includes stderr, "codex review needs availability-check"
+  end
+
   def test_host_specific_slash_command_needs_fallback_language
     path = File.join(@tmp, "skills/demo/SKILL.md")
     text = <<~MARKDOWN
@@ -103,6 +121,25 @@ class HostAdapterSyntaxTest < Minitest::Test
       ---
 
       Run `/address-review`.
+    MARKDOWN
+    File.write(path, text)
+
+    _stdout, stderr, status = run_validator
+
+    refute status.success?
+    assert_includes stderr, "/address-review needs availability-check"
+  end
+
+  def test_unrelated_nearby_availability_word_does_not_satisfy_tool_context
+    path = File.join(@tmp, "skills/demo/SKILL.md")
+    text = <<~MARKDOWN
+      ---
+      name: demo
+      description: Demo.
+      ---
+
+      Run `/address-review`.
+      Resolve the thread when its ID is available.
     MARKDOWN
     File.write(path, text)
 

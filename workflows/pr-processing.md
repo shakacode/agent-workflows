@@ -650,15 +650,12 @@ For non-trivial, high-risk, hosted-CI-labeled, force-full, benchmark-labeled,
 workflow/build-config, dependency/runtime-version, or broad refactor PRs (labels per `.agents/agent-workflow.yml`), commit the intended
 implementation locally before pushing so there is a clean branch diff. Run
 repo-specific validation, formatter/lint/type checks as applicable, then run the
-primary local/adversarial self-review gate, normally `codex review --base
-origin/<base>` or the PR's real base when that CLI is available, before PR
-creation or update.
+primary local/adversarial self-review gate, normally available `codex review --base origin/<base>` or the PR's real base, before PR creation or update.
 
 When requested by a maintainer or when the change is high-risk,
 hosted-CI-labeled, force-full, benchmark-labeled,
 workflow/build-config, dependency/runtime-version, or broad refactor scoped, run
-one additional Claude Code review pass if available, such as `/code-review` or
-`/code-review ultra`.
+one additional available Claude Code review pass such as `/code-review` or `/code-review ultra`.
 
 For workflow/build/dependency/lockfile gate changes, include the `AGENTS.md` /
 `.agents/workflows/pr-processing.md` audit evidence for new-gate stale-base
@@ -666,9 +663,8 @@ controls. For lockfile changes, include Dependabot ecosystem and
 directory/directories compatibility, then apply the lockfile content-diff
 evidence requirement from the Handoff Contract in `.agents/skills/pr-batch/SKILL.md`.
 
-For high-risk cases above, apply the canonical `/simplify` policy from
-**Pre-Push AI Review And Simplify Gate**: run it after required review passes
-when the tooling is available, target the real branch diff, accept only
+For high-risk cases above, apply the canonical `/simplify` policy when that tooling is available from
+**Pre-Push AI Review And Simplify Gate**: run it after required review passes, target the real branch diff, accept only
 behavior-preserving complexity reductions, rerun targeted validation after
 accepted changes, and record run/skip/accept/reject evidence.
 

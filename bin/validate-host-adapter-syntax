@@ -23,7 +23,7 @@ CODEX_ONLY_TOKENS = [
 ].freeze
 
 AVAILABLE_TOOL_PATTERNS = [
-  { pattern: /`codex review|codex review --/, label: "codex review" },
+  { pattern: /(?:`|^|\s)codex review(?:`|\s+--|\s|$)/, label: "codex review" },
   { pattern: %r{(?:`|^|\s)/address-review(?:\s|`|$)}, label: "/address-review" },
   { pattern: %r{(?:`|^|\s)/code-review(?:\s|`|$)}, label: "/code-review" },
   { pattern: %r{(?:`|^|\s)/simplify(?:\s|`|$)}, label: "/simplify" }
@@ -141,10 +141,7 @@ def validate_available_tools(path, text)
       next unless line_downcased.match?(tool.fetch(:pattern))
       next if allowed.include?(index)
 
-      window_start = [index - 3, 0].max
-      window_end = [index + 3, lines.length - 1].min
-      context = lines[window_start..window_end].join.downcase
-      has_context = AVAILABILITY_WORDS.any? { |word| context.include?(word) }
+      has_context = AVAILABILITY_WORDS.any? { |word| line_downcased.include?(word) }
       failures << "#{path}:#{index + 1}: #{tool.fetch(:label)} needs availability-check or fallback language" unless has_context
     end
   end
