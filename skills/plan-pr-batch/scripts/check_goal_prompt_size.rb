@@ -1,11 +1,15 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-GOAL_PROMPT_CHAR_LIMIT = 4_000
+CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
+CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 100
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
+GOAL_LINE = "/goal"
+INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
+CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 
@@ -140,6 +144,17 @@ def with_items(prompt_template, items)
   updated_prompt
 end
 
+def prompt_for_target(prompt_template, target)
+  case target
+  when :codex
+    prompt_template
+  when :claude, :generic
+    prompt_template.sub(/\A#{Regexp.escape(GOAL_LINE)}\n/, "")
+  else
+    abort_with_failure("unknown prompt target: #{target.inspect}")
+  end
+end
+
 skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
 
@@ -164,20 +179,37 @@ continuation_prompt = extract_first_text_fence_body(
 )
 
 required_skill_rule_phrases = [
+  "Determine the prompt target",
+  "the agent host/chat where the generated prompt will be pasted",
+  "destination wins over host detection",
+  "Codex prompt or Codex goal",
+  "Claude prompt/chat",
+  "After the target-specific invocation line",
   "Batch title:",
   "<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
   "current repository name",
   "date +'%m-%d %H:%M'",
-  "Goal prompt character count:",
-  "If the measured prompt is 4000 characters or more",
+  "Goal prompt character count: N characters (target: codex|claude|generic)",
+  "target-specific prompt",
+  "including the `/goal` line",
+  "remove only the `/goal` line",
+  "apply Codex's strict 4000-character limit",
+  "under 8000 characters",
+  "For Codex, if the measured prompt is 4000 characters or more",
+  "For Claude or generic targets, do not split solely because the prompt is",
   "output only the first ready goal",
+  "If the Codex prompt will not fit",
   "bulky detail stays in the Batch Plan",
   "Keep bulky evidence",
   "outside the prompt",
   "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
 ]
 
-required_prompt_phrases = [
+required_codex_prompt_phrases = [
+  CODEX_PROMPT_START
+]
+
+required_all_prompt_phrases = [
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
   "Goal Mode Completion Contract",
@@ -195,7 +227,6 @@ required_prompt_phrases = [
 
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
-require_phrases(prompt_template, required_prompt_phrases, "Goal prompt template")
 
 unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("canonical workflow is missing the exact restart resume snippet")
@@ -225,19 +256,74 @@ unless unexpected_pressure_refs.empty?
   )
 end
 
-if prompt_template.match?(/Batch Plan/i)
-  abort_with_failure("goal prompt template must be self-contained and not depend on Batch Plan context")
+codex_prompt_template = prompt_for_target(prompt_template, :codex)
+claude_prompt_template = prompt_for_target(prompt_template, :claude)
+generic_prompt_template = prompt_for_target(prompt_template, :generic)
+prompt_templates_by_target = {
+  codex: codex_prompt_template,
+  claude: claude_prompt_template,
+  generic: generic_prompt_template
+}
+
+require_phrases(codex_prompt_template, required_codex_prompt_phrases, "Codex goal prompt template")
+
+required_all_prompt_phrases.each do |phrase|
+  prompt_templates_by_target.each do |target, target_prompt_template|
+    unless target_prompt_template.include?(phrase)
+      abort_with_failure("#{target} goal prompt template is missing required phrase: #{phrase}")
+    end
+  end
 end
 
-template_chars = prompt_template.length
-if template_chars >= GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure("goal prompt template is #{template_chars} chars, must stay under #{GOAL_PROMPT_CHAR_LIMIT}")
+unless codex_prompt_template.start_with?(CODEX_PROMPT_START)
+  abort_with_failure("Goal prompt template must start with /goal followed by the $pr-batch invocation")
 end
 
-template_headroom = GOAL_PROMPT_CHAR_LIMIT - template_chars
+unless claude_prompt_template.start_with?("#{INVOCATION_LINE}\n")
+  abort_with_failure("Claude goal prompt template must omit /goal and start with the $pr-batch invocation")
+end
+
+unless generic_prompt_template.start_with?("#{INVOCATION_LINE}\n")
+  abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
+end
+
+if claude_prompt_template.include?(GOAL_LINE) || generic_prompt_template.include?(GOAL_LINE)
+  abort_with_failure("Claude/generic goal prompt templates must not include /goal")
+end
+
+prompt_templates_by_target.each do |target, target_prompt_template|
+  if target_prompt_template.match?(/Batch Plan/i)
+    abort_with_failure("#{target} goal prompt template must be self-contained and not depend on Batch Plan context")
+  end
+end
+
+codex_template_chars = codex_prompt_template.length
+if codex_template_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure(
+    "Codex goal prompt template is #{codex_template_chars} chars, " \
+    "must stay under #{CODEX_GOAL_PROMPT_CHAR_LIMIT}"
+  )
+end
+
+claude_template_chars = claude_prompt_template.length
+generic_template_chars = generic_prompt_template.length
+{
+  claude: claude_template_chars,
+  generic: generic_template_chars
+}.each do |target, chars|
+  next if chars < CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+
+  abort_with_failure(
+    "#{target.capitalize} goal prompt template is #{chars} chars, " \
+    "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
+  )
+end
+
+template_headroom = CODEX_GOAL_PROMPT_CHAR_LIMIT - codex_template_chars
 if template_headroom < GOAL_PROMPT_MIN_HEADROOM
   abort_with_failure(
-    "goal prompt template has #{template_headroom} chars of headroom, must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
+    "Codex goal prompt template has #{template_headroom} chars of headroom, " \
+    "must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
   )
 end
 
@@ -257,23 +343,68 @@ first_ready_item = <<~ITEM.chomp
     Done when: final state is `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence` as allowed by the requested `merge_authority`.
 ITEM
 
-oversized_candidate = with_items(prompt_template, bulky_items)
-abort_with_failure("oversized fixture did not exceed 4000 chars") unless oversized_candidate.length >= 4_000
+codex_oversized_candidate = with_items(codex_prompt_template, bulky_items)
+unless codex_oversized_candidate.length >= CODEX_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure("Codex oversized fixture did not exceed #{CODEX_GOAL_PROMPT_CHAR_LIMIT} chars")
+end
 
-fallback_prompt = with_items(prompt_template, first_ready_item)
+claude_oversized_candidate = with_items(claude_prompt_template, bulky_items)
+unless claude_oversized_candidate.length >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure("Claude oversized fixture did not exceed #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT} chars")
+end
+
+generic_oversized_candidate = with_items(generic_prompt_template, bulky_items)
+unless generic_oversized_candidate.length >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure("Generic oversized fixture did not exceed #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT} chars")
+end
+
+codex_fallback_prompt = with_items(codex_prompt_template, first_ready_item)
 # Keep this defense-in-depth check near the substitution so future changes to
 # with_items cannot accidentally reintroduce a Batch Plan dependency.
-if fallback_prompt.match?(/Batch Plan/i)
+if codex_fallback_prompt.match?(/Batch Plan/i)
   abort_with_failure("split fallback prompt must be self-contained and not depend on Batch Plan context")
 end
 
-fallback_chars = fallback_prompt.length
-if fallback_chars >= GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure("split fallback prompt is #{fallback_chars} chars, must stay under #{GOAL_PROMPT_CHAR_LIMIT}")
+codex_fallback_chars = codex_fallback_prompt.length
+if codex_fallback_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure(
+    "Codex split fallback prompt is #{codex_fallback_chars} chars, " \
+    "must stay under #{CODEX_GOAL_PROMPT_CHAR_LIMIT}"
+  )
+end
+
+claude_fallback_prompt = with_items(claude_prompt_template, first_ready_item)
+if claude_fallback_prompt.match?(/Batch Plan/i)
+  abort_with_failure("Claude fallback prompt must be self-contained and not depend on Batch Plan context")
+end
+
+generic_fallback_prompt = with_items(generic_prompt_template, first_ready_item)
+if generic_fallback_prompt.match?(/Batch Plan/i)
+  abort_with_failure("Generic fallback prompt must be self-contained and not depend on Batch Plan context")
+end
+
+claude_fallback_chars = claude_fallback_prompt.length
+generic_fallback_chars = generic_fallback_prompt.length
+{
+  claude: claude_fallback_chars,
+  generic: generic_fallback_chars
+}.each do |target, chars|
+  next if chars < CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+
+  abort_with_failure(
+    "#{target.capitalize} fallback prompt is #{chars} chars, " \
+    "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
+  )
 end
 
 puts "All checks passed."
-puts "goal_prompt_template_chars=#{template_chars}"
-puts "goal_prompt_template_headroom=#{template_headroom}"
-puts "oversized_candidate_chars=#{oversized_candidate.length}"
-puts "split_fallback_goal_prompt_chars=#{fallback_chars}"
+puts "codex_goal_prompt_template_chars=#{codex_template_chars}"
+puts "codex_goal_prompt_template_headroom=#{template_headroom}"
+puts "claude_goal_prompt_template_chars=#{claude_template_chars}"
+puts "generic_goal_prompt_template_chars=#{generic_template_chars}"
+puts "codex_oversized_candidate_chars=#{codex_oversized_candidate.length}"
+puts "claude_oversized_candidate_chars=#{claude_oversized_candidate.length}"
+puts "generic_oversized_candidate_chars=#{generic_oversized_candidate.length}"
+puts "codex_split_fallback_goal_prompt_chars=#{codex_fallback_chars}"
+puts "claude_split_fallback_goal_prompt_chars=#{claude_fallback_chars}"
+puts "generic_split_fallback_goal_prompt_chars=#{generic_fallback_chars}"

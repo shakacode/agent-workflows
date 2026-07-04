@@ -12,6 +12,7 @@ TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
+PLAN_PR_BATCH_CODEX_PREFIX = "/goal\nUse $pr-batch to complete this batch with subagents.\n"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 
 def read_repo_file(path)
@@ -138,15 +139,19 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_goal_prompts_start_with_batch_title
+  def test_goal_prompts_put_batch_title_after_target_invocation
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt
     }.each do |label, text|
       assert text.start_with?("#{BATCH_TITLE_LINE}\n"),
-             "#{label} must start with the standard batch title line"
+             "#{label} must put the standard batch title line at the target-specific start"
     end
+
+    assert @plan_goal_prompt.start_with?(PLAN_PR_BATCH_CODEX_PREFIX),
+           "skills/plan-pr-batch Codex goal prompt must start with the Codex goal prefix"
+    assert @plan_goal_prompt.delete_prefix(PLAN_PR_BATCH_CODEX_PREFIX).start_with?("#{BATCH_TITLE_LINE}\n"),
+           "skills/plan-pr-batch goal prompt must put the standard batch title line after the Codex prefix"
   end
 
   def test_batch_title_instructions_pin_local_date_source

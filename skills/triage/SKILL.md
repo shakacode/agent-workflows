@@ -103,14 +103,16 @@ after phase 1 with a precise blocker.
    empty groups.
 4. Keep dependencies inside a group where practical. When a dependency must cross
    groups, express it as a `depends_on` ref for the private batch state.
-5. Produce one `$pr-batch` goal prompt per group, keeping each goal prompt under
-   the 4 000-character limit described for `$plan-pr-batch` in
-   `docs/pr-batch-skills.md`, with a stable batch id,
-   lane name, agent id, target list, validation expectations, and coordination
-   hooks. Put a short `Batch title:` at the top of each pasteable prompt using
-   a short abbreviation derived from the current repository name, A/B/C group
-   letter when multiple prompts are created, `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell, and a descriptive title.
+5. Produce one target-specific `$pr-batch` goal prompt per group, with a stable
+   batch id, lane name, agent id, target list, validation expectations, and
+   coordination hooks. For Codex prompts, keep the prompt under the
+   `$plan-pr-batch` Codex 4 000-character limit, including `/goal`; for
+   Claude/generic prompts, measure the actual prompt, keep it under 8 000
+   characters, and split or compact it when too large rather than applying the
+   Codex split threshold. Put a short `Batch title:` after the target-specific
+   invocation line(s), using a repository abbreviation, A/B/C group letter when
+   multiple prompts are created, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the
+   local shell, and a descriptive title.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire an `agent-coord claim` before editing.
@@ -130,8 +132,10 @@ Return:
   lanes.
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
 - Up to one non-empty, per-batch-capped, capacity-derived group per available
-  lane, each with a ready `$pr-batch` prompt within the `$pr-batch` prompt size
-  limit; report idle slots or remaining backlog/next wave separately.
+  lane, each with a ready `$pr-batch` prompt within the target-specific prompt
+  size limit: Codex 4 000 characters including `/goal`; Claude/generic under
+  8 000 measured characters. Report idle slots or remaining backlog/next wave
+  separately.
 - Per-inbox queue summary when backend queue state is available: next-up items,
   in-flight items, blocked/lost-heartbeat items, and `UNKNOWN` state. If the
   installed backend does not support queue state, omit this section and note that

@@ -25,7 +25,7 @@ for cancellation, see
 | `$evaluate-issue`    | A concrete issue, proposed fix, or code-analysis finding has uncertain value, priority, or fix scope.       | A disposition: fix now, fix later, park, document/work around, close, or ask.         |
 | `$pause`             | An operator needs copy-paste prompts to pause an agent thread for runner restart and resume from a handoff. | Non-batch or PR-batch pause prompts plus same-thread and new-chat restart prompts.    |
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
-| `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A concise Batch Plan plus a ready `$pr-batch` goal prompt under 4000 characters.      |
+| `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A concise Batch Plan plus a target-specific ready `$pr-batch` goal prompt.            |
 | `$pr-batch`          | The target list is exact, trusted, and ready to run or convert into a `/goal` prompt.                       | A launch plan, worker split, or final `/goal` prompt for processing the batch.        |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
@@ -66,11 +66,12 @@ omit the queue summary and note that queue state is unavailable.
 4. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
 5. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
 6. Shape the batch into independent worker lanes. Cap each batch at 8 items when files or risk overlap, or 10 fully independent items; otherwise propose a smaller first batch. For multiple concurrent batches, keep this as a per-batch cap and apply the target repo's coordination-backend rules before launching.
-7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Put a short
-   `Batch title:` at the top of each pasteable prompt, using a short
-   abbreviation derived from the current repository name, A/B/C when multiple
-   prompts are produced, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the local
-   shell, and a descriptive title. Do not launch workers yet.
+7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
+   the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
+   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
+   line using a repository abbreviation, A/B/C when multiple prompts are
+   produced, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the local shell, and a
+   descriptive title. Do not launch workers yet.
 8. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
    resolves the spec tasks into exact GitHub targets before running.
