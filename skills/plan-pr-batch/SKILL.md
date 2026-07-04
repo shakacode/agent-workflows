@@ -166,7 +166,7 @@ Plan a PR batch
      target-specific wrapper is available for the detected host.
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
-     `<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>`.
+     `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
      Derive `<PROJECT>` from the current repository name or maintainer-supplied
      abbreviation. Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell

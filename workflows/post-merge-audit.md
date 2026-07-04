@@ -56,13 +56,14 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   Never pass a label or target set directly to
   `agent-coord status --batch-id`. Do not ask solely to confirm the obvious
   just-run batch. Ask only when the batch is not obvious, multiple candidates
-  are visible, or verified evidence conflicts with the default.
+  are visible, verified evidence conflicts with the default, or the default
+  cannot be verified because the coordination backend is unavailable.
 - When batch work is in scope but the batch/run id was not supplied and is not
   obvious from the current visible chat, record `worked_issue_scope: UNKNOWN
   (needs batch confirmation)`. If candidate discovery cannot verify backend
   setup or access, record `UNKNOWN (setup)` or `UNKNOWN (access)` with the exact
-  command/error and report that batch id confirmation is still needed after
-  backend recovery.
+  command/error, and ask before deep audit whether to wait for backend recovery
+  or proceed with an explicitly `UNKNOWN` worked-issue scope.
 - For named batch/run audits, run bounded `agent-coord doctor --json`, then
   bounded `agent-coord status --batch-id <batch-id> --json`, and inspect the
   named batch entry as the primary worked-issue scope when available. If
@@ -161,7 +162,9 @@ First, produce the exact worked-issue scope, merged-PR range, and audit mode:
   If candidate discovery cannot verify backend setup or access, record
   `worked_issue_scope: UNKNOWN (setup)` or
   `worked_issue_scope: UNKNOWN (access)` instead of
-  `UNKNOWN (needs batch confirmation)`, with the exact command/error.
+  `UNKNOWN (needs batch confirmation)`, with the exact command/error, and ask
+  before deep audit whether to wait for backend recovery or proceed with an
+  explicitly `UNKNOWN` worked-issue scope.
 - when a batch id is known:
   - run bounded `agent-coord doctor --json`, then bounded
     `agent-coord status --batch-id <batch-id> --json`, then inspect
@@ -237,10 +240,12 @@ Show the included/excluded worked issues, collected QA lanes and QA Evidence
 blocks, advisory `codex-claim` rows, excluded range PRs, audit coverage
 evidence, and PR range before deep audit. Proceed without another confirmation
 when the just-run batch was obvious in the current visible chat and verification
-did not surface conflicting scope evidence or audit-mode ambiguity. When the
-audit mode is ambiguous, ask me to choose the mode before deep audit. When the
-scope is `UNKNOWN (needs batch confirmation)`, ask me to choose the candidate
-batch/run id before any confirmed worked-issue audit.
+did not surface conflicting or unavailable scope evidence or audit-mode
+ambiguity. When the audit mode is ambiguous, ask me to choose the mode before
+deep audit. When the scope is `UNKNOWN (needs batch confirmation)`, ask me to
+choose the candidate batch/run id before any confirmed worked-issue audit. When
+the scope is `UNKNOWN (setup)` or `UNKNOWN (access)`, ask me whether to wait for
+backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope.
 
 Then audit each known worked issue, QA lane, or advisory `codex-claim` row for:
 - whether the implementation, no-PR comment, QA evidence, blocker, or parked

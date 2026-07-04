@@ -23,6 +23,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Fix post-merge audit default-batch handling so unavailable coordination verification asks before deep audit, and tighten batch-title guard coverage.**
 - **Harden `pr-security-preflight` trust resolution and warning scans for explicit global configs, missing environment configs, metadata-only bots, bounded git probes, host-qualified repo-local trust checks, and truncated timeline coverage.**
 - **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
 - **Fix `upgrade-agent-workflows` with no `--consumer-root` arguments under shells that treat empty arrays as unset.**

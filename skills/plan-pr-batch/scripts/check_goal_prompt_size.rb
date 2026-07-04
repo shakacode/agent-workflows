@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "stringio"
+
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 100
@@ -23,7 +25,7 @@ TEXT
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
 # Keep phrase checks here in sync when that source prompt changes.
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
-  "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.",
+  CONTINUATION_BATCH_TITLE_LINE,
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
   "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
@@ -91,15 +93,54 @@ def extract_section(text, start_marker, end_heading)
   text[body_start...body_end]
 end
 
+def extract_single_bare_fenced_body(section_body, label, missing_closing_message: nil, nested_fence_message: nil)
+  missing_closing_message ||= "#{label} is missing closing fence"
+  nested_fence_message ||= "#{label} contains a nested bare fence line; use a non-text fence type instead"
+
+  fence_offsets = []
+  section_body.scan(/^```\s*$/) { fence_offsets << Regexp.last_match.begin(0) }
+
+  abort_with_failure(missing_closing_message) if fence_offsets.empty?
+  abort_with_failure(nested_fence_message) if fence_offsets.length > 1
+
+  section_body[0...fence_offsets.first]
+end
+
 def extract_first_text_fence_body(text, label)
   fence_start = text.index(TEXT_FENCE)
   abort_with_failure("#{label} is missing text fence") unless fence_start
 
   body_start = fence_start + TEXT_FENCE.length
-  fence_end = text.index(/^```\s*$/, body_start)
-  abort_with_failure("#{label} is missing closing fence") unless fence_end
+  section_body = text[body_start..]
+  extract_single_bare_fenced_body(section_body, label)
+end
 
-  text[body_start...fence_end]
+def assert_first_text_fence_rejects_nested_bare_fence
+  fixture = <<~TEXT
+    Intro
+
+    ```text
+    Use $pr-batch.
+    ```
+    stray prose
+    ```
+  TEXT
+
+  stderr = StringIO.new
+  original_stderr = $stderr
+  result = nil
+  $stderr = stderr
+  begin
+    extract_first_text_fence_body(fixture, "nested continuation fixture")
+  rescue SystemExit => e
+    result = [e.status, stderr.string]
+  ensure
+    $stderr = original_stderr
+  end
+
+  return if result&.first == 1 && result.last.include?("nested bare fence")
+
+  abort_with_failure("continuation prompt extractor must reject nested bare fence lines")
 end
 
 def require_phrases(text, phrases, label)
@@ -121,15 +162,11 @@ def extract_goal_prompt_template(skill_text)
   next_heading = skill_text.match(/^##\s+/, fence_body_start)
   section_end = next_heading ? next_heading.begin(0) : skill_text.length
   section_body = skill_text[fence_body_start...section_end]
-  fence_offsets = []
-  section_body.scan(/^```\s*$/) { fence_offsets << Regexp.last_match.begin(0) }
-
-  abort_with_failure("missing closing fence in Goal Prompt section") if fence_offsets.empty?
-  if fence_offsets.length > 1
-    abort_with_failure("goal prompt template contains a nested bare fence line; use a non-text fence type instead")
-  end
-
-  section_body[0...fence_offsets.first]
+  extract_single_bare_fenced_body(
+    section_body,
+    "goal prompt template",
+    missing_closing_message: "missing closing fence in Goal Prompt section"
+  )
 end
 
 def with_items(prompt_template, items)
@@ -178,6 +215,7 @@ continuation_prompt = extract_first_text_fence_body(
   continuation_section,
   "canonical workflow continuation prompt"
 )
+assert_first_text_fence_rejects_nested_bare_fence
 
 required_skill_rule_phrases = [
   "Determine the prompt target",
@@ -187,7 +225,7 @@ required_skill_rule_phrases = [
   "Claude prompt/chat",
   "After the target-specific invocation line",
   "Batch title:",
-  "<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
+  "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
   "current repository name",
   "date +'%m-%d %H:%M'",
   "Goal prompt character count: N characters (target: codex|claude|generic)",

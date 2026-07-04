@@ -33,7 +33,8 @@ an exact batch id or verified worked-issue list through bounded coordination
 discovery, public claim fields, or GitHub target evidence before proceeding.
 Never pass a label or target set directly to `agent-coord status --batch-id`.
 Ask only when the just-run batch is not obvious, multiple candidates are
-visible, or verified evidence conflicts with the default.
+visible, verified evidence conflicts with the default, or the default cannot be
+verified because the coordination backend is unavailable.
 
 Term: a structured public `codex-claim` comment is a GitHub issue/PR comment
 containing a `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with
@@ -98,9 +99,9 @@ deep audit because modes imply different scope and base selection.
 
    If candidate discovery cannot verify backend setup or access,
    `UNKNOWN (setup)` or `UNKNOWN (access)` takes precedence over
-   `UNKNOWN (needs batch confirmation)`; report that batch id confirmation is
-   still needed after backend recovery only when the id was not already obvious
-   from the current visible chat. When a batch/run id is known, run
+   `UNKNOWN (needs batch confirmation)`; report the verification blocker and ask
+   before deep audit whether to wait for backend recovery or proceed with an
+   explicitly `UNKNOWN` worked-issue scope. When a batch/run id is known, run
    bounded `agent-coord doctor --json` and bounded
    `agent-coord status --batch-id <batch-id> --json`, then inspect the named
    batch entry; use claims, heartbeats, and batch metadata as the primary
@@ -153,10 +154,10 @@ collected QA lanes and QA Evidence blocks, base/head SHAs, coordination status
 evidence, audit coverage markers/ledger evidence when available, and assumptions.
 Proceed into deep audit without another confirmation when the just-run batch was
 obvious in the current visible chat and verification did not surface conflicting
-scope evidence or audit-mode ambiguity. Ask first only when the audit mode is
-ambiguous, the batch is not obvious, multiple candidates remain, the named batch
-is unexpectedly empty while lanes appear to exist, or another conflict requires
-a user choice.
+or unavailable scope evidence or audit-mode ambiguity. Ask first only when the
+audit mode is ambiguous, the batch is not obvious, multiple candidates remain,
+the named batch is unexpectedly empty while lanes appear to exist, coordination
+verification cannot run, or another conflict requires a user choice.
 
 ## Audit Checks
 
