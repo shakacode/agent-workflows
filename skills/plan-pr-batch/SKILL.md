@@ -18,9 +18,9 @@ broad discovery.
 If the user is asking whether existing PRs are ready to merge, what manual
 testing remains, or how to sequence open PR merges, use the target repo's
 `AGENTS.md` **Agent Workflow Configuration** pointer to resolve
-`.agents/agent-workflow.yml` when present, or the inline `AGENTS.md` seam value
-when the repo documents the review gate there, then read the `review_gate` key or
-review-gate seam for repo-specific readiness requirements. Use the repo-local
+`.agents/agent-workflow.yml` when present, then read the `review_gate` key for
+repo-specific readiness requirements. If the repo documents readiness inline,
+read the `AGENTS.md` `Review gate` policy instead. Use the repo-local
 `pr-processing.md` readiness workflow when present or the installed/shared
 `pr-processing.md` fallback instead of producing an implementation batch plan.
 If `review_gate` cannot be resolved but `pr-processing.md` can, continue with
