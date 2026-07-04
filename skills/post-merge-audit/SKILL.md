@@ -6,9 +6,9 @@ argument-hint: '[base tag/commit or range]'
 
 # Post-Merge Audit
 
-Audit merged PRs as a batch before the next release step. Use visible chat only
-to choose the obvious just-run batch default; use git, GitHub, and coordination
-ground truth for every audit fact.
+Audit merged PRs as a batch after batch work or before the next release step.
+Use visible chat only to choose the obvious just-run batch default; use git,
+GitHub, and coordination ground truth for every audit fact.
 
 Memorable invocation:
 
@@ -48,11 +48,37 @@ POST_MERGE_AUDIT_SKILL_DIR="${POST_MERGE_AUDIT_SKILL_DIR:-.agents/skills/post-me
 "${POST_MERGE_AUDIT_SKILL_DIR}/bin/post-merge-audit-scope" --json
 ```
 
-The resolver is read-only. It resolves the default release-candidate base, the head SHA, squash-aware merged PRs, prior `post-merge-audit-finding` fingerprints, PRs with open finding markers, and the `to_audit` list. Open finding markers create carry-over PRs that are subtracted from `to_audit`; closed markers remain fingerprint context only. Use the output as the initial merged-PR scope table, then verify assumptions before deep audit.
+The resolver is read-only. It resolves the default release-candidate base, the head SHA, squash-aware merged PRs, prior `post-merge-audit-finding` fingerprints, PRs with open finding markers, and the `to_audit` list. Open finding markers create carry-over PRs that are subtracted from `to_audit`; closed markers remain fingerprint context only. `to_audit` is a range-derived candidate queue, not proof that a PR was never audited unless the repository has a durable audit coverage marker or ledger that records completed audit coverage. Use the output as the initial merged-PR scope table, then verify assumptions before deep audit.
 
-1. Base: the user-supplied tag/commit, or the most recent release candidate tag when the user says "since the last RC".
+Choose the audit mode before deep audit:
+
+- **Completed-batch audit**: use after a coordinated batch reaches terminal
+  states. When `worked_issue_scope` is verified from coordination state, deep
+  audit only the batch worked issues, QA lane, mapped PRs, no-PR evidence,
+  blocker, parked, and done-unmerged lanes. Keep the commit range as the
+  evidence and discovery boundary; list unrelated range PRs as excluded context
+  with their audit coverage status when known, but do not deep-audit them.
+- **Release/range audit**: use before a release candidate/final release,
+  suspected bad merge investigation, or when no verified batch subset exists.
+  Deep audit the selected range's candidate PRs and advisory worked-issue rows.
+- **Coverage catch-up**: when the user asks for un-audited PRs or commits in a
+  specific range, prefer the explicit `BASE..HEAD` range and subtract only
+  durable audit coverage markers/ledger rows that prove prior completed audit
+  coverage. If no durable coverage record exists, report coverage as `UNKNOWN`
+  instead of treating `to_audit` as definitive.
+
+If the audit mode itself is ambiguous, ask the user to choose the mode before
+deep audit because modes imply different scope and base selection.
+
+1. Base: for completed-batch audit, prefer the user-supplied or batch-recorded
+   lower bound that covers the batch merges; for coverage catch-up, use the
+   explicit lower bound; otherwise use the user-supplied tag/commit or the most
+   recent release candidate tag when the user says "since the last RC".
 2. Head: usually `origin/main` or the current release branch.
-3. Merged PR list: every PR merged between base and head.
+3. Merged PR list: every PR merged between base and head. For a
+   completed-batch audit with verified `worked_issue_scope`, keep the full range
+   list as context and deep-audit only the verified batch subset. For a
+   release/range audit, deep-audit the candidate PRs in the selected range.
 4. Worked issue list: for private coordination backend setup and CLI discovery,
    see `docs/coordination-backend.md`. If no
    coordinated batch/run is in scope, record
@@ -113,20 +139,24 @@ The resolver is read-only. It resolves the default release-candidate base, the h
    git history. Treat `not applicable`, `UNKNOWN (...)`, and `empty (...)` as
    merged-PR-range-only or advisory scope states, not verified batch subsets.
    Keep PR-range inclusion separate from worked-issue coverage so no-PR,
-   blocked, parked, and unmerged lanes are still evaluated.
+   blocked, parked, and unmerged lanes are still evaluated. In completed-batch
+   audit mode, this verified subset is the deep-audit PR scope; unrelated range
+   PRs remain excluded context unless the user switches to release/range audit.
 
 After the scope algorithm identifies the batch or reports an `UNKNOWN` scope,
 collect any QA lane and QA Evidence block for that batch. Do not use missing QA
 state to shrink the worked-issue scope; report it as a QA coverage finding or
 `UNKNOWN` fact instead.
 
-Show included worked issues, included PRs, collected QA lanes and QA Evidence
-blocks, excluded near-matches, base/head SHAs, coordination status evidence, and
-assumptions. Proceed into deep audit without another confirmation when the
-just-run batch was obvious in the current visible chat and verification did not
-surface conflicting scope evidence. Ask first only when the batch is not
-obvious, multiple candidates remain, the named batch is unexpectedly empty while
-lanes appear to exist, or another conflict requires a user choice.
+Show included worked issues, included PRs, excluded range PRs and near-matches,
+collected QA lanes and QA Evidence blocks, base/head SHAs, coordination status
+evidence, audit coverage markers/ledger evidence when available, and assumptions.
+Proceed into deep audit without another confirmation when the just-run batch was
+obvious in the current visible chat and verification did not surface conflicting
+scope evidence or audit-mode ambiguity. Ask first only when the audit mode is
+ambiguous, the batch is not obvious, multiple candidates remain, the named batch
+is unexpectedly empty while lanes appear to exist, or another conflict requires
+a user choice.
 
 ## Audit Checks
 
@@ -288,12 +318,15 @@ Return high-risk findings first, then:
 3. Missing changelog candidates, with a single recommendation to run `/update-changelog` when any are found.
 4. Cross-PR interaction risks.
 5. A deduped issue plan with parent/child recommendations and fingerprints.
-6. A worked-issue/QA-lane coverage table with issue number or QA lane id,
+6. An audit scope/coverage table with audit mode, base/head range, included PRs,
+   excluded range PRs, durable audit coverage marker/ledger status where
+   available, and any `UNKNOWN` coverage facts.
+7. A worked-issue/QA-lane coverage table with issue number or QA lane id,
    coordination lane/branch, linked PR or no-PR/blocker/QA evidence, final
    state, issue intent-achievement or QA-coverage classification, and `UNKNOWN`
    facts (see the example in `.agents/workflows/post-merge-audit.md`).
-7. A PR-by-PR table.
-8. Exact commands and data sources used, including bounded `agent-coord status`
+8. A PR-by-PR table.
+9. Exact commands and data sources used, including bounded `agent-coord status`
    output for the named batch or the exact reason coordination state was
    `UNKNOWN`.
 
