@@ -7,7 +7,7 @@ Portable language for multi-agent PR-batch workflows: how coordinators, workers,
 ### Ownership
 
 **Claim**:
-The exclusive lease one agent instance holds on a target (issue or PR) in one repo.
+The exclusive lease one agent instance holds on a target (issue, PR, batch lane, QA lane, or other repo-scoped coordination target) in one repo.
 _Avoid_: lock, reservation, assignment
 
 **Takeover**:
@@ -81,6 +81,7 @@ _Avoid_: force kill (without the cleanup steps it names)
 ## Flagged ambiguities
 
 - "status" was used for three different things — resolved: **Worker phase** (worker progress), heartbeat status (the raw field), and lane status (batch-file field) are distinct; prefer **Worker phase** in prose.
+- Some older shared docs still say "heartbeat status" for phase-like values such as blocked, done, or cancelled — treat that as legacy wording. When updating those docs, prefer **Worker phase** for progress and **Live/Stale/Dead** for liveness.
 - "stuck" was used for both **Wedged** and **Dead** — resolved: they need different operator responses (inspect or hard escape vs dead-threshold takeover or explicit **Supersede (claim operation)**), so the vague word is avoided.
 - "restart" previously mixed ordinary agent-runner resume prompts with backend-fenced replacement — resolved: use restart/resume handoffs for the former, and **Supersede (claim operation)** only for explicit same-lane replacement when the backend supports fencing.
 - "supersede" also appears in CI/review triage for superseded workflow rows — resolved: **Supersede (claim operation)** is only the same-lane ownership replacement; use "superseded check row" or similar in CI contexts.
