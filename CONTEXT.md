@@ -15,7 +15,7 @@ A *different* agent acquiring a claim only after the current holder is dead.
 _Avoid_: steal, reclaim
 
 **Supersede**:
-A deliberate operator restart in which a *new instance of the same lane identity* fences out its live-or-stale predecessor via an explicit flag; never implicit.
+A deliberate operator replacement in which a *new instance of the same lane identity* fences out its live-or-stale predecessor via an explicit flag when the coordination backend supports that operation; never implicit.
 _Avoid_: restart-claim, re-claim, takeover (that word is reserved for the different-agent case)
 
 **Lane identity**:
@@ -27,7 +27,7 @@ One running session (chat/process) for a lane identity; the same lane identity c
 _Avoid_: session, chat (in protocol contexts)
 
 **Generation**:
-The claim's monotonically increasing fencing counter; bumped on every ownership change so a displaced holder is rejected at its next write.
+The claim's monotonically increasing fencing counter when the coordination backend supports fenced ownership changes; bumped on every ownership change so a displaced holder is rejected at its next write.
 _Avoid_: version, epoch
 
 ### Liveness
@@ -55,8 +55,8 @@ One worker's slice of a batch: a named owner plus its targets and dependencies.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
 
 **Thread handle**:
-The short memorable name that appears both in a chat's auto-generated title (via the goal prompt's first line) and in the backend, so an operator can match dashboard rows to chat-sidebar threads.
-_Avoid_: thread name (in prose; `thread_name` stays as the field name), session name
+The short memorable identifier that appears both in a chat's title and coordination records, so an operator can match dashboard rows or handoff notes to chat-sidebar threads.
+_Avoid_: thread name (ambiguous between chat title and backend field), session name
 
 **Drain**:
 Coordinator-published cancellation that workers honor at their next safe checkpoint; the preferred stop.
@@ -82,4 +82,4 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 - "status" was used for three different things — resolved: **Phase** (worker progress), heartbeat status (the raw field), and lane status (batch-file field) are distinct; prefer **Phase** in prose.
 - "stuck" was used for both **Wedged** and **Dead** — resolved: they need different operator responses (inspect or hard escape vs dead-threshold takeover or explicit supersede), so the vague word is avoided.
-- "restart" previously meant re-pasting a prompt, which silently double-started a lane — resolved: the sanctioned restart is **Supersede**.
+- "restart" previously mixed ordinary agent-runner resume prompts with backend-fenced replacement — resolved: use restart/resume handoffs for the former, and **Supersede** only for explicit same-lane replacement when the backend supports fencing.
