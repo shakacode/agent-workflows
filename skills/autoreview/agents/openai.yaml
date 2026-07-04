@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Autoreview"
+  short_description: "Run a second-model review"
+  default_prompt: "Use $autoreview to run a structured review on the current branch or diff."

@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Spec"
+  short_description: "Turn ambiguity into tasks"
+  default_prompt: "Use $spec to turn a vague feature or bug request into requirements and executable tasks."

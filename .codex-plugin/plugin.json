@@ -1,0 +1,36 @@
+{
+  "name": "agent-workflows",
+  "version": "0.1.0",
+  "description": "Reusable agent workflow skills for ShakaCode repositories.",
+  "author": {
+    "name": "ShakaCode",
+    "url": "https://github.com/shakacode"
+  },
+  "homepage": "https://github.com/shakacode/agent-workflows#readme",
+  "repository": "https://github.com/shakacode/agent-workflows",
+  "keywords": [
+    "codex",
+    "agent-workflows",
+    "pull-requests",
+    "code-review",
+    "ci"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ShakaCode Agent Workflows",
+    "shortDescription": "Reusable Codex workflows for PR batches, reviews, CI, and audits.",
+    "longDescription": "Reusable Codex skills for PR batch planning, review triage, merge readiness, changelog updates, CI routing, and audit loops. Consumer repositories supply their own local policy seam.",
+    "developerName": "ShakaCode",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Plan a safe PR batch.",
+      "Check a PR's merge readiness.",
+      "Run a local verification loop."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Address Review"
+  short_description: "Triage PR review feedback"
+  default_prompt: "Use $address-review to fetch and triage review comments for a pull request."

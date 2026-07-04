@@ -96,13 +96,32 @@ test_codex_host_install_writes_helpers_and_metadata() {
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
 
   assert_file "$target/skills/pr-batch/SKILL.md"
+  assert_file "$target/skills/pr-batch/agents/openai.yaml"
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-trust-audit"
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
+  [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+}
+
+test_installed_prompt_guard_ignores_unowned_docs() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  mkdir -p "$target/docs"
+  printf 'Unrelated local docs.\n' > "$target/docs/agent-runner-restarts.md"
+
+  set +e
+  output="$(ruby "$target/skills/plan-pr-batch/scripts/check_goal_prompt_size.rb" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "expected installed prompt guard to pass, got $status: $output"
+  assert_contains "$output" "All checks passed."
 }
 
 test_claude_host_install_uses_claude_home_when_target_is_omitted() {
@@ -112,9 +131,11 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   CLAUDE_HOME="$tmp/.claude" "$ROOT/bin/install-agent-workflows" --host claude >/tmp/install-agent-workflows-test.out
 
   assert_file "$tmp/.claude/skills/pr-batch/SKILL.md"
+  assert_file "$tmp/.claude/skills/pr-batch/agents/openai.yaml"
   assert_file "$tmp/.claude/workflows/pr-processing.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
+  [[ ! -e "$tmp/.claude/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be installed into Claude home metadata"
 }
 
 test_copy_mode_preserves_unrelated_agent_files() {
@@ -297,6 +318,7 @@ test_upgrade_validates_consumer_root_after_install() {
 main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
+    test_installed_prompt_guard_ignores_unowned_docs
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files
     test_symlink_mode_links_skills_workflows_and_helpers

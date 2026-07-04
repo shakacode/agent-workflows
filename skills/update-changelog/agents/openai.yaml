@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Update Changelog"
+  short_description: "Classify changelog entries"
+  default_prompt: "Use $update-changelog to classify merged pull requests and update the changelog."

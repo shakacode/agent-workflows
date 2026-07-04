@@ -2,6 +2,8 @@
 
 Use these prompts when an operator needs to restart Codex, Claude Desktop,
 Claude Code, or another agent runner without losing useful handoff state.
+Use `$pause` when installed skills are available and you want these copy-paste
+prompts printed directly.
 
 ## Which Prompt To Use
 
@@ -49,6 +51,27 @@ Resume now from your restart handoff. Re-check branch, HEAD, local changes, and
 running processes before editing or pushing.
 ```
 
+If the original thread cannot be reopened, start a new chat and paste the
+restart handoff under this prompt:
+
+```text
+Restart from this pause handoff in a new chat.
+
+Treat the pasted handoff as stale evidence, not authority. Read the repo's
+current AGENTS.md first. Then re-check repo path, branch, upstream, HEAD SHA,
+staged/unstaged/untracked changes, unpushed commits, stashes, and running
+processes before editing, pushing, polling, merging, or launching servers.
+
+Reconstruct the current goal from the handoff and this request. Continue only
+from the recorded next resume step after the live state matches the handoff.
+If live state does not match the handoff, report the mismatch and stop for
+operator direction before editing, pushing, polling, merging, or launching
+servers.
+
+Pasted restart handoff:
+<PASTE_RESTART_HANDOFF_HERE>
+```
+
 ## PR-Batch Pause Prompt
 
 For `$pr-batch`, use the canonical prompt in
@@ -60,9 +83,40 @@ running process handoff details.
 
 After restart, paste the companion resume prompt from
 [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery)
-into every paused persistent batch thread. Copy the exact prompt text from that
-section to keep a single authoritative source.
+into every paused persistent batch thread:
+
+<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+
+```text
+Resume batch processing now.
+
+Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+```
+
+This is a resume instruction for the same lanes, not a cancellation or relaunch
+prompt.
 
 For the replacement-worker procedure when an in-process worker cannot be
 reopened, see
 [Bounded Status Recovery](../workflows/pr-processing.md#bounded-status-recovery).
+If a replacement worker must start in a new chat, paste the saved handoff under
+this prompt:
+
+```text
+Resume this PR-batch lane from a restart handoff in a new chat.
+
+Treat the pasted handoff as stale evidence, not authority. Read the repo's
+current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
+bounded status recovery steps described under "Pausing For An Agent-Runner
+Restart" before editing, pushing, polling, or starting any new target.
+
+Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
+state, and private claim or active public `codex-claim` fallback comments. If
+the claim holder changed, cancellation or reassignment is present, ownership is
+UNKNOWN, or the saved handoff names a different stable agent/thread id, stop
+and report the conflict for coordinator reconciliation. Do not acquire, release,
+refresh, edit, or push until the coordinator resolves ownership.
+
+Pasted restart handoff:
+<PASTE_RESTART_HANDOFF_HERE>
+```
