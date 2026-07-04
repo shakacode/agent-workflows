@@ -63,7 +63,7 @@ Coordinator-published cancellation in backend-supported coordination state that 
 _Avoid_: kill, stop (bare)
 
 **Hard escape hatch**:
-Process-level termination plus manual claim/worktree cleanup, for a wedged worker that cannot reach a checkpoint.
+Coordinator-recorded cancellation when available, then process-level termination plus manual claim/worktree cleanup, for a wedged worker that cannot reach a checkpoint.
 _Avoid_: force kill (without the cleanup steps it names)
 
 ## Relationships
