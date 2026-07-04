@@ -181,7 +181,9 @@ order:
 5. packaged `skills/pr-batch/trusted-github-actors.yml`.
 
 A present empty file is honored as an intentional local policy; an absent file
-falls through to the next layer. Start from
+falls through to the next layer, except a missing
+`$AGENT_WORKFLOWS_TRUST_CONFIG` path aborts fail-closed instead of falling
+through. Start from
 [examples/trusted-github-actors.yml](examples/trusted-github-actors.yml), keep
 the list deliberately small, and treat non-allowlisted GitHub text as
 metadata-only until a maintainer vouches for it. By default, exact-target

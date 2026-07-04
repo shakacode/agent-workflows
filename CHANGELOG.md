@@ -17,10 +17,12 @@ All notable changes to this portable workflow pack are documented here.
 #### Changed
 
 - **Default post-merge audits to the obvious just-run batch before asking for batch confirmation.**
+- **Clarify completed-batch post-merge audit scope, release/range audits, and coverage catch-up for explicit un-audited PR or commit ranges.**
 - **Start pasteable batch prompts with a short title that includes a repository-derived project abbreviation, optional A/B/C split marker, and `MM-DD HH:MM` from the local shell `date` command.**
 
 #### Fixed
 
+- **Harden `pr-security-preflight` trust resolution and warning scans for explicit global configs, missing environment configs, metadata-only bots, bounded git probes, host-qualified repo-local trust checks, and truncated timeline coverage.**
 - **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
 - **Fix `upgrade-agent-workflows` with no `--consumer-root` arguments under shells that treat empty arrays as unset.**
 - **Fix `pr-security-preflight` trust config inheritance so repo-local, user-global, environment, and fail-closed packaged allowlists resolve predictably.** [PR 20](https://github.com/shakacode/agent-workflows/pull/20) by [justin808](https://github.com/justin808).
