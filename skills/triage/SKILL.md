@@ -106,7 +106,7 @@ after phase 1 with a precise blocker.
 5. Produce one target-specific `$pr-batch` goal prompt per group, with a stable
    batch id, lane name, agent id, target list, validation expectations, and
    coordination hooks. For Codex prompts, keep the prompt under the
-   `$plan-pr-batch` Codex 4 000-character limit, including `/goal`; for
+   `$plan-pr-batch` Codex 4 000-character limit, including `/goal`; for <!-- host-allow: codex-only -->
    Claude/generic prompts, measure the actual prompt, keep it under 8 000
    characters, and split or compact it when too large rather than applying the
    Codex split threshold. Put a short `Batch title:` after the target-specific
@@ -133,7 +133,7 @@ Return:
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
 - Up to one non-empty, per-batch-capped, capacity-derived group per available
   lane, each with a ready `$pr-batch` prompt within the target-specific prompt
-  size limit: Codex 4 000 characters including `/goal`; Claude/generic under
+  size limit: Codex 4 000 characters including `/goal`; Claude/generic under <!-- host-allow: codex-only -->
   8 000 measured characters. Report idle slots or remaining backlog/next wave
   separately.
 - Per-inbox queue summary when backend queue state is available: next-up items,
