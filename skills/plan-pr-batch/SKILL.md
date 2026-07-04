@@ -24,9 +24,10 @@ review-gate seam for repo-specific readiness requirements. Use the repo-local
 `pr-processing.md` readiness workflow when present or the installed/shared
 `pr-processing.md` fallback instead of producing an implementation batch plan.
 If `review_gate` cannot be resolved but `pr-processing.md` can, continue with
-the workflow's `$pr-batch` CI/review readiness checks and report the policy value
-as `UNKNOWN`; if the workflow cannot be resolved, report workflow state as
-`UNKNOWN` rather than guessing.
+that workflow's **Merge Readiness Gate** and report the policy value as
+`UNKNOWN`; do not invoke `$pr-batch` as a substitute for reading the readiness
+workflow. If the workflow cannot be resolved, report workflow state as `UNKNOWN`
+rather than guessing.
 
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
@@ -170,7 +171,7 @@ Plan a PR batch
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For the `claude` or `generic` target, omit the Codex goal invocation and do not
+     For the `claude` or `generic` target, omit only the `/goal` line and do not <!-- host-allow: codex-only -->
      apply Codex's strict 4000-character limit; still keep the prompt compact,
      measured, under 8000 characters, and free of bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
