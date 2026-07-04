@@ -11,6 +11,20 @@ self-contained. Keep state-machine changes mirrored across this workflow,
 
 - Use one exact audit id, base, and head for every agent, for example `audit: <YYYY-MM-DD>-post-rc`.
 - Format `<AUDIT_ID>` as `<YYYY-MM-DD>-<short-purpose>`, for example `<YYYY-MM-DD>-post-rc` or `<YYYY-MM-DD>-agent-batch-audit`.
+- Choose the audit mode before deep audit:
+  - completed-batch audit: for coordinated batches that reached terminal
+    states; when coordination state verifies the worked-issue scope, deep-audit
+    only that batch's worked issues, QA lane, mapped PRs, no-PR evidence,
+    blocker, parked, and done-unmerged lanes
+  - release/range audit: for release readiness, suspected bad merges, or cases
+    where no verified batch subset exists; deep-audit the selected range's
+    candidate PRs and advisory worked-issue rows
+  - coverage catch-up: for user-supplied un-audited PR/commit range requests;
+    use the explicit `BASE..HEAD` range and subtract only durable audit coverage
+    markers/ledger rows that prove prior completed audit coverage
+- Treat `to_audit` as a range-derived candidate queue. It is not proof that a
+  PR was never audited unless the repo has a durable audit coverage marker or
+  ledger that records completed audit coverage.
 - Run Codex and Claude independently first. Do not give either agent the other agent's report until both reports are complete.
 - During independent audits, agents may draft issue bodies but must not create issues, comments, labels, fixes, reverts, branches, or PRs.
 - Use one coordinator to compare reports, dedupe findings, and propose the issue plan.
@@ -95,22 +109,23 @@ Run this separately in Codex and Claude. Do not share one agent's output with th
 
 ```text
 Run an independent post-merge audit of merged PRs (and, when a batch id is known, its worked-issue scope)
-since the last release candidate.
+for the requested audit mode.
 
 Use git, GitHub, and agent-coord ground truth. Do not rely on prior chat memory.
 
 Scope:
 - Repository: <OWNER>/<REPO>
 - Batch id: <BATCH_ID | UNKNOWN | not applicable>
-- Base: resolve the most recent release candidate tag/commit unless I provide one explicitly
-- Head: current main
-- Focus: PRs that appear to be from recent high-concurrency agent/Codex/Claude batch work
+- Audit mode: <completed-batch | release/range | coverage catch-up>
+- Base: resolve the most recent release candidate tag/commit unless I provide one explicitly; for coverage catch-up, use the explicit lower bound I provide
+- Head: current main unless I provide one explicitly
+- Focus: for completed-batch audit, only the verified batch subset; for release/range audit, the selected range; for coverage catch-up, candidate un-audited PRs/commits in the explicit range
 - Audit id: <AUDIT_ID>
 
 BATCH_ID = the known batch run id; UNKNOWN = batch work is in scope but the id
 was not supplied; not applicable = no coordinated batch is in scope.
 
-First, produce the exact worked-issue scope and merged-PR range:
+First, produce the exact worked-issue scope, merged-PR range, and audit mode:
 - when no coordinated batch/run is in scope, skip `agent-coord` and record
   `worked_issue_scope: not applicable`
 - when batch work is in scope but the batch id is `UNKNOWN`, run bounded
@@ -169,8 +184,14 @@ verified from coordination state, the batch-subset list:
 - why it is or is not part of the batch, only when `worked_issue_scope` is
   verified from coordination state
 
-List every PR merged between base and head, not only the PRs that look like
-batch work.
+List every PR merged between base and head as range context. In
+completed-batch audit mode with verified `worked_issue_scope`, deep-audit only
+the verified batch subset and list unrelated range PRs as excluded context with
+their audit coverage status when known. In release/range audit mode, deep-audit
+the selected range's candidate PRs and advisory worked-issue rows. In coverage
+catch-up mode, subtract only durable audit coverage markers/ledger rows that
+prove prior completed audit coverage; if no durable coverage record exists,
+report coverage as `UNKNOWN` rather than treating `to_audit` as definitive.
 
 If `worked_issue_scope` is `UNKNOWN`, do not invent a worked-issue list from the
 merged PR range and do not identify an included/excluded batch subset from PR
@@ -190,8 +211,9 @@ state to shrink the worked-issue scope; report it as a QA coverage finding or
 `UNKNOWN` fact instead.
 
 Ask me to confirm the included/excluded worked issues, collected QA lanes and QA
-Evidence blocks, advisory `codex-claim` rows, and PR range before deep audit
-unless I explicitly say to proceed. When the scope is
+Evidence blocks, advisory `codex-claim` rows, excluded range PRs, audit coverage
+evidence, and PR range before deep audit unless I explicitly say to proceed.
+When the scope is
 `UNKNOWN (needs batch confirmation)`, ask me to choose the candidate batch/run id
 before any confirmed worked-issue audit.
 
@@ -277,13 +299,16 @@ For every non-OK finding, include a draft issue entry but do not create it:
 
 Return high-risk findings first, then review-gate violations, QA coverage
 findings, missing changelog candidates, cross-PR interaction risks, the issue
-plan, a worked-issue/QA-lane coverage table, a PR-by-PR table, and exact
-commands/data sources. Include any remaining `UNKNOWN` facts and the command or
-permission needed to resolve them. Do not make code changes, comments, labels,
-issues, reverts, or PRs without approval. The worked-issue/QA-lane coverage
-table must include issue number or QA lane id, coordination lane/branch, linked
-PR or no-PR/blocker/QA evidence, final state, intent-achievement or QA-coverage
-classification, and `UNKNOWN` facts.
+plan, an audit scope/coverage table, a worked-issue/QA-lane coverage table, a
+PR-by-PR table, and exact commands/data sources. Include any remaining
+`UNKNOWN` facts and the command or permission needed to resolve them. Do not
+make code changes, comments, labels, issues, reverts, or PRs without approval.
+The audit scope/coverage table must include audit mode, base/head range,
+included PRs, excluded range PRs, durable audit coverage marker/ledger status
+where available, and any `UNKNOWN` coverage facts. The worked-issue/QA-lane
+coverage table must include issue number or QA lane id, coordination lane/branch,
+linked PR or no-PR/blocker/QA evidence, final state, intent-achievement or
+QA-coverage classification, and `UNKNOWN` facts.
 
 Example worked-issue coverage table (`batch-abc` and issue numbers are
 placeholders; replace them with the real batch id and issues):
@@ -350,11 +375,14 @@ Return:
 4. disputed findings needing human review
 5. PRs both agents consider OK
 6. deduped issue plan
-7. reconciled worked-issue/QA-lane coverage table with issue number or QA lane
+7. reconciled audit scope/coverage table with audit mode, base/head range,
+   included PRs, excluded range PRs, durable audit coverage marker/ledger status
+   where available, and any unresolved `UNKNOWN` coverage facts
+8. reconciled worked-issue/QA-lane coverage table with issue number or QA lane
    id, coordination lane/branch, linked PR or no-PR/blocker/QA evidence, final
    state, intent-achievement or QA-coverage classification, and any unresolved
    `UNKNOWN` facts
-8. recommended next actions, including a coordinator resume/reassign/drop
+9. recommended next actions, including a coordinator resume/reassign/drop
    decision for `stalled` lanes instead of defaulting to issue creation
 
 Do not create issues or PRs yet.
