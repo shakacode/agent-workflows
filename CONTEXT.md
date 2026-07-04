@@ -47,7 +47,7 @@ _Avoid_: status (overloaded — heartbeat status and lane status already exist)
 ### Batch lifecycle
 
 **Batch**:
-A coordinator-registered unit of work: objective, instructions, targets, and lanes — registered in the backend *before* any worker starts.
+A coordinator-scoped unit of work: objective, instructions, targets, and lanes. Depending on repo policy and dependency risk, it may be recorded in the private backend, mirrored through public claim comments, or carried only in the coordinator handoff.
 _Avoid_: run, job
 
 **Lane**:
@@ -76,10 +76,10 @@ _Avoid_: force kill (without the cleanup steps it names)
 ## Example dialogue
 
 > **Dev:** "Lane docs shows **live** but has not moved phases — is it **dead**?"
-> **Coordinator:** "No, it's **wedged** — the heartbeat sidecar is fine but there's been no **phase** transition since `implementing`. If you restart the chat, use **supersede** so the old **instance** gets fenced by the **generation** bump; don't just re-paste the prompt, and don't call it a **takeover** — that's only when a *different* agent claims after the holder is **dead**."
+> **Coordinator:** "No, it's **wedged** — the heartbeat sidecar is fine but there's been no **phase** transition since `implementing`. Inspect first; if it cannot reach a checkpoint, use the **hard escape hatch** before starting a replacement. Don't call it a **takeover** — that's only when a *different* agent claims after the holder is **dead**."
 
 ## Flagged ambiguities
 
 - "status" was used for three different things — resolved: **Phase** (worker progress), heartbeat status (the raw field), and lane status (batch-file field) are distinct; prefer **Phase** in prose.
-- "stuck" was used for both **Wedged** and **Dead** — resolved: they need different operator responses (inspect/recover vs dead-threshold takeover or explicit supersede), so the vague word is avoided.
+- "stuck" was used for both **Wedged** and **Dead** — resolved: they need different operator responses (inspect or hard escape vs dead-threshold takeover or explicit supersede), so the vague word is avoided.
 - "restart" previously meant re-pasting a prompt, which silently double-started a lane — resolved: the sanctioned restart is **Supersede**.
