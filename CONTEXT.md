@@ -11,7 +11,7 @@ The exclusive lease one agent instance holds on a target (issue or PR) in one re
 _Avoid_: lock, reservation, assignment
 
 **Takeover**:
-A *different* agent acquiring a claim only after the current holder is dead.
+A *different* agent acquiring a claim only after the current private-backend holder is dead, or after a public fallback claim's advisory lease has expired.
 _Avoid_: steal, reclaim
 
 **Supersede (claim operation)**:
@@ -69,14 +69,14 @@ _Avoid_: force kill (without the cleanup steps it names)
 ## Relationships
 
 - A **Batch** has one or more **Lanes**; a **Lane** has exactly one owner identity at a time.
-- A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** — both bump the **Generation**.
+- A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** or a fallback claim expires — both bump the **Generation** when the backend supports fencing.
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.
 
 ## Example dialogue
 
 > **Dev:** "Lane docs shows **live** but has not moved worker phases — is it **dead**?"
-> **Coordinator:** "No, it's **wedged** — the heartbeat sidecar is fine but there's been no **worker phase** transition since `implementing`. Inspect first; if it cannot reach a checkpoint, use the **hard escape hatch** before starting a replacement. Don't call it a **takeover** — that's only when a *different* agent claims after the holder is **dead**."
+> **Coordinator:** "No, it's **wedged** — the heartbeat sidecar is fine but there's been no **worker phase** transition since `implementing`. Inspect first; if it cannot reach a checkpoint, use the **hard escape hatch** before starting a replacement. Don't call it a **takeover** — that's only when a *different* agent claims after the holder is **dead** or an advisory fallback claim has expired."
 
 ## Flagged ambiguities
 
