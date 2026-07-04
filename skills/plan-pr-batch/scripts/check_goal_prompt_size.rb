@@ -10,6 +10,7 @@ TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
+SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 
@@ -147,9 +148,9 @@ end
 def prompt_for_target(prompt_template, target)
   case target
   when :codex
-    prompt_template
+    "#{GOAL_LINE}\n#{prompt_template}"
   when :claude, :generic
-    prompt_template.sub(/\A#{Regexp.escape(GOAL_LINE)}\n/, "")
+    prompt_template
   else
     abort_with_failure("unknown prompt target: #{target.inspect}")
   end
@@ -192,7 +193,8 @@ required_skill_rule_phrases = [
   "Goal prompt character count: N characters (target: codex|claude|generic)",
   "target-specific prompt",
   "including the `/goal` line",
-  "remove only the `/goal` line",
+  "prepend only the `/goal` line",
+  "keep the shared `$pr-batch` invocation",
   "apply Codex's strict 4000-character limit",
   "under 8000 characters",
   "For Codex, if the measured prompt is 4000 characters or more",
@@ -279,11 +281,15 @@ unless codex_prompt_template.start_with?(CODEX_PROMPT_START)
   abort_with_failure("Goal prompt template must start with /goal followed by the $pr-batch invocation")
 end
 
-unless claude_prompt_template.start_with?("#{INVOCATION_LINE}\n")
+unless prompt_template.start_with?(SHARED_PROMPT_START)
+  abort_with_failure("Shared goal prompt template must start with the $pr-batch invocation")
+end
+
+unless claude_prompt_template.start_with?(SHARED_PROMPT_START)
   abort_with_failure("Claude goal prompt template must omit /goal and start with the $pr-batch invocation")
 end
 
-unless generic_prompt_template.start_with?("#{INVOCATION_LINE}\n")
+unless generic_prompt_template.start_with?(SHARED_PROMPT_START)
   abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
 end
 

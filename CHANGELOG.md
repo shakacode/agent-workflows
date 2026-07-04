@@ -19,6 +19,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Default post-merge audits to the obvious just-run batch before asking for batch confirmation.**
 - **Clarify completed-batch post-merge audit scope, release/range audits, and coverage catch-up for explicit un-audited PR or commit ranges.**
 - **Start pasteable batch prompts with a short title that includes a repository-derived project abbreviation, optional A/B/C split marker, and `MM-DD HH:MM` from the local shell `date` command.**
+- **Default post-merge audits to creating follow-up issues from the deduped issue plan unless the user requests report-only/no issue creation.**
 
 #### Fixed
 

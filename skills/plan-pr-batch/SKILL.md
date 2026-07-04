@@ -171,9 +171,10 @@ Plan a PR batch
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For the `claude` or `generic` target, omit only the `/goal` line and do not <!-- host-allow: codex-only -->
-     apply Codex's strict 4000-character limit; still keep the prompt compact,
-     measured, under 8000 characters, and free of bulky evidence.
+     For the `claude` or `generic` target, do not prepend the Codex-only
+     `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
+     Still keep the prompt compact, measured, under 8000 characters, and free of
+     bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
      script below, or pipe only the extracted fence body to a
      character-counting command such as `ruby -e 'print STDIN.read.length'`.
@@ -229,14 +230,12 @@ Plan a PR batch
 ## Goal Prompt for pr-batch
 
 Use this template and fill it with the verified items. The fenced template below
-shows the Codex variant. For the `codex` target, keep `/goal` as the first line. <!-- host-allow: codex-only -->
-For the `claude` or `generic` target, remove only the `/goal` line so the prompt <!-- host-allow: codex-only -->
-starts with `Use $pr-batch to complete this batch with subagents.`
+is the shared prompt body. For the `codex` target, prepend only the `/goal` line <!-- host-allow: codex-only -->
+before this body. For the `claude` or `generic` target, use the body as-is so the
+prompt starts with `Use $pr-batch to complete this batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
 
-<!-- host-branch: codex-only start -->
 ```text
-/goal
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 
@@ -276,7 +275,6 @@ Execution rules:
 - Use validation, self-review, review-comment, CI, and readiness gates. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
 - Final handoff must include links, tests, blockers, next action, confidence/UNKNOWN, `merge_authority`, QA Evidence or not-required rationale, and final-state sections: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 ```
-<!-- host-branch: codex-only end -->
 
 ## Common Mistakes
 
