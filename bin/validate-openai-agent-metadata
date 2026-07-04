@@ -1,0 +1,75 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "yaml"
+
+module ValidateOpenaiAgentMetadata
+  REQUIRED_FIELDS = %w[display_name short_description default_prompt].freeze
+
+  module_function
+
+  def validate_root(root)
+    failures = []
+    openai_paths(root).each do |path|
+      failures.concat(validate_file(path, root))
+    end
+    failures
+  end
+
+  def openai_paths(root)
+    Dir.glob(File.join(root, "skills", "*", "agents", "openai.yaml")).sort
+  end
+
+  def validate_file(path, root)
+    relative_path = relative_path(path, root)
+    metadata = load_yaml(path, relative_path)
+    return [metadata] if metadata.is_a?(String)
+
+    failures = []
+    interface = metadata["interface"] if metadata.is_a?(Hash)
+    unless interface.is_a?(Hash)
+      return ["#{relative_path}: interface mapping is required"]
+    end
+
+    REQUIRED_FIELDS.each do |field|
+      value = interface[field]
+      unless value.is_a?(String) && !value.strip.empty?
+        failures << "#{relative_path}: interface.#{field} must be a non-empty string"
+      end
+    end
+
+    expected_skill = File.basename(File.dirname(File.dirname(path)))
+    default_prompt = interface["default_prompt"]
+    if default_prompt.is_a?(String)
+      prompt_refs = default_prompt.scan(/\$([a-z0-9][a-z0-9-]*)/).flatten
+      unless prompt_refs == [expected_skill]
+        failures << "#{relative_path}: default_prompt must reference $#{expected_skill}"
+      end
+    end
+
+    failures
+  end
+
+  def load_yaml(path, relative_path)
+    YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false) || {}
+  rescue Psych::Exception => e
+    "#{relative_path}: invalid YAML: #{e.message}"
+  end
+
+  def relative_path(path, root)
+    path.delete_prefix("#{File.expand_path(root)}/")
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  root = File.expand_path(ARGV.fetch(0, File.join(__dir__, "..")))
+  failures = ValidateOpenaiAgentMetadata.validate_root(root)
+
+  if failures.empty?
+    count = ValidateOpenaiAgentMetadata.openai_paths(root).length
+    puts "PASS #{count} OpenAI agent metadata files"
+  else
+    warn failures.join("\n")
+    exit 1
+  end
+end

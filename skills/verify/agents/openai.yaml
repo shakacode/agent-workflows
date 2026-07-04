@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Verify"
+  short_description: "Run pre-PR validation"
+  default_prompt: "Use $verify to run the local verification loop for the current branch."

@@ -1,0 +1,224 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require "pathname"
+
+module CodexPluginManifestCheck
+  MANIFEST_RELATIVE_PATH = ".codex-plugin/plugin.json"
+  EXPECTED_NAME = "agent-workflows"
+  EXPECTED_REPOSITORY = "https://github.com/shakacode/agent-workflows"
+  EXPECTED_SKILLS_PATH = "skills"
+  REQUIRED_INTERFACE_FIELDS = %w[
+    displayName
+    shortDescription
+    longDescription
+    developerName
+    category
+  ].freeze
+  CONSUMER_POLICY_PATTERNS = [
+    [%r{\.agents/bin/}i, "consumer command wrapper path"],
+    [/AGENTS\.md/, "consumer AGENTS.md policy file"],
+    [/\bbase[_ -]?branch\b/i, "consumer base branch policy"],
+    [/\b(main|master)\b/, "hardcoded branch name"],
+    [/\breview[_ -]?gate\b/i, "consumer review gate policy"],
+    [/\bmerge[_ -]?ledger\b/i, "consumer merge ledger policy"],
+    [/\bhosted[_ -]?ci\b/i, "consumer hosted CI policy"],
+    [/\bci[_ -]?change[_ -]?detector\b/i, "consumer CI detector policy"],
+    [/\bfollow[-_ ]?up prefix\b/i, "consumer follow-up prefix policy"],
+    [/\bbenchmark labels?\b/i, "consumer benchmark label policy"],
+    [/\bbundle exec\b/i, "consumer command"],
+    [/\b(?:npm|yarn|pnpm) (?:test|run|exec)\b/i, "consumer package command"],
+    [%r{\b(?:bin|script)/[A-Za-z0-9_.-]+\b}, "consumer script path"]
+  ].freeze
+
+  module_function
+
+  def run(argv)
+    root = parse_root(argv)
+    errors = validate(root)
+
+    if errors.empty?
+      puts "PASS Codex plugin manifest"
+      0
+    else
+      warn "FAIL Codex plugin manifest"
+      errors.each { |error| warn "- #{error}" }
+      1
+    end
+  end
+
+  def parse_root(argv)
+    root = File.expand_path("..", __dir__)
+
+    OptionParser.new do |opts|
+      opts.banner = "Usage: codex-plugin-manifest-check [--root DIR]"
+      opts.on("--root DIR", "Source pack root to validate") { |value| root = value }
+    end.parse!(argv)
+
+    File.expand_path(root)
+  end
+
+  def validate(root)
+    errors = []
+    manifest = load_manifest(root, errors)
+    return errors unless manifest
+
+    validate_manifest_metadata(root, manifest, errors)
+    validate_skills_path(root, manifest, errors)
+    validate_interface(manifest, errors)
+    validate_no_consumer_policy(manifest, errors)
+    errors
+  end
+
+  def load_manifest(root, errors)
+    path = File.join(root, MANIFEST_RELATIVE_PATH)
+    unless File.file?(path)
+      errors << "missing #{MANIFEST_RELATIVE_PATH}"
+      return nil
+    end
+
+    payload = JSON.parse(File.read(path, encoding: "UTF-8"))
+    unless payload.is_a?(Hash)
+      errors << "#{MANIFEST_RELATIVE_PATH} must contain a JSON object"
+      return nil
+    end
+
+    payload
+  rescue JSON::ParserError => e
+    errors << "#{MANIFEST_RELATIVE_PATH} must be valid JSON: #{e.message}"
+    nil
+  end
+
+  def validate_manifest_metadata(root, manifest, errors)
+    expected_version = read_required_file(root, "VERSION", errors)&.strip
+    expected_description = read_readme_description(root, errors)
+
+    errors << "name must be #{EXPECTED_NAME.inspect}" unless manifest["name"] == EXPECTED_NAME
+    errors << "version must match VERSION #{expected_version.inspect}" if expected_version && manifest["version"] != expected_version
+    errors << "description must match README summary #{expected_description.inspect}" if expected_description && manifest["description"] != expected_description
+    errors << "repository must be #{EXPECTED_REPOSITORY.inspect}" unless manifest["repository"] == EXPECTED_REPOSITORY
+  end
+
+  def read_required_file(root, relative_path, errors)
+    path = File.join(root, relative_path)
+    unless File.file?(path)
+      errors << "missing #{relative_path}"
+      return nil
+    end
+
+    File.read(path, encoding: "UTF-8")
+  end
+
+  def read_readme_description(root, errors)
+    readme = read_required_file(root, "README.md", errors)
+    return nil unless readme
+
+    lines = readme.lines.map(&:chomp)
+    heading_index = lines.index { |line| line.start_with?("# ") }
+    body = lines[(heading_index || -1) + 1..] || []
+    body.each do |line|
+      stripped = line.strip
+      return stripped unless stripped.empty?
+    end
+
+    errors << "README.md must contain a summary paragraph after the title"
+    nil
+  end
+
+  def validate_skills_path(root, manifest, errors)
+    raw_path = manifest["skills"]
+    if raw_path != "./skills/"
+      errors << "skills must be \"./skills/\""
+      return
+    end
+
+    skills_root = resolve_relative_path(root, raw_path, errors)
+    return unless skills_root
+
+    unless File.directory?(skills_root)
+      errors << "skills path #{raw_path.inspect} does not resolve to a directory from the plugin root"
+      return
+    end
+
+    expected = skill_names(File.join(root, EXPECTED_SKILLS_PATH))
+    actual = skill_names(skills_root)
+    if actual != expected
+      errors << "skills path exposes #{actual.length} skill(s), expected #{expected.length}: #{diff_names(expected, actual)}"
+    end
+
+    actual.each do |name|
+      skill_md = File.join(skills_root, name, "SKILL.md")
+      errors << "skill #{name.inspect} is missing SKILL.md" unless File.file?(skill_md)
+    end
+  end
+
+  def resolve_relative_path(root, raw_path, errors)
+    path = Pathname.new(raw_path).cleanpath
+    if path.absolute? || path.each_filename.any? { |part| part == ".." }
+      errors << "skills path must be a relative path inside the plugin root"
+      return nil
+    end
+
+    root_real = File.realpath(root)
+    resolved = File.expand_path(path.to_s, root_real)
+    real_resolved = File.exist?(resolved) ? File.realpath(resolved) : resolved
+    unless real_resolved == root_real || real_resolved.start_with?("#{root_real}/")
+      errors << "skills path must stay inside the plugin root"
+      return nil
+    end
+
+    resolved
+  end
+
+  def skill_names(skills_root)
+    return [] unless File.directory?(skills_root)
+
+    Dir.children(skills_root).select do |entry|
+      File.directory?(File.join(skills_root, entry)) && !entry.start_with?(".")
+    end.sort
+  end
+
+  def diff_names(expected, actual)
+    missing = expected - actual
+    extra = actual - expected
+    parts = []
+    parts << "missing #{missing.join(', ')}" unless missing.empty?
+    parts << "extra #{extra.join(', ')}" unless extra.empty?
+    parts.join("; ")
+  end
+
+  def validate_interface(manifest, errors)
+    interface = manifest["interface"]
+    unless interface.is_a?(Hash)
+      errors << "interface must be an object"
+      return
+    end
+
+    REQUIRED_INTERFACE_FIELDS.each do |field|
+      value = interface[field]
+      errors << "interface.#{field} must be a non-empty string" unless value.is_a?(String) && !value.strip.empty?
+    end
+
+    default_prompt = interface["defaultPrompt"]
+    return if default_prompt.is_a?(Array) && default_prompt.any? && default_prompt.all? { |value| value.is_a?(String) && !value.strip.empty? }
+
+    errors << "interface.defaultPrompt must be a non-empty array of strings"
+  end
+
+  def validate_no_consumer_policy(value, errors, path = "$")
+    case value
+    when Hash
+      value.each { |key, child| validate_no_consumer_policy(child, errors, "#{path}.#{key}") }
+    when Array
+      value.each_with_index { |child, index| validate_no_consumer_policy(child, errors, "#{path}[#{index}]") }
+    when String
+      CONSUMER_POLICY_PATTERNS.each do |pattern, label|
+        errors << "#{path} contains #{label}: #{value.inspect}" if value.match?(pattern)
+      end
+    end
+  end
+end
+
+exit CodexPluginManifestCheck.run(ARGV) if $PROGRAM_NAME == __FILE__

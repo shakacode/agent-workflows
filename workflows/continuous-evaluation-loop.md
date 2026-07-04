@@ -26,6 +26,8 @@ role, not a maker role.
 Gather live evidence from git, GitHub, and agent-coord, not chat memory:
 
 1. Run bounded coordination reads through the resolved `pr-batch` helper:
+   resolve `PR_BATCH_SKILL_DIR` with the explicit env-var, loaded skill base,
+   repo-local pinned-copy chain, then run
    `PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"; "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json`,
    then `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id <batch-id> --json`
    when a batch id is known, or

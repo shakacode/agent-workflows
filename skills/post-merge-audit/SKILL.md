@@ -43,6 +43,7 @@ key/value fields in the "Public claim comment" format from
 When this repository includes the `post-merge-audit-scope` helper, run it first:
 
 ```bash
+# Resolve POST_MERGE_AUDIT_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 POST_MERGE_AUDIT_SKILL_DIR="${POST_MERGE_AUDIT_SKILL_DIR:-.agents/skills/post-merge-audit}"
 "${POST_MERGE_AUDIT_SKILL_DIR}/bin/post-merge-audit-scope" --json
 ```

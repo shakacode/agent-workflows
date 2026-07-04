@@ -156,6 +156,7 @@ Include the review body as a general comment when it contains actionable feedbac
 **If only PR number is provided (full-PR scan), fetch all review data with the helper:**
 
 ```bash
+# Resolve ADDRESS_REVIEW_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
 "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json
 ```

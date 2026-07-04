@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Triage"
+  short_description: "Inventory issues and PRs"
+  default_prompt: "Use $triage to build a live issue and PR inventory with batch splits."

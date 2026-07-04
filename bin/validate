@@ -39,8 +39,20 @@ else
 end
 RUBY
 
+echo "== Codex plugin manifest =="
+ruby bin/codex-plugin-manifest-check
+
+echo "== OpenAI picker metadata =="
+ruby bin/validate-openai-agent-metadata
+
+echo "== host adapter syntax =="
+bin/validate-host-adapter-syntax
+
 echo "== seam doctor unit tests =="
 ruby bin/agent-workflow-seam-doctor-test.rb
+ruby bin/codex-plugin-manifest-check-test.rb
+ruby bin/validate-openai-agent-metadata-test.rb
+ruby bin/host-adapter-syntax-test.rb
 
 echo "== status unit tests =="
 ruby bin/agent-workflows-status-test.rb

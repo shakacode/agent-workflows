@@ -1,0 +1,170 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "pathname"
+
+ROOT = Pathname.new(ARGV[0] || ".").expand_path
+CODEX_ONLY_START = "<!-- host-branch: codex-only start -->"
+CODEX_ONLY_END = "<!-- host-branch: codex-only end -->"
+AVAILABLE_TOOL_START = "<!-- host-branch: available-tool start -->"
+AVAILABLE_TOOL_END = "<!-- host-branch: available-tool end -->"
+ALLOW_CODEX = "<!-- host-allow: codex-only -->"
+
+PAIR_RULES = [
+  {
+    left: "git worktree add",
+    right: "isolation: 'worktree'",
+    message: "worktree isolation must mention both machine worktrees and Claude in-process worktree isolation"
+  }
+].freeze
+
+CODEX_ONLY_TOKENS = [
+  "/goal"
+].freeze
+
+AVAILABLE_TOOL_TOKENS = [
+  "`codex review",
+  "codex review --",
+  "/simplify"
+].freeze
+
+AVAILABILITY_WORDS = [
+  "available",
+  "availability",
+  "fallback",
+  "if the current environment",
+  "when the current environment",
+  "if available",
+  "when available",
+  "verify it is available",
+  "skipped with reason"
+].freeze
+
+def target_files
+  ROOT.glob("skills/*/SKILL.md").sort + ROOT.glob("workflows/*.md").sort
+end
+
+def codex_only_lines(lines)
+  inside = false
+  allowed = []
+
+  lines.each_with_index do |line, index|
+    inside = true if line.include?(CODEX_ONLY_START)
+    allowed << index if inside || line.include?(ALLOW_CODEX)
+    inside = false if line.include?(CODEX_ONLY_END)
+  end
+
+  allowed
+end
+
+def available_tool_lines(lines)
+  inside = false
+  allowed = []
+
+  lines.each_with_index do |line, index|
+    inside = true if line.include?(AVAILABLE_TOOL_START)
+    allowed << index if inside
+    inside = false if line.include?(AVAILABLE_TOOL_END)
+  end
+
+  allowed
+end
+
+def validate_marker_pairs(path, text)
+  marker_pairs = [
+    [CODEX_ONLY_START, CODEX_ONLY_END, "codex-only"],
+    [AVAILABLE_TOOL_START, AVAILABLE_TOOL_END, "available-tool"]
+  ]
+  failures = []
+  lines = text.lines
+
+  marker_pairs.each do |start_marker, end_marker, label|
+    inside = false
+    start_line = nil
+
+    lines.each_with_index do |line, index|
+      if line.include?(start_marker)
+        failures << "#{path}:#{index + 1}: #{label} host branch start appears before previous branch ended" if inside
+        inside = true
+        start_line = index + 1
+      end
+
+      next unless line.include?(end_marker)
+
+      failures << "#{path}:#{index + 1}: #{label} host branch end appears before start" unless inside
+      inside = false
+      start_line = nil
+    end
+
+    failures << "#{path}:#{start_line}: #{label} host branch start missing end" if inside
+  end
+
+  failures
+end
+
+def validate_codex_tokens(path, text)
+  lines = text.lines
+  allowed = codex_only_lines(lines)
+  failures = []
+
+  lines.each_with_index do |line, index|
+    CODEX_ONLY_TOKENS.each do |token|
+      next unless line.include?(token)
+      next if allowed.include?(index)
+
+      failures << "#{path}:#{index + 1}: #{token} must be inside a codex-only host branch"
+    end
+  end
+
+  failures
+end
+
+def validate_pairs(path, text)
+  PAIR_RULES.filter_map do |rule|
+    left = text.include?(rule.fetch(:left))
+    right = text.include?(rule.fetch(:right))
+    next if left == right
+
+    "#{path}: #{rule.fetch(:message)}"
+  end
+end
+
+def validate_available_tools(path, text)
+  lines = text.lines
+  allowed = available_tool_lines(lines)
+  failures = []
+
+  lines.each_with_index do |line, index|
+    line_downcased = line.downcase
+    AVAILABLE_TOOL_TOKENS.each do |token|
+      next unless line_downcased.include?(token)
+      next if allowed.include?(index)
+
+      window_start = [index - 3, 0].max
+      window_end = [index + 3, lines.length - 1].min
+      context = lines[window_start..window_end].join.downcase
+      has_context = AVAILABILITY_WORDS.any? { |word| context.include?(word) }
+      failures << "#{path}:#{index + 1}: #{token} needs availability-check or fallback language" unless has_context
+    end
+  end
+
+  failures
+end
+
+failures = []
+
+target_files.each do |path|
+  text = path.read(encoding: "UTF-8")
+  relative = path.relative_path_from(ROOT)
+  failures.concat(validate_marker_pairs(relative, text))
+  failures.concat(validate_pairs(relative, text))
+  failures.concat(validate_codex_tokens(relative, text))
+  failures.concat(validate_available_tools(relative, text))
+end
+
+if failures.empty?
+  puts "PASS host adapter syntax"
+else
+  warn failures.join("\n")
+  exit 1
+end
