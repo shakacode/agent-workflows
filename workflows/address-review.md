@@ -1,6 +1,6 @@
 # Address Review Prompt
 
-Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow.
+Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow and that command is unavailable.
 
 ## How to Use
 
@@ -22,7 +22,7 @@ If the assistant has terminal access with `gh`, it should execute the workflow d
 ````text
 Act as a pull request review triage assistant.
 
-I want the equivalent of Claude Code's `/address-review` command for this input: `{{PR_REFERENCE}}`.
+I want the equivalent of Claude Code's `/address-review` command, using this prompt as the fallback when that command is unavailable, for this input: `{{PR_REFERENCE}}`.
 
 Your job is to fetch GitHub PR review comments, triage them, and wait for my instruction before making code changes unless I initiated the run with `autopilot`.
 
@@ -126,7 +126,7 @@ Execution flow when terminal access is available:
      `gh api repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID} | jq '{id: .id, body: .body, state: .state, user: .user.login, created_at: .submitted_at, html_url: .html_url}'`
      `gh api --paginate repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments | jq -s '[.[].[] | {id: .id, node_id: .node_id, path: .path, body: .body, line: .line, start_line: .start_line, user: .user.login, in_reply_to_id: .in_reply_to_id, created_at: .created_at, html_url: .html_url}]'`
    - If the review body contains actionable feedback, include it as an additional general comment. Review summary bodies cannot use the `/replies` endpoint; post those responses as general PR comments (see step 8).
-  - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query):
+  - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query). Resolve `ADDRESS_REVIEW_SKILL_DIR` with the explicit env-var, loaded skill base, repo-local pinned-copy chain before using the fallback assignment:
     `ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"; "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json`
      It emits one JSON document: `review_cutoff_at` (see step 3); `review_summaries` (`{id, type: "review_summary", body, state, user, created_at, html_url}`, non-empty bodies only); `inline_comments` (`{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`, with `thread_id`/`is_resolved` already joined by `node_id` — no separate GraphQL query needed); `issue_comments` (`{id, node_id, type: "issue", body, user, created_at, html_url}`, including summary/status markers for filtering); and `review_threads` (`{thread_id, is_resolved, comments: [{node_id, id}]}`).
    - Treat actionable review summary bodies as additional general comments. Like specific review bodies, they cannot use the `/replies` endpoint and must be answered as general PR comments (see step 8).

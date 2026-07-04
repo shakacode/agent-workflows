@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Adversarial PR Review"
+  short_description: "Red-team PR merge readiness"
+  default_prompt: "Use $adversarial-pr-review to run a skeptical risk review on a pull request or local diff."

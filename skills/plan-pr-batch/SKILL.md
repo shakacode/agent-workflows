@@ -20,6 +20,11 @@ entry point. After fetching, prefer repo-local `.agents/skills/...` and
 `.agents/workflows/...` files when they exist; otherwise use the installed
 shared files adjacent to this skill.
 
+When helper scripts need a `*_SKILL_DIR`, resolve it in this order: explicit
+environment variable; the loaded skill's base directory when the host exposes
+it; repo-local `.agents/skills/<skill>`; then stop with a precise blocker if the
+helper is still missing.
+
 Memorable invocation:
 
 ```text
@@ -44,8 +49,8 @@ Plan a PR batch
    - Record title, URL, state, branch/author for PRs, labels, linked PR/issue refs, and blockers. If a fact cannot be verified, write `UNKNOWN`.
    - Treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded
-     `agent-coord doctor --json` and targeted status probes exit 0. Resolve the
-     `pr-batch` skill directory, then run
+     `agent-coord doctor --json` and targeted status probes exit 0. Resolve
+     `PR_BATCH_SKILL_DIR` using the helper path chain above, then run
      `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <resolved-owner/repo> --target <issue-or-pr> --json`
      for exact targets; for known batch dependencies, run
      `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id <batch-id> --json`.
@@ -90,6 +95,9 @@ Plan a PR batch
      diff and the Files API must independently agree on the path set — a
      fail-safe against a silent under-report scheduling two colliding items into
      the same wave:
+     Resolve `PLAN_PR_BATCH_SKILL_DIR` with the explicit env-var, loaded skill
+     base, repo-local pinned-copy chain before using the fallback assignment.
+     Then run:
      `PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"; "${PLAN_PR_BATCH_SKILL_DIR}/bin/pr-file-touch-map" N --repo OWNER/REPO --cross-check`
      It prints `{pr, repo, source, changed_files, paths, renames}`:
      - `source` is `verified` (cross-check: both sources agreed — the only value

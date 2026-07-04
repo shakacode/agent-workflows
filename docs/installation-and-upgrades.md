@@ -35,6 +35,40 @@ Claude:
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
 
+## Codex Native Plugin Path
+
+This repository also ships Codex native plugin metadata at
+`.codex-plugin/plugin.json`. That manifest is for Codex only and points at the
+source pack's existing `./skills/` tree. It lets Codex consume the pack through a
+native plugin source without reshaping the repository or copying the skills into
+a host home first.
+
+Use the Codex native plugin path when a Codex marketplace or plugin source
+points at this cloned or released source pack and you only need Codex to load
+the shared skills. The manifest is deliberately source-pack metadata: consumer
+repository commands, labels, branches, changelog rules, CI policy, and review
+gates still come from that repository's `AGENTS.md` seam and `.agents/`
+contract.
+
+The native plugin path is not the Claude Code install path. Claude Code users
+should keep using:
+
+```bash
+bin/install-agent-workflows --host claude
+```
+
+The native plugin path also does not install helper binaries on `PATH`, write
+`<target>/.agent-workflows-install.json`, or participate in
+`agent-workflows-status` and `upgrade-agent-workflows`. Use the host installer
+path for Codex or Claude when you need those helper binaries, install metadata,
+copy/symlink mode, status checks, or managed upgrades.
+
+Validate the Codex plugin manifest from the source pack root with:
+
+```bash
+ruby bin/codex-plugin-manifest-check
+```
+
 ## Install
 
 Clone the source pack:

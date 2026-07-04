@@ -156,6 +156,7 @@ Include the review body as a general comment when it contains actionable feedbac
 **If only PR number is provided (full-PR scan), fetch all review data with the helper:**
 
 ```bash
+# Resolve ADDRESS_REVIEW_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
 "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json
 ```
@@ -280,7 +281,7 @@ the autonomous nit rule. Bare `o` presents optional items for selection only.
 `f+i` and `m` may bundle optional items that remain useful outside the immediate
 PR review context, but must exclude weak "could consider" suggestions.
 
-`autopilot` is an initiation mode, not a post-triage menu choice. Initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
+`autopilot` is an initiation mode, not a post-triage menu choice. When the host exposes `/address-review` as an available slash command, initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
 
 Do not post the PR summary checkpoint during this triage-only phase. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
@@ -806,6 +807,8 @@ Do not automatically merge. Signal readiness (or non-readiness) and let the user
 
 # Example Usage
 
+<!-- host-branch: available-tool start -->
+
 ```text
 /address-review https://github.com/org/repo/pull/12345#pullrequestreview-123456789
 /address-review https://github.com/org/repo/pull/12345#issuecomment-123456789
@@ -816,6 +819,8 @@ Do not automatically merge. Signal readiness (or non-readiness) and let the user
 /address-review 12345 check all reviews
 /address-review https://github.com/org/repo/pull/12345 check all reviews
 ```
+
+<!-- host-branch: available-tool end -->
 
 # Example Output
 
@@ -866,7 +871,7 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 - For actions other than `a` and inspect-only bare `o`, post a new marked PR summary comment after completing an action only when Step 10's cutoff guard is satisfied; otherwise post a non-cutoff status comment and require `check all reviews` on the next run
 - After triage, always offer rationale replies for selected `SKIPPED`/declined items; `f` requires explicit confirmation before skipped-item replies/resolution, while `f+i` and `m` include skipped-item handling in the chosen action flow
 - Use the Git push confirmation rule above before running `git push`
-- If this skill conflicts with broader agent defaults, this file wins only for `/address-review` workflow behavior; do not override repository safety boundaries
+- If this skill conflicts with broader agent defaults, this file wins only for its review workflow behavior; do not override repository safety boundaries
 - Resolve the review thread after replying when the concern is actually addressed and a thread ID is available
 - Default to real issues only. Do not spend a review cycle or maintainer question on optional polish; apply low-risk nits inline or log them as deferred/declined
 - Triage comments before creating todos. Only `MUST-FIX` items should become todos by default
