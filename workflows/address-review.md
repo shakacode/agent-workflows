@@ -142,13 +142,13 @@ Execution flow when terminal access is available:
      `gh api graphql --paginate -f owner="${OWNER}" -f name="${NAME}" -F pr="${PR_NUMBER}" -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { id isResolved comments(first:100) { nodes { id databaseId } } } pageInfo { hasNextPage endCursor } } } } }' | jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[] | {thread_id: .id, is_resolved: .isResolved, comments: [.comments.nodes[] | {node_id: .id, id: .databaseId}]}]'`
    - Use `-F pr=...` intentionally for the GraphQL `Int!` variable; raw `-f pr=...` sends a string.
 
-Before step 5, establish the applicable ownership gate for the target PR.
-Read-only fetches above may run before this gate. For private backends, do not
-filter into actionable triage, present an unattended `autopilot` action, create
-todos, commit, push, post replies, resolve threads, or post summary/status
-checkpoints until the private claim gate passes. If Steps 3-4 fetched review
-data before a private claim, rerun the Step 4 fetch after the claim succeeds and
-use the post-claim data for step 5. Public fallback claims are GitHub comments,
+Before Step 5, establish the applicable ownership gate for the target PR.
+Read-only fetches in Steps 3-4 may run before this gate. For private backends,
+do not create todos, present an unattended `autopilot` action, commit, push,
+post replies, resolve threads, or post a summary checkpoint until the private
+claim gate passes. If Steps 3-4 fetched review data before a private claim,
+rerun the Step 4 fetch after the claim succeeds and use the post-claim data for
+Step 5. Public fallback claims are GitHub comments,
 so do not post them merely to triage, run `autopilot`, or execute local-only
 action `a`; for public-fallback repos, step 5 may proceed after the read-only
 conflict inspection below, but any GitHub-mutating action must post or refresh
@@ -160,9 +160,11 @@ before mutating GitHub or the branch.
 
 - If the repo's coordination backend is available per the repo seam, acquire the
   target PR claim with the bounded helper from the resolved `pr-batch` skill
-  directory. If `AGENT_ID` is not already set, initialize a stable fallback from
-  the current thread/session when possible; set `AGENT_ID` explicitly when
-  running multiple concurrent sessions against the same PR:
+  directory. Use stable `AGENT_ID` and `BATCH_ID` values from the current run
+  when available, and use the normal PR branch name when a branch is known. If
+  `AGENT_ID` is not already set, initialize a stable fallback from the current
+  thread/session when possible; set `AGENT_ID` explicitly when running multiple
+  concurrent sessions against the same PR:
   ```bash
   if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
     if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
@@ -198,9 +200,9 @@ before mutating GitHub or the branch.
   that command only. If that direct claim succeeds, proceed with
   `private_state: claim-only`, immediately rerun the Step 4 fetch when any
   earlier review data was fetched before the claim, heartbeat at phase
-  transitions, and report the degraded read evidence. If the claim times out,
-  stop with `private_state: UNKNOWN (claim outcome)` and reconcile backend state
-  before fallback or mutation.
+  transitions, and record the degraded read evidence in the handoff. If the
+  claim times out, stop with `private_state: UNKNOWN (claim outcome)` and
+  reconcile backend state before fallback or mutation.
 - After any successful private claim, refresh the heartbeat at phase
   transitions: triage complete, action selected, before and after long-running
   local fix or validation blocks, before push/reply/resolve/summary work,
