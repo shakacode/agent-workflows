@@ -22,6 +22,8 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - coverage catch-up: for user-supplied un-audited PR/commit range requests;
     use the explicit `BASE..HEAD` range and subtract only durable audit coverage
     markers/ledger rows that prove prior completed audit coverage
+- If the audit mode itself is ambiguous, ask the user to choose the mode before
+  deep audit because modes imply different scope and base selection.
 - Treat `to_audit` as a range-derived candidate queue. It is not proof that a
   PR was never audited unless the repo has a durable audit coverage marker or
   ledger that records completed audit coverage.
@@ -131,7 +133,7 @@ Scope:
 - Repository: <OWNER>/<REPO>
 - Batch id: <BATCH_ID | UNKNOWN | not applicable; default to the obvious just-run exact id, or resolve a visible label/target-set hint first>
 - Audit mode: <completed-batch | release/range | coverage catch-up>
-- Base: resolve the most recent release candidate tag/commit unless I provide one explicitly; for coverage catch-up, use the explicit lower bound I provide
+- Base: for completed-batch audit, prefer the user-supplied or batch-recorded lower bound that covers the batch merges; for coverage catch-up, use the explicit lower bound I provide; otherwise resolve the most recent release candidate tag/commit unless I provide one explicitly
 - Head: current main unless I provide one explicitly
 - Focus: for completed-batch audit, only the verified batch subset; for release/range audit, the selected range; for coverage catch-up, candidate un-audited PRs/commits in the explicit range
 - Audit id: <AUDIT_ID>
@@ -236,9 +238,10 @@ Show the included/excluded worked issues, collected QA lanes and QA Evidence
 blocks, advisory `codex-claim` rows, excluded range PRs, audit coverage
 evidence, and PR range before deep audit. Proceed without another confirmation
 when the just-run batch was obvious in the current visible chat and verification
-did not surface conflicting scope evidence. When the scope is
-`UNKNOWN (needs batch confirmation)`, ask me to choose the
-candidate batch/run id before any confirmed worked-issue audit.
+did not surface conflicting scope evidence or audit-mode ambiguity. When the
+audit mode is ambiguous, ask me to choose the mode before deep audit. When the
+scope is `UNKNOWN (needs batch confirmation)`, ask me to choose the candidate
+batch/run id before any confirmed worked-issue audit.
 
 Then audit each known worked issue, QA lane, or advisory `codex-claim` row for:
 - whether the implementation, no-PR comment, QA evidence, blocker, or parked

@@ -67,7 +67,13 @@ Choose the audit mode before deep audit:
   coverage. If no durable coverage record exists, report coverage as `UNKNOWN`
   instead of treating `to_audit` as definitive.
 
-1. Base: the user-supplied tag/commit, or the most recent release candidate tag when the user says "since the last RC".
+If the audit mode itself is ambiguous, ask the user to choose the mode before
+deep audit because modes imply different scope and base selection.
+
+1. Base: for completed-batch audit, prefer the user-supplied or batch-recorded
+   lower bound that covers the batch merges; for coverage catch-up, use the
+   explicit lower bound; otherwise use the user-supplied tag/commit or the most
+   recent release candidate tag when the user says "since the last RC".
 2. Head: usually `origin/main` or the current release branch.
 3. Merged PR list: every PR merged between base and head. For a
    completed-batch audit with verified `worked_issue_scope`, keep the full range
@@ -147,9 +153,10 @@ collected QA lanes and QA Evidence blocks, base/head SHAs, coordination status
 evidence, audit coverage markers/ledger evidence when available, and assumptions.
 Proceed into deep audit without another confirmation when the just-run batch was
 obvious in the current visible chat and verification did not surface conflicting
-scope evidence. Ask first only when the batch is not obvious, multiple
-candidates remain, the named batch is unexpectedly empty while lanes appear to
-exist, or another conflict requires a user choice.
+scope evidence or audit-mode ambiguity. Ask first only when the audit mode is
+ambiguous, the batch is not obvious, multiple candidates remain, the named batch
+is unexpectedly empty while lanes appear to exist, or another conflict requires
+a user choice.
 
 ## Audit Checks
 

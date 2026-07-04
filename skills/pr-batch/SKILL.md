@@ -471,12 +471,12 @@ per-PR merge-ledger run, stale release-mode classification updates and the final
 `Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
 distinct), hosted-CI request and waitback when uncertainty remains, and any
 authorized ready/merge action, required QA Evidence verification, the late
-post-merge bot-finding sweep before final batch handoff, and any completed-batch
-post-merge audit required by the canonical closeout lane. Completed-batch audit
-deep-audits only the verified batch subset; coverage catch-up mode handles
-user-requested un-audited PR/commit ranges; release/range audit remains reserved
-for final-release readiness, suspected bad merges, unverified batch scope, or
-credible release-readiness risk.
+post-merge bot-finding sweep before final batch handoff, and, for non-trivial
+batches, any optional completed-batch post-merge audit from the canonical
+closeout lane. Completed-batch audit deep-audits only the verified batch subset;
+coverage catch-up mode handles user-requested un-audited PR/commit ranges;
+release/range audit remains reserved for final-release readiness, suspected bad
+merges, unverified batch scope, or credible release-readiness risk.
 
 When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
 target is merged + closed out (or a true blocker / no-PR with evidence), not

@@ -1760,6 +1760,9 @@ Choose the audit mode before deep audit:
   coverage. If no durable coverage record exists, report coverage as `UNKNOWN`
   instead of treating `to_audit` as definitive.
 
+If the audit mode itself is ambiguous, ask the user to choose the mode before
+deep audit because modes imply different scope and base selection.
+
 1. Resolve the base tag/commit and head SHA. For release/range audit this is
    usually the base release candidate tag/commit and current head. For
    completed-batch audit, prefer the user-supplied or batch-recorded range that
@@ -1846,8 +1849,9 @@ Choose the audit mode before deep audit:
    blocks, advisory public `codex-claim` rows, excluded range PRs, audit
    coverage evidence, and the PR range before deep audit. Proceed without
    another confirmation when the just-run batch was obvious in the current
-   visible chat and verification did not surface conflicting scope evidence.
-   When the scope is
+   visible chat and verification did not surface conflicting scope evidence or
+   audit-mode ambiguity. When the audit mode is ambiguous, ask the user to
+   choose the mode before deep audit. When the scope is
    `UNKNOWN (needs batch confirmation)`, ask the user to choose the candidate
    batch/run id before any confirmed worked-issue audit.
 6. For each known worked issue, QA lane, or advisory public `codex-claim` row,
