@@ -194,6 +194,7 @@ required_skill_rule_phrases = [
   "target-specific prompt",
   "including the `/goal` line",
   "prepend only the `/goal` line",
+  "keep the shared `$pr-batch` invocation",
   "apply Codex's strict 4000-character limit",
   "under 8000 characters",
   "For Codex, if the measured prompt is 4000 characters or more",

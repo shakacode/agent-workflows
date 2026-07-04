@@ -157,9 +157,10 @@ Plan a PR batch
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For the `claude` or `generic` target, omit the Codex invocation line and do not
-     apply Codex's strict 4000-character limit; still keep the prompt compact,
-     measured, under 8000 characters, and free of bulky evidence.
+     For the `claude` or `generic` target, do not prepend the Codex-only
+     `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
+     Still keep the prompt compact, measured, under 8000 characters, and free of
+     bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
      script below, or pipe only the extracted fence body to a
      character-counting command such as `ruby -e 'print STDIN.read.length'`.

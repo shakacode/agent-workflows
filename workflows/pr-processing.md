@@ -1615,6 +1615,11 @@ For local pre-push review, use the configured local review tool such as `.agents
 
 Follow-up issues are expensive. Default to no new issue.
 
+Post-merge batch audit follow-up issues are governed by the Post-Merge Batch
+Audit section, not this ordinary follow-up tracking default; after dedupe, the
+coordinator creates those follow-up issues by default unless the user explicitly
+asked for report-only or no issue creation.
+
 Create follow-up tracking only when all of these are true:
 
 - The work is actionable without rereading the full PR.
