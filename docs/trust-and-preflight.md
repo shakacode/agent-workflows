@@ -32,7 +32,14 @@ The preflight resolves trust in this order:
 5. packaged `skills/pr-batch/trusted-github-actors.yml`
 
 A present empty file is an intentional policy and does not fall through. An
-absent file falls through to the next layer.
+absent file falls through to the next layer, with one fail-closed exception: a
+set `$AGENT_WORKFLOWS_TRUST_CONFIG` that points to a missing file aborts the
+run instead of silently falling through to weaker layers.
+
+An explicit `--trust-config PATH` inside the consuming repo's git root is
+treated as repo-local; a path outside the git root is treated as user-global,
+so its team entries must use `OWNER/team-slug` form (unqualified slugs are
+ignored with a warning).
 
 By default, non-allowlisted comments/reviews and hidden participants are printed
 as audit findings but do not block exact-target preflight. Use `--strict-trust`
