@@ -107,11 +107,12 @@ after phase 1 with a precise blocker.
    batch id, lane name, agent id, target list, validation expectations, and
    coordination hooks. For Codex prompts, keep the prompt under the
    `$plan-pr-batch` Codex 4 000-character limit, including `/goal`; for
-   Claude/generic prompts, measure the actual prompt without applying the Codex
-   split threshold. Put a short `Batch title:` after the target-specific
+   Claude/generic prompts, measure the actual prompt, keep it under 8 000
+   characters, and split or compact it when too large rather than applying the
+   Codex split threshold. Put a short `Batch title:` after the target-specific
    invocation line(s), using a repository abbreviation, A/B/C group letter when
-   multiple prompts are created, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in
-   the local shell, and a descriptive title.
+   multiple prompts are created, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the
+   local shell, and a descriptive title.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire an `agent-coord claim` before editing.
