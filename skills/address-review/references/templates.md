@@ -2,6 +2,9 @@
 
 Read this reference before preparing deferred-work tracking or posting a PR
 summary/status checkpoint from the address-review workflow.
+Keep this file host-neutral: host-adapter marker blocks and available-tool
+syntax stay in `SKILL.md` or `workflows/address-review.md`, which are covered by
+`bin/validate-host-adapter-syntax`.
 
 ## Step 9: Deferred-Work Tracking (when requested)
 
@@ -125,7 +128,7 @@ else
     fi
     # FOLLOW_UP_PREFIX has no safe default; resolve it from the repo seam before creating issues.
     FOLLOW_UP_PREFIX="${FOLLOW_UP_PREFIX:?set FOLLOW_UP_PREFIX from .agents/agent-workflow.yml follow_up_prefix}"
-    FOLLOW_UP_URL=$(gh issue create --repo "${REPO}" --title "${FOLLOW_UP_PREFIX} Review feedback from PR #${PR_NUMBER}" --body-file "${issue_body_file}" --json url -q .url)
+    FOLLOW_UP_URL=$(gh issue create --repo "${REPO}" --title "${FOLLOW_UP_PREFIX} Review feedback from PR #${PR_NUMBER}" --body-file "${issue_body_file}")
     TRACKING_OUTCOME="new issue ${FOLLOW_UP_URL}"
   fi
 

@@ -172,7 +172,7 @@ This single read-only call replaces the per-endpoint `gh api ... | jq` blocks an
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
 - `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
 - `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`.
-- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status marker comments are included so you can filter them (see Filtering comments below).
+- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 
 When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
@@ -195,10 +195,10 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 **Filtering comments:**
 
-- Never triage prior workflow summary/status comments. Skip any issue comment
+- Never triage prior workflow summary/status/claim comments. Skip any issue comment
   whose body starts with `<!-- address-review-summary -->` or
-  `<!-- address-review-status -->`; only the summary marker is a cutoff
-  checkpoint.
+  `<!-- address-review-status -->` or `<!-- codex-claim v1`; only the summary
+  marker is a cutoff checkpoint.
 - Skip comments belonging to already-resolved threads (use the `is_resolved` field already joined onto each `inline_comments` entry, or match via `thread_id` against `review_threads`)
 - Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern
 - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp
@@ -233,10 +233,10 @@ comment. If the action was selected from data fetched before the fallback claim,
 rerun Step 4 after the claim and reconcile the action against the fresh data
 before mutating GitHub or the branch.
 
-- If the repo's coordination backend is available per the repo seam, acquire the
-  target PR claim with the bounded helper from the resolved `pr-batch` skill
-  directory. Use stable `AGENT_ID` and `BATCH_ID` values from the current run
-  when available, and use the normal PR branch name when a branch is known. If
+- If the repo's `coordination_backend` seam selects an available coordination
+  backend, acquire the target PR claim with the bounded helper from the resolved
+  `pr-batch` skill directory. Use stable `AGENT_ID` and `BATCH_ID` values from
+  the current run when available, and use the normal PR branch name when a branch is known. If
   `AGENT_ID` is not already set, initialize a stable fallback from the current
   thread/session when possible; set `AGENT_ID` explicitly when running multiple
   concurrent sessions against the same PR:
@@ -285,12 +285,13 @@ before mutating GitHub or the branch.
   local fix or validation blocks, before push/reply/resolve/summary work,
   blocked/resumed states, and final stable stop. Do not let a live address-review
   run exceed the backend heartbeat TTL without a refresh.
-- Use a structured public `codex-claim` comment only when the repo seam
-  explicitly selects public claim-comment fallback, or when the private claim
-  cannot be started or definitively fails with a non-timeout setup/auth error
-  before any mutation and the repo seam allows that fallback. Public claim
-  comments are advisory and must not override a private claim refusal, timeout,
-  or a repo seam that opts out of coordination.
+- Use a structured public `codex-claim` comment only when the repo's
+  `coordination_backend` seam explicitly selects public claim-comment fallback,
+  or when the private claim cannot be started or definitively fails with a
+  non-timeout setup/auth error before any mutation and the
+  `coordination_backend` seam allows that fallback. Public claim comments are
+  advisory and must not override a private claim refusal, timeout, or a repo
+  seam that opts out of coordination.
 - Before posting a fallback claim, inspect recent PR comments for an unexpired
   `codex-claim` block on the same PR. If another active fallback claim exists,
   stop GitHub-mutating actions and report the conflicting comment URL;

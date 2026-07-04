@@ -158,10 +158,10 @@ comment. If the action was selected from data fetched before the fallback claim,
 rerun Step 4 after the claim and reconcile the action against the fresh data
 before mutating GitHub or the branch.
 
-- If the repo's coordination backend is available per the repo seam, acquire the
-  target PR claim with the bounded helper from the resolved `pr-batch` skill
-  directory. Use stable `AGENT_ID` and `BATCH_ID` values from the current run
-  when available, and use the normal PR branch name when a branch is known. If
+- If the repo's `coordination_backend` seam selects an available coordination
+  backend, acquire the target PR claim with the bounded helper from the resolved
+  `pr-batch` skill directory. Use stable `AGENT_ID` and `BATCH_ID` values from
+  the current run when available, and use the normal PR branch name when a branch is known. If
   `AGENT_ID` is not already set, initialize a stable fallback from the current
   thread/session when possible; set `AGENT_ID` explicitly when running multiple
   concurrent sessions against the same PR:
@@ -208,12 +208,13 @@ before mutating GitHub or the branch.
   local fix or validation blocks, before push/reply/resolve/summary work,
   blocked/resumed states, and final stable stop. Do not let a live address-review
   run exceed the backend heartbeat TTL without a refresh.
-- Use a structured public `codex-claim` comment only when the repo seam
-  explicitly selects public claim-comment fallback, or when the private claim
-  cannot be started or definitively fails with a non-timeout setup/auth error
-  before any mutation and the repo seam allows that fallback. Public claim
-  comments are advisory and must not override a private claim refusal, timeout,
-  or a repo seam that opts out of coordination.
+- Use a structured public `codex-claim` comment only when the repo's
+  `coordination_backend` seam explicitly selects public claim-comment fallback,
+  or when the private claim cannot be started or definitively fails with a
+  non-timeout setup/auth error before any mutation and the
+  `coordination_backend` seam allows that fallback. Public claim comments are
+  advisory and must not override a private claim refusal, timeout, or a repo
+  seam that opts out of coordination.
 - Before posting a fallback claim, inspect recent PR comments for an unexpired
   `codex-claim` block on the same PR. If another active fallback claim exists,
   stop GitHub-mutating actions and report the conflicting comment URL;
@@ -244,7 +245,7 @@ before mutating GitHub or the branch.
   not be the only cleanup step.
 
 5. Filter comments:
-   - Never triage prior workflow summary/status comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->` or `<!-- address-review-status -->` on its very first line; only the summary marker is a cutoff checkpoint.
+   - Never triage prior workflow summary/status/claim comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
    - Skip resolved threads.
    - Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern.
    - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp.
@@ -302,7 +303,7 @@ before mutating GitHub or the branch.
    - Do not post the PR summary checkpoint yet. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
 8. Execute the chosen action:
-   <!-- Keep this action-routing section in sync with .agents/skills/address-review/SKILL.md Step 8. -->
+   <!-- Keep this action-routing section in sync with .agents/skills/address-review/references/actions.md. -->
    - **`a` — Apply, stage, and recommend**: Fix all `MUST-FIX` and `OPTIONAL` items inline after the user selects `a`, or automatically when `autopilot` was requested at initiation. Run relevant checks and the self-review gate. Stage only the intended changed files with explicit `git add` paths instead of committing them. Do **not** commit, push, post GitHub replies, resolve review threads, create follow-up issues, or post the PR summary checkpoint. Return a local summary with: fixed `MUST-FIX` items, fixed `OPTIONAL` items, staged files, validation commands/results, unresolved/skipped items, and detailed `DISCUSS` recommendations. Each `DISCUSS` recommendation must include the reviewer/comment link, recommended decision (`fix now`, `defer`, `decline`, or `ask user`), rationale/evidence, risk/tradeoff, and concrete next step. If validation fails after reasonable local repair, still report the staged-file state clearly and mark the PR as not ready for commit/push.
    - **`f`**:
      Pre-reply subflow: steps 1-7 below end at the commit/push-before-reply gate.

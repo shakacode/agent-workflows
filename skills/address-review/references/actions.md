@@ -2,6 +2,9 @@
 
 Read this reference after choosing an action in `SKILL.md` Step 8. Follow only
 the selected action path, plus `### General rules for all actions`.
+Keep this file host-neutral: host-adapter marker blocks and available-tool
+syntax stay in `SKILL.md` or `workflows/address-review.md`, which are covered by
+`bin/validate-host-adapter-syntax`.
 
 <!-- Keep this action-routing section in sync with .agents/workflows/address-review.md Step 8. -->
 
