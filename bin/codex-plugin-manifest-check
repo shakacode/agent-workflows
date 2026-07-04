@@ -10,6 +10,7 @@ module CodexPluginManifestCheck
   EXPECTED_NAME = "agent-workflows"
   EXPECTED_REPOSITORY = "https://github.com/shakacode/agent-workflows"
   EXPECTED_SKILLS_PATH = "skills"
+  EXPECTED_SKILLS_MANIFEST_PATH = "./#{EXPECTED_SKILLS_PATH}/".freeze
   REQUIRED_INTERFACE_FIELDS = %w[
     displayName
     shortDescription
@@ -21,7 +22,7 @@ module CodexPluginManifestCheck
     [%r{\.agents/bin/}i, "consumer command wrapper path"],
     [/AGENTS\.md/, "consumer AGENTS.md policy file"],
     [/\bbase[_ -]?branch\b/i, "consumer base branch policy"],
-    [/\b(main|master)\b/, "hardcoded branch name"],
+    [/\b(main|master)\b/i, "hardcoded branch name"],
     [/\breview[_ -]?gate\b/i, "consumer review gate policy"],
     [/\bmerge[_ -]?ledger\b/i, "consumer merge ledger policy"],
     [/\bhosted[_ -]?ci\b/i, "consumer hosted CI policy"],
@@ -118,10 +119,18 @@ module CodexPluginManifestCheck
     lines = readme.lines.map(&:chomp)
     heading_index = lines.index { |line| line.start_with?("# ") }
     body = lines[(heading_index || -1) + 1..] || []
+    paragraph = []
     body.each do |line|
       stripped = line.strip
-      return stripped unless stripped.empty?
+      if stripped.empty?
+        break unless paragraph.empty?
+
+        next
+      end
+
+      paragraph << stripped
     end
+    return paragraph.join(" ") unless paragraph.empty?
 
     errors << "README.md must contain a summary paragraph after the title"
     nil
@@ -129,8 +138,8 @@ module CodexPluginManifestCheck
 
   def validate_skills_path(root, manifest, errors)
     raw_path = manifest["skills"]
-    if raw_path != "./skills/"
-      errors << "skills must be \"./skills/\""
+    if raw_path != EXPECTED_SKILLS_MANIFEST_PATH
+      errors << "skills must be #{EXPECTED_SKILLS_MANIFEST_PATH.inspect}"
       return
     end
 

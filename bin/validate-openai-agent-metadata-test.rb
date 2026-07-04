@@ -112,6 +112,22 @@ class ValidateOpenaiAgentMetadataTest < Minitest::Test
     end
   end
 
+  def test_allows_money_amounts_in_default_prompt
+    with_fixture do |root|
+      write_skill(root, "alpha")
+      write_metadata(root, "alpha", <<~YAML)
+        interface:
+          display_name: "Alpha"
+          short_description: "Run alpha"
+          default_prompt: "Use $alpha to review a $20 budget."
+      YAML
+
+      out, status = run_validator(root)
+
+      assert status.success?, out
+    end
+  end
+
   def test_rejects_prompt_with_multiple_skill_refs
     with_fixture do |root|
       write_skill(root, "alpha")

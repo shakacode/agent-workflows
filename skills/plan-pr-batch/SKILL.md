@@ -94,10 +94,10 @@ Plan a PR batch
      **For parallel batch scheduling, always pass `--cross-check`** so the local
      diff and the Files API must independently agree on the path set — a
      fail-safe against a silent under-report scheduling two colliding items into
-     the same wave:
-     `PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"; "${PLAN_PR_BATCH_SKILL_DIR}/bin/pr-file-touch-map" N --repo OWNER/REPO --cross-check`
      Resolve `PLAN_PR_BATCH_SKILL_DIR` with the explicit env-var, loaded skill
      base, repo-local pinned-copy chain before using the fallback assignment.
+     Then run:
+     `PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"; "${PLAN_PR_BATCH_SKILL_DIR}/bin/pr-file-touch-map" N --repo OWNER/REPO --cross-check`
      It prints `{pr, repo, source, changed_files, paths, renames}`:
      - `source` is `verified` (cross-check: both sources agreed — the only value
        safe to place in a parallel worktree lane), `local-diff` / `files-api`

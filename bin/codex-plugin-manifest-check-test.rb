@@ -50,6 +50,22 @@ class CodexPluginManifestCheckTest < Minitest::Test
     end
   end
 
+  def test_wrapped_readme_summary_is_joined_before_manifest_comparison
+    with_source_pack do |root|
+      File.write(File.join(root, "README.md"), <<~MARKDOWN)
+        # ShakaCode Agent Workflows
+
+        Reusable agent workflow skills
+        for ShakaCode repositories.
+      MARKDOWN
+      write_manifest(root, "description" => "Reusable agent workflow skills for ShakaCode repositories.")
+
+      out, status = run_check(root)
+
+      assert status.success?, out
+    end
+  end
+
   def test_skills_path_must_resolve_to_complete_skill_tree
     with_source_pack do |root|
       FileUtils.mkdir_p(File.join(root, "plugin-skills/example"))
@@ -99,6 +115,17 @@ class CodexPluginManifestCheckTest < Minitest::Test
       refute status.success?, out
       assert_includes out, "contains hardcoded branch name"
       assert_includes out, "contains consumer script path"
+    end
+  end
+
+  def test_manifest_rejects_case_variant_branch_policy
+    with_source_pack do |root|
+      write_manifest(root, "interface" => base_interface.merge("longDescription" => "Run checks on MASTER before merging."))
+
+      out, status = run_check(root)
+
+      refute status.success?, out
+      assert_includes out, "contains hardcoded branch name"
     end
   end
 

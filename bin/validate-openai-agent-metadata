@@ -41,7 +41,7 @@ module ValidateOpenaiAgentMetadata
     expected_skill = File.basename(File.dirname(File.dirname(path)))
     default_prompt = interface["default_prompt"]
     if default_prompt.is_a?(String)
-      prompt_refs = default_prompt.scan(/\$([a-z0-9][a-z0-9-]*)/).flatten
+      prompt_refs = default_prompt.scan(/\$([a-z][a-z0-9-]*)/).flatten
       unless prompt_refs == [expected_skill]
         failures << "#{relative_path}: default_prompt must reference $#{expected_skill}"
       end
