@@ -244,8 +244,10 @@ directly in the PR description.
 For non-trivial, high-risk, hosted-CI-labeled, force-full, benchmark-labeled,
 workflow/build-config, dependency/runtime-version, or broad refactor PRs (labels/policy per `.agents/agent-workflow.yml`), commit the intended
 implementation locally before pushing so there is a clean branch diff. Run
-`.agents/bin/validate` plus formatter/lint/type checks as applicable, then run the
-primary local/adversarial self-review gate, normally available `codex review --base origin/<base>` or the PR's real base, before PR creation or update.
+`.agents/bin/validate` plus formatter/lint/type checks as applicable, then follow
+the resolved `workflows/pr-processing.md` **Pre-Push AI Review And Simplify Gate**
+for primary review engine availability checks, fallback routing, and skip
+evidence before PR creation or update.
 
 When requested by a maintainer or when the change is high-risk, hosted-CI-labeled,
 force-full, benchmark-labeled, workflow/build-config, dependency/runtime-version, or

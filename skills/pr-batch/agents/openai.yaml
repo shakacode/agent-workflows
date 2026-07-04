@@ -1,5 +1,5 @@
 # Codex UI metadata for skill picker display text and default prompt.
 interface:
   display_name: "PR Batch"
-  short_description: "Launch agent PR batches"
+  short_description: "Launch coordinated PR batches"
   default_prompt: "Use $pr-batch to run an approved batch of issues or pull requests with subagents."

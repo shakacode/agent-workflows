@@ -3,7 +3,7 @@
 
 require "pathname"
 
-ROOT = Pathname.new(ARGV[0] || ".").expand_path
+ROOT = Pathname.new(ARGV[0] || File.expand_path("..", __dir__)).expand_path
 CODEX_ONLY_START = "<!-- host-branch: codex-only start -->"
 CODEX_ONLY_END = "<!-- host-branch: codex-only end -->"
 AVAILABLE_TOOL_START = "<!-- host-branch: available-tool start -->"
@@ -23,10 +23,10 @@ CODEX_ONLY_TOKENS = [
 ].freeze
 
 AVAILABLE_TOOL_PATTERNS = [
-  { pattern: /(?:`|^|\s)codex review(?:`|\s+--|\s|$)/, label: "codex review" },
-  { pattern: %r{(?:`|^|\s)/address-review(?:\s|`|$)}, label: "/address-review" },
-  { pattern: %r{(?:`|^|\s)/code-review(?:\s|`|$)}, label: "/code-review" },
-  { pattern: %r{(?:`|^|\s)/simplify(?:\s|`|$)}, label: "/simplify" }
+  { pattern: /(?:`|^|\s)codex review(?=`|\s+--|[\s,.)]|$)/, label: "codex review" },
+  { pattern: %r{(?:`|^|\s)/address-review(?=[\s,.)`]|$)}, label: "/address-review" },
+  { pattern: %r{(?:`|^|\s)/code-review(?=[\s,.)`]|$)}, label: "/code-review" },
+  { pattern: %r{(?:`|^|\s)/simplify(?=[\s,.)`]|$)}, label: "/simplify" }
 ].freeze
 
 AVAILABILITY_WORDS = [

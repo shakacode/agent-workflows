@@ -40,6 +40,13 @@ class HostAdapterSyntaxTest < Minitest::Test
     Open3.capture3(VALIDATOR, @tmp)
   end
 
+  def test_default_root_is_independent_of_current_directory
+    stdout, stderr, status = Open3.capture3("ruby", VALIDATOR, chdir: File.join(@tmp, "skills"))
+
+    assert status.success?, stderr
+    assert_includes stdout, "PASS host adapter syntax"
+  end
+
   def test_fixture_passes
     stdout, stderr, status = run_validator
 
@@ -103,6 +110,24 @@ class HostAdapterSyntaxTest < Minitest::Test
       ---
 
       Run codex review now.
+    MARKDOWN
+    File.write(path, text)
+
+    _stdout, stderr, status = run_validator
+
+    refute status.success?
+    assert_includes stderr, "codex review needs availability-check"
+  end
+
+  def test_plain_codex_review_with_trailing_punctuation_needs_fallback_language
+    path = File.join(@tmp, "skills/demo/SKILL.md")
+    text = <<~MARKDOWN
+      ---
+      name: demo
+      description: Demo.
+      ---
+
+      Run codex review, then continue.
     MARKDOWN
     File.write(path, text)
 

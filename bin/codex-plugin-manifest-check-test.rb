@@ -8,6 +8,7 @@ require "open3"
 require "tmpdir"
 
 SCRIPT = File.expand_path("codex-plugin-manifest-check", __dir__)
+load SCRIPT
 
 class CodexPluginManifestCheckTest < Minitest::Test
   def test_current_source_pack_manifest_passes
@@ -93,6 +94,15 @@ class CodexPluginManifestCheckTest < Minitest::Test
         assert_includes out, "skills path must stay inside the plugin root"
       end
     end
+  end
+
+  def test_resolve_relative_path_rejects_traversal
+    errors = []
+
+    result = CodexPluginManifestCheck.resolve_relative_path(Dir.tmpdir, "../skills", errors)
+
+    assert_nil result
+    assert_includes errors, "skills path must be a relative path inside the plugin root"
   end
 
   def test_each_referenced_skill_requires_skill_md

@@ -5,6 +5,7 @@ require "yaml"
 
 module ValidateOpenaiAgentMetadata
   REQUIRED_FIELDS = %w[display_name short_description default_prompt].freeze
+  SHORT_DESCRIPTION_LENGTH = (25..64)
 
   module_function
 
@@ -38,6 +39,8 @@ module ValidateOpenaiAgentMetadata
       end
     end
 
+    validate_short_description(interface["short_description"], relative_path, failures)
+
     expected_skill = File.basename(File.dirname(File.dirname(path)))
     default_prompt = interface["default_prompt"]
     if default_prompt.is_a?(String)
@@ -54,6 +57,15 @@ module ValidateOpenaiAgentMetadata
     YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false) || {}
   rescue Psych::Exception => e
     "#{relative_path}: invalid YAML: #{e.message}"
+  end
+
+  def validate_short_description(value, relative_path, failures)
+    return unless value.is_a?(String) && !value.strip.empty?
+
+    length = value.length
+    return if SHORT_DESCRIPTION_LENGTH.cover?(length)
+
+    failures << "#{relative_path}: interface.short_description must be 25-64 characters"
   end
 
   def relative_path(path, root)

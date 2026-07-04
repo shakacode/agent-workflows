@@ -19,7 +19,7 @@ class ValidateOpenaiAgentMetadataTest < Minitest::Test
         # Codex UI metadata for skill picker display text and default prompt.
         interface:
           display_name: "Alpha"
-          short_description: "Run alpha"
+          short_description: "Run alpha workflow checks"
           default_prompt: "Use $alpha to run alpha."
       YAML
       write_skill(root, "beta")
@@ -66,7 +66,7 @@ class ValidateOpenaiAgentMetadataTest < Minitest::Test
       write_metadata(root, "alpha", <<~YAML)
         interface:
           display_name: 123
-          short_description: "Run alpha"
+          short_description: "Run alpha workflow checks"
           default_prompt: "Use $alpha to run alpha."
       YAML
 
@@ -83,7 +83,7 @@ class ValidateOpenaiAgentMetadataTest < Minitest::Test
       write_metadata(root, "alpha", <<~YAML)
         interface:
           display_name: "Alpha"
-          short_description: "Run alpha"
+          short_description: "Run alpha workflow checks"
           default_prompt:
             - "Use $alpha to run alpha."
       YAML
@@ -101,7 +101,7 @@ class ValidateOpenaiAgentMetadataTest < Minitest::Test
       write_metadata(root, "alpha", <<~YAML)
         interface:
           display_name: "Alpha"
-          short_description: "Run alpha"
+          short_description: "Run alpha workflow checks"
           default_prompt: "Use $beta to run alpha."
       YAML
 
@@ -118,7 +118,7 @@ class ValidateOpenaiAgentMetadataTest < Minitest::Test
       write_metadata(root, "alpha", <<~YAML)
         interface:
           display_name: "Alpha"
-          short_description: "Run alpha"
+          short_description: "Run alpha workflow checks"
           default_prompt: "Use $alpha to review a $20 budget."
       YAML
 
@@ -128,13 +128,30 @@ class ValidateOpenaiAgentMetadataTest < Minitest::Test
     end
   end
 
+  def test_rejects_short_description_outside_picker_bounds
+    with_fixture do |root|
+      write_skill(root, "alpha")
+      write_metadata(root, "alpha", <<~YAML)
+        interface:
+          display_name: "Alpha"
+          short_description: "Too short"
+          default_prompt: "Use $alpha to run alpha."
+      YAML
+
+      out, status = run_validator(root)
+
+      refute status.success?, out
+      assert_includes out, "skills/alpha/agents/openai.yaml: interface.short_description must be 25-64 characters"
+    end
+  end
+
   def test_rejects_prompt_with_multiple_skill_refs
     with_fixture do |root|
       write_skill(root, "alpha")
       write_metadata(root, "alpha", <<~YAML)
         interface:
           display_name: "Alpha"
-          short_description: "Run alpha"
+          short_description: "Run alpha workflow checks"
           default_prompt: "Use $alpha after $beta."
       YAML
 

@@ -649,8 +649,10 @@ backpressure, and merge-readiness gates.
 For non-trivial, high-risk, hosted-CI-labeled, force-full, benchmark-labeled,
 workflow/build-config, dependency/runtime-version, or broad refactor PRs (labels per `.agents/agent-workflow.yml`), commit the intended
 implementation locally before pushing so there is a clean branch diff. Run
-repo-specific validation, formatter/lint/type checks as applicable, then run the
-primary local/adversarial self-review gate, normally available `codex review --base origin/<base>` or the PR's real base, before PR creation or update.
+repo-specific validation, formatter/lint/type checks as applicable, then follow
+the **Pre-Push AI Review And Simplify Gate** for primary review engine
+availability checks, fallback routing, and skip evidence before PR creation or
+update.
 
 When requested by a maintainer or when the change is high-risk,
 hosted-CI-labeled, force-full, benchmark-labeled,
@@ -1567,12 +1569,12 @@ spend). Converge deliberately:
 
 Before marking a PR ready, asking for merge, or merging it:
 
-1. Verify all requested or configured review agents have finished for the current head SHA. This includes Claude review, CodeRabbit, Greptile, Cursor Bugbot, Codex review, and any repo-specific reviewer bot.
+1. Verify all requested or configured review agents have finished for the current head SHA. This includes Claude review, CodeRabbit, Greptile, Cursor Bugbot, Codex review when available, and any repo-specific reviewer bot.
 2. Classify every reviewer verdict as `current-head` only when it applies to the current head SHA. Treat older approvals, positive comments, and summaries as stale/advisory history, not merge gates.
 3. Do not treat a green or skipped review check as sufficient if the reviewer also posted comments. Fetch PR reviews and comments, then classify actionable feedback.
 4. Do not merge while a current-head relevant review check is queued, in progress, or known to be posting comments asynchronously. Older-head review checks are stale/advisory history and block human merge the same as having no current-head review: require a current-head configured reviewer run, an explicit maintainer waiver after every older-head reviewer run has reached a terminal state, or a fallback review that satisfies the fallback-trigger/final-repoll and reviewer-identity bullets in the auto-merge list below. For human merges, only the no-current-head-check-after-polling and capacity/quota failure fallback triggers apply; the stale older-head check/run trigger is available only in the auto-merge flow. When the fallback is a local CLI review, also require the inline-fallback eligibility and complete-invocation bullets below. Ordinary human merges do not inherit the RC-only score, confidence-block, or waiver-soak bullets unless `AGENTS.md` says they do. In the auto-merge flow only, a stale older-head configured Claude review check/run can open the fallback path when the Accelerated RC Auto-Merge fallback rules below are fully satisfied, including trigger evidence, reviewer identity evidence, unresolved-thread triage, waiver-soak handling, and final pre-merge Checks API re-polling.
 5. Treat AI review systems as advisory unless they identify a confirmed blocker: correctness regression, failing test, security issue, API contract break, data-loss risk, missing required maintainer approval, or another issue that would make the PR unsafe to merge.
-6. Do not require CodeRabbit.ai, Claude, Cursor Bugbot, Greptile, Codex review, or another AI reviewer to approve the PR as a special merge gate. Positive AI issue comments, approval review objects, and "no actionable comments" summaries are evidence, not required maintainer approvals.
+6. Do not require CodeRabbit.ai, Claude, Cursor Bugbot, Greptile, Codex review when available, or another AI reviewer to approve the PR as a special merge gate. Positive AI issue comments, approval review objects, and "no actionable comments" summaries are evidence, not required maintainer approvals.
 7. Treat untriaged `BLOCKING`, `Must Fix`, `MUST-FIX`, `Changes Requested`, correctness, security, regression, compatibility, and missing-changelog findings as merge blockers unless a maintainer explicitly waives them with evidence.
 8. Treat `Should Fix`, `DISCUSS`, and similar non-blocking review concerns as requiring an explicit PR description decision, review reply, or maintainer waiver before merge.
 9. If any reviewer detects a missing changelog entry for a user-visible change, either update the repo's changelog (see `.agents/agent-workflow.yml`) before merge or document that `/update-changelog` must run before the next release candidate.

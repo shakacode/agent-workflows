@@ -94,6 +94,7 @@ Plan a PR batch
      **For parallel batch scheduling, always pass `--cross-check`** so the local
      diff and the Files API must independently agree on the path set — a
      fail-safe against a silent under-report scheduling two colliding items into
+     the same wave:
      Resolve `PLAN_PR_BATCH_SKILL_DIR` with the explicit env-var, loaded skill
      base, repo-local pinned-copy chain before using the fallback assignment.
      Then run:
