@@ -41,7 +41,7 @@ A worker whose heartbeat is live but which makes no worker phase transitions —
 _Avoid_: stuck (ambiguous between wedged and dead), hung
 
 **Worker phase**:
-A worker's self-reported position in the lane lifecycle (claimed, branching, implementing, validating, pushing, waiting-on-ci, addressing-review, blocked, done); progress signal, distinct from liveness.
+A worker's self-reported position in the lane lifecycle; progress signal, distinct from liveness. Use the active workflow or backend vocabulary for phase names, such as item start, branch or PR update, validation, review pass, blocked, resumed, and done.
 _Avoid_: status (overloaded), phase by itself when release phase is in scope
 
 ### Batch lifecycle
@@ -59,7 +59,7 @@ The short memorable identifier that appears both in a chat's title and coordinat
 _Avoid_: thread name (ambiguous between chat title and backend field), session name
 
 **Drain**:
-Coordinator-published cancellation that workers honor at their next safe checkpoint; the preferred stop.
+Coordinator-published cancellation in backend-supported coordination state that workers honor at their next safe checkpoint; the preferred stop when workers can observe that state. In fallback-only or no-backend batches, use process-stop and reconciliation from the hard escape hatch instead.
 _Avoid_: kill, stop (bare)
 
 **Hard escape hatch**:
