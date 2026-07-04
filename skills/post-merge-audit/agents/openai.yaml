@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Post-Merge Audit"
+  short_description: "Audit merged agent workflow work"
+  default_prompt: "Use $post-merge-audit to inspect merged PRs for missed risks or follow-ups."

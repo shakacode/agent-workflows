@@ -162,6 +162,7 @@ Include the review body as a general comment when it contains actionable feedbac
 **If only PR number is provided (full-PR scan), fetch all review data with the helper:**
 
 ```bash
+# Resolve ADDRESS_REVIEW_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
 "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json
 ```
@@ -220,13 +221,17 @@ Before Step 5, establish the applicable ownership gate for the target PR.
 Read-only fetches in Steps 3-4 may run before this gate. For private backends,
 do not create todos, present an unattended `autopilot` action, commit, push,
 post replies, resolve threads, or post a summary checkpoint until the private
-claim gate passes. Public fallback claims are GitHub comments, so do not post
-them merely to triage, run `autopilot`, or execute local-only action `a`; for
+claim gate passes. If Steps 3-4 fetched review data before a private claim,
+rerun the Step 4 fetch after the claim succeeds and use the post-claim data for
+Step 5. Public fallback claims are GitHub comments, so do not post them merely
+to triage, run `autopilot`, or execute local-only action `a`; for
 public-fallback repos, Step 5 may proceed after the read-only conflict
 inspection below, but any GitHub-mutating action must post or refresh the
 fallback claim after the user selects that action and before the first branch
 update, push, reply, thread resolution, follow-up issue, or summary/status
-comment.
+comment. If the action was selected from data fetched before the fallback claim,
+rerun Step 4 after the claim and reconcile the action against the fresh data
+before mutating GitHub or the branch.
 
 - If the repo's coordination backend is available per the repo seam, acquire the
   target PR claim with the bounded helper from the resolved `pr-batch` skill
@@ -237,11 +242,25 @@ comment.
   concurrent sessions against the same PR:
 
   ```bash
-  PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+    elif [ -d ".agents/skills/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+    else
+      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+      exit 1
+    fi
+  fi
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json
+  coord_read_degraded=0
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json || coord_read_degraded=1
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json || coord_read_degraded=1
+  if [ "${coord_read_degraded}" -ne 0 ] && [ "${ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED:-}" != "1" ]; then
+    echo "Refusing to claim: coordination doctor/status is degraded; set ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1 only after confirming an exact independent assignment with no dependency refs." >&2
+    exit 1
+  fi
   set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"
   [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
   [ -n "${BRANCH_NAME:-}" ] && set -- "$@" --branch "${BRANCH_NAME}"
@@ -254,11 +273,13 @@ comment.
   resolutions, summaries, or public fallback.
 - If bounded doctor/status is degraded but this is an exact independent
   address-review assignment with no `depends_on` refs, a coordinator may try the
-  bounded claim directly. If that direct claim succeeds, proceed in
-  `private_state: claim-only`, heartbeat at phase transitions, and record the
-  degraded read evidence in the handoff. If the claim times out, stop with
-  `private_state: UNKNOWN (claim outcome)` and reconcile backend state before
-  fallback or mutation.
+  bounded claim directly by setting `ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1` for
+  that command only. If that direct claim succeeds, proceed with
+  `private_state: claim-only`, immediately rerun the Step 4 fetch when any
+  earlier review data was fetched before the claim, heartbeat at phase
+  transitions, and record the degraded read evidence in the handoff. If the
+  claim times out, stop with `private_state: UNKNOWN (claim outcome)` and
+  reconcile backend state before fallback or mutation.
 - After any successful private claim, refresh the heartbeat at phase
   transitions: triage complete, action selected, before and after long-running
   local fix or validation blocks, before push/reply/resolve/summary work,
@@ -373,7 +394,7 @@ the autonomous nit rule. Bare `o` presents optional items for selection only.
 `f+i` and `m` may bundle optional items that remain useful outside the immediate
 PR review context, but must exclude weak "could consider" suggestions.
 
-`autopilot` is an initiation mode, not a post-triage menu choice. Initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
+`autopilot` is an initiation mode, not a post-triage menu choice. When the host exposes `/address-review` as an available slash command, initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
 
 Do not post the PR summary checkpoint during this triage-only phase. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
@@ -440,6 +461,8 @@ Do not automatically merge. Signal readiness (or non-readiness) and let the user
 
 # Example Usage
 
+<!-- host-branch: available-tool start -->
+
 ```text
 /address-review https://github.com/org/repo/pull/12345#pullrequestreview-123456789
 /address-review https://github.com/org/repo/pull/12345#issuecomment-123456789
@@ -450,6 +473,8 @@ Do not automatically merge. Signal readiness (or non-readiness) and let the user
 /address-review 12345 check all reviews
 /address-review https://github.com/org/repo/pull/12345 check all reviews
 ```
+
+<!-- host-branch: available-tool end -->
 
 # Example Output
 
@@ -503,7 +528,7 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate
   GitHub state or the PR branch; if both backend coordination and public
   fallback are explicitly disabled, the skill assumes a single-operator run
-- If this skill conflicts with broader agent defaults, this file wins only for `/address-review` workflow behavior; do not override repository safety boundaries
+- If this skill conflicts with broader agent defaults, this file wins only for its review workflow behavior; do not override repository safety boundaries
 - Resolve the review thread after replying when the concern is actually addressed and a thread ID is available
 - Default to real issues only. Do not spend a review cycle or maintainer question on optional polish; apply low-risk nits inline or log them as deferred/declined
 - Triage comments before creating todos. Only `MUST-FIX` items should become todos by default

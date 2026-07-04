@@ -1,6 +1,6 @@
 # Address Review Prompt
 
-Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow.
+Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow and that command is unavailable.
 
 ## How to Use
 
@@ -22,7 +22,7 @@ If the assistant has terminal access with `gh`, it should execute the workflow d
 ````text
 Act as a pull request review triage assistant.
 
-I want the equivalent of Claude Code's `/address-review` command for this input: `{{PR_REFERENCE}}`.
+I want the equivalent of Claude Code's `/address-review` command, using this prompt as the fallback when that command is unavailable, for this input: `{{PR_REFERENCE}}`.
 
 Your job is to fetch GitHub PR review comments, triage them, and wait for my instruction before making code changes unless I initiated the run with `autopilot`.
 
@@ -126,7 +126,7 @@ Execution flow when terminal access is available:
      `gh api repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID} | jq '{id: .id, body: .body, state: .state, user: .user.login, created_at: .submitted_at, html_url: .html_url}'`
      `gh api --paginate repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments | jq -s '[.[].[] | {id: .id, node_id: .node_id, path: .path, body: .body, line: .line, start_line: .start_line, user: .user.login, in_reply_to_id: .in_reply_to_id, created_at: .created_at, html_url: .html_url}]'`
    - If the review body contains actionable feedback, include it as an additional general comment. Review summary bodies cannot use the `/replies` endpoint; post those responses as general PR comments (see step 8).
-  - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query):
+  - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query). Resolve `ADDRESS_REVIEW_SKILL_DIR` with the explicit env-var, loaded skill base, repo-local pinned-copy chain before using the fallback assignment:
     `ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"; "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json`
      It emits one JSON document: `review_cutoff_at` (see step 3); `review_summaries` (`{id, type: "review_summary", body, state, user, created_at, html_url}`, non-empty bodies only); `inline_comments` (`{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`, with `thread_id`/`is_resolved` already joined by `node_id` — no separate GraphQL query needed); `issue_comments` (`{id, node_id, type: "issue", body, user, created_at, html_url}`, including summary/status markers for filtering); and `review_threads` (`{thread_id, is_resolved, comments: [{node_id, id}]}`).
    - Treat actionable review summary bodies as additional general comments. Like specific review bodies, they cannot use the `/replies` endpoint and must be answered as general PR comments (see step 8).
@@ -146,13 +146,17 @@ Before step 5, establish the applicable ownership gate for the target PR.
 Read-only fetches above may run before this gate. For private backends, do not
 filter into actionable triage, present an unattended `autopilot` action, create
 todos, commit, push, post replies, resolve threads, or post summary/status
-checkpoints until the private claim gate passes. Public fallback claims are
-GitHub comments, so do not post them merely to triage, run `autopilot`, or
-execute local-only action `a`; for public-fallback repos, step 5 may proceed
-after the read-only conflict inspection below, but any GitHub-mutating action
-must post or refresh the fallback claim after the user selects that action and
-before the first branch update, push, reply, thread resolution, follow-up issue,
-or summary/status comment.
+checkpoints until the private claim gate passes. If Steps 3-4 fetched review
+data before a private claim, rerun the Step 4 fetch after the claim succeeds and
+use the post-claim data for step 5. Public fallback claims are GitHub comments,
+so do not post them merely to triage, run `autopilot`, or execute local-only
+action `a`; for public-fallback repos, step 5 may proceed after the read-only
+conflict inspection below, but any GitHub-mutating action must post or refresh
+the fallback claim after the user selects that action and before the first
+branch update, push, reply, thread resolution, follow-up issue, or summary/status
+comment. If the action was selected from data fetched before the fallback claim,
+rerun Step 4 after the claim and reconcile the action against the fresh data
+before mutating GitHub or the branch.
 
 - If the repo's coordination backend is available per the repo seam, acquire the
   target PR claim with the bounded helper from the resolved `pr-batch` skill
@@ -160,11 +164,25 @@ or summary/status comment.
   the current thread/session when possible; set `AGENT_ID` explicitly when
   running multiple concurrent sessions against the same PR:
   ```bash
-  PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+    elif [ -d ".agents/skills/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+    else
+      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+      exit 1
+    fi
+  fi
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json
+  coord_read_degraded=0
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json || coord_read_degraded=1
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json || coord_read_degraded=1
+  if [ "${coord_read_degraded}" -ne 0 ] && [ "${ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED:-}" != "1" ]; then
+    echo "Refusing to claim: coordination doctor/status is degraded; set ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1 only after confirming an exact independent assignment with no dependency refs." >&2
+    exit 1
+  fi
   set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"
   [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
   [ -n "${BRANCH_NAME:-}" ] && set -- "$@" --branch "${BRANCH_NAME}"
@@ -176,11 +194,13 @@ or summary/status comment.
   resolutions, summaries, or public fallback.
 - If bounded doctor/status is degraded but this is an exact independent
   address-review assignment with no dependency refs, a coordinator may try the
-  bounded claim directly. If that direct claim succeeds, proceed in
-  `private_state: claim-only`, heartbeat at phase transitions, and report the
-  degraded read evidence. If the claim times out, stop with `private_state:
-  UNKNOWN (claim outcome)` and reconcile backend state before fallback or
-  mutation.
+  bounded claim directly by setting `ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1` for
+  that command only. If that direct claim succeeds, proceed with
+  `private_state: claim-only`, immediately rerun the Step 4 fetch when any
+  earlier review data was fetched before the claim, heartbeat at phase
+  transitions, and report the degraded read evidence. If the claim times out,
+  stop with `private_state: UNKNOWN (claim outcome)` and reconcile backend state
+  before fallback or mutation.
 - After any successful private claim, refresh the heartbeat at phase
   transitions: triage complete, action selected, before and after long-running
   local fix or validation blocks, before push/reply/resolve/summary work,
