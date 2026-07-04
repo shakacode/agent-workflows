@@ -18,13 +18,15 @@ broad discovery.
 If the user is asking whether existing PRs are ready to merge, what manual
 testing remains, or how to sequence open PR merges, use the target repo's
 `AGENTS.md` **Agent Workflow Configuration** pointer to resolve
-`.agents/agent-workflow.yml`, then read the `review_gate` key for repo-specific
-readiness requirements. Use the repo-local `pr-processing.md` readiness workflow
-when present or the installed/shared `pr-processing.md` fallback instead of
-producing an implementation batch plan. If `review_gate` cannot be resolved but
-`pr-processing.md` can, continue with the workflow's `$pr-batch` CI/review
-readiness checks and report the policy value as `UNKNOWN`; if the workflow
-cannot be resolved, report workflow state as `UNKNOWN` rather than guessing.
+`.agents/agent-workflow.yml` when present, or the inline `AGENTS.md` seam value
+when the repo documents the review gate there, then read the `review_gate` key or
+review-gate seam for repo-specific readiness requirements. Use the repo-local
+`pr-processing.md` readiness workflow when present or the installed/shared
+`pr-processing.md` fallback instead of producing an implementation batch plan.
+If `review_gate` cannot be resolved but `pr-processing.md` can, continue with
+the workflow's `$pr-batch` CI/review readiness checks and report the policy value
+as `UNKNOWN`; if the workflow cannot be resolved, report workflow state as
+`UNKNOWN` rather than guessing.
 
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
@@ -168,7 +170,7 @@ Plan a PR batch
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For the `claude` or `generic` target, omit the `/goal` line and do not <!-- host-allow: codex-only -->
+     For the `claude` or `generic` target, omit the Codex goal invocation and do not
      apply Codex's strict 4000-character limit; still keep the prompt compact,
      measured, under 8000 characters, and free of bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
