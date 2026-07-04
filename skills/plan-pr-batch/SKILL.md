@@ -15,6 +15,22 @@ the canonical [Generic PR-Batch Continuation Prompt](../../workflows/pr-processi
 in the installed `pr-processing.md` workflow instead of turning the handoff into
 broad discovery.
 
+If the user is asking whether existing PRs are ready to merge, what manual
+testing remains, or how to sequence open PR merges, use the target repo's
+`AGENTS.md` **Agent Workflow Configuration** pointer to resolve
+`.agents/agent-workflow.yml` when present, then read the policy keys the
+readiness workflow requires, including `review_gate` and `merge_ledger`. If the
+repo documents workflow configuration inline, read the full `AGENTS.md`
+**Agent Workflow Configuration** section, including `Review gate` and the other
+policy values the readiness workflow asks for. Use the repo-local
+`pr-processing.md` readiness workflow when present or the installed/shared
+`pr-processing.md` fallback instead of producing an implementation batch plan.
+If a required policy value cannot be resolved but `pr-processing.md` can,
+continue with that workflow's **Merge Readiness Gate** and report that policy
+value as `UNKNOWN`; do not invoke `$pr-batch` as a substitute for reading the
+readiness workflow. If the workflow cannot be resolved, report workflow state as
+`UNKNOWN` rather than guessing.
+
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
 `.agents/workflows/...` files when they exist; otherwise use the installed
