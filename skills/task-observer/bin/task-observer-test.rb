@@ -417,6 +417,30 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_mapped_and_ambiguous_private_ip_literals
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      [
+        "http://[::ffff:127.0.0.1]/",
+        "http://2130706433/",
+        "http://0177.0.0.1/"
+      ].each do |url|
+        out, status = capture_task_observer(
+          "append",
+          "--kind", "correction",
+          "--summary", "See #{url}",
+          "--source", "test",
+          env: { "CODEX_HOME" => home }
+        )
+
+        refute status.success?
+        assert_includes out, "private URL"
+        assert_includes out, "private host"
+      end
+    end
+  end
+
   def test_append_rejects_ipv4_link_local_hosts
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })

@@ -44,6 +44,7 @@ module TaskObserver
     "172.16.0.0/12",
     "192.168.0.0/16",
     "::1/128",
+    "::ffff:0:0/96",
     "fc00::/7",
     "fe80::/10"
   ].map { |range| IPAddr.new(range) }.freeze
@@ -210,11 +211,21 @@ module TaskObserver
   def private_host?(host)
     normalized = host.to_s.delete_prefix("[").delete_suffix("]")
     return true if PRIVATE_HOST_PATTERNS.any? { |pattern| normalized.match?(pattern) }
+    return true if ambiguous_ip_literal?(normalized)
 
     ip = IPAddr.new(normalized)
     PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
   rescue IPAddr::InvalidAddressError
     false
+  end
+
+  def ambiguous_ip_literal?(host)
+    parts = host.split(".")
+    return true if host.match?(/\A\d+\z/)
+
+    parts.length > 1 &&
+      parts.all? { |part| part.match?(/\A\d+\z/) } &&
+      parts.any? { |part| part.length > 1 && part.start_with?("0") }
   end
 
   def decoded_path(uri)
