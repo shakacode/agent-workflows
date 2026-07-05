@@ -17,6 +17,7 @@ module TaskObserver
   MAX_FIELD_LENGTH = 500
   SENSITIVE_PATTERNS = [
     /(?:password|passwd|secret|token|api[\s_-]?key|access[\s_-]?key|private[\s_-]?key|session[\s_-]?cookie)\s*[:=]/i,
+    /(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)?\s*\S+/i,
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
     /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)\b/i,
@@ -35,6 +36,7 @@ module TaskObserver
   PRIVATE_IP_RANGES = [
     "10.0.0.0/8",
     "127.0.0.0/8",
+    "169.254.0.0/16",
     "172.16.0.0/12",
     "192.168.0.0/16",
     "::1/128",

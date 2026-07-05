@@ -130,6 +130,23 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_authorization_headers
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "Authorization: Bearer abc123",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "sensitive material"
+    end
+  end
+
   def test_append_rejects_missing_required_fields_without_stack_trace
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -290,6 +307,24 @@ class TaskObserverTest < Minitest::Test
         "append",
         "--kind", "correction",
         "--summary", "See https://[::1]/report",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+      assert_includes out, "private host"
+    end
+  end
+
+  def test_append_rejects_ipv4_link_local_hosts
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See http://169.254.169.254/latest/meta-data",
         "--source", "test",
         env: { "CODEX_HOME" => home }
       )
