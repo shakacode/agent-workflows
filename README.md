@@ -152,13 +152,18 @@ the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
 | `address-review` | Fetch and triage GitHub PR review comments. |
 | `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
 | `autoreview` | Run a structured second-model local diff review. |
+| `benchmark-verification` | Verify performance-sensitive changes with benchmark evidence. |
 | `continue` | Resume an in-progress task with a structured checkpoint. |
 | `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
+| `manual-testing` | Verify changed behavior in a real running app or service. |
 | `pause` | Print restart-safe pause and resume prompts for copy/paste handoffs. |
 | `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
 | `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
+| `plan-review` | Review implementation plans before coding or launching workers. |
 | `post-merge-audit` | Audit merged batch work or release-candidate risk. |
 | `pr-batch` | Launch or coordinate multi-issue/multi-PR agent batches. |
+| `pr-monitoring` | Monitor opened PRs through checks, comments, conflicts, and handoff. |
+| `qa-stress` | Run destructive QA stress campaigns against repo-owned targets. |
 | `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
 | `run-ci` | Choose and run repo-local CI checks. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
@@ -166,6 +171,7 @@ the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
 | `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
+| `type-design-review` | Review changed type surfaces for representable invalid states. |
 | `update-changelog` | Classify merged PRs and update a repo changelog. |
 | `verify` | Run local verification before PR updates. |
 | `verify-pr-fix` | Reproduce a bug before and after a fix. |

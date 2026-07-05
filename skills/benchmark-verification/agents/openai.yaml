@@ -1,0 +1,4 @@
+interface:
+  display_name: "Benchmark Verification"
+  short_description: "Verify benchmark evidence for performance changes"
+  default_prompt: "Use $benchmark-verification to verify performance-sensitive changes with baseline and patched benchmark evidence."
