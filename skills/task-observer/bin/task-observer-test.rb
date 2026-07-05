@@ -216,6 +216,23 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_url_userinfo_credentials
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://user:secret@example.com/report",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+    end
+  end
+
   def test_append_rejects_malformed_query_strings_without_stack_trace
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })

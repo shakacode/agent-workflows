@@ -151,7 +151,7 @@ module TaskObserver
       sensitive_path = SENSITIVE_PATTERNS.any? { |pattern| decoded_path(uri).match?(pattern) }
       query_keys = uri.query.to_s.empty? ? [] : URI.decode_www_form(uri.query).map { |key, _value| key.downcase }
       sensitive_query = (query_keys & SENSITIVE_QUERY_KEYS).any?
-      next unless private_host || sensitive_query || sensitive_path
+      next unless private_host || sensitive_query || sensitive_path || !uri.userinfo.to_s.empty?
 
       raise Error, "observation appears to contain a private URL with sensitive query parameters"
     rescue URI::InvalidURIError, ArgumentError

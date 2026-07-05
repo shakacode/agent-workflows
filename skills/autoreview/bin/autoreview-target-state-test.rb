@@ -156,6 +156,18 @@ class AutoreviewTargetStateTest < Minitest::Test
     end
   end
 
+  def test_configured_base_defaults_when_workflow_yaml_is_not_a_mapping
+    Dir.mktmpdir("autoreview-target-state") do |dir|
+      system("git", "init", "-q", dir)
+      FileUtils.mkdir_p(File.join(dir, ".agents"))
+      File.write(File.join(dir, ".agents", "agent-workflow.yml"), "- not-a-mapping\n")
+
+      Dir.chdir(dir) do
+        assert_equal "main", AutoreviewTargetState.configured_base
+      end
+    end
+  end
+
   def test_branch_target_shell_escapes_unusual_base_names
     result = classify(
       pr: { "state" => "found", "base" => "release/$candidate;rm" },

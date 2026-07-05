@@ -163,6 +163,26 @@ copy_pack_docs() {
   copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
 }
 
+link_pack_docs() {
+  local docs_target="$1"
+  local destination
+  mkdir -p "$docs_target"
+
+  destination="$docs_target/review-finding-schema.md"
+  if [[ -e "$destination" && ! -L "$destination" ]]; then
+    echo "Refusing to replace non-symlink path: $destination" >&2
+    exit 1
+  fi
+  ln -sfn "$repo_root/docs/review-finding-schema.md" "$destination"
+
+  destination="$docs_target/solutions"
+  if [[ -e "$destination" && ! -L "$destination" ]]; then
+    echo "Refusing to replace non-symlink path: $destination" >&2
+    exit 1
+  fi
+  ln -sfn "$repo_root/docs/solutions" "$destination"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -223,10 +243,6 @@ else
     echo "Refusing to replace non-symlink path: $target/workflows" >&2
     exit 1
   fi
-  if [[ -e "$target/docs" && ! -L "$target/docs" ]]; then
-    echo "Refusing to replace non-symlink path: $target/docs" >&2
-    exit 1
-  fi
   for skill in "$repo_root"/skills/*; do
     [[ -d "$skill" ]] || continue
     destination="$target/skills/$(basename "$skill")"
@@ -238,8 +254,7 @@ else
   done
   rm -f "$target/workflows"
   ln -sfn "$repo_root/workflows" "$target/workflows"
-  rm -f "$target/docs"
-  ln -sfn "$repo_root/docs" "$target/docs"
+  link_pack_docs "$target/docs"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -e "$destination" && ! -L "$destination" ]]; then

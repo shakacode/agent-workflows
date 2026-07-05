@@ -183,12 +183,16 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   local tmp target
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
+  mkdir -p "$target/docs"
+  printf 'personal docs\n' > "$target/docs/personal.md"
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
 
   assert_symlink "$target/skills/pr-batch"
   assert_symlink "$target/workflows"
-  assert_symlink "$target/docs"
+  assert_file "$target/docs/personal.md"
+  assert_symlink "$target/docs/review-finding-schema.md"
+  assert_symlink "$target/docs/solutions"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
   assert_file "$target/.agent-workflows-install.json"

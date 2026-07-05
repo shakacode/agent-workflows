@@ -184,6 +184,8 @@ module AutoreviewTargetState
     return "main" unless File.exist?(workflow_path)
 
     data = YAML.safe_load(File.read(workflow_path), aliases: false) || {}
+    return "main" unless data.is_a?(Hash)
+
     data.fetch("base_branch", "main").to_s
   rescue Psych::Exception
     "main"
