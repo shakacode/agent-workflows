@@ -39,6 +39,19 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_runner_env_does_not_leak_parent_agent_homes
+    Dir.mktmpdir("task-observer-codex") do |codex_home|
+      Dir.mktmpdir("task-observer-claude") do |claude_home|
+        with_env("CODEX_HOME" => codex_home, "CLAUDE_HOME" => nil, "TASK_OBSERVER_HOME" => nil) do
+          run!("init", env: { "CLAUDE_HOME" => claude_home })
+          status = JSON.parse(run!("status", "--json", env: { "CLAUDE_HOME" => claude_home }))
+
+          assert_equal File.join(claude_home, "memories", "task-observer"), status.fetch("memory_root")
+        end
+      end
+    end
+  end
+
   def test_append_writes_sanitized_observation_stub
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -230,10 +243,26 @@ class TaskObserverTest < Minitest::Test
   def capture_task_observer(*args, env: {})
     full_env = {
       "PATH" => ENV.fetch("PATH"),
-      "HOME" => ENV.fetch("HOME")
+      "HOME" => ENV.fetch("HOME"),
+      "TASK_OBSERVER_HOME" => nil,
+      "CODEX_HOME" => nil,
+      "CLAUDE_HOME" => nil
     }.merge(env)
     out, status = Open3.capture2e(full_env, "ruby", SCRIPT, *args)
     [out, status]
+  end
+
+  def with_env(overrides)
+    previous = overrides.transform_values { nil }
+    overrides.each_key { |key| previous[key] = ENV[key] if ENV.key?(key) }
+    overrides.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
+    yield
+  ensure
+    previous.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
   end
 
   def assert_directory(path)
