@@ -61,6 +61,14 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== push-downstream unit tests =="
 ruby bin/push-downstream-test.rb
 
+echo "== solution docs =="
+ruby bin/validate-solutions-test.rb
+ruby bin/validate-solutions
+
+echo "== review finding schema =="
+ruby bin/validate-review-findings-test.rb
+ruby bin/validate-review-findings
+
 echo "== installer/status/upgrade tests =="
 bash bin/install-agent-workflows-test.bash
 
@@ -71,6 +79,7 @@ echo "== downstream registry dry-run =="
 bin/push-downstream --config downstream.yml >/dev/null
 
 echo "== helper tests =="
+ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
@@ -81,6 +90,7 @@ ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb
+ruby skills/task-observer/bin/task-observer-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
 
 echo "== rubocop ${RUBOCOP_VERSION} =="

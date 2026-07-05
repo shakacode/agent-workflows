@@ -209,6 +209,18 @@ Plan a PR batch
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
 
+## Canonical Readiness Vocabulary
+
+Use the canonical human-facing readiness states from
+[Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format)
+in planning notes, done conditions, and final-bucket handoffs. Normal
+interactive output stays human-readable; do not replace those states with vague
+labels such as `ready`, `complete`, or `done`. Preserve explicit `UNKNOWN` for
+facts that cannot be verified, including coordination, file-touch, review, CI,
+QA, or merge-ledger evidence; do not turn unknown evidence into an optimistic
+state. Optional structured handoff blocks may reduce ambiguity for a coordinator
+or validator, but they are not required and JSON is not mandatory.
+
 ## Batch Plan Format
 
 - Objective:
@@ -225,6 +237,7 @@ Plan a PR batch
 - Coordination hooks, including backend claim exclusions:
 - Batch QA Lane decision and QA Evidence expectations:
 - Verification expectations:
+- Expected readiness states or unresolved `UNKNOWN` facts:
 - Prompt sizing: `Goal prompt character count: N characters (target: codex|claude|generic)`; note any split fallback
   and keep omitted item details here, not in the goal prompt.
 - Open questions:

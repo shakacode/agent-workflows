@@ -53,6 +53,20 @@ handoffs, Codex/Claude comparison, and output templates.
    - `NON_BLOCKING_DECISION`: the PR made a reasonable decision that reviewers should be able to surface later.
    - `NOISE`: investigated and not actionable.
 5. Return a report with evidence, exact files/lines where possible, and commands/data sources used.
+6. When structured output would help a batch, ledger, or follow-up workflow, append an optional
+   `review-findings` JSON block using the shared
+   [Review Finding schema](../../docs/review-finding-schema.md). Keep the human-readable report
+   first and map this skill's labels explicitly:
+   - `BLOCKING` -> `must_fix`, usually `P1` or `P0`.
+   - `DISCUSS` -> `needs_decision`.
+   - `FOLLOWUP` -> `deferred` or `should_fix`, usually `P2` or `P3`.
+   - `NON_BLOCKING_DECISION` -> `accepted_fixed`, `deferred`, or
+     `waived_by_maintainer`, depending on the evidence.
+   - `NOISE` -> `rejected_false_positive` or `rejected_not_actionable`, usually `INFO`.
+   Findings contradicted by current evidence should set `verification.status` to
+   `contradicted` and use a rejection disposition rather than leaving the outcome implicit.
+   Mark findings as `verified/current` only after checking the real code and current PR or head
+   state. Stale, unverified, or unknown findings remain advisory.
 
 ## Merge Gate
 
