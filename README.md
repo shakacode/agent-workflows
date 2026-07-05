@@ -35,6 +35,7 @@ plus a validated repo seam are the default.
 | `downstream.yml` | Registry of consumer repos for `bin/push-downstream`. |
 | `seam-presets.yml` | Seam value adapter: org defaults + archetype presets. |
 | `docs/` | Adoption, seam design, and operator guidance. |
+| `CONTEXT.md` | Canonical glossary for batch coordination and lane lifecycle terms. |
 | `examples/` | Example consumer-repo configuration snippets. |
 | `test/fixtures/consumer-repo/` | Minimal fixture used by `bin/validate`. |
 
@@ -129,6 +130,10 @@ See [docs/adoption.md](docs/adoption.md) for the full adoption guide,
 [docs/seam-design.md](docs/seam-design.md) for the design rationale, and
 [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 ongoing host installs and upgrades.
+
+Use [docs/source-pack-glossary.md](docs/source-pack-glossary.md) for canonical
+vocabulary around source-pack distribution, install paths, seams, readiness
+states, review findings, and state-machine fixtures.
 
 ## Downstream Seam Sync
 
