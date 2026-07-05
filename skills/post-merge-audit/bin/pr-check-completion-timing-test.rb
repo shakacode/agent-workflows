@@ -14,26 +14,26 @@ class PrCheckCompletionTimingTest < Minitest::Test
     Dir.mktmpdir("pr-check-completion-timing-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(gh, <<~BASH)
-          #!/usr/bin/env bash
-          set -euo pipefail
-          if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
-            printf 'owner/repo'
-            exit 0
-          fi
-          if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-            cat <<'JSON'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+          printf 'owner/repo'
+          exit 0
+        fi
+        if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+          cat <<'JSON'
         #{pr_json}
         JSON
-            exit 0
-          fi
-          if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
-            cat <<'JSON'
+          exit 0
+        fi
+        if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
+          cat <<'JSON'
         #{checks_json}
         JSON
-            exit #{checks_status}
-          fi
-          echo "unexpected gh invocation: $*" >&2
-          exit 1
+          exit #{checks_status}
+        fi
+        echo "unexpected gh invocation: $*" >&2
+        exit 1
       BASH
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
