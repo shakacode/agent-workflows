@@ -325,7 +325,13 @@ cancelled rows), ignores cancelled/superseded rows, and prints a
 check names (`required_used` shows whether required checks gated the verdict).
 Treat `UNKNOWN` (an empty check list) as not ready and request hosted CI or
 maintainer status-check configuration before merge; skipped checks still need CI
-selector or maintainer-waiver evidence allowed by `AGENTS.md`.
+selector or maintainer-waiver evidence allowed by `AGENTS.md`. When hosted CI was
+explicitly requested for the current head, add one `--requested-hosted-run
+<run-id-or-url>` argument per requested Actions run so readiness cannot ignore
+selected hosted jobs that are still queued or running. This blocks only the
+explicitly requested current-head hosted runs; when no usable required checks
+exist, the requested runs become the gate instead of the full advisory list.
+Unrelated advisory checks remain advisory unless another repo policy selects them.
 
 At the final review/readiness gate, apply the canonical hosted-CI uncertainty
 rule from `.agents/workflows/pr-processing.md` under **Question And Decision
@@ -411,6 +417,10 @@ Use the canonical Batch Handoff Format in
 requests already handled, no-PR rationales, autonomous nit outcomes,
 confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
 merge-ledger summaries.
+When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
+ready/merge claim, include replayable `qa-evidence v1` and
+`priority-finding-dispositions v1` markers as defined in
+`.agents/workflows/pr-processing.md`, or state why replay is not applicable.
 Do not call a target `complete` while its ledger has `UNKNOWN` fields or
 `complete_allowed: false`.
 Do not report a batch that requires QA as ready while required QA

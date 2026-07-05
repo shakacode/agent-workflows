@@ -114,7 +114,11 @@ or inferred related work unless the operator explicitly asks for discovery.
   maintainer intentionally wants to bypass optimized selection or selector
   coverage is the specific risk. Direct `ready-for-hosted-ci` labels are a
   human/local user-token path, not a substitute for comment-command dispatch
-  from automation.
+  from automation. If the trigger reports specific Actions run ids or URLs, pass
+  them to `skills/pr-batch/bin/pr-ci-readiness` with `--requested-hosted-run` so
+  readiness waits for the explicitly requested current-head hosted runs only; in
+  repos with no usable required checks, those requested runs gate readiness
+  instead of the full advisory check list.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
 - Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, and explicit `UNKNOWN` entries.

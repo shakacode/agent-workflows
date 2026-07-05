@@ -166,6 +166,12 @@ For each included PR:
 - Review completion: find reviews, review comments, issue comments, and review/check runs from Claude, Codex, CodeRabbit, Greptile, Cursor Bugbot, and other configured reviewers.
 - Review timing: flag any reviewer check, review, or comment that was still queued/in-progress at merge time or landed after merge.
 - Review triage: flag any pre-merge review/comment with `Must Fix`, `MUST-FIX`, `Should Fix`, `DISCUSS`, `Changes Requested`, `blocking`, or similar actionable language when there is no later evidence it was fixed, waived, or explicitly classified.
+- Selected CI timing: when the repo or batch selected specific hosted checks for
+  replay, resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /
+  repo-local chain, then run
+  `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/pr-check-completion-timing" <PR> --repo <OWNER/REPO> --select-name <regex>`
+  or `--select-workflow <regex>` and flag selected checks that completed after
+  merge or could not be verified.
 - Approval semantics: flag any merge that treated an AI reviewer approval, positive issue comment, or "no actionable comments" summary as required maintainer approval or a special approval gate. Also flag any AI finding that was ignored even though it identified a confirmed blocker such as a correctness regression, failing test, security issue, API contract break, data-loss risk, or missing required maintainer approval.
 - Adversarial review: flag any requested adversarial review that finished after merge, reviewed an older head SHA, or left untriaged `BLOCKING` or `DISCUSS` findings.
 - Changelog: if the diff or PR body indicates a user-visible behavior, API, error message, configuration, performance, security, or breaking change, verify the repo's changelog (see `changelog` in `.agents/agent-workflow.yml`) has a matching entry. When entries are missing, recommend running `/update-changelog`.
@@ -181,7 +187,11 @@ For each included PR:
   covers the changed surfaces, and does not leave release-blocking findings
   untriaged. If private coordination claim/heartbeat state is `UNKNOWN`, verify
   the documented fallback evidence is otherwise complete and names a concrete QA
-  owner and branch/worktree before treating QA coverage as satisfied.
+  owner and branch/worktree before treating QA coverage as satisfied. Use the
+  resolved `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` helper
+  when a PR body, handoff, or issue comment includes replay markers for QA
+  Evidence or priority finding dispositions; missing or `UNKNOWN` replay is a
+  process finding unless a maintainer explicitly waived replay for that scope.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.
 - Decision log: inspect any `Codex Decision Log` or equivalent section and verify the decisions still hold after the merge.
 

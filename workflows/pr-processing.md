@@ -545,6 +545,43 @@ includes this evidence block:
 - Process-gap disposition: <script | schema | checklist+replay | park | not applicable>
 ```
 
+For replayable post-merge audit, append a hidden marker next to the human QA
+Evidence block whenever QA is required or explicitly not required:
+
+```markdown
+<!-- qa-evidence v1
+required: <yes | no>
+status: <satisfied | blocked | waived | in_progress | unknown | not_applicable>
+tested_at: <PR/head SHA(s), audited range, or not applicable reason>
+scope: <changed areas, PRs, or release phase covered>
+automated_checks: <commands, CI links, or covered-by-worker-validation note>
+manual_checks: <manual smoke checks or not applicable>
+findings: <none, fixed, waived, blocked, or follow-up link>
+release_blocking: <clear | blocked | waived | not_applicable>
+process_gap_disposition: <script | schema | checklist+replay | park | not applicable>
+-->
+```
+
+For priority review findings that feed a strict merge ledger or final handoff,
+append a hidden disposition marker without inventing a separate review-finding
+schema. Reference the source finding URL or id; shared review-finding schema
+work remains the source of truth when the repo adopts one:
+
+```markdown
+<!-- priority-finding-dispositions v1
+head_sha: <current PR head SHA>
+finding: url=<review/thread/check URL> | severity=<P0|P1|P2|Must-Fix|BLOCKING> | disposition=<fixed|waived|false_positive|not_applicable|deferred_with_issue> | evidence=<PR comment, commit, test, or thread URL> | waiver=<maintainer waiver URL when waived>
+-->
+```
+
+Resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /
+repo-local chain, then run
+`"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay" <file-or->` to
+replay these markers and report `SATISFIED`, `WAIVED`, `NOT_APPLICABLE`,
+`BLOCKED`, or `UNKNOWN` for post-merge audits. Treat `SATISFIED`, `WAIVED`,
+and `NOT_APPLICABLE` as replayed terminal evidence; carry `BLOCKED` and
+`UNKNOWN` into the audit findings for operator action.
+
 `Release-blocking status` is derived from `QA lane status`: `satisfied` ->
 `clear`, `blocked` -> `blocked`, `waived` -> `waived`, `not_applicable` ->
 `not_applicable`, and `in_progress` / `unknown` -> `blocked`. An unresponsive QA
@@ -1259,7 +1296,9 @@ The closeout lane is:
    still blocking.
 5. Run the repo's merge ledger in strict mode for every worker PR, supplying
    explicit changelog classification and any P0/P1/P2/Must-Fix disposition
-   evidence. Store the JSON artifact or table for the final handoff. Do not
+   evidence. Store the JSON artifact or table for the final handoff, and preserve
+   priority findings in a `priority-finding-dispositions v1` marker when the
+   ledger or handoff relies on a fixed/waived/deferred finding. Do not
    mark a target complete while the ledger has `UNKNOWN` fields, unresolved
    current-head review threads, active `review_objects.changes_requested`
    entries, or
@@ -1271,6 +1310,10 @@ The closeout lane is:
    QA coverage/scope evidence as a readiness blocker until fixed, waived, or
    carried as an explicit blocker. A QA lane whose only `UNKNOWN` is private
    coordination claim/heartbeat state may use the documented fallback evidence.
+   Use the resolved
+   `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` helper against
+   the PR body, handoff comment, or saved evidence file when QA or
+   priority-disposition replay is part of the readiness claim.
 7. Refresh stale release-mode classification from the release tracker when
    needed. For accelerated-RC merge readiness, refresh the latest finalized
    PR-body `Agent Merge Confidence` block required by `AGENTS.md`; keep this
@@ -1490,6 +1533,12 @@ status-check configuration before merge; skipped checks still need CI selector o
 maintainer-waiver evidence allowed by `AGENTS.md`. (As of #3844, `main` defines
 zero required status-check contexts, so the helper falls back to the full list;
 if required checks are later configured per #3844 option (a), it uses them.)
+When hosted CI was explicitly requested for the current head, pass each requested
+Actions run id or URL as `--requested-hosted-run <run-id-or-url>`; the helper
+then blocks only those requested current-head hosted runs while leaving unrelated
+advisory checks advisory. When no usable required checks exist, the requested
+runs become the gate instead of the full advisory list. A stale requested run for
+an older head is `UNKNOWN`, not success.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
 `statusCheckRollup` alone when `gh pr checks` can answer the readiness question more

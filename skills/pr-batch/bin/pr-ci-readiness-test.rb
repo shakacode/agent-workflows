@@ -107,10 +107,10 @@ end
 class PrCiReadinessCliTest < Minitest::Test
   # Build a temp dir with a fake `gh` executable that emits canned `gh pr
   # checks` JSON, then run the real script with that dir prepended to PATH.
-  def with_fake_gh(required_json:, full_json:)
+  def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", runs: {})
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
-      File.write(gh, fake_gh_script(required_json, full_json))
+      File.write(gh, fake_gh_script(required_json, full_json, pr_head, runs))
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
@@ -120,11 +120,49 @@ class PrCiReadinessCliTest < Minitest::Test
   # The fake gh handles `gh repo view ...` (so --repo is optional) and
   # `gh pr checks ...`, returning the required vs full payload based on the
   # presence of the --required flag. Non-JSON ("") models "no required checks".
-  def fake_gh_script(required_json, full_json)
+  def fake_gh_script(required_json, full_json, pr_head, runs)
+    run_cases = runs.map do |run_id, payload|
+      run_json = JSON.generate(payload.fetch(:run))
+      jobs_json = JSON.generate("total_count" => payload.fetch(:jobs).length, "jobs" => payload.fetch(:jobs))
+      jobs_case =
+        if payload.fetch(:jobs_error, false)
+          <<~BASH
+            if [[ "$*" = *"actions/runs/#{run_id}/jobs"* ]]; then
+              echo 'jobs should not be fetched for this run' >&2
+              exit 1
+            fi
+          BASH
+        else
+          <<~BASH
+            if [[ "$*" = *"actions/runs/#{run_id}/jobs"* ]]; then
+              cat <<'JSON'
+            #{jobs_json}
+            JSON
+              exit 0
+            fi
+          BASH
+        end
+      <<~BASH
+        #{jobs_case}
+        if [[ "$*" = *"actions/runs/#{run_id}"* ]]; then
+          cat <<'JSON'
+        #{run_json}
+        JSON
+          exit 0
+        fi
+      BASH
+    end.join("\n")
+
     <<~SH
       #!/usr/bin/env bash
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
         printf 'owner/repo'
+        exit 0
+      fi
+      if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+        cat <<'JSON'
+      {"headRefOid":#{pr_head.inspect}}
+      JSON
         exit 0
       fi
       if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
@@ -136,6 +174,9 @@ class PrCiReadinessCliTest < Minitest::Test
         done
         printf '%s' #{full_json.inspect}
         exit 0
+      fi
+      if [ "$1" = "api" ]; then
+      #{run_cases}
       fi
       exit 1
     SH
@@ -237,6 +278,43 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_text_mode_surfaces_requested_hosted_pending
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "in_progress",
+                 "conclusion" => nil, "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "queued", "conclusion" => nil,
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42", "--text")
+      assert status.success?, out
+      assert_includes out, "requested_hosted_pending: hosted, hosted / linux"
+      assert_includes out, "requested_hosted_failing: (none)"
+    end
+  end
+
+  def test_text_mode_surfaces_invalid_requested_hosted_run
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "abc123",
+      runs: {}
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "not-a-run", "--text")
+      assert status.success?, out
+      assert_includes out, "UNKNOWN"
+      assert_includes out, "requested_hosted_unknown: not-a-run: requested hosted run must be a run id"
+    end
+  end
+
   def test_repo_defaults_to_gh_repo_view
     with_fake_gh(
       required_json: '[{"name":"rspec","bucket":"pass"}]',
@@ -245,6 +323,177 @@ class PrCiReadinessCliTest < Minitest::Test
       out, status = run_script(env, "123")
       assert status.success?, out
       assert_equal "READY", JSON.parse(out)["verdict"]
+    end
+  end
+
+  def test_requested_hosted_pending_blocks_ready_required_gate
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"},{"name":"advisory","bucket":"pending"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "in_progress",
+                 "conclusion" => nil, "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "queued", "conclusion" => nil,
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal(["hosted", "hosted / linux"], data.fetch("requested_hosted").fetch("pending").map { |row| row["name"] })
+      assert_empty data.fetch("requested_hosted").fetch("failing")
+    end
+  end
+
+  def test_requested_hosted_run_status_blocks_ready_even_when_jobs_completed
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "in_progress",
+                 "conclusion" => nil, "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "success",
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      pending_names = data.fetch("requested_hosted").fetch("pending").map { |row| row["name"] }
+      assert_equal ["hosted"], pending_names
+      assert_empty data.fetch("requested_hosted").fetch("failing")
+    end
+  end
+
+  def test_requested_hosted_failure_blocks_ready_required_gate
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "failure", "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "failure",
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal(["hosted", "hosted / linux"], data.fetch("requested_hosted").fetch("failing").map { |row| row["name"] })
+      assert_empty data.fetch("requested_hosted").fetch("pending")
+    end
+  end
+
+  def test_requested_hosted_success_keeps_required_gate_ready_despite_unrelated_advisory_pending
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"},{"name":"unrelated advisory","bucket":"pending"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "success",
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data["verdict"]
+      assert_empty data.fetch("requested_hosted").fetch("pending")
+      assert_empty data.fetch("requested_hosted").fetch("failing")
+      assert_empty data.fetch("requested_hosted").fetch("stale")
+    end
+  end
+
+  def test_requested_hosted_success_does_not_fetch_jobs
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: [],
+          jobs_error: true
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data["verdict"]
+      assert_empty data.fetch("requested_hosted").fetch("unknown")
+    end
+  end
+
+  def test_requested_hosted_success_is_ready_without_required_checks_despite_unrelated_advisory_pending
+    with_fake_gh(
+      required_json: "",
+      full_json: '[{"name":"unrelated advisory","bucket":"pending"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "success",
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data["verdict"]
+      assert_equal false, data["required_used"]
+      assert_empty data["pending"]
+      assert_empty data.fetch("requested_hosted").fetch("pending")
+    end
+  end
+
+  def test_requested_hosted_stale_head_is_unknown_when_base_gate_is_ready
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "new-head",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "old-head", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data["verdict"]
+      assert_equal(["42"], data.fetch("requested_hosted").fetch("stale").map { |row| row["run_id"] })
     end
   end
 

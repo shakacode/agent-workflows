@@ -86,6 +86,8 @@ AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_p
 ruby skills/pause/bin/pause-prompt-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
 bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
+ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
+ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb

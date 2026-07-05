@@ -234,7 +234,12 @@ states, not verified batch subsets.
 After the scope algorithm identifies the batch or reports an `UNKNOWN` scope,
 collect any QA lane and QA Evidence block for that batch. Do not use missing QA
 state to shrink the worked-issue scope; report it as a QA coverage finding or
-`UNKNOWN` fact instead.
+`UNKNOWN` fact instead. When the handoff includes `qa-evidence v1` or
+`priority-finding-dispositions v1` markers, resolve
+`POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill / repo-local chain,
+then run `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` against
+the PR body, handoff comment, or saved evidence file and carry `BLOCKED` /
+`UNKNOWN` replay as a QA or priority-disposition finding.
 
 Show the included/excluded worked issues, collected QA lanes and QA Evidence
 blocks, advisory `codex-claim` rows, excluded range PRs, audit coverage
@@ -292,6 +297,10 @@ Also audit each included merged PR for:
 - overlapping files or assumptions
 - undocumented non-blocking decisions
 - review-agent checks/reviews/comments that were late, pending, stale, or untriaged at merge time
+- selected hosted checks that completed after merge or could not be replayed; use
+  the resolved `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/pr-check-completion-timing"`
+  helper with selectors from the consumer repo seam or maintainer-approved audit
+  scope
 - AI reviewer approvals, positive issue comments, or "no actionable comments" summaries that were incorrectly treated as required maintainer approval or special approval gates
 - AI review findings that were ignored even though they identified a confirmed blocker such as a correctness regression, failing test, security issue, API contract break, data-loss risk, or missing required maintainer approval
 - requested adversarial reviews that were late, stale, missing, or left untriaged `BLOCKING`/`DISCUSS` findings
