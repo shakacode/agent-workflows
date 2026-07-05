@@ -143,6 +143,69 @@ class PushDownstreamConfigTest < Minitest::Test
     end
   end
 
+  def test_registry_dry_run_reports_invalid_contract_without_aborting_valid_repos
+    yaml = <<~YAML
+      defaults:
+        owner: shakacode
+        base_branch: main
+        pr_branch: agent-workflows/seam-sync
+      repos:
+        - repo: good
+        - repo: bad
+          overrides:
+            trust:
+              trusted_bots: [github-actions]
+              trusted_metadata_bots: [github-actions]
+    YAML
+
+    with_config(yaml) do |path|
+      out, err = capture_io do
+        @registry_status = PushDownstream.run_registry(path, File.join(File.dirname(path), "missing.yml"),
+                                                       only: nil, include_disabled: false, apply: false)
+      end
+
+      assert_equal 1, @registry_status
+      assert_includes out, "shakacode/good"
+      refute_includes out, "shakacode/bad"
+      assert_includes err, "FAIL shakacode/bad: invalid trust config"
+    end
+  end
+
+  def test_registry_apply_continues_after_invalid_contract
+    yaml = <<~YAML
+      defaults:
+        owner: shakacode
+        base_branch: main
+        pr_branch: agent-workflows/seam-sync
+      repos:
+        - repo: good
+        - repo: bad
+          overrides:
+            trust:
+              trusted_bots: [github-actions]
+              trusted_metadata_bots: [github-actions]
+    YAML
+
+    with_config(yaml) do |path|
+      calls = []
+      sync_repo = lambda do |repo, _contract|
+        calls << repo.fetch(:nwo)
+        true
+      end
+
+      with_module_stub(PushDownstream, :sync_repo, sync_repo) do
+        _out, err = capture_io do
+          @registry_status = PushDownstream.run_registry(path, File.join(File.dirname(path), "missing.yml"),
+                                                         only: nil, include_disabled: false, apply: true)
+        end
+
+        assert_equal 1, @registry_status
+        assert_equal ["shakacode/good"], calls
+        assert_includes err, "FAIL shakacode/bad: invalid trust config"
+      end
+    end
+  end
+
   private
 
   def with_module_stub(mod, name, replacement)
@@ -160,12 +223,14 @@ class PushDownstreamAdapterTest < Minitest::Test
     presets = {
       "defaults" => {
         "commands" => { "validate" => "echo default-validate", "test" => "echo default-test" },
-        "policy" => { "follow_up_prefix" => "Follow-up:", "benchmark_labels" => "n/a" }
+        "policy" => { "follow_up_prefix" => "Follow-up:", "benchmark_labels" => "n/a" },
+        "trust" => { "trusted_bots" => ["dependabot"] }
       },
       "presets" => {
         "ts-package" => {
           "commands" => { "validate" => { "compose" => %w[build test] }, "build" => "yarn build" },
-          "policy" => { "benchmark_labels" => "n/a (package)", "hosted_ci_trigger" => "n/a" }
+          "policy" => { "benchmark_labels" => "n/a (package)", "hosted_ci_trigger" => "n/a" },
+          "trust" => { "trusted_metadata_bots" => ["github-actions"] }
         }
       }
     }
@@ -173,7 +238,8 @@ class PushDownstreamAdapterTest < Minitest::Test
       repo: "rsc", base_branch: "main", preset: "ts-package",
       overrides: {
         "commands" => { "test" => "yarn test --runInBand" },
-        "policy" => { "hosted_ci_trigger" => "CI runs on every PR" }
+        "policy" => { "hosted_ci_trigger" => "CI runs on every PR" },
+        "trust" => { "trusted_users" => ["justin808"] }
       }
     }
 
@@ -185,6 +251,84 @@ class PushDownstreamAdapterTest < Minitest::Test
     assert_equal "main", contract.fetch(:policy).fetch("base_branch")
     assert_equal "n/a (package)", contract.fetch(:policy).fetch("benchmark_labels")
     assert_equal "CI runs on every PR", contract.fetch(:policy).fetch("hosted_ci_trigger")
+    assert_equal ["dependabot"], contract.fetch(:trust).fetch("trusted_bots")
+    assert_equal ["github-actions"], contract.fetch(:trust).fetch("trusted_metadata_bots")
+    assert_equal ["justin808"], contract.fetch(:trust).fetch("trusted_users")
+    assert_equal true, contract.fetch(:trust_configured)
+  end
+
+  def test_resolve_contract_tracks_explicit_empty_trust
+    repo = {
+      repo: "rsc", base_branch: "main", preset: nil,
+      overrides: { "trust" => {} }
+    }
+
+    contract = PushDownstream.resolve_contract(repo, {})
+
+    assert_equal true, contract.fetch(:trust_configured)
+    assert_equal PushDownstream.empty_trust_config, contract.fetch(:trust)
+  end
+
+  def test_resolve_contract_empty_trust_override_does_not_clear_layered_trust
+    presets = {
+      "presets" => {
+        "ruby-gem" => {
+          "trust" => { "trusted_users" => ["maintainer-login"] }
+        }
+      }
+    }
+    repo = {
+      repo: "rsc", base_branch: "main", preset: "ruby-gem",
+      overrides: { "trust" => {} }
+    }
+
+    contract = PushDownstream.resolve_contract(repo, presets)
+
+    assert_equal true, contract.fetch(:trust_configured)
+    assert_equal ["maintainer-login"], contract.fetch(:trust).fetch("trusted_users")
+  end
+
+  def test_resolve_contract_normalizes_trusted_user_case_for_idempotent_merge
+    presets = {
+      "defaults" => {
+        "trust" => {
+          "trusted_users" => ["@Justin808"],
+          "trusted_teams" => ["Acme/Maintainers"]
+        }
+      }
+    }
+    repo = {
+      repo: "rsc", base_branch: "main", preset: nil,
+      overrides: {
+        "trust" => {
+          "trusted_users" => ["justin808"],
+          "trusted_teams" => ["acme/maintainers"]
+        }
+      }
+    }
+
+    contract = PushDownstream.resolve_contract(repo, presets)
+
+    assert_equal ["justin808"], contract.fetch(:trust).fetch("trusted_users")
+    assert_equal ["acme/maintainers"], contract.fetch(:trust).fetch("trusted_teams")
+  end
+
+  def test_resolve_contract_rejects_bot_metadata_overlap
+    presets = {
+      "defaults" => {
+        "trust" => { "trusted_bots" => ["GitHub-Actions[bot]"] }
+      }
+    }
+    repo = {
+      repo: "rsc", base_branch: "main", preset: nil,
+      overrides: { "trust" => { "trusted_metadata_bots" => ["github-actions"] } }
+    }
+
+    error = assert_raises(RuntimeError) do
+      PushDownstream.resolve_contract(repo, presets)
+    end
+
+    assert_match(/bot\(s\) listed in both trusted_bots and trusted_metadata_bots: github-actions/, error.message)
   end
 
   def test_resolve_contract_unknown_preset_raises
@@ -240,9 +384,118 @@ class PushDownstreamScaffoldTest < Minitest::Test
       assert_equal CONTRACT.fetch(:policy), YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
       assert_includes File.read(File.join(root, "AGENTS.md")), AgentWorkflowSeamDoctor::POINTER_SECTION
       assert_equal PushDownstream::THIN_CLAUDE, File.read(File.join(root, "CLAUDE.md"))
+      refute File.exist?(File.join(root, ".agents/trusted-github-actors.yml"))
 
       out, status = Open3.capture2e(RbConfig.ruby, DOCTOR, "--root", root)
       assert status.success?, out
+    end
+  end
+
+  def test_apply_scaffold_writes_repo_local_trust_config
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      contract = Marshal.load(Marshal.dump(CONTRACT))
+      contract[:trust] = {
+        "trusted_users" => ["justin808"],
+        "trusted_bots" => ["dependabot"],
+        "trusted_metadata_bots" => ["github-actions"],
+        "trusted_teams" => []
+      }
+
+      result = PushDownstream.reconcile_scaffold(root, contract)
+
+      assert result.changed?
+      trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")), aliases: false)
+      assert_equal ["justin808"], trust.fetch("trusted_users")
+      assert_equal ["dependabot"], trust.fetch("trusted_bots")
+      assert_equal ["github-actions"], trust.fetch("trusted_metadata_bots")
+      assert_equal [], trust.fetch("trusted_teams")
+    end
+  end
+
+  def test_apply_scaffold_writes_explicit_empty_repo_local_trust_config
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      contract = Marshal.load(Marshal.dump(CONTRACT))
+      contract[:trust] = PushDownstream.empty_trust_config
+      contract[:trust_configured] = true
+
+      result = PushDownstream.reconcile_scaffold(root, contract)
+
+      assert result.changed?
+      trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")), aliases: false)
+      assert_equal [], trust.fetch("trusted_users")
+      assert_equal [], trust.fetch("trusted_bots")
+      assert_equal [], trust.fetch("trusted_metadata_bots")
+      assert_equal [], trust.fetch("trusted_teams")
+    end
+  end
+
+  def test_apply_scaffold_preserves_existing_trust_config_entries
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents/trusted-github-actors.yml"), {
+        "trusted_users" => ["existing-maintainer"],
+        "trusted_bots" => ["coderabbitai"],
+        "trusted_metadata_bots" => [],
+        "trusted_teams" => ["maintainers"]
+      }.to_yaml)
+      contract = Marshal.load(Marshal.dump(CONTRACT))
+      contract[:trust] = {
+        "trusted_users" => ["justin808"],
+        "trusted_bots" => [],
+        "trusted_metadata_bots" => ["github-actions"],
+        "trusted_teams" => []
+      }
+
+      PushDownstream.reconcile_scaffold(root, contract)
+
+      trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")), aliases: false)
+      assert_equal %w[existing-maintainer justin808], trust.fetch("trusted_users")
+      assert_equal ["coderabbitai"], trust.fetch("trusted_bots")
+      assert_equal ["github-actions"], trust.fetch("trusted_metadata_bots")
+      assert_equal ["maintainers"], trust.fetch("trusted_teams")
+    end
+  end
+
+  def test_apply_scaffold_rejects_existing_trust_bot_metadata_overlap
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      path = File.join(root, ".agents/trusted-github-actors.yml")
+      File.write(path, {
+        "trusted_users" => [],
+        "trusted_bots" => ["GitHub-Actions[bot]"],
+        "trusted_metadata_bots" => [],
+        "trusted_teams" => []
+      }.to_yaml)
+      contract = Marshal.load(Marshal.dump(CONTRACT))
+      contract[:trust] = { "trusted_metadata_bots" => ["github-actions"] }
+
+      error = assert_raises(RuntimeError) do
+        PushDownstream.reconcile_scaffold(root, contract)
+      end
+
+      assert_match(/bot\(s\) listed in both trusted_bots and trusted_metadata_bots: github-actions/, error.message)
+    end
+  end
+
+  def test_apply_scaffold_keeps_existing_trust_file_when_configured_entries_already_exist
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      path = File.join(root, ".agents/trusted-github-actors.yml")
+      original = <<~YAML
+        # Maintainer-approved local trust.
+        trusted_users:
+          - justin808
+        trusted_bots: []
+        trusted_metadata_bots: []
+        trusted_teams: []
+      YAML
+      File.write(path, original)
+      contract = Marshal.load(Marshal.dump(CONTRACT))
+      contract[:trust] = { "trusted_users" => ["justin808"] }
+
+      PushDownstream.reconcile_scaffold(root, contract)
+
+      assert_equal original, File.read(path)
     end
   end
 
@@ -575,6 +828,38 @@ class PushDownstreamGitTest < Minitest::Test
     end
   end
 
+  def test_sync_repo_reports_existing_invalid_trust_config_without_raising
+    Dir.mktmpdir("push-downstream-git") do |dir|
+      remote, seed = seed_remote(dir)
+      FileUtils.mkdir_p(File.join(seed, ".agents"))
+      File.write(File.join(seed, ".agents/trusted-github-actors.yml"), {
+        "trusted_users" => [],
+        "trusted_bots" => ["github-actions"],
+        "trusted_metadata_bots" => ["github-actions"],
+        "trusted_teams" => []
+      }.to_yaml)
+      system("git", "-C", seed, "add", ".agents/trusted-github-actors.yml")
+      system("git", "-C", seed, "commit", "-m", "invalid trust config", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      repo = {
+        repo: "consumer",
+        nwo: "local/consumer",
+        base_branch: "main",
+        pr_branch: "agent-workflows/seam-sync",
+        remote_url: remote
+      }
+      contract = Marshal.load(Marshal.dump(CONTRACT))
+      contract[:trust] = { "trusted_users" => ["maintainer-login"] }
+      contract[:trust_configured] = true
+
+      _out, err = capture_io { refute PushDownstream.sync_repo(repo, contract) }
+
+      assert_includes err, "FAIL local/consumer: invalid trust config"
+      assert_includes err, "bot(s) listed in both trusted_bots and trusted_metadata_bots: github-actions"
+    end
+  end
+
   private
 
   def seed_remote(dir)
@@ -631,6 +916,51 @@ class PushDownstreamCliTest < Minitest::Test
 
       assert status2.success?, out2
       assert_includes out2, "already current"
+    end
+  end
+
+  def test_local_apply_can_seed_trusted_actors
+    Dir.mktmpdir("push-downstream-cli") do |root|
+      out, status = run_cli(
+        "--root", root, "--apply",
+        "--trusted-user", "justin808",
+        "--trusted-bot", "coderabbitai",
+        "--trusted-metadata-bot", "github-actions",
+        "--trusted-team", "acme/maintainers"
+      )
+
+      assert status.success?, out
+      trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")), aliases: false)
+      assert_equal ["justin808"], trust.fetch("trusted_users")
+      assert_equal ["coderabbitai"], trust.fetch("trusted_bots")
+      assert_equal ["github-actions"], trust.fetch("trusted_metadata_bots")
+      assert_equal ["acme/maintainers"], trust.fetch("trusted_teams")
+    end
+  end
+
+  def test_registry_mode_rejects_cli_trust_flags
+    out, status = run_cli("--trusted-user", "justin808")
+
+    refute status.success?, out
+    assert_includes out, "--trusted-* flags require --root"
+  end
+
+  def test_local_apply_reports_invalid_trust_config_without_backtrace
+    Dir.mktmpdir("push-downstream-cli") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents/trusted-github-actors.yml"), {
+        "trusted_users" => [],
+        "trusted_bots" => ["github-actions"],
+        "trusted_metadata_bots" => ["github-actions"],
+        "trusted_teams" => []
+      }.to_yaml)
+
+      out, status = run_cli("--root", root, "--apply", "--trusted-user", "maintainer-login")
+
+      refute status.success?, out
+      assert_includes out, "FAIL #{root}: invalid trust config"
+      assert_includes out, "bot(s) listed in both trusted_bots and trusted_metadata_bots: github-actions"
+      refute_includes out, "Traceback"
     end
   end
 

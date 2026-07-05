@@ -104,6 +104,10 @@ Repo-local `trusted_teams` entries are team slugs under the repo owner. Global
 trust configs must use `OWNER/team-slug` entries, and only entries whose owner
 matches the scanned repo owner are honored.
 
+When bootstrapping a consumer repo, put repo-specific maintainers in that
+repo's `.agents/trusted-github-actors.yml`. Use a trusted team instead only
+after verifying the exact GitHub team slug and membership.
+
 ## Auditing Before Editing Trust
 
 Use `agent-workflows-trust-audit` before adding repo-local trust entries:

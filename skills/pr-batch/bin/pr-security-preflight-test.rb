@@ -10,6 +10,7 @@ require "minitest/autorun"
 require "open3"
 require "shellwords"
 require "tmpdir"
+require "yaml"
 
 require_relative "../lib/git_probe_env"
 
@@ -1252,6 +1253,96 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_repo_local_fixture_trust_allows_maintainer_targets_in_strict_trust
+    with_fake_gh("repo-local-maintainer-targets") do |env, _trust_config_path, _log_path, dir|
+      trust_config_path = File.join(dir, "widgets-trusted-github-actors.yml")
+      write_trust_config(trust_config_path, users: ["maintainer-login"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "acme/widgets",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "701",
+        "702",
+        "703",
+        "704"
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      refute_includes out, "untrusted, hidden, or unidentifiable participant(s)"
+      refute_includes out, "untrusted comment/review author(s)"
+      assert_equal 4, out.scan("Untrusted or hidden participant findings: none").length
+      assert_equal 4, out.scan("Untrusted comment/review queue: none").length
+    end
+  end
+
+  def test_temp_fixture_allows_requested_exact_target_command_shape
+    with_fake_gh("repo-local-maintainer-targets") do |env, _trust_config_path, _log_path, dir|
+      trust_config_path = File.join(dir, "requested-widgets-trust.yml")
+      write_trust_config(trust_config_path, users: ["maintainer-login"])
+
+      out, status = run_script(
+        env,
+        "--repo",
+        "acme/widgets",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "701",
+        "702",
+        "703",
+        "704"
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_equal 4, out.scan("Untrusted or hidden participant findings: none").length
+      assert_equal 4, out.scan("Untrusted comment/review queue: none").length
+    end
+  end
+
+  def test_packaged_fallback_stays_empty_and_blocks_maintainer_targets_in_strict_trust
+    with_fake_gh("repo-local-maintainer-targets") do |env, _trust_config_path, _log_path, dir|
+      packaged_config = YAML.safe_load_file(
+        File.expand_path("../trusted-github-actors.yml", __dir__),
+        aliases: false
+      )
+      assert_equal [], packaged_config.fetch("trusted_users")
+      assert_equal [], packaged_config.fetch("trusted_bots")
+      assert_equal [], packaged_config.fetch("trusted_metadata_bots")
+      assert_equal [], packaged_config.fetch("trusted_teams")
+
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      FileUtils.mkdir_p([consumer_root, home])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => home),
+        "--repo",
+        "acme/widgets",
+        "--strict-trust",
+        "701",
+        "702",
+        "703",
+        "704",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "- #701: untrusted, hidden, or unidentifiable participant(s)"
+      assert_includes out, "- #701: untrusted comment/review author(s)"
+      assert_includes out, "maintainer-login issue comment"
+    end
+  end
+
   def test_warning_terms_in_trusted_issue_text_do_not_block
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -2317,6 +2408,17 @@ class PrSecurityPreflightTest < Minitest::Test
         esac
       }
 
+      repo_local_target_number() {
+        case "$1" in
+          701|702|703|704)
+            return 0
+            ;;
+          *)
+            return 1
+            ;;
+        esac
+      }
+
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
         if [ "$mode" = "repo-view-failure" ]; then
           printf 'simulated repo view failure\\n' >&2
@@ -2329,6 +2431,16 @@ class PrSecurityPreflightTest < Minitest::Test
         repo_url="${PREFLIGHT_TEST_REPO_URL:-https://github.com/owner/repo}"
         printf '{"nameWithOwner":"owner/repo","url":"%s"}\\n' "$repo_url"
         exit 0
+      fi
+
+      if [ "$mode" = "repo-local-maintainer-targets" ] && [ "$1" = "api" ] && [[ "$2" == repos/acme/widgets/issues/* ]]; then
+        number="${2##*/}"
+        if repo_local_target_number "$number"; then
+          cat <<JSON
+      {"number":${number},"title":"Maintainer target ${number}","html_url":"https://github.com/acme/widgets/issues/${number}","body":"Maintainer-scoped batch target.","user":{"login":"maintainer-login"}}
+      JSON
+          exit 0
+        fi
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
@@ -2377,7 +2489,15 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
-        if [[ "$*" == *"reviewThreads"* ]]; then
+        if [ "$mode" = "repo-local-maintainer-targets" ]; then
+          number="$(printf '%s\\n' "$*" | sed -n 's/.*number=\\([0-9][0-9]*\\).*/\\1/p')"
+          if repo_local_target_number "$number"; then
+            cat <<JSON
+      {"data":{"repository":{"issue":{"number":${number},"title":"Maintainer target ${number}","url":"https://github.com/acme/widgets/issues/${number}","author":{"login":"maintainer-login"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"maintainer-login","url":"https://github.com/maintainer-login","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"IssueComment","author":{"login":"maintainer-login"}}]}}}}}
+      JSON
+            exit 0
+          fi
+        elif [[ "$*" == *"reviewThreads"* ]]; then
           if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ]; then
             cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"isResolved":true,"resolvedBy":{"login":"justin808"},"comments":{"nodes":[{"databaseId":901}]}}]}}}}}
@@ -2527,6 +2647,17 @@ class PrSecurityPreflightTest < Minitest::Test
 
       # These fake responses model `gh api --paginate --slurp`, which wraps
       # raw GitHub REST pages in an outer array. An empty first page is `[[]]`.
+      if [ "$mode" = "repo-local-maintainer-targets" ] && [ "$1" = "api" ] && [[ "$2" == repos/acme/widgets/issues/*/comments?per_page=100 ]]; then
+        comments_path="${2%/comments?per_page=100}"
+        number="${comments_path##*/}"
+        if repo_local_target_number "$number"; then
+          cat <<JSON
+      [[{"id":${number}01,"html_url":"https://github.com/acme/widgets/issues/${number}#issuecomment-${number}01","user":{"login":"maintainer-login"},"body":"Maintainer follow-up for ${number}."}]]
+      JSON
+          exit 0
+        fi
+      fi
+
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123/comments?per_page=100" ]; then
         if [ "$mode" = "metadata-bot-comment" ]; then
           cat <<JSON
@@ -2570,6 +2701,11 @@ class PrSecurityPreflightTest < Minitest::Test
         else
           printf '[[]]'
         fi
+        exit 0
+      fi
+
+      if [ "$mode" = "repo-local-maintainer-targets" ] && [ "$1" = "api" ] && [ "$2" = "repos/acme/widgets/collaborators/maintainer-login/permission" ]; then
+        printf '{"permission":"admin"}'
         exit 0
       fi
 

@@ -8,6 +8,7 @@ The default model is:
 - shared skills are installed in the user or agent environment
 - each repo owns command wrappers in `.agents/bin/`
 - each repo owns non-command policy in `.agents/agent-workflow.yml`
+- each repo owns durable PR-batch actor trust in `.agents/trusted-github-actors.yml`
 - `AGENTS.md` points agents to those two sources
 - repo-pinned copies are optional and justified case by case
 
@@ -40,9 +41,20 @@ notes.
    non-command policy keys: `base_branch`, `follow_up_prefix`, `review_gate`,
    `approval_exempt`, `coordination_backend`, `changelog`, `benchmark_labels`,
    `merge_ledger`, `ci_parity_environment`, `hosted_ci_trigger`, and
-   `ci_change_detector`. Use `n/a` for unavailable policy.
+   `ci_change_detector`. Use `n/a` for unavailable policy. Start from
+   [`examples/agent-workflow.yml`](../examples/agent-workflow.yml) when
+   bootstrapping a new consumer repo.
 
-5. **Add the AGENTS pointer.** `AGENTS.md` stays canonical for human policy, but
+5. **Add repo-local trust YAML.** Create `.agents/trusted-github-actors.yml`
+   when PR-batch preflight should trust repo-specific maintainers, teams, or
+   automation. The preflight resolution order is `--trust-config`, repo-local
+   `.agents/trusted-github-actors.yml`, `$AGENT_WORKFLOWS_TRUST_CONFIG`,
+   `~/.agents/trusted-github-actors.yml`, then the packaged empty fallback.
+   Keep the packaged fallback empty. Put repo-specific maintainers in the
+   consumer repo's local trust file unless maintainers verify and choose a
+   narrower team slug.
+
+6. **Add the AGENTS pointer.** `AGENTS.md` stays canonical for human policy, but
    the workflow configuration section is only:
 
    ```markdown
@@ -53,16 +65,16 @@ notes.
    - **Policy / config** — `.agents/agent-workflow.yml`.
    ```
 
-6. **Keep repo-local skills local, but keep workflow references reachable.** Add
+7. **Keep repo-local skills local, but keep workflow references reachable.** Add
    only repo-specific skills, tiny compatibility launchers, or local validation
    helpers to the repo. Do not copy shared workflow text unless the execution
    environment cannot load user-installed skills.
 
-7. **Validate the contract.** Run `agent-workflow-seam-doctor` from this shared
+8. **Validate the contract.** Run `agent-workflow-seam-doctor` from this shared
    pack with `--shared` pointing at the cloned or installed pack root. Then run
    one dry workflow pass without making changes.
 
-8. **Make `AGENTS.md` canonical.** Tool-specific files such as `CLAUDE.md`
+9. **Make `AGENTS.md` canonical.** Tool-specific files such as `CLAUDE.md`
    should stay thin and link back to `AGENTS.md`.
 
 ## Command Wrappers
@@ -153,6 +165,8 @@ updates reviewed in that repo. If a repo chooses that route:
   upgrade decision is recorded.
 - `agent-workflow-seam-doctor --shared <path-to-shakacode/agent-workflows>` passes.
 - Every generated wrapper's underlying command exists in the target repo.
+- `pr-security-preflight --repo OWNER/REPO --trust-config .agents/trusted-github-actors.yml --strict-trust <exact-targets>`
+  reports `SECURITY_PREFLIGHT_OK` for maintainer-approved exact targets.
 - Markdown formatting and link checks pass for edited docs.
 - A dry run of `$pr-batch` stops with an exact target list and goal prompt
   before spawning workers.
