@@ -29,6 +29,13 @@ class AutoreviewTargetStateTest < Minitest::Test
     ], commands(result)
   end
 
+  def test_branch_plus_untracked_only_work_uses_precise_local_reason
+    result = classify(dirty: true, untracked_only: true, branch_diff: true)
+
+    assert_equal "BRANCH_PLUS_DIRTY_LOCAL", result["state"]
+    assert_equal "Review untracked-only work.", result.fetch("review_targets").last.fetch("reason")
+  end
+
   def test_non_main_pr_base_drives_branch_review_base
     result = classify(
       pr: { "state" => "found", "base" => "release/1.2" },

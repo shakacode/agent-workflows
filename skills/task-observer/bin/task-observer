@@ -20,6 +20,7 @@ module TaskObserver
     /(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)?\s*\S+/i,
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
+    /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
     /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)\b/i,
     /\b\d{3}-\d{2}-\d{4}\b/,
     /\b(?:\d[ -]*?){13,19}\b/
@@ -29,8 +30,8 @@ module TaskObserver
   ].freeze
   PRIVATE_HOST_PATTERNS = [
     /\Alocalhost\z/i,
-    /(?:^|\.)internal(?:\.|$)/i,
-    /(?:^|\.)corp(?:\.|$)/i,
+    /(?:^|[.-])internal(?:[.-]|$)/i,
+    /(?:^|[.-])corp(?:[.-]|$)/i,
     /\.(?:local|test)\z/i
   ].freeze
   PRIVATE_IP_RANGES = [
@@ -68,11 +69,13 @@ module TaskObserver
   end
 
   def init
+    ensure_private_directory(memory_root)
     %w[observations staged-updates].each do |name|
-      FileUtils.mkdir_p(File.join(memory_root, name))
+      ensure_private_directory(File.join(memory_root, name))
     end
     principles = File.join(memory_root, "principles.md")
-    File.write(principles, "# Task Observer Principles\n\n", mode: "w") unless File.exist?(principles)
+    write_private_file(principles, "# Task Observer Principles\n\n") unless File.exist?(principles)
+    File.chmod(0o600, principles)
     "initialized #{memory_root}"
   end
 
@@ -135,8 +138,18 @@ module TaskObserver
       "update_mode" => "staged-review-only"
     }
     path = File.join(memory_root, "observations", "#{observed_at.utc.strftime('%Y-%m-%d')}.jsonl")
-    File.open(path, "a", encoding: "UTF-8") { |file| file.puts(JSON.generate(record)) }
+    File.open(path, "a:UTF-8", 0o600) { |file| file.puts(JSON.generate(record)) }
+    File.chmod(0o600, path)
     "appended #{path}"
+  end
+
+  def ensure_private_directory(path)
+    FileUtils.mkdir_p(path, mode: 0o700)
+    File.chmod(0o700, path)
+  end
+
+  def write_private_file(path, contents)
+    File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(contents) }
   end
 
   def ensure_initialized!

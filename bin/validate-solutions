@@ -38,7 +38,10 @@ module ValidateSolutions
   end
 
   def validate(root)
-    solution_paths(root).flat_map { |path| validate_file(path, root) }
+    paths = solution_paths(root)
+    return ["docs/solutions: no solution docs found"] if paths.empty?
+
+    paths.flat_map { |path| validate_file(path, root) }
   end
 
   def solution_paths(root)

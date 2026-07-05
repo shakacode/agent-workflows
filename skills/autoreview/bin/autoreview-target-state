@@ -39,7 +39,7 @@ module AutoreviewTargetState
     if branch_diff == :unknown
       pr["state"] == "unknown" ? unknown_pr_result(pr) : unknown_base_result(base)
     elsif dirty && branch_diff == true
-      pr["state"] == "unknown" ? unknown_pr_result(pr) : branch_plus_dirty_result(base, pr)
+      pr["state"] == "unknown" ? unknown_pr_result(pr) : branch_plus_dirty_result(base, pr, facts)
     elsif dirty
       local_dirty_result(facts)
     elsif pr["state"] == "unknown"
@@ -73,7 +73,7 @@ module AutoreviewTargetState
     }
   end
 
-  def branch_plus_dirty_result(base, pull_request)
+  def branch_plus_dirty_result(base, pull_request, facts)
     {
       "state" => "BRANCH_PLUS_DIRTY_LOCAL",
       "disposition" => "not_ready",
@@ -81,7 +81,7 @@ module AutoreviewTargetState
       "pr_state" => pull_request["state"],
       "review_targets" => [
         branch_target(base),
-        local_target("Review staged, unstaged, and untracked local work.")
+        local_target(facts.fetch(:untracked_only) ? "Review untracked-only work." : "Review staged, unstaged, and untracked local work.")
       ],
       "message" => "Committed branch work and dirty local work need either a commit first or two explicit review targets."
     }

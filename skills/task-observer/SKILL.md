@@ -123,7 +123,7 @@ observations:
 4. Stage any skill or workflow edits as normal repo changes and wait for the
    user's explicit request before overwriting live installed skills or personal
    memory.
-5. Run the relevant helper tests and `bin/validate` before publishing changes.
+5. Run the relevant helper tests and `.agents/bin/validate` before publishing changes.
 
 Never overwrite installed skills, user-global skills, or live personal memory
 as a side effect of observation review. A direct user request is required before

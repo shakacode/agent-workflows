@@ -53,6 +53,14 @@ class ValidateSolutionsTest < Minitest::Test
     end
   end
 
+  def test_missing_solution_docs_fails
+    with_solution_root do |root|
+      write_solution(root, "README.md", "# Solutions\n")
+
+      assert_equal ["docs/solutions: no solution docs found"], ValidateSolutions.validate(root)
+    end
+  end
+
   def test_missing_frontmatter_fails
     with_solution_root do |root|
       write_solution(root, "missing-frontmatter.md", "# Missing\n")

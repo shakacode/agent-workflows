@@ -53,6 +53,8 @@ module ValidateReviewFindings
     else
       validate_json_block(text, path)
     end
+  rescue SystemCallError => e
+    ["#{path}: #{e.message}"]
   end
 
   def validate_markdown(text, path)

@@ -27,6 +27,30 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_init_and_append_create_private_memory_paths
+    Dir.mktmpdir("task-observer") do |home|
+      with_umask(0o022) do
+        run!("init", env: { "CODEX_HOME" => home })
+
+        root = File.join(home, "memories", "task-observer")
+        assert_mode 0o700, root
+        assert_mode 0o700, File.join(root, "observations")
+        assert_mode 0o700, File.join(root, "staged-updates")
+        assert_mode 0o600, File.join(root, "principles.md")
+
+        run!(
+          "append",
+          "--kind", "gap",
+          "--summary", "A valid sanitized summary.",
+          "--source", "test",
+          env: { "CODEX_HOME" => home, "TASK_OBSERVER_TIME" => "2026-07-03T12:00:00Z" }
+        )
+
+        assert_mode 0o600, File.join(root, "observations", "2026-07-03.jsonl")
+      end
+    end
+  end
+
   def test_init_and_status_use_claude_memory_root_when_codex_home_is_unset
     Dir.mktmpdir("task-observer") do |home|
       out = run!("init", env: { "CLAUDE_HOME" => home })
@@ -147,6 +171,23 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_github_fine_grained_tokens
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "github_pat_#{'A' * 24}",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "sensitive material"
+    end
+  end
+
   def test_append_rejects_missing_required_fields_without_stack_trace
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -243,6 +284,24 @@ class TaskObserverTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "private URL"
+    end
+  end
+
+  def test_append_rejects_hyphenated_internal_hosts
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://wiki-internal.example.com/runbook",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+      assert_includes out, "private host"
     end
   end
 
@@ -401,6 +460,17 @@ class TaskObserverTest < Minitest::Test
     previous.each do |key, value|
       value.nil? ? ENV.delete(key) : ENV[key] = value
     end
+  end
+
+  def with_umask(mask)
+    previous = File.umask(mask)
+    yield
+  ensure
+    File.umask(previous)
+  end
+
+  def assert_mode(expected, path)
+    assert_equal expected, File.stat(path).mode & 0o777, "Expected #{path} mode to be #{expected.to_s(8)}"
   end
 
   def assert_directory(path)

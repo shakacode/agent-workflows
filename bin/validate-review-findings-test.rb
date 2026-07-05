@@ -3,6 +3,7 @@
 
 require "json"
 require "minitest/autorun"
+require "tmpdir"
 
 SCRIPT = File.expand_path("validate-review-findings", __dir__)
 load SCRIPT
@@ -86,5 +87,16 @@ class ValidateReviewFindingsTest < Minitest::Test
     failures = ValidateReviewFindings.validate_markdown("# Empty\n", "example.md")
 
     assert_equal ["example.md: missing ```json review-findings fenced block"], failures
+  end
+
+  def test_missing_report_path_fails_without_backtrace
+    Dir.mktmpdir("validate-review-findings") do |dir|
+      path = File.join(dir, "missing.md")
+      failures = ValidateReviewFindings.validate_path(path)
+
+      assert_equal 1, failures.length
+      assert_match(/\A#{Regexp.escape(path)}: /, failures.first)
+      assert_includes failures.first, "No such file"
+    end
   end
 end
