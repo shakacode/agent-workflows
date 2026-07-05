@@ -377,6 +377,31 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_requested_hosted_failure_blocks_ready_required_gate
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "failure", "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "failure",
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal(["hosted", "hosted / linux"], data.fetch("requested_hosted").fetch("failing").map { |row| row["name"] })
+      assert_empty data.fetch("requested_hosted").fetch("pending")
+    end
+  end
+
   def test_requested_hosted_success_keeps_required_gate_ready_despite_unrelated_advisory_pending
     with_fake_gh(
       required_json: '[{"name":"unit","bucket":"pass"}]',

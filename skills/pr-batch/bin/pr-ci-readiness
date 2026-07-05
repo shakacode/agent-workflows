@@ -144,6 +144,8 @@ module PrCiReadiness
           --requested-hosted-run RUN_ID_OR_URL
                                               Require this explicit current-head hosted run to finish.
                                               Repeat for multiple maintainer-requested runs.
+                                              With no usable required checks, requested runs replace
+                                              the full advisory-list fallback gate.
           --json                              Print JSON (default).
           --text                              Print a human-readable verdict instead of JSON.
           --self-check                        Run parser checks plus a read-only gh smoke check.
