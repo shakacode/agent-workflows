@@ -36,6 +36,11 @@ absent file falls through to the next layer, except a missing
 `$AGENT_WORKFLOWS_TRUST_CONFIG` path aborts fail-closed instead of falling
 through.
 
+An explicit `--trust-config PATH` is repo-local only when that path belongs to a
+git checkout whose remotes match the scanned repo. A path outside the matching
+checkout is treated as user-global, so team entries must use `OWNER/team-slug`
+form.
+
 By default, non-allowlisted comments/reviews and hidden participants are printed
 as audit findings but do not block exact-target preflight. Use `--strict-trust`
 for untrusted discovery, high-concurrency launches that require fail-closed
@@ -50,6 +55,12 @@ Local git probes are bounded by timeout environment variables:
 `PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS` for the preflight helper and
 `PR_BATCH_GIT_PROBE_TIMEOUT_SECONDS` for the shared git-probe environment
 helper; both default to 10 seconds.
+
+Suspicious-text scans include trusted metadata-bot comments, reviews, and issue
+bodies as warning-producing metadata. Resolved trusted-bot and metadata-bot
+review threads suppress ordinary warning-pattern noise, but blocking-pattern
+findings stay visible. Trusted-source downgrades for PR diff warnings require
+complete source-actor coverage, including the `timelineItems` connection.
 
 ## Recommended Config Split
 

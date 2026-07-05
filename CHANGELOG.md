@@ -16,6 +16,8 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Port consumer-repo preflight hardening: fail closed when `AGENT_WORKFLOWS_TRUST_CONFIG` points to a missing file, treat explicit `--trust-config` paths outside the consuming repo's git root as user-global (warning on ignored unqualified team slugs), scan trusted metadata-bot comments for suspicious-text warnings, keep blocking-pattern warnings visible on resolved trusted-bot review threads, and require full source-actor timeline coverage before treating a PR source as trusted for diff-warning downgrades.**
+- **Port consumer-repo `agent-coord-bounded` hardening: preserve captured stdout/stderr on interrupt and timeout exits, and wait for the whole process group to exit during termination.**
 - **Default post-merge audits to the obvious just-run batch before asking for batch confirmation.**
 - **Clarify completed-batch post-merge audit scope, release/range audits, and coverage catch-up for explicit un-audited PR or commit ranges.**
 - **Start pasteable batch prompts with a short title that includes a repository-derived project abbreviation, optional A/B/C split marker, and `MM-DD HH:MM` from the local shell `date` command.**
