@@ -20,6 +20,15 @@ environment, then make each consumer repo expose a small, validated contract:
 - non-command policy is structured YAML in `.agents/agent-workflow.yml`
 - `AGENTS.md` points humans and agents at those two sources
 
+## Language
+
+Use [source-pack-glossary.md](source-pack-glossary.md) as the canonical glossary
+for terms such as Source Pack, Consumer Repo, Agent Workflow Configuration Seam,
+Host Installer Path, Native Plugin Path, Workflow Lessons Library, Readiness
+Vocabulary, Review Finding, and State-Machine Fixture. Keep this document
+focused on the seam architecture; update the glossary when new workflow-pack
+terms need stable meaning across issues, PRs, and implementation prompts.
+
 ## Architecture
 
 ```text
