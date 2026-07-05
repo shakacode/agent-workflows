@@ -91,12 +91,40 @@ module PrCiReadiness
   def text_summary(result)
     failing = result["failing"]
     pending = result["pending"]
-    [
+    lines = [
       result["verdict"],
       "required_used: #{result['required_used']}",
       "failing: #{failing.empty? ? '(none)' : failing.join(', ')}",
       "pending: #{pending.empty? ? '(none)' : pending.join(', ')}"
-    ].join("\n")
+    ]
+    requested = result.fetch("requested_hosted", {})
+    if requested_hosted_present?(requested)
+      lines.concat([
+                     "requested_hosted_pending: #{requested_names(requested, 'pending')}",
+                     "requested_hosted_failing: #{requested_names(requested, 'failing')}",
+                     "requested_hosted_stale: #{requested_names(requested, 'stale')}",
+                     "requested_hosted_unknown: #{requested_unknown(requested)}"
+                   ])
+    end
+    lines.join("\n")
+  end
+
+  def requested_hosted_present?(requested)
+    %w[run_ids pending failing stale unknown].any? { |bucket| requested.fetch(bucket, []).any? }
+  end
+
+  def requested_names(requested, bucket)
+    rows = requested.fetch(bucket, [])
+    return "(none)" if rows.empty?
+
+    rows.map { |row| row.fetch("name", row.fetch("run_id", "unknown")).to_s }.join(", ")
+  end
+
+  def requested_unknown(requested)
+    rows = requested.fetch("unknown", [])
+    return "(none)" if rows.empty?
+
+    rows.map { |row| "#{row.fetch('run_id', 'unknown')}: #{row.fetch('reason', 'unknown')}" }.join(", ")
   end
 
   USAGE = <<~USAGE
@@ -112,11 +140,14 @@ module PrCiReadiness
       <pr-number>        PR number to inspect (integer).
 
     Options:
-          --repo REPO    GitHub repo in OWNER/REPO form. Defaults to gh repo view.
-          --json         Print JSON (default).
-          --text         Print a human-readable verdict instead of JSON.
-          --self-check   Run parser checks plus a read-only gh smoke check.
-      -h, --help         Show this help.
+          --repo REPO                         GitHub repo in OWNER/REPO form. Defaults to gh repo view.
+          --requested-hosted-run RUN_ID_OR_URL
+                                              Require this explicit current-head hosted run to finish.
+                                              Repeat for multiple maintainer-requested runs.
+          --json                              Print JSON (default).
+          --text                              Print a human-readable verdict instead of JSON.
+          --self-check                        Run parser checks plus a read-only gh smoke check.
+      -h, --help                              Show this help.
 
     Output JSON shape:
       {
@@ -124,12 +155,21 @@ module PrCiReadiness
         "verdict": "READY" | "NOT_READY" | "UNKNOWN",
         "required_used": true | false,
         "failing": [ "check name", ... ],
-        "pending": [ "check name", ... ]
+        "pending": [ "check name", ... ],
+        "requested_hosted": {
+          "run_ids": [ "1234567890", ... ],
+          "pending": [ { "run_id": "1234567890", "name": "job", "url": "..." }, ... ],
+          "failing": [ { "run_id": "1234567890", "name": "job", "url": "..." }, ... ],
+          "stale": [ { "run_id": "1234567890", "head_sha": "old", "expected_head_sha": "new" }, ... ],
+          "unknown": [ { "run_id": "1234567890", "reason": "..." }, ... ]
+        }
       }
 
     verdict is UNKNOWN when neither the required nor the full check list reports any
     checks (cancelled rows do not count). required_used is true when the required
     check list was non-empty and was used as the readiness gate.
+    With --requested-hosted-run and no usable required checks, the requested
+    current-head runs are the gate instead of the full advisory check list.
 
     Requires: gh (GitHub CLI)
   USAGE
@@ -147,7 +187,7 @@ module PrCiReadiness
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      print_result(assess(repo, pr_number), opts[:format])
+      print_result(assess(repo, pr_number, requested_hosted_runs: opts[:requested_hosted_runs]), opts[:format])
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -157,12 +197,13 @@ module PrCiReadiness
     private
 
     def parse_args(argv)
-      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil }
+      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil, requested_hosted_runs: [] }
       args = argv.dup
       until args.empty?
         arg = args.shift
         case arg
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
+        when "--requested-hosted-run" then opts[:requested_hosted_runs] << take_value!(args, "--requested-hosted-run")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -205,16 +246,28 @@ module PrCiReadiness
 
     # Fetch the required-check list first; fall back to the full list when the
     # required form yields no rows. required_used flips to false on fallback.
-    def assess(repo, pr_number)
+    def assess(repo, pr_number, requested_hosted_runs:)
       required_raw = fetch_checks(repo, pr_number, required: true)
       if PrCiReadiness.usable_checks?(required_raw)
         rows = PrCiReadiness.parse_rows(required_raw)
         required_used = true
+        requested_hosted_only = false
+      elsif requested_hosted_runs.any?
+        rows = []
+        required_used = false
+        requested_hosted_only = true
       else
         rows = PrCiReadiness.parse_rows(fetch_checks(repo, pr_number, required: false))
         required_used = false
+        requested_hosted_only = false
       end
-      PrCiReadiness.assess(pr_number:, required_used:, rows:)
+      result =
+        if requested_hosted_only
+          requested_hosted_base_result(pr_number)
+        else
+          PrCiReadiness.assess(pr_number:, required_used:, rows:)
+        end
+      apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
     end
 
     # `gh pr checks` exits non-zero when checks are failing/pending and also when
@@ -228,6 +281,137 @@ module PrCiReadiness
       # inspect stdout only, so discard stderr to keep our output clean.
       out, _status = Open3.capture2(*cmd, err: File::NULL)
       out.to_s.force_encoding("UTF-8")
+    end
+
+    def apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
+      result["requested_hosted"] = empty_requested_hosted
+      return result if requested_hosted_runs.empty?
+
+      requested = requested_hosted_summary(repo, pr_number, requested_hosted_runs)
+      result["requested_hosted"] = requested
+      if requested["pending"].any? || requested["failing"].any?
+        result["verdict"] = "NOT_READY"
+      elsif result["verdict"] == "READY" && (requested["stale"].any? || requested["unknown"].any?)
+        result["verdict"] = "UNKNOWN"
+      end
+      result
+    end
+
+    def empty_requested_hosted
+      {
+        "run_ids" => [],
+        "pending" => [],
+        "failing" => [],
+        "stale" => [],
+        "unknown" => []
+      }
+    end
+
+    def requested_hosted_base_result(pr_number)
+      {
+        "pr" => pr_number.to_i,
+        "verdict" => "READY",
+        "required_used" => false,
+        "failing" => [],
+        "pending" => []
+      }
+    end
+
+    def requested_hosted_summary(repo, pr_number, requested_hosted_runs)
+      expected_head_sha = fetch_pr_head_oid(repo, pr_number)
+      requested_hosted_runs.each_with_object(empty_requested_hosted) do |input, summary|
+        run_id = requested_hosted_run_id(input)
+        summary["run_ids"] << run_id
+        run = fetch_actions_run(repo, run_id)
+        classify_requested_run(summary, repo, run_id, run, expected_head_sha)
+      rescue Error => e
+        summary["unknown"] << { "run_id" => run_id || input.to_s, "reason" => e.message }
+      end
+    end
+
+    def requested_hosted_run_id(input)
+      value = input.to_s.strip
+      run_id = value[%r{/actions/runs/(\d+)}, 1] || value[/\A\d+\z/]
+      raise Error, "requested hosted run must be a run id or Actions run URL (got: '#{input}')" if run_id.nil?
+
+      run_id
+    end
+
+    def classify_requested_run(summary, repo, run_id, run, expected_head_sha)
+      actual_head_sha = run.fetch("head_sha", "").to_s
+      if actual_head_sha.empty? || actual_head_sha != expected_head_sha
+        summary["stale"] << run_record(run_id, run).merge(
+          "head_sha" => actual_head_sha,
+          "expected_head_sha" => expected_head_sha
+        )
+        return
+      end
+
+      classify_status_row(summary, "run", run_id, run_record(run_id, run))
+      fetch_actions_jobs(repo, run_id).each do |job|
+        classify_status_row(summary, "job", run_id, run_record(run_id, job))
+      end
+    end
+
+    def classify_status_row(summary, kind, run_id, row)
+      status = row["status"].to_s
+      conclusion = row["conclusion"].to_s
+      record = row.merge("kind" => kind, "run_id" => run_id)
+      if status != "completed"
+        summary["pending"] << record
+      elsif successful_conclusion?(conclusion)
+        nil
+      else
+        summary["failing"] << record
+      end
+    end
+
+    def successful_conclusion?(conclusion)
+      %w[success neutral skipped].include?(conclusion)
+    end
+
+    def run_record(run_id, payload)
+      {
+        "run_id" => run_id,
+        "name" => payload["name"].to_s.empty? ? "run #{run_id}" : payload["name"].to_s,
+        "status" => payload["status"].to_s,
+        "conclusion" => payload["conclusion"],
+        "url" => payload["html_url"].to_s
+      }
+    end
+
+    def fetch_pr_head_oid(repo, pr_number)
+      data = capture_json!("gh", "pr", "view", pr_number.to_s, "--repo", repo, "--json", "headRefOid")
+      head = data.fetch("headRefOid", "").to_s
+      raise Error, "could not resolve PR headRefOid for ##{pr_number}" if head.empty?
+
+      head
+    end
+
+    def fetch_actions_run(repo, run_id)
+      capture_json!("gh", "api", "repos/#{repo}/actions/runs/#{run_id}")
+    end
+
+    def fetch_actions_jobs(repo, run_id)
+      per_page = 100
+      jobs = []
+      page = 1
+      loop do
+        data = capture_json!("gh", "api", "repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=#{per_page}&page=#{page}")
+        page_jobs = data.fetch("jobs", [])
+        jobs.concat(page_jobs)
+        break if page_jobs.length < per_page
+
+        page += 1
+      end
+      jobs
+    end
+
+    def capture_json!(*cmd)
+      raw = capture_required!(*cmd)
+      JSON.parse(raw)
+    rescue JSON::ParserError => e
+      raise Error, "command returned invalid JSON: #{cmd.first(3).join(' ')} (#{e.message})"
     end
 
     # Run a command with no shell (array args) and return UTF-8 stdout, raising

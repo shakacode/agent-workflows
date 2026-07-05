@@ -97,7 +97,9 @@ Plan a PR batch
    - Apply `.agents/workflows/pr-processing.md` under **Batch QA Lane**. Record
      whether QA is required, which subset qualifies, the planned owner/lane, and
      final QA Evidence expectations. If QA is omitted for low-risk work, record
-     `not required` plus the rationale.
+     `not required` plus the rationale. For batches that need post-merge replay,
+     require the `qa-evidence v1` marker and any needed
+     `priority-finding-dispositions v1` marker in the final evidence.
    - Build a File-touch map for the batch: list the paths each item changes or
      intends to affect, including creates, deletes, and renames. Never guess
      paths.
@@ -223,7 +225,7 @@ Plan a PR batch
 - `merge_authority`:
 - Concurrent activity and dependency status:
 - Coordination hooks, including backend claim exclusions:
-- Batch QA Lane decision and QA Evidence expectations:
+- Batch QA Lane decision and QA Evidence expectations, including replay marker requirements:
 - Verification expectations:
 - Prompt sizing: `Goal prompt character count: N characters (target: codex|claude|generic)`; note any split fallback
   and keep omitted item details here, not in the goal prompt.
