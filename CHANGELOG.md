@@ -9,6 +9,7 @@ All notable changes to this portable workflow pack are documented here.
 #### Added
 
 - **Add durable workflow solution docs, review finding schema, readiness vocabulary, autoreview target-state fixtures, and the optional `task-observer` skill.**
+- **Add the `$pause` skill to print restart-safe pause, resume, and new-chat handoff prompts for ordinary and `$pr-batch` work.** [PR 68](https://github.com/shakacode/agent-workflows/pull/68) by [justin808](https://github.com/justin808).
 - **Add `agent-workflows-trust-audit` to check recent merged PRs against `pr-security-preflight` and draft candidate repo-local trust entries for maintainer review.**
 - **Add `trusted_metadata_bots` so workflow/status bot comments can be audited as metadata without becoming actionable trusted instructions.**
 - **Add `pr-security-preflight --strict-trust` so exact-target batches can report actor-trust findings by default while still supporting fail-closed launches.**
