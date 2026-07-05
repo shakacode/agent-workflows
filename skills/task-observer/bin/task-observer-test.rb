@@ -230,6 +230,7 @@ class TaskObserverTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "private URL"
+      assert_includes out, "URL credentials"
     end
   end
 
