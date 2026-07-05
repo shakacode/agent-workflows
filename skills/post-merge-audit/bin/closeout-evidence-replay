@@ -80,6 +80,7 @@ module CloseoutEvidenceReplay
     missing << "required" unless required.empty? || VALID_QA_REQUIRED.include?(required)
     missing << "status" unless status.empty? || VALID_QA_STATUSES.include?(status)
     missing << "release_blocking" unless release_blocking.empty? || VALID_RELEASE_BLOCKING.include?(release_blocking)
+    missing << "status" if required == "yes" && status == "not_applicable"
     unless process_gap_disposition.empty? || VALID_PROCESS_GAP_DISPOSITIONS.include?(process_gap_disposition)
       missing << "process_gap_disposition"
     end

@@ -121,6 +121,26 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "NOT_APPLICABLE", data.fetch("priority_finding_dispositions").fetch("verdict")
   end
 
+  def test_required_qa_marker_cannot_be_not_applicable
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: yes
+      status: not_applicable
+      tested_at: PR #123 head abc123
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: not applicable
+      findings: none
+      release_blocking: not_applicable
+      process_gap_disposition: schema
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", data.fetch("qa_evidence").fetch("verdict")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "status"
+  end
+
   def test_incomplete_qa_marker_is_unknown
     data = run_replay(<<~MARKDOWN)
       <!-- qa-evidence v1
@@ -222,6 +242,19 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "UNKNOWN", data.fetch("priority_finding_dispositions").fetch("verdict")
     assert_includes data.fetch("priority_finding_dispositions").fetch("missing"), "finding[0].disposition"
+  end
+
+  def test_waived_priority_marker_without_waiver_is_unknown
+    data = run_replay(<<~MARKDOWN)
+      <!-- priority-finding-dispositions v1
+      head_sha: abc123
+      finding: url=https://example.test/review/1 | severity=P1 | disposition=waived | evidence=https://example.test/pr/123#discussion_r1
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", data.fetch("priority_finding_dispositions").fetch("verdict")
+    assert_includes data.fetch("priority_finding_dispositions").fetch("missing"), "finding[0].waiver"
   end
 
   def test_priority_marker_with_invalid_severity_is_unknown
