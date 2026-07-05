@@ -102,7 +102,10 @@ module PrCheckCompletionTiming
     merged_at = Time.iso8601(merged_at_raw)
     rows = fetch_check_rows(repo, pr_number)
     selected = rows.select { |row| selected?(row, selectors) }
-    return unknown_result(pr_number, "no selected checks matched", merged_at: merged_at_raw) if selected.empty?
+    if selected.empty?
+      reason = rows.empty? ? "no checks reported by GitHub" : "no selected checks matched"
+      return unknown_result(pr_number, reason, merged_at: merged_at_raw)
+    end
 
     late = []
     pending = []
@@ -146,12 +149,18 @@ module PrCheckCompletionTiming
   end
 
   def fetch_check_rows(repo, pr_number)
-    raw, _status = Open3.capture2(
+    raw, err, status = Open3.capture3(
       "gh", "pr", "checks", pr_number.to_s,
       "--repo", repo,
-      "--json", "name,workflow,bucket,state,startedAt,completedAt,link",
-      err: File::NULL
+      "--json", "name,workflow,bucket,state,startedAt,completedAt,link"
     )
+    if raw.strip.empty?
+      return [] if status.success? || err.match?(/no checks reported/i)
+
+      message = err.strip.lines.first.to_s
+      raise Error, "gh pr checks failed: #{message.empty? ? "exit #{status.exitstatus}" : message}"
+    end
+
     data = JSON.parse(raw)
     data.is_a?(Array) ? data : []
   rescue JSON::ParserError => e

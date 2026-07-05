@@ -10,7 +10,7 @@ require "minitest/autorun"
 SCRIPT = File.expand_path("pr-check-completion-timing", __dir__)
 
 class PrCheckCompletionTimingTest < Minitest::Test
-  def with_fake_gh(pr_json:, checks_json:, checks_status: 0)
+  def with_fake_gh(pr_json:, checks_json:, checks_status: 0, checks_stderr: "")
     Dir.mktmpdir("pr-check-completion-timing-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(gh, <<~BASH)
@@ -27,6 +27,9 @@ class PrCheckCompletionTimingTest < Minitest::Test
           exit 0
         fi
         if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
+          cat >&2 <<'STDERR'
+        #{checks_stderr}
+        STDERR
           cat <<'JSON'
         #{checks_json}
         JSON
@@ -88,6 +91,38 @@ class PrCheckCompletionTimingTest < Minitest::Test
       out, status = run_script(env, "123", "--repo", "owner/repo", "--select-name", "hosted")
       assert status.success?, out
       assert_equal "UNKNOWN", JSON.parse(out).fetch("verdict")
+    end
+  end
+
+  def test_no_check_json_is_unknown_when_gh_reports_no_checks
+    pr_json = JSON.generate("number" => 123, "mergedAt" => "2026-07-03T09:00:00Z")
+
+    with_fake_gh(
+      pr_json:,
+      checks_json: "",
+      checks_status: 1,
+      checks_stderr: "no checks reported on the branch"
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--select-name", "hosted")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal "no checks reported by GitHub", data.fetch("reason")
+    end
+  end
+
+  def test_empty_check_json_from_other_gh_failure_is_an_error
+    pr_json = JSON.generate("number" => 123, "mergedAt" => "2026-07-03T09:00:00Z")
+
+    with_fake_gh(
+      pr_json:,
+      checks_json: "",
+      checks_status: 1,
+      checks_stderr: "GraphQL: Resource not accessible by integration"
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--select-name", "hosted")
+      refute status.success?, out
+      assert_includes out, "gh pr checks failed: GraphQL: Resource not accessible"
     end
   end
 
