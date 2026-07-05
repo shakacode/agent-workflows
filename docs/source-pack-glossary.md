@@ -37,6 +37,11 @@ A lightweight, curated `docs/solutions/` area for reusable Source Pack workflow
 failure modes and fixes.
 _Avoid_: full compounding system, session memory.
 
+**Compound Engineering (CE)**:
+The EveryInc `compound-engineering-plugin` source used as prior art for these
+workflow improvement ideas.
+_Avoid_: using CE as a synonym for this Source Pack or for every agent workflow.
+
 **Readiness Vocabulary**:
 The canonical human-facing state language for planning and batch handoffs, with
 optional machine-readable blocks where automation needs them.
@@ -85,9 +90,9 @@ _Avoid_: broad prose-only hardening.
 - "plugin" can mean the Codex-native manifest surface or the entire Source
   Pack. Resolved: use **Native Plugin Path** for host plugin manifests and
   **Source Pack** for the repository as a whole.
-- `docs/solutions/` could mean a full CE-style compounding workflow or a small
-  curated library. Resolved for v0: use **Workflow Lessons Library** for the
-  lightweight curated form.
+- `docs/solutions/` could mean a full Compound Engineering-style compounding
+  workflow or a small curated library. Resolved for v0: use **Workflow Lessons
+  Library** for the lightweight curated form.
 - "machine-readable readiness contract" could mean mandatory JSON in every
   planning output. Resolved for v0: define a **Readiness Vocabulary** first and
   keep structured blocks optional unless a workflow explicitly needs automation.
