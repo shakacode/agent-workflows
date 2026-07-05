@@ -128,7 +128,7 @@ module ValidateSolutions
     line = raw_frontmatter.lines.find { |candidate| candidate.match?(/\Adate:/) }
     return nil unless line
 
-    raw = line.sub(/\Adate:\s*/, "").sub(/\s+#.*\z/, "").strip
+    raw = line.chomp.sub(/\Adate:\s*/, "").sub(/\s+#.*\z/, "").strip
     if (raw.start_with?('"') && raw.end_with?('"')) || (raw.start_with?("'") && raw.end_with?("'"))
       raw = raw[1...-1]
     end

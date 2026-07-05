@@ -188,7 +188,8 @@ copy_pack_docs() {
 link_pack_docs() {
   local docs_target="$1"
   local destination source_path
-  mkdir -p "$docs_target" "$docs_target/solutions"
+  ensure_real_directory "$docs_target"
+  ensure_real_directory "$docs_target/solutions"
 
   destination="$docs_target/review-finding-schema.md"
   if [[ -e "$destination" && ! -L "$destination" ]]; then

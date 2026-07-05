@@ -78,8 +78,11 @@ missing private coordination status as UNKNOWN."
 The optional helper writes under a safe observation path, defaulting to:
 
 ```bash
-${CODEX_HOME:-$HOME/.codex}/memories/task-observer
+${CODEX_HOME:-${CLAUDE_HOME:-$HOME/.codex}}/memories/task-observer
 ```
+
+If `CODEX_HOME` is unset and only a Claude home exists, the helper uses
+`${CLAUDE_HOME:-$HOME/.claude}/memories/task-observer`.
 
 Use it for local runs:
 

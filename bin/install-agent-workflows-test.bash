@@ -199,6 +199,21 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_file "$target/.agent-workflows-install.json"
 }
 
+test_symlink_mode_replaces_docs_directory_symlink() {
+  local tmp target external_docs
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  external_docs="$tmp/external-docs"
+  mkdir -p "$target" "$external_docs"
+  ln -s "$external_docs" "$target/docs"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
+
+  [[ -d "$target/docs" && ! -L "$target/docs" ]] || fail "expected real docs directory"
+  assert_symlink "$target/docs/review-finding-schema.md"
+  [[ ! -e "$external_docs/review-finding-schema.md" ]] || fail "should not write through pre-existing docs symlink"
+}
+
 test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   local tmp target source_doc
   tmp="$(mktemp -d)"
@@ -368,6 +383,7 @@ main() {
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
+    test_symlink_mode_replaces_docs_directory_symlink
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits

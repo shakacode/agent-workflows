@@ -118,6 +118,37 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_list_degrades_malformed_observation_shapes
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+      path = File.join(home, "memories", "task-observer", "observations", "2026-07-03.jsonl")
+      File.write(path, "null\n{\"kind\":\"gap\"}\n", mode: "w")
+
+      out = run!("list", env: { "CODEX_HOME" => home })
+
+      assert_includes out, "UNKNOWN"
+      assert_includes out, "unparseable"
+      refute_includes out, "NoMethodError"
+      refute_includes out, "KeyError"
+    end
+  end
+
+  def test_append_allows_sanitized_customer_and_payment_topic_words
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out = run!(
+        "append",
+        "--kind", "gap",
+        "--summary", "Payment webhook retries should use an idempotency key.",
+        "--source", "customer-facing-message-review",
+        env: { "CODEX_HOME" => home }
+      )
+
+      assert_includes out, "appended"
+    end
+  end
+
   def test_append_rejects_sensitive_material
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -132,6 +163,41 @@ class TaskObserverTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "sensitive material"
+    end
+  end
+
+  def test_append_rejects_regulated_data_shapes
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      ["patient name: Jane Doe", "123-45-6789", "4111 1111 1111 1111"].each do |summary|
+        out, status = capture_task_observer(
+          "append",
+          "--kind", "correction",
+          "--summary", summary,
+          "--source", "test",
+          env: { "CODEX_HOME" => home }
+        )
+
+        refute status.success?
+        assert_includes out, "sensitive material"
+      end
+    end
+  end
+
+  def test_append_allows_normal_pr_numbers_and_dates
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out = run!(
+        "append",
+        "--kind", "gap",
+        "--summary", "PR 69 was reviewed on 2026-07-05.",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      assert_includes out, "appended"
     end
   end
 
@@ -193,6 +259,8 @@ class TaskObserverTest < Minitest::Test
       run!("init", env: { "CODEX_HOME" => home })
 
       [
+        "sk-proj-#{'A' * 24}",
+        "sk-ant-api03-#{'A' * 24}",
         "sk_live_#{'A' * 24}",
         "xoxb-#{'A' * 24}",
         "eyJ#{'a' * 8}.eyJ#{'b' * 8}.#{'c' * 12}"
@@ -293,6 +361,24 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_encoded_sensitive_query_keys
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://example.com/report?api%5Fkey=abc",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+      assert_includes out, "sensitive query"
+    end
+  end
+
   def test_append_rejects_urls_with_sensitive_fragments
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -328,21 +414,50 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_non_http_private_urls_and_bare_hosts
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      [
+        "See ssh://internal.example.test/repo",
+        "Connect via internal-db.corp:5432"
+      ].each do |summary|
+        out, status = capture_task_observer(
+          "append",
+          "--kind", "correction",
+          "--summary", summary,
+          "--source", "test",
+          env: { "CODEX_HOME" => home }
+        )
+
+        refute status.success?
+        assert_includes out, "private URL"
+        assert_includes out, "private host"
+      end
+    end
+  end
+
   def test_append_rejects_hyphenated_internal_hosts
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
 
-      out, status = capture_task_observer(
-        "append",
-        "--kind", "correction",
-        "--summary", "See https://wiki-internal.example.com/runbook",
-        "--source", "test",
-        env: { "CODEX_HOME" => home }
-      )
+      [
+        "https://wiki-internal.example.com/runbook",
+        "https://internalapi.example.com/runbook",
+        "https://corpwiki.example.com/runbook"
+      ].each do |url|
+        out, status = capture_task_observer(
+          "append",
+          "--kind", "correction",
+          "--summary", "See #{url}",
+          "--source", "test",
+          env: { "CODEX_HOME" => home }
+        )
 
-      refute status.success?
-      assert_includes out, "private URL"
-      assert_includes out, "private host"
+        refute status.success?
+        assert_includes out, "private URL"
+        assert_includes out, "private host"
+      end
     end
   end
 

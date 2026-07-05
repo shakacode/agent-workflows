@@ -21,20 +21,21 @@ module TaskObserver
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
     /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
+    /\bsk-(?:proj-|ant-api\d+-)?[A-Za-z0-9_-]{20,}\b/,
     /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
     /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
     /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/,
-    /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)\b/i,
+    /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)(?:[\s_-]?(?:id|name|number|record))?\s*[:=]/i,
     /\b\d{3}-\d{2}-\d{4}\b/,
     /\b(?:\d[ -]*?){13,19}\b/
   ].freeze
   SENSITIVE_QUERY_KEYS = %w[
-    access_token auth authorization code key password secret sig signature token
+    access_key access_token api_key auth authorization code key password secret sig signature token
   ].freeze
   PRIVATE_HOST_PATTERNS = [
     /\Alocalhost\z/i,
-    /(?:^|[.-])internal(?:[.-]|$)/i,
-    /(?:^|[.-])corp(?:[.-]|$)/i,
+    /(?:^|[.-])internal[a-z0-9-]*(?:[.-]|$)/i,
+    /(?:^|[.-])corp[a-z0-9-]*(?:[.-]|$)/i,
     /\.(?:local|test)\z/i
   ].freeze
   PRIVATE_IP_RANGES = [
@@ -97,16 +98,34 @@ module TaskObserver
       File.readlines(path, chomp: true, encoding: "UTF-8").filter_map do |line|
         next if line.strip.empty?
 
-        JSON.parse(line)
+        normalize_record(JSON.parse(line), path)
       rescue JSON::ParserError
-        {
-          "observed_at" => "UNKNOWN",
-          "kind" => "unparseable",
-          "skill" => nil,
-          "summary" => "Could not parse #{path}"
-        }
+        unparseable_record(path)
       end
     end
+  end
+
+  def normalize_record(record, path)
+    return unparseable_record(path) unless record.is_a?(Hash)
+    return unparseable_record(path) unless %w[observed_at kind summary].all? { |key| record.key?(key) }
+
+    {
+      "observed_at" => record.fetch("observed_at"),
+      "kind" => record.fetch("kind"),
+      "skill" => record["skill"],
+      "summary" => record.fetch("summary"),
+      "source" => record["source"],
+      "update_mode" => record["update_mode"]
+    }
+  end
+
+  def unparseable_record(path)
+    {
+      "observed_at" => "UNKNOWN",
+      "kind" => "unparseable",
+      "skill" => nil,
+      "summary" => "Could not parse #{path}"
+    }
   end
 
   def staged_update_count
@@ -173,15 +192,16 @@ module TaskObserver
     return if text.to_s.empty?
     raise Error, "observation contains an invalid URL; summarize without the URL" if malformed_url_encoding?(text)
     raise Error, "observation appears to contain a private URL (URL credentials)" if url_userinfo?(text)
+    raise Error, "observation appears to contain a private URL (private host)" if bare_private_host?(text)
 
-    URI::DEFAULT_PARSER.extract(text, %w[http https]).each do |url|
+    URI::DEFAULT_PARSER.extract(text).each do |url|
       uri = URI.parse(url)
       private_host = private_host?(uri.host)
       sensitive_path = SENSITIVE_PATTERNS.any? { |pattern| decoded_path(uri).match?(pattern) }
       query_keys = form_keys(uri.query)
       fragment_keys = form_keys(uri.fragment)
-      sensitive_query = (query_keys & SENSITIVE_QUERY_KEYS).any?
-      sensitive_fragment = (fragment_keys & SENSITIVE_QUERY_KEYS).any?
+      sensitive_query = query_keys.any? { |key| sensitive_form_key?(key) }
+      sensitive_fragment = fragment_keys.any? { |key| sensitive_form_key?(key) }
       reasons = []
       reasons << "private host" if private_host
       reasons << "sensitive query" if sensitive_query
@@ -221,11 +241,21 @@ module TaskObserver
 
   def ambiguous_ip_literal?(host)
     parts = host.split(".")
-    return true if host.match?(/\A\d+\z/)
+    return true if host.match?(/\A\d{8,}\z/)
 
     parts.length > 1 &&
       parts.all? { |part| part.match?(/\A\d+\z/) } &&
       parts.any? { |part| part.length > 1 && part.start_with?("0") }
+  end
+
+  def bare_private_host?(text)
+    text.to_s.scan(/[A-Za-z0-9._-]+(?::\d{2,5})?|\[[^\]\s]+\](?::\d{2,5})?/).any? do |token|
+      host = token.delete_prefix("[").sub(/\]\z/, "").sub(/\]:\d{2,5}\z/, "")
+      host = host.sub(/:\d{2,5}\z/, "")
+      next false unless host.include?(".") || host.include?(":") || host.match?(/\A\d+\z/)
+
+      private_host?(host)
+    end
   end
 
   def decoded_path(uri)
@@ -237,7 +267,11 @@ module TaskObserver
   def form_keys(component)
     return [] if component.to_s.empty?
 
-    URI.decode_www_form(component).map { |key, _value| key.downcase }
+    URI.decode_www_form(component).map { |key, _value| key.downcase.tr("-", "_") }
+  end
+
+  def sensitive_form_key?(key)
+    SENSITIVE_QUERY_KEYS.include?(key)
   end
 
   def parse_append_args(args)

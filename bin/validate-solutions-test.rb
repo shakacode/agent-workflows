@@ -120,6 +120,14 @@ class ValidateSolutionsTest < Minitest::Test
     end
   end
 
+  def test_unquoted_date_with_inline_comment_passes
+    with_solution_root do |root|
+      write_solution(root, "commented-date.md", valid_solution.sub('date: "2026-07-02"', "date: 2026-07-02  # learned date"))
+
+      assert_empty ValidateSolutions.validate(root)
+    end
+  end
+
   def test_missing_related_file_fails
     with_solution_root do |root|
       write_solution(root, "missing-related-file.md", valid_solution.sub("workflows/pr-processing.md", "missing/path.md"))
