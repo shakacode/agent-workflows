@@ -115,7 +115,7 @@ class TaskObserverTest < Minitest::Test
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
 
-      ["session_cookie=abc123", "private_key=abc123"].each do |summary|
+      ["session_cookie=abc123", "private_key=abc123", "session cookie: abc123", "private key: abc123"].each do |summary|
         out, status = capture_task_observer(
           "append",
           "--kind", "correction",

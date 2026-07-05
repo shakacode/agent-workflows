@@ -84,6 +84,18 @@ class AutoreviewTargetStateTest < Minitest::Test
     assert_empty result["review_targets"]
   end
 
+  def test_dirty_only_work_does_not_require_pr_base_probe
+    result = classify(
+      dirty: true,
+      pr: { "state" => "unknown", "reason" => "gh auth failed" },
+      branch_diff: false
+    )
+
+    assert_equal "LOCAL_DIRTY_ONLY", result["state"]
+    assert_equal "ready", result["disposition"]
+    assert_equal ["codex review --uncommitted"], commands(result)
+  end
+
   def test_pr_base_probe_failure_takes_precedence_over_base_diff_failure
     result = classify(
       pr: { "state" => "unknown", "reason" => "gh auth failed" },

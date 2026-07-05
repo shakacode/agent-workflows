@@ -14,7 +14,7 @@ module TaskObserver
 
   ALLOWED_KINDS = %w[correction gap skill-improvement simplification cross-cutting self-improvement].freeze
   SENSITIVE_PATTERNS = [
-    /(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|session[_-]?cookie)\s*[:=]/i,
+    /(?:password|passwd|secret|token|api[\s_-]?key|access[\s_-]?key|private[\s_-]?key|session[\s_-]?cookie)\s*[:=]/i,
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
     /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)\b/i,

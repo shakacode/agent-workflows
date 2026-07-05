@@ -36,14 +36,14 @@ module AutoreviewTargetState
     return detached_result(facts) unless facts.fetch(:attached)
     return default_branch_result(branch, configured_base) if branch == configured_base && branch_diff == true
 
-    if pr["state"] == "unknown"
-      unknown_pr_result(pr)
-    elsif branch_diff == :unknown
-      unknown_base_result(base)
+    if branch_diff == :unknown
+      pr["state"] == "unknown" ? unknown_pr_result(pr) : unknown_base_result(base)
     elsif dirty && branch_diff == true
-      branch_plus_dirty_result(base, pr)
+      pr["state"] == "unknown" ? unknown_pr_result(pr) : branch_plus_dirty_result(base, pr)
     elsif dirty
       local_dirty_result(facts)
+    elsif pr["state"] == "unknown"
+      unknown_pr_result(pr)
     elsif branch_diff
       branch_result(base, pr)
     else
