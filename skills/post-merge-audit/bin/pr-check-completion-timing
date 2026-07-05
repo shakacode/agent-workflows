@@ -107,33 +107,40 @@ module PrCheckCompletionTiming
     late = []
     pending = []
     failing = []
+    timing_unknown = []
     selected.each do |row|
       bucket = row.fetch("bucket", "").to_s
       completed_at_raw = row.fetch("completedAt", "").to_s
-      pending << row_summary(row) if bucket == "pending" || completed_at_raw.empty?
-      failing << row_summary(row) if %w[fail cancel].include?(bucket)
-      next if completed_at_raw.empty?
+      summary = row_summary(row)
+      pending << summary if bucket == "pending"
+      failing << summary if %w[fail cancel].include?(bucket)
+      if completed_at_raw.empty?
+        timing_unknown << summary unless bucket == "pending" || %w[fail cancel].include?(bucket)
+        next
+      end
 
-      late << row_summary(row).merge("completed_at" => completed_at_raw) if Time.iso8601(completed_at_raw) > merged_at
+      late << summary.merge("completed_at" => completed_at_raw) if Time.iso8601(completed_at_raw) > merged_at
     end
 
     {
       "pr" => pr_number.to_i,
-      "verdict" => timing_verdict(late, pending, failing),
+      "verdict" => timing_verdict(late, pending, failing, timing_unknown),
       "merged_at" => merged_at_raw,
       "selected_count" => selected.length,
       "late" => late,
       "pending" => pending,
-      "failing" => failing
+      "failing" => failing,
+      "timing_unknown" => timing_unknown
     }
   rescue ArgumentError => e
     unknown_result(pr_number, "invalid timestamp: #{e.message}")
   end
 
-  def timing_verdict(late, pending, failing)
+  def timing_verdict(late, pending, failing, timing_unknown)
+    return "SELECTED_CHECKS_FAILED" if failing.any?
     return "LATE_SELECTED_CHECKS" if late.any?
     return "SELECTED_CHECKS_PENDING" if pending.any?
-    return "SELECTED_CHECKS_FAILED" if failing.any?
+    return "UNKNOWN" if timing_unknown.any?
 
     "NO_LATE_SELECTED_CHECKS"
   end
@@ -177,6 +184,7 @@ module PrCheckCompletionTiming
       "late" => [],
       "pending" => [],
       "failing" => [],
+      "timing_unknown" => [],
       "reason" => reason
     }
   end

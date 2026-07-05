@@ -124,19 +124,32 @@ class PrCiReadinessCliTest < Minitest::Test
     run_cases = runs.map do |run_id, payload|
       run_json = JSON.generate(payload.fetch(:run))
       jobs_json = JSON.generate("total_count" => payload.fetch(:jobs).length, "jobs" => payload.fetch(:jobs))
+      jobs_case =
+        if payload.fetch(:jobs_error, false)
+          <<~BASH
+            if [[ "$*" = *"actions/runs/#{run_id}/jobs"* ]]; then
+              echo 'jobs should not be fetched for this run' >&2
+              exit 1
+            fi
+          BASH
+        else
+          <<~BASH
+            if [[ "$*" = *"actions/runs/#{run_id}/jobs"* ]]; then
+              cat <<'JSON'
+            #{jobs_json}
+            JSON
+              exit 0
+            fi
+          BASH
+        end
       <<~BASH
-          if [[ "$*" = *"actions/runs/#{run_id}/jobs"* ]]; then
-            cat <<'JSON'
-        #{jobs_json}
-        JSON
-            exit 0
-          fi
-          if [[ "$*" = *"actions/runs/#{run_id}"* ]]; then
-            cat <<'JSON'
+        #{jobs_case}
+        if [[ "$*" = *"actions/runs/#{run_id}"* ]]; then
+          cat <<'JSON'
         #{run_json}
         JSON
-            exit 0
-          fi
+          exit 0
+        fi
       BASH
     end.join("\n")
 
@@ -387,6 +400,28 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_empty data.fetch("requested_hosted").fetch("pending")
       assert_empty data.fetch("requested_hosted").fetch("failing")
       assert_empty data.fetch("requested_hosted").fetch("stale")
+    end
+  end
+
+  def test_requested_hosted_success_does_not_fetch_jobs
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: [],
+          jobs_error: true
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data["verdict"]
+      assert_empty data.fetch("requested_hosted").fetch("unknown")
     end
   end
 

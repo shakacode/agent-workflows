@@ -348,6 +348,8 @@ module PrCiReadiness
       end
 
       classify_status_row(summary, "run", run_id, run_record(run_id, run))
+      return if run.fetch("status", "").to_s == "completed" && successful_conclusion?(run.fetch("conclusion", "").to_s)
+
       fetch_actions_jobs(repo, run_id).each do |job|
         classify_status_row(summary, "job", run_id, run_record(run_id, job))
       end

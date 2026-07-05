@@ -123,6 +123,42 @@ class PrCheckCompletionTimingTest < Minitest::Test
     end
   end
 
+  def test_failing_status_api_check_without_completed_at_is_failed_not_pending
+    pr_json = JSON.generate("number" => 123, "mergedAt" => "2026-07-03T09:00:00Z")
+    checks_json = JSON.generate([
+                                  { "name" => "hosted status", "workflow" => "",
+                                    "bucket" => "fail", "completedAt" => "" }
+                                ])
+
+    with_fake_gh(pr_json:, checks_json:, checks_status: 1) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--select-name", "hosted")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "SELECTED_CHECKS_FAILED", data.fetch("verdict")
+      assert_equal(["hosted status"], data.fetch("failing").map { |row| row.fetch("name") })
+      assert_empty data.fetch("pending")
+      assert_empty data.fetch("timing_unknown")
+    end
+  end
+
+  def test_passing_status_api_check_without_completed_at_is_timing_unknown
+    pr_json = JSON.generate("number" => 123, "mergedAt" => "2026-07-03T09:00:00Z")
+    checks_json = JSON.generate([
+                                  { "name" => "hosted status", "workflow" => "",
+                                    "bucket" => "pass", "completedAt" => "" }
+                                ])
+
+    with_fake_gh(pr_json:, checks_json:) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--select-name", "hosted")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal(["hosted status"], data.fetch("timing_unknown").map { |row| row.fetch("name") })
+      assert_empty data.fetch("pending")
+      assert_empty data.fetch("failing")
+    end
+  end
+
   def test_cancelled_selected_check_is_non_clean_even_before_merge
     pr_json = JSON.generate("number" => 123, "mergedAt" => "2026-07-03T09:00:00Z")
     checks_json = JSON.generate([

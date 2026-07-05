@@ -139,8 +139,17 @@ module CloseoutEvidenceReplay
       end
     end
 
+    verdict =
+      if missing.any?
+        "UNKNOWN"
+      elsif findings.any? { |finding| finding.fetch("disposition", "") == "waived" }
+        "WAIVED"
+      else
+        "SATISFIED"
+      end
+
     {
-      "verdict" => missing.empty? ? "SATISFIED" : "UNKNOWN",
+      "verdict" => verdict,
       "fields" => fields,
       "findings" => findings,
       "missing" => missing
@@ -173,7 +182,7 @@ module CloseoutEvidenceReplay
     verdicts = results.map { |result| result.fetch("verdict") }
     return "BLOCKED" if verdicts.include?("BLOCKED")
     return "UNKNOWN" if verdicts.include?("UNKNOWN")
-    return "WAIVED" if verdicts.all? { |verdict| verdict == "WAIVED" }
+    return "WAIVED" if verdicts.include?("WAIVED")
     return "NOT_APPLICABLE" if verdicts.all? { |verdict| verdict == "NOT_APPLICABLE" }
 
     "SATISFIED"

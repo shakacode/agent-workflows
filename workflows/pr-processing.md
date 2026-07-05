@@ -577,8 +577,10 @@ finding: url=<review/thread/check URL> | severity=<P0|P1|P2|Must-Fix|BLOCKING> |
 Resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /
 repo-local chain, then run
 `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay" <file-or->` to
-replay these markers and report `SATISFIED`, `BLOCKED`, or `UNKNOWN` for
-post-merge audits.
+replay these markers and report `SATISFIED`, `WAIVED`, `NOT_APPLICABLE`,
+`BLOCKED`, or `UNKNOWN` for post-merge audits. Treat `SATISFIED`, `WAIVED`,
+and `NOT_APPLICABLE` as replayed terminal evidence; carry `BLOCKED` and
+`UNKNOWN` into the audit findings for operator action.
 
 `Release-blocking status` is derived from `QA lane status`: `satisfied` ->
 `clear`, `blocked` -> `blocked`, `waived` -> `waived`, `not_applicable` ->

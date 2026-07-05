@@ -47,7 +47,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- priority-finding-dispositions v1
       head_sha: abc123
       finding: url=https://example.test/review/1 | severity=P1 | disposition=fixed | evidence=https://example.test/pr/123#discussion_r1
-      finding: url=https://example.test/review/2 | severity=Must-Fix | disposition=waived | evidence=https://example.test/pr/123#discussion_r2 | waiver=https://example.test/pr/123#issuecomment-1
+      finding: url=https://example.test/review/2 | severity=Must-Fix | disposition=fixed | evidence=https://example.test/pr/123#discussion_r2
       -->
     MARKDOWN
 
@@ -55,6 +55,50 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
     assert_equal "SATISFIED", data.fetch("priority_finding_dispositions").fetch("verdict")
     assert_equal 2, data.fetch("priority_finding_dispositions").fetch("findings").length
+  end
+
+  def test_waived_qa_marker_preserves_waived_overall
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: yes
+      status: waived
+      tested_at: PR #123 head abc123
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: not applicable
+      findings: waived by maintainer
+      release_blocking: waived
+      process_gap_disposition: schema
+      -->
+    MARKDOWN
+
+    assert_equal "WAIVED", data.fetch("overall_verdict")
+    assert_equal "WAIVED", data.fetch("qa_evidence").fetch("verdict")
+    assert_equal "NOT_APPLICABLE", data.fetch("priority_finding_dispositions").fetch("verdict")
+  end
+
+  def test_waived_priority_marker_preserves_waived_overall
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      tested_at: PR #123 head abc123
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: not applicable
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      -->
+
+      <!-- priority-finding-dispositions v1
+      head_sha: abc123
+      finding: url=https://example.test/review/2 | severity=Must-Fix | disposition=waived | evidence=https://example.test/pr/123#discussion_r2 | waiver=https://example.test/pr/123#issuecomment-1
+      -->
+    MARKDOWN
+
+    assert_equal "WAIVED", data.fetch("overall_verdict")
+    assert_equal "WAIVED", data.fetch("priority_finding_dispositions").fetch("verdict")
   end
 
   def test_valid_qa_marker_without_priority_marker_is_satisfied
