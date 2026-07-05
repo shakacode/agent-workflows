@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "ipaddr"
 require "json"
 require "optparse"
 require "time"
@@ -13,6 +14,7 @@ module TaskObserver
   module_function
 
   ALLOWED_KINDS = %w[correction gap skill-improvement simplification cross-cutting self-improvement].freeze
+  MAX_FIELD_LENGTH = 500
   SENSITIVE_PATTERNS = [
     /(?:password|passwd|secret|token|api[\s_-]?key|access[\s_-]?key|private[\s_-]?key|session[\s_-]?cookie)\s*[:=]/i,
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
@@ -26,14 +28,19 @@ module TaskObserver
   ].freeze
   PRIVATE_HOST_PATTERNS = [
     /\Alocalhost\z/i,
-    /\A127\./,
-    /\A10\./,
-    /\A172\.(?:1[6-9]|2\d|3[01])\./,
-    /\A192\.168\./,
     /(?:^|\.)internal(?:\.|$)/i,
     /(?:^|\.)corp(?:\.|$)/i,
     /\.(?:local|test)\z/i
   ].freeze
+  PRIVATE_IP_RANGES = [
+    "10.0.0.0/8",
+    "127.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "::1/128",
+    "fc00::/7",
+    "fe80::/10"
+  ].map { |range| IPAddr.new(range) }.freeze
 
   def memory_root
     explicit = ENV["TASK_OBSERVER_HOME"].to_s.strip
@@ -107,8 +114,10 @@ module TaskObserver
     raise Error, "--kind is required" if kind.empty?
     raise Error, "--kind must be one of: #{ALLOWED_KINDS.join(', ')}" unless ALLOWED_KINDS.include?(kind)
     raise Error, "--summary is required" if summary.empty?
-    raise Error, "--summary must be 500 characters or fewer" if summary.length > 500
+    raise Error, "--summary must be #{MAX_FIELD_LENGTH} characters or fewer" if summary.length > MAX_FIELD_LENGTH
     raise Error, "--source is required" if source.empty?
+    raise Error, "--source must be #{MAX_FIELD_LENGTH} characters or fewer" if source.length > MAX_FIELD_LENGTH
+    raise Error, "--skill must be #{MAX_FIELD_LENGTH} characters or fewer" if skill.length > MAX_FIELD_LENGTH
 
     check_privacy!(summary)
     check_privacy!(source)
@@ -144,10 +153,11 @@ module TaskObserver
   def check_privacy!(text)
     return if text.to_s.empty?
     raise Error, "observation contains an invalid URL; summarize without the URL" if malformed_url_encoding?(text)
+    raise Error, "observation appears to contain a private URL (URL credentials)" if url_userinfo?(text)
 
     URI::DEFAULT_PARSER.extract(text, %w[http https]).each do |url|
       uri = URI.parse(url)
-      private_host = PRIVATE_HOST_PATTERNS.any? { |pattern| uri.host.to_s.match?(pattern) }
+      private_host = private_host?(uri.host)
       sensitive_path = SENSITIVE_PATTERNS.any? { |pattern| decoded_path(uri).match?(pattern) }
       query_keys = uri.query.to_s.empty? ? [] : URI.decode_www_form(uri.query).map { |key, _value| key.downcase }
       sensitive_query = (query_keys & SENSITIVE_QUERY_KEYS).any?
@@ -170,6 +180,20 @@ module TaskObserver
 
   def malformed_url_encoding?(text)
     text.match?(%r{https?://\S*%(?![0-9A-Fa-f]{2})})
+  end
+
+  def url_userinfo?(text)
+    text.match?(%r{\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@})
+  end
+
+  def private_host?(host)
+    normalized = host.to_s.delete_prefix("[").delete_suffix("]")
+    return true if PRIVATE_HOST_PATTERNS.any? { |pattern| normalized.match?(pattern) }
+
+    ip = IPAddr.new(normalized)
+    PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
+  rescue IPAddr::InvalidAddressError
+    false
   end
 
   def decoded_path(uri)

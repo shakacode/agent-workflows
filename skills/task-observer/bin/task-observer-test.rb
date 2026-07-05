@@ -165,6 +165,36 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_overlong_source_and_skill_before_privacy_scan
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "gap",
+        "--summary", "A valid sanitized summary.",
+        "--source", "s" * 501,
+        "--skill", "https://127.0.0.1/private",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "--source must be 500 characters or fewer"
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "gap",
+        "--summary", "A valid sanitized summary.",
+        "--source", "test",
+        "--skill", "k" * 501,
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "--skill must be 500 characters or fewer"
+    end
+  end
+
   def test_append_rejects_private_urls_with_query_strings
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -231,6 +261,42 @@ class TaskObserverTest < Minitest::Test
       refute status.success?
       assert_includes out, "private URL"
       assert_includes out, "URL credentials"
+    end
+  end
+
+  def test_append_rejects_non_http_url_userinfo_credentials
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See ssh://user:secret@example.com/repo",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+      assert_includes out, "URL credentials"
+    end
+  end
+
+  def test_append_rejects_private_ipv6_hosts
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://[::1]/report",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+      assert_includes out, "private host"
     end
   end
 

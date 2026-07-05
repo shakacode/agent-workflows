@@ -192,10 +192,26 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/workflows"
   assert_file "$target/docs/personal.md"
   assert_symlink "$target/docs/review-finding-schema.md"
-  assert_symlink "$target/docs/solutions"
+  [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
+  assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
   assert_file "$target/.agent-workflows-install.json"
+}
+
+test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
+  local tmp target source_doc
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  source_doc="$ROOT/docs/solutions/README.md"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
+  assert_symlink "$target/docs/solutions/README.md"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+
+  assert_file "$source_doc"
+  assert_file "$target/docs/solutions/README.md"
+  [[ ! -L "$target/docs/solutions/README.md" ]] || fail "copy mode should replace pack doc symlink with a real copy"
 }
 
 test_status_reports_not_installed_and_check_failed_explicitly() {
@@ -352,6 +368,7 @@ main() {
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
+    test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision

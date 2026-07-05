@@ -142,11 +142,24 @@ write_metadata() {
   mv "$metadata_tmp" "$metadata_path"
 }
 
+ensure_real_directory() {
+  local directory="$1"
+
+  if [[ -L "$directory" ]]; then
+    rm -f "$directory"
+  fi
+  if [[ -e "$directory" && ! -d "$directory" ]]; then
+    echo "Refusing to replace non-directory path: $directory" >&2
+    exit 1
+  fi
+  mkdir -p "$directory"
+}
+
 copy_children_preserving_unrelated() {
   local source_dir="$1"
   local target_dir="$2"
   local source_path destination
-  mkdir -p "$target_dir"
+  ensure_real_directory "$target_dir"
 
   for source_path in "$source_dir"/*; do
     [[ -e "$source_path" ]] || continue
@@ -158,15 +171,24 @@ copy_children_preserving_unrelated() {
 
 copy_pack_docs() {
   local docs_target="$1"
-  mkdir -p "$docs_target" "$docs_target/solutions"
-  install -m 0644 "$repo_root/docs/review-finding-schema.md" "$docs_target/review-finding-schema.md"
+  local schema_destination="$docs_target/review-finding-schema.md"
+  ensure_real_directory "$docs_target"
+  ensure_real_directory "$docs_target/solutions"
+  if [[ -L "$schema_destination" ]]; then
+    rm -f "$schema_destination"
+  fi
+  if [[ -e "$schema_destination" && ! -f "$schema_destination" ]]; then
+    echo "Refusing to replace non-file path: $schema_destination" >&2
+    exit 1
+  fi
+  install -m 0644 "$repo_root/docs/review-finding-schema.md" "$schema_destination"
   copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
 }
 
 link_pack_docs() {
   local docs_target="$1"
-  local destination
-  mkdir -p "$docs_target"
+  local destination source_path
+  mkdir -p "$docs_target" "$docs_target/solutions"
 
   destination="$docs_target/review-finding-schema.md"
   if [[ -e "$destination" && ! -L "$destination" ]]; then
@@ -175,12 +197,15 @@ link_pack_docs() {
   fi
   ln -sfn "$repo_root/docs/review-finding-schema.md" "$destination"
 
-  destination="$docs_target/solutions"
-  if [[ -e "$destination" && ! -L "$destination" ]]; then
-    echo "Refusing to replace non-symlink path: $destination" >&2
-    exit 1
-  fi
-  ln -sfn "$repo_root/docs/solutions" "$destination"
+  for source_path in "$repo_root"/docs/solutions/*; do
+    [[ -e "$source_path" ]] || continue
+    destination="$docs_target/solutions/$(basename "$source_path")"
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-symlink path: $destination" >&2
+      exit 1
+    fi
+    ln -sfn "$source_path" "$destination"
+  done
 }
 
 while [[ $# -gt 0 ]]; do
@@ -230,12 +255,23 @@ host="${resolved%%:*}"
 target="${resolved#*:}"
 
 if [[ "$mode" = "copy" ]]; then
-  mkdir -p "$target/skills" "$target/workflows" "$target/docs" "$target/bin"
+  ensure_real_directory "$target/skills"
+  ensure_real_directory "$target/workflows"
+  ensure_real_directory "$target/docs"
+  ensure_real_directory "$target/bin"
   copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
   copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
   copy_pack_docs "$target/docs"
   for helper in "${bin_helpers[@]}"; do
-    install -m 0755 "$repo_root/bin/$helper" "$target/bin/$helper"
+    destination="$target/bin/$helper"
+    if [[ -L "$destination" ]]; then
+      rm -f "$destination"
+    fi
+    if [[ -e "$destination" && ! -f "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
+    install -m 0755 "$repo_root/bin/$helper" "$destination"
   done
 else
   mkdir -p "$target/skills" "$target/bin"

@@ -90,21 +90,9 @@ AUTOREVIEW_SKILL_DIR="${AUTOREVIEW_SKILL_DIR:-.agents/skills/autoreview}"
 | `PR_BASE_UNKNOWN` | PR base probing failed for reasons other than "no PR". | UNKNOWN | Resolve `gh` auth/network/state before selecting a branch target. |
 | `BASE_DIFF_UNKNOWN` | Git cannot compare `origin/$base...HEAD`. | UNKNOWN | Fetch or repair the base ref before selecting a branch target. |
 
-- **Dirty local work** (unstaged/staged/untracked in the working tree): review the working
-  tree with `codex review --uncommitted`. Use this only when there is an actual local patch.
-- **Branch / PR work** (committed, maybe pushed): review the branch diff against its configured
-  base with `codex review --base "origin/$base"` or the PR's real base.
-  If an open PR exists, use its real base instead of assuming the configured value:
-
-  ```bash
-  base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
-  git diff "origin/$base...HEAD" --stat
-  ```
-
-- **Branch plus dirty local work**: either commit the intended local changes before the final
-  branch review, or run two reviews: one branch review for committed changes and one
-  `--uncommitted` review for staged/unstaged/untracked local changes. Staging alone does not put
-  changes into the branch diff. Do not let untracked files fall out of scope.
+The state table is the source of truth for dirty local work, branch/PR work,
+and branch plus dirty local work. Do not duplicate those target decisions
+elsewhere in this skill.
 <!-- host-branch: available-tool end -->
 - **Single landed commit** (already on the configured base branch, or one commit in a stack): review
   that commit's diff (`git show <sha>`). Reviewing a clean base branch against its remote is an
