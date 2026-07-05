@@ -14,7 +14,7 @@ module TaskObserver
 
   ALLOWED_KINDS = %w[correction gap skill-improvement simplification cross-cutting self-improvement].freeze
   SENSITIVE_PATTERNS = [
-    /(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)\s*[:=]/i,
+    /(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|session[_-]?cookie)\s*[:=]/i,
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
     /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)\b/i,
@@ -161,10 +161,6 @@ module TaskObserver
     return unless SENSITIVE_PATTERNS.any? { |pattern| text.match?(pattern) }
 
     raise Error, "observation appears to contain sensitive material; summarize without secrets or regulated data"
-  end
-
-  def malformed_query?(query)
-    query.match?(/%(?![0-9A-Fa-f]{2})/)
   end
 
   def malformed_url_encoding?(text)

@@ -84,6 +84,17 @@ class AutoreviewTargetStateTest < Minitest::Test
     assert_empty result["review_targets"]
   end
 
+  def test_pr_base_probe_failure_takes_precedence_over_base_diff_failure
+    result = classify(
+      pr: { "state" => "unknown", "reason" => "gh auth failed" },
+      branch_diff: :unknown
+    )
+
+    assert_equal "PR_BASE_UNKNOWN", result["state"]
+    assert_equal "UNKNOWN", result["disposition"]
+    assert_empty result["review_targets"]
+  end
+
   def test_base_diff_failure_is_unknown
     result = classify(branch_diff: :unknown)
 

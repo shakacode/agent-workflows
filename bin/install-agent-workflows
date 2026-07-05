@@ -15,7 +15,8 @@ Default targets:
 Installed paths:
   <target>/skills/*
   <target>/workflows/*
-  <target>/docs/*
+  <target>/docs/review-finding-schema.md
+  <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
@@ -155,6 +156,13 @@ copy_children_preserving_unrelated() {
   done
 }
 
+copy_pack_docs() {
+  local docs_target="$1"
+  mkdir -p "$docs_target" "$docs_target/solutions"
+  install -m 0644 "$repo_root/docs/review-finding-schema.md" "$docs_target/review-finding-schema.md"
+  copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -205,7 +213,7 @@ if [[ "$mode" = "copy" ]]; then
   mkdir -p "$target/skills" "$target/workflows" "$target/docs" "$target/bin"
   copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
   copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
-  copy_children_preserving_unrelated "$repo_root/docs" "$target/docs"
+  copy_pack_docs "$target/docs"
   for helper in "${bin_helpers[@]}"; do
     install -m 0755 "$repo_root/bin/$helper" "$target/bin/$helper"
   done

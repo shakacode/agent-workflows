@@ -107,7 +107,8 @@ The installer writes:
 
 - `<target>/skills/*`
 - `<target>/workflows/*`
-- `<target>/docs/*`
+- `<target>/docs/review-finding-schema.md`
+- `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
@@ -115,8 +116,9 @@ The installer writes:
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`
 
-Copy mode replaces only this pack's skill, workflow, and docs names; it
-preserves unrelated files already present in the target agent home.
+Copy mode replaces this pack's skill and workflow names plus the pack-owned docs
+listed above; it preserves unrelated files already present in the target agent
+home, including generic consumer-owned docs under `<target>/docs`.
 
 The metadata file records host, mode, source clone, pack version, source
 revision, branch, remote, and install time. The status and upgrade helpers use

@@ -111,6 +111,25 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_session_cookie_and_private_key_assignments
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      ["session_cookie=abc123", "private_key=abc123"].each do |summary|
+        out, status = capture_task_observer(
+          "append",
+          "--kind", "correction",
+          "--summary", summary,
+          "--source", "test",
+          env: { "CODEX_HOME" => home }
+        )
+
+        refute status.success?
+        assert_includes out, "sensitive material"
+      end
+    end
+  end
+
   def test_append_rejects_missing_required_fields_without_stack_trace
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
