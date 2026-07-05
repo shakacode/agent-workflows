@@ -67,6 +67,7 @@ git diff --cached --stat
 git ls-files --others --exclude-standard
 ```
 
+<!-- host-branch: available-tool start -->
 Use these states when deciding the target. If available, resolve
 `AUTOREVIEW_SKILL_DIR` to the installed or repo-local directory containing this
 `SKILL.md`, then run the read-only helper:
@@ -89,7 +90,6 @@ AUTOREVIEW_SKILL_DIR="${AUTOREVIEW_SKILL_DIR:-.agents/skills/autoreview}"
 | `PR_BASE_UNKNOWN` | PR base probing failed for reasons other than "no PR". | UNKNOWN | Resolve `gh` auth/network/state before selecting a branch target. |
 | `BASE_DIFF_UNKNOWN` | Git cannot compare `origin/$base...HEAD`. | UNKNOWN | Fetch or repair the base ref before selecting a branch target. |
 
-<!-- host-branch: available-tool start -->
 - **Dirty local work** (unstaged/staged/untracked in the working tree): review the working
   tree with `codex review --uncommitted`. Use this only when there is an actual local patch.
 - **Branch / PR work** (committed, maybe pushed): review the branch diff against its configured
