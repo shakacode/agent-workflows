@@ -14,6 +14,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_SKILL_CLOSING_DEFAULT = "Create follow-up issues by default unless the user explicitly asked for report-only or no issue creation, issue creation is blocked, or there are no issue-worthy findings."
   REQUIRED_PR_PROCESSING_EXCEPTION = "Post-merge batch audit follow-up issues are governed by the Post-Merge Batch Audit section, not this ordinary follow-up tracking default; after dedupe, the coordinator creates those follow-up issues by default unless the user explicitly asked for report-only or no issue creation."
   REQUIRED_ISSUE_CREATION_ACCOUNTING = "issue-creation accounting: parent issue URL if created, child issue URLs, skipped duplicates with existing issue URLs, changelog recommendation, and any planned issue that could not be created"
+  REQUIRED_UNAVAILABLE_COORDINATION_ASK = "ask before deep audit whether to wait for backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope"
 
   REQUIRED_FILES = [
     "skills/post-merge-audit/SKILL.md",
@@ -102,6 +103,15 @@ class PostMergeAuditPolicyTest < Minitest::Test
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_ISSUE_CREATION_ACCOUNTING
+    end
+  end
+
+  def test_unavailable_coordination_scope_requires_user_choice_before_deep_audit
+    REQUIRED_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      normalized_text = text.gsub(/\s+/, " ")
+
+      assert_includes normalized_text, REQUIRED_UNAVAILABLE_COORDINATION_ASK
     end
   end
 end

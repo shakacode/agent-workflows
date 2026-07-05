@@ -1806,12 +1806,12 @@ deep audit because modes imply different scope and base selection.
    parked, or done-unmerged lanes before reducing scope to merged PRs. If
    candidate discovery cannot verify backend setup or access, `UNKNOWN (setup)`
    or `UNKNOWN (access)` takes precedence over
-   `UNKNOWN (needs batch confirmation)`; report that batch id confirmation is
-   still needed after backend recovery only when the id was not already obvious
-   from the current visible chat. Keep advisory claim rows marked
+   `UNKNOWN (needs batch confirmation)`; report the verification blocker and ask
+   before deep audit whether to wait for backend recovery or proceed with an
+   explicitly `UNKNOWN` worked-issue scope. Keep advisory claim rows marked
    `UNKNOWN` as needed, and report the command, permission, or batch id
-   confirmation needed to recover the worked issue list instead of identifying a
-   confirmed batch subset from PR links or heuristics.
+   confirmation/verification needed to recover the worked issue list instead of
+   identifying a confirmed batch subset from PR links or heuristics.
    If the batch id itself is unknown, scope advisory public-claim discovery to
    issues and open PRs active within the audit time window, and use each claim's
    `batch:` field only to surface candidate ids until the user confirms one.

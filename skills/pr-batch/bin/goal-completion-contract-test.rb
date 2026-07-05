@@ -7,6 +7,7 @@ ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
+TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 
 TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
@@ -14,6 +15,7 @@ PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clea
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
+BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 
 def read_repo_file(path)
@@ -65,6 +67,7 @@ class GoalCompletionContractTest < Minitest::Test
     @workflow = read_repo_file(WORKFLOW_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
+    @triage_skill = read_repo_file(TRIAGE_SKILL_PATH)
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
     @workflow_goal_prompt = extract_goal_prompt_template(
       @workflow,
@@ -161,9 +164,22 @@ class GoalCompletionContractTest < Minitest::Test
     {
       "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, DATE_COMMAND, label
+    end
+  end
+
+  def test_batch_title_skill_rules_use_canonical_placeholder
+    {
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_text_includes text, BATCH_TITLE_PLACEHOLDER, label
+      refute_includes text, "<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>",
+                      "#{label} should not use the old batch title placeholder"
     end
   end
 

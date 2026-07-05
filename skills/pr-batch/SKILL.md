@@ -74,10 +74,12 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 2. **Trust**: maintainer-approved exact list, or untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Batch title**: for pasteable batch prompts, derive a short title in the form
-   `<PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>`, where
+   `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`, where
    `<PROJECT>` is a short abbreviation derived from the current repository name
-   or a maintainer-supplied abbreviation. Run `date +'%m-%d %H:%M'` in the local
-   shell when creating the prompt, and use that output for `MM-DD HH:MM`.
+   or a maintainer-supplied abbreviation. Fill the optional `A?` slot with A,
+   B, C, etc. only when creating multiple batch prompts; omit it for a single
+   batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
+   prompt, and use that output for `MM-DD HH:MM`.
 <!-- host-branch: codex-only start -->
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
@@ -149,7 +151,7 @@ Before implementation or worker launch, produce:
 <!-- host-branch: codex-only end -->
 
 The top line of each pasteable batch prompt must be
-`Batch title: <PROJECT> <A/B/C when multiple> <MM-DD HH:MM> - <descriptive title>`.
+`Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
 Derive `<PROJECT>` from the current repository name or maintainer-supplied
 abbreviation, and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
 local shell when creating the prompt.

@@ -69,9 +69,9 @@ omit the queue summary and note that queue state is unavailable.
 7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
-   line using a repository abbreviation, A/B/C when multiple prompts are
+   line using a repository abbreviation, A/B/C only when multiple prompts are
    produced, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the local shell, and a
-   descriptive title. Do not launch workers yet.
+   short title. Do not launch workers yet.
 8. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
    resolves the spec tasks into exact GitHub targets before running.

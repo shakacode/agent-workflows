@@ -110,9 +110,10 @@ after phase 1 with a precise blocker.
    line; for Claude/generic prompts, measure the actual prompt, keep it under 8 000
    characters, and split or compact it when too large rather than applying the
    Codex split threshold. Put a short `Batch title:` after the target-specific
-   invocation line(s), using a repository abbreviation, A/B/C group letter when
-   multiple prompts are created, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the
-   local shell, and a descriptive title.
+   invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   Derive `<PROJECT>` from the current repository name, use A/B/C group letters
+   only when multiple prompts are created, and get `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire an `agent-coord claim` before editing.
