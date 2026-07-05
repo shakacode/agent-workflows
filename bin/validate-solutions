@@ -1,0 +1,148 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "date"
+require "yaml"
+
+module ValidateSolutions
+  REQUIRED_STRING_FIELDS = %w[
+    title
+    category
+    component
+    problem_type
+    root_cause
+    resolution
+  ].freeze
+  REQUIRED_LIST_FIELDS = %w[
+    symptoms
+    related_files
+    related_issues
+  ].freeze
+  REQUIRED_FIELDS = (REQUIRED_STRING_FIELDS + REQUIRED_LIST_FIELDS + ["date"]).freeze
+  FRONTMATTER_CLOSE = "\n---\n"
+  DATE_FORMAT = /\A\d{4}-\d{2}-\d{2}\z/
+
+  module_function
+
+  def run(root)
+    failures = validate(root)
+
+    if failures.empty?
+      count = solution_paths(root).length
+      puts "PASS #{count} solution docs"
+      0
+    else
+      warn failures.join("\n")
+      1
+    end
+  end
+
+  def validate(root)
+    paths = solution_paths(root)
+    return ["docs/solutions: no solution docs found"] if paths.empty?
+
+    paths.flat_map { |path| validate_file(path, root) }
+  end
+
+  def solution_paths(root)
+    Dir.glob(File.join(root, "docs/solutions/*.md")).reject do |path|
+      File.basename(path).casecmp("README.md").zero?
+    end.sort
+  end
+
+  def validate_file(path, root)
+    relative = path.delete_prefix("#{root}/")
+    text = File.read(path, encoding: "UTF-8")
+    failures = []
+
+    unless text.start_with?("---\n")
+      return ["#{relative}: missing YAML frontmatter"]
+    end
+
+    closing = text.index(FRONTMATTER_CLOSE, 4)
+    if closing.nil?
+      return ["#{relative}: unterminated YAML frontmatter"]
+    end
+
+    raw_frontmatter = text[4...closing]
+    frontmatter = parse_frontmatter(raw_frontmatter, relative)
+    return [frontmatter] if frontmatter.is_a?(String)
+
+    failures.concat(validate_required_fields(frontmatter, relative, root, raw_frontmatter))
+    failures.concat(validate_body(text[(closing + FRONTMATTER_CLOSE.length)..], relative))
+    failures
+  end
+
+  def parse_frontmatter(yaml, relative)
+    frontmatter = YAML.safe_load(yaml, permitted_classes: [Date], aliases: false)
+    return "#{relative}: YAML frontmatter must be a mapping" unless frontmatter.is_a?(Hash)
+
+    frontmatter
+  rescue Psych::Exception => e
+    "#{relative}: invalid YAML frontmatter: #{e.message}"
+  end
+
+  def validate_required_fields(frontmatter, relative, root, raw_frontmatter)
+    failures = []
+
+    missing = REQUIRED_FIELDS.reject { |field| frontmatter.key?(field) }
+    failures << "#{relative}: missing required fields: #{missing.join(', ')}" unless missing.empty?
+
+    REQUIRED_STRING_FIELDS.each do |field|
+      next unless frontmatter.key?(field)
+
+      value = frontmatter[field]
+      failures << "#{relative}: #{field} must be a non-empty string" unless value.is_a?(String) && !value.strip.empty?
+    end
+
+    REQUIRED_LIST_FIELDS.each do |field|
+      next unless frontmatter.key?(field)
+
+      value = frontmatter[field]
+      if !value.is_a?(Array)
+        failures << "#{relative}: #{field} must be a list"
+      elsif value.any? { |entry| !entry.is_a?(String) || entry.strip.empty? }
+        failures << "#{relative}: #{field} entries must be non-empty strings"
+      elsif field == "related_files"
+        missing = value.reject { |entry| File.exist?(File.join(root, entry)) }
+        failures << "#{relative}: related_files not found: #{missing.join(', ')}" unless missing.empty?
+      end
+    end
+
+    validate_date(frontmatter["date"], relative, failures, raw_frontmatter) if frontmatter.key?("date")
+    failures
+  end
+
+  def validate_date(value, relative, failures, raw_frontmatter)
+    raw = raw_date_value(raw_frontmatter)
+    normalized = value.is_a?(Date) ? value.iso8601 : value.to_s
+    raise ArgumentError unless raw&.match?(DATE_FORMAT)
+    raise ArgumentError unless normalized == raw
+
+    Date.iso8601(normalized)
+  rescue ArgumentError
+    failures << "#{relative}: date must be ISO 8601 YYYY-MM-DD"
+  end
+
+  def raw_date_value(raw_frontmatter)
+    line = raw_frontmatter.lines.find { |candidate| candidate.match?(/\Adate:/) }
+    return nil unless line
+
+    raw = line.chomp.sub(/\Adate:\s*/, "").sub(/\s+#.*\z/, "").strip
+    if (raw.start_with?('"') && raw.end_with?('"')) || (raw.start_with?("'") && raw.end_with?("'"))
+      raw = raw[1...-1]
+    end
+    raw
+  end
+
+  def validate_body(body, relative)
+    return [] if body.to_s.strip.length.positive?
+
+    ["#{relative}: body is required"]
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  root = File.expand_path(ARGV.fetch(0, File.join(__dir__, "..")))
+  exit ValidateSolutions.run(root)
+end

@@ -1,0 +1,197 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+module ValidateReviewFindings
+  SCHEMA = "review-finding-v0"
+  REQUIRED_FINDING_FIELDS = %w[
+    id
+    source
+    target
+    severity
+    disposition
+    title
+    body
+    verification
+  ].freeze
+  REQUIRED_VERIFICATION_FIELDS = %w[status current_head_state].freeze
+  SEVERITIES = %w[P0 P1 P2 P3 INFO].freeze
+  DISPOSITIONS = %w[
+    must_fix
+    needs_decision
+    should_fix
+    accepted_fixed
+    deferred
+    waived_by_maintainer
+    rejected_false_positive
+    rejected_not_actionable
+    unknown
+  ].freeze
+  VERIFICATION_STATUSES = %w[unverified verified contradicted unknown].freeze
+  CURRENT_HEAD_STATES = %w[current stale not_applicable unknown].freeze
+  STRING_ARRAY_FIELDS = %w[evidence links related_ids].freeze
+
+  module_function
+
+  def run(path)
+    failures = validate_path(path)
+
+    if failures.empty?
+      puts "PASS review finding schema"
+      0
+    else
+      warn failures.join("\n")
+      1
+    end
+  end
+
+  def validate_path(path)
+    text = File.read(path, encoding: "UTF-8")
+    if File.extname(path).casecmp(".md").zero?
+      validate_markdown(text, path)
+    else
+      validate_json_block(text, path)
+    end
+  rescue SystemCallError => e
+    ["#{path}: #{e.message}"]
+  end
+
+  def validate_markdown(text, path)
+    blocks = extract_blocks(text)
+    return ["#{path}: missing ```json review-findings fenced block"] if blocks.empty?
+
+    blocks.each_with_index.flat_map do |block, index|
+      validate_json_block(block, "#{path}: review-findings block #{index + 1}")
+    end
+  end
+
+  def extract_blocks(text)
+    text.scan(/^```json[ \t]+review-findings\n(.*?)^```\s*$/m).flatten
+  end
+
+  def validate_json_block(text, label)
+    document = JSON.parse(text)
+    validate_document(document, label)
+  rescue JSON::ParserError => e
+    ["#{label}: invalid JSON: #{e.message}"]
+  end
+
+  def validate_document(document, label)
+    failures = []
+    unless document.is_a?(Hash)
+      return ["#{label}: top-level value must be a JSON object"]
+    end
+
+    failures << "#{label}: schema must be #{SCHEMA.inspect}" unless document["schema"] == SCHEMA
+    findings = document["review_findings"]
+    unless findings.is_a?(Array)
+      return failures << "#{label}: review_findings must be an array"
+    end
+
+    failures.concat(validate_findings(findings, label))
+    failures
+  end
+
+  def validate_findings(findings, label)
+    seen_ids = {}
+    findings.each_with_index.flat_map do |finding, index|
+      finding_label = "#{label}: review_findings[#{index}]"
+      failures = validate_finding(finding, finding_label)
+      id = finding["id"] if finding.is_a?(Hash)
+      failures << "#{finding_label}: id must be unique within the report" if id && seen_ids[id]
+      seen_ids[id] = true if id
+      failures
+    end
+  end
+
+  def validate_finding(finding, label)
+    return ["#{label}: finding must be an object"] unless finding.is_a?(Hash)
+
+    failures = []
+    missing = REQUIRED_FINDING_FIELDS.reject { |field| finding.key?(field) }
+    failures << "#{label}: missing required fields: #{missing.join(', ')}" unless missing.empty?
+
+    %w[id source title body].each do |field|
+      next unless finding.key?(field)
+
+      failures << "#{label}: #{field} must be a non-empty string" unless non_empty_string?(finding[field])
+    end
+
+    failures.concat(validate_target(finding["target"], label)) if finding.key?("target")
+    failures.concat(validate_enum(finding, "severity", SEVERITIES, label))
+    failures.concat(validate_enum(finding, "disposition", DISPOSITIONS, label))
+    failures.concat(validate_verification(finding["verification"], label)) if finding.key?("verification")
+    failures.concat(validate_location(finding["location"], label)) if finding.key?("location")
+    STRING_ARRAY_FIELDS.each { |field| failures.concat(validate_string_array(finding, field, label)) }
+    failures
+  end
+
+  def validate_target(target, label)
+    unless target.is_a?(Hash) && !target.empty?
+      return ["#{label}: target must be a non-empty object"]
+    end
+
+    []
+  end
+
+  def validate_verification(verification, label)
+    return ["#{label}: verification must be an object"] unless verification.is_a?(Hash)
+
+    failures = []
+    missing = REQUIRED_VERIFICATION_FIELDS.reject { |field| verification.key?(field) }
+    failures << "#{label}: verification missing required fields: #{missing.join(', ')}" unless missing.empty?
+    failures.concat(validate_enum(verification, "status", VERIFICATION_STATUSES, "#{label}: verification"))
+    failures.concat(validate_enum(verification, "current_head_state", CURRENT_HEAD_STATES, "#{label}: verification"))
+    failures
+  end
+
+  def validate_location(location, label)
+    return ["#{label}: location must be an object"] unless location.is_a?(Hash)
+
+    failures = []
+    %w[file symbol url].each do |field|
+      next unless location.key?(field)
+
+      failures << "#{label}: location.#{field} must be a non-empty string" unless non_empty_string?(location[field])
+    end
+    %w[line end_line].each do |field|
+      next unless location.key?(field)
+
+      failures << "#{label}: location.#{field} must be a positive integer" unless positive_integer?(location[field])
+    end
+    failures
+  end
+
+  def validate_string_array(finding, field, label)
+    return [] unless finding.key?(field)
+
+    value = finding[field]
+    if !value.is_a?(Array)
+      ["#{label}: #{field} must be an array"]
+    elsif value.any? { |entry| !non_empty_string?(entry) }
+      ["#{label}: #{field} entries must be non-empty strings"]
+    else
+      []
+    end
+  end
+
+  def validate_enum(object, field, allowed, label)
+    return [] unless object.key?(field)
+
+    allowed.include?(object[field]) ? [] : ["#{label}: #{field} must be one of: #{allowed.join(', ')}"]
+  end
+
+  def non_empty_string?(value)
+    value.is_a?(String) && !value.strip.empty?
+  end
+
+  def positive_integer?(value)
+    value.is_a?(Integer) && value.positive?
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  path = ARGV.fetch(0, File.expand_path("../docs/review-finding-schema.md", __dir__))
+  exit ValidateReviewFindings.run(path)
+end

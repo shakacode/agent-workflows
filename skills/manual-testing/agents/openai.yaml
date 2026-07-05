@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manual Testing"
+  short_description: "Record live-system manual testing evidence"
+  default_prompt: "Use $manual-testing to verify changed behavior in a real running app or service."

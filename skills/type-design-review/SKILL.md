@@ -1,6 +1,7 @@
 ---
 name: type-design-review
-description: Review changes to data models, signatures, domain types, parsing, or casts so invalid domain states are represented as little as possible.
+description: Use when reviewing data models, signatures, domain types, parsing, casts, or state machines so invalid states stay hard to represent.
+argument-hint: '[diff, PR, or type surface]'
 ---
 
 # Type Design Review

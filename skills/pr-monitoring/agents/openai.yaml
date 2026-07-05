@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Monitoring"
+  short_description: "Monitor PR checks, comments, and readiness"
+  default_prompt: "Use $pr-monitoring to monitor an opened pull request through checks, comments, conflicts, and final handoff."

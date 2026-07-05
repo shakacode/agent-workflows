@@ -18,7 +18,7 @@ handoffs, Codex/Claude comparison, and output templates.
 - Review from a trusted base checkout when possible.
 - Do not create commits, branches, comments, labels, issues, review approvals, thread resolutions, pushes, merges, or changelog edits unless the user explicitly asks.
 - Do not treat `/pr-review-toolkit:review-pr` as a complete adversarial gate. It is useful input, but this skill adds release-risk, timing, changelog, and untrusted-input checks.
-- Treat AI review systems such as CodeRabbit.ai, Claude, Cursor Bugbot, Greptile, and Codex review as advisory unless they identify a confirmed blocker: correctness regression, failing test, security issue, API contract break, data-loss risk, or missing required maintainer approval. Positive AI issue comments and AI approval review objects are evidence, not required maintainer approvals.
+- Treat AI review systems such as CodeRabbit.ai, Claude, Cursor Bugbot, Greptile, and Codex-generated review as advisory unless they identify a confirmed blocker: correctness regression, failing test, security issue, API contract break, data-loss risk, or missing required maintainer approval. Positive AI issue comments and AI approval review objects are evidence, not required maintainer approvals.
 - If a Claude CLI invocation must be private/report-only, restrict tools at invocation time. Skill `allowed-tools` can grant tools; it is not the same as a write-prevention policy.
 - Always identify the PR number, base branch, head SHA, merge state, and whether the PR is already merged.
 
@@ -53,6 +53,20 @@ handoffs, Codex/Claude comparison, and output templates.
    - `NON_BLOCKING_DECISION`: the PR made a reasonable decision that reviewers should be able to surface later.
    - `NOISE`: investigated and not actionable.
 5. Return a report with evidence, exact files/lines where possible, and commands/data sources used.
+6. When structured output would help a batch, ledger, or follow-up workflow, append an optional
+   `review-findings` JSON block using the shared
+   [Review Finding schema](../../docs/review-finding-schema.md). Keep the human-readable report
+   first and map this skill's labels explicitly:
+   - `BLOCKING` -> `must_fix`, usually `P1` or `P0`.
+   - `DISCUSS` -> `needs_decision`.
+   - `FOLLOWUP` -> `deferred` or `should_fix`, usually `P2` or `P3`.
+   - `NON_BLOCKING_DECISION` -> `accepted_fixed`, `deferred`, or
+     `waived_by_maintainer`, depending on the evidence.
+   - `NOISE` -> `rejected_false_positive` or `rejected_not_actionable`, usually `INFO`.
+   Findings contradicted by current evidence should set `verification.status` to
+   `contradicted` and use a rejection disposition rather than leaving the outcome implicit.
+   Mark findings as `verified/current` only after checking the real code and current PR or head
+   state. Stale, unverified, or unknown findings remain advisory.
 
 ## Merge Gate
 

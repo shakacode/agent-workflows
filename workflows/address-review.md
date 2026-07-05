@@ -1,6 +1,6 @@
 # Address Review Prompt
 
-Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow.
+Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow and that command is unavailable.
 
 ## How to Use
 
@@ -22,7 +22,7 @@ If the assistant has terminal access with `gh`, it should execute the workflow d
 ````text
 Act as a pull request review triage assistant.
 
-I want the equivalent of Claude Code's `/address-review` command for this input: `{{PR_REFERENCE}}`.
+I want the equivalent of Claude Code's `/address-review` command, using this prompt as the fallback when that command is unavailable, for this input: `{{PR_REFERENCE}}`.
 
 Your job is to fetch GitHub PR review comments, triage them, and wait for my instruction before making code changes unless I initiated the run with `autopilot`.
 
@@ -126,7 +126,7 @@ Execution flow when terminal access is available:
      `gh api repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID} | jq '{id: .id, body: .body, state: .state, user: .user.login, created_at: .submitted_at, html_url: .html_url}'`
      `gh api --paginate repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments | jq -s '[.[].[] | {id: .id, node_id: .node_id, path: .path, body: .body, line: .line, start_line: .start_line, user: .user.login, in_reply_to_id: .in_reply_to_id, created_at: .created_at, html_url: .html_url}]'`
    - If the review body contains actionable feedback, include it as an additional general comment. Review summary bodies cannot use the `/replies` endpoint; post those responses as general PR comments (see step 8).
-  - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query):
+  - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query). Resolve `ADDRESS_REVIEW_SKILL_DIR` with the explicit env-var, loaded skill base, repo-local pinned-copy chain before using the fallback assignment:
     `ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"; "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json`
      It emits one JSON document: `review_cutoff_at` (see step 3); `review_summaries` (`{id, type: "review_summary", body, state, user, created_at, html_url}`, non-empty bodies only); `inline_comments` (`{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`, with `thread_id`/`is_resolved` already joined by `node_id` — no separate GraphQL query needed); `issue_comments` (`{id, node_id, type: "issue", body, user, created_at, html_url}`, including summary/status markers for filtering); and `review_threads` (`{thread_id, is_resolved, comments: [{node_id, id}]}`).
    - Treat actionable review summary bodies as additional general comments. Like specific review bodies, they cannot use the `/replies` endpoint and must be answered as general PR comments (see step 8).
@@ -142,8 +142,110 @@ Execution flow when terminal access is available:
      `gh api graphql --paginate -f owner="${OWNER}" -f name="${NAME}" -F pr="${PR_NUMBER}" -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { id isResolved comments(first:100) { nodes { id databaseId } } } pageInfo { hasNextPage endCursor } } } } }' | jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[] | {thread_id: .id, is_resolved: .isResolved, comments: [.comments.nodes[] | {node_id: .id, id: .databaseId}]}]'`
    - Use `-F pr=...` intentionally for the GraphQL `Int!` variable; raw `-f pr=...` sends a string.
 
+Before Step 5, establish the applicable ownership gate for the target PR.
+Read-only fetches in Steps 3-4 may run before this gate. For private backends,
+do not create todos, present an unattended `autopilot` action, commit, push,
+post replies, resolve threads, or post a summary checkpoint until the private
+claim gate passes. If Steps 3-4 fetched review data before a private claim,
+rerun the Step 4 fetch after the claim succeeds and use the post-claim data for
+Step 5. Public fallback claims are GitHub comments,
+so do not post them merely to triage, run `autopilot`, or execute local-only
+action `a`; for public-fallback repos, Step 5 may proceed after the read-only
+conflict inspection below, but any GitHub-mutating action must post or refresh
+the fallback claim after the user selects that action and before the first
+branch update, push, reply, thread resolution, follow-up issue, or summary/status
+comment. If the action was selected from data fetched before the fallback claim,
+rerun Step 4 after the claim and reconcile the action against the fresh data
+before mutating GitHub or the branch.
+
+- If the repo's `coordination_backend` seam selects an available coordination
+  backend, acquire the target PR claim with the bounded helper from the resolved
+  `pr-batch` skill directory. Use stable `AGENT_ID` and `BATCH_ID` values from
+  the current run when available, and use the normal PR branch name when a branch is known. If
+  `AGENT_ID` is not already set, initialize a stable fallback from the current
+  thread/session when possible; set `AGENT_ID` explicitly when running multiple
+  concurrent sessions against the same PR:
+  ```bash
+  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
+    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
+    elif [ -d ".agents/skills/pr-batch" ]; then
+      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+    else
+      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
+      exit 1
+    fi
+  fi
+  machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
+  AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
+  coord_read_degraded=0
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json || coord_read_degraded=1
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json || coord_read_degraded=1
+  if [ "${coord_read_degraded}" -ne 0 ] && [ "${ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED:-}" != "1" ]; then
+    echo "Refusing to claim: coordination doctor/status is degraded; set ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1 only after confirming an exact independent assignment with no dependency refs." >&2
+    exit 1
+  fi
+  set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"
+  [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
+  [ -n "${BRANCH_NAME:-}" ] && set -- "$@" --branch "${BRANCH_NAME}"
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json
+  ```
+- A refused private claim is a hard stop. If the claim returns
+  `CLAIM_REFUSED` / exit code 3, report the holder, heartbeat liveness, and
+  target PR; do not continue with triage, branch changes, pushes, replies,
+  resolutions, summaries, or public fallback.
+- If bounded doctor/status is degraded but this is an exact independent
+  address-review assignment with no dependency refs, a coordinator may try the
+  bounded claim directly by setting `ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1` for
+  that command only. If that direct claim succeeds, proceed with
+  `private_state: claim-only`, immediately rerun the Step 4 fetch when any
+  earlier review data was fetched before the claim, heartbeat at phase
+  transitions, and record the degraded read evidence in the handoff. If the
+  claim times out, stop with `private_state: UNKNOWN (claim outcome)` and
+  reconcile backend state before fallback or mutation.
+- After any successful private claim, refresh the heartbeat at phase
+  transitions: triage complete, action selected, before and after long-running
+  local fix or validation blocks, before push/reply/resolve/summary work,
+  blocked/resumed states, and final stable stop. Do not let a live address-review
+  run exceed the backend heartbeat TTL without a refresh.
+- Use a structured public `codex-claim` comment only when the repo's
+  `coordination_backend` seam explicitly selects public claim-comment fallback,
+  or when the private claim cannot be started or definitively fails with a
+  non-timeout setup/auth error before any mutation and the
+  `coordination_backend` seam allows that fallback. Public claim comments are
+  advisory and must not override a private claim refusal, timeout, or a repo
+  seam that opts out of coordination.
+- Before posting a fallback claim, inspect recent PR comments for an unexpired
+  `codex-claim` block on the same PR. If another active fallback claim exists,
+  stop GitHub-mutating actions and report the conflicting comment URL;
+  local-only action `a` may still proceed, but it must report that
+  publishing/reply actions remain blocked by the active advisory claim.
+  Otherwise post a PR issue comment using this marker shape only when a
+  GitHub-mutating action is selected:
+  ```markdown
+  <!-- codex-claim v1
+  batch: <BATCH_ID>
+  machine: <MACHINE_ID>
+  thread: <codex-thread-id>
+  branch: <BRANCH_NAME>
+  status: in_progress
+  expires_at: <ISO8601_UTC>
+  -->
+  ```
+  Use any stable session, thread, or machine identifier available; if none is
+  available, use `thread: unavailable`. Set a short bounded advisory lease,
+  usually 2-4 hours for an active review run, and refresh the same comment if
+  continuing beyond that window.
+- At a stable stop, update the private heartbeat or advisory claim state before
+  reporting. For private coordination, send a terminal heartbeat and release the
+  claim on normal completion; preserve it for blocked or handoff states when the
+  repo workflow requires preservation. For public fallback, edit the claim
+  comment to a terminal status with an expired `expires_at`; a final
+  address-review summary/status comment may link the terminal claim, but it must
+  not be the only cleanup step.
+
 5. Filter comments:
-   - Never triage prior workflow summary/status comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->` or `<!-- address-review-status -->` on its very first line; only the summary marker is a cutoff checkpoint.
+   - Never triage prior workflow summary/status/claim comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
    - Skip resolved threads.
    - Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern.
    - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp.
@@ -201,7 +303,7 @@ Execution flow when terminal access is available:
    - Do not post the PR summary checkpoint yet. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
 8. Execute the chosen action:
-   <!-- Keep this action-routing section in sync with .agents/skills/address-review/SKILL.md Step 8. -->
+   <!-- Keep this action-routing section in sync with .agents/skills/address-review/references/actions.md. -->
    - **`a` — Apply, stage, and recommend**: Fix all `MUST-FIX` and `OPTIONAL` items inline after the user selects `a`, or automatically when `autopilot` was requested at initiation. Run relevant checks and the self-review gate. Stage only the intended changed files with explicit `git add` paths instead of committing them. Do **not** commit, push, post GitHub replies, resolve review threads, create follow-up issues, or post the PR summary checkpoint. Return a local summary with: fixed `MUST-FIX` items, fixed `OPTIONAL` items, staged files, validation commands/results, unresolved/skipped items, and detailed `DISCUSS` recommendations. Each `DISCUSS` recommendation must include the reviewer/comment link, recommended decision (`fix now`, `defer`, `decline`, or `ask user`), rationale/evidence, risk/tradeoff, and concrete next step. If validation fails after reasonable local repair, still report the staged-file state clearly and mark the PR as not ready for commit/push.
    - **`f`**:
      Pre-reply subflow: steps 1-7 below end at the commit/push-before-reply gate.
@@ -265,7 +367,7 @@ Execution flow when terminal access is available:
      `gh api graphql -f query='mutation($threadId:ID!) { resolveReviewThread(input:{threadId:$threadId}) { thread { id isResolved } } }' -f threadId="<THREAD_ID>"`
    - Do not resolve anything still in progress or uncertain.
    - **Self-review gate**: After making all code changes but before committing, review the diff for issues introduced by the fixes themselves. Check for correctness bugs, style violations, and inconsistencies with surrounding code. Fix critical issues immediately. This prevents new review cycles caused by the fixes. If you have access to a code-review agent or tool, use it; otherwise, do a manual diff review.
-   - **Git push confirmation**: For ordinary PR/review iteration, a validated commit should be pushed without a separate prompt so CI and online reviews can run on the next head. Ask before running `git push` only when the user requested local-only or inspect-before-push work, branch or remote ownership is unclear, the push is destructive or risky under `AGENTS.md` git safety boundaries, hosted-CI/review-churn policy requires a maintainer decision, or the next push would be optional/nit-only after the final-candidate gate. Action `a` must not push; it stops after staging files and returning the local summary.
+   - **Git push confirmation**: For ordinary PR/review iteration, a validated commit should be pushed without a separate prompt so CI and online reviews can run on the next head. Ask before running `git push` only when the user requested local-only or inspect-before-push work, branch or remote ownership is unclear, the push is destructive or risky under `AGENTS.md` git safety boundaries, hosted-CI/review-churn policy requires a maintainer decision, or the next push would be optional/nit-only after the final-candidate gate. Action `a` must not push; it stops after staging files and returning the local summary. A rejected non-fast-forward push is a hard stop: fetch the remote branch, report the local and remote heads plus likely concurrent ownership conflict, and do not force-push, rebase-and-push over, or otherwise replace another agent's commits without explicit maintainer or coordinator direction. If a maintainer or coordinator directs the run to continue after reconciling the remote head, rerun step 4 review-data fetch, step 5 filtering, and step 6 triage from that new head before any further push, reply, thread resolution, or summary checkpoint.
    - **Converge the review loop, don't chase it**: every push re-triggers the configured review bots on the new head and produces a fresh batch of comments. Batch all code fixes into a single push; resolve purely advisory threads (style, dead-code, "consider…", informational, positive) in-thread with a reply — **without a new commit**, since resolving a thread does not re-trigger reviews while a push does. Never resolve a confirmed blocker by reply alone. See [Review-Loop Convergence](pr-processing.md#review-loop-convergence-push-amplification).
    - **Parallel fixes**: When there are 2+ items to fix that touch different files with no logical dependencies, process them in parallel if your environment supports concurrent execution (e.g., sub-agents, background tasks). Items in the same file or with cross-file dependencies must be fixed sequentially. Instruct each sub-agent **not to commit** — all changes must remain unstaged so the self-review gate can run on the combined diff. After parallel fixes complete, verify no conflicts exist between the changes by checking whether any sub-agents touched the same files (`git diff --name-only`).
 

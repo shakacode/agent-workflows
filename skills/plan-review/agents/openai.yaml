@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Review"
+  short_description: "Review implementation plans before coding"
+  default_prompt: "Use $plan-review to check an implementation plan before coding or launching workers."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pause"
+  short_description: "Print restart-safe pause prompts"
+  default_prompt: "Use $pause to print the pause prompt and the companion restart prompt for copy/paste."

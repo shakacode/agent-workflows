@@ -1,0 +1,375 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Select the autoreview diff target as an explicit workflow state.
+#
+# The helper is read-only: it inspects git and, when available, `gh pr view` for
+# the current branch's PR base. It intentionally treats expected "no PR for this
+# branch" exits as a named state instead of a generic command failure.
+
+require "json"
+require "shellwords"
+require "tempfile"
+require "yaml"
+
+module AutoreviewTargetState
+  class Error < StandardError; end
+
+  module_function
+
+  NO_PR_PATTERNS = [
+    /no pull requests? found/i,
+    /no open pull requests?/i,
+    /could not find.*pull request/i,
+    /no pull request.*current branch/i
+  ].freeze
+  COMMAND_TIMEOUT_SECONDS = 15
+
+  def classify(facts)
+    branch = facts.fetch(:branch)
+    configured_base = facts.fetch(:configured_base, "main")
+    pr = facts.fetch(:pr, { "state" => "no_pr" })
+    dirty = facts.fetch(:dirty)
+    branch_diff = facts.fetch(:branch_diff)
+    base = pr["state"] == "found" ? pr.fetch("base") : configured_base
+
+    return detached_result(facts) unless facts.fetch(:attached)
+    return default_branch_result(branch, configured_base) if branch == configured_base && branch_diff == true
+
+    if branch_diff == :unknown
+      pr["state"] == "unknown" ? unknown_pr_result(pr) : unknown_base_result(base)
+    elsif dirty && branch_diff == true
+      pr["state"] == "unknown" ? unknown_pr_result(pr) : branch_plus_dirty_result(base, pr, facts)
+    elsif dirty
+      local_dirty_result(facts)
+    elsif pr["state"] == "unknown"
+      unknown_pr_result(pr)
+    elsif branch_diff
+      branch_result(base, pr)
+    else
+      no_target_result(base, pr)
+    end
+  end
+
+  def detached_result(facts)
+    {
+      "state" => "DETACHED_HEAD",
+      "disposition" => "blocked",
+      "base" => facts.fetch(:configured_base, "main"),
+      "pr_state" => facts.fetch(:pr, { "state" => "not_checked" })["state"],
+      "review_targets" => [],
+      "message" => "Detached HEAD is not a safe implicit branch target. Attach a branch or use explicit commit review."
+    }
+  end
+
+  def default_branch_result(branch, configured_base)
+    {
+      "state" => "DEFAULT_BRANCH_WITH_LOCAL_COMMITS",
+      "disposition" => "blocked",
+      "base" => configured_base,
+      "pr_state" => "not_applicable",
+      "review_targets" => [],
+      "message" => "Local commits are on #{branch}; create a feature branch or review the specific commit explicitly."
+    }
+  end
+
+  def branch_plus_dirty_result(base, pull_request, facts)
+    {
+      "state" => "BRANCH_PLUS_DIRTY_LOCAL",
+      "disposition" => "not_ready",
+      "base" => base,
+      "pr_state" => pull_request["state"],
+      "review_targets" => [
+        branch_target(base),
+        local_target(facts.fetch(:untracked_only) ? "Review untracked-only work." : "Review staged, unstaged, and untracked local work.")
+      ],
+      "message" => "Committed branch work and dirty local work need either a commit first or two explicit review targets."
+    }
+  end
+
+  def local_dirty_result(facts)
+    state = facts.fetch(:untracked_only) ? "LOCAL_UNTRACKED_ONLY" : "LOCAL_DIRTY_ONLY"
+    {
+      "state" => state,
+      "disposition" => "ready",
+      "base" => facts.fetch(:configured_base, "main"),
+      "pr_state" => facts.fetch(:pr, { "state" => "not_needed" })["state"],
+      "review_targets" => [
+        local_target(facts.fetch(:untracked_only) ? "Review untracked-only work." : "Review staged, unstaged, and untracked local work.")
+      ],
+      "message" => "Use an uncommitted review because the working tree contains the review target."
+    }
+  end
+
+  def unknown_pr_result(pull_request)
+    {
+      "state" => "PR_BASE_UNKNOWN",
+      "disposition" => "UNKNOWN",
+      "base" => nil,
+      "pr_state" => "unknown",
+      "review_targets" => [],
+      "message" => "Could not determine whether the branch has a PR or what base branch that PR targets: #{pull_request['reason']}"
+    }
+  end
+
+  def unknown_base_result(base)
+    {
+      "state" => "BASE_DIFF_UNKNOWN",
+      "disposition" => "UNKNOWN",
+      "base" => base,
+      "pr_state" => "known",
+      "review_targets" => [],
+      "message" => "Could not compare HEAD with origin/#{base}; fetch the base branch or resolve the git error first."
+    }
+  end
+
+  def branch_result(base, pull_request)
+    no_pr = pull_request["state"] == "no_pr"
+    {
+      "state" => no_pr ? "BRANCH_NO_PR_DIFF" : "BRANCH_PR_DIFF",
+      "disposition" => "ready",
+      "base" => base,
+      "pr_state" => pull_request["state"],
+      "review_targets" => [branch_target(base)],
+      "message" => no_pr ? "No PR for the current branch is an expected state; review against the configured base." : "Review the branch diff against the PR base."
+    }
+  end
+
+  def no_target_result(base, pull_request)
+    {
+      "state" => "NO_REVIEW_TARGET",
+      "disposition" => "not_ready",
+      "base" => base,
+      "pr_state" => pull_request["state"],
+      "review_targets" => [],
+      "message" => "No local changes or committed branch diff were found."
+    }
+  end
+
+  def branch_target(base)
+    {
+      "kind" => "branch",
+      "command" => "codex review --base #{Shellwords.escape("origin/#{base}")}",
+      "reason" => "Review committed branch changes against origin/#{base}."
+    }
+  end
+
+  def local_target(reason)
+    {
+      "kind" => "local",
+      "command" => "codex review --uncommitted",
+      "reason" => reason
+    }
+  end
+
+  def text_summary(result)
+    target_lines = result.fetch("review_targets").map do |target|
+      "- #{target.fetch('kind')}: #{target.fetch('command')} (#{target.fetch('reason')})"
+    end
+    target_lines = ["- (none)"] if target_lines.empty?
+
+    [
+      "state: #{result.fetch('state')}",
+      "disposition: #{result.fetch('disposition')}",
+      "base: #{result.fetch('base') || '(unknown)'}",
+      "pr_state: #{result.fetch('pr_state')}",
+      "targets:",
+      *target_lines,
+      "message: #{result.fetch('message')}"
+    ].join("\n")
+  end
+
+  def configured_base
+    workflow_path = File.join(git_toplevel || Dir.pwd, ".agents/agent-workflow.yml")
+    return "main" unless File.exist?(workflow_path)
+
+    data = YAML.safe_load(File.read(workflow_path), aliases: false) || {}
+    return "main" unless data.is_a?(Hash)
+
+    data.fetch("base_branch", "main").to_s
+  rescue Psych::Exception
+    "main"
+  end
+
+  def git(*args)
+    out, err, status = capture_command("git", *args)
+    [out.force_encoding("UTF-8"), err.force_encoding("UTF-8"), status]
+  rescue Errno::ENOENT
+    raise Error, "git is not installed"
+  end
+
+  def git_toplevel
+    out, _err, status = git("rev-parse", "--show-toplevel")
+    return out.strip if status.zero? && !out.strip.empty?
+
+    nil
+  rescue Error
+    nil
+  end
+
+  def current_branch
+    out, _err, status = git("symbolic-ref", "--quiet", "--short", "HEAD")
+    return [true, out.strip] if status.zero?
+
+    [false, nil]
+  end
+
+  def status_facts
+    out, _err, status = git("status", "--porcelain=v1", "--untracked-files=all")
+    raise Error, "git status failed" unless status.zero?
+
+    lines = out.lines.map(&:chomp).reject(&:empty?)
+    dirty = !lines.empty?
+    untracked_only = dirty && lines.all? { |line| line.start_with?("?? ") }
+    [dirty, untracked_only]
+  end
+
+  def pr_base
+    out, err, status = capture_command("gh", "pr", "view", "--json", "baseRefName", "--jq", ".baseRefName")
+    return { "state" => "found", "base" => out.strip } if status.zero? && !out.strip.empty?
+
+    combined = "#{out}\n#{err}"
+    return { "state" => "no_pr", "reason" => combined.strip } if no_pr_output?(combined)
+
+    { "state" => "unknown", "reason" => combined.strip.empty? ? "gh pr view failed" : combined.strip }
+  rescue Errno::ENOENT
+    { "state" => "unknown", "reason" => "gh is not installed" }
+  end
+
+  def capture_command(*command, seconds: COMMAND_TIMEOUT_SECONDS)
+    stdout_file = Tempfile.new("autoreview-target-state-out")
+    stderr_file = Tempfile.new("autoreview-target-state-err")
+    pid = Process.spawn(*command, out: stdout_file.path, err: stderr_file.path, pgroup: true)
+    status = wait_for_command(pid, seconds)
+    stdout_file.rewind
+    stderr_file.rewind
+    out = stdout_file.read.force_encoding("UTF-8")
+    err = stderr_file.read.force_encoding("UTF-8")
+    err = "#{command.join(' ')} timed out after #{seconds} seconds" if status == 124 && err.strip.empty?
+    [out, err, status]
+  ensure
+    stdout_file&.close!
+    stderr_file&.close!
+  end
+
+  def wait_for_command(pid, seconds)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    loop do
+      result = Process.waitpid2(pid, Process::WNOHANG)
+      return process_status_code(result.last) if result
+
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        terminate_process(pid)
+        return 124
+      end
+
+      sleep 0.05
+    end
+  end
+
+  def process_status_code(status)
+    status.exitstatus || (status.termsig ? 128 + status.termsig : 1)
+  end
+
+  def terminate_process(pid)
+    signal_process(pid, "TERM")
+    sleep 0.2
+    return if reaped?(pid)
+
+    signal_process(pid, "KILL")
+    Process.waitpid2(pid)
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def reaped?(pid)
+    !!Process.waitpid2(pid, Process::WNOHANG)
+  rescue Errno::ECHILD
+    true
+  end
+
+  def signal_process(pid, signal)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  rescue Errno::EPERM
+    begin
+      Process.kill(signal, pid)
+    rescue Errno::ESRCH
+      nil
+    end
+  end
+
+  def no_pr_output?(text)
+    NO_PR_PATTERNS.any? { |pattern| text.match?(pattern) }
+  end
+
+  def branch_diff(base)
+    _out, _err, status = git("diff", "--quiet", "origin/#{base}...HEAD")
+    return false if status.zero?
+    return true if status == 1
+
+    :unknown
+  end
+
+  def inspect_repo
+    inside, _err, status = git("rev-parse", "--is-inside-work-tree")
+    raise Error, "not inside a git work tree" unless status.zero? && inside.strip == "true"
+
+    attached, branch = current_branch
+    base = configured_base
+    dirty, untracked_only = status_facts
+    pr = attached ? pr_base : { "state" => "not_checked", "reason" => "detached HEAD" }
+    comparison_base = pr["state"] == "found" ? pr.fetch("base") : base
+
+    {
+      attached: attached,
+      branch: branch,
+      configured_base: base,
+      dirty: dirty,
+      untracked_only: untracked_only,
+      pr: pr,
+      branch_diff: attached ? branch_diff(comparison_base) : :unknown
+    }
+  end
+
+  USAGE = <<~USAGE
+    Usage: autoreview-target-state [--json|--text]
+
+    Inspect the current git checkout and print the named autoreview target-selection
+    state. The helper is read-only and treats "no PR for current branch" as an
+    expected state, while preserving blocked, not_ready, and UNKNOWN states.
+  USAGE
+
+  class Runner
+    def run(argv)
+      format = parse_format(argv)
+      result = AutoreviewTargetState.classify(AutoreviewTargetState.inspect_repo)
+      puts(format == "text" ? AutoreviewTargetState.text_summary(result) : JSON.pretty_generate(result))
+      0
+    rescue Error => e
+      warn "Error: #{e.message}"
+      1
+    end
+
+    private
+
+    def parse_format(argv)
+      format = "json"
+      argv.each do |arg|
+        case arg
+        when "--json" then format = "json"
+        when "--text" then format = "text"
+        when "-h", "--help"
+          puts USAGE
+          exit 0
+        else
+          raise Error, "unknown option: #{arg}\n\n#{USAGE}"
+        end
+      end
+      format
+    end
+  end
+end
+
+exit(AutoreviewTargetState::Runner.new.run(ARGV)) if $PROGRAM_NAME == __FILE__

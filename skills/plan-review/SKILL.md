@@ -1,6 +1,7 @@
 ---
 name: plan-review
-description: Review an implementation plan before coding or launching workers, checking that the approach is sound, scoped, and anchored in repo conventions.
+description: Use when reviewing an implementation plan before coding or launching workers to check approach, scope, and repo-convention fit.
+argument-hint: '[implementation plan or batch plan]'
 ---
 
 # Plan Review

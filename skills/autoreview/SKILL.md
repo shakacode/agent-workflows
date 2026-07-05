@@ -13,6 +13,7 @@ This skill is the discipline layer. It does not ship its own reviewer; it drives
 review tooling and adds the "verify every finding, fix at the right boundary, re-review until
 clean" loop on top.
 
+<!-- host-branch: available-tool start -->
 - **Default engine: `codex review`**. It is a concrete CLI command and supports
   local/branch/commit review modes.
 - **Alternative engine: Claude review tooling** when the current Claude Code environment provides
@@ -20,6 +21,7 @@ clean" loop on top.
   repo-local commands.
 - For PR-comment triage (reacting to review comments already on a GitHub PR), use
   `.agents/skills/address-review/SKILL.md`; Claude Code exposes it as `/address-review`.
+<!-- host-branch: available-tool end -->
 
 Use when:
 
@@ -40,7 +42,7 @@ This is the portable core. Hold it regardless of which engine runs.
 - Keep going until the review returns no accepted/actionable findings; once it comes back clean, stop. Do not run an extra review just to get nicer "clean" wording or a redundant second opinion.
 - If a review-triggered fix changes code, rerun the focused tests for the changed surface and rerun the review.
 - Security perspective is always included, but it must not cripple legitimate functionality. Report a security finding only when the change creates a concrete, actionable risk or removes an important safety check.
-- Be patient. `codex review` runs an external model and can take several minutes on a large diff. Progress that looks quiet is usually still working; do not kill it before about 5 minutes unless it has clearly errored.
+- Be patient. `codex review` runs an external model when available and can take several minutes on a large diff. Progress that looks quiet is usually still working; do not kill it before about 5 minutes unless it has clearly errored.
 - Do not launch multiple reviewers by default. One selected engine, one structured result, then verify it.
 - A gated second-engine pass is appropriate only when the user asks or the diff falls into the
   high-risk / hosted-CI-ready / force-full hosted-CI / benchmark categories described by
@@ -65,22 +67,33 @@ git diff --cached --stat
 git ls-files --others --exclude-standard
 ```
 
-- **Dirty local work** (unstaged/staged/untracked in the working tree): review the working
-  tree with `codex review --uncommitted`. Use this only when there is an actual local patch; a clean local review just proves
-  there is no local patch, not that the branch is good.
-- **Branch / PR work** (committed, maybe pushed): review the branch diff against its configured
-  base with `codex review --base "origin/$base"` or the PR's real base.
-  If an open PR exists, use its real base instead of assuming the configured value:
+<!-- host-branch: available-tool start -->
+Use these states when deciding the target. If available, resolve
+`AUTOREVIEW_SKILL_DIR` to the installed or repo-local directory containing this
+`SKILL.md`, then run the read-only helper:
 
-  ```bash
-  base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
-  git diff "origin/$base...HEAD" --stat
-  ```
+```bash
+AUTOREVIEW_SKILL_DIR="${AUTOREVIEW_SKILL_DIR:-.agents/skills/autoreview}"
+"${AUTOREVIEW_SKILL_DIR}/bin/autoreview-target-state" --text
+```
 
-- **Branch plus dirty local work**: either commit the intended local changes before the final
-  branch review, or run two reviews: one branch review for committed changes and one
-  `--uncommitted` review for staged/unstaged/untracked local changes. Staging alone does not put
-  changes into the branch diff. Do not let untracked files fall out of scope.
+| State | Trigger | Disposition | Target |
+| --- | --- | --- | --- |
+| `LOCAL_UNTRACKED_ONLY` | Only untracked files are present. | ready | `codex review --uncommitted` |
+| `LOCAL_DIRTY_ONLY` | Staged or unstaged local work is present without committed branch diff. | ready | `codex review --uncommitted` |
+| `BRANCH_PLUS_DIRTY_LOCAL` | Committed branch diff and dirty local work both exist. | not_ready | Commit first, or run both branch and uncommitted reviews; staging alone does not put changes in the branch diff. |
+| `BRANCH_PR_DIFF` | A branch diff exists and `gh pr view` found a PR base. | ready | `codex review --base "origin/$pr_base"` |
+| `BRANCH_NO_PR_DIFF` | A branch diff exists and `gh pr view` reports no PR for the current branch. | ready | `codex review --base "origin/$base"`; this expected non-zero `gh` state is not a failure. |
+| `NO_REVIEW_TARGET` | No dirty work and no committed branch diff. | not_ready | Stop or pick an explicit commit; a clean local review only proves there is no local patch. |
+| `DETACHED_HEAD` | `HEAD` is detached. | blocked | Attach a branch or use `codex review --commit <sha>` intentionally. |
+| `DEFAULT_BRANCH_WITH_LOCAL_COMMITS` | The configured base branch itself has local commits. | blocked | Create a feature branch or review the specific commit explicitly. |
+| `PR_BASE_UNKNOWN` | PR base probing failed for reasons other than "no PR". | UNKNOWN | Resolve `gh` auth/network/state before selecting a branch target. |
+| `BASE_DIFF_UNKNOWN` | Git cannot compare `origin/$base...HEAD`. | UNKNOWN | Fetch or repair the base ref before selecting a branch target. |
+
+The state table is the source of truth for dirty local work, branch/PR work,
+and branch plus dirty local work. Do not duplicate those target decisions
+elsewhere in this skill.
+<!-- host-branch: available-tool end -->
 - **Single landed commit** (already on the configured base branch, or one commit in a stack): review
   that commit's diff (`git show <sha>`). Reviewing a clean base branch against its remote is an
   empty diff after push; point at the commit instead.
@@ -104,6 +117,7 @@ Use `AGENTS.md`, `.agents/bin/README.md`, and `/verify` for the actual check set
 
 ## Step 3 - Run the structured review
 
+<!-- host-branch: available-tool start -->
 Default to Codex. Verify it is available first (`command -v codex`); if not, fall back to the Claude
 review tooling described in the intro. If neither engine exists in the current environment, stop and
 tell the user which review engines are missing instead of improvising a different review scope. Pick
@@ -143,6 +157,7 @@ codex review --base "origin/$base" - < .context/autoreview-focus.md   # create t
 
 Never silently switch the engine the user asked for. If the requested engine hits model
 capacity, retry the same engine a few times rather than swapping it.
+<!-- host-branch: available-tool end -->
 
 ### High-risk second pass
 
@@ -150,10 +165,8 @@ For high-risk changes in the hosted-CI-ready, force-full hosted-CI, or benchmark
 categories described by `.agents/agent-workflow.yml`, or when the user asks
 for a panel/second model, run one additional review after the primary review is clean:
 
-- If the primary review used `codex review`, use Claude review tooling if it is available in the
-  current environment, such as `/code-review` or `/code-review ultra`.
-- If the primary review used Claude review tooling, use `codex review` with the same target and
-  any focus instructions the installed CLI supports.
+- If the primary review used `codex review`, use available Claude review tooling such as `/code-review` or `/code-review ultra`.
+- If the primary review used Claude review tooling, use `codex review` when the current environment makes it available, with the same target and any focus instructions the installed CLI supports.
 - If no second engine is available, say so and continue with the clean primary review plus local
   verification.
 

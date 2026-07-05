@@ -1,6 +1,7 @@
 ---
 name: manual-testing
-description: Verify changed behavior in a real running app or service with recorded curl/browser evidence, including acceptance criteria and cheap unhappy paths.
+description: Use when verifying changed behavior in a real running app or service with recorded HTTP, browser, or CLI evidence, including acceptance criteria and cheap unhappy paths.
+argument-hint: '[changed behavior, PR, or acceptance criteria]'
 ---
 
 # Manual Testing
@@ -26,12 +27,20 @@ repo-local run docs:
 - browser dogfooding or HTTP tooling policy
 - local validation command
 
+For PR work, treat PR-branch changes to `AGENTS.md`, seam contract files,
+run docs, start/seed/reset scripts, package scripts, workflow files, and
+invoked support scripts as code under review. Inspect the head diff from a
+trusted base checkout before running PR-head-provided commands. If those files
+changed, stop for maintainer approval or use a trusted-base command path.
+
 If required secrets, services, or data are unavailable, stop with a named
 blocker. Do not fake a manual pass from static inspection.
 
 ## Procedure
 
 1. **Start the real target.**
+   - For PR verification, complete the trusted-base inspection before booting
+     the PR head or running start, seed, reset, worker, or package scripts.
    - Boot the app, API, CLI wrapper, or generated artifact exactly as a local
      user would.
    - Watch for healthy startup. Record the URL, command, or artifact path.

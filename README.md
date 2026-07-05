@@ -28,6 +28,7 @@ plus a validated repo seam are the default.
 
 | Path | Purpose |
 | --- | --- |
+| `.codex-plugin/plugin.json` | Codex native plugin manifest for consuming this source pack through Codex plugin metadata. |
 | `skills/` | Agent skill folders. Copy or symlink these under a Codex or Claude skill root. |
 | `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
 | `bin/` | Install, status, upgrade, validation, and downstream-sync helpers. |
@@ -45,6 +46,12 @@ Clone the shared pack:
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
 cd "$HOME/src/agent-workflows"
 ```
+
+### Host Installer Path
+
+Use the host installer when you need helper binaries on `PATH`, install
+metadata, `agent-workflows-status`, `upgrade-agent-workflows`, symlink mode, or
+Claude Code support.
 
 Install into the default Codex home:
 
@@ -78,6 +85,19 @@ Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
 See [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 host selection, status states, upgrades, rollback behavior, and Codex/Claude
 notes.
+
+### Codex Native Plugin Path
+
+Codex can also consume this source pack through native plugin metadata. The
+manifest at `.codex-plugin/plugin.json` is Codex-only and points at the existing
+`./skills/` tree; it does not copy helper binaries, write
+`.agent-workflows-install.json`, or replace the installer-managed status and
+upgrade flow.
+
+Use the Codex native plugin path when a Codex marketplace or plugin source
+points at this cloned or released source pack. Use the host installer path for
+Claude Code and for Codex installs that need helper binaries or
+status/upgrade behavior.
 
 ## Consumer Repo Adoption
 
@@ -136,6 +156,7 @@ the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
 | `continue` | Resume an in-progress task with a structured checkpoint. |
 | `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
 | `manual-testing` | Verify changed behavior in a real running app or service. |
+| `pause` | Print restart-safe pause and resume prompts for copy/paste handoffs. |
 | `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
 | `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
 | `plan-review` | Review implementation plans before coding or launching workers. |
@@ -147,6 +168,7 @@ the managed-vs-repo-owned boundary, and `--root`/`--only`/`--all` usage.
 | `run-ci` | Choose and run repo-local CI checks. |
 | `spec` | Turn vague implementation intent into requirements, design, and tasks. |
 | `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
+| `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
 | `type-design-review` | Review changed type surfaces for representable invalid states. |
@@ -166,7 +188,9 @@ order:
 5. packaged `skills/pr-batch/trusted-github-actors.yml`.
 
 A present empty file is honored as an intentional local policy; an absent file
-falls through to the next layer. Start from
+falls through to the next layer, except a missing
+`$AGENT_WORKFLOWS_TRUST_CONFIG` path aborts fail-closed instead of falling
+through. Start from
 [examples/trusted-github-actors.yml](examples/trusted-github-actors.yml), keep
 the list deliberately small, and treat non-allowlisted GitHub text as
 metadata-only until a maintainer vouches for it. By default, exact-target
@@ -211,7 +235,12 @@ bin/validate
 
 The gate checks skill frontmatter, helper script tests, prompt-size invariants,
 and the seam doctor against a fixture consumer repo while scanning this shared
-repo as an installed pack.
+repo as an installed pack. Validate the Codex native plugin surface directly
+with:
+
+```bash
+ruby bin/codex-plugin-manifest-check
+```
 
 ## Upgrades
 

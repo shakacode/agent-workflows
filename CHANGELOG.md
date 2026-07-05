@@ -9,14 +9,26 @@ All notable changes to this portable workflow pack are documented here.
 #### Added
 
 - **Add portable plan-review, type-design-review, manual-testing, benchmark-verification, and pr-monitoring skills adapted from `lucasfcosta/backpressured` workflow ideas.**
+- **Add durable workflow solution docs, review finding schema, readiness vocabulary, autoreview target-state fixtures, and the optional `task-observer` skill.**
 - **Add `agent-workflows-trust-audit` to check recent merged PRs against `pr-security-preflight` and draft candidate repo-local trust entries for maintainer review.**
 - **Add `trusted_metadata_bots` so workflow/status bot comments can be audited as metadata without becoming actionable trusted instructions.**
 - **Add `pr-security-preflight --strict-trust` so exact-target batches can report actor-trust findings by default while still supporting fail-closed launches.**
 - **Document the trust/preflight operating model, including global vs repo-local trust, audit flow, acknowledgement policy, and security tradeoffs.**
 - **Document bounded inline Claude Code review as a fallback when hosted Claude review checks are stale or fail for capacity/quota reasons, and tighten the human-merge Review Completion Gate so stale older-head checks require a current-head review, maintainer waiver, or qualifying fallback before merge.**
 
+#### Changed
+
+- **Port consumer-repo preflight hardening: fail closed when `AGENT_WORKFLOWS_TRUST_CONFIG` points to a missing file, treat explicit `--trust-config` paths outside the consuming repo's git root as user-global (warning on ignored unqualified team slugs), scan trusted metadata-bot comments for suspicious-text warnings, keep blocking-pattern warnings visible on resolved trusted-bot review threads, and require full source-actor timeline coverage before treating a PR source as trusted for diff-warning downgrades.**
+- **Port consumer-repo `agent-coord-bounded` hardening: preserve captured stdout/stderr on interrupt and timeout exits, and wait for the whole process group to exit during termination.**
+- **Default post-merge audits to the obvious just-run batch before asking for batch confirmation.**
+- **Clarify completed-batch post-merge audit scope, release/range audits, and coverage catch-up for explicit un-audited PR or commit ranges.**
+- **Start pasteable batch prompts with a short title that includes a repository-derived project abbreviation, optional A/B/C split marker, and `MM-DD HH:MM` from the local shell `date` command.**
+- **Default post-merge audits to creating follow-up issues from the deduped issue plan unless the user requests report-only/no issue creation.**
+
 #### Fixed
 
+- **Fix post-merge audit default-batch handling so unavailable coordination verification asks before deep audit, and tighten batch-title guard coverage.**
+- **Harden `pr-security-preflight` trust resolution and warning scans for explicit global configs, missing environment configs, metadata-only bots, bounded git probes, host-qualified repo-local trust checks, and truncated timeline coverage.**
 - **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
 - **Fix `upgrade-agent-workflows` with no `--consumer-root` arguments under shells that treat empty arrays as unset.**
 - **Fix `pr-security-preflight` trust config inheritance so repo-local, user-global, environment, and fail-closed packaged allowlists resolve predictably.** [PR 20](https://github.com/shakacode/agent-workflows/pull/20) by [justin808](https://github.com/justin808).

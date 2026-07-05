@@ -35,6 +35,40 @@ Claude:
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
 
+## Codex Native Plugin Path
+
+This repository also ships Codex native plugin metadata at
+`.codex-plugin/plugin.json`. That manifest is for Codex only and points at the
+source pack's existing `./skills/` tree. It lets Codex consume the pack through a
+native plugin source without reshaping the repository or copying the skills into
+a host home first.
+
+Use the Codex native plugin path when a Codex marketplace or plugin source
+points at this cloned or released source pack and you only need Codex to load
+the shared skills. The manifest is deliberately source-pack metadata: consumer
+repository commands, labels, branches, changelog rules, CI policy, and review
+gates still come from that repository's `AGENTS.md` seam and `.agents/`
+contract.
+
+The native plugin path is not the Claude Code install path. Claude Code users
+should keep using:
+
+```bash
+bin/install-agent-workflows --host claude
+```
+
+The native plugin path also does not install helper binaries on `PATH`, write
+`<target>/.agent-workflows-install.json`, or participate in
+`agent-workflows-status` and `upgrade-agent-workflows`. Use the host installer
+path for Codex or Claude when you need those helper binaries, install metadata,
+copy/symlink mode, status checks, or managed upgrades.
+
+Validate the Codex plugin manifest from the source pack root with:
+
+```bash
+ruby bin/codex-plugin-manifest-check
+```
+
 ## Install
 
 Clone the source pack:
@@ -73,6 +107,8 @@ The installer writes:
 
 - `<target>/skills/*`
 - `<target>/workflows/*`
+- `<target>/docs/review-finding-schema.md`
+- `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
@@ -80,8 +116,9 @@ The installer writes:
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`
 
-Copy mode replaces only this pack's skill and workflow names; it preserves
-unrelated files already present in the target agent home.
+Copy mode replaces this pack's skill and workflow names plus the pack-owned docs
+listed above; it preserves unrelated files already present in the target agent
+home, including generic consumer-owned docs under `<target>/docs`.
 
 The metadata file records host, mode, source clone, pack version, source
 revision, branch, remote, and install time. The status and upgrade helpers use
@@ -180,7 +217,7 @@ code changes.
 ## Codex And Claude
 
 The skill Markdown is host-neutral. Codex and Claude both use the same
-`skills/`, `workflows/`, and `bin/` layout after installation. Files under
+`skills/`, `workflows/`, `docs/`, and `bin/` layout after installation. Files under
 `skills/*/agents/openai.yaml` are optional Codex UI metadata and are ignored by
 Claude.
 

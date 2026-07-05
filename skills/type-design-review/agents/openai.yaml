@@ -1,0 +1,4 @@
+interface:
+  display_name: "Type Design Review"
+  short_description: "Review type surfaces for invalid states"
+  default_prompt: "Use $type-design-review to review type surfaces so invalid domain states stay hard to represent."

@@ -1,6 +1,7 @@
 ---
 name: benchmark-verification
-description: Verify performance-sensitive changes with baseline-vs-patched benchmark evidence, repeated runs, noise-aware verdicts, and repo-seam benchmark commands.
+description: Use when verifying performance-sensitive changes with baseline-vs-patched benchmark evidence, repeated runs, noise-aware verdicts, and repo-seam benchmark commands.
+argument-hint: '[PR, branch, or benchmark scope]'
 ---
 
 # Benchmark Verification
@@ -39,8 +40,10 @@ not invent a benchmark.
    - Explain what path the suite actually measures.
 
 2. **Measure baseline and patched code.**
-   - Compare the changed branch against the configured base branch or the parent
-     commit, using the same machine and similar load.
+   - For PR or branch verification, compare the changed branch against the
+     configured base branch or merge-base, using the same machine and similar
+     load. Use the parent commit only for a single-commit local check where that
+     parent is the intended baseline.
    - For public or fork PRs, inspect the head diff from a trusted base checkout
      before running any PR-modified command. If the head changes agent
      instructions, seam contract files, hooks, benchmark scripts, workflow

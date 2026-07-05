@@ -1,0 +1,354 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "ipaddr"
+require "json"
+require "optparse"
+require "time"
+require "uri"
+
+module TaskObserver
+  class Error < StandardError; end
+
+  module_function
+
+  ALLOWED_KINDS = %w[correction gap skill-improvement simplification cross-cutting self-improvement].freeze
+  MAX_FIELD_LENGTH = 500
+  SENSITIVE_PATTERNS = [
+    /(?:password|passwd|secret|token|api[\s_-]?key|access[\s_-]?key|private[\s_-]?key|session[\s_-]?cookie)\s*[:=]/i,
+    /(?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic|token)?\s*\S+/i,
+    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
+    /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
+    /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
+    /\bsk-(?:proj-|ant-api\d+-)?[A-Za-z0-9_-]{20,}\b/,
+    /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
+    /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
+    /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/,
+    /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)(?:[\s_-]?(?:id|name|number|record))?\s*[:=]/i,
+    /\b\d{3}-\d{2}-\d{4}\b/,
+    /\b(?:\d[ -]*?){13,19}\b/
+  ].freeze
+  SENSITIVE_QUERY_KEYS = %w[
+    access_key access_token api_key auth authorization code key password secret sig signature token
+  ].freeze
+  PRIVATE_HOST_PATTERNS = [
+    /\Alocalhost\z/i,
+    /(?:^|[.-])internal[a-z0-9-]*(?:[.-]|$)/i,
+    /(?:^|[.-])corp[a-z0-9-]*(?:[.-]|$)/i,
+    /\.(?:local|test)\z/i
+  ].freeze
+  PRIVATE_IP_RANGES = [
+    "10.0.0.0/8",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "::1/128",
+    "::ffff:0:0/96",
+    "fc00::/7",
+    "fe80::/10"
+  ].map { |range| IPAddr.new(range) }.freeze
+
+  def memory_root
+    explicit = ENV["TASK_OBSERVER_HOME"].to_s.strip
+    return File.expand_path(explicit) unless explicit.empty?
+
+    File.join(agent_home, "memories", "task-observer")
+  end
+
+  def agent_home
+    codex_home = ENV["CODEX_HOME"].to_s.strip
+    return File.expand_path(codex_home) unless codex_home.empty?
+
+    claude_home = ENV["CLAUDE_HOME"].to_s.strip
+    return File.expand_path(claude_home) unless claude_home.empty?
+
+    codex_default = File.join(Dir.home, ".codex")
+    return codex_default if Dir.exist?(codex_default)
+
+    claude_default = File.join(Dir.home, ".claude")
+    return claude_default if Dir.exist?(claude_default)
+
+    codex_default
+  end
+
+  def init
+    ensure_private_directory(memory_root)
+    %w[observations staged-updates].each do |name|
+      ensure_private_directory(File.join(memory_root, name))
+    end
+    principles = File.join(memory_root, "principles.md")
+    write_private_file(principles, "# Task Observer Principles\n\n") unless File.exist?(principles)
+    File.chmod(0o600, principles)
+    "initialized #{memory_root}"
+  end
+
+  def status
+    {
+      "memory_root" => memory_root,
+      "initialized" => Dir.exist?(File.join(memory_root, "observations")) && Dir.exist?(File.join(memory_root, "staged-updates")),
+      "observations" => observation_records.length,
+      "staged_updates" => staged_update_count
+    }
+  end
+
+  def observation_records
+    Dir.glob(File.join(memory_root, "observations", "*.jsonl")).sort.flat_map do |path|
+      File.readlines(path, chomp: true, encoding: "UTF-8").filter_map do |line|
+        next if line.strip.empty?
+
+        normalize_record(JSON.parse(line), path)
+      rescue JSON::ParserError
+        unparseable_record(path)
+      end
+    end
+  end
+
+  def normalize_record(record, path)
+    return unparseable_record(path) unless record.is_a?(Hash)
+    return unparseable_record(path) unless %w[observed_at kind summary].all? { |key| record.key?(key) }
+
+    {
+      "observed_at" => record.fetch("observed_at"),
+      "kind" => record.fetch("kind"),
+      "skill" => record["skill"],
+      "summary" => record.fetch("summary"),
+      "source" => record["source"],
+      "update_mode" => record["update_mode"]
+    }
+  end
+
+  def unparseable_record(path)
+    {
+      "observed_at" => "UNKNOWN",
+      "kind" => "unparseable",
+      "skill" => nil,
+      "summary" => "Could not parse #{path}"
+    }
+  end
+
+  def staged_update_count
+    Dir.glob(File.join(memory_root, "staged-updates", "*")).count { |path| File.file?(path) }
+  end
+
+  def append(options)
+    ensure_initialized!
+    kind = options[:kind].to_s.strip
+    summary = options[:summary].to_s.strip
+    source = options[:source].to_s.strip
+    skill = options[:skill].to_s.strip
+
+    raise Error, "--kind is required" if kind.empty?
+    raise Error, "--kind must be one of: #{ALLOWED_KINDS.join(', ')}" unless ALLOWED_KINDS.include?(kind)
+    raise Error, "--summary is required" if summary.empty?
+    raise Error, "--summary must be #{MAX_FIELD_LENGTH} characters or fewer" if summary.length > MAX_FIELD_LENGTH
+    raise Error, "--source is required" if source.empty?
+    raise Error, "--source must be #{MAX_FIELD_LENGTH} characters or fewer" if source.length > MAX_FIELD_LENGTH
+    raise Error, "--skill must be #{MAX_FIELD_LENGTH} characters or fewer" if skill.length > MAX_FIELD_LENGTH
+
+    check_privacy!(summary)
+    check_privacy!(source)
+    check_privacy!(skill) unless skill.empty?
+
+    observed_at = current_time
+    record = {
+      "observed_at" => observed_at.iso8601,
+      "kind" => kind,
+      "skill" => skill.empty? ? nil : skill,
+      "summary" => summary,
+      "source" => source,
+      "update_mode" => "staged-review-only"
+    }
+    path = File.join(memory_root, "observations", "#{observed_at.utc.strftime('%Y-%m-%d')}.jsonl")
+    File.open(path, "a:UTF-8", 0o600) { |file| file.puts(JSON.generate(record)) }
+    File.chmod(0o600, path)
+    "appended #{path}"
+  end
+
+  def ensure_private_directory(path)
+    FileUtils.mkdir_p(path, mode: 0o700)
+    File.chmod(0o700, path)
+  end
+
+  def write_private_file(path, contents)
+    File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |file| file.write(contents) }
+  end
+
+  def ensure_initialized!
+    return if status.fetch("initialized")
+
+    raise Error, "task-observer memory is not initialized; run `task-observer init` first"
+  end
+
+  def current_time
+    value = ENV["TASK_OBSERVER_TIME"].to_s.strip
+    value.empty? ? Time.now.utc : Time.iso8601(value).utc
+  rescue ArgumentError
+    raise Error, "TASK_OBSERVER_TIME must be an ISO 8601 timestamp"
+  end
+
+  def check_privacy!(text)
+    return if text.to_s.empty?
+    raise Error, "observation contains an invalid URL; summarize without the URL" if malformed_url_encoding?(text)
+    raise Error, "observation appears to contain a private URL (URL credentials)" if url_userinfo?(text)
+    raise Error, "observation appears to contain a private URL (private host)" if bare_private_host?(text)
+
+    URI::DEFAULT_PARSER.extract(text).each do |url|
+      uri = URI.parse(url)
+      private_host = private_host?(uri.host)
+      sensitive_path = SENSITIVE_PATTERNS.any? { |pattern| decoded_path(uri).match?(pattern) }
+      query_keys = form_keys(uri.query)
+      fragment_keys = form_keys(uri.fragment)
+      sensitive_query = query_keys.any? { |key| sensitive_form_key?(key) }
+      sensitive_fragment = fragment_keys.any? { |key| sensitive_form_key?(key) }
+      reasons = []
+      reasons << "private host" if private_host
+      reasons << "sensitive query" if sensitive_query
+      reasons << "sensitive fragment" if sensitive_fragment
+      reasons << "sensitive path" if sensitive_path
+      reasons << "URL credentials" unless uri.userinfo.to_s.empty?
+      next if reasons.empty?
+
+      raise Error, "observation appears to contain a private URL (#{reasons.join(', ')})"
+    rescue URI::InvalidURIError, ArgumentError
+      raise Error, "observation contains an invalid URL; summarize without the URL"
+    end
+
+    return unless SENSITIVE_PATTERNS.any? { |pattern| text.match?(pattern) }
+
+    raise Error, "observation appears to contain sensitive material; summarize without secrets or regulated data"
+  end
+
+  def malformed_url_encoding?(text)
+    text.match?(%r{https?://\S*%(?![0-9A-Fa-f]{2})})
+  end
+
+  def url_userinfo?(text)
+    text.match?(%r{\b[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@})
+  end
+
+  def private_host?(host)
+    normalized = host.to_s.delete_prefix("[").delete_suffix("]")
+    return true if PRIVATE_HOST_PATTERNS.any? { |pattern| normalized.match?(pattern) }
+    return true if ambiguous_ip_literal?(normalized)
+
+    ip = IPAddr.new(normalized)
+    PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
+  rescue IPAddr::InvalidAddressError
+    false
+  end
+
+  def ambiguous_ip_literal?(host)
+    parts = host.split(".")
+    return true if host.match?(/\A\d{8,}\z/)
+
+    parts.length > 1 &&
+      parts.all? { |part| part.match?(/\A\d+\z/) } &&
+      parts.any? { |part| part.length > 1 && part.start_with?("0") }
+  end
+
+  def bare_private_host?(text)
+    text.to_s.scan(/[A-Za-z0-9._-]+(?::\d{2,5})?|\[[^\]\s]+\](?::\d{2,5})?/).any? do |token|
+      host = token.delete_prefix("[").sub(/\]\z/, "").sub(/\]:\d{2,5}\z/, "")
+      host = host.sub(/:\d{2,5}\z/, "")
+      next false unless host.include?(".") || host.include?(":") || host.match?(/\A\d+\z/)
+
+      private_host?(host)
+    end
+  end
+
+  def decoded_path(uri)
+    URI.decode_www_form_component(uri.path.to_s)
+  rescue ArgumentError
+    raise Error, "observation contains an invalid URL; summarize without the URL"
+  end
+
+  def form_keys(component)
+    return [] if component.to_s.empty?
+
+    URI.decode_www_form(component).map { |key, _value| key.downcase.tr("-", "_") }
+  end
+
+  def sensitive_form_key?(key)
+    SENSITIVE_QUERY_KEYS.include?(key)
+  end
+
+  def parse_append_args(args)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: task-observer append --kind KIND --summary TEXT --source SOURCE [--skill NAME]"
+      opts.on("--kind KIND", "Observation kind") { |value| options[:kind] = value }
+      opts.on("--skill NAME", "Affected skill name") { |value| options[:skill] = value }
+      opts.on("--summary TEXT", "Sanitized observation summary") { |value| options[:summary] = value }
+      opts.on("--source SOURCE", "Sanitized source handle") { |value| options[:source] = value }
+    end
+    parser.parse!(args)
+    raise Error, "unexpected append arguments: #{args.join(' ')}" unless args.empty?
+
+    options
+  rescue OptionParser::ParseError => e
+    raise Error, e.message
+  end
+
+  def usage
+    <<~TEXT
+      Usage: task-observer COMMAND [options]
+
+      Commands:
+        init                         Create task-observer memory directories.
+        status [--json]              Show memory path and counts.
+        list                         List sanitized observation stubs.
+        append --kind KIND --summary TEXT --source SOURCE [--skill NAME]
+                                     Append a staged-review-only observation stub.
+    TEXT
+  end
+
+  def run(argv)
+    command = argv.shift
+    case command
+    when "init"
+      puts init
+    when "status"
+      json = argv.delete("--json")
+      raise Error, "unknown status options: #{argv.join(' ')}" unless argv.empty?
+
+      data = status
+      if json
+        puts JSON.pretty_generate(data)
+      else
+        puts "memory_root: #{data.fetch('memory_root')}"
+        puts "initialized: #{data.fetch('initialized')}"
+        puts "observations: #{data.fetch('observations')}"
+        puts "staged_updates: #{data.fetch('staged_updates')}"
+      end
+    when "list"
+      raise Error, "unknown list options: #{argv.join(' ')}" unless argv.empty?
+
+      records = observation_records
+      if records.empty?
+        puts "No observations."
+      else
+        records.each do |record|
+          skill = record["skill"] || "general"
+          puts "#{record.fetch('observed_at')} #{record.fetch('kind')} #{skill}: #{record.fetch('summary')}"
+        end
+      end
+    when "append"
+      puts append(parse_append_args(argv))
+    when "-h", "--help", nil
+      puts usage
+    else
+      raise Error, "unknown command: #{command}\n#{usage}"
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    TaskObserver.run(ARGV)
+  rescue TaskObserver::Error => e
+    warn e.message
+    exit 1
+  end
+end
