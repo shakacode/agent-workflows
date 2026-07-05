@@ -188,6 +188,29 @@ class TaskObserverTest < Minitest::Test
     end
   end
 
+  def test_append_rejects_common_token_shapes
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      [
+        "sk_live_#{'A' * 24}",
+        "xoxb-#{'A' * 24}",
+        "eyJ#{'a' * 8}.eyJ#{'b' * 8}.#{'c' * 12}"
+      ].each do |summary|
+        out, status = capture_task_observer(
+          "append",
+          "--kind", "correction",
+          "--summary", summary,
+          "--source", "test",
+          env: { "CODEX_HOME" => home }
+        )
+
+        refute status.success?
+        assert_includes out, "sensitive material"
+      end
+    end
+  end
+
   def test_append_rejects_missing_required_fields_without_stack_trace
     Dir.mktmpdir("task-observer") do |home|
       run!("init", env: { "CODEX_HOME" => home })
@@ -267,6 +290,24 @@ class TaskObserverTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "private URL"
+    end
+  end
+
+  def test_append_rejects_urls_with_sensitive_fragments
+    Dir.mktmpdir("task-observer") do |home|
+      run!("init", env: { "CODEX_HOME" => home })
+
+      out, status = capture_task_observer(
+        "append",
+        "--kind", "correction",
+        "--summary", "See https://app.example.com/callback#code=abc123&state=xyz",
+        "--source", "test",
+        env: { "CODEX_HOME" => home }
+      )
+
+      refute status.success?
+      assert_includes out, "private URL"
+      assert_includes out, "sensitive fragment"
     end
   end
 

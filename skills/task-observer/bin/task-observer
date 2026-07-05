@@ -21,6 +21,9 @@ module TaskObserver
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/,
     /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
+    /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
+    /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/,
+    /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/,
     /\b(?:customer|patient|payment|cardholder|diagnosis|prescription|medical record|health data)\b/i,
     /\b\d{3}-\d{2}-\d{4}\b/,
     /\b(?:\d[ -]*?){13,19}\b/
@@ -174,11 +177,14 @@ module TaskObserver
       uri = URI.parse(url)
       private_host = private_host?(uri.host)
       sensitive_path = SENSITIVE_PATTERNS.any? { |pattern| decoded_path(uri).match?(pattern) }
-      query_keys = uri.query.to_s.empty? ? [] : URI.decode_www_form(uri.query).map { |key, _value| key.downcase }
+      query_keys = form_keys(uri.query)
+      fragment_keys = form_keys(uri.fragment)
       sensitive_query = (query_keys & SENSITIVE_QUERY_KEYS).any?
+      sensitive_fragment = (fragment_keys & SENSITIVE_QUERY_KEYS).any?
       reasons = []
       reasons << "private host" if private_host
       reasons << "sensitive query" if sensitive_query
+      reasons << "sensitive fragment" if sensitive_fragment
       reasons << "sensitive path" if sensitive_path
       reasons << "URL credentials" unless uri.userinfo.to_s.empty?
       next if reasons.empty?
@@ -215,6 +221,12 @@ module TaskObserver
     URI.decode_www_form_component(uri.path.to_s)
   rescue ArgumentError
     raise Error, "observation contains an invalid URL; summarize without the URL"
+  end
+
+  def form_keys(component)
+    return [] if component.to_s.empty?
+
+    URI.decode_www_form(component).map { |key, _value| key.downcase }
   end
 
   def parse_append_args(args)
