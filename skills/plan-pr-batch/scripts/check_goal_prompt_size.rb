@@ -286,7 +286,8 @@ host_aware_batch_sizing_phrase_checks = {
   "workflows/pr-processing.md" => [
     ["`codex`: 10 independent items, or 8", 1],
     ["`claude`: 5 independent items, or 3", 1],
-    ["`generic`: use the Claude-sized 5/3", 1]
+    ["`generic`: use the Claude-sized 5/3", 1],
+    ["- Batch size target: `codex`, `claude`, or `generic`", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: 10 independent items, or 8", 1],
@@ -303,6 +304,7 @@ host_aware_batch_sizing_phrase_checks = {
   "skills/triage/SKILL.md" => [
     ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
     ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
+    ["current-wave item cap applies across all generated groups in aggregate", 1],
     ["Codex 10/8", 2],
     ["Claude/generic 5/3", 1]
   ]

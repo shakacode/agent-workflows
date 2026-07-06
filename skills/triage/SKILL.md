@@ -93,10 +93,11 @@ after phase 1 with a precise blocker.
    - If `N` is 0 after subtracting occupied/reserved lane refs, report "all
      lanes currently occupied" and stop phase 2 instead of inventing groups.
 
-3. Split the actionable worklist into up to `N` non-empty groups for the current
-   wave, honoring dependencies, file/risk disjointness, package boundaries,
-   release gates, cross-repo sequencing, and the host-aware `$pr-batch`
-   per-wave cap from `workflows/pr-processing.md`:
+3. First cap the current wave to the selected host-aware item limit, then split
+   only those capped items into up to `N` non-empty groups, honoring
+   dependencies, file/risk disjointness, package boundaries, release gates,
+   cross-repo sequencing, and the host-aware `$pr-batch` per-wave cap from
+   `workflows/pr-processing.md`:
    - `codex`: up to 10 independent file-disjoint items, or 8 when verified
      file-disjoint lanes touch shared/risky surfaces.
    - `claude` or `generic`: up to 5 independent file-disjoint items, or 3 under
@@ -105,7 +106,9 @@ after phase 1 with a precise blocker.
      serial discovery; never count them as parallel capacity.
    Use the prompt target selected for each generated `$pr-batch` prompt; an
    explicit user-requested host or paste destination wins, otherwise use the
-   detectable current host, or `generic` when detection is ambiguous. If
+   detectable current host, or `generic` when detection is ambiguous.
+   The current-wave item cap applies across all generated groups in aggregate;
+   never multiply it by `N`, registered profiles, inboxes, or machines. If
    actionable work exceeds the capped current wave, report the remaining
    backlog/next wave instead of packing oversized groups. If actionable work has
    fewer items than available slots, report the idle slots instead of creating
@@ -141,11 +144,12 @@ Return:
 - Current coordination state, including live, stale, dead, blocked, and done
   lanes.
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
-- Up to one non-empty, per-batch-capped, capacity-derived group per available
-  lane, each with a ready `$pr-batch` prompt within the target-specific prompt
-  size limit and host-aware item cap: Codex 10/8 and 4 000 characters including
-  the Codex invocation line; Claude/generic 5/3 and under 8 000 measured
-  characters. Report idle slots or remaining backlog/next wave separately.
+- One current-wave plan whose total item count is capped in aggregate by the
+  host-aware target, then split into up to `N` non-empty capacity-derived groups,
+  each with a ready `$pr-batch` prompt within the target-specific prompt size
+  limit: Codex 10/8 and 4 000 characters including the Codex invocation line;
+  Claude/generic 5/3 and under 8 000 measured characters. Report idle slots or
+  remaining backlog/next wave separately.
 - Per-inbox queue summary when backend queue state is available: next-up items,
   in-flight items, blocked/lost-heartbeat items, and `UNKNOWN` state. If the
   installed backend does not support queue state, omit this section and note that

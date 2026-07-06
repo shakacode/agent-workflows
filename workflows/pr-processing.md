@@ -391,6 +391,9 @@ The user should not need to write a long launch prompt. If the request is short,
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
 - `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`.
 - Concurrency: one machine, multiple machines, or single-threaded.
+- Batch size target: `codex`, `claude`, or `generic`; explicit paste
+  destination or runner wins, otherwise use reliable host detection or
+  `generic`.
 - Lane split: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
 - Permissions: whether the current session can run without blocking worker approval prompts.
 - Question handling: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
