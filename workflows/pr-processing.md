@@ -2005,7 +2005,14 @@ deep audit because modes imply different scope and base selection.
     facts), a worked-issue/QA-lane coverage table (issue number or QA lane id,
     coordination lane/branch, linked PR or no-PR/blocker/QA evidence, final
     state, intent-achievement or QA-coverage classification, `UNKNOWN` facts), a
-    PR-by-PR table, and exact commands/data sources.
+    PR-by-PR table, and a concise evidence trail. The evidence trail must not be
+    a boilerplate tool list: include exact commands and data sources only when
+    they materially affect audit scope, confidence, a finding, or an `UNKNOWN`,
+    and put the relevant result, SHA, range, status, failure, or timeout beside
+    each entry. For a named batch, include bounded `agent-coord status` evidence
+    or the exact reason coordination state was `UNKNOWN`. Mention omitted
+    expected sources only when their omission changes audit confidence, with the
+    command, permission, or artifact needed to resolve it.
 
 Do not create fixes, labels, changelog edits, reverts, or PRs. Do not create
 unrelated comments; the release-gate ledger append is allowed when required

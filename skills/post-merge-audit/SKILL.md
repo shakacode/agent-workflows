@@ -350,9 +350,14 @@ Return high-risk findings first, then:
    state, issue intent-achievement or QA-coverage classification, and `UNKNOWN`
    facts (see the example in `.agents/workflows/post-merge-audit.md`).
 8. A PR-by-PR table.
-9. Exact commands and data sources used, including bounded `agent-coord status`
-   output for the named batch or the exact reason coordination state was
-   `UNKNOWN`.
+9. A concise evidence trail, not a boilerplate tool list. Include exact
+   commands and data sources only when they materially affect audit scope,
+   confidence, a finding, or an `UNKNOWN`; include the relevant result, SHA,
+   range, status, failure, or timeout beside each entry. For a named batch,
+   include bounded `agent-coord status` evidence or the exact reason
+   coordination state was `UNKNOWN`. Mention omitted expected sources only when
+   the omission changes audit confidence, with the command, permission, or
+   artifact needed to resolve it.
 
 Do not create fixes, labels, changelog edits, reverts, or PRs. Do not create
 unrelated comments; the release-gate ledger append is allowed when required
