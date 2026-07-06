@@ -255,7 +255,7 @@ or validator, but they are not required and JSON is not mandatory.
 - File-touch map and path evidence:
 - Dependencies and sequencing:
 - Subagent split:
-- Batch sizing target: `codex`, `claude`, or `generic`; max items per wave and
+- Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - `merge_authority`:
 - Concurrent activity and dependency status:

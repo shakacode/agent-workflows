@@ -249,7 +249,7 @@ required_skill_rule_phrases = [
   "current repository name",
   "date +'%m-%d %H:%M'",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
-  "Batch sizing target:",
+  "Batch size target:",
   "target-specific prompt",
   "including the `/goal` line",
   "prepend only the `/goal` line",
