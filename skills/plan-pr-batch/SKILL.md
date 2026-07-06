@@ -286,7 +286,8 @@ Objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <required owner/scope or not required rationale>.
-Scope summary: [compact titles, sequencing, deps, exclusions, path owners; bulky evidence outside.]
+Batch size target: <codex|claude|generic>; wave: <cap/items>.
+Scope summary: [titles, sequencing, deps, exclusions, owners.]
 File-touch map:
 - PR/Issue #N -> changed paths incl create/delete/rename (owner: lane/name)
 - PR/Issue #N -> summarized path patterns plus collision-relevant exact paths/renames/deletes (owner: lane/name)

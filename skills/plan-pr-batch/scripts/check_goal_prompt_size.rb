@@ -11,6 +11,7 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
+BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wave:"
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
@@ -271,6 +272,7 @@ required_all_prompt_phrases = [
   "`waiting-on-checks-or-review` is not an overall Goal-mode terminal state",
   "report NOT COMPLETE",
   "merge_authority:",
+  BATCH_SIZE_TARGET_PROMPT_PHRASE,
   "merge only when `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
@@ -313,6 +315,12 @@ host_aware_batch_sizing_text_by_path = {
   "skills/triage/SKILL.md" => triage_skill_text
 }
 
+goal_prompt_batch_size_target_text_by_path = {
+  "workflows/pr-processing.md" => workflow_text,
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "skills/pr-batch/SKILL.md" => pr_batch_skill_text
+}
+
 if enforce_restart_docs_drift
   if pr_batch_docs_text.nil?
     abort_with_failure("source checkout is missing docs/pr-batch-skills.md for host-aware sizing drift check")
@@ -333,6 +341,10 @@ host_aware_batch_sizing_phrase_checks.each do |path, phrase_checks|
   phrase_checks.each do |phrase, expected_count|
     require_occurrence_count(text, phrase, expected_count, "#{path} host-aware batch sizing rules")
   end
+end
+
+goal_prompt_batch_size_target_text_by_path.each do |path, text|
+  require_occurrence_count(text, BATCH_SIZE_TARGET_PROMPT_PHRASE, 1, "#{path} goal prompt batch-size target")
 end
 
 unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
