@@ -78,7 +78,7 @@ end
 
 def read_optional_repo_file(path)
   full_path = File.join(REPO_ROOT, path)
-  return nil unless File.exist?(full_path)
+  return nil unless File.file?(full_path)
 
   File.read(full_path, encoding: "UTF-8")
 end
@@ -151,6 +151,15 @@ def require_phrases(text, phrases, label)
   end
 end
 
+def require_occurrence_count(text, phrase, expected_count, label)
+  actual_count = text.scan(Regexp.new(Regexp.escape(phrase))).length
+  return if actual_count == expected_count
+
+  abort_with_failure(
+    "#{label} has #{actual_count} occurrences of #{phrase.inspect}; expected #{expected_count}"
+  )
+end
+
 def extract_goal_prompt_template(skill_text)
   heading_index = skill_text.index("## Goal Prompt for pr-batch")
   abort_with_failure("missing Goal Prompt for pr-batch section") unless heading_index
@@ -199,8 +208,11 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
-restart_docs_text = read_optional_repo_file("docs/agent-runner-restarts.md")
+pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
+triage_skill_text = read_repo_file("skills/triage/SKILL.md")
 enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
+pr_batch_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/pr-batch-skills.md") : nil
+restart_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/agent-runner-restarts.md") : nil
 pressure_scenario_text = extract_section(
   workflow_text,
   "Pressure scenarios this prompt must satisfy:",
@@ -268,8 +280,60 @@ required_all_prompt_phrases = [
   "report UNKNOWN"
 ]
 
+host_aware_batch_sizing_phrase_checks = {
+  "workflows/pr-processing.md" => [
+    ["`codex`: 10 independent items, or 8", 1],
+    ["`claude`: 5 independent items, or 3", 1],
+    ["`generic`: use the Claude-sized 5/3", 1]
+  ],
+  "skills/plan-pr-batch/SKILL.md" => [
+    ["`codex`: 10 independent items, or 8", 1],
+    ["`claude`: 5 independent items, or 3", 1],
+    ["`generic`: use the Claude-sized 5/3", 1]
+  ],
+  "skills/pr-batch/SKILL.md" => [
+    ["Use `codex` for up to 10", 1],
+    ["Use `claude` for up to 5", 1],
+    ["Claude-sized 5/3", 1],
+    ["Codex-targeted waves may use up to 10 independent", 1],
+    ["Claude and generic\nwaves use 5 lanes, or 3", 1]
+  ],
+  "skills/triage/SKILL.md" => [
+    ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
+    ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
+    ["Codex 10/8", 2],
+    ["Claude/generic 5/3", 1]
+  ]
+}
+
+host_aware_batch_sizing_text_by_path = {
+  "workflows/pr-processing.md" => workflow_text,
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
+  "skills/triage/SKILL.md" => triage_skill_text
+}
+
+if enforce_restart_docs_drift
+  if pr_batch_docs_text.nil?
+    abort_with_failure("source checkout is missing docs/pr-batch-skills.md for host-aware sizing drift check")
+  end
+
+  host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
+    ["Codex-targeted waves may use up to 10", 1],
+    ["Claude and generic waves use up to 5", 1]
+  ]
+  host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
+end
+
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
+
+host_aware_batch_sizing_phrase_checks.each do |path, phrase_checks|
+  text = host_aware_batch_sizing_text_by_path.fetch(path)
+  phrase_checks.each do |phrase, expected_count|
+    require_occurrence_count(text, phrase, expected_count, "#{path} host-aware batch sizing rules")
+  end
+end
 
 unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("canonical workflow is missing the exact restart resume snippet")
