@@ -95,8 +95,17 @@ after phase 1 with a precise blocker.
 
 3. Split the actionable worklist into up to `N` non-empty groups for the current
    wave, honoring dependencies, file/risk disjointness, package boundaries,
-   release gates, cross-repo sequencing, and the `$pr-batch` per-batch cap: 8
-   items when files or risk overlap, or 10 fully independent items. If
+   release gates, cross-repo sequencing, and the host-aware `$pr-batch`
+   per-wave cap from `workflows/pr-processing.md`:
+   - `codex`: up to 10 independent file-disjoint items, or 8 when verified
+     file-disjoint lanes touch shared/risky surfaces.
+   - `claude` or `generic`: up to 5 independent file-disjoint items, or 3 under
+     those same shared/risky conditions.
+   - Overlapping or `UNKNOWN` path lanes are sequenced, deferred, or run as
+     serial discovery; never count them as parallel capacity.
+   Use the prompt target selected for each generated `$pr-batch` prompt; an
+   explicit user-requested host or paste destination wins, otherwise use the
+   detectable current host, or `generic` when detection is ambiguous. If
    actionable work exceeds the capped current wave, report the remaining
    backlog/next wave instead of packing oversized groups. If actionable work has
    fewer items than available slots, report the idle slots instead of creating
@@ -134,9 +143,9 @@ Return:
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
 - Up to one non-empty, per-batch-capped, capacity-derived group per available
   lane, each with a ready `$pr-batch` prompt within the target-specific prompt
-  size limit: Codex 4 000 characters including the Codex invocation line; Claude/generic under
-  8 000 measured characters. Report idle slots or remaining backlog/next wave
-  separately.
+  size limit and host-aware item cap: Codex 10/8 and 4 000 characters including
+  the Codex invocation line; Claude/generic 5/3 and under 8 000 measured
+  characters. Report idle slots or remaining backlog/next wave separately.
 - Per-inbox queue summary when backend queue state is available: next-up items,
   in-flight items, blocked/lost-heartbeat items, and `UNKNOWN` state. If the
   installed backend does not support queue state, omit this section and note that
@@ -150,6 +159,8 @@ Return:
 - Do not multiply a per-batch item cap by an assumed machine count.
 - Do not pack the full actionable backlog into the available groups when that
   would exceed the per-batch caps; report the overflow as the next wave.
+- Do not apply the Codex 10/8 cap to Claude or generic prompts; use the
+  host-aware target chosen for each generated prompt.
 - Do not route `needs-customer-feedback` issues into implementation groups
   without customer evidence or explicit maintainer approval.
 - Do not use public issue comments as capacity or queue state when the private

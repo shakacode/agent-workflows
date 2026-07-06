@@ -49,7 +49,9 @@ phase 2. The group count is derived by summing registered
 `max_concurrent_batches`, bounding that total by enabled inboxes, and subtracting
 live, blocked, and reserved lanes. If any of those inputs cannot be verified,
 phase 2 stops instead of inventing a group count. The value is never committed in
-this repo or hardcoded in the skill.
+this repo or hardcoded in the skill. Each generated implementation group still
+obeys the host-aware per-wave item caps described below; capacity slots do not
+override Codex, Claude, generic, file-collision, or `UNKNOWN` path limits.
 
 If live capacity profiles or enabled inbox config are unavailable, `$triage` may
 still produce the phase-1 inventory and graph, but phase 2 must stop with a
