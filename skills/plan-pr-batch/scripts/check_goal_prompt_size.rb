@@ -310,6 +310,7 @@ host_aware_batch_sizing_phrase_checks = {
     ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
     ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
     ["current-wave item cap applies across all generated groups in aggregate", 1],
+    ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
     ["Codex 10/8", 2],
     ["Claude/generic 5/3", 1]
   ]

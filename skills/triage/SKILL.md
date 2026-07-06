@@ -117,12 +117,13 @@ after phase 1 with a precise blocker.
    groups, express it as a `depends_on` ref for the private batch state.
 5. Produce one target-specific `$pr-batch` goal prompt per group, with a stable
    batch id, lane name, agent id, target list, validation expectations, and
-   coordination hooks. For Codex prompts, keep the prompt under the
-   `$plan-pr-batch` Codex 4 000-character limit, including the Codex invocation
-   line; for Claude/generic prompts, measure the actual prompt, keep it under 8 000
-   characters, and split or compact it when too large rather than applying the
-   Codex split threshold. Put a short `Batch title:` after the target-specific
-   invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   coordination hooks. Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
+   with the selected target and current aggregate wave cap. For Codex prompts, keep the
+   prompt under the `$plan-pr-batch` Codex 4 000-character limit, including the
+   Codex invocation line; for Claude/generic prompts, measure the actual prompt,
+   keep it under 8 000 characters, and split or compact it when too large rather
+   than applying the Codex split threshold. Put a short `Batch title:` after the
+   target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
    Derive `<PROJECT>` from the current repository name, use A/B/C group letters
    only when multiple prompts are created, and get `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell.
@@ -148,7 +149,8 @@ Return:
   host-aware target, then split into up to `N` non-empty capacity-derived groups,
   each with a ready `$pr-batch` prompt within the target-specific prompt size
   limit: Codex 10/8 and 4 000 characters including the Codex invocation line;
-  Claude/generic 5/3 and under 8 000 measured characters. Report idle slots or
+  Claude/generic 5/3 and under 8 000 measured characters. Each prompt carries
+  its selected batch size target and aggregate wave cap. Report idle slots or
   remaining backlog/next wave separately.
 - Per-inbox queue summary when backend queue state is available: next-up items,
   in-flight items, blocked/lost-heartbeat items, and `UNKNOWN` state. If the
