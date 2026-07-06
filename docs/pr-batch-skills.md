@@ -65,7 +65,14 @@ omit the queue summary and note that queue state is unavailable.
 3. If exact candidate issues are already known and may be hypothetical, AI/code-analysis-only, over-scoped, or better handled with a no-PR evidence comment, start with `$evaluate-issue` directly.
 4. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
 5. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
-6. Shape the batch into independent worker lanes. Cap each batch at 8 items when files or risk overlap, or 10 fully independent items; otherwise propose a smaller first batch. For multiple concurrent batches, keep this as a per-batch cap and apply the target repo's coordination-backend rules before launching.
+6. Shape the batch into independent worker lanes and choose the batch-size
+   target before final lane packing. Codex-targeted waves may use up to 10
+   fully independent file-disjoint items, or 8 when files or risk overlap.
+   Claude and generic waves use up to 5 independent items, or 3 when files or
+   risk overlap. Propose a smaller first batch when live coordination, CI,
+   approval, or quota health is uncertain. For multiple concurrent batches,
+   keep this as a per-wave cap and apply the target repo's coordination-backend
+   rules before launching.
 7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`

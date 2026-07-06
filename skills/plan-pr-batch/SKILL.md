@@ -150,7 +150,24 @@ Plan a PR batch
      discovered mid-flight cannot safely redirect an active editor lane; the
      coordinator would have to abort the wave, release claims, and restart it,
      which is worse than waiting.
-   - Cap at 8 with shared/risky files, else 10 independent items; propose a smaller first batch.
+   - Host-aware batch sizing: choose the prompt target before final lane
+     packing. An explicit user-requested paste destination wins over host
+     detection; otherwise use the detectable current host, or `generic` when
+     detection is ambiguous. Installed Codex/Claude homes prove install state,
+     not the active runtime.
+     After collision filtering, default to these maximum file-disjoint lanes per
+     prompt or wave:
+     - `codex`: 10 independent items, or 8 when any lane touches shared/risky
+       files, workflow/build/dependency/release surfaces, needs substantial QA,
+       has `UNKNOWN` path evidence, or would exceed the Codex prompt limit.
+     - `claude`: 5 independent items, or 3 under the same risky/shared/UNKNOWN
+       conditions, because in-process Claude Code subagents share more of the
+       current runner's context, permission, and rate budget.
+     - `generic`: use the Claude-sized 5/3 limit unless the user explicitly
+       names a host with larger verified capacity.
+     Prefer a smaller first batch when live coordination, CI, approval, or quota
+     health is uncertain; put remaining file-disjoint work in later wave
+     prompts.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -165,7 +182,10 @@ Plan a PR batch
      host is Codex. Use `claude` when the user asks for a Claude prompt/chat, or
      with no explicit paste target, the current host is Claude or Claude Code.
      Otherwise use `generic`; report when the host was not detectable or when no
-     target-specific wrapper is available for the detected host.
+     target-specific wrapper is available for the detected host. Host detection
+     is heuristic: prefer host-exposed runtime signals over installed-home
+     auto-detection, and choose `generic` when both Codex and Claude are
+     plausible.
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
      `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
@@ -234,6 +254,8 @@ or validator, but they are not required and JSON is not mandatory.
 - File-touch map and path evidence:
 - Dependencies and sequencing:
 - Subagent split:
+- Batch sizing target: `codex`, `claude`, or `generic`; max items per wave and
+  split rationale.
 - `merge_authority`:
 - Concurrent activity and dependency status:
 - Coordination hooks, including backend claim exclusions:
@@ -305,6 +327,9 @@ Execution rules:
 - Do not omit links; use GitHub URLs for every item.
 - Do not put full audit evidence in the goal prompt; put bulky details in the Batch Plan outside the goal.
 - Do not fan out items that change the same path as parallel worktrees; they will conflict — sequence them or split into a later batch.
+- Do not use installed Codex/Claude homes as proof of the current runtime host;
+  use an explicit target or fall back to `generic` sizing when detection is
+  ambiguous.
 - Do not eyeball the goal-prompt length; apply the Output-section size gate and split Codex prompts into smaller goals if they are over budget.
 
 ## Self-Check

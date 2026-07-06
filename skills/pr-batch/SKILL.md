@@ -85,10 +85,16 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 <!-- host-branch: codex-only end -->
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
-8. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
-9. **Permissions**: confirm the current session can run without blocking worker approval prompts.
-10. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
-11. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
+8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
+   user-requested host or paste destination wins. Use `codex` for up to 10
+   independent file-disjoint items, or 8 when shared/risky/UNKNOWN conditions
+   apply. Use `claude` for up to 5 independent file-disjoint items, or 3 under
+   those same conditions. Use the Claude-sized 5/3 limit for `generic` unless a
+   larger host capacity is explicitly verified.
+9. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
+10. **Permissions**: confirm the current session can run without blocking worker approval prompts.
+11. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
+12. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 
 ## Canonical Readiness Vocabulary
 
@@ -159,8 +165,11 @@ Before implementation or worker launch, produce:
    Evidence expectations.
 8. A permission and trust preflight result.
 9. A conflict check for overlapping files or dependent PRs.
+10. The selected batch-size target and wave split: `codex` up to 10/8,
+    `claude` up to 5/3, or `generic` up to 5/3, with spillover assigned to
+    later waves instead of overfilling the current one.
 <!-- host-branch: codex-only start -->
-10. A final `/goal` prompt when the user asked for Goal mode.
+11. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
 The top line of each pasteable batch prompt must be
@@ -459,6 +468,10 @@ worktree so two workers never share one working directory — Codex or
 multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
+For host-aware sizing, Codex-targeted waves may use up to 10 independent
+file-disjoint lanes, or 8 when shared/risky/UNKNOWN conditions apply. Claude and
+generic waves use 5 lanes, or 3 under those same conditions. Queue spillover as
+later waves rather than overfilling the active worker set.
 
 ## Pausing Or Stopping A Batch
 

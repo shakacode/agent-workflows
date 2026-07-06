@@ -44,6 +44,21 @@ If a host cannot load installed shared skills, use a repo-pinned `.agents/`
 copy as the fallback. Repo-local copies may carry pinned compatibility changes,
 so resolve them before the installed home.
 
+## Runtime Host Detection
+
+Runtime host detection is best-effort. An explicit user-requested host, runner,
+or paste destination wins over inference. Installed-home auto detection, such as
+`agent-workflows-status --host auto` or installer `--host auto`, detects Codex
+and Claude homes; it does not prove which runner is executing the current
+prompt. When both homes exist, the install/status tools must ask for
+`--host codex` or `--host claude` instead of guessing.
+
+A coordinator may infer the active host only from reliable runtime-exposed
+signals, such as Codex `/goal` support or Codex-specific tooling for Codex, and
+Claude Code slash commands or subagent runtime support for Claude Code. If those
+signals are absent or mixed, use the `generic` prompt target and conservative
+batch sizing.
+
 ## Invocation Syntax
 
 Shared docs may mention the portable skill name, but user-facing prompts must

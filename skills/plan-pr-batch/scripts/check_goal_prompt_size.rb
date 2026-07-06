@@ -219,6 +219,8 @@ assert_first_text_fence_rejects_nested_bare_fence
 
 required_skill_rule_phrases = [
   "Determine the prompt target",
+  "Host-aware batch sizing",
+  "Installed Codex/Claude homes prove install state",
   "the agent host/chat where the generated prompt will be pasted",
   "destination wins over host detection",
   "Codex prompt or Codex goal",
@@ -229,6 +231,7 @@ required_skill_rule_phrases = [
   "current repository name",
   "date +'%m-%d %H:%M'",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
+  "Batch sizing target:",
   "target-specific prompt",
   "including the `/goal` line",
   "prepend only the `/goal` line",
