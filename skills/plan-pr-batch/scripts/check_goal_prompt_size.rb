@@ -16,6 +16,11 @@ CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
+GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
+  merge_authority: <none | ask | auto_merge_when_gates_pass>.
+  Batch size target: <codex|claude|generic>; wave: <cap/items>.
+  Goal Mode Completion Contract:
+TEXT
 
 CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Resume batch processing now.
@@ -347,6 +352,12 @@ end
 
 goal_prompt_batch_size_target_text_by_path.each do |path, text|
   require_occurrence_count(text, BATCH_SIZE_TARGET_PROMPT_PHRASE, 1, "#{path} goal prompt batch-size target")
+  require_occurrence_count(
+    text,
+    GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET,
+    1,
+    "#{path} goal prompt batch-size target field order"
+  )
 end
 
 unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
