@@ -67,12 +67,14 @@ omit the queue summary and note that queue state is unavailable.
 5. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
 6. Shape the batch into independent worker lanes and choose the batch-size
    target before final lane packing. Codex-targeted waves may use up to 10
-   fully independent file-disjoint items, or 8 when files or risk overlap.
-   Claude and generic waves use up to 5 independent items, or 3 when files or
-   risk overlap. Propose a smaller first batch when live coordination, CI,
-   approval, or quota health is uncertain. For multiple concurrent batches,
-   keep this as a per-wave cap and apply the target repo's coordination-backend
-   rules before launching.
+   fully independent file-disjoint items, or 8 when verified file-disjoint lanes
+   touch shared or risky surfaces. Claude and generic waves use up to 5
+   independent items, or 3 under those same shared/risky conditions. Overlapping
+   or `UNKNOWN` path lanes are sequenced, deferred, or run as serial discovery;
+   never count them as parallel capacity. Propose a smaller first batch when
+   live coordination, CI, approval, or quota health is uncertain. For multiple
+   concurrent batches, keep this as a per-wave cap and apply the target repo's
+   coordination-backend rules before launching.
 7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`

@@ -87,10 +87,11 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
    user-requested host or paste destination wins. Use `codex` for up to 10
-   independent file-disjoint items, or 8 when shared/risky/UNKNOWN conditions
-   apply. Use `claude` for up to 5 independent file-disjoint items, or 3 under
-   those same conditions. Use the Claude-sized 5/3 limit for `generic` unless a
-   larger host capacity is explicitly verified.
+   independent file-disjoint items, or 8 when shared/risky conditions apply.
+   Use `claude` for up to 5 independent file-disjoint items, or 3 under those
+   same conditions. Items with `UNKNOWN` path evidence stay serial discovery
+   lanes. Use the Claude-sized 5/3 limit for `generic` unless a larger host
+   capacity is explicitly verified.
 9. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
 10. **Permissions**: confirm the current session can run without blocking worker approval prompts.
 11. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
@@ -469,9 +470,10 @@ multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 For host-aware sizing, Codex-targeted waves may use up to 10 independent
-file-disjoint lanes, or 8 when shared/risky/UNKNOWN conditions apply. Claude and
-generic waves use 5 lanes, or 3 under those same conditions. Queue spillover as
-later waves rather than overfilling the active worker set.
+file-disjoint lanes, or 8 when shared/risky conditions apply. Claude and generic
+waves use 5 lanes, or 3 under those same conditions. Keep `UNKNOWN` path lanes
+serial until discovery resolves their real paths. Queue spillover as later waves
+rather than overfilling the active worker set.
 
 ## Pausing Or Stopping A Batch
 
