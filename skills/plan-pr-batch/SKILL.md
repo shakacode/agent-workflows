@@ -158,10 +158,10 @@ Plan a PR batch
      After collision filtering, default to these maximum file-disjoint lanes per
      prompt or wave. Items with `UNKNOWN` path evidence remain serial discovery
      lanes and are not counted in parallel wave limits.
-     - `codex`: 10 independent items, or 8 when any lane touches shared/risky
+     - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky
        files, workflow/build/dependency/release surfaces, needs substantial QA,
        or would exceed the Codex prompt limit.
-     - `claude`: 5 independent items, or 3 under the same risky/shared
+     - `claude`: up to 5 independent items, or 3 under the same risky/shared
        conditions, because in-process Claude Code subagents share more of the
        current runner's context, permission, and rate budget.
      - `generic`: use the Claude-sized 5/3 limit unless the user explicitly

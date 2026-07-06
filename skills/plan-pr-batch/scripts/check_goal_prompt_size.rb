@@ -289,14 +289,14 @@ required_all_prompt_phrases = [
 
 host_aware_batch_sizing_phrase_checks = {
   "workflows/pr-processing.md" => [
-    ["`codex`: 10 independent items, or 8", 1],
-    ["`claude`: 5 independent items, or 3", 1],
+    ["`codex`: up to 10 independent items, or 8", 1],
+    ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
     ["- Batch size target: `codex`, `claude`, or `generic`", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
-    ["`codex`: 10 independent items, or 8", 1],
-    ["`claude`: 5 independent items, or 3", 1],
+    ["`codex`: up to 10 independent items, or 8", 1],
+    ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
@@ -304,7 +304,7 @@ host_aware_batch_sizing_phrase_checks = {
     ["Use `claude` for up to 5", 1],
     ["Claude-sized 5/3", 1],
     ["Codex-targeted waves may use up to 10 independent", 1],
-    ["Claude and generic waves use 5 lanes, or 3", 1]
+    ["Claude and generic waves use up to 5 lanes, or up to 3", 1]
   ],
   "skills/triage/SKILL.md" => [
     ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
