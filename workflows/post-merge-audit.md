@@ -352,11 +352,9 @@ the relevant result, SHA, range, status, failure, or timeout beside each entry.
 For a named batch, include bounded `agent-coord status` evidence or the exact
 reason coordination state was `UNKNOWN`. Mention omitted expected sources only
 when their omission changes audit confidence, with the command, permission, or
-artifact needed to resolve it. Include any remaining `UNKNOWN` facts and the
-command or permission needed to resolve them. Do not make code changes,
-comments, labels, issues, reverts, or PRs from the independent audit. The
-coordinator creates follow-up issues by default after dedupe unless the user
-opted out.
+artifact needed to resolve it. Do not make code changes, comments, labels,
+issues, reverts, or PRs from the independent audit. The coordinator creates
+follow-up issues by default after dedupe unless the user opted out.
 The audit scope/coverage table must include audit mode, base/head range,
 included PRs, excluded range PRs, durable audit coverage marker/ledger status
 where available, and any `UNKNOWN` coverage facts. The worked-issue/QA-lane
