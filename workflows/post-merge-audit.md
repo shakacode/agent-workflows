@@ -345,11 +345,18 @@ the user explicitly asked for report-only/no issue creation:
 Return high-risk findings first, then review-gate violations, QA coverage
 findings, missing changelog candidates, cross-PR interaction risks, the issue
 plan, an audit scope/coverage table, a worked-issue/QA-lane coverage table, a
-PR-by-PR table, and exact commands/data sources. Include any remaining
-`UNKNOWN` facts and the command or permission needed to resolve them. Do not make
-code changes, comments, labels, issues, reverts, or PRs from the independent
-audit. The coordinator creates follow-up issues by default after dedupe unless
-the user opted out.
+PR-by-PR table, and a concise evidence trail. The evidence trail must not be a
+boilerplate tool list: include exact commands and data sources only when they
+materially affect audit scope, confidence, a finding, or an `UNKNOWN`, and put
+the relevant result, SHA, range, status, failure, or timeout beside each entry.
+For a named batch, include bounded `agent-coord status` evidence or the exact
+reason coordination state was `UNKNOWN`. Mention omitted expected sources only
+when their omission changes audit confidence, with the command, permission, or
+artifact needed to resolve it. Include any remaining `UNKNOWN` facts and the
+command or permission needed to resolve them. Do not make code changes,
+comments, labels, issues, reverts, or PRs from the independent audit. The
+coordinator creates follow-up issues by default after dedupe unless the user
+opted out.
 The audit scope/coverage table must include audit mode, base/head range,
 included PRs, excluded range PRs, durable audit coverage marker/ledger status
 where available, and any `UNKNOWN` coverage facts. The worked-issue/QA-lane
