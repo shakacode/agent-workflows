@@ -471,8 +471,8 @@ multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
 For host-aware sizing, Codex-targeted waves may use up to 10 independent
-file-disjoint lanes, or 8 when shared/risky conditions apply. Claude and generic
-waves use 5 lanes, or 3 under those same conditions. Keep `UNKNOWN` path lanes
+file-disjoint lanes, or 8 when shared/risky conditions apply.
+Claude and generic waves use 5 lanes, or 3 under those same conditions. Keep `UNKNOWN` path lanes
 serial until discovery resolves their real paths. Queue spillover as later waves
 rather than overfilling the active worker set.
 

@@ -153,7 +153,7 @@ def require_phrases(text, phrases, label)
 end
 
 def require_occurrence_count(text, phrase, expected_count, label)
-  actual_count = text.scan(Regexp.new(Regexp.escape(phrase))).length
+  actual_count = text.scan(phrase).length
   return if actual_count == expected_count
 
   abort_with_failure(
@@ -298,7 +298,7 @@ host_aware_batch_sizing_phrase_checks = {
     ["Use `claude` for up to 5", 1],
     ["Claude-sized 5/3", 1],
     ["Codex-targeted waves may use up to 10 independent", 1],
-    ["Claude and generic\nwaves use 5 lanes, or 3", 1]
+    ["Claude and generic waves use 5 lanes, or 3", 1]
   ],
   "skills/triage/SKILL.md" => [
     ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
