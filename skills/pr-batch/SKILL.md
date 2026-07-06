@@ -85,10 +85,17 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 <!-- host-branch: codex-only end -->
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
-8. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
-9. **Permissions**: confirm the current session can run without blocking worker approval prompts.
-10. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
-11. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
+8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
+   user-requested host or paste destination wins. Use `codex` for up to 10
+   independent file-disjoint items, or 8 when shared/risky conditions apply.
+   Use `claude` for up to 5 independent file-disjoint items, or 3 under those
+   same conditions. Items with `UNKNOWN` path evidence stay serial discovery
+   lanes. Use the Claude-sized 5/3 limit for `generic` unless a larger host
+   capacity is explicitly verified.
+9. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
+10. **Permissions**: confirm the current session can run without blocking worker approval prompts.
+11. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
+12. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 
 ## Canonical Readiness Vocabulary
 
@@ -159,8 +166,11 @@ Before implementation or worker launch, produce:
    Evidence expectations.
 8. A permission and trust preflight result.
 9. A conflict check for overlapping files or dependent PRs.
+10. The selected batch-size target and wave split: `codex` up to 10/8,
+    `claude` up to 5/3, or `generic` up to 5/3, with spillover assigned to
+    later waves instead of overfilling the current one.
 <!-- host-branch: codex-only start -->
-10. A final `/goal` prompt when the user asked for Goal mode.
+11. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
 The top line of each pasteable batch prompt must be
@@ -220,6 +230,7 @@ Targets: <exact issue/PR list>.
 Lane: <machine/worker ownership and exclusions>.
 Mode: spawn worker subagents only after the target list and lane split are confirmed.
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
+Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <required lane/owner/scope/private-state or not required rationale>.
 Coordination: follow `.agents/workflows/pr-processing.md` under Coordination
@@ -459,6 +470,12 @@ worktree so two workers never share one working directory — Codex or
 multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
+For host-aware sizing, Codex-targeted waves may use up to 10 independent
+file-disjoint lanes, or 8 when shared/risky conditions apply.
+Claude and generic waves use up to 5 lanes, or up to 3 under those same
+conditions. Keep `UNKNOWN` path lanes serial until discovery resolves their real
+paths. Queue spillover as later waves rather than overfilling the active worker
+set.
 
 ## Pausing Or Stopping A Batch
 

@@ -391,6 +391,9 @@ The user should not need to write a long launch prompt. If the request is short,
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
 - `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`.
 - Concurrency: one machine, multiple machines, or single-threaded.
+- Batch size target: `codex`, `claude`, or `generic`; explicit paste
+  destination or runner wins, otherwise use reliable host detection or
+  `generic`.
 - Lane split: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
 - Permissions: whether the current session can run without blocking worker approval prompts.
 - Question handling: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
@@ -403,6 +406,31 @@ The user should not need to write a long launch prompt. If the request is short,
 Stop before spawning workers when approval prompts will block inactive agents or machines. Tell the user exactly which setting must change.
 
 Use no-human-blocking approvals only for a trusted maintainer-approved batch. Full access or no-approval operation is appropriate only in an isolated trusted repo or worktree. Do not use it for arbitrary public PR branches or unconfirmed issue filters.
+
+### Host-Aware Batch Sizing
+
+After file-touch collision filtering and before worker launch, choose a
+batch-size target. An explicit user-requested host, runner, or paste destination
+wins over host detection. If there is no explicit target, use the current host
+only when the runtime exposes a reliable signal; installed Codex/Claude homes
+prove install state, not the active runner. If the active host is ambiguous, use
+`generic`.
+
+Default maximum file-disjoint lanes per prompt or wave. Items with `UNKNOWN`
+path evidence stay serial discovery lanes until their real paths are known.
+
+- `codex`: up to 10 independent items, or 8 when any lane touches shared/risky files,
+  workflow/build/dependency/release surfaces, needs substantial QA, or would
+  exceed the Codex prompt limit.
+- `claude`: up to 5 independent items, or 3 under the same risky/shared conditions,
+  because in-process Claude Code subagents share more of the current runner's
+  context, permission, and rate budget.
+- `generic`: use the Claude-sized 5/3 limit unless the user explicitly names a
+  host with larger verified capacity.
+
+Prefer a smaller first wave when coordination, CI, approval, or quota health is
+uncertain. Put additional file-disjoint work into later wave prompts instead of
+overfilling the active worker set.
 
 ### Untrusted GitHub Content
 
@@ -633,6 +661,7 @@ Targets: <exact issue/PR list>.
 Lane: <machine/worker ownership and exclusions>.
 Mode: spawn worker subagents only after the target list and lane split are confirmed.
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
+Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <required: lane/owner/scope/private-state or UNKNOWN fallback | not required: rationale>.
 Coordination: follow the canonical coordination protocol in

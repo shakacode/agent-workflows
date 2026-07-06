@@ -49,7 +49,9 @@ phase 2. The group count is derived by summing registered
 `max_concurrent_batches`, bounding that total by enabled inboxes, and subtracting
 live, blocked, and reserved lanes. If any of those inputs cannot be verified,
 phase 2 stops instead of inventing a group count. The value is never committed in
-this repo or hardcoded in the skill.
+this repo or hardcoded in the skill. Each generated implementation group still
+obeys the host-aware per-wave item caps described below; capacity slots do not
+override Codex, Claude, generic, file-collision, or `UNKNOWN` path limits.
 
 If live capacity profiles or enabled inbox config are unavailable, `$triage` may
 still produce the phase-1 inventory and graph, but phase 2 must stop with a
@@ -65,7 +67,16 @@ omit the queue summary and note that queue state is unavailable.
 3. If exact candidate issues are already known and may be hypothetical, AI/code-analysis-only, over-scoped, or better handled with a no-PR evidence comment, start with `$evaluate-issue` directly.
 4. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
 5. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
-6. Shape the batch into independent worker lanes. Cap each batch at 8 items when files or risk overlap, or 10 fully independent items; otherwise propose a smaller first batch. For multiple concurrent batches, keep this as a per-batch cap and apply the target repo's coordination-backend rules before launching.
+6. Shape the batch into independent worker lanes and choose the batch-size
+   target before final lane packing. Codex-targeted waves may use up to 10
+   fully independent file-disjoint items, or 8 when verified file-disjoint lanes
+   touch shared or risky surfaces. Claude and generic waves use up to 5
+   independent items, or 3 under those same shared/risky conditions. Overlapping
+   or `UNKNOWN` path lanes are sequenced, deferred, or run as serial discovery;
+   never count them as parallel capacity. Propose a smaller first batch when
+   live coordination, CI, approval, or quota health is uncertain. For multiple
+   concurrent batches, keep this as a per-wave cap and apply the target repo's
+   coordination-backend rules before launching.
 7. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`

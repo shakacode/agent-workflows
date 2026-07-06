@@ -11,10 +11,16 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
+BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wave:"
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
+GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
+  merge_authority: <none | ask | auto_merge_when_gates_pass>.
+  Batch size target: <codex|claude|generic>; wave: <cap/items>.
+  Goal Mode Completion Contract:
+TEXT
 
 CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Resume batch processing now.
@@ -78,7 +84,7 @@ end
 
 def read_optional_repo_file(path)
   full_path = File.join(REPO_ROOT, path)
-  return nil unless File.exist?(full_path)
+  return nil unless File.file?(full_path)
 
   File.read(full_path, encoding: "UTF-8")
 end
@@ -151,6 +157,15 @@ def require_phrases(text, phrases, label)
   end
 end
 
+def require_occurrence_count(text, phrase, expected_count, label)
+  actual_count = text.scan(phrase).length
+  return if actual_count == expected_count
+
+  abort_with_failure(
+    "#{label} has #{actual_count} occurrences of #{phrase.inspect}; expected #{expected_count}"
+  )
+end
+
 def extract_goal_prompt_template(skill_text)
   heading_index = skill_text.index("## Goal Prompt for pr-batch")
   abort_with_failure("missing Goal Prompt for pr-batch section") unless heading_index
@@ -199,8 +214,11 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 skill_text = File.read(skill_path, encoding: "UTF-8")
 prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
-restart_docs_text = read_optional_repo_file("docs/agent-runner-restarts.md")
+pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
+triage_skill_text = read_repo_file("skills/triage/SKILL.md")
 enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
+pr_batch_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/pr-batch-skills.md") : nil
+restart_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/agent-runner-restarts.md") : nil
 pressure_scenario_text = extract_section(
   workflow_text,
   "Pressure scenarios this prompt must satisfy:",
@@ -219,6 +237,8 @@ assert_first_text_fence_rejects_nested_bare_fence
 
 required_skill_rule_phrases = [
   "Determine the prompt target",
+  "Host-aware batch sizing",
+  "Installed Codex/Claude homes prove install state",
   "the agent host/chat where the generated prompt will be pasted",
   "destination wins over host detection",
   "Codex prompt or Codex goal",
@@ -229,6 +249,7 @@ required_skill_rule_phrases = [
   "current repository name",
   "date +'%m-%d %H:%M'",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
+  "Batch size target:",
   "target-specific prompt",
   "including the `/goal` line",
   "prepend only the `/goal` line",
@@ -256,6 +277,7 @@ required_all_prompt_phrases = [
   "`waiting-on-checks-or-review` is not an overall Goal-mode terminal state",
   "report NOT COMPLETE",
   "merge_authority:",
+  BATCH_SIZE_TARGET_PROMPT_PHRASE,
   "merge only when `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
@@ -265,8 +287,79 @@ required_all_prompt_phrases = [
   "report UNKNOWN"
 ]
 
+host_aware_batch_sizing_phrase_checks = {
+  "workflows/pr-processing.md" => [
+    ["`codex`: up to 10 independent items, or 8", 1],
+    ["`claude`: up to 5 independent items, or 3", 1],
+    ["`generic`: use the Claude-sized 5/3", 1],
+    ["- Batch size target: `codex`, `claude`, or `generic`", 1]
+  ],
+  "skills/plan-pr-batch/SKILL.md" => [
+    ["`codex`: up to 10 independent items, or 8", 1],
+    ["`claude`: up to 5 independent items, or 3", 1],
+    ["`generic`: use the Claude-sized 5/3", 1]
+  ],
+  "skills/pr-batch/SKILL.md" => [
+    ["Use `codex` for up to 10", 1],
+    ["Use `claude` for up to 5", 1],
+    ["Claude-sized 5/3", 1],
+    ["Codex-targeted waves may use up to 10 independent", 1],
+    ["Claude and generic waves use up to 5 lanes, or up to 3", 1]
+  ],
+  "skills/triage/SKILL.md" => [
+    ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
+    ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
+    ["current-wave item cap applies across all generated groups in aggregate", 1],
+    ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
+    ["Codex 10/8", 2],
+    ["Claude/generic 5/3", 1]
+  ]
+}
+
+host_aware_batch_sizing_text_by_path = {
+  "workflows/pr-processing.md" => workflow_text,
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
+  "skills/triage/SKILL.md" => triage_skill_text
+}
+
+goal_prompt_batch_size_target_text_by_path = {
+  "workflows/pr-processing.md" => workflow_text,
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "skills/pr-batch/SKILL.md" => pr_batch_skill_text
+}
+
+if enforce_restart_docs_drift
+  if pr_batch_docs_text.nil?
+    abort_with_failure("source checkout is missing docs/pr-batch-skills.md for host-aware sizing drift check")
+  end
+
+  host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
+    ["Codex-targeted waves may use up to 10", 1],
+    ["Claude and generic waves use up to 5", 1]
+  ]
+  host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text
+end
+
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
+
+host_aware_batch_sizing_phrase_checks.each do |path, phrase_checks|
+  text = host_aware_batch_sizing_text_by_path.fetch(path)
+  phrase_checks.each do |phrase, expected_count|
+    require_occurrence_count(text, phrase, expected_count, "#{path} host-aware batch sizing rules")
+  end
+end
+
+goal_prompt_batch_size_target_text_by_path.each do |path, text|
+  require_occurrence_count(text, BATCH_SIZE_TARGET_PROMPT_PHRASE, 1, "#{path} goal prompt batch-size target")
+  require_occurrence_count(
+    text,
+    GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET,
+    1,
+    "#{path} goal prompt batch-size target field order"
+  )
+end
 
 unless workflow_text.include?(CANONICAL_RESUME_SNIPPET)
   abort_with_failure("canonical workflow is missing the exact restart resume snippet")
