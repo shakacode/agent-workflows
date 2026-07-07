@@ -4,6 +4,11 @@ Shared workflow skills do not require one specific coordination backend. Each
 consumer repo declares its backend in `.agents/agent-workflow.yml` under
 `coordination_backend`.
 
+Use this page as the canonical vocabulary for private coordination, public
+claim-comment fallback, no-backend mode, and `UNKNOWN` coordination state.
+Individual skills should refer here instead of duplicating backend-specific
+operating details unless they need an exact command snippet.
+
 ## Supported Models
 
 - **Private backend**: use when an organization has a tool such as
@@ -16,6 +21,16 @@ consumer repo declares its backend in `.agents/agent-workflow.yml` under
 - **No coordination backend**: acceptable for single-agent work; write `n/a` in
   `coordination_backend` and keep batch guidance serial or explicitly low
   concurrency.
+
+## Skill Behavior Summary
+
+- Prefer the private backend when the repo seam selects one and it is available.
+- Use public claim comments only when the repo seam explicitly selects or allows
+  that fallback.
+- In no-backend mode, avoid concurrent workers on the same target and describe
+  the run as single-operator or serial.
+- Preserve `UNKNOWN` when coordination facts cannot be verified. A missing or
+  degraded backend is not evidence that no one owns a target.
 
 ## Backend Contract
 

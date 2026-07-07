@@ -7,9 +7,9 @@ Status: approved direction, updated 2026-06-27
 
 The shared `pr-batch` family and related agent workflows should run across
 ShakaCode repos without copying repo-specific commands, labels, branches,
-release policy, paths, or domain examples into the shared pack. The original
-inline `AGENTS.md` key/value seam was readable, but it made scripts parse prose
-and encouraged large policy blocks inside every consumer `AGENTS.md`.
+release policy, paths, or domain examples into the shared pack. Consumer repos
+need a small, structured contract that is easy for humans to review and easy for
+helper scripts to validate.
 
 ## Goal
 
@@ -132,14 +132,13 @@ resolution and workflow policy come from the binstubs and YAML.
 The doctor intentionally does not execute the wrappers. Before consumer PRs,
 also verify that wrapped commands/tasks exist in the target repo.
 
-## Why Not Subtree First
+## Repository-Pinned Copies
 
-`git subtree` solves "every repo has a pinned copy of shared files," but the
-primary problem is resolving repo-specific behavior safely. A subtree also makes
-the `.agents/` prefix all-or-nothing, which is awkward when a repo has genuine
-local skills. Use pinned copies only when an execution environment cannot depend
-on user-installed skills or intentionally wants shared workflow updates reviewed
-inside that repo.
+Some repos may need a pinned copy of shared workflow files because their
+execution environment cannot depend on user-installed skills or because shared
+workflow updates must be reviewed inside that repo. Treat that as an explicit
+deployment choice. The default architecture remains installed shared skills plus
+a validated repo-owned seam.
 
 ## Validation
 

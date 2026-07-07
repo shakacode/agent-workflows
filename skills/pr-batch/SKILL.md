@@ -8,6 +8,9 @@ argument-hint: '[exact issue/PR numbers or filters]'
 
 Turn a short batch request into a safe, explicit launch plan and, when requested, a ready-to-paste Codex goal prompt.
 
+Use `docs/coordination-backend.md` as the canonical vocabulary for private
+backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
+
 If a skill picker only exposes installed/global skills, treat this skill as an
 entry point. After fetching, prefer repo-local `.agents/skills/...` and
 `.agents/workflows/...` files when they exist; otherwise use the installed
@@ -235,11 +238,11 @@ Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall G
 Batch QA Lane: <required lane/owner/scope/private-state or not required rationale>.
 Coordination: follow `.agents/workflows/pr-processing.md` under Coordination
 State and Worker Rules before creating worktrees or branches. Include stable
-agent ids, bounded targeted `agent-coord status` / claim outcomes, batch ids,
+agent ids, bounded targeted coordination status / claim outcomes, batch ids,
 dependency refs, and any `UNKNOWN` state in every worker lane and handoff.
 When the Batch QA Lane section requires QA, declare a `qa` lane with stable owner
-and claim/heartbeat expectations when the private backend is available. If
-private state is unavailable, record QA claim/heartbeat state as `UNKNOWN` and
+and claim/heartbeat expectations when the repo seam selects an available private
+backend. If private state is unavailable, record QA claim/heartbeat state as `UNKNOWN` and
 use allowed fallback evidence. Require the final QA Evidence block in the
 handoff; if QA is not required, record the rationale in that block.
 Attention contract: follow `AGENTS.md` under Maintainer Attention Contract and
@@ -448,18 +451,15 @@ Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as th
 canonical source for coordination state and worker rules. Keep this skill as a
 routing entry point; do not duplicate the full protocol here.
 
-In short: exact lane assignments beat labels; private `agent-coord` state is the
-source of truth when bounded `agent-coord doctor --json` and targeted
-lane-scoped status probes exit 0; `CLAIM_REFUSED` / exit code 3 hard-stops
-machine agents; workers heartbeat at phase transitions; coordinators create
-private batch files before dependency lanes start; dependency-sensitive lanes
-run bounded targeted status before rebase, push, readiness, and closeout; broad
-`agent-coord status` is audit-only; exact independent lanes may proceed in
-`private_state: claim-only` after a successful direct bounded claim when status
-is degraded; and structured public claim comments are only advisory fallback
-state when a private claim cannot be started or definitively fails before
-mutation with a non-timeout setup/auth error. Timed-out claims stop as
-`UNKNOWN (claim outcome)` for backend reconciliation.
+In short: exact lane assignments beat labels; a selected private backend is the
+source of truth when bounded health and target-scoped status probes pass; claim
+refusals hard-stop machine agents; workers heartbeat at phase transitions;
+dependency-sensitive lanes re-check coordination before rebase, push, readiness,
+and closeout; broad status reads are audit-only; exact independent lanes may
+proceed in claim-only mode only after the canonical workflow allows it; and
+structured public claim comments are advisory fallback state only when the repo
+seam allows that fallback. Timed-out claims stop as `UNKNOWN (claim outcome)`
+for backend reconciliation.
 
 ## Worker Rules
 
@@ -495,11 +495,11 @@ To stop an in-flight batch — for example to relaunch it with updated skills,
 workflow rules, or targets — follow the canonical
 [Cancelling Or Stopping A Batch](../../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
 protocol instead of waiting out claim leases. In short: a coordinator or maintainer
-marks the batch or specific lanes cancelled in the private backend (see
+marks the batch or specific lanes cancelled in the selected private backend (see
 [coordination-backend.md](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md)
 → **Cancellation**); workers drain at their next safe checkpoint, finishing an
 in-flight target only when abandoning would leave remote state inconsistent,
-then run `agent-coord release` and exit; wedged workers are stopped at the
+then release the coordination claim and exit; wedged workers are stopped at the
 process level. Restarting with updated skills requires launching fresh workers
 from a checkout that already has the updated `.agents/skills/...` and
 `.agents/workflows/...` files — a still-running worker keeps its old skill text.

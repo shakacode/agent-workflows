@@ -1,4 +1,7 @@
-# Downstream Binstub Sync
+# Maintainer Consumer Repo Sync
+
+This is maintainer reference material for teams that manage many consumer repos.
+It is not required for first-time adoption.
 
 Use `bin/push-downstream` to roll the agent-workflow binstub contract into the
 consumer repositories listed in `downstream.yml`, one pull request per repo.
@@ -95,7 +98,7 @@ Portable shared skills resolve this repo's commands and policy through:
 
 ```yaml
 repos:
-  - repo: shakapacker
+  - repo: example-repo
     preset: ruby-gem
     overrides:
       commands:
@@ -124,13 +127,13 @@ Plan only, with no clones and no network writes:
 
 ```bash
 bin/push-downstream
-bin/push-downstream --only shakapacker
+bin/push-downstream --only example-repo
 ```
 
 Apply to a canary first, then fan out:
 
 ```bash
-bin/push-downstream --only shakapacker --apply
+bin/push-downstream --only example-repo --apply
 bin/push-downstream --apply
 ```
 
