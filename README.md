@@ -73,25 +73,11 @@ bin/install-agent-workflows --host codex
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
 explicit shared agent home.
 
-For contributors and operators who want the full ShakaCode agent stack locally,
-run the stack sync helper from the checkout:
-
-```bash
-bin/agent-stack sync
-```
-
+For the full ShakaCode agent stack setup (`agent-workflows`,
+`agent-coordination`, and `agent-coordination-dashboard`), see
+[Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup).
 `agent-stack` is ShakaCode-specific stack tooling, not part of the generic
 workflow-pack install path for consumer repositories.
-
-It keeps the source repos in `~/src`, keeps private runtime configuration under
-`~/.agent-workflows`, creates compatibility symlinks for older Codex paths, and
-installs the shorter `agent-stack` command for future runs:
-
-```text
-~/src/agent-workflows
-~/src/agent-coordination
-~/src/agent-coordination-dashboard
-```
 
 ### Host Installer Path
 

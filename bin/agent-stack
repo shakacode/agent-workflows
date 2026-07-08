@@ -147,6 +147,49 @@ physical_dir() {
   (cd "$directory" && pwd -P)
 }
 
+absolute_path() {
+  local path="$1"
+  local parent base parent_path
+
+  if [[ "$path" != /* ]]; then
+    path="$PWD/$path"
+  fi
+
+  if [[ "$path" = "/" ]]; then
+    printf '/\n'
+    return
+  fi
+  path="${path%/}"
+  parent="$(dirname "$path")"
+  base="$(basename "$path")"
+  if [[ -d "$parent" ]]; then
+    parent_path="$(cd "$parent" && pwd -P)"
+  else
+    parent_path="$(absolute_path "$parent")"
+  fi
+
+  if [[ "$parent_path" = "/" ]]; then
+    printf '/%s\n' "$base"
+  else
+    printf '%s/%s\n' "$parent_path" "$base"
+  fi
+}
+
+reject_compat_root_inside_source_checkout() {
+  local root="$1"
+  local repo_name checkout_path
+
+  for repo_name in "${repo_names[@]}"; do
+    checkout_path="$source_root/$repo_name"
+    case "$root" in
+      "$checkout_path"|"$checkout_path"/*)
+        echo "Refusing compatibility root inside source checkout: $root" >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
 prepare_runtime_root() {
   mkdir -p "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
   chmod 700 "$runtime_root" "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
@@ -245,7 +288,10 @@ sync_repo() {
     exit 1
   fi
 
-  origin="$(git -C "$path" remote get-url origin)"
+  if ! origin="$(git -C "$path" remote get-url origin 2>/dev/null)"; then
+    echo "Refusing to sync $name: missing origin remote at $path" >&2
+    exit 1
+  fi
   if ! origin_allowed "$name" "$origin"; then
     echo "Refusing $name origin mismatch at $path: $origin" >&2
     exit 1
@@ -375,7 +421,10 @@ install_workflows() {
 }
 
 source_root="$(physical_dir "$source_root")"
+compat_root="$(absolute_path "$compat_root")"
+reject_compat_root_inside_source_checkout "$compat_root"
 compat_root="$(physical_dir "$compat_root")"
+reject_compat_root_inside_source_checkout "$compat_root"
 runtime_root="$(physical_dir "$runtime_root")"
 if [[ "$install_tools" = "true" ]]; then
   agent_coord_install_dir="$(physical_dir "$agent_coord_install_dir")"

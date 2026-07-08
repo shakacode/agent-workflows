@@ -284,6 +284,33 @@ test_sync_refuses_non_main_repo() {
   assert_contains "$output" "not on main"
 }
 
+test_sync_refuses_checkout_without_origin_remote() {
+  local tmp source_root output status
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  with_origins "$tmp"
+
+  git clone --quiet "$tmp/origins/agent-workflows.git" "$source_root/agent-workflows"
+  git -C "$source_root/agent-workflows" remote remove origin
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$tmp/compat" \
+        --runtime-root "$tmp/runtime" \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected checkout without origin remote to fail"
+  assert_contains "$output" "missing origin remote"
+}
+
 test_sync_accepts_git_worktree_checkout() {
   local tmp source_root primary_checkout
   tmp="$(make_tmp_dir)"
@@ -418,6 +445,32 @@ test_sync_refuses_overlapping_source_and_compat_roots() {
   [[ -d "$source_root/agent-workflows/.git" || -f "$source_root/agent-workflows/.git" ]] || fail "expected source checkout to remain intact"
 }
 
+test_sync_refuses_compat_root_inside_source_checkout_before_creating_it() {
+  local tmp source_root compat_root output status
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$source_root/agent-workflows/compat"
+  with_origins "$tmp"
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$compat_root" \
+        --runtime-root "$tmp/runtime" \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected nested compatibility root to fail"
+  assert_contains "$output" "Refusing compatibility root inside source checkout"
+  [[ ! -e "$source_root/agent-workflows" ]] || fail "nested compatibility root should be rejected before creating the checkout path"
+}
+
 test_sync_links_compat_to_physical_source_root() {
   local tmp real_source_root source_root compat_root runtime_root
   tmp="$(make_tmp_dir)"
@@ -527,11 +580,13 @@ test_sync_preserves_preexisting_agent_coord_file
 test_sync_updates_running_installed_agent_stack_via_temp_file
 test_sync_refuses_dirty_repo_without_force_stash
 test_sync_refuses_non_main_repo
+test_sync_refuses_checkout_without_origin_remote
 test_sync_accepts_git_worktree_checkout
 test_sync_clones_main_even_when_remote_head_differs
 test_sync_rejects_existing_checkout_when_url_override_disagrees
 test_sync_refuses_mismatched_compat_symlink_without_replace
 test_sync_refuses_overlapping_source_and_compat_roots
+test_sync_refuses_compat_root_inside_source_checkout_before_creating_it
 test_sync_links_compat_to_physical_source_root
 test_sync_refuses_runtime_env_symlink
 test_no_install_does_not_create_default_install_dir
