@@ -13,6 +13,7 @@ Default targets:
   --host auto    an existing Codex or Claude home, if exactly one is detectable
 
 Installed paths:
+  <target>/LICENSE
   <target>/skills/*
   <target>/workflows/*
   <target>/docs/coordination-backend.md
@@ -217,6 +218,29 @@ link_pack_docs() {
   done
 }
 
+copy_pack_license() {
+  local destination="$target/LICENSE"
+  mkdir -p "$target"
+  if [[ -L "$destination" ]]; then
+    rm -f "$destination"
+  fi
+  if [[ -e "$destination" && ! -f "$destination" ]]; then
+    echo "Refusing to replace non-file path: $destination" >&2
+    exit 1
+  fi
+  install -m 0644 "$repo_root/LICENSE" "$destination"
+}
+
+link_pack_license() {
+  local destination="$target/LICENSE"
+  mkdir -p "$target"
+  if [[ -e "$destination" && ! -L "$destination" ]]; then
+    echo "Refusing to replace non-symlink path: $destination" >&2
+    exit 1
+  fi
+  ln -sfn "$repo_root/LICENSE" "$destination"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -264,6 +288,7 @@ host="${resolved%%:*}"
 target="${resolved#*:}"
 
 if [[ "$mode" = "copy" ]]; then
+  copy_pack_license
   ensure_real_directory "$target/skills"
   ensure_real_directory "$target/workflows"
   ensure_real_directory "$target/docs"
@@ -283,6 +308,7 @@ if [[ "$mode" = "copy" ]]; then
     install -m 0755 "$repo_root/bin/$helper" "$destination"
   done
 else
+  link_pack_license
   mkdir -p "$target/skills" "$target/bin"
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
     echo "Refusing to replace non-symlink path: $target/workflows" >&2

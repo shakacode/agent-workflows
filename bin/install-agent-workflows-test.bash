@@ -95,6 +95,8 @@ test_codex_host_install_writes_helpers_and_metadata() {
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
 
+  assert_file "$target/LICENSE"
+  grep -q "MIT License" "$target/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
   assert_file "$target/skills/pr-batch/SKILL.md"
   assert_file "$target/skills/pr-batch/agents/openai.yaml"
   assert_file "$target/workflows/pr-processing.md"
@@ -134,6 +136,8 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
 
   CLAUDE_HOME="$tmp/.claude" "$ROOT/bin/install-agent-workflows" --host claude >/tmp/install-agent-workflows-test.out
 
+  assert_file "$tmp/.claude/LICENSE"
+  grep -q "MIT License" "$tmp/.claude/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
   assert_file "$tmp/.claude/skills/pr-batch/SKILL.md"
   assert_file "$tmp/.claude/skills/pr-batch/agents/openai.yaml"
   assert_file "$tmp/.claude/workflows/pr-processing.md"
@@ -194,6 +198,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
 
+  assert_symlink "$target/LICENSE"
   assert_symlink "$target/skills/pr-batch"
   assert_symlink "$target/workflows"
   assert_file "$target/docs/personal.md"
@@ -235,6 +240,8 @@ test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   assert_symlink "$target/docs/solutions/README.md"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
 
+  assert_file "$target/LICENSE"
+  [[ ! -L "$target/LICENSE" ]] || fail "copy mode should replace pack LICENSE symlink with a real copy"
   assert_file "$source_doc"
   assert_file "$target/docs/coordination-backend.md"
   [[ ! -L "$target/docs/coordination-backend.md" ]] || fail "copy mode should replace pack doc symlink with a real copy"
