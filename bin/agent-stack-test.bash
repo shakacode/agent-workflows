@@ -2,6 +2,29 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tmp_paths=()
+
+make_tmp_dir() {
+  local path
+  path="$(mktemp -d)"
+  tmp_paths+=("$path")
+  printf '%s\n' "$path"
+}
+
+make_tmp_file() {
+  local path
+  path="$(mktemp)"
+  tmp_paths+=("$path")
+  printf '%s\n' "$path"
+}
+
+cleanup() {
+  if [[ "${#tmp_paths[@]}" -gt 0 ]]; then
+    rm -rf "${tmp_paths[@]}"
+  fi
+}
+
+trap cleanup EXIT
 
 fail() {
   echo "FAIL: $*" >&2
@@ -101,9 +124,11 @@ with_origins() {
 }
 
 test_sync_clones_installs_and_links_the_stack() {
-  local tmp source_root compat_root runtime_root target install_dir
-  tmp="$(mktemp -d)"
+  local tmp source_root expected_source_root compat_root runtime_root target install_dir
+  tmp="$(make_tmp_dir)"
   source_root="$tmp/src"
+  mkdir -p "$source_root"
+  expected_source_root="$(cd "$source_root" && pwd -P)"
   compat_root="$tmp/codex/agent-repos"
   runtime_root="$tmp/agent-workflows-home"
   target="$tmp/codex-home"
@@ -125,10 +150,11 @@ test_sync_clones_installs_and_links_the_stack() {
   assert_file "$source_root/agent-coordination-dashboard/README.md"
   assert_file "$target/bin/agent-workflows-installed"
   assert_executable "$install_dir/agent-coord"
+  assert_executable "$install_dir/agent-stack"
   [[ ! -e "$install_dir/agent_coord" ]] || fail "legacy agent_coord alias should be removed"
-  assert_symlink_to "$compat_root/agent-workflows" "$source_root/agent-workflows"
-  assert_symlink_to "$compat_root/agent-coordination" "$source_root/agent-coordination"
-  assert_symlink_to "$compat_root/agent-coordination-dashboard" "$source_root/agent-coordination-dashboard"
+  assert_symlink_to "$compat_root/agent-workflows" "$expected_source_root/agent-workflows"
+  assert_symlink_to "$compat_root/agent-coordination" "$expected_source_root/agent-coordination"
+  assert_symlink_to "$compat_root/agent-coordination-dashboard" "$expected_source_root/agent-coordination-dashboard"
   [[ -d "$runtime_root/cache" ]] || fail "expected runtime cache directory"
   [[ -d "$runtime_root/logs" ]] || fail "expected runtime logs directory"
   [[ -d "$runtime_root/state" ]] || fail "expected runtime state directory"
@@ -137,7 +163,7 @@ test_sync_clones_installs_and_links_the_stack() {
 
 test_sync_refuses_dirty_repo_without_force_stash() {
   local tmp source_root output status
-  tmp="$(mktemp -d)"
+  tmp="$(make_tmp_dir)"
   source_root="$tmp/src"
   with_origins "$tmp"
 
@@ -149,7 +175,11 @@ test_sync_refuses_dirty_repo_without_force_stash() {
     AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
     AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
     AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
-      "$ROOT/bin/agent-stack" sync --source-root "$source_root" --compat-root "$tmp/compat" --no-install 2>&1
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$tmp/compat" \
+        --runtime-root "$tmp/runtime" \
+        --no-install 2>&1
   )"
   status=$?
   set -e
@@ -160,7 +190,7 @@ test_sync_refuses_dirty_repo_without_force_stash() {
 
 test_sync_refuses_non_main_repo() {
   local tmp source_root output status
-  tmp="$(mktemp -d)"
+  tmp="$(make_tmp_dir)"
   source_root="$tmp/src"
   with_origins "$tmp"
 
@@ -172,7 +202,11 @@ test_sync_refuses_non_main_repo() {
     AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
     AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
     AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
-      "$ROOT/bin/agent-stack" sync --source-root "$source_root" --compat-root "$tmp/compat" --no-install 2>&1
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$tmp/compat" \
+        --runtime-root "$tmp/runtime" \
+        --no-install 2>&1
   )"
   status=$?
   set -e
@@ -181,9 +215,89 @@ test_sync_refuses_non_main_repo() {
   assert_contains "$output" "not on main"
 }
 
+test_sync_rejects_existing_checkout_when_url_override_disagrees() {
+  local tmp source_root output status
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  with_origins "$tmp"
+  git clone --quiet --bare "$tmp/work/agent-workflows" "$tmp/origins/agent-workflows-fork.git"
+
+  git clone --quiet "$tmp/origins/agent-workflows.git" "$source_root/agent-workflows"
+  git -C "$source_root/agent-workflows" remote set-url origin https://github.com/shakacode/agent-workflows.git
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows-fork.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$tmp/compat" \
+        --runtime-root "$tmp/runtime" \
+        --no-install \
+        --no-fetch 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected override origin mismatch to fail"
+  assert_contains "$output" "origin mismatch"
+}
+
+test_sync_links_compat_to_physical_source_root() {
+  local tmp real_source_root source_root compat_root runtime_root
+  tmp="$(make_tmp_dir)"
+  real_source_root="$tmp/real-src"
+  source_root="$tmp/src-link"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  mkdir -p "$real_source_root"
+  real_source_root="$(cd "$real_source_root" && pwd -P)"
+  ln -s "$real_source_root" "$source_root"
+  with_origins "$tmp"
+
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$ROOT/bin/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$compat_root" \
+      --runtime-root "$runtime_root" \
+      --no-install
+
+  assert_symlink_to "$compat_root/agent-workflows" "$real_source_root/agent-workflows"
+  assert_symlink_to "$compat_root/agent-coordination" "$real_source_root/agent-coordination"
+  assert_symlink_to "$compat_root/agent-coordination-dashboard" "$real_source_root/agent-coordination-dashboard"
+}
+
+test_no_install_does_not_create_default_install_dir() {
+  local tmp source_root compat_root runtime_root home
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  home="$tmp/home"
+  mkdir -p "$home"
+  with_origins "$tmp"
+
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  HOME="$home" \
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$ROOT/bin/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$compat_root" \
+      --runtime-root "$runtime_root" \
+      --no-install
+
+  [[ ! -e "$home/.local/bin" ]] || fail "--no-install should not create the default install dir"
+}
+
 test_sync_force_stash_allows_dirty_main_repo() {
-  local tmp source_root
-  tmp="$(mktemp -d)"
+  local tmp source_root output_file
+  tmp="$(make_tmp_dir)"
+  output_file="$(make_tmp_file)"
   source_root="$tmp/src"
   with_origins "$tmp"
 
@@ -196,8 +310,9 @@ test_sync_force_stash_allows_dirty_main_repo() {
     "$ROOT/bin/agent-stack" sync \
       --source-root "$source_root" \
       --compat-root "$tmp/compat" \
+      --runtime-root "$tmp/runtime" \
       --no-install \
-      --force-stash >/tmp/agent-stack-test.out
+      --force-stash >"$output_file"
 
   git -C "$source_root/agent-workflows" diff --quiet || fail "expected dirty changes to be stashed"
   git -C "$source_root/agent-workflows" stash list | grep -q "agent-stack-sync-" || fail "expected agent-stack stash"
@@ -206,6 +321,9 @@ test_sync_force_stash_allows_dirty_main_repo() {
 test_sync_clones_installs_and_links_the_stack
 test_sync_refuses_dirty_repo_without_force_stash
 test_sync_refuses_non_main_repo
+test_sync_rejects_existing_checkout_when_url_override_disagrees
+test_sync_links_compat_to_physical_source_root
+test_no_install_does_not_create_default_install_dir
 test_sync_force_stash_allows_dirty_main_repo
 
 echo "PASS agent-stack tests"

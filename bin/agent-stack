@@ -140,6 +140,12 @@ timestamp() {
   date -u '+%Y%m%dT%H%M%SZ'
 }
 
+physical_dir() {
+  local directory="$1"
+  mkdir -p "$directory"
+  (cd "$directory" && pwd -P)
+}
+
 prepare_runtime_root() {
   mkdir -p "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
   chmod 700 "$runtime_root" "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
@@ -170,6 +176,23 @@ repo_url() {
   esac
 }
 
+repo_url_overridden() {
+  case "$1" in
+    agent-workflows)
+      [[ -n "${AGENT_STACK_AGENT_WORKFLOWS_URL:-}" ]]
+      ;;
+    agent-coordination)
+      [[ -n "${AGENT_STACK_AGENT_COORDINATION_URL:-}" ]]
+      ;;
+    agent-coordination-dashboard)
+      [[ -n "${AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL:-}" ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 origin_allowed() {
   local name="$1"
   local origin="$2"
@@ -178,6 +201,10 @@ origin_allowed() {
 
   if [[ "$origin" = "$configured" ]]; then
     return 0
+  fi
+
+  if repo_url_overridden "$name"; then
+    return 1
   fi
 
   case "$name:$origin" in
@@ -268,6 +295,25 @@ link_compat_path() {
   ln -s "$source_path" "$compat_path"
 }
 
+current_script_path() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  printf '%s/%s\n' "$script_dir" "$(basename "${BASH_SOURCE[0]}")"
+}
+
+install_agent_stack() {
+  local source_path destination
+  source_path="$(current_script_path)"
+  destination="$agent_coord_install_dir/agent-stack"
+  mkdir -p "$agent_coord_install_dir"
+
+  if [[ "$source_path" = "$destination" ]]; then
+    chmod +x "$destination"
+  else
+    install -m 0755 "$source_path" "$destination"
+  fi
+}
+
 install_agent_coord() {
   local repo="$source_root/agent-coordination"
   if [[ ! -x "$repo/bin/agent-coord" ]]; then
@@ -294,6 +340,16 @@ install_workflows() {
   "$repo/bin/install-agent-workflows" "${args[@]}"
 }
 
+source_root="$(physical_dir "$source_root")"
+compat_root="$(physical_dir "$compat_root")"
+runtime_root="$(physical_dir "$runtime_root")"
+if [[ "$install_tools" = "true" ]]; then
+  agent_coord_install_dir="$(physical_dir "$agent_coord_install_dir")"
+fi
+if [[ "$install_tools" = "true" && -n "$target" ]]; then
+  target="$(physical_dir "$target")"
+fi
+
 echo "agent-stack sync"
 echo "source_root=$source_root"
 echo "compat_root=$compat_root"
@@ -310,6 +366,7 @@ for repo_name in "${repo_names[@]}"; do
 done
 
 if [[ "$install_tools" = "true" ]]; then
+  install_agent_stack
   install_agent_coord
   install_workflows
 else
