@@ -283,6 +283,13 @@ link_compat_path() {
   local backup_path link_target
 
   mkdir -p "$compat_root"
+  case "$compat_path" in
+    "$source_path"|"$source_path"/*)
+      echo "Refusing compatibility path that overlaps source checkout: $compat_path" >&2
+      exit 1
+      ;;
+  esac
+
   if [[ -L "$compat_path" ]]; then
     link_target="$(readlink "$compat_path")"
     if [[ "$link_target" = "$source_path" ]]; then

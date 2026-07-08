@@ -329,6 +329,32 @@ test_sync_refuses_mismatched_compat_symlink_without_replace() {
   assert_symlink_to "$compat_root/agent-workflows" "$wrong_target"
 }
 
+test_sync_refuses_overlapping_source_and_compat_roots() {
+  local tmp source_root output status
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  with_origins "$tmp"
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$source_root" \
+        --runtime-root "$tmp/runtime" \
+        --replace-compat \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected overlapping source/compat roots to fail"
+  assert_contains "$output" "Refusing compatibility path that overlaps source checkout"
+  [[ -d "$source_root/agent-workflows/.git" || -f "$source_root/agent-workflows/.git" ]] || fail "expected source checkout to remain intact"
+}
+
 test_sync_links_compat_to_physical_source_root() {
   local tmp real_source_root source_root compat_root runtime_root
   tmp="$(make_tmp_dir)"
@@ -440,6 +466,7 @@ test_sync_accepts_git_worktree_checkout
 test_sync_clones_main_even_when_remote_head_differs
 test_sync_rejects_existing_checkout_when_url_override_disagrees
 test_sync_refuses_mismatched_compat_symlink_without_replace
+test_sync_refuses_overlapping_source_and_compat_roots
 test_sync_links_compat_to_physical_source_root
 test_sync_refuses_runtime_env_symlink
 test_no_install_does_not_create_default_install_dir
