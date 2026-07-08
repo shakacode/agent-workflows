@@ -273,6 +273,7 @@ required_codex_prompt_phrases = [
 required_all_prompt_phrases = [
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
+  "Thread handle: <batch-short>-<lane>-<word>",
   "Goal Mode Completion Contract",
   "`waiting-on-checks-or-review` is not an overall Goal-mode terminal state",
   "report NOT COMPLETE",
@@ -284,6 +285,8 @@ required_all_prompt_phrases = [
   "document confidence data in the PR description",
   "verify current GitHub state before edits",
   "respect coordination claims and dependencies",
+  "register before launch when supported",
+  "push holder/generation check",
   "report UNKNOWN"
 ]
 

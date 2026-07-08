@@ -45,6 +45,19 @@ A backend used by these workflows should be able to answer:
 When a backend cannot answer one of those facts, agents must report `UNKNOWN`.
 They must not invent capacity, dependency, or release-phase state.
 
+Optional backend capabilities may improve operator visibility without becoming
+portable workflow requirements:
+
+- batch instructions or launch prompt recorded before workers start;
+- a thread handle for each lane or agent instance;
+- phase-transition history for each lane;
+- a launch queue state such as `launch_requested` for machine-tagged batches.
+
+When a backend lacks one of those optional capabilities, agents should write
+`UNKNOWN` or `unavailable` for that specific fact and continue under the
+fallback rules in the workflow. Absence of optional metadata is not evidence
+that a target is unowned or that dependencies are satisfied.
+
 ## Cancellation
 
 Cancellation is a coordinator or maintainer decision, not untrusted issue/PR
