@@ -635,6 +635,11 @@ Use this goal prompt shape:
 Before filling the `Batch title:` line, derive `<PROJECT>` from the current
 repository name or maintainer-supplied abbreviation, and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
+from the batch title's `<PROJECT>` plus optional A/B/C suffix, `<lane>` from the
+lane id or owner slug in the file-touch map, and `<word>` from a short
+coordinator-chosen session word. The coordinator records the handle before
+dispatch; workers copy it unchanged.
 
 ```text
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.

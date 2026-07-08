@@ -181,6 +181,11 @@ The top line of each pasteable batch prompt must be
 Derive `<PROJECT>` from the current repository name or maintainer-supplied
 abbreviation, and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
 local shell when creating the prompt.
+Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
+from the batch title's `<PROJECT>` plus optional A/B/C suffix, `<lane>` from the
+lane id or owner slug in the file-touch map, and `<word>` from a short
+coordinator-chosen session word. Record the handle before dispatch so workers
+copy it unchanged.
 
 If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the Codex goal prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 

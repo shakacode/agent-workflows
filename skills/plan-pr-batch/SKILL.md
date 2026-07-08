@@ -207,6 +207,11 @@ Plan a PR batch
      abbreviation. Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
+   - Add `Thread handle:` as the first worker-specific line. Derive
+     `<batch-short>` from the batch title's `<PROJECT>` plus optional A/B/C
+     suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
+     `<word>` from a short coordinator-chosen session word. Record the handle
+     before dispatch so workers copy it unchanged.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
      For the `claude` or `generic` target, do not prepend the Codex-only

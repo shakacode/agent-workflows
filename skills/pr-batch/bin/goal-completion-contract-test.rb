@@ -132,6 +132,19 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_thread_handle_derivation_guidance_is_documented
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+    }.each do |label, text|
+      assert_text_includes text, "first worker-specific line", label
+      assert_text_includes text, "<batch-short>", label
+      assert_text_includes text, "<lane>", label
+      assert_text_includes text, "coordinator-chosen session word", label
+    end
+  end
+
   def test_workflow_defines_canonical_readiness_vocabulary
     workflow_text = extract_markdown_section(@workflow, "### Batch Handoff Format", end_heading: /^###\s+/)
     CANONICAL_READINESS_STATES.each do |state|
