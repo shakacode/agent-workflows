@@ -68,6 +68,11 @@ create_origin() {
   case "$name" in
     agent-workflows)
       mkdir -p "$work/bin"
+      cat > "$work/bin/agent-stack" <<'BASH'
+#!/usr/bin/env bash
+echo synced agent-stack fixture
+BASH
+      chmod +x "$work/bin/agent-stack"
       cat > "$work/bin/install-agent-workflows" <<'BASH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -151,6 +156,7 @@ test_sync_clones_installs_and_links_the_stack() {
   assert_file "$target/bin/agent-workflows-installed"
   assert_executable "$install_dir/agent-coord"
   assert_executable "$install_dir/agent-stack"
+  grep -q "synced agent-stack fixture" "$install_dir/agent-stack" || fail "expected installed agent-stack to come from synced checkout"
   [[ ! -e "$install_dir/agent_coord" ]] || fail "legacy agent_coord alias should be removed"
   assert_symlink_to "$compat_root/agent-workflows" "$expected_source_root/agent-workflows"
   assert_symlink_to "$compat_root/agent-coordination" "$expected_source_root/agent-coordination"
@@ -215,6 +221,55 @@ test_sync_refuses_non_main_repo() {
   assert_contains "$output" "not on main"
 }
 
+test_sync_accepts_git_worktree_checkout() {
+  local tmp source_root primary_checkout
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  primary_checkout="$tmp/primary-agent-workflows"
+  with_origins "$tmp"
+
+  git clone --quiet "$tmp/origins/agent-workflows.git" "$primary_checkout"
+  git -C "$primary_checkout" switch --quiet -c spare-worktree-holder
+  git -C "$primary_checkout" worktree add --quiet "$source_root/agent-workflows" main
+
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$ROOT/bin/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$tmp/compat" \
+      --runtime-root "$tmp/runtime" \
+      --no-install
+
+  [[ -f "$source_root/agent-workflows/.git" ]] || fail "expected git worktree gitfile"
+}
+
+test_sync_clones_main_even_when_remote_head_differs() {
+  local tmp source_root branch
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  with_origins "$tmp"
+
+  git -C "$tmp/work/agent-workflows" switch --quiet -c default-branch
+  printf 'default branch\n' >> "$tmp/work/agent-workflows/README.md"
+  git -C "$tmp/work/agent-workflows" add README.md
+  git -C "$tmp/work/agent-workflows" commit --quiet -m "default branch marker"
+  git -C "$tmp/origins/agent-workflows.git" fetch --quiet "$tmp/work/agent-workflows" default-branch:default-branch
+  git -C "$tmp/origins/agent-workflows.git" symbolic-ref HEAD refs/heads/default-branch
+
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$ROOT/bin/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$tmp/compat" \
+      --runtime-root "$tmp/runtime" \
+      --no-install
+
+  branch="$(git -C "$source_root/agent-workflows" branch --show-current)"
+  [[ "$branch" = "main" ]] || fail "expected fresh clone on main, got $branch"
+}
+
 test_sync_rejects_existing_checkout_when_url_override_disagrees() {
   local tmp source_root output status
   tmp="$(make_tmp_dir)"
@@ -244,6 +299,36 @@ test_sync_rejects_existing_checkout_when_url_override_disagrees() {
   assert_contains "$output" "origin mismatch"
 }
 
+test_sync_refuses_mismatched_compat_symlink_without_replace() {
+  local tmp source_root compat_root runtime_root output status wrong_target
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  wrong_target="$tmp/custom-agent-workflows"
+  mkdir -p "$compat_root" "$wrong_target"
+  ln -s "$wrong_target" "$compat_root/agent-workflows"
+  with_origins "$tmp"
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$compat_root" \
+        --runtime-root "$runtime_root" \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected mismatched compatibility symlink to fail"
+  assert_contains "$output" "Refusing to replace compatibility path"
+  assert_symlink_to "$compat_root/agent-workflows" "$wrong_target"
+}
+
 test_sync_links_compat_to_physical_source_root() {
   local tmp real_source_root source_root compat_root runtime_root
   tmp="$(make_tmp_dir)"
@@ -268,6 +353,36 @@ test_sync_links_compat_to_physical_source_root() {
   assert_symlink_to "$compat_root/agent-workflows" "$real_source_root/agent-workflows"
   assert_symlink_to "$compat_root/agent-coordination" "$real_source_root/agent-coordination"
   assert_symlink_to "$compat_root/agent-coordination-dashboard" "$real_source_root/agent-coordination-dashboard"
+}
+
+test_sync_refuses_runtime_env_symlink() {
+  local tmp source_root compat_root runtime_root env_target output status
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  env_target="$tmp/external-env"
+  mkdir -p "$runtime_root"
+  printf 'SECRET=1\n' > "$env_target"
+  ln -s "$env_target" "$runtime_root/env"
+  with_origins "$tmp"
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$compat_root" \
+        --runtime-root "$runtime_root" \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected runtime env symlink to fail"
+  assert_contains "$output" "Refusing to use runtime env symlink"
 }
 
 test_no_install_does_not_create_default_install_dir() {
@@ -321,8 +436,12 @@ test_sync_force_stash_allows_dirty_main_repo() {
 test_sync_clones_installs_and_links_the_stack
 test_sync_refuses_dirty_repo_without_force_stash
 test_sync_refuses_non_main_repo
+test_sync_accepts_git_worktree_checkout
+test_sync_clones_main_even_when_remote_head_differs
 test_sync_rejects_existing_checkout_when_url_override_disagrees
+test_sync_refuses_mismatched_compat_symlink_without_replace
 test_sync_links_compat_to_physical_source_root
+test_sync_refuses_runtime_env_symlink
 test_no_install_does_not_create_default_install_dir
 test_sync_force_stash_allows_dirty_main_repo
 

@@ -149,7 +149,10 @@ physical_dir() {
 prepare_runtime_root() {
   mkdir -p "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
   chmod 700 "$runtime_root" "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
-  if [[ ! -e "$runtime_root/env" ]]; then
+  if [[ -L "$runtime_root/env" ]]; then
+    echo "Refusing to use runtime env symlink: $runtime_root/env" >&2
+    exit 1
+  elif [[ ! -e "$runtime_root/env" ]]; then
     install -m 0600 /dev/null "$runtime_root/env"
   elif [[ ! -f "$runtime_root/env" ]]; then
     echo "Refusing to use non-file runtime env: $runtime_root/env" >&2
@@ -235,8 +238,8 @@ sync_repo() {
 
   if [[ ! -e "$path" ]]; then
     echo "clone $name -> $path"
-    git clone "$url" "$path"
-  elif [[ ! -d "$path/.git" ]]; then
+    git clone --branch main "$url" "$path"
+  elif ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "Refusing to use non-git path for $name: $path" >&2
     exit 1
   fi
@@ -277,11 +280,21 @@ link_compat_path() {
   local name="$1"
   local source_path="$source_root/$name"
   local compat_path="$compat_root/$name"
-  local backup_path
+  local backup_path link_target
 
   mkdir -p "$compat_root"
   if [[ -L "$compat_path" ]]; then
-    rm -f "$compat_path"
+    link_target="$(readlink "$compat_path")"
+    if [[ "$link_target" = "$source_path" ]]; then
+      return
+    fi
+    if [[ "$replace_compat" != "true" ]]; then
+      echo "Refusing to replace compatibility path: $compat_path (use --replace-compat)" >&2
+      exit 1
+    fi
+    backup_path="$compat_path.pre-agent-stack-$(timestamp)"
+    mv "$compat_path" "$backup_path"
+    echo "archived compatibility path: $backup_path"
   elif [[ -e "$compat_path" ]]; then
     if [[ "$replace_compat" != "true" ]]; then
       echo "Refusing to replace compatibility path: $compat_path (use --replace-compat)" >&2
@@ -295,16 +308,15 @@ link_compat_path() {
   ln -s "$source_path" "$compat_path"
 }
 
-current_script_path() {
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-  printf '%s/%s\n' "$script_dir" "$(basename "${BASH_SOURCE[0]}")"
-}
-
 install_agent_stack() {
   local source_path destination
-  source_path="$(current_script_path)"
+  source_path="$source_root/agent-workflows/bin/agent-stack"
   destination="$agent_coord_install_dir/agent-stack"
+  if [[ ! -x "$source_path" ]]; then
+    echo "Skipping agent-stack install: missing $source_path" >&2
+    return
+  fi
+
   mkdir -p "$agent_coord_install_dir"
 
   if [[ "$source_path" = "$destination" ]]; then
