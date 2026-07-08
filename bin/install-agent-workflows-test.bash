@@ -104,6 +104,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-trust-audit"
+  assert_file "$target/bin/agent-stack"
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
@@ -141,6 +142,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/docs/solutions/README.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
+  assert_file "$tmp/.claude/bin/agent-stack"
   [[ ! -e "$tmp/.claude/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be installed into Claude home metadata"
 }
 
@@ -201,6 +203,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
+  assert_symlink "$target/bin/agent-stack"
   assert_file "$target/.agent-workflows-install.json"
 }
 

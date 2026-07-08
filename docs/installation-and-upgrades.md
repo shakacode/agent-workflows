@@ -73,7 +73,28 @@ ruby bin/codex-plugin-manifest-check
 
 ## Install
 
-Clone the source pack:
+For a hackable full-stack local setup, use `agent-stack sync` after this pack is
+installed. It keeps editable source checkouts in `~/src`, private runtime
+configuration under `~/.agent-workflows`, and compatibility symlinks under
+`~/codex/agent-repos`:
+
+```text
+~/src/agent-workflows
+~/src/agent-coordination
+~/src/agent-coordination-dashboard
+
+~/.agent-workflows/
+  env
+  cache/
+  logs/
+  state/
+```
+
+```bash
+agent-stack sync
+```
+
+For a first install, clone the source pack manually:
 
 ```bash
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
@@ -113,6 +134,7 @@ The installer writes:
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/agent-stack`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`

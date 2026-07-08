@@ -19,6 +19,7 @@ Installed paths:
   <target>/docs/review-finding-schema.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
+  <target>/bin/agent-stack
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
   <target>/.agent-workflows-install.json
@@ -32,6 +33,7 @@ mode="copy"
 metadata_name=".agent-workflows-install.json"
 bin_helpers=(
   agent-workflow-seam-doctor
+  agent-stack
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows

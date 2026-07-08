@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: agent-stack sync [options]
+
+Keeps the ShakaCode agent stack in a hacker-friendly local layout.
+
+Default source checkouts:
+  ~/src/agent-workflows
+  ~/src/agent-coordination
+  ~/src/agent-coordination-dashboard
+
+Default compatibility aliases:
+  ~/codex/agent-repos/<repo> -> ~/src/<repo>
+
+Options:
+  --source-root DIR              source checkout root (default: ~/src)
+  --compat-root DIR              compatibility symlink root (default: ~/codex/agent-repos)
+  --runtime-root DIR             private runtime/config root (default: ~/.agent-workflows)
+  --host codex|claude|auto       workflow install host (default: codex)
+  --target DIR                   workflow install target
+  --mode copy|symlink            workflow install mode (default: copy)
+  --agent-coord-install-dir DIR  agent-coord install dir (default: ~/.local/bin)
+  --force-stash                  stash dirty main checkouts before syncing
+  --replace-compat               archive existing compatibility paths before symlinking
+  --no-fetch                     skip fetch/pull for existing checkouts
+  --no-install                   clone/update/link only; skip tool installs
+  -h, --help                     show help
+
+Environment URL overrides:
+  AGENT_STACK_AGENT_WORKFLOWS_URL
+  AGENT_STACK_AGENT_COORDINATION_URL
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL
+USAGE
+}
+
+command="${1:-}"
+if [[ "$command" = "-h" || "$command" = "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "$command" != "sync" ]]; then
+  usage >&2
+  exit 64
+fi
+shift
+
+source_root="${AGENT_STACK_SOURCE_ROOT:-$HOME/src}"
+compat_root="${AGENT_STACK_COMPAT_ROOT:-$HOME/codex/agent-repos}"
+runtime_root="${AGENT_STACK_RUNTIME_ROOT:-$HOME/.agent-workflows}"
+host="codex"
+target=""
+mode="copy"
+agent_coord_install_dir="$HOME/.local/bin"
+force_stash=false
+replace_compat=false
+fetch=true
+install_tools=true
+
+repo_names=(agent-workflows agent-coordination agent-coordination-dashboard)
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --source-root)
+      source_root="${2:?--source-root requires a directory}"
+      shift 2
+      ;;
+    --compat-root)
+      compat_root="${2:?--compat-root requires a directory}"
+      shift 2
+      ;;
+    --runtime-root)
+      runtime_root="${2:?--runtime-root requires a directory}"
+      shift 2
+      ;;
+    --host)
+      host="${2:?--host requires codex, claude, or auto}"
+      shift 2
+      ;;
+    --target)
+      target="${2:?--target requires a directory}"
+      shift 2
+      ;;
+    --mode)
+      mode="${2:?--mode requires copy or symlink}"
+      shift 2
+      ;;
+    --agent-coord-install-dir)
+      agent_coord_install_dir="${2:?--agent-coord-install-dir requires a directory}"
+      shift 2
+      ;;
+    --force-stash)
+      force_stash=true
+      shift
+      ;;
+    --replace-compat)
+      replace_compat=true
+      shift
+      ;;
+    --no-fetch)
+      fetch=false
+      shift
+      ;;
+    --no-install)
+      install_tools=false
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+done
+
+case "$host" in
+  codex|claude|auto) ;;
+  *)
+    echo "--host must be codex, claude, or auto, got: $host" >&2
+    exit 64
+    ;;
+esac
+
+case "$mode" in
+  copy|symlink) ;;
+  *)
+    echo "--mode must be copy or symlink, got: $mode" >&2
+    exit 64
+    ;;
+esac
+
+timestamp() {
+  date -u '+%Y%m%dT%H%M%SZ'
+}
+
+prepare_runtime_root() {
+  mkdir -p "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
+  chmod 700 "$runtime_root" "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
+  if [[ ! -e "$runtime_root/env" ]]; then
+    install -m 0600 /dev/null "$runtime_root/env"
+  elif [[ ! -f "$runtime_root/env" ]]; then
+    echo "Refusing to use non-file runtime env: $runtime_root/env" >&2
+    exit 1
+  else
+    chmod 600 "$runtime_root/env"
+  fi
+}
+
+repo_url() {
+  case "$1" in
+    agent-workflows)
+      printf '%s\n' "${AGENT_STACK_AGENT_WORKFLOWS_URL:-https://github.com/shakacode/agent-workflows.git}"
+      ;;
+    agent-coordination)
+      printf '%s\n' "${AGENT_STACK_AGENT_COORDINATION_URL:-https://github.com/shakacode/agent-coordination.git}"
+      ;;
+    agent-coordination-dashboard)
+      printf '%s\n' "${AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL:-https://github.com/shakacode/agent-coordination-dashboard.git}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+origin_allowed() {
+  local name="$1"
+  local origin="$2"
+  local configured
+  configured="$(repo_url "$name")"
+
+  if [[ "$origin" = "$configured" ]]; then
+    return 0
+  fi
+
+  case "$name:$origin" in
+    agent-workflows:https://github.com/shakacode/agent-workflows|\
+agent-workflows:https://github.com/shakacode/agent-workflows.git|\
+agent-workflows:git@github.com:shakacode/agent-workflows.git|\
+agent-coordination:https://github.com/shakacode/agent-coordination|\
+agent-coordination:https://github.com/shakacode/agent-coordination.git|\
+agent-coordination:git@github.com:shakacode/agent-coordination.git|\
+agent-coordination-dashboard:https://github.com/shakacode/agent-coordination-dashboard|\
+agent-coordination-dashboard:https://github.com/shakacode/agent-coordination-dashboard.git|\
+agent-coordination-dashboard:git@github.com:shakacode/agent-coordination-dashboard.git)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+sync_repo() {
+  local name="$1"
+  local path="$source_root/$name"
+  local url origin branch dirty stash_message
+
+  url="$(repo_url "$name")"
+  mkdir -p "$source_root"
+
+  if [[ ! -e "$path" ]]; then
+    echo "clone $name -> $path"
+    git clone "$url" "$path"
+  elif [[ ! -d "$path/.git" ]]; then
+    echo "Refusing to use non-git path for $name: $path" >&2
+    exit 1
+  fi
+
+  origin="$(git -C "$path" remote get-url origin)"
+  if ! origin_allowed "$name" "$origin"; then
+    echo "Refusing $name origin mismatch at $path: $origin" >&2
+    exit 1
+  fi
+
+  branch="$(git -C "$path" branch --show-current)"
+  if [[ "$branch" != "main" ]]; then
+    echo "Refusing to sync $name: not on main at $path (current: ${branch:-detached})" >&2
+    exit 1
+  fi
+
+  dirty="$(git -C "$path" status --porcelain)"
+  if [[ -n "$dirty" ]]; then
+    if [[ "$force_stash" = "true" ]]; then
+      stash_message="agent-stack-sync-$(timestamp)"
+      git -C "$path" stash push -u -m "$stash_message" >/dev/null
+      echo "stashed $name dirty worktree: $stash_message"
+    else
+      echo "Refusing to sync $name: dirty worktree at $path (use --force-stash to stash first)" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ "$fetch" = "true" ]]; then
+    git -C "$path" fetch --prune origin main
+    git -C "$path" pull --ff-only origin main
+  fi
+
+  printf '%-36s %s %s\n' "$name" "$(git -C "$path" rev-parse --short HEAD)" "$path"
+}
+
+link_compat_path() {
+  local name="$1"
+  local source_path="$source_root/$name"
+  local compat_path="$compat_root/$name"
+  local backup_path
+
+  mkdir -p "$compat_root"
+  if [[ -L "$compat_path" ]]; then
+    rm -f "$compat_path"
+  elif [[ -e "$compat_path" ]]; then
+    if [[ "$replace_compat" != "true" ]]; then
+      echo "Refusing to replace compatibility path: $compat_path (use --replace-compat)" >&2
+      exit 1
+    fi
+    backup_path="$compat_path.pre-agent-stack-$(timestamp)"
+    mv "$compat_path" "$backup_path"
+    echo "archived compatibility path: $backup_path"
+  fi
+
+  ln -s "$source_path" "$compat_path"
+}
+
+install_agent_coord() {
+  local repo="$source_root/agent-coordination"
+  if [[ ! -x "$repo/bin/agent-coord" ]]; then
+    echo "Skipping agent-coord install: missing $repo/bin/agent-coord" >&2
+    return
+  fi
+
+  "$repo/bin/agent-coord" bootstrap --install-dir "$agent_coord_install_dir"
+  rm -f "$agent_coord_install_dir/agent_coord"
+}
+
+install_workflows() {
+  local repo="$source_root/agent-workflows"
+  local args=(--host "$host" --mode "$mode")
+  if [[ -n "$target" ]]; then
+    args+=(--target "$target")
+  fi
+
+  if [[ ! -x "$repo/bin/install-agent-workflows" ]]; then
+    echo "Skipping workflow install: missing $repo/bin/install-agent-workflows" >&2
+    return
+  fi
+
+  "$repo/bin/install-agent-workflows" "${args[@]}"
+}
+
+echo "agent-stack sync"
+echo "source_root=$source_root"
+echo "compat_root=$compat_root"
+echo "runtime_root=$runtime_root"
+
+prepare_runtime_root
+
+for repo_name in "${repo_names[@]}"; do
+  sync_repo "$repo_name"
+done
+
+for repo_name in "${repo_names[@]}"; do
+  link_compat_path "$repo_name"
+done
+
+if [[ "$install_tools" = "true" ]]; then
+  install_agent_coord
+  install_workflows
+else
+  echo "tool installs skipped (--no-install)"
+fi
+
+echo "agent-stack sync complete"

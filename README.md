@@ -62,7 +62,25 @@ default.
 
 ## Quick Start
 
-Clone the workflow pack:
+For contributors and operators who want the full hackable stack locally, use the
+stack sync helper. It keeps the source repos in `~/src`, keeps private runtime
+configuration under `~/.agent-workflows`, and creates compatibility symlinks for
+older Codex paths:
+
+```bash
+agent-stack sync
+```
+
+The synced source layout is:
+
+```text
+~/src/agent-workflows
+~/src/agent-coordination
+~/src/agent-coordination-dashboard
+```
+
+If you are installing this pack for the first time and do not have
+`agent-stack` yet, clone the workflow pack first:
 
 ```bash
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
@@ -101,7 +119,7 @@ The installer copies:
 - install metadata to `<target>/.agent-workflows-install.json`.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-status`, `agent-workflows-trust-audit`, and
+`agent-stack`, `agent-workflows-status`, `agent-workflows-trust-audit`, and
 `upgrade-agent-workflows` available as normal commands.
 
 See [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
