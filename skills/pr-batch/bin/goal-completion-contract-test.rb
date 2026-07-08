@@ -136,7 +136,8 @@ class GoalCompletionContractTest < Minitest::Test
     {
       "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, "first worker-specific line", label
       assert_text_includes text, "<batch-short>", label
@@ -149,7 +150,8 @@ class GoalCompletionContractTest < Minitest::Test
     {
       "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, "Lane Card", label
       assert_text_includes text, "after a successful claim", label

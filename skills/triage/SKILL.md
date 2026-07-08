@@ -126,8 +126,15 @@ precise blocker.
    keep it under 8 000 characters, and split or compact it when too large rather
    than applying the Codex split threshold. Put a short `Batch title:` after the
    target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   Derive `<PROJECT>` from the current repository name, use A/B/C group letters
-   only when multiple prompts are created, and get `MM-DD HH:MM` from
+   Use `Thread handle:` as the first worker-specific line:
+   `Thread handle: <batch-short>-<lane>-<word>.`, with `<word>` as a short
+   coordinator-chosen session word. Then add the compact
+   `Lane Card: claim/PR-open/block/cancel/final; holder, branch/PR, phase, URLs or UNKNOWN.`
+   line so workers emit the canonical Lane Card after a successful claim, when the PR is opened,
+   on blocked/cancelled state, and in final handoff. The canonical card carries
+   `dashboard_url` and `pr_url`, with `UNKNOWN` when the backend does not provide
+   them. Derive `<PROJECT>` from the current repository name, use A/B/C group
+   letters only when multiple prompts are created, and get `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
@@ -152,8 +159,8 @@ Return:
   each with a ready `$pr-batch` prompt within the target-specific prompt size
   limit: Codex 10/8 and 4 000 characters including the Codex invocation line;
   Claude/generic 5/3 and under 8 000 measured characters. Each prompt carries
-  its selected batch size target and aggregate wave cap. Report idle slots or
-  remaining backlog/next wave separately.
+  its selected batch size target, aggregate wave cap, thread handle, and Lane
+  Card. Report idle slots or remaining backlog/next wave separately.
 - Per-inbox queue summary when backend queue state is available: next-up items,
   in-flight items, blocked/lost-heartbeat items, and `UNKNOWN` state. If the
   installed backend does not support queue state, omit this section and note that
