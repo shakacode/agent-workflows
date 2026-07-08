@@ -154,6 +154,7 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "Lane Card", label
       assert_text_includes text, "after a successful claim", label
       assert_text_includes text, "when the PR is opened", label
+      assert_text_includes text, "holder", label
       assert_text_includes text, "dashboard_url", label
       assert_text_includes text, "pr_url", label
     end
@@ -164,6 +165,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "Lane Card:", label
+      assert_text_includes text, "holder", label
       assert_text_includes text, "PR-open", label
       assert_text_includes text, "UNKNOWN", label
     end

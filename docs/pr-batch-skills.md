@@ -86,7 +86,7 @@ omit the queue summary and note that queue state is unavailable.
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
    workers emit the canonical card after claim, PR-open, blocked/cancelled, and
    final handoff states. Dashboard-generated and skill-generated prompts must
-   carry the same execution rules, including thread handles, Lane Cards,
+   carry the same execution rules, including thread handles, claim holders, Lane Cards,
    registration-first
    coordination when supported, and UNKNOWN fallbacks. Do not launch workers yet.
 8. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
