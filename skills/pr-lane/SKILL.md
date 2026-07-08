@@ -73,7 +73,13 @@ Claim the target before creating a branch or worktree with the core claim fields
 
 If the selected backend's claim command advertises metadata flags, include the
 lane metadata on that same claim. For ShakaCode `agent-coord`, verify support
-with `agent-coord claim --help`, then add:
+with the bounded helper before adding them:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim --help
+```
+
+Then add:
 
 ```text
 --thread-handle THREAD_HANDLE
@@ -88,7 +94,11 @@ with `agent-coord claim --help`, then add:
 When the claim command does not advertise those metadata flags, do not pass
 unknown options. Instead, write the core claim first, then verify heartbeat
 metadata support before adding lane metadata there. For ShakaCode `agent-coord`,
-verify support with `agent-coord heartbeat --help`.
+verify support with the bounded helper:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 heartbeat --help
+```
 
 If heartbeat advertises the same metadata flags, immediately record the lane
 metadata with a bounded heartbeat before branching:
@@ -216,7 +226,8 @@ triage, CI readiness, and merge policy. The single-lane shortcuts are:
    facts in the PR body.
 5. Use `verify`, `pr-monitoring`, and `address-review` when those skills apply.
 6. Determine `merge_authority` before the merge-readiness phase. Use an explicit
-   user or repo instruction when one is visible; otherwise default to `ask`.
+   user, `AGENTS.md`, or resolved batch-plan instruction when one is visible;
+   otherwise default to `none`.
    Valid values are `none`, `ask`, and `auto_merge_when_gates_pass`.
 7. Apply that `merge_authority`. With `auto_merge_when_gates_pass`, merge only
    after local validation, current-head checks, review threads, branch state,
