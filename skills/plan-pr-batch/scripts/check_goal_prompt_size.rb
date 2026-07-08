@@ -535,59 +535,52 @@ first_ready_item = <<~ITEM.chomp
     Done when: final state is `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence` as allowed by the requested `merge_authority`.
 ITEM
 
-codex_oversized_candidate = with_items(codex_prompt_template, bulky_items)
-unless codex_oversized_candidate.length >= CODEX_GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure("Codex oversized fixture did not exceed #{CODEX_GOAL_PROMPT_CHAR_LIMIT} chars")
+realistic_checks = {}
+budget_checks.each do |label, result|
+  prompts_by_target = {
+    codex: result.fetch(:codex_prompt),
+    claude: result.fetch(:claude_prompt),
+    generic: result.fetch(:generic_prompt)
+  }
+
+  realistic_checks[label] = { oversized: {}, fallback: {} }
+
+  prompts_by_target.each do |target, target_prompt_template|
+    limit = target == :codex ? CODEX_GOAL_PROMPT_CHAR_LIMIT : CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+    target_label = "#{label} #{target}"
+
+    oversized_candidate = with_items(target_prompt_template, bulky_items)
+    oversized_chars = oversized_candidate.length
+    realistic_checks[label].fetch(:oversized)[target] = oversized_chars
+    unless oversized_chars >= limit
+      abort_with_failure("#{target_label} oversized fixture did not exceed #{limit} chars")
+    end
+
+    fallback_prompt = with_items(target_prompt_template, first_ready_item)
+    # Keep this defense-in-depth check near the substitution so future changes to
+    # with_items cannot accidentally reintroduce a Batch Plan dependency.
+    if fallback_prompt.match?(/Batch Plan/i)
+      abort_with_failure("#{target_label} fallback prompt must be self-contained and not depend on Batch Plan context")
+    end
+
+    fallback_chars = fallback_prompt.length
+    realistic_checks[label].fetch(:fallback)[target] = fallback_chars
+    next if fallback_chars < limit
+
+    abort_with_failure(
+      "#{target_label} fallback prompt is #{fallback_chars} chars, " \
+      "must stay under #{limit}"
+    )
+  end
 end
 
-claude_oversized_candidate = with_items(claude_prompt_template, bulky_items)
-unless claude_oversized_candidate.length >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure("Claude oversized fixture did not exceed #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT} chars")
-end
-
-generic_oversized_candidate = with_items(generic_prompt_template, bulky_items)
-unless generic_oversized_candidate.length >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure("Generic oversized fixture did not exceed #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT} chars")
-end
-
-codex_fallback_prompt = with_items(codex_prompt_template, first_ready_item)
-# Keep this defense-in-depth check near the substitution so future changes to
-# with_items cannot accidentally reintroduce a Batch Plan dependency.
-if codex_fallback_prompt.match?(/Batch Plan/i)
-  abort_with_failure("split fallback prompt must be self-contained and not depend on Batch Plan context")
-end
-
-codex_fallback_chars = codex_fallback_prompt.length
-if codex_fallback_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure(
-    "Codex split fallback prompt is #{codex_fallback_chars} chars, " \
-    "must stay under #{CODEX_GOAL_PROMPT_CHAR_LIMIT}"
-  )
-end
-
-claude_fallback_prompt = with_items(claude_prompt_template, first_ready_item)
-if claude_fallback_prompt.match?(/Batch Plan/i)
-  abort_with_failure("Claude fallback prompt must be self-contained and not depend on Batch Plan context")
-end
-
-generic_fallback_prompt = with_items(generic_prompt_template, first_ready_item)
-if generic_fallback_prompt.match?(/Batch Plan/i)
-  abort_with_failure("Generic fallback prompt must be self-contained and not depend on Batch Plan context")
-end
-
-claude_fallback_chars = claude_fallback_prompt.length
-generic_fallback_chars = generic_fallback_prompt.length
-{
-  claude: claude_fallback_chars,
-  generic: generic_fallback_chars
-}.each do |target, chars|
-  next if chars < CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
-
-  abort_with_failure(
-    "#{target.capitalize} fallback prompt is #{chars} chars, " \
-    "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
-  )
-end
+plan_realistic_checks = realistic_checks.fetch("plan_pr_batch")
+codex_oversized_candidate_chars = plan_realistic_checks.fetch(:oversized).fetch(:codex)
+claude_oversized_candidate_chars = plan_realistic_checks.fetch(:oversized).fetch(:claude)
+generic_oversized_candidate_chars = plan_realistic_checks.fetch(:oversized).fetch(:generic)
+codex_fallback_chars = plan_realistic_checks.fetch(:fallback).fetch(:codex)
+claude_fallback_chars = plan_realistic_checks.fetch(:fallback).fetch(:claude)
+generic_fallback_chars = plan_realistic_checks.fetch(:fallback).fetch(:generic)
 
 puts "All checks passed."
 puts "codex_goal_prompt_template_chars=#{codex_template_chars}"
@@ -600,9 +593,15 @@ budget_checks.each do |label, result|
   puts "#{label}_claude_goal_prompt_template_chars=#{result.fetch(:claude_chars)}"
   puts "#{label}_generic_goal_prompt_template_chars=#{result.fetch(:generic_chars)}"
 end
-puts "codex_oversized_candidate_chars=#{codex_oversized_candidate.length}"
-puts "claude_oversized_candidate_chars=#{claude_oversized_candidate.length}"
-puts "generic_oversized_candidate_chars=#{generic_oversized_candidate.length}"
+realistic_checks.each do |label, result|
+  %i[codex claude generic].each do |target|
+    puts "#{label}_#{target}_oversized_candidate_chars=#{result.fetch(:oversized).fetch(target)}"
+    puts "#{label}_#{target}_split_fallback_goal_prompt_chars=#{result.fetch(:fallback).fetch(target)}"
+  end
+end
+puts "codex_oversized_candidate_chars=#{codex_oversized_candidate_chars}"
+puts "claude_oversized_candidate_chars=#{claude_oversized_candidate_chars}"
+puts "generic_oversized_candidate_chars=#{generic_oversized_candidate_chars}"
 puts "codex_split_fallback_goal_prompt_chars=#{codex_fallback_chars}"
 puts "claude_split_fallback_goal_prompt_chars=#{claude_fallback_chars}"
 puts "generic_split_fallback_goal_prompt_chars=#{generic_fallback_chars}"
