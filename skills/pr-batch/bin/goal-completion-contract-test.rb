@@ -147,8 +147,18 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_lane_card_contract_is_documented
+    workflow_worker_rules = extract_markdown_section(@workflow, "### Worker Rules")
+    assert_text_includes workflow_worker_rules, "Lane Card", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "after a successful claim", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "when the PR is opened", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "`claim:`", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "holder|UNKNOWN", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "generation|UNKNOWN", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "instance|UNKNOWN", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "dashboard_url", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "pr_url", "workflows/pr-processing.md Worker Rules"
+
     {
-      "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
