@@ -1072,7 +1072,7 @@ When worker subagents are explicitly authorized:
   - `Target:` `<GitHub issue/PR link>`
   - `Branch:` `<branch>`; `pr_url`: `<verified GitHub PR url|backend url|UNKNOWN>`
   - `Phase:` `<phase>`; `claim:` `<holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>`;
-    `coordinator:` `<operator|UNKNOWN>`
+    `coordinator:` `<coordinator-id|UNKNOWN>`
   If the backend does not provide `dashboard_url`, generation, or instance
   metadata, show `UNKNOWN` and continue with the available GitHub links. If the
   backend does not provide `pr_url`, use the verified GitHub PR URL from the
