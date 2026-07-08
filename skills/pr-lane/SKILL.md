@@ -60,10 +60,37 @@ only after bounded checks succeed:
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo OWNER/REPO --target TARGET --json
 ```
 
-Claim the target before creating a branch or worktree:
+Claim the target before creating a branch or worktree with the core claim fields:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim \
+  --agent-id AGENT_ID \
+  --repo OWNER/REPO \
+  --target TARGET \
+  --branch BRANCH \
+  --json
+```
+
+If the selected backend's claim command advertises metadata flags, include the
+lane metadata on that same claim. For ShakaCode `agent-coord`, verify support
+with `agent-coord claim --help`, then add:
+
+```text
+--thread-handle THREAD_HANDLE
+--chat-handle CHAT_HANDLE
+--host HOST
+--operator OPERATOR
+--phase claim
+--instance-id INSTANCE_ID
+--status claimed
+```
+
+When the claim command does not advertise those metadata flags, do not pass
+unknown options. Instead, write the core claim first, then immediately record the
+lane metadata with a bounded heartbeat before branching:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 heartbeat \
   --agent-id AGENT_ID \
   --repo OWNER/REPO \
   --target TARGET \
@@ -78,7 +105,7 @@ Claim the target before creating a branch or worktree:
   --json
 ```
 
-The claim must include:
+The lane metadata must include or explicitly mark `UNKNOWN` for:
 
 - stable `--agent-id`
 - target `--repo` and `--target`
@@ -142,12 +169,13 @@ Lane Card
 - Target: <GitHub issue/PR link or ad-hoc target>
 - Branch: <branch>; pr_url: <verified GitHub PR url|backend url|UNKNOWN>
 - Phase: <worker phase>; claim: <holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>; coordinator: <coordinator-id|UNKNOWN>
-- Host: <host|UNKNOWN>; chat: <chat-handle|UNKNOWN>; operator: <operator|UNKNOWN>
 ```
 
 Refresh the card values instead of relying on chat titles. If the backend lacks
-`dashboard_url`, generation, instance, or `pr_url`, write `UNKNOWN` for that fact
-and continue with verified GitHub links.
+`dashboard_url`, generation, instance, or `pr_url`, write `UNKNOWN` for that
+fact and continue with verified GitHub links. Keep host, chat handle, and
+operator in backend metadata, public claim metadata, PR evidence, or the final
+handoff; do not add extra fields to the canonical Lane Card.
 
 ## Work Loop
 
