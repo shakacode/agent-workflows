@@ -114,6 +114,9 @@ the source checkout:
 bin/agent-stack sync
 ```
 
+`agent-stack` is ShakaCode-specific stack tooling, not part of the generic
+workflow-pack install path for consumer repositories.
+
 It keeps editable source checkouts in `~/src`, private runtime configuration
 under `~/.agent-workflows`, compatibility symlinks under `~/codex/agent-repos`,
 and installs the shorter `agent-stack` command for future runs:

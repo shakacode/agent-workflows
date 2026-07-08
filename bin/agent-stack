@@ -6,6 +6,7 @@ usage() {
 Usage: agent-stack sync [options]
 
 Keeps the ShakaCode agent stack in a hacker-friendly local layout.
+This is ShakaCode stack tooling, not the generic workflow-pack installer.
 
 Default source checkouts:
   ~/src/agent-workflows
@@ -316,7 +317,7 @@ link_compat_path() {
 }
 
 install_agent_stack() {
-  local source_path destination
+  local source_path destination tmp_destination
   source_path="$source_root/agent-workflows/bin/agent-stack"
   destination="$agent_coord_install_dir/agent-stack"
   if [[ ! -x "$source_path" ]]; then
@@ -329,19 +330,33 @@ install_agent_stack() {
   if [[ "$source_path" = "$destination" ]]; then
     chmod +x "$destination"
   else
-    install -m 0755 "$source_path" "$destination"
+    tmp_destination="$(mktemp "$agent_coord_install_dir/.agent-stack.XXXXXX")"
+    if install -m 0755 "$source_path" "$tmp_destination"; then
+      mv -f "$tmp_destination" "$destination"
+    else
+      rm -f "$tmp_destination"
+      return 1
+    fi
   fi
 }
 
 install_agent_coord() {
   local repo="$source_root/agent-coordination"
+  local legacy_alias="$agent_coord_install_dir/agent_coord"
+  local had_legacy_alias=false
   if [[ ! -x "$repo/bin/agent-coord" ]]; then
     echo "Skipping agent-coord install: missing $repo/bin/agent-coord" >&2
     return
   fi
 
+  if [[ -e "$legacy_alias" || -L "$legacy_alias" ]]; then
+    had_legacy_alias=true
+  fi
+
   "$repo/bin/agent-coord" bootstrap --install-dir "$agent_coord_install_dir"
-  rm -f "$agent_coord_install_dir/agent_coord"
+  if [[ "$had_legacy_alias" = "false" && ( -e "$legacy_alias" || -L "$legacy_alias" ) ]]; then
+    rm -f "$legacy_alias"
+  fi
 }
 
 install_workflows() {

@@ -80,6 +80,9 @@ run the stack sync helper from the checkout:
 bin/agent-stack sync
 ```
 
+`agent-stack` is ShakaCode-specific stack tooling, not part of the generic
+workflow-pack install path for consumer repositories.
+
 It keeps the source repos in `~/src`, keeps private runtime configuration under
 `~/.agent-workflows`, creates compatibility symlinks for older Codex paths, and
 installs the shorter `agent-stack` command for future runs:

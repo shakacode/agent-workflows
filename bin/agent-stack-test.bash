@@ -167,6 +167,69 @@ test_sync_clones_installs_and_links_the_stack() {
   assert_file "$runtime_root/env"
 }
 
+test_sync_preserves_preexisting_agent_coord_file() {
+  local tmp source_root compat_root runtime_root install_dir
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  install_dir="$tmp/local-bin"
+  mkdir -p "$install_dir"
+  printf 'custom command\n' > "$install_dir/agent_coord"
+  with_origins "$tmp"
+
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$ROOT/bin/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$compat_root" \
+      --runtime-root "$runtime_root" \
+      --target "$tmp/codex-home" \
+      --agent-coord-install-dir "$install_dir"
+
+  assert_file "$install_dir/agent_coord"
+}
+
+test_sync_updates_running_installed_agent_stack_via_temp_file() {
+  local tmp source_root compat_root runtime_root install_dir fake_bin
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  install_dir="$tmp/local-bin"
+  fake_bin="$tmp/fake-bin"
+  mkdir -p "$install_dir" "$fake_bin"
+  cp "$ROOT/bin/agent-stack" "$install_dir/agent-stack"
+  chmod +x "$install_dir/agent-stack"
+  cat > "$fake_bin/install" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+last_arg="${@: -1}"
+if [[ -n "${AGENT_STACK_TEST_FORBIDDEN_INSTALL_DEST:-}" && "$last_arg" = "$AGENT_STACK_TEST_FORBIDDEN_INSTALL_DEST" ]]; then
+  echo "direct install to running agent-stack" >&2
+  exit 42
+fi
+exec /usr/bin/install "$@"
+BASH
+  chmod +x "$fake_bin/install"
+  with_origins "$tmp"
+
+  PATH="$fake_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  AGENT_STACK_TEST_FORBIDDEN_INSTALL_DEST="$install_dir/agent-stack" \
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$install_dir/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$compat_root" \
+      --runtime-root "$runtime_root" \
+      --target "$tmp/codex-home" \
+      --agent-coord-install-dir "$install_dir"
+
+  grep -q "synced agent-stack fixture" "$install_dir/agent-stack" || fail "expected running installed agent-stack to refresh from synced checkout"
+}
+
 test_sync_refuses_dirty_repo_without_force_stash() {
   local tmp source_root output status
   tmp="$(make_tmp_dir)"
@@ -460,6 +523,8 @@ test_sync_force_stash_allows_dirty_main_repo() {
 }
 
 test_sync_clones_installs_and_links_the_stack
+test_sync_preserves_preexisting_agent_coord_file
+test_sync_updates_running_installed_agent_stack_via_temp_file
 test_sync_refuses_dirty_repo_without_force_stash
 test_sync_refuses_non_main_repo
 test_sync_accepts_git_worktree_checkout
