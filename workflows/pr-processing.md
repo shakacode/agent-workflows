@@ -1070,11 +1070,14 @@ When worker subagents are explicitly authorized:
   - `Thread:` `<thread-handle>`
   - `Batch/lane:` `<batch-id>` / `<lane>`; `dashboard_url`: `<url|UNKNOWN>`
   - `Target:` `<GitHub issue/PR link>`
-  - `Branch:` `<branch>`; `pr_url`: `<url|UNKNOWN>`
+  - `Branch:` `<branch>`; `pr_url`: `<verified GitHub PR url|backend url|UNKNOWN>`
   - `Phase:` `<phase>`; `claim:` `<holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>`;
     `coordinator:` `<operator|UNKNOWN>`
-  If the backend does not provide `dashboard_url`, `pr_url`, generation, or
-  instance metadata, show `UNKNOWN` and continue with the available GitHub links.
+  If the backend does not provide `dashboard_url`, generation, or instance
+  metadata, show `UNKNOWN` and continue with the available GitHub links. If the
+  backend does not provide `pr_url`, use the verified GitHub PR URL from the
+  PR-open step or current PR state; show `UNKNOWN` only when no PR URL can be
+  verified.
 - For a worker lane with `depends_on`, check bounded `agent-coord status` at
   lane start and before rebase or push. If dependencies are unmet, the worker
   reports the `blocked_on` refs, sets heartbeat `--status blocked`, and moves
