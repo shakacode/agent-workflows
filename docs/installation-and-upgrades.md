@@ -138,6 +138,7 @@ After the first sync, update the stack with `agent-stack sync`.
 The installer writes:
 
 - `<target>/skills/*`
+- `<target>/LICENSE`
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
 - `<target>/docs/review-finding-schema.md`
@@ -149,9 +150,10 @@ The installer writes:
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`
 
-Copy mode replaces this pack's skill and workflow names plus the pack-owned docs
-listed above; it preserves unrelated files already present in the target agent
-home, including generic consumer-owned docs under `<target>/docs`.
+Copy mode replaces this pack's license file, skill and workflow names, plus the
+pack-owned docs listed above; it preserves unrelated files already present in
+the target agent home, including generic consumer-owned docs under
+`<target>/docs`.
 
 The metadata file records host, mode, source clone, pack version, source
 revision, branch, remote, and install time. The status and upgrade helpers use
