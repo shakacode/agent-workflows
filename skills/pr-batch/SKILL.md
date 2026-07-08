@@ -246,7 +246,7 @@ Items:
 
 Execution rules:
 - Resolve `base_branch` from `.agents/agent-workflow.yml`; run `git fetch --prune origin <base-branch>`; verify installed or repo-local `$pr-batch` and `pr-processing.md` before launch; if unresolved, stop with workflow state `UNKNOWN`.
-- Follow the resolved `$pr-batch` template; if skill autoloading is unavailable, copy its safety, review, /simplify, CI, and readiness gates.
+- Follow resolved `$pr-batch`; if autoloading fails, copy gates from the resolved local skill/workflow files.
 - Dispatch one subagent per independent item, but only for the current file-disjoint wave. Group dependent items only when shared context is required; hold serial and `UNKNOWN` lanes until no active editor lane can collide.
 - Workers edit only owned File-touch map paths. If an `UNKNOWN`, unlisted, or other-lane path is needed, stop, report paths, and wait for an updated map or coordinator confirmation.
 - Sequenced lanes may share declared files only in the stated order.
