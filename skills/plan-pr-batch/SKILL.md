@@ -212,11 +212,12 @@ Plan a PR batch
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
      `<word>` from a short coordinator-chosen session word. Record the handle
      before dispatch so workers copy it unchanged.
-   - Add a compact `Lane Card:` line. Workers emit the canonical Lane Card
-     after a successful claim, when the PR is opened, on blocked/cancelled state, and
-     as the final handoff header; claim holder and `dashboard_url` degrade to
-     `UNKNOWN` when the backend does not provide them, while `pr_url` may use the
-     verified GitHub PR URL from PR-open/current PR state.
+  - Add a compact `Lane Card:` line. Workers emit the canonical Lane Card
+    after a successful claim, on blocked/cancelled state, and as the final
+    handoff header. The actor that opens or updates the PR emits the PR-open
+    Lane Card when the PR is opened; claim holder and `dashboard_url` degrade
+    to `UNKNOWN` when the backend does not provide them, while `pr_url` may use
+    the verified GitHub PR URL from PR-open/current PR state.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
      For the `claude` or `generic` target, do not prepend the Codex-only

@@ -126,6 +126,9 @@ precise blocker.
    keep it under 8 000 characters, and split or compact it when too large rather
    than applying the Codex split threshold. Put a short `Batch title:` after the
    target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   Derive `<PROJECT>` from the current repository name, use A/B/C group letters
+   only when multiple prompts are created, and get `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell.
    Use `Thread handle:` as the first worker-specific line:
    `Thread handle: <batch-short>-<lane>-<word>.`, with `<word>` as a short
    coordinator-chosen session word. Then add the compact
@@ -134,9 +137,6 @@ precise blocker.
    on blocked/cancelled state, and in final handoff. The canonical card carries
    claim holder and `dashboard_url` from backend metadata, plus `pr_url` from
    backend metadata or verified GitHub PR state, with `UNKNOWN` when unavailable.
-   Derive `<PROJECT>` from the current repository name, use A/B/C group letters
-   only when multiple prompts are created, and get `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire a coordination claim before editing.
