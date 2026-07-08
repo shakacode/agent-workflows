@@ -471,6 +471,33 @@ test_sync_refuses_compat_root_inside_source_checkout_before_creating_it() {
   [[ ! -e "$source_root/agent-workflows" ]] || fail "nested compatibility root should be rejected before creating the checkout path"
 }
 
+test_sync_refuses_source_root_inside_compat_alias_before_creating_it() {
+  local tmp source_root compat_root output status
+  tmp="$(make_tmp_dir)"
+  compat_root="$tmp/compat"
+  source_root="$compat_root/agent-workflows"
+  with_origins "$tmp"
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$compat_root" \
+        --runtime-root "$tmp/runtime" \
+        --replace-compat \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected source root inside compatibility alias to fail"
+  assert_contains "$output" "Refusing source root inside compatibility alias path"
+  [[ ! -e "$source_root" ]] || fail "source root inside compatibility alias should be rejected before creating it"
+}
+
 test_sync_links_compat_to_physical_source_root() {
   local tmp real_source_root source_root compat_root runtime_root
   tmp="$(make_tmp_dir)"
@@ -575,6 +602,16 @@ test_sync_force_stash_allows_dirty_main_repo() {
   git -C "$source_root/agent-workflows" stash list | grep -q "agent-stack-sync-" || fail "expected agent-stack stash"
 }
 
+test_help_documents_path_overrides_and_force_stash_behavior() {
+  local output
+  output="$("$ROOT/bin/agent-stack" --help)"
+
+  assert_contains "$output" "AGENT_STACK_SOURCE_ROOT"
+  assert_contains "$output" "AGENT_STACK_COMPAT_ROOT"
+  assert_contains "$output" "AGENT_STACK_RUNTIME_ROOT"
+  assert_contains "$output" "not restored automatically"
+}
+
 test_sync_clones_installs_and_links_the_stack
 test_sync_preserves_preexisting_agent_coord_file
 test_sync_updates_running_installed_agent_stack_via_temp_file
@@ -587,9 +624,11 @@ test_sync_rejects_existing_checkout_when_url_override_disagrees
 test_sync_refuses_mismatched_compat_symlink_without_replace
 test_sync_refuses_overlapping_source_and_compat_roots
 test_sync_refuses_compat_root_inside_source_checkout_before_creating_it
+test_sync_refuses_source_root_inside_compat_alias_before_creating_it
 test_sync_links_compat_to_physical_source_root
 test_sync_refuses_runtime_env_symlink
 test_no_install_does_not_create_default_install_dir
 test_sync_force_stash_allows_dirty_main_repo
+test_help_documents_path_overrides_and_force_stash_behavior
 
 echo "PASS agent-stack tests"

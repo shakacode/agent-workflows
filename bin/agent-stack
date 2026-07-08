@@ -24,11 +24,16 @@ Options:
   --target DIR                   workflow install target
   --mode copy|symlink            workflow install mode (default: copy)
   --agent-coord-install-dir DIR  agent-coord install dir (default: ~/.local/bin)
-  --force-stash                  stash dirty main checkouts before syncing
+  --force-stash                  stash dirty main checkouts before syncing; not restored automatically
   --replace-compat               archive existing compatibility paths before symlinking
   --no-fetch                     skip fetch/pull for existing checkouts
   --no-install                   clone/update/link only; skip tool installs
   -h, --help                     show help
+
+Environment path overrides:
+  AGENT_STACK_SOURCE_ROOT
+  AGENT_STACK_COMPAT_ROOT
+  AGENT_STACK_RUNTIME_ROOT
 
 Environment URL overrides:
   AGENT_STACK_AGENT_WORKFLOWS_URL
@@ -190,8 +195,23 @@ reject_compat_root_inside_source_checkout() {
   done
 }
 
+reject_source_root_inside_compat_alias() {
+  local root="$1"
+  local repo_name alias_path
+
+  for repo_name in "${repo_names[@]}"; do
+    alias_path="$compat_root/$repo_name"
+    case "$root" in
+      "$alias_path"|"$alias_path"/*)
+        echo "Refusing source root inside compatibility alias path: $root" >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
 prepare_runtime_root() {
-  mkdir -p "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
+  (umask 077 && mkdir -p "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state")
   chmod 700 "$runtime_root" "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
   if [[ -L "$runtime_root/env" ]]; then
     echo "Refusing to use runtime env symlink: $runtime_root/env" >&2
@@ -336,6 +356,12 @@ link_compat_path() {
       exit 1
       ;;
   esac
+  case "$source_path" in
+    "$compat_path"|"$compat_path"/*)
+      echo "Refusing compatibility path that parents source checkout: $compat_path" >&2
+      exit 1
+      ;;
+  esac
 
   if [[ -L "$compat_path" ]]; then
     link_target="$(readlink "$compat_path")"
@@ -420,11 +446,16 @@ install_workflows() {
   "$repo/bin/install-agent-workflows" "${args[@]}"
 }
 
-source_root="$(physical_dir "$source_root")"
+source_root="$(absolute_path "$source_root")"
 compat_root="$(absolute_path "$compat_root")"
 reject_compat_root_inside_source_checkout "$compat_root"
+reject_source_root_inside_compat_alias "$source_root"
+source_root="$(physical_dir "$source_root")"
+reject_compat_root_inside_source_checkout "$compat_root"
+reject_source_root_inside_compat_alias "$source_root"
 compat_root="$(physical_dir "$compat_root")"
 reject_compat_root_inside_source_checkout "$compat_root"
+reject_source_root_inside_compat_alias "$source_root"
 runtime_root="$(physical_dir "$runtime_root")"
 if [[ "$install_tools" = "true" ]]; then
   agent_coord_install_dir="$(physical_dir "$agent_coord_install_dir")"
