@@ -113,13 +113,20 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_goal_prompts_include_thread_handle_and_registration_contract
-    {
+    prompts = {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
-    }.each do |label, text|
+    }
+    registration_patterns = {
+      "workflows/pr-processing.md goal prompt" => /register batch metadata before launch when supported/i,
+      "skills/pr-batch goal prompt" => /register batch\s+metadata before launch when supported/i,
+      "skills/plan-pr-batch goal prompt" => /register before launch when supported/i
+    }
+
+    prompts.each do |label, text|
       assert_text_includes text, "Thread handle: <batch-short>-<lane>-<word>", label
-      assert_match(/register/i, text, "#{label} is missing registration language")
+      assert_match registration_patterns.fetch(label), text, "#{label} is missing registration language"
       assert_text_includes text, "holder/generation", label
       assert_text_includes text, "UNKNOWN", label
     end
