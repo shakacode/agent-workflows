@@ -86,8 +86,12 @@ with `agent-coord claim --help`, then add:
 ```
 
 When the claim command does not advertise those metadata flags, do not pass
-unknown options. Instead, write the core claim first, then immediately record the
-lane metadata with a bounded heartbeat before branching:
+unknown options. Instead, write the core claim first, then verify heartbeat
+metadata support before adding lane metadata there. For ShakaCode `agent-coord`,
+verify support with `agent-coord heartbeat --help`.
+
+If heartbeat advertises the same metadata flags, immediately record the lane
+metadata with a bounded heartbeat before branching:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 heartbeat \
@@ -101,6 +105,20 @@ lane metadata with a bounded heartbeat before branching:
   --operator OPERATOR \
   --phase claim \
   --instance-id INSTANCE_ID \
+  --status claimed \
+  --json
+```
+
+If heartbeat also lacks metadata flags, immediately write a core heartbeat before
+branching and preserve the unsupported metadata in the Lane Card, public claim
+metadata when available, PR evidence, or final handoff:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 heartbeat \
+  --agent-id AGENT_ID \
+  --repo OWNER/REPO \
+  --target TARGET \
+  --branch BRANCH \
   --status claimed \
   --json
 ```
@@ -182,8 +200,11 @@ handoff; do not add extra fields to the canonical Lane Card.
 Follow `workflows/pr-processing.md` for implementation, validation, review
 triage, CI readiness, and merge policy. The single-lane shortcuts are:
 
-1. Fetch/prune the resolved base branch and create one feature branch for the
-   lane.
+1. Fetch/prune the resolved base branch. For issue or ad-hoc targets, create one
+   feature branch for the lane. For existing PR targets, check out the verified
+   PR head branch fetched during target resolution and update that PR; do not
+   create a competing branch unless a maintainer explicitly asks for a new PR or
+   the verified head branch cannot be pushed.
 2. Heartbeat at phase changes: `branching`, `implementing`, `validation`,
    `pr-open`, `review`, `ci`, `merge-ready`, `blocked`, `handoff`, and final.
 3. Before each push, check target status and confirm the claim holder still
