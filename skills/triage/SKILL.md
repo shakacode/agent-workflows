@@ -12,7 +12,7 @@ state, and a capacity-aware split into ready `$pr-batch` prompts.
 
 This skill is operator-agnostic. Do not hardcode machine names, RAM values,
 group counts, inbox names, or model or tool names. Capacity and routing come
-from live `agent-coord` state and operator config.
+from the selected backend and operator config.
 
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
@@ -65,12 +65,12 @@ Build a complete current-state inventory for the requested repo or repos:
 
 Use `$evaluate-issue` for value or priority calls that are unclear. Use
 `UNKNOWN` for facts that cannot be verified from GitHub, local repo state, or
-the selected coordination model.
+the selected backend.
 
 ## Phase 2: Capacity-Aware Split
 
 Only start phase 2 after phase 1 has a verified worklist and capacity state.
-Phase 2 requires capacity state from the selected coordination model or
+Phase 2 requires capacity state from the selected backend or
 gitignored local config; if that state is unavailable, stop after phase 1 with a
 precise blocker.
 
@@ -136,7 +136,7 @@ precise blocker.
 If profiles or inboxes are unavailable, stop with a precise blocker after the
 inventory phase; do not fall back to a fixed number of groups. Queue state is
 advisory; omit the queue summary section and note unavailability when the
-coordination model does not support it.
+selected backend does not support it.
 
 ## Output
 

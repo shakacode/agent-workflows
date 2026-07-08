@@ -109,6 +109,7 @@ The installer writes:
 
 - `<target>/skills/*`
 - `<target>/workflows/*`
+- `<target>/docs/coordination-backend.md`
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`

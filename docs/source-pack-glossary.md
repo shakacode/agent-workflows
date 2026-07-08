@@ -69,6 +69,7 @@ _Avoid_: broad prose-only hardening.
   be shared from the first implementation.
 - The first **State-Machine Fixture** target is `autoreview` target selection;
   broader batch and current-head readiness fixtures come later.
+
 ## Flagged Ambiguities
 
 - "plugin" can mean the Codex-native manifest surface or the entire Source

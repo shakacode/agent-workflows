@@ -168,7 +168,7 @@ policy values. Plan first, then apply a canary before fanning out:
 
 ```bash
 bin/push-downstream                               # plan every enabled repo
-bin/push-downstream --only <repo-key> --apply      # clone, reconcile, validate, open one PR
+bin/push-downstream --only <repo-key> --apply       # clone, reconcile, validate, open one PR
 bin/push-downstream --apply                       # fan out to all enabled repos
 ```
 

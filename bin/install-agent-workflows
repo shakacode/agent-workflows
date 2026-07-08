@@ -15,6 +15,7 @@ Default targets:
 Installed paths:
   <target>/skills/*
   <target>/workflows/*
+  <target>/docs/coordination-backend.md
   <target>/docs/review-finding-schema.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
@@ -171,32 +172,39 @@ copy_children_preserving_unrelated() {
 
 copy_pack_docs() {
   local docs_target="$1"
-  local schema_destination="$docs_target/review-finding-schema.md"
+  local doc_name destination
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
-  if [[ -L "$schema_destination" ]]; then
-    rm -f "$schema_destination"
-  fi
-  if [[ -e "$schema_destination" && ! -f "$schema_destination" ]]; then
-    echo "Refusing to replace non-file path: $schema_destination" >&2
-    exit 1
-  fi
-  install -m 0644 "$repo_root/docs/review-finding-schema.md" "$schema_destination"
+
+  for doc_name in coordination-backend.md review-finding-schema.md; do
+    destination="$docs_target/$doc_name"
+    if [[ -L "$destination" ]]; then
+      rm -f "$destination"
+    fi
+    if [[ -e "$destination" && ! -f "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
+    install -m 0644 "$repo_root/docs/$doc_name" "$destination"
+  done
+
   copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
 }
 
 link_pack_docs() {
   local docs_target="$1"
-  local destination source_path
+  local destination doc_name source_path
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
 
-  destination="$docs_target/review-finding-schema.md"
-  if [[ -e "$destination" && ! -L "$destination" ]]; then
-    echo "Refusing to replace non-symlink path: $destination" >&2
-    exit 1
-  fi
-  ln -sfn "$repo_root/docs/review-finding-schema.md" "$destination"
+  for doc_name in coordination-backend.md review-finding-schema.md; do
+    destination="$docs_target/$doc_name"
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-symlink path: $destination" >&2
+      exit 1
+    fi
+    ln -sfn "$repo_root/docs/$doc_name" "$destination"
+  done
 
   for source_path in "$repo_root"/docs/solutions/*; do
     [[ -e "$source_path" ]] || continue
