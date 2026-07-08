@@ -133,10 +133,12 @@ precise blocker.
    `Thread handle: <batch-short>-<lane>-<word>.`, with `<word>` as a short
    coordinator-chosen session word. Then add the compact
    `Lane Card: claim/PR-open/block/cancel/final; holder, branch/PR, phase, URLs or UNKNOWN.`
-   line so workers emit the canonical Lane Card after a successful claim, when the PR is opened,
-   on blocked/cancelled state, and in final handoff. The canonical card carries
-   claim holder and `dashboard_url` from backend metadata, plus `pr_url` from
-   backend metadata or verified GitHub PR state, with `UNKNOWN` when unavailable.
+   line so workers emit the canonical Lane Card after a successful claim, on
+   blocked/cancelled state, and in final handoff. The actor that opens or
+   updates the PR emits the PR-open Lane Card when the PR is opened. The
+   canonical card carries claim holder and `dashboard_url` from backend
+   metadata, plus `pr_url` from backend metadata or verified GitHub PR state,
+   with `UNKNOWN` when unavailable.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire a coordination claim before editing.

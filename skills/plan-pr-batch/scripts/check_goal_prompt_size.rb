@@ -166,21 +166,21 @@ def require_occurrence_count(text, phrase, expected_count, label)
   )
 end
 
-def extract_goal_prompt_template(skill_text)
-  heading_index = skill_text.index("## Goal Prompt for pr-batch")
-  abort_with_failure("missing Goal Prompt for pr-batch section") unless heading_index
+def extract_goal_prompt_template(text, heading, label:)
+  heading_index = text.index(heading)
+  abort_with_failure("missing #{heading} section") unless heading_index
 
-  fence_start = skill_text.index(TEXT_FENCE, heading_index)
-  abort_with_failure("missing text fence in Goal Prompt section") unless fence_start
+  fence_start = text.index(TEXT_FENCE, heading_index)
+  abort_with_failure("missing text fence in #{heading} section") unless fence_start
 
   fence_body_start = fence_start + TEXT_FENCE.length
-  next_heading = skill_text.match(/^##\s+/, fence_body_start)
-  section_end = next_heading ? next_heading.begin(0) : skill_text.length
-  section_body = skill_text[fence_body_start...section_end]
+  next_heading = text.match(/^##\s+/, fence_body_start)
+  section_end = next_heading ? next_heading.begin(0) : text.length
+  section_body = text[fence_body_start...section_end]
   extract_single_bare_fenced_body(
     section_body,
-    "goal prompt template",
-    missing_closing_message: "missing closing fence in Goal Prompt section"
+    label,
+    missing_closing_message: "missing closing fence in #{heading} section"
   )
 end
 
@@ -208,14 +208,70 @@ def prompt_for_target(prompt_template, target)
   end
 end
 
+def assert_prompt_budget(label, prompt_template, codex_prefix:)
+  codex_prompt = "#{codex_prefix}#{prompt_template}"
+  claude_prompt = prompt_template
+  generic_prompt = prompt_template
+
+  codex_chars = codex_prompt.length
+  if codex_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
+    abort_with_failure(
+      "#{label} Codex goal prompt template is #{codex_chars} chars, " \
+      "must stay under #{CODEX_GOAL_PROMPT_CHAR_LIMIT}"
+    )
+  end
+
+  template_headroom = CODEX_GOAL_PROMPT_CHAR_LIMIT - codex_chars
+  if template_headroom < GOAL_PROMPT_MIN_HEADROOM
+    abort_with_failure(
+      "#{label} Codex goal prompt template has #{template_headroom} chars of headroom, " \
+      "must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
+    )
+  end
+
+  {
+    claude: claude_prompt.length,
+    generic: generic_prompt.length
+  }.each do |target, chars|
+    next if chars < CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+
+    abort_with_failure(
+      "#{label} #{target.capitalize} goal prompt template is #{chars} chars, " \
+      "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
+    )
+  end
+
+  {
+    codex_prompt: codex_prompt,
+    claude_prompt: claude_prompt,
+    generic_prompt: generic_prompt,
+    codex_chars: codex_chars,
+    codex_headroom: template_headroom,
+    claude_chars: claude_prompt.length,
+    generic_chars: generic_prompt.length
+  }
+end
+
 skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
-prompt_template = extract_goal_prompt_template(skill_text)
 workflow_text = read_repo_file("workflows/pr-processing.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
+prompt_template = extract_goal_prompt_template(skill_text, "## Goal Prompt for pr-batch",
+                                               label: "plan-pr-batch goal prompt template")
+pr_batch_prompt_template = extract_goal_prompt_template(pr_batch_skill_text, "## Goal Prompt Template",
+                                                        label: "pr-batch goal prompt template")
+workflow_goal_section = extract_section(
+  workflow_text,
+  "### Plan To Goal Handoff",
+  /^###\s+/
+)
+workflow_prompt_template = extract_first_text_fence_body(
+  workflow_goal_section,
+  "canonical workflow plan-to-goal prompt"
+)
 enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
 pr_batch_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/pr-batch-skills.md") : nil
 restart_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/agent-runner-restarts.md") : nil
@@ -395,6 +451,24 @@ unless unexpected_pressure_refs.empty?
   )
 end
 
+budget_checks = {
+  "plan_pr_batch" => assert_prompt_budget(
+    "plan-pr-batch",
+    prompt_template,
+    codex_prefix: "#{GOAL_LINE}\n"
+  ),
+  "pr_batch" => assert_prompt_budget(
+    "pr-batch",
+    pr_batch_prompt_template,
+    codex_prefix: "#{GOAL_LINE}\n"
+  ),
+  "workflow_plan_to_goal" => assert_prompt_budget(
+    "workflow plan-to-goal",
+    workflow_prompt_template,
+    codex_prefix: "#{GOAL_LINE}\n"
+  )
+}
+
 codex_prompt_template = prompt_for_target(prompt_template, :codex)
 claude_prompt_template = prompt_for_target(prompt_template, :claude)
 generic_prompt_template = prompt_for_target(prompt_template, :generic)
@@ -440,35 +514,10 @@ prompt_templates_by_target.each do |target, target_prompt_template|
   end
 end
 
-codex_template_chars = codex_prompt_template.length
-if codex_template_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
-  abort_with_failure(
-    "Codex goal prompt template is #{codex_template_chars} chars, " \
-    "must stay under #{CODEX_GOAL_PROMPT_CHAR_LIMIT}"
-  )
-end
-
-claude_template_chars = claude_prompt_template.length
-generic_template_chars = generic_prompt_template.length
-{
-  claude: claude_template_chars,
-  generic: generic_template_chars
-}.each do |target, chars|
-  next if chars < CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
-
-  abort_with_failure(
-    "#{target.capitalize} goal prompt template is #{chars} chars, " \
-    "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
-  )
-end
-
-template_headroom = CODEX_GOAL_PROMPT_CHAR_LIMIT - codex_template_chars
-if template_headroom < GOAL_PROMPT_MIN_HEADROOM
-  abort_with_failure(
-    "Codex goal prompt template has #{template_headroom} chars of headroom, " \
-    "must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
-  )
-end
+codex_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:codex_chars)
+template_headroom = budget_checks.fetch("plan_pr_batch").fetch(:codex_headroom)
+claude_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:claude_chars)
+generic_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:generic_chars)
 
 bulky_items = (1..12).map do |number|
   <<~ITEM.chomp
@@ -545,6 +594,12 @@ puts "codex_goal_prompt_template_chars=#{codex_template_chars}"
 puts "codex_goal_prompt_template_headroom=#{template_headroom}"
 puts "claude_goal_prompt_template_chars=#{claude_template_chars}"
 puts "generic_goal_prompt_template_chars=#{generic_template_chars}"
+budget_checks.each do |label, result|
+  puts "#{label}_codex_goal_prompt_template_chars=#{result.fetch(:codex_chars)}"
+  puts "#{label}_codex_goal_prompt_template_headroom=#{result.fetch(:codex_headroom)}"
+  puts "#{label}_claude_goal_prompt_template_chars=#{result.fetch(:claude_chars)}"
+  puts "#{label}_generic_goal_prompt_template_chars=#{result.fetch(:generic_chars)}"
+end
 puts "codex_oversized_candidate_chars=#{codex_oversized_candidate.length}"
 puts "claude_oversized_candidate_chars=#{claude_oversized_candidate.length}"
 puts "generic_oversized_candidate_chars=#{generic_oversized_candidate.length}"

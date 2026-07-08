@@ -119,8 +119,8 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }
     registration_patterns = {
-      "workflows/pr-processing.md goal prompt" => /register batch metadata before launch when supported/i,
-      "skills/pr-batch goal prompt" => /register batch\s+metadata before launch when supported/i,
+      "workflows/pr-processing.md goal prompt" => /register before launch when supported/i,
+      "skills/pr-batch goal prompt" => /register before launch when supported/i,
       "skills/plan-pr-batch goal prompt" => /register before launch when supported/i
     }
 
@@ -263,14 +263,12 @@ class GoalCompletionContractTest < Minitest::Test
   def test_goal_prompts_put_batch_title_after_target_invocation
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{BATCH_TITLE_LINE}\n"),
-             "#{label} must put the standard batch title line at the target-specific start"
+      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+             "#{label} must put the standard batch title line after the invocation"
     end
-
-    assert @plan_goal_prompt.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
-           "skills/plan-pr-batch shared goal prompt must put the standard batch title line after the invocation"
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
     assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
