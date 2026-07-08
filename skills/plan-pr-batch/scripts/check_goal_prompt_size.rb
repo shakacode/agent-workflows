@@ -274,6 +274,7 @@ required_all_prompt_phrases = [
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
   "Thread handle: <batch-short>-<lane>-<word>",
+  "Lane Card:",
   "Goal Mode Completion Contract",
   "`waiting-on-checks-or-review` is not an overall Goal-mode terminal state",
   "report NOT COMPLETE",

@@ -145,6 +145,30 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_lane_card_contract_is_documented
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+    }.each do |label, text|
+      assert_text_includes text, "Lane Card", label
+      assert_text_includes text, "after a successful claim", label
+      assert_text_includes text, "when the PR is opened", label
+      assert_text_includes text, "dashboard_url", label
+      assert_text_includes text, "pr_url", label
+    end
+
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      assert_text_includes text, "Lane Card:", label
+      assert_text_includes text, "PR-open", label
+      assert_text_includes text, "UNKNOWN", label
+    end
+  end
+
   def test_workflow_defines_canonical_readiness_vocabulary
     workflow_text = extract_markdown_section(@workflow, "### Batch Handoff Format", end_heading: /^###\s+/)
     CANONICAL_READINESS_STATES.each do |state|
