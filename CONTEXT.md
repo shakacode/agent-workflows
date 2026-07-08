@@ -51,7 +51,9 @@ A coordinator-scoped unit of work: objective, instructions, targets, and lanes. 
 _Avoid_: run, job
 
 **Lane**:
-One worker's slice of a batch: a named owner plus its targets and dependencies.
+One agent-owned work stream: either a direct single-PR task in the current chat
+or one worker's slice of a batch. A lane has a named owner plus its target or
+targets and optional dependencies.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
 
 **Thread handle**:
@@ -68,7 +70,9 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 ## Relationships
 
-- A **Batch** has one or more **Lanes**; a **Lane** has exactly one owner identity at a time.
+- A **Batch** has one or more **Lanes**; a direct PR task can also be one
+  standalone **Lane** without batch planning or worker split machinery. A
+  **Lane** has exactly one owner identity at a time.
 - A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** or a fallback claim expires — both bump the **Generation** when the backend supports fencing.
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.

@@ -34,7 +34,8 @@ default.
 ## What You Get
 
 - Portable Codex and Claude skills for planning, running, reviewing, and
-  verifying agent-assisted PR work.
+  verifying agent-assisted PR work, from one coordinated PR lane through
+  multi-lane batches.
 - A repo contract so shared workflows can resolve base branches, validation
   commands, hosted-CI triggers, changelog policy, review gates, and
   coordination backends from `.agents/bin/`, `.agents/agent-workflow.yml`, and
@@ -214,6 +215,7 @@ This project is available under the MIT License.
 | `plan-review` | Review implementation plans before coding or launching workers. |
 | `post-merge-audit` | Audit merged batch work or release-candidate risk. |
 | `pr-batch` | Launch or coordinate multi-issue/multi-PR agent batches. |
+| `pr-lane` | Run one direct-prompt issue, PR, or task as a coordinated lane. |
 | `pr-monitoring` | Monitor opened PRs through checks, comments, conflicts, and handoff. |
 | `qa-stress` | Run destructive QA stress campaigns against repo-owned targets. |
 | `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
