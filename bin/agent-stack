@@ -154,29 +154,36 @@ physical_dir() {
 
 absolute_path() {
   local path="$1"
-  local parent base parent_path
+  local segment
+  local parts=()
+  local normalized=()
+  local joined
 
   if [[ "$path" != /* ]]; then
     path="$PWD/$path"
   fi
 
-  if [[ "$path" = "/" ]]; then
-    printf '/\n'
-    return
-  fi
-  path="${path%/}"
-  parent="$(dirname "$path")"
-  base="$(basename "$path")"
-  if [[ -d "$parent" ]]; then
-    parent_path="$(cd "$parent" && pwd -P)"
-  else
-    parent_path="$(absolute_path "$parent")"
-  fi
+  IFS='/' read -r -a parts <<< "$path"
+  for segment in "${parts[@]}"; do
+    case "$segment" in
+      ""|.)
+        ;;
+      ..)
+        if [[ "${#normalized[@]}" -gt 0 ]]; then
+          unset 'normalized[${#normalized[@]}-1]'
+        fi
+        ;;
+      *)
+        normalized+=("$segment")
+        ;;
+    esac
+  done
 
-  if [[ "$parent_path" = "/" ]]; then
-    printf '/%s\n' "$base"
+  if [[ "${#normalized[@]}" -eq 0 ]]; then
+    printf '/\n'
   else
-    printf '%s/%s\n' "$parent_path" "$base"
+    joined="$(IFS=/; printf '%s' "${normalized[*]}")"
+    printf '/%s\n' "$joined"
   fi
 }
 
@@ -211,6 +218,19 @@ reject_source_root_inside_compat_alias() {
 }
 
 prepare_runtime_root() {
+  local directory runtime_directory
+
+  for directory in cache logs state; do
+    runtime_directory="$runtime_root/$directory"
+    if [[ -L "$runtime_directory" ]]; then
+      echo "Refusing to use runtime directory symlink: $runtime_directory" >&2
+      exit 1
+    elif [[ -e "$runtime_directory" && ! -d "$runtime_directory" ]]; then
+      echo "Refusing to use non-directory runtime path: $runtime_directory" >&2
+      exit 1
+    fi
+  done
+
   (umask 077 && mkdir -p "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state")
   chmod 700 "$runtime_root" "$runtime_root/cache" "$runtime_root/logs" "$runtime_root/state"
   if [[ -L "$runtime_root/env" ]]; then
@@ -336,8 +356,7 @@ sync_repo() {
   fi
 
   if [[ "$fetch" = "true" ]]; then
-    git -C "$path" fetch --prune origin main
-    git -C "$path" pull --ff-only origin main
+    git -C "$path" pull --ff-only --prune origin main
   fi
 
   printf '%-36s %s %s\n' "$name" "$(git -C "$path" rev-parse --short HEAD)" "$path"

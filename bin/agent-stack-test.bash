@@ -471,6 +471,32 @@ test_sync_refuses_compat_root_inside_source_checkout_before_creating_it() {
   [[ ! -e "$source_root/agent-workflows" ]] || fail "nested compatibility root should be rejected before creating the checkout path"
 }
 
+test_sync_normalizes_dot_dot_before_compat_root_guard() {
+  local tmp source_root compat_root output status
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/missing/../src/agent-workflows/compat"
+  with_origins "$tmp"
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$compat_root" \
+        --runtime-root "$tmp/runtime" \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected dot-dot nested compatibility root to fail"
+  assert_contains "$output" "Refusing compatibility root inside source checkout"
+  [[ ! -e "$source_root/agent-workflows" ]] || fail "dot-dot compatibility root should be rejected before creating the checkout path"
+}
+
 test_sync_refuses_source_root_inside_compat_alias_before_creating_it() {
   local tmp source_root compat_root output status
   tmp="$(make_tmp_dir)"
@@ -554,6 +580,35 @@ test_sync_refuses_runtime_env_symlink() {
   assert_contains "$output" "Refusing to use runtime env symlink"
 }
 
+test_sync_refuses_runtime_directory_symlink() {
+  local tmp source_root compat_root runtime_root cache_target output status
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  cache_target="$tmp/external-cache"
+  mkdir -p "$runtime_root" "$cache_target"
+  ln -s "$cache_target" "$runtime_root/cache"
+  with_origins "$tmp"
+
+  set +e
+  output="$(
+    AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+    AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+    AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+      "$ROOT/bin/agent-stack" sync \
+        --source-root "$source_root" \
+        --compat-root "$compat_root" \
+        --runtime-root "$runtime_root" \
+        --no-install 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected runtime directory symlink to fail"
+  assert_contains "$output" "Refusing to use runtime directory symlink"
+}
+
 test_no_install_does_not_create_default_install_dir() {
   local tmp source_root compat_root runtime_root home
   tmp="$(make_tmp_dir)"
@@ -624,9 +679,11 @@ test_sync_rejects_existing_checkout_when_url_override_disagrees
 test_sync_refuses_mismatched_compat_symlink_without_replace
 test_sync_refuses_overlapping_source_and_compat_roots
 test_sync_refuses_compat_root_inside_source_checkout_before_creating_it
+test_sync_normalizes_dot_dot_before_compat_root_guard
 test_sync_refuses_source_root_inside_compat_alias_before_creating_it
 test_sync_links_compat_to_physical_source_root
 test_sync_refuses_runtime_env_symlink
+test_sync_refuses_runtime_directory_symlink
 test_no_install_does_not_create_default_install_dir
 test_sync_force_stash_allows_dirty_main_repo
 test_help_documents_path_overrides_and_force_stash_behavior
