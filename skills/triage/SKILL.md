@@ -132,11 +132,11 @@ precise blocker.
    `Lane Card: claim/PR-open/block/cancel/final; holder, branch/PR, phase, URLs or UNKNOWN.`
    line so workers emit the canonical Lane Card after a successful claim, when the PR is opened,
    on blocked/cancelled state, and in final handoff. The canonical card carries
-   `dashboard_url` from backend metadata and `pr_url` from backend metadata or
-   verified GitHub PR state, with `UNKNOWN` when unavailable. Derive `<PROJECT>`
-   from the current repository name, use A/B/C group letters only when multiple
-   prompts are created, and get `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the
-   local shell.
+   claim holder and `dashboard_url` from backend metadata, plus `pr_url` from
+   backend metadata or verified GitHub PR state, with `UNKNOWN` when unavailable.
+   Derive `<PROJECT>` from the current repository name, use A/B/C group letters
+   only when multiple prompts are created, and get `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire a coordination claim before editing.

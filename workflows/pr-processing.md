@@ -1063,9 +1063,10 @@ When worker subagents are explicitly authorized:
 - Keep write scopes disjoint unless the main agent serializes integration.
 - Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
   PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
-- Emit a portable Lane Card after a successful claim, when the PR is opened, on
-  blocked/cancelled state, and as the final handoff header. Keep it in markdown
-  and refresh values instead of relying on chat titles:
+- Emit a portable Lane Card after a successful claim, on blocked/cancelled state,
+  and as the final handoff header. The actor that opens or updates the PR emits
+  the PR-open Lane Card when the PR is opened. Keep it in markdown and refresh
+  values instead of relying on chat titles:
   - `Lane Card`
   - `Thread:` `<thread-handle>`
   - `Batch/lane:` `<batch-id>` / `<lane>`; `dashboard_url`: `<url|UNKNOWN>`

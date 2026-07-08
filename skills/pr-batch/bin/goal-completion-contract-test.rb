@@ -156,7 +156,7 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "Lane Card", label
       assert_text_includes text, "after a successful claim", label
       assert_text_includes text, "when the PR is opened", label
-      assert_text_includes text, "holder", label
+      assert_text_includes text, "claim holder", label
       assert_text_includes text, "dashboard_url", label
       assert_text_includes text, "pr_url", label
     end

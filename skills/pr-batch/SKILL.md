@@ -479,10 +479,11 @@ worktree so two workers never share one working directory — Codex or
 multi-machine workers use `git worktree add`; in-process Claude Code
 `Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
 final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
-Workers emit the canonical Lane Card after a successful claim, when the PR is opened,
-on blocked/cancelled state, and as the final handoff header. The card shows claim
-holder and `dashboard_url` from backend metadata or `UNKNOWN`; `pr_url` comes from
-backend metadata, verified GitHub PR state, or `UNKNOWN`.
+Workers emit the canonical Lane Card after a successful claim, on
+blocked/cancelled state, and as the final handoff header. The actor that opens
+or updates the PR emits the PR-open Lane Card when the PR is opened. The card
+shows claim holder and `dashboard_url` from backend metadata or `UNKNOWN`;
+`pr_url` comes from backend metadata, verified GitHub PR state, or `UNKNOWN`.
 For host-aware sizing, Codex-targeted waves may use up to 10 independent
 file-disjoint lanes, or 8 when shared/risky conditions apply.
 Claude and generic waves use up to 5 lanes, or up to 3 under those same
