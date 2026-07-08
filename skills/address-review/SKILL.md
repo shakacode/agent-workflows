@@ -11,6 +11,8 @@ that configure a coordination backend or public claim-comment fallback must use
 the mutual-exclusion gate below before triage. A repo that explicitly opts out
 of both mechanisms is declaring a single-operator workflow; do not run
 concurrent address-review workers against the same PR in that repo.
+Use `docs/coordination-backend.md` as the canonical vocabulary for private
+backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
 # Instructions
 
@@ -218,20 +220,23 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 ## Mutual Exclusion Gate
 
 Before Step 5, establish the applicable ownership gate for the target PR.
-Read-only fetches in Steps 3-4 may run before this gate. For private backends,
-do not create todos, present an unattended `autopilot` action, commit, push,
-post replies, resolve threads, or post a summary checkpoint until the private
-claim gate passes. If Steps 3-4 fetched review data before a private claim,
-rerun the Step 4 fetch after the claim succeeds and use the post-claim data for
-Step 5. Public fallback claims are GitHub comments, so do not post them merely
-to triage, run `autopilot`, or execute local-only action `a`; for
-public-fallback repos, Step 5 may proceed after the read-only conflict
-inspection below, but any GitHub-mutating action must post or refresh the
-fallback claim after the user selects that action and before the first branch
-update, push, reply, thread resolution, follow-up issue, or summary/status
-comment. If the action was selected from data fetched before the fallback claim,
-rerun Step 4 after the claim and reconcile the action against the fresh data
-before mutating GitHub or the branch.
+Read-only fetches in Steps 3-4 may run before this gate. Follow the repo's
+`coordination_backend` seam and the vocabulary in
+`docs/coordination-backend.md`: use the selected private backend when available,
+use public claim comments only when the seam allows them, and treat `n/a` as a
+single-operator workflow. Do not create todos, present an unattended
+`autopilot` action, commit, push, post replies, resolve threads, or post a
+summary checkpoint until the required ownership gate passes. If Steps 3-4
+fetched review data before the ownership claim, rerun the Step 4 fetch after the
+claim succeeds and use the post-claim data for Step 5. Public fallback claims
+are GitHub comments, so do not post them merely to triage, run `autopilot`, or
+execute local-only action `a`; for public-fallback repos, Step 5 may proceed
+after the read-only conflict inspection below, but any GitHub-mutating action
+must post or refresh the fallback claim after the user selects that action and
+before the first branch update, push, reply, thread resolution, follow-up issue,
+or summary/status comment. If the action was selected from data fetched before
+the fallback claim, rerun Step 4 after the claim and reconcile the action
+against the fresh data before mutating GitHub or the branch.
 
 - If the repo's `coordination_backend` seam selects an available coordination
   backend, acquire the target PR claim with the bounded helper from the resolved

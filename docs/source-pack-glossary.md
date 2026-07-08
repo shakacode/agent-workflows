@@ -37,11 +37,6 @@ A lightweight, curated `docs/solutions/` area for reusable Source Pack workflow
 failure modes and fixes.
 _Avoid_: full compounding system, session memory.
 
-**Compound Engineering (CE)**:
-The EveryInc `compound-engineering-plugin` source used as prior art for these
-workflow improvement ideas.
-_Avoid_: using CE as a synonym for this Source Pack or for every agent workflow.
-
 **Readiness Vocabulary**:
 The canonical human-facing state language for planning and batch handoffs, with
 optional machine-readable blocks where automation needs them.
@@ -63,9 +58,9 @@ _Avoid_: broad prose-only hardening.
   **Native Plugin Path**.
 - A **Consumer Repo** owns exactly one canonical **Agent Workflow Configuration
   Seam**.
-- The **Native Plugin Path** must not replace the **Host Installer Path** for a
-  host unless it also covers that host's helper-binary and stale-skill-text
-  footguns.
+- The **Native Plugin Path** and **Host Installer Path** are separate delivery
+  routes; choose the route that supplies the helper binaries, metadata, and host
+  behavior the repo needs.
 - The **Workflow Lessons Library** captures portable Source Pack lessons, not
   Consumer Repo domain policy.
 - The **Readiness Vocabulary** must preserve explicit `UNKNOWN` states and must
@@ -74,30 +69,20 @@ _Avoid_: broad prose-only hardening.
   be shared from the first implementation.
 - The first **State-Machine Fixture** target is `autoreview` target selection;
   broader batch and current-head readiness fixtures come later.
-- CE-derived improvements should be implemented in staged waves rather than one
-  parallel batch, because the **Workflow Lessons Library**, **Readiness
-  Vocabulary**, and **Review Finding** schema create downstream vocabulary.
-
-## Example Dialogue
-
-> **Dev:** "Can we add a Codex plugin manifest and tell Claude users to use it?"
-> **Maintainer:** "No. The Codex **Native Plugin Path** is v0 Codex-only.
-> Claude users stay on the **Host Installer Path** until the Claude path has no
-> helper-binary or stale-skill-text footguns."
 
 ## Flagged Ambiguities
 
 - "plugin" can mean the Codex-native manifest surface or the entire Source
   Pack. Resolved: use **Native Plugin Path** for host plugin manifests and
   **Source Pack** for the repository as a whole.
-- `docs/solutions/` could mean a full Compound Engineering-style compounding
-  workflow or a small curated library. Resolved for v0: use **Workflow Lessons
-  Library** for the lightweight curated form.
+- `docs/solutions/` could mean a broad knowledge system or a small curated
+  library. Resolved: use **Workflow Lessons Library** for the lightweight
+  curated form.
 - "machine-readable readiness contract" could mean mandatory JSON in every
-  planning output. Resolved for v0: define a **Readiness Vocabulary** first and
-  keep structured blocks optional unless a workflow explicitly needs automation.
+  planning output. Resolved: define a **Readiness Vocabulary** first and keep
+  structured blocks optional unless a workflow explicitly needs automation.
 - "structured review output" could mean each skill emits its own JSON shape.
-  Resolved for v0: define one shared **Review Finding** schema and adopt it in
-  one review path first.
+  Resolved: define one shared **Review Finding** schema and adopt it
+  incrementally.
 - "state-machine hardening" could target the whole batch workflow at once.
-  Resolved for v0: start with `autoreview` target selection fixtures.
+  Resolved: start with `autoreview` target selection fixtures.

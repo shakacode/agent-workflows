@@ -27,9 +27,9 @@ The default model is:
 - validate that installed workflows can resolve the consumer repo's contract;
 - keep repo-specific skills and overrides in the consumer repo only when needed.
 
-This is deliberately not a subtree-first model. Repos may pin local copies when
-their execution environment cannot load installed skills, but installed skills
-plus a validated repo seam are the default.
+Repos may pin local copies when their execution environment cannot load
+installed skills, but installed skills plus a validated repo seam are the
+default.
 
 ## What You Get
 
@@ -52,10 +52,10 @@ plus a validated repo seam are the default.
 | `.codex-plugin/plugin.json` | Codex native plugin manifest for consuming this source pack through Codex plugin metadata. |
 | `skills/` | Agent skill folders. Copy or symlink these under a Codex or Claude skill root. |
 | `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
-| `bin/` | Install, status, upgrade, validation, and downstream-sync helpers. |
+| `bin/` | Install, status, upgrade, validation, and maintainer sync helpers. |
 | `downstream.yml` | Registry of consumer repos for `bin/push-downstream`. |
 | `seam-presets.yml` | Seam value adapter: org defaults + archetype presets. |
-| `docs/` | Adoption, seam design, and operator guidance. |
+| `docs/` | Adoption, seam design, and workflow guidance. |
 | `CONTEXT.md` | Canonical glossary for batch coordination and lane lifecycle terms. |
 | `examples/` | Example consumer-repo configuration snippets. |
 | `test/fixtures/consumer-repo/` | Minimal fixture used by `bin/validate`. |
@@ -158,15 +158,17 @@ Use [docs/source-pack-glossary.md](docs/source-pack-glossary.md) for canonical
 vocabulary around source-pack distribution, install paths, seams, readiness
 states, review findings, and state-machine fixtures.
 
-## Downstream Seam Sync
+## Maintainer Sync Reference
 
-`bin/push-downstream` rolls the binstub contract into the consumer repos listed
-in `downstream.yml`, one PR per repo, while preserving repo-owned scripts and
+Most teams can adopt the source pack with the Quick Start and Consumer Repo
+Adoption steps above. Maintainers who manage many consumer repos can use
+`bin/push-downstream` to roll the binstub contract into the repos listed in
+`downstream.yml`, one PR per repo, while preserving repo-owned scripts and
 policy values. Plan first, then apply a canary before fanning out:
 
 ```bash
 bin/push-downstream                               # plan every enabled repo
-bin/push-downstream --only shakapacker --apply    # clone, reconcile, validate, open one PR
+bin/push-downstream --only <repo-key> --apply       # clone, reconcile, validate, open one PR
 bin/push-downstream --apply                       # fan out to all enabled repos
 ```
 
@@ -179,8 +181,7 @@ the managed-vs-repo-owned boundary, trust seeding, and
 The docs for this pack are the
 [ShakaCode Agent Workflow Playbook](docs/README.md). Start there when deciding
 which workflow to use, how to install the pack, how to adopt it in a consumer
-repo, how to validate the agent workflow contract, or what would justify a
-separate docs site.
+repo, or how to validate the agent workflow contract.
 
 ## Skill Inventory
 
@@ -294,8 +295,8 @@ upgrade-agent-workflows --host codex --consumer-root /path/to/consumer/repo
 ```
 
 Long-running agents keep whatever skill text they already loaded. Let active
-batches finish unless they are blocked by old workflow instructions; use the new
-pack for new batches or a small canary run first. For restart handoff prompts,
+batches finish unless they are blocked by superseded workflow instructions; use
+the new pack for new batches or a small canary run first. For restart handoff prompts,
 see [docs/agent-runner-restarts.md](docs/agent-runner-restarts.md); for
 `UP_TO_DATE`, `UPGRADE_AVAILABLE`, `NOT_INSTALLED`, and `CHECK_FAILED` status
 semantics and network-use notes, see

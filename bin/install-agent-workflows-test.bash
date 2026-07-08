@@ -98,6 +98,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/skills/pr-batch/SKILL.md"
   assert_file "$target/skills/pr-batch/agents/openai.yaml"
   assert_file "$target/workflows/pr-processing.md"
+  assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
@@ -135,6 +136,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/skills/pr-batch/SKILL.md"
   assert_file "$tmp/.claude/skills/pr-batch/agents/openai.yaml"
   assert_file "$tmp/.claude/workflows/pr-processing.md"
+  assert_file "$tmp/.claude/docs/coordination-backend.md"
   assert_file "$tmp/.claude/docs/review-finding-schema.md"
   assert_file "$tmp/.claude/docs/solutions/README.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
@@ -157,6 +159,7 @@ test_copy_mode_preserves_unrelated_agent_files() {
   assert_file "$target/skills/personal/SKILL.md"
   assert_file "$target/workflows/personal.md"
   assert_file "$target/docs/personal.md"
+  assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/personal-helper"
@@ -175,6 +178,7 @@ test_copy_mode_does_not_replace_generic_consumer_docs() {
 
   grep -q 'consumer adoption docs' "$target/docs/adoption.md" || fail "copy mode replaced consumer docs/adoption.md"
   grep -q 'consumer architecture decision' "$target/docs/adr/0001-consumer.md" || fail "copy mode replaced consumer docs/adr"
+  assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/solutions/README.md"
 }
@@ -191,6 +195,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/skills/pr-batch"
   assert_symlink "$target/workflows"
   assert_file "$target/docs/personal.md"
+  assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
@@ -210,7 +215,9 @@ test_symlink_mode_replaces_docs_directory_symlink() {
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
 
   [[ -d "$target/docs" && ! -L "$target/docs" ]] || fail "expected real docs directory"
+  assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
+  [[ ! -e "$external_docs/coordination-backend.md" ]] || fail "should not write through pre-existing docs symlink"
   [[ ! -e "$external_docs/review-finding-schema.md" ]] || fail "should not write through pre-existing docs symlink"
 }
 
@@ -221,10 +228,13 @@ test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   source_doc="$ROOT/docs/solutions/README.md"
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
+  assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/solutions/README.md"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
 
   assert_file "$source_doc"
+  assert_file "$target/docs/coordination-backend.md"
+  [[ ! -L "$target/docs/coordination-backend.md" ]] || fail "copy mode should replace pack doc symlink with a real copy"
   assert_file "$target/docs/solutions/README.md"
   [[ ! -L "$target/docs/solutions/README.md" ]] || fail "copy mode should replace pack doc symlink with a real copy"
 }

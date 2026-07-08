@@ -1,7 +1,7 @@
 # ShakaCode Agent Workflow Playbook
 
-Operator docs for installing, adopting, and running the shared ShakaCode agent
-workflow pack.
+Guide for installing, adopting, and running the shared ShakaCode agent workflow
+pack.
 
 Use this playbook when you need to decide which workflow skill to use, install
 or upgrade the shared pack, adopt it in a consumer repository, validate an
@@ -9,7 +9,7 @@ agent workflow contract, or run safer multi-PR agent work.
 
 ## Start Here
 
-These are the most common operator entry points.
+These are the most common entry points.
 
 | Goal | Read |
 | --- | --- |
@@ -25,7 +25,7 @@ These are the most common operator entry points.
 
 | Area | Read |
 | --- | --- |
-| Consumer repo rollout and sync | [Downstream Sync](downstream-sync.md) |
+| Maintainer sync across consumer repos | [Maintainer Consumer Repo Sync](downstream-sync.md) |
 | Coordination backend behavior | [Coordination Backend](coordination-backend.md) |
 | Issue value and scope decisions | [Issue Evaluation](issue-evaluation.md) |
 | Release branch policy | [Release Branching](release-branching.md) |
@@ -50,10 +50,9 @@ These are the most common operator entry points.
 
 ## Docs Site Direction
 
-Keep this playbook as source-controlled Markdown for now. A standalone docs
-site is worth adding when the audience grows beyond current ShakaCode operators
-or when search, sidebar navigation, or polished public onboarding becomes more
-valuable than the extra site maintenance.
+This playbook is the source of truth for team and client sharing. A standalone
+docs site can be added when search, sidebar navigation, or a hosted public URL
+would make adoption easier than source-controlled Markdown alone.
 
 If the site happens, use the playbook name publicly and publish it as
 **ShakaCode Agent Workflow Playbook**. A practical URL would be
