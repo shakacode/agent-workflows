@@ -62,12 +62,22 @@ default.
 
 ## Quick Start
 
-Clone the workflow pack:
+Clone the workflow pack and install it into the agent host you use:
 
 ```bash
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
 cd "$HOME/src/agent-workflows"
+bin/install-agent-workflows --host codex
 ```
+
+Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
+explicit shared agent home.
+
+For the full ShakaCode agent stack setup (`agent-workflows`,
+`agent-coordination`, and `agent-coordination-dashboard`), see
+[Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup).
+`agent-stack` is ShakaCode-specific stack tooling, not part of the generic
+workflow-pack install path for consumer repositories.
 
 ### Host Installer Path
 

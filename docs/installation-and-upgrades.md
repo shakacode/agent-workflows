@@ -73,7 +73,7 @@ ruby bin/codex-plugin-manifest-check
 
 ## Install
 
-Clone the source pack:
+Clone the source pack once:
 
 ```bash
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
@@ -104,6 +104,36 @@ pointing at the clone:
 ```bash
 bin/install-agent-workflows --host codex --mode symlink
 ```
+
+## Full Stack Contributor Setup
+
+For a hackable ShakaCode full-stack local setup, run the stack sync helper from
+the source checkout:
+
+```bash
+bin/agent-stack sync
+```
+
+`agent-stack` is ShakaCode-specific stack tooling, not part of the generic
+workflow-pack install path for consumer repositories.
+
+It keeps editable source checkouts in `~/src`, private runtime configuration
+under `~/.agent-workflows`, compatibility symlinks under `~/codex/agent-repos`,
+and installs the shorter `agent-stack` command for future runs:
+
+```text
+~/src/agent-workflows
+~/src/agent-coordination
+~/src/agent-coordination-dashboard
+
+~/.agent-workflows/
+  env
+  cache/
+  logs/
+  state/
+```
+
+After the first sync, update the stack with `agent-stack sync`.
 
 The installer writes:
 
