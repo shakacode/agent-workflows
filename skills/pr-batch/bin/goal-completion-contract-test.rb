@@ -119,8 +119,8 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }
     registration_patterns = {
-      "workflows/pr-processing.md goal prompt" => /register batch metadata before launch when supported/i,
-      "skills/pr-batch goal prompt" => /register batch\s+metadata before launch when supported/i,
+      "workflows/pr-processing.md goal prompt" => /register before launch when supported/i,
+      "skills/pr-batch goal prompt" => /register before launch when supported/i,
       "skills/plan-pr-batch goal prompt" => /register before launch when supported/i
     }
 
@@ -136,12 +136,50 @@ class GoalCompletionContractTest < Minitest::Test
     {
       "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, "first worker-specific line", label
       assert_text_includes text, "<batch-short>", label
       assert_text_includes text, "<lane>", label
       assert_text_includes text, "coordinator-chosen session word", label
+    end
+  end
+
+  def test_lane_card_contract_is_documented
+    workflow_worker_rules = extract_markdown_section(@workflow, "### Worker Rules")
+    assert_text_includes workflow_worker_rules, "Lane Card", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "after a successful claim", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "when the PR is opened", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "`claim:`", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "holder|UNKNOWN", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "generation|UNKNOWN", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "instance|UNKNOWN", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "dashboard_url", "workflows/pr-processing.md Worker Rules"
+    assert_text_includes workflow_worker_rules, "pr_url", "workflows/pr-processing.md Worker Rules"
+
+    {
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_text_includes text, "Lane Card", label
+      assert_text_includes text, "after a successful claim", label
+      assert_text_includes text, "when the PR is opened", label
+      assert_text_includes text, "claim holder", label
+      assert_text_includes text, "dashboard_url", label
+      assert_text_includes text, "pr_url", label
+    end
+
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      assert_text_includes text, "Lane Card:", label
+      assert_text_includes text, "holder", label
+      assert_text_includes text, "PR-open", label
+      assert_text_includes text, "UNKNOWN", label
     end
   end
 
@@ -235,14 +273,12 @@ class GoalCompletionContractTest < Minitest::Test
   def test_goal_prompts_put_batch_title_after_target_invocation
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{BATCH_TITLE_LINE}\n"),
-             "#{label} must put the standard batch title line at the target-specific start"
+      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+             "#{label} must put the standard batch title line after the invocation"
     end
-
-    assert @plan_goal_prompt.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
-           "skills/plan-pr-batch shared goal prompt must put the standard batch title line after the invocation"
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
     assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
