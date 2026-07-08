@@ -119,7 +119,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "Thread handle: <batch-short>-<lane>-<word>", label
-      assert_text_includes text, "register", label
+      assert_match(/register/i, text, "#{label} is missing registration language")
       assert_text_includes text, "holder/generation", label
       assert_text_includes text, "UNKNOWN", label
     end

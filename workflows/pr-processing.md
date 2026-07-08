@@ -990,8 +990,8 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
 - Before pushing a worker lane, verify the bounded target or batch status still
   shows this lane's claim holder. When the backend reports a claim generation or
   instance identifier, it must also match the worker's last known value. A
-  different holder or generation is a hard stop: do not push, refresh the lane
-  heartbeat as blocked when possible, and report the conflicting owner. If the
+  different holder or generation is a hard stop: do not push. Refresh the lane
+  heartbeat as blocked when possible and report the conflicting owner. If the
   backend cannot report holder or generation, record that fact as `UNKNOWN` and
   mutate only when the existing claim result and dependency rules still allow
   the push.

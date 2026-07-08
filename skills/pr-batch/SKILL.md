@@ -238,8 +238,8 @@ Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state. Do not mark goal complete while any target has pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <required lane/owner/scope/private-state or not required rationale>.
 Coordination: follow `.agents/workflows/pr-processing.md` under Coordination
-State and Worker Rules before creating worktrees or branches. Include stable
-agent ids, thread handles, register batch metadata before launch when supported,
+State and Worker Rules before creating worktrees or branches. Register batch
+metadata before launch when supported. Include stable agent ids, thread handles,
 bounded targeted coordination status / claim outcomes, batch ids, dependency
 refs, push holder/generation checks when reported, and any `UNKNOWN` state in
 every worker lane and handoff.
