@@ -241,7 +241,9 @@ single-lane shortcuts are:
 7. Apply that `merge_authority`. With `auto_merge_when_gates_pass`, merge only
    after local validation, current-head checks, review threads, branch state,
    and repo policy are clean. With `ask`, ask exactly once when gates are clean.
-   With `none`, stop at `ready-no-merge-authority`.
+   With `none`, stop at `ready-no-merge-authority` only after those same gates
+   are clean; otherwise report `waiting-on-checks-or-review` or the applicable
+   blocked state.
 
 Do not add batch planning, goal prompts, worker split machinery, or changes to
 `$pr-batch` behavior.
