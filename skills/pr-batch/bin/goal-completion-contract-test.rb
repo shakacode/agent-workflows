@@ -112,6 +112,19 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_goal_prompts_include_thread_handle_and_registration_contract
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      assert_text_includes text, "Thread handle: <batch-short>-<lane>-<word>", label
+      assert_text_includes text, "register", label
+      assert_text_includes text, "holder/generation", label
+      assert_text_includes text, "UNKNOWN", label
+    end
+  end
+
   def test_workflow_defines_canonical_readiness_vocabulary
     workflow_text = extract_markdown_section(@workflow, "### Batch Handoff Format", end_heading: /^###\s+/)
     CANONICAL_READINESS_STATES.each do |state|
