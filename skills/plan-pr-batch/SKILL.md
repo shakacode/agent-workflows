@@ -100,9 +100,18 @@ Plan a PR batch
      `not required` plus the rationale. For batches that need post-merge replay,
      require the `qa-evidence v1` marker and any needed
      `priority-finding-dispositions v1` marker in the final evidence.
-   - Build a File-touch map for the batch: list the paths each item changes or
-     intends to affect, including creates, deletes, and renames. Never guess
-     paths.
+   - Decide whether the batch will schedule any parallel wave before doing path
+     discovery. The File-touch map exists only to keep same-path items out of the
+     same parallel worktree wave; a serial schedule cannot collide, so the map
+     cannot change it. If the batch runs serially — a single item, the user asked
+     for serial execution, or the resolved host cap is 1 — skip path discovery and
+     default every lane to serial. Otherwise build the map only for items that are
+     candidates for the same parallel wave. PR path discovery is a cheap
+     deterministic helper (below), so run it for every parallel-candidate PR;
+     issue path discovery is model work, so defer it under the lazy rule below.
+   - Build the File-touch map for those parallel candidates: list the paths each
+     item changes or intends to affect, including creates, deletes, and renames.
+     Never guess paths.
 
    - File-touch map, PR path discovery: resolve the paths a PR touches with the
      helper, which does the authoritative local three-dot diff (fetching the
@@ -132,10 +141,14 @@ Plan a PR batch
        guards, fork pull-ref vs head-repo vs reachable-SHA fetch, shallow-clone
        deepen-and-retry, Files API `changedFiles` sanity check and ~3000-file
        cap); run `pr-file-touch-map --help` for the full contract.
-   - File-touch map, issue path discovery: read the issue body, record proposed
-     new paths from issue/design notes, and grep the repo to confirm existing
-     paths. If paths cannot be determined from the issue body or design notes,
-     record them as `UNKNOWN` and treat the item as serial.
+   - File-touch map, issue path discovery is lazy: an issue with no explicit
+     proposed paths in its body or design notes is recorded as `UNKNOWN` and run
+     serially immediately — do not grep-and-reason toward a path set that will
+     still land in a serial lane. Only when the issue names explicit paths and is
+     a live candidate for a wave with open parallel capacity, record those
+     proposed new paths from issue/design notes and grep the repo to confirm
+     existing paths. If paths still cannot be determined, record `UNKNOWN` and
+     treat the item as serial.
    - File-touch map, collision and wave scheduling: items that affect the same
      path cannot run as parallel worktrees; keep only file-disjoint items in the
      parallel first batch and sequence or defer collisions. A directory rename
@@ -326,6 +339,9 @@ Execution rules:
 - Do not hide missing GitHub data; say `UNKNOWN`.
 - Do not guess file paths; record unverifiable paths as `UNKNOWN` and treat that
   item as serial.
+- Do not run full issue path discovery for items that will schedule serially
+  anyway; a single-item batch, a user-requested serial run, a host cap of 1, or
+  an issue with no explicit paths all go straight to a serial lane as `UNKNOWN`.
 - Do not omit links; use GitHub URLs for every item.
 - Do not put full audit evidence in the goal prompt; put bulky details in the Batch Plan outside the goal.
 - Do not fan out items that change the same path as parallel worktrees; they will conflict — sequence them or split into a later batch.
