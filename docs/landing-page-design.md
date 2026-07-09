@@ -99,7 +99,11 @@ flowchart LR
   audit -.-> backend
 ```
 
-### System topology (Option 2 end-state)
+### System topology
+
+The dashboard stays a separate repo that consumes the Worker API through a
+published state-schema contract (agent-coordination ADR 0003), not a merged
+subdirectory.
 
 ```mermaid
 flowchart LR
@@ -109,8 +113,8 @@ flowchart LR
   consumers -->|agent-coord| cli
   subgraph platform [agent-coordination: protocol plane MIT]
     cli[agent-coord CLI] --> worker[Worker + D1]
-    dash[apps/dashboard] --> worker
   end
+  dash[agent-coordination-dashboard: operator view] -->|HTTP API + contract| worker
   worker --> state[(agent-coordination-state: private)]
   sim[(agent-coord-sim-*: private)] -.-> worker
 ```
