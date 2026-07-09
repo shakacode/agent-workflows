@@ -151,9 +151,8 @@ flowchart TB
 
 ## Prerequisites and open items
 
-- **Add a LICENSE.** This repo is currently unlicensed; an OSS-adoption page needs
-  one. Recommend MIT, consistent with the coordination protocol plane (agent-
-  coordination ADR 0002). Blocking for launch.
+- **License confirmed.** The repo includes an MIT `LICENSE`, consistent with the
+  coordination protocol plane (agent-coordination ADR 0002).
 - Extract shakacode.com brand tokens (colors, type) — build prerequisite.
 - Verify the exact dogfooding numbers before publishing section 6.
 - Record an asciinema cast of a real `pr-batch` run for the hero (optional but
@@ -169,6 +168,6 @@ flowchart TB
 ## Next step
 
 On approval, turn this into an implementation plan (writing-plans): scaffold
-Astro under `site/`, add the LICENSE, build the four diagrams as themed SVGs,
-assemble copy from existing docs, wire Cloudflare Pages + the CNAME, and draft
-the methodology article.
+Astro under `site/`, build the four diagrams as themed SVGs, assemble copy from
+existing docs, wire Cloudflare Pages + the CNAME, and draft the methodology
+article.
