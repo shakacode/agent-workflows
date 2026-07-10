@@ -159,6 +159,12 @@ Simple explicit commands forward wrapper arguments automatically. Explicit
 arguments directly. Compound shell expressions are preserved verbatim; include
 `"$@"` in the expression when it should receive wrapper arguments.
 
+Files carrying the generated init marker are tool-owned. Supplying explicit
+commands again rewrites both managed wrappers, so keep hand-written logic in the
+target commands. To own a wrapper directly, replace it without the marker and
+rerun initialization without explicit commands; later explicit replacement then
+fails closed instead of overwriting it.
+
 The generated `.agents/trusted-github-actors.yml` is intentionally empty and
 fail-closed. Add only repo-specific maintainers, trusted bots, metadata-only
 bots, or teams that the repository has deliberately approved. Add repo-local

@@ -63,6 +63,12 @@ notes.
    arguments. Use `--base-branch` when the new policy should not default to
    `main`.
 
+   Generated wrappers that retain the init marker are tool-owned, and another
+   explicit-command run rewrites both of them. Keep custom logic in the target
+   commands, or replace a wrapper without the marker and rerun without explicit
+   commands to make that wrapper repo-owned. Explicit replacement of a
+   repo-owned wrapper fails closed.
+
 4. **Review policy YAML.** The initializer creates
    `.agents/agent-workflow.yml` with required
    non-command policy keys: `base_branch`, `follow_up_prefix`, `review_gate`,

@@ -1141,6 +1141,42 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_does_not_duplicate_a_leading_exec
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "exec bundle exec rake validate",
+        "--test-command", "exec npm run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec bundle exec rake validate "$@"'
+      refute_includes validate, "exec exec"
+      assert_includes test, 'exec npm run test -- "$@"'
+      refute_includes test, "exec exec"
+    end
+  end
+
+  def test_init_adds_npm_separator_after_leading_environment_assignments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "CI=1 npm run validate",
+        "--test-command", "CI=1 LABEL='test suite' npm run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'CI=1 npm run validate -- "$@"'
+      assert_includes test, %(CI=1 LABEL='test suite' npm run test -- "$@")
+    end
+  end
+
   def test_init_appends_missing_yaml_keys_without_losing_comments_or_formatting
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
@@ -1198,6 +1234,24 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_equal original, File.read(policy_path)
       refute File.exist?(File.join(root, ".agents/bin"))
       refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_reports_filesystem_errors_without_a_backtrace
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin/validate"))
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "FAIL agent workflow seam has 1 issue(s)"
+      refute_includes out, "agent-workflow-seam-doctor:"
+      refute_includes out, "Errno::EISDIR"
     end
   end
 

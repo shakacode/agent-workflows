@@ -137,6 +137,12 @@ policy or trust keys are appended to existing block mappings so comments and
 formatting remain intact; initialization fails closed before writing when a
 safe append is not possible.
 
+The init marker is the ownership boundary for generated wrappers. Explicit
+commands replace both marked wrappers on a later run, while an unmarked valid
+wrapper is repo-owned and preserved; explicit replacement of that repo-owned
+wrapper fails closed. Put hand-written behavior behind a managed wrapper or
+remove the marker deliberately before taking direct ownership.
+
 ## Seam Doctor
 
 `agent-workflow-seam-doctor` validates the contract:

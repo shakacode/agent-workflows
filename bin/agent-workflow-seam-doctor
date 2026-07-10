@@ -7,6 +7,7 @@ require "json"
 require "fileutils"
 require "open3"
 require "optparse"
+require "shellwords"
 require "yaml"
 
 module AgentWorkflowSeamDoctor
@@ -262,14 +263,28 @@ module AgentWorkflowSeamDoctor
     return command if command.match?(/[|&;<>#]/)
 
     argument_suffix = command.match?(/\$(?:@|\{@\})/) ? "" : ' "$@"'
-    return "#{command}#{argument_suffix}" if command.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    has_exec = command.match?(/\Aexec\s+/)
+    has_environment = command.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    npm_run = init_npm_run_command?(command)
 
-    if !argument_suffix.empty? && command.match?(/\Anpm\s+run\s+\S/)
+    if !argument_suffix.empty? && npm_run
       separator = command.match?(/(?:\A|\s)--(?:\s|\z)/) ? "" : " --"
-      return "exec #{command}#{separator}#{argument_suffix}"
+      prefix = has_exec || has_environment ? "" : "exec "
+      return "#{prefix}#{command}#{separator}#{argument_suffix}"
     end
 
+    return "#{command}#{argument_suffix}" if has_exec || has_environment
+
     "exec #{command}#{argument_suffix}"
+  end
+
+  def init_npm_run_command?(command)
+    words = Shellwords.shellsplit(command)
+    words.shift if words.first == "exec"
+    words.shift while words.first&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    words.length >= 3 && words.first(2) == %w[npm run] && !words.fetch(2).empty?
+  rescue ArgumentError
+    false
   end
 
   def write_init_readme(root, commands, explicit_commands:, scripts_changed:)
@@ -742,7 +757,7 @@ if $PROGRAM_NAME == __FILE__
                  test_command: options[:test_command],
                  shared_roots: options.fetch(:shared_roots)
                )
-             rescue AgentWorkflowSeamDoctor::InitError => e
+             rescue AgentWorkflowSeamDoctor::InitError, SystemCallError => e
                [e.message]
              end
            else
