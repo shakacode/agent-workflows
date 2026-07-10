@@ -81,8 +81,9 @@ it shows how the team works, which is what buyers evaluate. Credit the pairing.
 
 ## Diagrams
 
-Authored as in-repo assets (SVG for the site, mermaid here for review). No image
-model needed — labels stay exact and restyleable to the brand.
+Themed SVG assets are authored in `agent-workflows-com`; mermaid versions live
+here for review. No image model needed — labels stay exact and restyleable to
+the brand.
 
 ### Batch lifecycle (hero, section 3)
 
@@ -173,6 +174,6 @@ flowchart TB
 ## Next step
 
 On approval, turn this into an implementation plan (writing-plans) in
-`agent-workflows-com`: scaffold Astro, build the four diagrams as themed SVGs,
+`agent-workflows-com`: scaffold Astro, build the three diagrams as themed SVGs,
 assemble copy from existing docs, wire Cloudflare Pages + the CNAME, and draft
 the methodology article.
