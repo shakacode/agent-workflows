@@ -767,7 +767,7 @@ Execution rules:
 - For coordination, respect coordination claims and dependencies: stable ids/thread handles, register before launch when supported, bounded status/claim, phase heartbeats, push holder/generation check, and stop on unmet `blocked_on` or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence.
 - Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
-- Final handoff: canonical closeout; links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA rationale, final-state bucket.
+- Final handoff: canonical closeout; links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, final-state bucket.
 
 ```
 
@@ -1994,8 +1994,8 @@ For a manual multi-PR landing plan:
 
 ## Post-Merge Batch Audit
 
-Use this section when reviewing already-merged PRs from concurrent agent work,
-especially after a completed non-trivial batch or before a release candidate.
+Use this section when reviewing a completed coordinated batch, including a
+small batch, or already-merged PRs before a release candidate.
 
 Choose the audit mode before deep audit:
 

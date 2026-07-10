@@ -346,7 +346,7 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_canonical_closeout_requires_audit_before_final_conversation_status
-    closeout = extract_markdown_section(@workflow, "### Coordinator Closeout Lane")
+    closeout = extract_markdown_section(@workflow, "### Coordinator Closeout Lane", end_heading: /^##\s+/)
     normalized_closeout = closeout.gsub(/\s+/, " ")
 
     assert_includes normalized_closeout,

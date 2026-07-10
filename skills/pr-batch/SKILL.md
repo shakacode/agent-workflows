@@ -270,7 +270,7 @@ Execution rules:
 - For coordination, respect coordination claims and dependencies: stable ids/thread handles, register before launch when supported, bounded status/claim, phase heartbeats, push holder/generation check, and stop on unmet `blocked_on` or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence.
 - Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
-- Final handoff: canonical closeout; links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA rationale, final-state bucket.
+- Final handoff: canonical closeout; links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, final-state bucket.
 
 ```
 
