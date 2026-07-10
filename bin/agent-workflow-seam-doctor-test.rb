@@ -1209,6 +1209,36 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_adds_npm_separator_for_run_script_alias
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run-script validate",
+        "--test-command", "npm --prefix app run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm run-script validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm --prefix app run-script test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_before_caller_supplied_argument_forwarding
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'npm run validate "$@"',
+        "--test-command", "CI=1 npm run-script test \$@"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), "CI=1 npm run-script test -- \$@"
+    end
+  end
+
   def test_init_appends_missing_yaml_keys_without_losing_comments_or_formatting
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
