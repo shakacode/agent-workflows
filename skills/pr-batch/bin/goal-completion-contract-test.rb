@@ -108,6 +108,8 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "report NOT COMPLETE", label
       assert_text_includes text, "pending, missing, or untriaged current-head CI", label
       assert_text_includes text, "unresolved current-head review threads", label
+      assert_text_includes text, "watch window", label
+      assert_text_includes text, "resume instructions", label
       assert_text_includes text, "UNKNOWN", label
     end
   end

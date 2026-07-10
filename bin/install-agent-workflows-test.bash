@@ -202,8 +202,10 @@ test_install_removes_legacy_copy_from_git_worktree_source() {
   install -m 0755 "$ROOT/bin/install-agent-workflows" "$clone_root/bin/install-agent-workflows"
   git -C "$clone_root" config user.email "agent-workflows-test@example.com"
   git -C "$clone_root" config user.name "Agent Workflows Test"
-  git -C "$clone_root" add bin/install-agent-workflows
-  git -C "$clone_root" commit --quiet -m "test worktree installer"
+  if ! git -C "$clone_root" diff --quiet -- bin/install-agent-workflows; then
+    git -C "$clone_root" add bin/install-agent-workflows
+    git -C "$clone_root" commit --quiet -m "test worktree installer"
+  fi
   git -C "$clone_root" worktree add --quiet --detach "$worktree_root" HEAD
   [[ -f "$worktree_root/.git" ]] || fail "expected linked worktree .git file"
 

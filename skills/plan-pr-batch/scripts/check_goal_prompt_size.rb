@@ -374,11 +374,11 @@ required_all_prompt_phrases = [
   "explicit merge approval",
   "ready-no-merge-authority",
   "document confidence data in the PR description",
-  "verify current GitHub state before edits",
+  "verifies live GitHub before edits",
   "respect coordination claims and dependencies",
   "register before launch when supported",
   "push holder/generation check",
-  "report UNKNOWN"
+  "facts are UNKNOWN"
 ]
 
 host_aware_batch_sizing_phrase_checks = {
