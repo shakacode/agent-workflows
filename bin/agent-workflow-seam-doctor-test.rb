@@ -1079,6 +1079,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_explicit_javascript_runner_commands_forward_after_separator
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run validate",
+        "--test-command", "pnpm run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec npm run validate -- "$@"'
+      assert_includes test, 'exec pnpm run test -- "$@"'
+    end
+  end
+
   def test_init_treats_non_object_package_json_as_unknown
     [[], "package", 1, nil].each do |package|
       Dir.mktmpdir("agent-workflow-seam-init") do |root|
@@ -1092,6 +1109,20 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         refute_includes out, "TypeError"
         refute_includes out, "NoMethodError"
       end
+    end
+  end
+
+  def test_init_treats_invalid_utf8_package_json_as_unknown
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      File.binwrite(File.join(root, "package.json"), "{\xFF}".b)
+      File.write(File.join(root, "package-lock.json"), "lock\n")
+
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "unconfigured init wrapper"
+      refute_includes out, "invalid byte sequence"
+      refute_includes out, "Encoding::"
     end
   end
 
