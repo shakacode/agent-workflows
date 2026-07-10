@@ -637,6 +637,12 @@ budget_checks.each do |label, result|
 
     mixed_route_fallback_chars = mixed_route_fallback.length
     realistic_checks[label].fetch(:mixed_route_fallback)[target] = mixed_route_fallback_chars
+    if mixed_route_fallback_chars >= limit
+      abort_with_failure(
+        "#{target_label} mixed-route fallback prompt is #{mixed_route_fallback_chars} chars, " \
+        "must stay under #{limit}"
+      )
+    end
 
     unsplit_four_route_candidate = fallback_prompt.sub(
       WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
@@ -648,9 +654,15 @@ budget_checks.each do |label, result|
 
     unsplit_four_route_chars = unsplit_four_route_candidate.length
     realistic_checks[label].fetch(:unsplit_four_route)[target] = unsplit_four_route_chars
-    if target == :codex && unsplit_four_route_chars < limit
+    if target == :codex
+      if unsplit_four_route_chars < limit
+        abort_with_failure(
+          "#{target_label} four-route fixture must require a route-group split at #{limit} chars"
+        )
+      end
+    elsif unsplit_four_route_chars >= limit
       abort_with_failure(
-        "#{target_label} four-route fixture must require a route-group split at #{limit} chars"
+        "#{target_label} four-route prompt is #{unsplit_four_route_chars} chars, must stay under #{limit}"
       )
     end
 

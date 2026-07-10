@@ -224,6 +224,28 @@ test_install_removes_legacy_copy_from_git_worktree_source() {
   assert_file "$target/docs/agent-workflows-model-routing.md"
 }
 
+test_install_removes_matching_legacy_copy_from_non_git_source() {
+  local tmp source target
+
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source" "$target/docs"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  install -m 0644 "$source/docs/agent-workflows-model-routing.md" "$target/docs/model-routing.md"
+  ruby -rjson -e '
+    path, source = ARGV
+    File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => "unknown"}) + "\n")
+  ' "$target/.agent-workflows-install.json" "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    >/tmp/install-agent-workflows-test.out
+
+  [[ ! -e "$target/docs/model-routing.md" ]] || \
+    fail "copy mode retained a matching legacy model-routing file from a non-git source"
+  assert_file "$target/docs/agent-workflows-model-routing.md"
+}
+
 test_installed_prompt_guard_ignores_unowned_docs() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -517,6 +539,7 @@ main() {
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
     test_install_removes_legacy_managed_model_routing_path
     test_install_removes_legacy_copy_from_git_worktree_source
+    test_install_removes_matching_legacy_copy_from_non_git_source
     test_installed_prompt_guard_ignores_unowned_docs
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files
