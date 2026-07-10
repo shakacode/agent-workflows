@@ -1051,6 +1051,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_preserves_subshell_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = '(bin/validate "$@")'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "#{command}\n"
+      refute_includes validate, "exec #{command}"
+    end
+  end
+
   def test_init_forwards_arguments_when_shell_metacharacters_are_quoted_or_escaped
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
