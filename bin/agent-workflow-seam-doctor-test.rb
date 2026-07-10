@@ -1552,6 +1552,29 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_bare_init_restores_managed_wrapper_mode_without_rewriting_content
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo explicit-validate",
+        "--test-command", "echo explicit-test"
+      )
+      assert first_status.success?, first_out
+      validate_path = File.join(root, ".agents/bin/validate")
+      before = File.binread(validate_path)
+      File.chmod(0o644, validate_path)
+
+      second_out, second_status = run_doctor(root, "--init")
+
+      assert second_status.success?, second_out
+      assert File.executable?(validate_path)
+      assert_equal before, File.binread(validate_path)
+      assert_includes File.read(validate_path), "explicit-validate"
+      refute_includes File.read(validate_path), AgentWorkflowSeamDoctor::INIT_PLACEHOLDER_MARKER
+    end
+  end
+
   def test_bare_init_preserves_explicit_wrappers_when_root_commands_are_detectable
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       FileUtils.mkdir_p(File.join(root, "bin"))

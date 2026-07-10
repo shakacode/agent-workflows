@@ -234,7 +234,20 @@ module AgentWorkflowSeamDoctor
 
   def write_init_script(root, name, command, replace_managed:)
     path = File.join(root, COMMANDS_DIR, name)
-    return false if File.file?(path) && script_issues(root, name).empty? && !replace_managed
+    if File.file?(path) && !replace_managed
+      issues = script_issues(root, name)
+      return false if issues.empty?
+
+      mode_issue = if CORE_SCRIPTS.include?(name)
+                     "core script is not executable: #{COMMANDS_DIR}/#{name}"
+                   else
+                     "script is not executable: #{COMMANDS_DIR}/#{name}"
+                   end
+      if init_managed_file?(path) && issues == [mode_issue]
+        File.chmod(0o755, path)
+        return true
+      end
+    end
     return false if File.file?(path) && !init_managed_file?(path)
 
     run_line = if command
@@ -253,9 +266,10 @@ module AgentWorkflowSeamDoctor
       cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
       #{run_line}
     BASH
-    changed = write_if_changed(path, content)
-    File.chmod(0o755, path) unless File.executable?(path)
-    changed
+    content_changed = write_if_changed(path, content)
+    mode_changed = !File.executable?(path)
+    File.chmod(0o755, path) if mode_changed
+    content_changed || mode_changed
   end
 
   def init_command_line(command)
