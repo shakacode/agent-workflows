@@ -225,20 +225,22 @@ test_install_removes_legacy_copy_from_git_worktree_source() {
 }
 
 test_install_removes_matching_legacy_copy_from_non_git_source() {
-  local tmp source target
+  local tmp current_source previous_source target
 
   tmp="$(mktemp -d)"
-  source="$tmp/source"
+  current_source="$tmp/current-source"
+  previous_source="$tmp/previous-source"
   target="$tmp/codex-home"
-  mkdir -p "$source" "$target/docs"
-  rsync -a --exclude .git "$ROOT/" "$source/"
-  install -m 0644 "$source/docs/agent-workflows-model-routing.md" "$target/docs/model-routing.md"
+  mkdir -p "$current_source" "$previous_source/docs" "$target/docs"
+  rsync -a --exclude .git "$ROOT/" "$current_source/"
+  printf 'legacy unpacked model-routing guide\n' > "$previous_source/docs/model-routing.md"
+  install -m 0644 "$previous_source/docs/model-routing.md" "$target/docs/model-routing.md"
   ruby -rjson -e '
     path, source = ARGV
     File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => "unknown"}) + "\n")
-  ' "$target/.agent-workflows-install.json" "$source"
+  ' "$target/.agent-workflows-install.json" "$previous_source"
 
-  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+  "$current_source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
     >/tmp/install-agent-workflows-test.out
 
   [[ ! -e "$target/docs/model-routing.md" ]] || \

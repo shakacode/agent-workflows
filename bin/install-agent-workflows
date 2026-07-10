@@ -215,6 +215,12 @@ remove_legacy_managed_model_routing_path() {
     fi
   done
 
+  if [[ -n "$previous_source" && -f "$previous_source/docs/model-routing.md" ]] &&
+     cmp -s "$legacy_path" "$previous_source/docs/model-routing.md"; then
+    rm -f "$legacy_path"
+    return 0
+  fi
+
   if [[ -f "$current_path" ]] && cmp -s "$legacy_path" "$current_path"; then
     rm -f "$legacy_path"
   fi
