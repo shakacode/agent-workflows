@@ -154,10 +154,10 @@ agent-workflow-seam-doctor --init \
   --shared "$HOME/src/agent-workflows"
 ```
 
-Simple explicit commands forward wrapper arguments automatically, and explicit
-`npm run`, `pnpm run`, or `yarn run` commands add the required `--` separator.
-Compound shell expressions are preserved verbatim; include `"$@"` in the
-expression when it should receive wrapper arguments.
+Simple explicit commands forward wrapper arguments automatically. Explicit
+`npm run` commands add npm's `--` separator; `pnpm run` and `yarn run` pass the
+arguments directly. Compound shell expressions are preserved verbatim; include
+`"$@"` in the expression when it should receive wrapper arguments.
 
 The generated `.agents/trusted-github-actors.yml` is intentionally empty and
 fail-closed. Add only repo-specific maintainers, trusted bots, metadata-only

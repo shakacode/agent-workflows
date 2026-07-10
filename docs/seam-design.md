@@ -129,7 +129,13 @@ The initializer conservatively detects executable root `bin/validate` and
 lockfile identifies npm, pnpm, or Yarn. Unknown, partial, and ambiguous command
 surfaces get marked fail-closed wrappers and a precise `FAIL` result. Callers can
 instead pass both `--validate-command` and `--test-command`; multiline, empty,
-and NUL-containing command values are rejected before any write.
+and NUL-containing command values are rejected before any write. Simple commands
+forward arguments automatically; npm gets its required `--` separator, while
+pnpm and Yarn receive arguments directly. Compound shell expressions are kept
+verbatim and must include `"$@"` themselves when forwarding is wanted. Missing
+policy or trust keys are appended to existing block mappings so comments and
+formatting remain intact; initialization fails closed before writing when a
+safe append is not possible.
 
 ## Seam Doctor
 

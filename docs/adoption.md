@@ -56,8 +56,12 @@ notes.
    ```
 
    `--validate-command` and `--test-command` accept non-empty single-line shell
-   commands and must be supplied together. Use `--base-branch` when the new
-   policy should not default to `main`.
+   commands and must be supplied together. Simple commands forward wrapper
+   arguments automatically. `npm run` commands add npm's `--` separator, while
+   `pnpm run` and `yarn run` pass arguments directly. Compound shell expressions
+   are preserved verbatim, so include `"$@"` when they should receive wrapper
+   arguments. Use `--base-branch` when the new policy should not default to
+   `main`.
 
 4. **Review policy YAML.** The initializer creates
    `.agents/agent-workflow.yml` with required
@@ -66,7 +70,9 @@ notes.
    `merge_ledger`, `ci_parity_environment`, `hosted_ci_trigger`, and
    `ci_change_detector`. Use `n/a` for unavailable policy. Start from
    [`examples/agent-workflow.yml`](../examples/agent-workflow.yml) when
-   bootstrapping a new consumer repo.
+   bootstrapping a new consumer repo. When an existing mapping needs new
+   required keys, initialization appends them without rewriting its comments or
+   formatting and fails closed if that merge cannot be represented safely.
 
 5. **Review repo-local trust YAML.** The generated
    `.agents/trusted-github-actors.yml` contains empty, fail-closed lists. Add

@@ -990,6 +990,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_preserves_compound_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'bin/validate "$@" && bin/test "$@"'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "#{command}\n"
+      refute_includes validate, "exec #{command}"
+    end
+  end
+
   def test_init_rejects_one_explicit_command_before_writing
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(root, "--init", "--validate-command", "true")
@@ -998,6 +1015,17 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_includes out, "--validate-command and --test-command must be provided together"
       refute File.exist?(File.join(root, ".agents"))
       refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_reports_missing_root_before_an_incomplete_explicit_command_pair
+    Dir.mktmpdir("agent-workflow-seam-init") do |parent|
+      missing = File.join(parent, "missing")
+      out, status = run_doctor(missing, "--init", "--validate-command", "true")
+
+      refute status.success?
+      assert_includes out, "missing directory: #{missing}"
+      refute_includes out, "must be provided together"
     end
   end
 
@@ -1077,12 +1105,12 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
-  def test_init_detects_exact_javascript_scripts_with_one_package_manager_lockfile
+  def test_init_detects_exact_javascript_scripts_with_runner_specific_argument_forwarding
     {
-      "package-lock.json" => "npm run",
-      "pnpm-lock.yaml" => "pnpm run",
-      "yarn.lock" => "yarn run"
-    }.each do |lockfile, runner|
+      "package-lock.json" => 'exec npm run validate -- "$@"',
+      "pnpm-lock.yaml" => 'exec pnpm run validate "$@"',
+      "yarn.lock" => 'exec yarn run validate "$@"'
+    }.each do |lockfile, expected_validate|
       Dir.mktmpdir("agent-workflow-seam-init") do |root|
         File.write(File.join(root, "package.json"), JSON.generate("scripts" => { "validate" => "check", "test" => "spec" }))
         File.write(File.join(root, lockfile), "lock\n")
@@ -1090,13 +1118,12 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         out, status = run_doctor(root, "--init")
 
         assert status.success?, "#{lockfile}: #{out}"
-        assert_includes File.read(File.join(root, ".agents/bin/validate")), "exec #{runner} validate"
-        assert_includes File.read(File.join(root, ".agents/bin/test")), "exec #{runner} test"
+        assert_includes File.read(File.join(root, ".agents/bin/validate")), expected_validate
       end
     end
   end
 
-  def test_init_explicit_javascript_runner_commands_forward_after_separator
+  def test_init_explicit_javascript_runner_commands_use_runner_specific_argument_forwarding
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
         root,
@@ -1109,7 +1136,68 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       validate = File.read(File.join(root, ".agents/bin/validate"))
       test = File.read(File.join(root, ".agents/bin/test"))
       assert_includes validate, 'exec npm run validate -- "$@"'
-      assert_includes test, 'exec pnpm run test -- "$@"'
+      assert_includes test, 'exec pnpm run test "$@"'
+      refute_includes test, 'pnpm run test -- "$@"'
+    end
+  end
+
+  def test_init_appends_missing_yaml_keys_without_losing_comments_or_formatting
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      trust_path = File.join(root, ".agents/trusted-github-actors.yml")
+      policy_prefix = <<~YAML
+        # Keep this policy guidance.
+        base_branch: develop # deployment branch
+        custom_policy: "keep quoted"
+      YAML
+      trust_prefix = <<~YAML
+        # Keep this trust guidance.
+        trusted_users:
+          - maintainer # release owner
+      YAML
+      File.write(policy_path, policy_prefix)
+      File.write(trust_path, trust_prefix)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      assert File.read(policy_path).start_with?(policy_prefix)
+      assert File.read(trust_path).start_with?(trust_prefix)
+      policy = YAML.safe_load(File.read(policy_path))
+      trust = YAML.safe_load(File.read(trust_path))
+      assert_equal "develop", policy.fetch("base_branch")
+      assert_equal "keep quoted", policy.fetch("custom_policy")
+      assert_equal [], trust.fetch("trusted_bots")
+      assert_equal [], trust.fetch("trusted_metadata_bots")
+      assert_equal [], trust.fetch("trusted_teams")
+    end
+  end
+
+  def test_init_fails_before_writing_when_existing_yaml_cannot_be_safely_appended
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      original = "{base_branch: develop} # keep flow style\n"
+      File.write(policy_path, original)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "cannot safely add missing policy config keys without rewriting"
+      assert_equal original, File.read(policy_path)
+      refute File.exist?(File.join(root, ".agents/bin"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
     end
   end
 

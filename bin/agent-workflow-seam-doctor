@@ -107,6 +107,8 @@ module AgentWorkflowSeamDoctor
     existing_trust = load_init_mapping(File.join(root, TRUST_CONFIG), "trust config")
     validate_trust_mapping!(existing_trust)
     validate_explicit_wrapper_conflicts!(root) if explicit_commands
+    policy_update = prepare_init_policy(root, base_branch, existing_policy)
+    trust_update = prepare_init_trust(root, existing_trust)
 
     detected_commands = detect_init_commands(root) unless explicit_commands
     commands = {
@@ -119,8 +121,8 @@ module AgentWorkflowSeamDoctor
       write_init_script(root, name, command, replace_managed: explicit_commands)
     end.any?
     write_init_readme(root, commands, explicit_commands:, scripts_changed:)
-    write_init_policy(root, base_branch, existing_policy)
-    write_init_trust(root, existing_trust)
+    write_init_mapping(policy_update)
+    write_init_mapping(trust_update)
     write_init_agents(root)
 
     check(root, shared_roots:)
@@ -179,7 +181,7 @@ module AgentWorkflowSeamDoctor
     end
 
     runner = lockfiles.values.fetch(0)
-    CORE_SCRIPTS.to_h { |name| [name, %(#{runner} #{name} -- "$@")] }
+    CORE_SCRIPTS.to_h { |name| [name, "#{runner} #{name}"] }
   rescue JSON::ParserError
     nil
   end
@@ -262,7 +264,7 @@ module AgentWorkflowSeamDoctor
     argument_suffix = command.match?(/\$(?:@|\{@\})/) ? "" : ' "$@"'
     return "#{command}#{argument_suffix}" if command.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
 
-    if !argument_suffix.empty? && command.match?(/\A(?:npm|pnpm|yarn)\s+run\s+\S/)
+    if !argument_suffix.empty? && command.match?(/\Anpm\s+run\s+\S/)
       separator = command.match?(/(?:\A|\s)--(?:\s|\z)/) ? "" : " --"
       return "exec #{command}#{separator}#{argument_suffix}"
     end
@@ -311,23 +313,38 @@ module AgentWorkflowSeamDoctor
     write_if_changed(path, content)
   end
 
-  def write_init_policy(root, base_branch, existing)
+  def prepare_init_policy(root, base_branch, existing)
     defaults = REQUIRED_POLICY_KEYS.to_h { |key| [key, key == "base_branch" ? base_branch : "n/a"] }
     defaults["follow_up_prefix"] = "Follow-up:"
-    merged = defaults.merge(existing)
-    path = File.join(root, POLICY_CONFIG)
-    return if File.file?(path) && merged == existing
-
-    write_if_changed(path, merged.to_yaml)
+    prepare_init_mapping(File.join(root, POLICY_CONFIG), existing, defaults, "policy config")
   end
 
-  def write_init_trust(root, existing)
+  def prepare_init_trust(root, existing)
     defaults = TRUST_KEYS.to_h { |key| [key, []] }
-    merged = defaults.merge(existing)
-    path = File.join(root, TRUST_CONFIG)
-    return if File.file?(path) && merged == existing
+    prepare_init_mapping(File.join(root, TRUST_CONFIG), existing, defaults, "trust config")
+  end
 
-    write_if_changed(path, merged.to_yaml)
+  def prepare_init_mapping(path, existing, defaults, label)
+    merged = defaults.merge(existing)
+    return if File.file?(path) && merged == existing
+    return [path, merged.to_yaml] unless File.file?(path)
+
+    missing = defaults.reject { |key, _value| existing.key?(key) }
+    current = File.read(path, encoding: "UTF-8")
+    separator = current.empty? || current.end_with?("\n") ? "" : "\n"
+    content = "#{current}#{separator}#{missing.to_yaml.delete_prefix("---\n")}"
+    parsed = YAML.safe_load(content, aliases: false) || {}
+    unless parsed == merged
+      raise InitError, "cannot safely add missing #{label} keys without rewriting #{path}"
+    end
+
+    [path, content]
+  rescue Psych::Exception => e
+    raise InitError, "cannot safely add missing #{label} keys without rewriting #{path}: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def write_init_mapping(update)
+    write_if_changed(*update) if update
   end
 
   def write_init_agents(root)
@@ -716,10 +733,7 @@ if $PROGRAM_NAME == __FILE__
   parser.parse!
 
   root = File.expand_path(options.fetch(:root))
-  explicit_command_count = [options[:validate_command], options[:test_command]].compact.length
-  issues = if options.fetch(:init) && explicit_command_count == 1
-             ["--validate-command and --test-command must be provided together"]
-           elsif options.fetch(:init)
+  issues = if options.fetch(:init)
              begin
                AgentWorkflowSeamDoctor.init(
                  root,
