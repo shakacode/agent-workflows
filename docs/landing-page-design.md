@@ -23,7 +23,8 @@ outcome rather than the headline.
 | --- | --- |
 | Positioning | Open-source pack + codified methodology (not product-vision, not lead-gen) |
 | URL | `agent-workflows.shakacode.com` (subdomain; no new domain) |
-| Scope | One landing page plus one long-form methodology article; deep docs stay in the repo |
+| Repository | Separate whole-stack repository: `agent-workflows-com` |
+| Scope | One landing page plus one long-form methodology article; deep docs stay in `agent-workflows` |
 | Visual identity | Match shakacode.com's existing brand |
 | Wordmark | Text wordmark ("Agent Workflow Playbook") for v1; graphical mark later |
 
@@ -145,8 +146,8 @@ flowchart TB
 
 - Framework: Astro (zero-JS by default, MDX for the article, room to add Starlight
   docs later).
-- Location: a `site/` directory in this repo — content lives with the pack; one
-  PR updates code and site. Cloudflare Pages builds from the subdirectory.
+- Location: the separate whole-stack `agent-workflows-com` repository.
+  `agent-workflows` remains the source pack and home of the canonical deep docs.
 - Host: Cloudflare Pages; CNAME `agent-workflows.shakacode.com`. (Same Cloudflare
   account as the coordination Worker.)
 - Analytics: Cloudflare Web Analytics (free, privacy-friendly, no cookie banner).
@@ -171,7 +172,7 @@ flowchart TB
 
 ## Next step
 
-On approval, turn this into an implementation plan (writing-plans): scaffold
-Astro under `site/`, build the four diagrams as themed SVGs, assemble copy from
-existing docs, wire Cloudflare Pages + the CNAME, and draft the methodology
-article.
+On approval, turn this into an implementation plan (writing-plans) in
+`agent-workflows-com`: scaffold Astro, build the four diagrams as themed SVGs,
+assemble copy from existing docs, wire Cloudflare Pages + the CNAME, and draft
+the methodology article.
