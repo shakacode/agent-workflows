@@ -149,7 +149,8 @@ class ModelRoutingContractTest < Minitest::Test
     ].each do |path|
       entry = normalized(read_repo_file(path))
 
-      assert_includes entry, "saved handoff explicitly requests model-route replacement",
+      assert_includes entry,
+                      "saved handoff explicitly requests model-route replacement or identifies workers on a wrong or too-expensive route",
                       "#{path} must detect model-routing recovery handoffs"
       assert_includes entry, "`MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery",
                       "#{path} must not confuse a worker restart handoff with batch recovery"

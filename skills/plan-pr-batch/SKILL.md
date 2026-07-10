@@ -12,7 +12,7 @@ If the request is vague feature or bug intent, use `$spec` first to produce requ
 If the user asks to continue PR-batch closeout from a pasted handoff,
 final-bucket table, PR URLs, or GitHub shorthand refs, route to `$pr-batch`
 instead of turning the handoff into broad discovery. When a saved handoff
-explicitly requests model-route replacement, identifies workers on a wrong or
+explicitly requests model-route replacement or identifies workers on a wrong or
 too-expensive route, use the canonical
 [Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
 `MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery. If
