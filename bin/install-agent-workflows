@@ -205,7 +205,8 @@ remove_legacy_managed_model_routing_path() {
   [[ -n "$previous_revision" ]] || return 0
 
   for source_root in "$repo_root" "$previous_source"; do
-    [[ -n "$source_root" && -d "$source_root/.git" ]] || continue
+    [[ -n "$source_root" ]] || continue
+    git -C "$source_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
     git -C "$source_root" cat-file -e "$previous_revision:docs/model-routing.md" 2>/dev/null || continue
     if cmp -s "$legacy_path" <(git -C "$source_root" show "$previous_revision:docs/model-routing.md"); then
       rm -f "$legacy_path"
