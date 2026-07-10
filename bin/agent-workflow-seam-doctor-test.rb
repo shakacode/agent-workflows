@@ -1069,6 +1069,58 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_uses_a_safe_markdown_code_span_for_commands_with_backticks
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = "echo `date`"
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes readme, "| `validate` | Pre-push gate | `` echo `date` `` |"
+      refute_includes readme, "| `validate` | Pre-push gate | `echo `date`` |"
+    end
+  end
+
+  def test_init_ignores_fenced_pointer_headings_and_preserves_the_example
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      example = <<~MARKDOWN
+        # AGENTS.md
+
+        ## Example
+
+        ```markdown
+        ## Agent Workflow Configuration
+
+        Example content that must remain fenced.
+        ```
+
+        ## Existing Guidance
+
+        Keep this guidance.
+      MARKDOWN
+      File.write(File.join(root, "AGENTS.md"), example)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      agents = File.read(File.join(root, "AGENTS.md"))
+      assert agents.start_with?(example)
+      assert_includes agents, "Example content that must remain fenced.\n```"
+      assert_equal 2, agents.scan("## Agent Workflow Configuration").length
+      assert_includes agents, "Keep this guidance."
+    end
+  end
+
   def test_init_rejects_one_explicit_command_before_writing
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(root, "--init", "--validate-command", "true")

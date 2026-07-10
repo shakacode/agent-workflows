@@ -341,7 +341,7 @@ module AgentWorkflowSeamDoctor
     rows = STANDARD_SCRIPTS.map do |name|
       script_path = File.join(root, COMMANDS_DIR, name)
       summary = if explicit_commands && commands[name]
-                  "`#{commands.fetch(name).gsub('|', '\\|')}`"
+                  markdown_table_code_span(commands.fetch(name))
                 elsif File.file?(script_path) && script_issues(root, name).empty?
                   "configured wrapper"
                 elsif CORE_SCRIPTS.include?(name)
@@ -368,6 +368,13 @@ module AgentWorkflowSeamDoctor
       Non-command policy lives in [`../agent-workflow.yml`](../agent-workflow.yml).
     MARKDOWN
     write_if_changed(path, content)
+  end
+
+  def markdown_table_code_span(command)
+    escaped = command.gsub("|", "\\|")
+    fence = "`" * ((escaped.scan(/`+/).map(&:length).max || 0) + 1)
+    padding = escaped.start_with?("`") || escaped.end_with?("`") ? " " : ""
+    "#{fence}#{padding}#{escaped}#{padding}#{fence}"
   end
 
   def prepare_init_policy(root, base_branch, existing)
@@ -414,9 +421,9 @@ module AgentWorkflowSeamDoctor
     return text if pointer_section_issues(text).empty?
 
     lines = text.lines
-    start = lines.index { |line| line.match?(SECTION_HEADING) }
+    start = unfenced_heading_index(lines, SECTION_HEADING)
     if start
-      finish = ((start + 1)...lines.length).find { |index| lines[index].match?(/^##\s+/) } || lines.length
+      finish = unfenced_heading_index(lines, /^##\s+/, start + 1) || lines.length
       after = lines[finish..].join
       separator = after.empty? ? "" : "\n"
       return "#{lines[0...start].join}#{POINTER_SECTION}\n#{separator}#{after}"
@@ -607,16 +614,28 @@ module AgentWorkflowSeamDoctor
 
   def extract_section(text)
     lines = text.lines
-    start_index = lines.index { |line| line.match?(SECTION_HEADING) }
+    start_index = unfenced_heading_index(lines, SECTION_HEADING)
     return nil if start_index.nil?
 
-    body = []
-    lines[(start_index + 1)..].each do |line|
-      break if line.match?(/^##\s+/)
+    finish_index = unfenced_heading_index(lines, /^##\s+/, start_index + 1) || lines.length
+    lines[(start_index + 1)...finish_index].join
+  end
 
-      body << line
+  def unfenced_heading_index(lines, pattern, start_at = 0)
+    in_fence = false
+    fence_delimiter = nil
+
+    lines.each_with_index do |line, index|
+      fence_state = update_fence_state(line, in_fence, fence_delimiter)
+      if fence_state
+        in_fence, _executable_fence, fence_delimiter = fence_state
+        next
+      end
+      next if index < start_at || in_fence
+
+      return index if line.match?(pattern)
     end
-    body.join
+    nil
   end
 
   def unresolved_template_value?(value)
