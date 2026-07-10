@@ -266,7 +266,7 @@ module AgentWorkflowSeamDoctor
       #!/usr/bin/env bash
       #{INIT_SCRIPT_MARKER}
       set -euo pipefail
-      cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+      cd "$(#{ROOT_RESOLUTION})"
       #{run_line}
     BASH
     content_changed = write_if_changed(path, content)
@@ -295,7 +295,9 @@ module AgentWorkflowSeamDoctor
       return "#{prefix}#{command}#{separator}#{argument_suffix}"
     end
 
-    return "#{command}#{argument_suffix}" if has_exec || has_environment
+    return "#{command}#{argument_suffix}" if has_exec
+    # Shell assignment words must precede the command; `exec VAR=value command` would try to execute the assignment.
+    return "#{command}#{argument_suffix}" if has_environment
 
     "exec #{command}#{argument_suffix}"
   end
