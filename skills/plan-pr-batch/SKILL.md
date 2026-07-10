@@ -203,9 +203,9 @@ Plan a PR batch
      (`fastest-low-cost`, `balanced`, or `strongest`) with the classified
      effort instead of guessing a model. Scope the class to the known host when
      possible. This fallback is ready only when the goal requires binding the
-     class to an exact supported pair before any worker starts. If neither a
-     ready initial nor escalation route can be named, record `UNKNOWN`.
-     Do not call the prompt ready. Group lanes by exact model/effort route,
+     class to an exact supported pair before any worker starts. If either the initial or escalation route cannot be named,
+     record that route `UNKNOWN`. Do not call the prompt ready unless the route
+     explicitly disables escalation with a zero maximum. Group lanes by exact model/effort route,
      or dispatch-resolved class/effort route, for review and dispatch,
      but preserve lane ownership, dependencies, serial discovery, collision
      rules, and wave caps; grouping never combines targets into one worker.

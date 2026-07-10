@@ -495,9 +495,11 @@ actual host; workers must not inherit the coordinator assignment. If the runtime
 cannot apply the planned worker pair, record `UNKNOWN` and stop before spawning
 instead of silently inheriting or substituting.
 
-Collate lanes with matching initial routes only for planning/dispatch review;
-never merge their ownership, claims, dependencies, serial discovery,
-file-collision ordering, or wave caps. See
+Collate lanes with matching complete worker model/effort routes for
+planning/dispatch review. A complete match includes the initial assignment,
+escalation assignment, evidence gate, and maximum escalation count. Never merge
+their ownership, claims, dependencies, serial discovery, file-collision
+ordering, or wave caps. See
 [Cost-Aware Agent Model Routing](../docs/model-routing.md) for the portable role
 matrix, operating modes, verification matrix, and measurement guidance.
 

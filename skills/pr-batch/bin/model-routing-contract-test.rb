@@ -97,6 +97,19 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
+  def test_ready_routes_require_both_tiers_and_group_by_complete_policy
+    planner = normalized(read_repo_file("skills/plan-pr-batch/SKILL.md"))
+    workflow = normalized(
+      extract_markdown_section(read_repo_file("workflows/pr-processing.md"), "### Model And Effort Routing")
+    )
+
+    assert_includes planner, "If either the initial or escalation route cannot be named"
+    assert_includes planner, "Do not call the prompt ready"
+    assert_includes workflow, "Collate lanes with matching complete worker model/effort routes"
+    assert_includes workflow, "initial assignment, escalation assignment, evidence gate, and maximum escalation count"
+    refute_includes workflow, "matching initial routes only"
+  end
+
   def test_recovery_prompt_preserves_parent_and_replaces_nonconforming_workers
     section = extract_markdown_section(
       read_repo_file("workflows/pr-processing.md"),
