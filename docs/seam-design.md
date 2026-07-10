@@ -116,6 +116,35 @@ Portable shared skills resolve this repo's commands and policy through:
 Consumer repos should keep broader human guidance in `AGENTS.md`, but command
 resolution and workflow policy come from the binstubs and YAML.
 
+## Seam Initialization
+
+`agent-workflow-seam-doctor --init` creates the smallest complete consumer seam
+and immediately validates it through the same public interface. Initialization
+preserves valid repo-owned wrappers and existing policy, trust, and unrelated
+`AGENTS.md` content. It writes an empty repo-local trust configuration so a new
+seam starts fail-closed.
+
+The initializer conservatively detects executable root `bin/validate` and
+`bin/test`, or exact JavaScript `validate` and `test` scripts when one recognized
+lockfile identifies npm, pnpm, or Yarn. Unknown, partial, and ambiguous command
+surfaces get marked fail-closed wrappers and a precise `FAIL` result. Callers can
+instead pass both `--validate-command` and `--test-command`; multiline, empty,
+and NUL-containing command values are rejected before any write. Simple commands
+forward arguments automatically; npm gets its required `--` separator, while
+pnpm and Yarn receive arguments directly. Compound shell expressions are kept
+verbatim and must include `"$@"` themselves when forwarding is wanted. `env -S`
+and `env --split-string` commands are likewise caller-controlled because their
+split payload owns argument placement. Missing
+policy or trust keys are appended to existing block mappings so comments and
+formatting remain intact; initialization fails closed before writing when a
+safe append is not possible.
+
+The init marker is the ownership boundary for generated wrappers. Explicit
+commands replace both marked wrappers on a later run, while an unmarked valid
+wrapper is repo-owned and preserved; explicit replacement of that repo-owned
+wrapper fails closed. Put hand-written behavior behind a managed wrapper or
+remove the marker deliberately before taking direct ownership.
+
 ## Seam Doctor
 
 `agent-workflow-seam-doctor` validates the contract:
@@ -126,11 +155,16 @@ resolution and workflow policy come from the binstubs and YAML.
   include the repo-root `cd` preamble
 - `.agents/agent-workflow.yml` parses and has all required policy keys with
   resolved values
+- an optional `.agents/trusted-github-actors.yml` parses as a mapping and has no
+  normalized bot login in both actionable and metadata-only roles; regular
+  checks and `--init` preserve preflight compatibility with legacy scalar
+  values, while newly generated role values use lists
 - repo-local and supplied shared skill/workflow Markdown do not contain
   unresolved executable placeholders such as `<follow-up prefix>`
 
 The doctor intentionally does not execute the wrappers. Before consumer PRs,
-also verify that wrapped commands/tasks exist in the target repo.
+also verify that wrapped commands/tasks exist in the target repo. It does reject
+the initializer's marked fail-closed wrappers until real commands replace them.
 
 ## Repository-Pinned Copies
 

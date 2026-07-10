@@ -107,7 +107,10 @@ test_codex_host_install_writes_helpers_and_metadata() {
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
+
+  grep -Fq "agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$ROOT\"" \
+    "$tmp/install-agent-workflows-test.out" || fail "expected seam init output to validate the shared root"
 
   assert_file "$target/LICENSE"
   grep -q "MIT License" "$target/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
@@ -264,7 +267,7 @@ test_installed_prompt_guard_ignores_unowned_docs() {
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
   mkdir -p "$target/docs"
   printf 'Unrelated local docs.\n' > "$target/docs/agent-runner-restarts.md"
 
@@ -276,11 +279,33 @@ test_installed_prompt_guard_ignores_unowned_docs() {
   assert_contains "$output" "All checks passed."
 }
 
+test_installed_doctor_initializes_consumer_repo() {
+  local tmp target consumer output
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$consumer"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
+  output="$("$target/bin/agent-workflow-seam-doctor" \
+    --init \
+    --root "$consumer" \
+    --validate-command true \
+    --test-command true 2>&1)"
+
+  assert_contains "$output" "PASS agent workflow seam is complete"
+  assert_file "$consumer/.agents/bin/validate"
+  assert_file "$consumer/.agents/bin/test"
+  assert_file "$consumer/.agents/agent-workflow.yml"
+  assert_file "$consumer/.agents/trusted-github-actors.yml"
+  assert_file "$consumer/AGENTS.md"
+}
+
 test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   local tmp
   tmp="$(mktemp -d)"
 
-  CLAUDE_HOME="$tmp/.claude" "$ROOT/bin/install-agent-workflows" --host claude >/tmp/install-agent-workflows-test.out
+  CLAUDE_HOME="$tmp/.claude" "$ROOT/bin/install-agent-workflows" --host claude >"$tmp/install-agent-workflows-test.out"
 
   assert_file "$tmp/.claude/LICENSE"
   grep -q "MIT License" "$tmp/.claude/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
@@ -307,7 +332,7 @@ test_copy_mode_preserves_unrelated_agent_files() {
   printf 'personal docs\n' > "$target/docs/personal.md"
   printf '#!/usr/bin/env bash\n' > "$target/bin/personal-helper"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
 
   assert_file "$target/skills/personal/SKILL.md"
   assert_file "$target/workflows/personal.md"
@@ -328,7 +353,7 @@ test_copy_mode_does_not_replace_generic_consumer_docs() {
   printf 'consumer adoption docs\n' > "$target/docs/adoption.md"
   printf 'consumer architecture decision\n' > "$target/docs/adr/0001-consumer.md"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
 
   grep -q 'consumer adoption docs' "$target/docs/adoption.md" || fail "copy mode replaced consumer docs/adoption.md"
   grep -q 'consumer architecture decision' "$target/docs/adr/0001-consumer.md" || fail "copy mode replaced consumer docs/adr"
@@ -344,7 +369,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   mkdir -p "$target/docs"
   printf 'personal docs\n' > "$target/docs/personal.md"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install-agent-workflows-test.out"
 
   assert_symlink "$target/LICENSE"
   assert_symlink "$target/skills/pr-batch"
@@ -369,7 +394,7 @@ test_symlink_mode_replaces_docs_directory_symlink() {
   mkdir -p "$target" "$external_docs"
   ln -s "$external_docs" "$target/docs"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install-agent-workflows-test.out"
 
   [[ -d "$target/docs" && ! -L "$target/docs" ]] || fail "expected real docs directory"
   assert_symlink "$target/docs/coordination-backend.md"
@@ -386,10 +411,10 @@ test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   target="$tmp/codex-home"
   source_doc="$ROOT/docs/solutions/README.md"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install-agent-workflows-test.out"
   assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/solutions/README.md"
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
 
   assert_file "$target/LICENSE"
   [[ ! -L "$target/LICENSE" ]] || fail "copy mode should replace pack LICENSE symlink with a real copy"
@@ -431,7 +456,7 @@ test_status_reports_upgrade_available_between_source_commits() {
   mkdir -p "$source"
   new_source_repo "$source"
 
-  "$source/bin/install-agent-workflows" --target "$target" >/tmp/install-agent-workflows-test.out
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install-agent-workflows-test.out"
   printf '0.1.1\n' > "$source/VERSION"
   git -C "$source" add VERSION
   git -C "$source" commit --quiet -m "bump version"
@@ -452,7 +477,7 @@ test_upgrade_reinstalls_new_source_revision() {
   mkdir -p "$source"
   new_source_repo "$source"
 
-  "$source/bin/install-agent-workflows" --target "$target" >/tmp/install-agent-workflows-test.out
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install-agent-workflows-test.out"
   printf '0.1.1\n' > "$source/VERSION"
   git -C "$source" add VERSION
   git -C "$source" commit --quiet -m "bump version"
@@ -472,7 +497,7 @@ test_upgrade_without_consumer_roots_succeeds() {
   mkdir -p "$source"
   new_source_repo "$source"
 
-  "$source/bin/install-agent-workflows" --target "$target" >/tmp/install-agent-workflows-test.out
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install-agent-workflows-test.out"
   printf '0.1.1\n' > "$source/VERSION"
   git -C "$source" add VERSION
   git -C "$source" commit --quiet -m "bump version"
@@ -506,7 +531,7 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   mkdir -p "$source"
   new_source_repo "$source"
 
-  "$source/bin/install-agent-workflows" --target "$target" >/tmp/install-agent-workflows-test.out
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install-agent-workflows-test.out"
   before="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
   printf '0.1.1\n' > "$source/VERSION"
   git -C "$source" add VERSION
@@ -534,7 +559,7 @@ test_upgrade_validates_consumer_root_after_install() {
   mkdir -p "$source"
   new_source_repo "$source"
 
-  "$source/bin/install-agent-workflows" --target "$target" >/tmp/install-agent-workflows-test.out
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install-agent-workflows-test.out"
   printf '0.1.1\n' > "$source/VERSION"
   git -C "$source" add VERSION
   git -C "$source" commit --quiet -m "bump version"
@@ -555,6 +580,7 @@ main() {
     test_install_removes_legacy_copy_from_git_worktree_source
     test_install_removes_matching_legacy_copy_from_non_git_source
     test_installed_prompt_guard_ignores_unowned_docs
+    test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs

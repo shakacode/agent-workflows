@@ -134,31 +134,46 @@ status/upgrade behavior.
 
 ## Consumer Repo Adoption
 
-In each repository that should use these workflows:
+From each repository that should use these workflows, initialize and validate a
+starter seam in one command:
 
-1. Add or update `.agents/bin/` command wrappers.
-2. Add `.agents/agent-workflow.yml` with the repo's non-command policy.
-3. Add `.agents/trusted-github-actors.yml` for repo-specific maintainers,
-   trusted review bots, metadata-only workflow bots, or trusted teams.
-4. Add the `## Agent Workflow Configuration` pointer section to `AGENTS.md`.
-5. Add repo-local skills only for domain-specific workflows or intentional
-   overrides.
-6. Validate the contract from the consumer repo:
+```bash
+agent-workflow-seam-doctor --init --shared "$HOME/src/agent-workflows"
+```
 
-   ```bash
-   agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
-   ```
+The initializer preserves existing repo-owned seam content. It detects executable
+root `bin/validate` plus `bin/test`, or exact `validate` and `test` scripts for a
+single detected npm, pnpm, or Yarn lockfile. When detection is not unambiguous,
+it writes fail-closed wrappers and reports the commands that still need
+configuration. Supply both commands explicitly to complete the seam in one run:
 
-   If `agent-workflow-seam-doctor` is not on `PATH`, run it from this repo:
+```bash
+agent-workflow-seam-doctor --init \
+  --validate-command 'bin/validate' \
+  --test-command 'bin/test' \
+  --shared "$HOME/src/agent-workflows"
+```
 
-   ```bash
-   "$HOME/src/agent-workflows/bin/agent-workflow-seam-doctor" \
-     --root /path/to/consumer/repo \
-     --shared "$HOME/src/agent-workflows"
-   ```
+Simple explicit commands forward wrapper arguments automatically. Explicit
+`npm run` commands add npm's `--` separator; `pnpm run` and `yarn run` pass the
+arguments directly. Compound shell expressions are preserved verbatim; include
+`"$@"` in the expression when it should receive wrapper arguments. `env -S`
+and `env --split-string` commands are also preserved verbatim because their
+split payload owns argument placement.
 
-7. Dry-run one workflow, such as `$plan-pr-batch` or `$address-review`, without
-   making code changes.
+Files carrying the generated init marker are tool-owned. Supplying explicit
+commands again rewrites both managed wrappers, so keep hand-written logic in the
+target commands. To own a wrapper directly, replace it without the marker and
+rerun initialization without explicit commands; later explicit replacement then
+fails closed instead of overwriting it.
+
+The generated `.agents/trusted-github-actors.yml` is intentionally empty and
+fail-closed. Add only repo-specific maintainers, trusted bots, metadata-only
+bots, or teams that the repository has deliberately approved. Add repo-local
+skills only for domain-specific workflows or intentional overrides.
+
+Finally, dry-run one workflow, such as `$plan-pr-batch` or `$address-review`,
+without making code changes.
 
 See [docs/adoption.md](docs/adoption.md) for the full adoption guide,
 [docs/seam-design.md](docs/seam-design.md) for the design rationale, and

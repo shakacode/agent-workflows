@@ -31,31 +31,68 @@ notes.
    `bin/install-agent-workflows --host claude`, or use the agent platform's
    normal user-skill installation mechanism.
 
-3. **Add command wrappers.** Create `.agents/bin/README.md` and executable
-   wrappers for the repo's standard commands. `validate` is the comprehensive
-   pre-push gate; `test` is the narrow test entry point. Optional scripts such
-   as `setup`, `lint`, `build`, `docs`, and `ci-detect` are present only when
-   the repo supports them.
+3. **Initialize the consumer seam.** From the consumer repo, run:
 
-4. **Add policy YAML.** Create `.agents/agent-workflow.yml` with required
+   ```bash
+   agent-workflow-seam-doctor --init --shared "$HOME/src/agent-workflows"
+   ```
+
+   The initializer preserves valid repo-owned wrappers and existing policy,
+   trust, and `AGENTS.md` content. It detects executable root `bin/validate`
+   plus `bin/test`, or exact `validate` and `test` package scripts when exactly
+   one of `package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock` identifies the
+   runner. It does not guess Ruby/Rake tasks, combine partial validation
+   scripts, or choose among ambiguous package managers.
+
+   If detection is unavailable, the command creates clearly marked
+   fail-closed wrappers and returns `FAIL` with the next step. Supply both real
+   commands to initialize and pass in one invocation:
+
+   ```bash
+   agent-workflow-seam-doctor --init \
+     --validate-command 'bin/validate' \
+     --test-command 'bin/test' \
+     --shared "$HOME/src/agent-workflows"
+   ```
+
+   `--validate-command` and `--test-command` accept non-empty single-line shell
+   commands and must be supplied together. Simple commands forward wrapper
+   arguments automatically. `npm run` commands add npm's `--` separator, while
+   `pnpm run` and `yarn run` pass arguments directly. Compound shell expressions
+   are preserved verbatim, so include `"$@"` when they should receive wrapper
+   arguments. Use `--base-branch` when the new policy should not default to
+   `main`. `env -S` and `env --split-string` commands are preserved verbatim;
+   their split payload must place any desired wrapper forwarding itself.
+
+   Generated wrappers that retain the init marker are tool-owned, and another
+   explicit-command run rewrites both of them. Keep custom logic in the target
+   commands, or replace a wrapper without the marker and rerun without explicit
+   commands to make that wrapper repo-owned. Explicit replacement of a
+   repo-owned wrapper fails closed.
+
+4. **Review policy YAML.** The initializer creates
+   `.agents/agent-workflow.yml` with required
    non-command policy keys: `base_branch`, `follow_up_prefix`, `review_gate`,
    `approval_exempt`, `coordination_backend`, `changelog`, `benchmark_labels`,
    `merge_ledger`, `ci_parity_environment`, `hosted_ci_trigger`, and
    `ci_change_detector`. Use `n/a` for unavailable policy. Start from
    [`examples/agent-workflow.yml`](../examples/agent-workflow.yml) when
-   bootstrapping a new consumer repo.
+   bootstrapping a new consumer repo. When an existing mapping needs new
+   required keys, initialization appends them without rewriting its comments or
+   formatting and fails closed if that merge cannot be represented safely.
 
-5. **Add repo-local trust YAML.** Create `.agents/trusted-github-actors.yml`
-   when PR-batch preflight should trust repo-specific maintainers, teams, or
-   automation. The preflight resolution order is `--trust-config`, repo-local
+5. **Review repo-local trust YAML.** The generated
+   `.agents/trusted-github-actors.yml` contains empty, fail-closed lists. Add
+   only repo-specific maintainers, teams, or automation that this repository
+   has deliberately approved. The preflight resolution order is `--trust-config`, repo-local
    `.agents/trusted-github-actors.yml`, `$AGENT_WORKFLOWS_TRUST_CONFIG`,
    `~/.agents/trusted-github-actors.yml`, then the packaged empty fallback.
    Keep the packaged fallback empty. Put repo-specific maintainers in the
    consumer repo's local trust file unless maintainers verify and choose a
    narrower team slug.
 
-6. **Add the AGENTS pointer.** `AGENTS.md` stays canonical for human policy, but
-   the workflow configuration section is only:
+6. **Review the AGENTS pointer.** `AGENTS.md` stays canonical for human policy,
+   and the initializer adds or repairs only this workflow configuration section:
 
    ```markdown
    ## Agent Workflow Configuration
@@ -70,9 +107,10 @@ notes.
    helpers to the repo. Do not copy shared workflow text unless the execution
    environment cannot load user-installed skills.
 
-8. **Validate the contract.** Run `agent-workflow-seam-doctor` from this shared
-   pack with `--shared` pointing at the cloned or installed pack root. Then run
-   one dry workflow pass without making changes.
+8. **Validate the contract.** Initialization runs the same seam-doctor check.
+   After resolving any fail-closed wrapper guidance, rerun
+   `agent-workflow-seam-doctor` with `--shared` pointing at the cloned or
+   installed pack root. Then run one dry workflow pass without making changes.
 
 9. **Make `AGENTS.md` canonical.** Tool-specific files such as `CLAUDE.md`
    should stay thin and link back to `AGENTS.md`.

@@ -308,6 +308,35 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_regular_check_accepts_scalar_trust_values_for_preflight_compatibility
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(File.join(root, ".agents/trusted-github-actors.yml"), "trusted_bots: deploy\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_regular_check_rejects_overlapping_trust_bot_roles
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      trust = {
+        "trusted_bots" => ["@Deploy[bot]"],
+        "trusted_metadata_bots" => ["deploy"]
+      }
+      File.write(File.join(root, ".agents/trusted-github-actors.yml"), trust.to_yaml)
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "bot(s) listed in both trusted_bots and trusted_metadata_bots: deploy"
+    end
+  end
+
   def test_json_output_format
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -910,6 +939,1070 @@ class AgentWorkflowSeamDoctorEncodingTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "PASS"
+    end
+  end
+end
+
+class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
+
+  def test_help_advertises_init
+    out, status = Open3.capture2e("ruby", SCRIPT, "--help")
+
+    assert status.success?, out
+    assert_includes out, "--init"
+  end
+
+  def test_init_only_options_require_init
+    {
+      "--base-branch" => "develop",
+      "--validate-command" => "true",
+      "--test-command" => "true"
+    }.each do |option, value|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        out, status = run_doctor(root, option, value)
+
+        refute status.success?
+        assert_includes out, "#{option} requires --init"
+      end
+    end
+  end
+
+  def test_init_with_explicit_commands_creates_a_complete_seam
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      assert_includes out, "PASS agent workflow seam is complete"
+      assert_includes File.read(File.join(root, "AGENTS.md")), AgentWorkflowSeamDoctor::POINTER_SECTION
+      assert File.executable?(File.join(root, ".agents/bin/validate"))
+      assert File.executable?(File.join(root, ".agents/bin/test"))
+      assert_equal "main", YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml"))).fetch("base_branch")
+      trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")))
+      assert_equal [], trust.fetch("trusted_users")
+      assert_equal [], trust.fetch("trusted_bots")
+      assert_equal [], trust.fetch("trusted_metadata_bots")
+      assert_equal [], trust.fetch("trusted_teams")
+    end
+  end
+
+  def test_init_explicit_simple_commands_forward_wrapper_arguments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      %w[validate test].each do |name|
+        path = File.join(root, "bin", name)
+        File.write(path, "#!/usr/bin/env bash\nprintf '#{name}:%s\\n' \"${1:-missing}\"\n")
+        File.chmod(0o755, path)
+      end
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "bin/validate",
+        "--test-command", "bin/test"
+      )
+      assert status.success?, out
+
+      validate_out, validate_status = Open3.capture2e(File.join(root, ".agents/bin/validate"), "--changed=src/a b.rb")
+      test_out, test_status = Open3.capture2e(File.join(root, ".agents/bin/test"), "--watch=false")
+      assert validate_status.success?, validate_out
+      assert test_status.success?, test_out
+      assert_equal "validate:--changed=src/a b.rb\n", validate_out
+      assert_equal "test:--watch=false\n", test_out
+    end
+  end
+
+  def test_init_preserves_shell_comment_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = "echo validate # caller owns forwarding"
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "#{command}\n"
+      refute_includes validate, "#{command} \"$@\""
+    end
+  end
+
+  def test_init_preserves_compound_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'bin/validate "$@" && bin/test "$@"'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "#{command}\n"
+      refute_includes validate, "exec #{command}"
+    end
+  end
+
+  def test_init_preserves_subshell_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = '(bin/validate "$@")'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "#{command}\n"
+      refute_includes validate, "exec #{command}"
+    end
+  end
+
+  def test_init_forwards_arguments_when_shell_metacharacters_are_quoted_or_escaped
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'LABEL="issue #1" bin/validate',
+        "--test-command", 'URL=https://example.test/a\&b bin/test'
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'LABEL="issue #1" bin/validate "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'URL=https://example.test/a\&b bin/test "$@"'
+    end
+  end
+
+  def test_init_escapes_pipes_in_the_generated_readme_table
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'bin/validate "$@" | tee validate.log'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes readme, '| `validate` | Pre-push gate | `bin/validate "$@" \| tee validate.log` |'
+      refute_includes readme, '| `bin/validate "$@" | tee validate.log` |'
+    end
+  end
+
+  def test_init_uses_a_safe_markdown_code_span_for_commands_with_backticks
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = "echo `date`"
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes readme, "| `validate` | Pre-push gate | `` echo `date` `` |"
+      refute_includes readme, "| `validate` | Pre-push gate | `echo `date`` |"
+    end
+  end
+
+  def test_init_ignores_fenced_pointer_headings_and_preserves_the_example
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      example = <<~MARKDOWN
+        # AGENTS.md
+
+        ## Example
+
+        ```markdown
+        ## Agent Workflow Configuration
+
+        Example content that must remain fenced.
+        ```
+
+        ## Existing Guidance
+
+        Keep this guidance.
+      MARKDOWN
+      File.write(File.join(root, "AGENTS.md"), example)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      agents = File.read(File.join(root, "AGENTS.md"))
+      assert agents.start_with?(example)
+      assert_includes agents, "Example content that must remain fenced.\n```"
+      assert_equal 2, agents.scan("## Agent Workflow Configuration").length
+      assert_includes agents, "Keep this guidance."
+    end
+  end
+
+  def test_init_rejects_one_explicit_command_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(root, "--init", "--validate-command", "true")
+
+      refute status.success?
+      assert_includes out, "--validate-command and --test-command must be provided together"
+      refute File.exist?(File.join(root, ".agents"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_reports_missing_root_before_an_incomplete_explicit_command_pair
+    Dir.mktmpdir("agent-workflow-seam-init") do |parent|
+      missing = File.join(parent, "missing")
+      out, status = run_doctor(missing, "--init", "--validate-command", "true")
+
+      refute status.success?
+      assert_includes out, "missing directory: #{missing}"
+      refute_includes out, "must be provided together"
+    end
+  end
+
+  def test_init_rejects_explicit_commands_that_would_replace_repo_owned_wrappers
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      validate_path = write_script(root, "validate", "exec echo repo-validate \"$@\"\n")
+      test_path = write_script(root, "test", "exec echo repo-test \"$@\"\n")
+      before = { validate_path => File.binread(validate_path), test_path => File.binread(test_path) }
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo replacement-validate",
+        "--test-command", "echo replacement-test"
+      )
+
+      refute status.success?
+      assert_includes out, "explicit commands cannot replace repo-owned wrappers"
+      assert_includes out, ".agents/bin/validate"
+      assert_includes out, ".agents/bin/test"
+      after = before.keys.to_h { |path| [path, File.binread(path)] }
+      assert_equal before, after
+      refute File.exist?(File.join(root, ".agents/bin/README.md"))
+      refute File.exist?(File.join(root, ".agents/agent-workflow.yml"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_api_rejects_one_explicit_command_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+        AgentWorkflowSeamDoctor.init(
+          root,
+          base_branch: "main",
+          validate_command: "true",
+          test_command: nil
+        )
+      end
+
+      assert_includes error.message, "--validate-command and --test-command must be provided together"
+      refute File.exist?(File.join(root, ".agents"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_unknown_repo_writes_fail_closed_wrappers_and_precise_next_step
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "unconfigured init wrapper: .agents/bin/validate"
+      assert_includes out, "rerun --init with both --validate-command CMD and --test-command CMD"
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "# Agent workflow seam init: command not configured."
+
+      checked_out, checked_status = run_doctor(root)
+      refute checked_status.success?
+      assert_includes checked_out, "unconfigured init wrapper: .agents/bin/validate"
+    end
+  end
+
+  def test_init_detects_executable_root_validate_and_test_commands
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      %w[validate test].each do |name|
+        path = File.join(root, "bin", name)
+        File.write(path, "#!/usr/bin/env bash\nexit 0\n")
+        File.chmod(0o755, path)
+      end
+
+      out, status = run_doctor(root, "--init")
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec bin/validate "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec bin/test "$@"'
+    end
+  end
+
+  def test_init_detects_exact_javascript_scripts_with_runner_specific_argument_forwarding
+    {
+      "package-lock.json" => 'exec npm run validate -- "$@"',
+      "pnpm-lock.yaml" => 'exec pnpm run validate "$@"',
+      "yarn.lock" => 'exec yarn run validate "$@"'
+    }.each do |lockfile, expected_validate|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        File.write(File.join(root, "package.json"), JSON.generate("scripts" => { "validate" => "check", "test" => "spec" }))
+        File.write(File.join(root, lockfile), "lock\n")
+
+        out, status = run_doctor(root, "--init")
+
+        assert status.success?, "#{lockfile}: #{out}"
+        assert_includes File.read(File.join(root, ".agents/bin/validate")), expected_validate
+      end
+    end
+  end
+
+  def test_init_explicit_javascript_runner_commands_use_runner_specific_argument_forwarding
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run validate",
+        "--test-command", "pnpm run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec npm run validate -- "$@"'
+      assert_includes test, 'exec pnpm run test "$@"'
+      refute_includes test, 'pnpm run test -- "$@"'
+    end
+  end
+
+  def test_init_does_not_duplicate_a_leading_exec
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "exec bundle exec rake validate",
+        "--test-command", "exec npm run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec bundle exec rake validate "$@"'
+      refute_includes validate, "exec exec"
+      assert_includes test, 'exec npm run test -- "$@"'
+      refute_includes test, "exec exec"
+    end
+  end
+
+  def test_init_normalizes_outer_command_whitespace_before_classification
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "  exec true  ",
+        "--test-command", "  CI=1 npm run test  "
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec true "$@"'
+      refute_includes validate, "exec  exec"
+      assert_includes test, 'CI=1 npm run test -- "$@"'
+      refute_includes test, "exec  CI=1"
+    end
+  end
+
+  def test_init_adds_npm_separator_after_leading_environment_assignments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "CI=1 npm run validate",
+        "--test-command", "CI=1 LABEL='test suite' exec npm run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'CI=1 npm run validate -- "$@"'
+      assert_includes test, %(CI=1 LABEL='test suite' exec npm run test -- "$@")
+    end
+  end
+
+  def test_init_adds_npm_separator_after_npm_options
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm --prefix app run validate",
+        "--test-command", "CI=1 npm --workspace packages/core --silent run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec npm --prefix app run validate -- "$@"'
+      assert_includes test, 'CI=1 npm --workspace packages/core --silent run test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_for_run_script_alias
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run-script validate",
+        "--test-command", "npm --prefix app run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm run-script validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm --prefix app run-script test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_for_run_aliases
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm rum validate",
+        "--test-command", "npm urn test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm rum validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm urn test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_for_test_lifecycle_command
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm --prefix app test",
+        "--test-command", "npm test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm --prefix app test -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_for_test_aliases
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm --prefix app tst",
+        "--test-command", "npm t"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm --prefix app tst -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm t -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_after_env_utility_assignments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "env CI=1 npm run validate",
+        "--test-command", "env LABEL='test suite' npm run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env CI=1 npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), %(exec env LABEL='test suite' npm run-script test -- "$@")
+    end
+  end
+
+  def test_init_adds_npm_separator_after_env_utility_options
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "env -u CI npm run validate",
+        "--test-command", "env --chdir app --ignore-environment npm run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env -u CI npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec env --chdir app --ignore-environment npm run-script test -- "$@"'
+    end
+  end
+
+  def test_init_preserves_env_split_string_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      validate_command = "env -S 'npm run validate'"
+      test_command = "env --split-string='npm run test'"
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", validate_command,
+        "--test-command", test_command
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, "#{validate_command}\n"
+      refute_includes validate, "#{validate_command} \"$@\""
+      assert_includes test, "#{test_command}\n"
+      refute_includes test, "#{test_command} \"$@\""
+    end
+  end
+
+  def test_init_adds_npm_separator_after_env_option_terminator
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "env -- npm run validate",
+        "--test-command", "env -- npm run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env -- npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec env -- npm run-script test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_before_caller_supplied_argument_forwarding
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'npm run validate "$@"',
+        "--test-command", "CI=1 npm run-script test \$@"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), "CI=1 npm run-script test -- \$@"
+    end
+  end
+
+  def test_init_appends_missing_yaml_keys_without_losing_comments_or_formatting
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      trust_path = File.join(root, ".agents/trusted-github-actors.yml")
+      policy_prefix = <<~YAML
+        # Keep this policy guidance.
+        base_branch: develop # deployment branch
+        custom_policy: "keep quoted"
+      YAML
+      trust_prefix = <<~YAML
+        # Keep this trust guidance.
+        trusted_users:
+          - maintainer # release owner
+      YAML
+      File.write(policy_path, policy_prefix)
+      File.write(trust_path, trust_prefix)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      assert File.read(policy_path).start_with?(policy_prefix)
+      assert File.read(trust_path).start_with?(trust_prefix)
+      policy = YAML.safe_load(File.read(policy_path))
+      trust = YAML.safe_load(File.read(trust_path))
+      assert_equal "develop", policy.fetch("base_branch")
+      assert_equal "keep quoted", policy.fetch("custom_policy")
+      assert_equal [], trust.fetch("trusted_bots")
+      assert_equal [], trust.fetch("trusted_metadata_bots")
+      assert_equal [], trust.fetch("trusted_teams")
+    end
+  end
+
+  def test_init_fails_before_writing_when_existing_yaml_cannot_be_safely_appended
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      original = "{base_branch: develop} # keep flow style\n"
+      File.write(policy_path, original)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "cannot safely add missing policy config keys without rewriting"
+      assert_equal original, File.read(policy_path)
+      refute File.exist?(File.join(root, ".agents/bin"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_reports_filesystem_errors_without_a_backtrace
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin/validate"))
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "FAIL agent workflow seam has 1 issue(s)"
+      refute_includes out, "agent-workflow-seam-doctor:"
+      refute_includes out, "Errno::EISDIR"
+    end
+  end
+
+  def test_init_treats_non_object_package_json_as_unknown
+    [[], "package", 1, nil].each do |package|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        File.write(File.join(root, "package.json"), JSON.generate(package))
+        File.write(File.join(root, "package-lock.json"), "lock\n")
+
+        out, status = run_doctor(root, "--init")
+
+        refute status.success?
+        assert_includes out, "unconfigured init wrapper"
+        refute_includes out, "TypeError"
+        refute_includes out, "NoMethodError"
+      end
+    end
+  end
+
+  def test_init_treats_invalid_utf8_package_json_as_unknown
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      File.binwrite(File.join(root, "package.json"), "{\xFF}".b)
+      File.write(File.join(root, "package-lock.json"), "lock\n")
+
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "unconfigured init wrapper"
+      refute_includes out, "invalid byte sequence"
+      refute_includes out, "Encoding::"
+    end
+  end
+
+  def test_init_does_not_detect_blank_javascript_scripts
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      File.write(File.join(root, "package.json"), JSON.generate("scripts" => { "validate" => " ", "test" => "spec" }))
+      File.write(File.join(root, "package-lock.json"), "lock\n")
+
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "unconfigured init wrapper"
+    end
+  end
+
+  def test_init_json_reports_shared_root_validation_failures
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      missing_shared = File.join(root, "missing-shared")
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true",
+        "--shared", missing_shared,
+        "--json"
+      )
+
+      refute status.success?
+      payload = JSON.parse(out)
+      assert_equal "FAIL", payload.fetch("status")
+      assert_includes payload.fetch("issues"), "missing shared root: #{missing_shared}"
+    end
+  end
+
+  def test_init_preserves_an_existing_valid_seam_and_is_idempotent
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      trust_path = File.join(root, ".agents/trusted-github-actors.yml")
+      File.write(trust_path, {
+        "trusted_users" => ["maintainer"],
+        "trusted_bots" => [],
+        "trusted_metadata_bots" => ["github-actions"],
+        "trusted_teams" => []
+      }.to_yaml)
+      paths = [
+        "AGENTS.md",
+        ".agents/bin/README.md",
+        ".agents/bin/validate",
+        ".agents/bin/test",
+        ".agents/agent-workflow.yml",
+        ".agents/trusted-github-actors.yml"
+      ]
+      before = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+
+      out, status = run_doctor(root, "--init")
+      assert status.success?, out
+      second_out, second_status = run_doctor(root, "--init")
+      assert second_status.success?, second_out
+
+      after = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+      assert_equal before, after
+    end
+  end
+
+  def test_init_readme_records_existing_optional_wrappers
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      write_script(root, "lint", "exec echo lint \"$@\"\n")
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes readme, "| `lint` | Lint / format | configured wrapper |"
+      refute_includes readme, "| `lint` | Lint / format | n/a |"
+    end
+  end
+
+  def test_bare_init_refreshes_managed_readme_for_new_optional_wrapper
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+      assert first_status.success?, first_out
+      refute_includes File.read(File.join(root, ".agents/bin/README.md")), "| `lint` | Lint / format | configured wrapper |"
+      write_script(root, "lint", "exec echo lint \"$@\"\n")
+
+      second_out, second_status = run_doctor(root, "--init")
+
+      assert second_status.success?, second_out
+      assert_includes File.read(File.join(root, ".agents/bin/README.md")), "| `lint` | Lint / format | configured wrapper |"
+    end
+  end
+
+  def test_init_preserves_scalar_trust_entries_accepted_by_preflight
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      trust_path = File.join(root, ".agents/trusted-github-actors.yml")
+      File.write(trust_path, "trusted_bots: deploy\n")
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      trust = YAML.safe_load(File.read(trust_path))
+      assert_equal "deploy", trust.fetch("trusted_bots")
+      assert_equal [], trust.fetch("trusted_metadata_bots")
+    end
+  end
+
+  def test_init_validates_existing_yaml_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      File.write(policy_path, "base_branch: [\n")
+
+      out, status = run_doctor(root, "--init", "--validate-command", "true", "--test-command", "true")
+
+      refute status.success?
+      assert_includes out, "invalid policy config"
+      assert_equal "base_branch: [\n", File.read(policy_path)
+      refute File.exist?(File.join(root, "AGENTS.md"))
+      refute File.exist?(File.join(root, ".agents/bin"))
+    end
+  end
+
+  def test_init_rejects_overlapping_trusted_bot_roles_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      trust_path = File.join(root, ".agents/trusted-github-actors.yml")
+      trust = {
+        "trusted_users" => [],
+        "trusted_bots" => ["@Deploy[bot]"],
+        "trusted_metadata_bots" => ["deploy"],
+        "trusted_teams" => []
+      }
+      File.write(trust_path, trust.to_yaml)
+      before = File.binread(trust_path)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bot(s) listed in both trusted_bots and trusted_metadata_bots: deploy"
+      assert_equal before, File.binread(trust_path)
+      refute File.exist?(File.join(root, ".agents/bin"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_does_not_guess_when_javascript_detection_is_ambiguous
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      File.write(File.join(root, "package.json"), JSON.generate("scripts" => { "validate" => "check", "test" => "spec" }))
+      File.write(File.join(root, "package-lock.json"), "lock\n")
+      File.write(File.join(root, "yarn.lock"), "lock\n")
+
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "unconfigured init wrapper"
+    end
+  end
+
+  def test_init_uses_explicit_base_branch_for_new_policy
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--base-branch", "develop",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")))
+      assert_equal "develop", policy.fetch("base_branch")
+    end
+  end
+
+  def test_init_rejects_invalid_base_branch_before_writing
+    ["", "feature\nbranch", "feature\0branch", "feature branch", "feature~branch", "release.lock", "-hidden", "@{-1}"].each do |base_branch|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+          AgentWorkflowSeamDoctor.init(
+            root,
+            base_branch: base_branch,
+            validate_command: "true",
+            test_command: "true"
+          )
+        end
+
+        assert_includes error.message, "base branch must be a valid Git branch name"
+        refute File.exist?(File.join(root, ".agents"))
+        refute File.exist?(File.join(root, "AGENTS.md"))
+      end
+    end
+  end
+
+  def test_init_rejects_multiline_command_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true\necho unexpected",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "commands must be non-empty single-line shell commands without NUL bytes"
+      refute File.exist?(File.join(root, ".agents"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_rejects_nul_command_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+        AgentWorkflowSeamDoctor.init(
+          root,
+          base_branch: "main",
+          validate_command: "true\0unexpected",
+          test_command: "true"
+        )
+      end
+
+      assert_includes error.message, "commands must be non-empty single-line shell commands without NUL bytes"
+      refute File.exist?(File.join(root, ".agents"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
+  def test_init_reports_missing_root_without_creating_it
+    Dir.mktmpdir("agent-workflow-seam-init") do |parent|
+      root = File.join(parent, "missing")
+
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "missing directory: #{root}"
+      refute File.exist?(root)
+    end
+  end
+
+  def test_init_text_and_json_report_the_same_failures
+    Dir.mktmpdir("agent-workflow-seam-init-text") do |text_root|
+      text, text_status = run_doctor(text_root, "--init")
+      refute text_status.success?
+
+      Dir.mktmpdir("agent-workflow-seam-init-json") do |json_root|
+        json, json_status = run_doctor(json_root, "--init", "--json")
+        refute json_status.success?
+        payload = JSON.parse(json)
+
+        assert_equal "FAIL", payload.fetch("status")
+        payload.fetch("issues").each do |issue|
+          normalized = issue.sub(json_root, text_root)
+          assert_includes text, normalized
+        end
+      end
+    end
+  end
+
+  def test_bare_init_preserves_previously_generated_valid_wrappers
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+      assert first_status.success?, first_out
+      paths = %w[
+        AGENTS.md
+        .agents/bin/README.md
+        .agents/bin/validate
+        .agents/bin/test
+        .agents/agent-workflow.yml
+        .agents/trusted-github-actors.yml
+      ]
+      before = paths.to_h do |path|
+        [path, File.binread(File.join(root, path))]
+      end
+
+      second_out, second_status = run_doctor(root, "--init")
+
+      assert second_status.success?, second_out
+      after = paths.to_h do |path|
+        [path, File.binread(File.join(root, path))]
+      end
+      assert_equal before, after
+    end
+  end
+
+  def test_bare_init_restores_managed_wrapper_mode_without_rewriting_content
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo explicit-validate",
+        "--test-command", "echo explicit-test"
+      )
+      assert first_status.success?, first_out
+      validate_path = File.join(root, ".agents/bin/validate")
+      before = File.binread(validate_path)
+      File.chmod(0o644, validate_path)
+
+      second_out, second_status = run_doctor(root, "--init")
+
+      assert second_status.success?, second_out
+      assert File.executable?(validate_path)
+      assert_equal before, File.binread(validate_path)
+      assert_includes File.read(validate_path), "explicit-validate"
+      refute_includes File.read(validate_path), AgentWorkflowSeamDoctor::INIT_PLACEHOLDER_MARKER
+    end
+  end
+
+  def test_bare_init_preserves_explicit_wrappers_when_root_commands_are_detectable
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      %w[validate test].each do |name|
+        path = File.join(root, "bin", name)
+        File.write(path, "#!/usr/bin/env bash\necho root-#{name}\n")
+        File.chmod(0o755, path)
+      end
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo explicit-validate",
+        "--test-command", "echo explicit-test"
+      )
+      assert first_status.success?, first_out
+      paths = %w[.agents/bin/README.md .agents/bin/validate .agents/bin/test]
+      before = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+
+      second_out, second_status = run_doctor(root, "--init")
+
+      assert second_status.success?, second_out
+      after = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+      assert_equal before, after
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), "explicit-validate"
+      refute_includes File.read(File.join(root, ".agents/bin/validate")), "bin/validate"
+    end
+  end
+
+  def test_explicit_commands_replace_previously_generated_wrappers
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo first",
+        "--test-command", "echo first-test"
+      )
+      assert first_status.success?, first_out
+
+      second_out, second_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo second",
+        "--test-command", "echo second-test"
+      )
+
+      assert second_status.success?, second_out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes validate, "exec echo second"
+      refute_includes validate, "exec echo first"
+      assert_includes test, "exec echo second-test"
+      refute_includes test, "exec echo first-test"
+      assert_includes readme, "`echo second`"
+      assert_includes readme, "`echo second-test`"
+    end
+  end
+
+  def test_init_does_not_detect_root_command_directories
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin/validate"))
+      FileUtils.mkdir_p(File.join(root, "bin/test"))
+
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "unconfigured init wrapper"
     end
   end
 end
