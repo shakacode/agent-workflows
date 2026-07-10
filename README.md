@@ -172,8 +172,9 @@ states, review findings, and state-machine fixtures.
 ## Maintainer Sync Reference
 
 Most teams can adopt the source pack with the Quick Start and Consumer Repo
-Adoption steps above. Maintainers who manage many consumer repos can use
-`bin/push-downstream` to roll the binstub contract into the repos listed in
+Adoption steps above. `bin/push-downstream` is ShakaCode-specific maintainer
+tooling, not part of the generic workflow-pack adoption path for consumer
+repositories. It rolls the binstub contract into the repos listed in
 `downstream.yml`, one PR per repo, while preserving repo-owned scripts and
 policy values. Plan first, then apply a canary before fanning out:
 
