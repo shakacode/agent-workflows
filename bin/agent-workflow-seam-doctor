@@ -181,9 +181,8 @@ module AgentWorkflowSeamDoctor
     return nil unless package.is_a?(Hash)
 
     scripts = package["scripts"]
-    return nil unless scripts.is_a?(Hash) && CORE_SCRIPTS.all? do |name|
-      scripts[name].is_a?(String) && !scripts[name].strip.empty?
-    end
+    return nil unless scripts.is_a?(Hash) &&
+                      CORE_SCRIPTS.all? { |name| scripts[name].is_a?(String) && !scripts[name].strip.empty? }
 
     runner = lockfiles.values.fetch(0)
     CORE_SCRIPTS.to_h { |name| [name, "#{runner} #{name}"] }
@@ -202,16 +201,18 @@ module AgentWorkflowSeamDoctor
     raise InitError, "invalid #{label}: #{path}: #{e.message.lines.first.to_s.strip}"
   end
 
-  def validate_trust_mapping!(trust)
-    TRUST_KEYS.each do |key|
-      next unless trust.key?(key)
-      next if trust[key].is_a?(Array)
+  def validate_trust_mapping!(trust, require_arrays: true)
+    if require_arrays
+      TRUST_KEYS.each do |key|
+        next unless trust.key?(key)
+        next if trust[key].is_a?(Array)
 
-      raise InitError, "invalid trust config: #{TRUST_CONFIG} key #{key} must be an array"
+        raise InitError, "invalid trust config: #{TRUST_CONFIG} key #{key} must be an array"
+      end
     end
 
-    trusted_bots = trust.fetch("trusted_bots", []).map { |login| normalized_trust_bot_login(login) }
-    metadata_bots = trust.fetch("trusted_metadata_bots", []).map { |login| normalized_trust_bot_login(login) }
+    trusted_bots = Array(trust.fetch("trusted_bots", [])).map { |login| normalized_trust_bot_login(login) }
+    metadata_bots = Array(trust.fetch("trusted_metadata_bots", [])).map { |login| normalized_trust_bot_login(login) }
     overlap = (trusted_bots & metadata_bots).sort
     return if overlap.empty?
 
@@ -494,7 +495,7 @@ module AgentWorkflowSeamDoctor
     return [] unless File.file?(path)
 
     trust = load_init_mapping(path, "trust config")
-    validate_trust_mapping!(trust)
+    validate_trust_mapping!(trust, require_arrays: false)
     []
   rescue InitError => e
     [e.message.sub("#{root}/", "")]

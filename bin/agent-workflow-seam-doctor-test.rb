@@ -308,7 +308,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_regular_check_rejects_non_array_trust_values
+  def test_regular_check_accepts_scalar_trust_values_for_preflight_compatibility
     with_repo do |root|
       write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
@@ -316,8 +316,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       out, status = run_doctor(root)
 
-      refute status.success?
-      assert_includes out, "key trusted_bots must be an array"
+      assert status.success?, out
     end
   end
 

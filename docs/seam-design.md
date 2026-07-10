@@ -153,6 +153,10 @@ remove the marker deliberately before taking direct ownership.
   include the repo-root `cd` preamble
 - `.agents/agent-workflow.yml` parses and has all required policy keys with
   resolved values
+- an optional `.agents/trusted-github-actors.yml` parses as a mapping and has no
+  normalized bot login in both actionable and metadata-only roles; regular
+  checks preserve preflight compatibility with legacy scalar values, while
+  `--init` requires role lists
 - repo-local and supplied shared skill/workflow Markdown do not contain
   unresolved executable placeholders such as `<follow-up prefix>`
 
