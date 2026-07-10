@@ -98,6 +98,7 @@ module AgentWorkflowSeamDoctor
   def init(root, base_branch:, validate_command:, test_command:, shared_roots: [])
     raise InitError, "missing directory: #{root}" unless File.directory?(root)
 
+    validate_init_base_branch!(base_branch)
     validate_init_command_inputs!(validate_command, test_command)
 
     existing_policy = load_init_mapping(File.join(root, POLICY_CONFIG), "policy config")
@@ -118,6 +119,13 @@ module AgentWorkflowSeamDoctor
     write_init_agents(root)
 
     check(root, shared_roots:)
+  end
+
+  def validate_init_base_branch!(base_branch)
+    valid = base_branch.is_a?(String) && !base_branch.strip.empty? && !base_branch.match?(/[\0\r\n]/)
+    return if valid
+
+    raise InitError, "base branch must be a non-empty single-line value without NUL bytes"
   end
 
   def validate_init_command_inputs!(*commands)
@@ -153,7 +161,9 @@ module AgentWorkflowSeamDoctor
 
     package = JSON.parse(File.read(package_path, encoding: "UTF-8"))
     scripts = package["scripts"]
-    return nil unless scripts.is_a?(Hash) && CORE_SCRIPTS.all? { |name| scripts[name].is_a?(String) }
+    return nil unless scripts.is_a?(Hash) && CORE_SCRIPTS.all? do |name|
+      scripts[name].is_a?(String) && !scripts[name].strip.empty?
+    end
 
     runner = lockfiles.values.fetch(0)
     CORE_SCRIPTS.to_h { |name| [name, %(#{runner} #{name} -- "$@")] }

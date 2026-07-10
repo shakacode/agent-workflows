@@ -1010,6 +1010,18 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_does_not_detect_blank_javascript_scripts
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      File.write(File.join(root, "package.json"), JSON.generate("scripts" => { "validate" => " ", "test" => "spec" }))
+      File.write(File.join(root, "package-lock.json"), "lock\n")
+
+      out, status = run_doctor(root, "--init")
+
+      refute status.success?
+      assert_includes out, "unconfigured init wrapper"
+    end
+  end
+
   def test_init_json_reports_shared_root_validation_failures
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       missing_shared = File.join(root, "missing-shared")
@@ -1101,6 +1113,25 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert status.success?, out
       policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")))
       assert_equal "develop", policy.fetch("base_branch")
+    end
+  end
+
+  def test_init_rejects_invalid_base_branch_before_writing
+    ["", "feature\nbranch", "feature\0branch"].each do |base_branch|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+          AgentWorkflowSeamDoctor.init(
+            root,
+            base_branch: base_branch,
+            validate_command: "true",
+            test_command: "true"
+          )
+        end
+
+        assert_includes error.message, "base branch must be a non-empty single-line value without NUL bytes"
+        refute File.exist?(File.join(root, ".agents"))
+        refute File.exist?(File.join(root, "AGENTS.md"))
+      end
     end
   end
 
