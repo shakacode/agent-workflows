@@ -308,6 +308,36 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_regular_check_rejects_non_array_trust_values
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(File.join(root, ".agents/trusted-github-actors.yml"), "trusted_bots: deploy\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "key trusted_bots must be an array"
+    end
+  end
+
+  def test_regular_check_rejects_overlapping_trust_bot_roles
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      trust = {
+        "trusted_bots" => ["@Deploy[bot]"],
+        "trusted_metadata_bots" => ["deploy"]
+      }
+      File.write(File.join(root, ".agents/trusted-github-actors.yml"), trust.to_yaml)
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "bot(s) listed in both trusted_bots and trusted_metadata_bots: deploy"
+    end
+  end
+
   def test_json_output_format
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -1238,6 +1268,36 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert status.success?, out
       assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm run-script validate -- "$@"'
       assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm --prefix app run-script test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_for_test_lifecycle_command
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm --prefix app test",
+        "--test-command", "npm test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm --prefix app test -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_after_env_utility_assignments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "env CI=1 npm run validate",
+        "--test-command", "env LABEL='test suite' npm run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env CI=1 npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), %(exec env LABEL='test suite' npm run-script test -- "$@")
     end
   end
 
