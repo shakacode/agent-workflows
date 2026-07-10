@@ -155,9 +155,9 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes guide, phrase, "model-routing guide is missing playbook content: #{phrase}"
     end
 
-    if source_checkout?
-      assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](model-routing.md)"
-    end
+    return unless source_checkout?
+
+    assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](model-routing.md)"
   end
 
   def test_glossary_models_staged_routes_and_replacement_evidence
