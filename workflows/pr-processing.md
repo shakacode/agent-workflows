@@ -1254,8 +1254,10 @@ Keep the parent coordinator on <coordinator model/class>/<effort>. Do not stop,
 replace, or downgrade the parent. It owns planning, risk classification, route
 decisions, integration, review, readiness, merge sequencing, and closeout.
 
-Worker initial route: <model/class>/<effort>.
-Worker escalation route: <model/class>/<effort>; max automatic cycles: <N>.
+Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+Preserve each lane's route mapping from the existing goal. Use one route entry
+per complete initial/escalation policy; do not collapse mixed routes into one
+batch-wide pair.
 merge_authority: preserve the existing goal value.
 
 Recovery first:

@@ -128,7 +128,8 @@ class ModelRoutingContractTest < Minitest::Test
       "Inventory every active worker",
       "`MODEL_REPLACEMENT_HANDOFF`",
       "Confirm the old instance has stopped",
-      "Worker initial route: <model/class>/<effort>",
+      WORKER_ROUTE,
+      "Preserve each lane's route mapping",
       "Do not allow a worker to inherit the coordinator assignment",
       "`MODEL_ESCALATION_REQUEST`",
       "Plan review is preferred",
@@ -136,6 +137,9 @@ class ModelRoutingContractTest < Minitest::Test
     ].each do |phrase|
       assert_includes prompt, phrase, "recovery prompt is missing: #{phrase}"
     end
+
+    refute_includes prompt, "Worker initial route: <model/class>/<effort>",
+                    "recovery prompt must not collapse per-lane routes into one batch-wide pair"
   end
 
   def test_user_guide_carries_the_cost_aware_model_playbook
