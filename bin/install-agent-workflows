@@ -18,7 +18,7 @@ Installed paths:
   <target>/workflows/*
   <target>/docs/coordination-backend.md
   <target>/docs/review-finding-schema.md
-  <target>/docs/model-routing.md
+  <target>/docs/agent-workflows-model-routing.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-status
@@ -118,6 +118,19 @@ metadata_value() {
   esac
 }
 
+installed_metadata_value() {
+  local key="$1"
+  local metadata_path="$target/$metadata_name"
+  [[ -f "$metadata_path" ]] || return 1
+
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    value = metadata[ARGV.fetch(1)]
+    exit 1 if value.nil? || value.to_s.empty?
+    puts value
+  ' "$metadata_path" "$key"
+}
+
 write_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
@@ -172,13 +185,49 @@ copy_children_preserving_unrelated() {
   done
 }
 
+remove_legacy_managed_model_routing_path() {
+  local docs_target="$1"
+  local legacy_path="$docs_target/model-routing.md"
+  local link_target previous_revision previous_source source_root
+
+  previous_source="$(installed_metadata_value source 2>/dev/null || true)"
+  if [[ -L "$legacy_path" ]]; then
+    link_target="$(readlink "$legacy_path")"
+    if [[ "$link_target" == "$repo_root/docs/model-routing.md" || \
+          ( -n "$previous_source" && "$link_target" == "$previous_source/docs/model-routing.md" ) ]]; then
+      rm -f "$legacy_path"
+    fi
+    return 0
+  fi
+
+  [[ -f "$legacy_path" ]] || return 0
+  previous_revision="$(installed_metadata_value source_revision 2>/dev/null || true)"
+  [[ -n "$previous_revision" ]] || return 0
+
+  for source_root in "$repo_root" "$previous_source"; do
+    [[ -n "$source_root" ]] || continue
+    git -C "$source_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+    git -C "$source_root" cat-file -e "$previous_revision:docs/model-routing.md" 2>/dev/null || continue
+    if cmp -s "$legacy_path" <(git -C "$source_root" show "$previous_revision:docs/model-routing.md"); then
+      rm -f "$legacy_path"
+      return 0
+    fi
+  done
+
+  if [[ -n "$previous_source" && -f "$previous_source/docs/model-routing.md" ]] &&
+     cmp -s "$legacy_path" "$previous_source/docs/model-routing.md"; then
+    rm -f "$legacy_path"
+  fi
+}
+
 copy_pack_docs() {
   local docs_target="$1"
   local doc_name destination
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  remove_legacy_managed_model_routing_path "$docs_target"
 
-  for doc_name in coordination-backend.md review-finding-schema.md model-routing.md; do
+  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
     destination="$docs_target/$doc_name"
     if [[ -L "$destination" ]]; then
       rm -f "$destination"
@@ -198,8 +247,9 @@ link_pack_docs() {
   local destination doc_name source_path
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  remove_legacy_managed_model_routing_path "$docs_target"
 
-  for doc_name in coordination-backend.md review-finding-schema.md model-routing.md; do
+  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
     destination="$docs_target/$doc_name"
     if [[ -e "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-symlink path: $destination" >&2

@@ -38,6 +38,20 @@ new_source_repo() {
   git -C "$source_dir" commit --quiet -m "initial"
 }
 
+new_source_repo_with_legacy_model_routing_history() {
+  local source_dir="$1"
+
+  new_source_repo "$source_dir"
+  install -m 0644 "$source_dir/docs/agent-workflows-model-routing.md" \
+    "$source_dir/docs/model-routing.md"
+  git -C "$source_dir" add docs/model-routing.md
+  git -C "$source_dir" commit --quiet -m "add legacy model-routing guide"
+  git -C "$source_dir" rev-parse HEAD
+  rm -f "$source_dir/docs/model-routing.md"
+  git -C "$source_dir" add -u docs/model-routing.md
+  git -C "$source_dir" commit --quiet -m "rename model-routing guide"
+}
+
 write_consumer_agents() {
   local root="$1"
   mkdir -p "$root/.agents/bin"
@@ -102,7 +116,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
-  assert_file "$target/docs/model-routing.md"
+  assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
@@ -112,6 +126,137 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/.agent-workflows-install.json"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+}
+
+test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
+  local tmp target mode
+
+  for mode in copy symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    mkdir -p "$target/docs"
+    printf 'personal model-routing notes\n' > "$target/docs/model-routing.md"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
+      >/tmp/install-agent-workflows-test.out
+
+    grep -q 'personal model-routing notes' "$target/docs/model-routing.md" || \
+      fail "$mode mode replaced unrelated docs/model-routing.md"
+    if [[ "$mode" = "copy" ]]; then
+      assert_file "$target/docs/agent-workflows-model-routing.md"
+      [[ ! -L "$target/docs/agent-workflows-model-routing.md" ]] || \
+        fail "copy mode should install the namespaced model-routing doc as a real file"
+    else
+      assert_symlink "$target/docs/agent-workflows-model-routing.md"
+    fi
+  done
+}
+
+test_install_preserves_exact_content_generic_collision_without_source_evidence() {
+  local tmp target mode missing_source
+
+  for mode in copy symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    missing_source="$tmp/missing-source"
+    mkdir -p "$target/docs"
+    install -m 0644 "$ROOT/docs/agent-workflows-model-routing.md" "$target/docs/model-routing.md"
+    ruby -rjson -e '
+      path, source = ARGV
+      File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => "unknown"}) + "\n")
+    ' "$target/.agent-workflows-install.json" "$missing_source"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
+      >/tmp/install-agent-workflows-test.out
+
+    cmp -s "$target/docs/model-routing.md" "$ROOT/docs/agent-workflows-model-routing.md" || \
+      fail "$mode mode removed an exact-content generic collision without prior-source evidence"
+  done
+}
+
+test_install_removes_legacy_managed_model_routing_path() {
+  local tmp target mode source revision
+
+  for mode in copy symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    source="$tmp/source"
+    mkdir -p "$source" "$target/docs"
+    revision="$(new_source_repo_with_legacy_model_routing_history "$source")"
+    if [[ "$mode" = "copy" ]]; then
+      git -C "$source" show "$revision:docs/model-routing.md" > "$target/docs/model-routing.md"
+    else
+      ln -s "$source/docs/model-routing.md" "$target/docs/model-routing.md"
+    fi
+    ruby -rjson -e '
+      path, mode, source, revision = ARGV
+      File.write(path, JSON.pretty_generate({"mode" => mode, "source" => source, "source_revision" => revision}) + "\n")
+    ' "$target/.agent-workflows-install.json" "$mode" "$source" "$revision"
+
+    "$source/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
+      >/tmp/install-agent-workflows-test.out
+
+    [[ ! -L "$target/docs/model-routing.md" ]] || \
+      fail "$mode mode retained the legacy managed model-routing symlink"
+    [[ ! -e "$target/docs/model-routing.md" ]] || \
+      fail "$mode mode retained the legacy managed model-routing path"
+    if [[ "$mode" = "copy" ]]; then
+      assert_file "$target/docs/agent-workflows-model-routing.md"
+    else
+      assert_symlink "$target/docs/agent-workflows-model-routing.md"
+    fi
+  done
+}
+
+test_install_removes_legacy_copy_from_git_worktree_source() {
+  local tmp source worktree_root target revision
+
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  worktree_root="$tmp/worktree"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  revision="$(new_source_repo_with_legacy_model_routing_history "$source")"
+  git -C "$source" worktree add --quiet --detach "$worktree_root" HEAD
+  [[ -f "$worktree_root/.git" ]] || fail "expected linked worktree .git file"
+
+  mkdir -p "$target/docs"
+  git -C "$source" show "$revision:docs/model-routing.md" > "$target/docs/model-routing.md"
+  ruby -rjson -e '
+    path, source, revision = ARGV
+    File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => revision}) + "\n")
+  ' "$target/.agent-workflows-install.json" "$worktree_root" "$revision"
+
+  "$worktree_root/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    >/tmp/install-agent-workflows-test.out
+
+  [[ ! -e "$target/docs/model-routing.md" ]] || \
+    fail "copy mode retained the legacy managed model-routing path when installed from a git worktree"
+  assert_file "$target/docs/agent-workflows-model-routing.md"
+}
+
+test_install_removes_matching_legacy_copy_from_non_git_source() {
+  local tmp current_source previous_source target
+
+  tmp="$(mktemp -d)"
+  current_source="$tmp/current-source"
+  previous_source="$tmp/previous-source"
+  target="$tmp/codex-home"
+  mkdir -p "$current_source" "$previous_source/docs" "$target/docs"
+  rsync -a --exclude .git "$ROOT/" "$current_source/"
+  printf 'legacy unpacked model-routing guide\n' > "$previous_source/docs/model-routing.md"
+  install -m 0644 "$previous_source/docs/model-routing.md" "$target/docs/model-routing.md"
+  ruby -rjson -e '
+    path, source = ARGV
+    File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => "unknown"}) + "\n")
+  ' "$target/.agent-workflows-install.json" "$previous_source"
+
+  "$current_source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    >/tmp/install-agent-workflows-test.out
+
+  [[ ! -e "$target/docs/model-routing.md" ]] || \
+    fail "copy mode retained a matching legacy model-routing file from a non-git source"
+  assert_file "$target/docs/agent-workflows-model-routing.md"
 }
 
 test_installed_prompt_guard_ignores_unowned_docs() {
@@ -144,7 +289,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/workflows/pr-processing.md"
   assert_file "$tmp/.claude/docs/coordination-backend.md"
   assert_file "$tmp/.claude/docs/review-finding-schema.md"
-  assert_file "$tmp/.claude/docs/model-routing.md"
+  assert_file "$tmp/.claude/docs/agent-workflows-model-routing.md"
   assert_file "$tmp/.claude/docs/solutions/README.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
@@ -169,7 +314,7 @@ test_copy_mode_preserves_unrelated_agent_files() {
   assert_file "$target/docs/personal.md"
   assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
-  assert_file "$target/docs/model-routing.md"
+  assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/personal-helper"
   assert_file "$target/skills/pr-batch/SKILL.md"
@@ -207,7 +352,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_file "$target/docs/personal.md"
   assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
-  assert_symlink "$target/docs/model-routing.md"
+  assert_symlink "$target/docs/agent-workflows-model-routing.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
@@ -229,10 +374,10 @@ test_symlink_mode_replaces_docs_directory_symlink() {
   [[ -d "$target/docs" && ! -L "$target/docs" ]] || fail "expected real docs directory"
   assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
-  assert_symlink "$target/docs/model-routing.md"
+  assert_symlink "$target/docs/agent-workflows-model-routing.md"
   [[ ! -e "$external_docs/coordination-backend.md" ]] || fail "should not write through pre-existing docs symlink"
   [[ ! -e "$external_docs/review-finding-schema.md" ]] || fail "should not write through pre-existing docs symlink"
-  [[ ! -e "$external_docs/model-routing.md" ]] || fail "should not write through pre-existing docs symlink"
+  [[ ! -e "$external_docs/agent-workflows-model-routing.md" ]] || fail "should not write through pre-existing docs symlink"
 }
 
 test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
@@ -404,6 +549,11 @@ test_upgrade_validates_consumer_root_after_install() {
 main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
+    test_install_namespaces_model_routing_doc_and_preserves_generic_collision
+    test_install_preserves_exact_content_generic_collision_without_source_evidence
+    test_install_removes_legacy_managed_model_routing_path
+    test_install_removes_legacy_copy_from_git_worktree_source
+    test_install_removes_matching_legacy_copy_from_non_git_source
     test_installed_prompt_guard_ignores_unowned_docs
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files

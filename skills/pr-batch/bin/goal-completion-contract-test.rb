@@ -108,6 +108,8 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "report NOT COMPLETE", label
       assert_text_includes text, "pending, missing, or untriaged current-head CI", label
       assert_text_includes text, "unresolved current-head review threads", label
+      assert_text_includes text, "watch window", label
+      assert_text_includes text, "resume instructions", label
       assert_text_includes text, "UNKNOWN", label
     end
   end
@@ -237,6 +239,8 @@ class GoalCompletionContractTest < Minitest::Test
     refute_nil workflow_goal_contract, "workflows/pr-processing.md goal prompt is missing the contract line"
     refute_nil pr_batch_contract, "skills/pr-batch goal prompt is missing the contract line"
     refute_nil plan_contract, "skills/plan-pr-batch goal prompt is missing the contract line"
+    assert_includes workflow_contract, "configured review agents",
+                    "the compact completion contract must retain configured review-agent gates"
     assert_equal workflow_contract, workflow_goal_contract
     assert_equal workflow_contract, pr_batch_contract.chomp
     assert_equal workflow_contract, plan_contract.chomp

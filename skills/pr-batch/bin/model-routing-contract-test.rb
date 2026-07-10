@@ -128,7 +128,8 @@ class ModelRoutingContractTest < Minitest::Test
       "Inventory every active worker",
       "`MODEL_REPLACEMENT_HANDOFF`",
       "Confirm the old instance has stopped",
-      "Worker initial route: <model/class>/<effort>",
+      WORKER_ROUTE,
+      "Preserve each lane's route mapping",
       "Do not allow a worker to inherit the coordinator assignment",
       "`MODEL_ESCALATION_REQUEST`",
       "Plan review is preferred",
@@ -136,10 +137,34 @@ class ModelRoutingContractTest < Minitest::Test
     ].each do |phrase|
       assert_includes prompt, phrase, "recovery prompt is missing: #{phrase}"
     end
+
+    refute_includes prompt, "Worker initial route: <model/class>/<effort>",
+                    "recovery prompt must not collapse per-lane routes into one batch-wide pair"
+  end
+
+  def test_continuation_entry_points_distinguish_batch_recovery_from_worker_restart
+    %w[
+      skills/plan-pr-batch/SKILL.md
+      skills/pr-batch/SKILL.md
+    ].each do |path|
+      entry = normalized(read_repo_file(path))
+
+      assert_includes entry,
+                      "saved handoff explicitly requests model-route replacement or identifies workers on a wrong or too-expensive route",
+                      "#{path} must detect model-routing recovery handoffs"
+      assert_includes entry, "`MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery",
+                      "#{path} must not confuse a worker restart handoff with batch recovery"
+      assert_includes entry, "Model-Routing Recovery Prompt",
+                      "#{path} must route model handoffs through fenced recovery"
+      assert_includes entry, "Bounded Status Recovery",
+                      "#{path} must route standalone worker restart handoffs through live-state recovery"
+      assert_includes entry, "Otherwise use the",
+                      "#{path} must reserve generic continuation for non-model handoffs"
+    end
   end
 
   def test_user_guide_carries_the_cost_aware_model_playbook
-    guide = read_repo_file("docs/model-routing.md")
+    guide = read_repo_file("docs/agent-workflows-model-routing.md")
 
     [
       "GPT-5.6 Sol",
@@ -157,7 +182,7 @@ class ModelRoutingContractTest < Minitest::Test
 
     return unless source_checkout?
 
-    assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](model-routing.md)"
+    assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](agent-workflows-model-routing.md)"
   end
 
   def test_glossary_models_staged_routes_and_replacement_evidence
