@@ -356,11 +356,11 @@ module AgentWorkflowSeamDoctor
     end
     return false unless words.shift == "npm"
 
-    command_index = words.index { |word| %w[run run-script test t tst start stop restart].include?(word) }
+    command_index = words.index { |word| %w[run run-script rum urn test t tst start stop restart].include?(word) }
     return false unless command_index
 
     npm_command = words.fetch(command_index)
-    return false if %w[run run-script].include?(npm_command) && !words[command_index + 1]
+    return false if %w[run run-script rum urn].include?(npm_command) && !words[command_index + 1]
 
     valid_npm_option_prefix?(words.first(command_index))
   rescue ArgumentError

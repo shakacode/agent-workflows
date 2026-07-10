@@ -1337,6 +1337,21 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_adds_npm_separator_for_run_aliases
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm rum validate",
+        "--test-command", "npm urn test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm rum validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm urn test -- "$@"'
+    end
+  end
+
   def test_init_adds_npm_separator_for_test_lifecycle_command
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
