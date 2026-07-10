@@ -38,6 +38,20 @@ new_source_repo() {
   git -C "$source_dir" commit --quiet -m "initial"
 }
 
+new_source_repo_with_legacy_model_routing_history() {
+  local source_dir="$1"
+
+  new_source_repo "$source_dir"
+  install -m 0644 "$source_dir/docs/agent-workflows-model-routing.md" \
+    "$source_dir/docs/model-routing.md"
+  git -C "$source_dir" add docs/model-routing.md
+  git -C "$source_dir" commit --quiet -m "add legacy model-routing guide"
+  git -C "$source_dir" rev-parse HEAD
+  rm -f "$source_dir/docs/model-routing.md"
+  git -C "$source_dir" add -u docs/model-routing.md
+  git -C "$source_dir" commit --quiet -m "rename model-routing guide"
+}
+
 write_consumer_agents() {
   local root="$1"
   mkdir -p "$root/.agents/bin"
@@ -138,35 +152,48 @@ test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
   done
 }
 
-test_install_removes_legacy_managed_model_routing_path() {
-  local tmp target mode old_source revision
-
-  revision="$(
-    git -C "$ROOT" rev-list HEAD | while read -r candidate; do
-      if git -C "$ROOT" cat-file -e "$candidate:docs/model-routing.md" 2>/dev/null; then
-        printf '%s\n' "$candidate"
-        break
-      fi
-    done
-  )"
-  [[ -n "$revision" ]] || fail "expected a historical docs/model-routing.md revision"
+test_install_preserves_exact_content_generic_collision_without_source_evidence() {
+  local tmp target mode missing_source
 
   for mode in copy symlink; do
     tmp="$(mktemp -d)"
     target="$tmp/codex-home"
-    old_source="$tmp/old-source"
-    mkdir -p "$target/docs" "$old_source/docs"
+    missing_source="$tmp/missing-source"
+    mkdir -p "$target/docs"
+    install -m 0644 "$ROOT/docs/agent-workflows-model-routing.md" "$target/docs/model-routing.md"
+    ruby -rjson -e '
+      path, source = ARGV
+      File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => "unknown"}) + "\n")
+    ' "$target/.agent-workflows-install.json" "$missing_source"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
+      >/tmp/install-agent-workflows-test.out
+
+    cmp -s "$target/docs/model-routing.md" "$ROOT/docs/agent-workflows-model-routing.md" || \
+      fail "$mode mode removed an exact-content generic collision without prior-source evidence"
+  done
+}
+
+test_install_removes_legacy_managed_model_routing_path() {
+  local tmp target mode source revision
+
+  for mode in copy symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    source="$tmp/source"
+    mkdir -p "$source" "$target/docs"
+    revision="$(new_source_repo_with_legacy_model_routing_history "$source")"
     if [[ "$mode" = "copy" ]]; then
-      git -C "$ROOT" show "$revision:docs/model-routing.md" > "$target/docs/model-routing.md"
+      git -C "$source" show "$revision:docs/model-routing.md" > "$target/docs/model-routing.md"
     else
-      ln -s "$old_source/docs/model-routing.md" "$target/docs/model-routing.md"
+      ln -s "$source/docs/model-routing.md" "$target/docs/model-routing.md"
     fi
     ruby -rjson -e '
       path, mode, source, revision = ARGV
       File.write(path, JSON.pretty_generate({"mode" => mode, "source" => source, "source_revision" => revision}) + "\n")
-    ' "$target/.agent-workflows-install.json" "$mode" "$old_source" "$revision"
+    ' "$target/.agent-workflows-install.json" "$mode" "$source" "$revision"
 
-    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
+    "$source/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
       >/tmp/install-agent-workflows-test.out
 
     [[ ! -L "$target/docs/model-routing.md" ]] || \
@@ -182,35 +209,19 @@ test_install_removes_legacy_managed_model_routing_path() {
 }
 
 test_install_removes_legacy_copy_from_git_worktree_source() {
-  local tmp clone_root worktree_root target revision
-
-  revision="$(
-    git -C "$ROOT" rev-list HEAD | while read -r candidate; do
-      if git -C "$ROOT" cat-file -e "$candidate:docs/model-routing.md" 2>/dev/null; then
-        printf '%s\n' "$candidate"
-        break
-      fi
-    done
-  )"
-  [[ -n "$revision" ]] || fail "expected a historical docs/model-routing.md revision"
+  local tmp source worktree_root target revision
 
   tmp="$(mktemp -d)"
-  clone_root="$tmp/source"
+  source="$tmp/source"
   worktree_root="$tmp/worktree"
   target="$tmp/codex-home"
-  git clone --quiet "$ROOT" "$clone_root"
-  install -m 0755 "$ROOT/bin/install-agent-workflows" "$clone_root/bin/install-agent-workflows"
-  git -C "$clone_root" config user.email "agent-workflows-test@example.com"
-  git -C "$clone_root" config user.name "Agent Workflows Test"
-  if ! git -C "$clone_root" diff --quiet -- bin/install-agent-workflows; then
-    git -C "$clone_root" add bin/install-agent-workflows
-    git -C "$clone_root" commit --quiet -m "test worktree installer"
-  fi
-  git -C "$clone_root" worktree add --quiet --detach "$worktree_root" HEAD
+  mkdir -p "$source"
+  revision="$(new_source_repo_with_legacy_model_routing_history "$source")"
+  git -C "$source" worktree add --quiet --detach "$worktree_root" HEAD
   [[ -f "$worktree_root/.git" ]] || fail "expected linked worktree .git file"
 
   mkdir -p "$target/docs"
-  git -C "$clone_root" show "$revision:docs/model-routing.md" > "$target/docs/model-routing.md"
+  git -C "$source" show "$revision:docs/model-routing.md" > "$target/docs/model-routing.md"
   ruby -rjson -e '
     path, source, revision = ARGV
     File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => revision}) + "\n")
@@ -539,6 +550,7 @@ main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
+    test_install_preserves_exact_content_generic_collision_without_source_evidence
     test_install_removes_legacy_managed_model_routing_path
     test_install_removes_legacy_copy_from_git_worktree_source
     test_install_removes_matching_legacy_copy_from_non_git_source

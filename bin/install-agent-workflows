@@ -188,7 +188,6 @@ copy_children_preserving_unrelated() {
 remove_legacy_managed_model_routing_path() {
   local docs_target="$1"
   local legacy_path="$docs_target/model-routing.md"
-  local current_path="$repo_root/docs/agent-workflows-model-routing.md"
   local link_target previous_revision previous_source source_root
 
   previous_source="$(installed_metadata_value source 2>/dev/null || true)"
@@ -217,11 +216,6 @@ remove_legacy_managed_model_routing_path() {
 
   if [[ -n "$previous_source" && -f "$previous_source/docs/model-routing.md" ]] &&
      cmp -s "$legacy_path" "$previous_source/docs/model-routing.md"; then
-    rm -f "$legacy_path"
-    return 0
-  fi
-
-  if [[ -f "$current_path" ]] && cmp -s "$legacy_path" "$current_path"; then
     rm -f "$legacy_path"
   fi
 }
