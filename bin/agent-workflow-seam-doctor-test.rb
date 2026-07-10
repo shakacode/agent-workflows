@@ -947,6 +947,32 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_explicit_simple_commands_forward_wrapper_arguments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      %w[validate test].each do |name|
+        path = File.join(root, "bin", name)
+        File.write(path, "#!/usr/bin/env bash\nprintf '#{name}:%s\\n' \"${1:-missing}\"\n")
+        File.chmod(0o755, path)
+      end
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "bin/validate",
+        "--test-command", "bin/test"
+      )
+      assert status.success?, out
+
+      validate_out, validate_status = Open3.capture2e(File.join(root, ".agents/bin/validate"), "--changed=src/a b.rb")
+      test_out, test_status = Open3.capture2e(File.join(root, ".agents/bin/test"), "--watch=false")
+      assert validate_status.success?, validate_out
+      assert test_status.success?, test_out
+      assert_equal "validate:--changed=src/a b.rb\n", validate_out
+      assert_equal "test:--watch=false\n", test_out
+    end
+  end
+
   def test_init_rejects_one_explicit_command_before_writing
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(root, "--init", "--validate-command", "true")

@@ -226,9 +226,11 @@ module AgentWorkflowSeamDoctor
   def init_command_line(command)
     command = command.to_s
     return command if command.match?(/[|&;<>]/)
-    return command if command.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
 
-    "exec #{command}"
+    argument_suffix = command.match?(/\$(?:@|\{@\})/) ? "" : ' "$@"'
+    return "#{command}#{argument_suffix}" if command.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+
+    "exec #{command}#{argument_suffix}"
   end
 
   def write_init_readme(root, commands)
