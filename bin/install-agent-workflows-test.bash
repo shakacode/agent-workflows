@@ -138,14 +138,33 @@ test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
   done
 }
 
-test_install_removes_legacy_managed_model_routing_symlink() {
-  local tmp target mode
+test_install_removes_legacy_managed_model_routing_path() {
+  local tmp target mode old_source revision
+
+  revision="$(
+    git -C "$ROOT" rev-list --all | while read -r candidate; do
+      if git -C "$ROOT" cat-file -e "$candidate:docs/model-routing.md" 2>/dev/null; then
+        printf '%s\n' "$candidate"
+        break
+      fi
+    done
+  )"
+  [[ -n "$revision" ]] || fail "expected a historical docs/model-routing.md revision"
 
   for mode in copy symlink; do
     tmp="$(mktemp -d)"
     target="$tmp/codex-home"
-    mkdir -p "$target/docs"
-    ln -s "$ROOT/docs/model-routing.md" "$target/docs/model-routing.md"
+    old_source="$tmp/old-source"
+    mkdir -p "$target/docs" "$old_source/docs"
+    if [[ "$mode" = "copy" ]]; then
+      git -C "$ROOT" show "$revision:docs/model-routing.md" > "$target/docs/model-routing.md"
+    else
+      ln -s "$old_source/docs/model-routing.md" "$target/docs/model-routing.md"
+    fi
+    ruby -rjson -e '
+      path, mode, source, revision = ARGV
+      File.write(path, JSON.pretty_generate({"mode" => mode, "source" => source, "source_revision" => revision}) + "\n")
+    ' "$target/.agent-workflows-install.json" "$mode" "$old_source" "$revision"
 
     "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
       >/tmp/install-agent-workflows-test.out
@@ -453,7 +472,7 @@ main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
-    test_install_removes_legacy_managed_model_routing_symlink
+    test_install_removes_legacy_managed_model_routing_path
     test_installed_prompt_guard_ignores_unowned_docs
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files
