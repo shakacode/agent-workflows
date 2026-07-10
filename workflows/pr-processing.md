@@ -767,7 +767,7 @@ Execution rules:
 - For coordination, respect coordination claims and dependencies: stable ids/thread handles, register before launch when supported, bounded status/claim, phase heartbeats, push holder/generation check, and stop on unmet `blocked_on` or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence.
 - Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
-- Final handoff: links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, and the canonical final-state bucket.
+- Final handoff: canonical closeout; links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, final-state bucket.
 
 ```
 
@@ -1527,15 +1527,24 @@ The closeout lane is:
     resolve target and base branch names from PR metadata and `.agents/agent-workflow.yml`, check
     their live GitHub/CI status, and inspect late review/check comments that
     arrived around or after merge. Route release-relevant findings into the next
-    post-merge audit intake. For non-trivial coordinated batches, especially
-    high-concurrency, release-affecting, workflow/build/dependency, or QA-lane
-    batches, the coordinator may run the post-merge audit in completed-batch mode
-    once every batch target has a terminal state; that deep audit is scoped to
-    the verified batch subset, with the commit range used as evidence/discovery
-    context. Use coverage catch-up mode for user-requested un-audited PR/commit
+    post-merge audit intake.
+12. Once it detects that every batch target has a final state, the parent
+    orchestration agent must run the completed-batch audit before its final
+    handoff. Scope the deep audit to the verified batch subset, with the commit
+    range used as evidence/discovery context. Start the audit's scope gate even
+    when it cannot proceed to a clean deep audit: a scope-confirmation need,
+    `UNKNOWN` fact, or audit finding is a follow-up, not a reason to omit the
+    audit. Use coverage catch-up mode for user-requested un-audited PR/commit
     ranges. Reserve release/range audit for final-release readiness, suspected
     bad merges, missing or unverified batch scope, or a lightweight sweep that
     finds a blocker, failed post-merge check, or credible release-readiness risk.
+13. End the final user-visible message after the audit. Use
+    `Conversation status: Ready for archiving.` only when the audit is clean and
+    there are no findings, follow-ups, unresolved questions, pending work, or
+    `UNKNOWN` facts. Otherwise, make
+    `Conversation status: Follow-ups remain — <each exact action or blocker>.`
+    the last user-visible line; repeat every outstanding follow-up or blocker
+    there even if it appears in the handoff above.
 
 ## Self-Review Gate
 
@@ -1985,8 +1994,8 @@ For a manual multi-PR landing plan:
 
 ## Post-Merge Batch Audit
 
-Use this section when reviewing already-merged PRs from concurrent agent work,
-especially after a completed non-trivial batch or before a release candidate.
+Use this section when reviewing a completed coordinated batch, including a
+small batch, or already-merged PRs before a release candidate.
 
 Choose the audit mode before deep audit:
 

@@ -14,6 +14,7 @@ TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
 CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
+CANONICAL_CLOSEOUT_PROMPT_LINE = "Final handoff: canonical closeout;"
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
@@ -332,6 +333,27 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       assert_text_includes text, "With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it", label
     end
+  end
+
+  def test_goal_prompts_route_final_handoff_to_canonical_closeout
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      assert_text_includes text, CANONICAL_CLOSEOUT_PROMPT_LINE, label
+    end
+  end
+
+  def test_canonical_closeout_requires_audit_before_final_conversation_status
+    closeout = extract_markdown_section(@workflow, "### Coordinator Closeout Lane", end_heading: /^##\s+/)
+    normalized_closeout = closeout.gsub(/\s+/, " ")
+
+    assert_includes normalized_closeout,
+                    "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
+    assert_includes normalized_closeout, "End the final user-visible message after the audit."
+    assert_includes normalized_closeout, "Conversation status: Ready for archiving."
+    assert_includes normalized_closeout, "Conversation status: Follow-ups remain — <each exact action or blocker>."
   end
 
   def test_normal_restart_stays_pause_resume_not_cancel_relaunch

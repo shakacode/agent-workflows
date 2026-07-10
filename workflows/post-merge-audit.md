@@ -30,6 +30,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
 - Run Codex and Claude independently first. Do not give either agent the other agent's report until both reports are complete.
 - During independent audits, agents may draft issue bodies but must not create issues, comments, labels, fixes, reverts, branches, or PRs.
 - Use one coordinator to compare reports, dedupe findings, finalize the issue plan, and create follow-up issues.
+- When invoked by a parent orchestration agent after a batch completes, the audit must be part of its final handoff. Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff. If the audit is clean and there are no findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts, its final user-visible line must be `Conversation status: Ready for archiving.` Otherwise its final user-visible line must be `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 - Create follow-up issues by default unless the user explicitly asks for report-only or no issue creation. For
   release-gate audits, append the audit report to the release-gate audit ledger
   first.
