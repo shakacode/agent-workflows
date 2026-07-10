@@ -95,6 +95,8 @@ test_codex_host_install_writes_helpers_and_metadata() {
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
 
+  grep -q "agent-workflow-seam-doctor --init" /tmp/install-agent-workflows-test.out || fail "expected install output to advertise seam init"
+
   assert_file "$target/LICENSE"
   grep -q "MIT License" "$target/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
   assert_file "$target/skills/pr-batch/SKILL.md"
@@ -128,6 +130,28 @@ test_installed_prompt_guard_ignores_unowned_docs() {
   set -e
   [[ "$status" -eq 0 ]] || fail "expected installed prompt guard to pass, got $status: $output"
   assert_contains "$output" "All checks passed."
+}
+
+test_installed_doctor_initializes_consumer_repo() {
+  local tmp target consumer output
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$consumer"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
+  output="$("$target/bin/agent-workflow-seam-doctor" \
+    --init \
+    --root "$consumer" \
+    --validate-command true \
+    --test-command true 2>&1)"
+
+  assert_contains "$output" "PASS agent workflow seam is complete"
+  assert_file "$consumer/.agents/bin/validate"
+  assert_file "$consumer/.agents/bin/test"
+  assert_file "$consumer/.agents/agent-workflow.yml"
+  assert_file "$consumer/.agents/trusted-github-actors.yml"
+  assert_file "$consumer/AGENTS.md"
 }
 
 test_claude_host_install_uses_claude_home_when_target_is_omitted() {
@@ -399,6 +423,7 @@ main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
     test_installed_prompt_guard_ignores_unowned_docs
+    test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs

@@ -98,6 +98,18 @@ Install into an explicit shared agent home:
 bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
 
+Then initialize and validate the seam from a consumer repository:
+
+```bash
+cd /path/to/consumer/repo
+agent-workflow-seam-doctor --init --shared "$HOME/src/agent-workflows"
+```
+
+The initializer detects only unambiguous root binstubs or exact JavaScript
+scripts with one recognized package-manager lockfile. If it reports
+fail-closed wrapper guidance, configure the generated wrappers or rerun with
+both `--validate-command` and `--test-command`.
+
 For local development on this pack, symlink mode keeps the installed skills
 pointing at the clone:
 

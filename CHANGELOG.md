@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add `agent-workflow-seam-doctor --init` for conservative, fail-closed consumer seam scaffolding and immediate contract validation.**
 - **Add an MIT license for the workflow pack and install the license notice with copied or symlinked agent homes.**
 - **Add portable plan-review, type-design-review, manual-testing, benchmark-verification, and pr-monitoring skills adapted from `lucasfcosta/backpressured` workflow ideas.**
 - **Add durable workflow solution docs, review finding schema, readiness vocabulary, autoreview target-state fixtures, and the optional `task-observer` skill.**

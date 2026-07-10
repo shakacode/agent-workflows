@@ -116,6 +116,21 @@ Portable shared skills resolve this repo's commands and policy through:
 Consumer repos should keep broader human guidance in `AGENTS.md`, but command
 resolution and workflow policy come from the binstubs and YAML.
 
+## Seam Initialization
+
+`agent-workflow-seam-doctor --init` creates the smallest complete consumer seam
+and immediately validates it through the same public interface. Initialization
+preserves valid repo-owned wrappers and existing policy, trust, and unrelated
+`AGENTS.md` content. It writes an empty repo-local trust configuration so a new
+seam starts fail-closed.
+
+The initializer conservatively detects executable root `bin/validate` and
+`bin/test`, or exact JavaScript `validate` and `test` scripts when one recognized
+lockfile identifies npm, pnpm, or Yarn. Unknown, partial, and ambiguous command
+surfaces get marked fail-closed wrappers and a precise `FAIL` result. Callers can
+instead pass both `--validate-command` and `--test-command`; multiline, empty,
+and NUL-containing command values are rejected before any write.
+
 ## Seam Doctor
 
 `agent-workflow-seam-doctor` validates the contract:
@@ -130,7 +145,8 @@ resolution and workflow policy come from the binstubs and YAML.
   unresolved executable placeholders such as `<follow-up prefix>`
 
 The doctor intentionally does not execute the wrappers. Before consumer PRs,
-also verify that wrapped commands/tasks exist in the target repo.
+also verify that wrapped commands/tasks exist in the target repo. It does reject
+the initializer's marked fail-closed wrappers until real commands replace them.
 
 ## Repository-Pinned Copies
 
