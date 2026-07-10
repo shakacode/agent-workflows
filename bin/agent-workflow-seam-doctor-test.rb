@@ -984,6 +984,32 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_rejects_explicit_commands_that_would_replace_repo_owned_wrappers
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      validate_path = write_script(root, "validate", "exec echo repo-validate \"$@\"\n")
+      test_path = write_script(root, "test", "exec echo repo-test \"$@\"\n")
+      before = { validate_path => File.binread(validate_path), test_path => File.binread(test_path) }
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo replacement-validate",
+        "--test-command", "echo replacement-test"
+      )
+
+      refute status.success?
+      assert_includes out, "explicit commands cannot replace repo-owned wrappers"
+      assert_includes out, ".agents/bin/validate"
+      assert_includes out, ".agents/bin/test"
+      after = before.keys.to_h { |path| [path, File.binread(path)] }
+      assert_equal before, after
+      refute File.exist?(File.join(root, ".agents/bin/README.md"))
+      refute File.exist?(File.join(root, ".agents/agent-workflow.yml"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
   def test_init_api_rejects_one_explicit_command_before_writing
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
@@ -1053,6 +1079,22 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_treats_non_object_package_json_as_unknown
+    [[], "package", 1, nil].each do |package|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        File.write(File.join(root, "package.json"), JSON.generate(package))
+        File.write(File.join(root, "package-lock.json"), "lock\n")
+
+        out, status = run_doctor(root, "--init")
+
+        refute status.success?
+        assert_includes out, "unconfigured init wrapper"
+        refute_includes out, "TypeError"
+        refute_includes out, "NoMethodError"
+      end
+    end
+  end
+
   def test_init_does_not_detect_blank_javascript_scripts
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       File.write(File.join(root, "package.json"), JSON.generate("scripts" => { "validate" => " ", "test" => "spec" }))
@@ -1111,6 +1153,25 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       after = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
       assert_equal before, after
+    end
+  end
+
+  def test_init_readme_records_existing_optional_wrappers
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+      write_script(root, "lint", "exec echo lint \"$@\"\n")
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes readme, "| `lint` | Lint / format | configured wrapper |"
+      refute_includes readme, "| `lint` | Lint / format | n/a |"
     end
   end
 
@@ -1270,6 +1331,34 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         [path, File.binread(File.join(root, path))]
       end
       assert_equal before, after
+    end
+  end
+
+  def test_bare_init_preserves_explicit_wrappers_when_root_commands_are_detectable
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      %w[validate test].each do |name|
+        path = File.join(root, "bin", name)
+        File.write(path, "#!/usr/bin/env bash\necho root-#{name}\n")
+        File.chmod(0o755, path)
+      end
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo explicit-validate",
+        "--test-command", "echo explicit-test"
+      )
+      assert first_status.success?, first_out
+      paths = %w[.agents/bin/README.md .agents/bin/validate .agents/bin/test]
+      before = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+
+      second_out, second_status = run_doctor(root, "--init")
+
+      assert second_status.success?, second_out
+      after = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+      assert_equal before, after
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), "explicit-validate"
+      refute_includes File.read(File.join(root, ".agents/bin/validate")), "bin/validate"
     end
   end
 

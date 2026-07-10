@@ -101,20 +101,24 @@ module AgentWorkflowSeamDoctor
     validate_init_command_pair!(validate_command, test_command)
     validate_init_base_branch!(base_branch)
     validate_init_command_inputs!(validate_command, test_command)
+    explicit_commands = !validate_command.nil?
 
     existing_policy = load_init_mapping(File.join(root, POLICY_CONFIG), "policy config")
     existing_trust = load_init_mapping(File.join(root, TRUST_CONFIG), "trust config")
     validate_trust_mapping!(existing_trust)
+    validate_explicit_wrapper_conflicts!(root) if explicit_commands
 
-    detected_commands = detect_init_commands(root) if validate_command.nil? && test_command.nil?
+    detected_commands = detect_init_commands(root) unless explicit_commands
     commands = {
       "validate" => validate_command || detected_commands&.[]("validate"),
       "test" => test_command || detected_commands&.[]("test")
     }
 
     FileUtils.mkdir_p(File.join(root, COMMANDS_DIR))
-    commands.each { |name, command| write_init_script(root, name, command) }
-    write_init_readme(root, commands)
+    scripts_changed = commands.map do |name, command|
+      write_init_script(root, name, command, replace_managed: explicit_commands)
+    end.any?
+    write_init_readme(root, commands, explicit_commands:, scripts_changed:)
     write_init_policy(root, base_branch, existing_policy)
     write_init_trust(root, existing_trust)
     write_init_agents(root)
@@ -167,6 +171,8 @@ module AgentWorkflowSeamDoctor
     return nil unless lockfiles.length == 1
 
     package = JSON.parse(File.read(package_path, encoding: "UTF-8"))
+    return nil unless package.is_a?(Hash)
+
     scripts = package["scripts"]
     return nil unless scripts.is_a?(Hash) && CORE_SCRIPTS.all? do |name|
       scripts[name].is_a?(String) && !scripts[name].strip.empty?
@@ -198,10 +204,22 @@ module AgentWorkflowSeamDoctor
     end
   end
 
-  def write_init_script(root, name, command)
+  def validate_explicit_wrapper_conflicts!(root)
+    conflicts = CORE_SCRIPTS.filter_map do |name|
+      path = File.join(root, COMMANDS_DIR, name)
+      File.join(COMMANDS_DIR, name) if File.file?(path) && !init_managed_file?(path)
+    end
+    return if conflicts.empty?
+
+    raise InitError,
+          "explicit commands cannot replace repo-owned wrappers: #{conflicts.join(', ')}; " \
+          "edit those wrappers directly or rerun --init without explicit commands"
+  end
+
+  def write_init_script(root, name, command, replace_managed:)
     path = File.join(root, COMMANDS_DIR, name)
-    return if command.nil? && File.file?(path) && script_issues(root, name).empty?
-    return if File.file?(path) && !init_managed_file?(path)
+    return false if File.file?(path) && script_issues(root, name).empty? && !replace_managed
+    return false if File.file?(path) && !init_managed_file?(path)
 
     run_line = if command
                  init_command_line(command)
@@ -219,8 +237,9 @@ module AgentWorkflowSeamDoctor
       cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
       #{run_line}
     BASH
-    write_if_changed(path, content)
+    changed = write_if_changed(path, content)
     File.chmod(0o755, path) unless File.executable?(path)
+    changed
   end
 
   def init_command_line(command)
@@ -233,20 +252,25 @@ module AgentWorkflowSeamDoctor
     "exec #{command}#{argument_suffix}"
   end
 
-  def write_init_readme(root, commands)
+  def write_init_readme(root, commands, explicit_commands:, scripts_changed:)
     path = File.join(root, COMMAND_README)
     configured_core = CORE_SCRIPTS.all? do |name|
       script_path = File.join(root, COMMANDS_DIR, name)
       File.file?(script_path) && script_issues(root, name).empty?
     end
-    return if File.file?(path) && commands.values.all?(&:nil?) && configured_core
+    return if File.file?(path) && !explicit_commands && !scripts_changed && configured_core
     return if File.file?(path) && !init_managed_file?(path)
 
     rows = STANDARD_SCRIPTS.map do |name|
-      summary = if commands[name]
+      script_path = File.join(root, COMMANDS_DIR, name)
+      summary = if explicit_commands && commands[name]
                   "`#{commands.fetch(name)}`"
+                elsif File.file?(script_path) && script_issues(root, name).empty?
+                  "configured wrapper"
                 elsif CORE_SCRIPTS.include?(name)
                   "unconfigured (fail-closed)"
+                elsif File.file?(script_path)
+                  "present (doctor reports issues)"
                 else
                   "n/a"
                 end
