@@ -102,7 +102,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
-  assert_file "$target/docs/model-routing.md"
+  assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
@@ -112,6 +112,30 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/.agent-workflows-install.json"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+}
+
+test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
+  local tmp target mode
+
+  for mode in copy symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    mkdir -p "$target/docs"
+    printf 'personal model-routing notes\n' > "$target/docs/model-routing.md"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
+      >/tmp/install-agent-workflows-test.out
+
+    grep -q 'personal model-routing notes' "$target/docs/model-routing.md" || \
+      fail "$mode mode replaced unrelated docs/model-routing.md"
+    if [[ "$mode" = "copy" ]]; then
+      assert_file "$target/docs/agent-workflows-model-routing.md"
+      [[ ! -L "$target/docs/agent-workflows-model-routing.md" ]] || \
+        fail "copy mode should install the namespaced model-routing doc as a real file"
+    else
+      assert_symlink "$target/docs/agent-workflows-model-routing.md"
+    fi
+  done
 }
 
 test_installed_prompt_guard_ignores_unowned_docs() {
@@ -144,7 +168,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/workflows/pr-processing.md"
   assert_file "$tmp/.claude/docs/coordination-backend.md"
   assert_file "$tmp/.claude/docs/review-finding-schema.md"
-  assert_file "$tmp/.claude/docs/model-routing.md"
+  assert_file "$tmp/.claude/docs/agent-workflows-model-routing.md"
   assert_file "$tmp/.claude/docs/solutions/README.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
@@ -169,7 +193,7 @@ test_copy_mode_preserves_unrelated_agent_files() {
   assert_file "$target/docs/personal.md"
   assert_file "$target/docs/coordination-backend.md"
   assert_file "$target/docs/review-finding-schema.md"
-  assert_file "$target/docs/model-routing.md"
+  assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/personal-helper"
   assert_file "$target/skills/pr-batch/SKILL.md"
@@ -207,7 +231,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_file "$target/docs/personal.md"
   assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
-  assert_symlink "$target/docs/model-routing.md"
+  assert_symlink "$target/docs/agent-workflows-model-routing.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
@@ -229,10 +253,10 @@ test_symlink_mode_replaces_docs_directory_symlink() {
   [[ -d "$target/docs" && ! -L "$target/docs" ]] || fail "expected real docs directory"
   assert_symlink "$target/docs/coordination-backend.md"
   assert_symlink "$target/docs/review-finding-schema.md"
-  assert_symlink "$target/docs/model-routing.md"
+  assert_symlink "$target/docs/agent-workflows-model-routing.md"
   [[ ! -e "$external_docs/coordination-backend.md" ]] || fail "should not write through pre-existing docs symlink"
   [[ ! -e "$external_docs/review-finding-schema.md" ]] || fail "should not write through pre-existing docs symlink"
-  [[ ! -e "$external_docs/model-routing.md" ]] || fail "should not write through pre-existing docs symlink"
+  [[ ! -e "$external_docs/agent-workflows-model-routing.md" ]] || fail "should not write through pre-existing docs symlink"
 }
 
 test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
@@ -404,6 +428,7 @@ test_upgrade_validates_consumer_root_after_install() {
 main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
+    test_install_namespaces_model_routing_doc_and_preserves_generic_collision
     test_installed_prompt_guard_ignores_unowned_docs
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files

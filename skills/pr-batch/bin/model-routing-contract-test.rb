@@ -142,8 +142,26 @@ class ModelRoutingContractTest < Minitest::Test
                     "recovery prompt must not collapse per-lane routes into one batch-wide pair"
   end
 
+  def test_continuation_entry_points_route_model_handoffs_to_recovery
+    %w[
+      skills/plan-pr-batch/SKILL.md
+      skills/pr-batch/SKILL.md
+    ].each do |path|
+      entry = normalized(read_repo_file(path))
+
+      assert_includes entry, "saved handoff explicitly requests model-route replacement",
+                      "#{path} must detect model-routing recovery handoffs"
+      assert_includes entry, "`MODEL_REPLACEMENT_HANDOFF`",
+                      "#{path} must recognize the durable replacement marker"
+      assert_includes entry, "Model-Routing Recovery Prompt",
+                      "#{path} must route model handoffs through fenced recovery"
+      assert_includes entry, "Otherwise use the",
+                      "#{path} must reserve generic continuation for non-model handoffs"
+    end
+  end
+
   def test_user_guide_carries_the_cost_aware_model_playbook
-    guide = read_repo_file("docs/model-routing.md")
+    guide = read_repo_file("docs/agent-workflows-model-routing.md")
 
     [
       "GPT-5.6 Sol",
@@ -161,7 +179,7 @@ class ModelRoutingContractTest < Minitest::Test
 
     return unless source_checkout?
 
-    assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](model-routing.md)"
+    assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](agent-workflows-model-routing.md)"
   end
 
   def test_glossary_models_staged_routes_and_replacement_evidence

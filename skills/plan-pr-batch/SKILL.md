@@ -10,10 +10,14 @@ Create verified scope and a goal prompt for `$pr-batch`. Do not implement items 
 
 If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.
 If the user asks to continue PR-batch closeout from a pasted handoff,
-final-bucket table, PR URLs, or GitHub shorthand refs, route to `$pr-batch` and
-the canonical [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt)
-in the installed `pr-processing.md` workflow instead of turning the handoff into
-broad discovery.
+final-bucket table, PR URLs, or GitHub shorthand refs, route to `$pr-batch`
+instead of turning the handoff into broad discovery. When a saved handoff
+explicitly requests model-route replacement, identifies workers on a wrong or
+too-expensive route, or contains `MODEL_REPLACEMENT_HANDOFF`, use the canonical
+[Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+Otherwise use the canonical
+[Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt)
+in the installed `pr-processing.md` workflow.
 
 If the user is asking whether existing PRs are ready to merge, what manual
 testing remains, or how to sequence open PR merges, use the target repo's

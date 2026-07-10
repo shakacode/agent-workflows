@@ -18,7 +18,7 @@ Installed paths:
   <target>/workflows/*
   <target>/docs/coordination-backend.md
   <target>/docs/review-finding-schema.md
-  <target>/docs/model-routing.md
+  <target>/docs/agent-workflows-model-routing.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-status
@@ -178,7 +178,7 @@ copy_pack_docs() {
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
 
-  for doc_name in coordination-backend.md review-finding-schema.md model-routing.md; do
+  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
     destination="$docs_target/$doc_name"
     if [[ -L "$destination" ]]; then
       rm -f "$destination"
@@ -199,7 +199,7 @@ link_pack_docs() {
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
 
-  for doc_name in coordination-backend.md review-finding-schema.md model-routing.md; do
+  for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
     destination="$docs_target/$doc_name"
     if [[ -e "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-symlink path: $destination" >&2

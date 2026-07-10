@@ -127,8 +127,12 @@ Prefer exact numbers for high-concurrency work. Filters are acceptable for disco
 ## Continuing From Saved Handoffs
 
 When the user asks to continue PR-batch closeout from a pasted handoff,
-final-bucket table, PR URLs, GitHub shorthand refs, or visible request, use the
-canonical
+final-bucket table, PR URLs, GitHub shorthand refs, or visible request, first
+classify the handoff. When a saved handoff explicitly requests model-route
+replacement, identifies workers on a wrong or too-expensive route, or contains
+`MODEL_REPLACEMENT_HANDOFF`, use the canonical
+[Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+Otherwise use the canonical
 [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt).
 Extract only explicit PR/issue refs presented as target entries or final-bucket
 entries, plus explicit exclusions. Do not treat evidence, blocker, dependency,
