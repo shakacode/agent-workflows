@@ -142,6 +142,7 @@ The installer writes:
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
 - `<target>/docs/review-finding-schema.md`
+- `<target>/docs/model-routing.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflows-status`

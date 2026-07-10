@@ -4,6 +4,7 @@
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
+SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 COORDINATOR_ROUTE = "Coordinator model/effort: <model/class>/<effort>."
 WORKER_ROUTE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; " \
@@ -39,6 +40,10 @@ end
 
 def normalized(text)
   text.gsub(/\s+/, " ").strip
+end
+
+def source_checkout?
+  ENV[SOURCE_CHECKOUT_ENV] == "1"
 end
 
 class ModelRoutingContractTest < Minitest::Test
@@ -150,10 +155,14 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes guide, phrase, "model-routing guide is missing playbook content: #{phrase}"
     end
 
-    assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](model-routing.md)"
+    if source_checkout?
+      assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](model-routing.md)"
+    end
   end
 
   def test_glossary_models_staged_routes_and_replacement_evidence
+    skip "source-pack glossary is not installed" unless source_checkout?
+
     context = normalized(read_repo_file("CONTEXT.md"))
 
     [
@@ -177,8 +186,8 @@ class ModelRoutingContractTest < Minitest::Test
       skills/plan-pr-batch/SKILL.md
       skills/pr-batch/SKILL.md
       skills/triage/SKILL.md
-      docs/pr-batch-skills.md
     ]
+    paths << "docs/pr-batch-skills.md" if source_checkout?
 
     paths.each do |path|
       text = read_repo_file(path)
