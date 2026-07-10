@@ -142,7 +142,7 @@ class ModelRoutingContractTest < Minitest::Test
                     "recovery prompt must not collapse per-lane routes into one batch-wide pair"
   end
 
-  def test_continuation_entry_points_route_model_handoffs_to_recovery
+  def test_continuation_entry_points_distinguish_batch_recovery_from_worker_restart
     %w[
       skills/plan-pr-batch/SKILL.md
       skills/pr-batch/SKILL.md
@@ -151,10 +151,12 @@ class ModelRoutingContractTest < Minitest::Test
 
       assert_includes entry, "saved handoff explicitly requests model-route replacement",
                       "#{path} must detect model-routing recovery handoffs"
-      assert_includes entry, "`MODEL_REPLACEMENT_HANDOFF`",
-                      "#{path} must recognize the durable replacement marker"
+      assert_includes entry, "`MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery",
+                      "#{path} must not confuse a worker restart handoff with batch recovery"
       assert_includes entry, "Model-Routing Recovery Prompt",
                       "#{path} must route model handoffs through fenced recovery"
+      assert_includes entry, "Bounded Status Recovery",
+                      "#{path} must route standalone worker restart handoffs through live-state recovery"
       assert_includes entry, "Otherwise use the",
                       "#{path} must reserve generic continuation for non-model handoffs"
     end

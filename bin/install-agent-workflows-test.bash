@@ -138,6 +138,30 @@ test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
   done
 }
 
+test_install_removes_legacy_managed_model_routing_symlink() {
+  local tmp target mode
+
+  for mode in copy symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    mkdir -p "$target/docs"
+    ln -s "$ROOT/docs/model-routing.md" "$target/docs/model-routing.md"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" \
+      >/tmp/install-agent-workflows-test.out
+
+    [[ ! -L "$target/docs/model-routing.md" ]] || \
+      fail "$mode mode retained the legacy managed model-routing symlink"
+    [[ ! -e "$target/docs/model-routing.md" ]] || \
+      fail "$mode mode retained the legacy managed model-routing path"
+    if [[ "$mode" = "copy" ]]; then
+      assert_file "$target/docs/agent-workflows-model-routing.md"
+    else
+      assert_symlink "$target/docs/agent-workflows-model-routing.md"
+    fi
+  done
+}
+
 test_installed_prompt_guard_ignores_unowned_docs() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -429,6 +453,7 @@ main() {
   local tests=(
     test_codex_host_install_writes_helpers_and_metadata
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
+    test_install_removes_legacy_managed_model_routing_symlink
     test_installed_prompt_guard_ignores_unowned_docs
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files

@@ -172,11 +172,21 @@ copy_children_preserving_unrelated() {
   done
 }
 
+remove_legacy_managed_model_routing_link() {
+  local docs_target="$1"
+  local legacy_path="$docs_target/model-routing.md"
+
+  [[ -L "$legacy_path" ]] || return 0
+  [[ "$(readlink "$legacy_path")" == "$repo_root/docs/model-routing.md" ]] || return 0
+  rm -f "$legacy_path"
+}
+
 copy_pack_docs() {
   local docs_target="$1"
   local doc_name destination
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  remove_legacy_managed_model_routing_link "$docs_target"
 
   for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
     destination="$docs_target/$doc_name"
@@ -198,6 +208,7 @@ link_pack_docs() {
   local destination doc_name source_path
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  remove_legacy_managed_model_routing_link "$docs_target"
 
   for doc_name in coordination-backend.md review-finding-schema.md agent-workflows-model-routing.md; do
     destination="$docs_target/$doc_name"

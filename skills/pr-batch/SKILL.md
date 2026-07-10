@@ -129,9 +129,13 @@ Prefer exact numbers for high-concurrency work. Filters are acceptable for disco
 When the user asks to continue PR-batch closeout from a pasted handoff,
 final-bucket table, PR URLs, GitHub shorthand refs, or visible request, first
 classify the handoff. When a saved handoff explicitly requests model-route
-replacement, identifies workers on a wrong or too-expensive route, or contains
-`MODEL_REPLACEMENT_HANDOFF`, use the canonical
+replacement or identifies workers on a wrong or too-expensive route, use the canonical
 [Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+`MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery. If
+the visible request is to resume that worker or lane, use
+[Bounded Status Recovery](../../workflows/pr-processing.md#bounded-status-recovery);
+otherwise continue classifying the handoff and use generic closeout when that is
+what the request asks for.
 Otherwise use the canonical
 [Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt).
 Extract only explicit PR/issue refs presented as target entries or final-bucket
