@@ -1051,6 +1051,21 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_forwards_arguments_when_shell_metacharacters_are_quoted_or_escaped
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'LABEL="issue #1" bin/validate',
+        "--test-command", 'URL=https://example.test/a\&b bin/test'
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'LABEL="issue #1" bin/validate "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'URL=https://example.test/a\&b bin/test "$@"'
+    end
+  end
+
   def test_init_escapes_pipes_in_the_generated_readme_table
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       command = 'bin/validate "$@" | tee validate.log'
@@ -1364,6 +1379,21 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert status.success?, out
       assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env CI=1 npm run validate -- "$@"'
       assert_includes File.read(File.join(root, ".agents/bin/test")), %(exec env LABEL='test suite' npm run-script test -- "$@")
+    end
+  end
+
+  def test_init_adds_npm_separator_after_env_utility_options
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "env -u CI npm run validate",
+        "--test-command", "env --chdir app --ignore-environment npm run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env -u CI npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec env --chdir app --ignore-environment npm run-script test -- "$@"'
     end
   end
 
