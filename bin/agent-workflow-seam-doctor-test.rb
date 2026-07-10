@@ -1615,6 +1615,45 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_bare_init_refreshes_managed_readme_for_new_optional_wrapper
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+      assert first_status.success?, first_out
+      refute_includes File.read(File.join(root, ".agents/bin/README.md")), "| `lint` | Lint / format | configured wrapper |"
+      write_script(root, "lint", "exec echo lint \"$@\"\n")
+
+      second_out, second_status = run_doctor(root, "--init")
+
+      assert second_status.success?, second_out
+      assert_includes File.read(File.join(root, ".agents/bin/README.md")), "| `lint` | Lint / format | configured wrapper |"
+    end
+  end
+
+  def test_init_preserves_scalar_trust_entries_accepted_by_preflight
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      trust_path = File.join(root, ".agents/trusted-github-actors.yml")
+      File.write(trust_path, "trusted_bots: deploy\n")
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      trust = YAML.safe_load(File.read(trust_path))
+      assert_equal "deploy", trust.fetch("trusted_bots")
+      assert_equal [], trust.fetch("trusted_metadata_bots")
+    end
+  end
+
   def test_init_validates_existing_yaml_before_writing
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

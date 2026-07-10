@@ -155,8 +155,8 @@ remove the marker deliberately before taking direct ownership.
   resolved values
 - an optional `.agents/trusted-github-actors.yml` parses as a mapping and has no
   normalized bot login in both actionable and metadata-only roles; regular
-  checks preserve preflight compatibility with legacy scalar values, while
-  `--init` requires role lists
+  checks and `--init` preserve preflight compatibility with legacy scalar
+  values, while newly generated role values use lists
 - repo-local and supplied shared skill/workflow Markdown do not contain
   unresolved executable placeholders such as `<follow-up prefix>`
 

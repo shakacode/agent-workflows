@@ -109,7 +109,7 @@ module AgentWorkflowSeamDoctor
 
     existing_policy = load_init_mapping(File.join(root, POLICY_CONFIG), "policy config")
     existing_trust = load_init_mapping(File.join(root, TRUST_CONFIG), "trust config")
-    validate_trust_mapping!(existing_trust)
+    validate_trust_mapping!(existing_trust, require_arrays: false)
     validate_explicit_wrapper_conflicts!(root) if explicit_commands
     policy_update = prepare_init_policy(root, base_branch, existing_policy)
     trust_update = prepare_init_trust(root, existing_trust)
@@ -403,24 +403,21 @@ module AgentWorkflowSeamDoctor
       script_path = File.join(root, COMMANDS_DIR, name)
       File.file?(script_path) && script_issues(root, name).empty?
     end
-    return if File.file?(path) && !explicit_commands && !scripts_changed && configured_core
     return if File.file?(path) && !init_managed_file?(path)
 
-    rows = STANDARD_SCRIPTS.map do |name|
-      script_path = File.join(root, COMMANDS_DIR, name)
-      summary = if explicit_commands && commands[name]
-                  markdown_table_code_span(commands.fetch(name))
-                elsif File.file?(script_path) && script_issues(root, name).empty?
-                  "configured wrapper"
-                elsif CORE_SCRIPTS.include?(name)
-                  "unconfigured (fail-closed)"
-                elsif File.file?(script_path)
-                  "present (doctor reports issues)"
-                else
-                  "n/a"
-                end
-      "| `#{name}` | #{COMMAND_PURPOSES.fetch(name)} | #{summary} |"
+    if File.file?(path) && !explicit_commands && !scripts_changed && configured_core
+      content = File.binread(path).force_encoding("UTF-8").scrub
+      optional_scripts = STANDARD_SCRIPTS - CORE_SCRIPTS
+      updated = optional_scripts.reduce(content) do |readme, name|
+        purpose = COMMAND_PURPOSES.fetch(name)
+        replacement = init_readme_row(root, name, commands, explicit_commands:)
+        readme.sub(/^\| `#{Regexp.escape(name)}` \| #{Regexp.escape(purpose)} \|.*\|$/, replacement)
+      end
+      write_if_changed(path, updated)
+      return
     end
+
+    rows = STANDARD_SCRIPTS.map { |name| init_readme_row(root, name, commands, explicit_commands:) }
     content = <<~MARKDOWN
       # Agent Workflow Scripts
 
@@ -436,6 +433,22 @@ module AgentWorkflowSeamDoctor
       Non-command policy lives in [`../agent-workflow.yml`](../agent-workflow.yml).
     MARKDOWN
     write_if_changed(path, content)
+  end
+
+  def init_readme_row(root, name, commands, explicit_commands:)
+    script_path = File.join(root, COMMANDS_DIR, name)
+    summary = if explicit_commands && commands[name]
+                markdown_table_code_span(commands.fetch(name))
+              elsif File.file?(script_path) && script_issues(root, name).empty?
+                "configured wrapper"
+              elsif CORE_SCRIPTS.include?(name)
+                "unconfigured (fail-closed)"
+              elsif File.file?(script_path)
+                "present (doctor reports issues)"
+              else
+                "n/a"
+              end
+    "| `#{name}` | #{COMMAND_PURPOSES.fetch(name)} | #{summary} |"
   end
 
   def markdown_table_code_span(command)
