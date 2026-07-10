@@ -245,7 +245,7 @@ module AgentWorkflowSeamDoctor
       issues = script_issues(root, name)
       return false if issues.empty?
 
-      mode_issue = "core script is not executable: #{COMMANDS_DIR}/#{name}"
+      mode_issue = core_script_not_executable_issue(name)
       if init_managed_file?(path) && issues == [mode_issue]
         File.chmod(0o755, path)
         return true
@@ -597,7 +597,7 @@ module AgentWorkflowSeamDoctor
 
     unless File.executable?(path)
       issues << if CORE_SCRIPTS.include?(script)
-                  "core script is not executable: #{relative}"
+                  core_script_not_executable_issue(script)
                 else
                   "script is not executable: #{relative}"
                 end
@@ -617,6 +617,10 @@ module AgentWorkflowSeamDoctor
     issues << "script has bash syntax error: #{relative}" unless status.success?
 
     issues
+  end
+
+  def core_script_not_executable_issue(script)
+    "core script is not executable: #{COMMANDS_DIR}/#{script}"
   end
 
   def missing_sibling_script_issues(root, relative, content)
