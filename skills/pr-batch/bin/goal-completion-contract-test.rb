@@ -237,6 +237,8 @@ class GoalCompletionContractTest < Minitest::Test
     refute_nil workflow_goal_contract, "workflows/pr-processing.md goal prompt is missing the contract line"
     refute_nil pr_batch_contract, "skills/pr-batch goal prompt is missing the contract line"
     refute_nil plan_contract, "skills/plan-pr-batch goal prompt is missing the contract line"
+    assert_includes workflow_contract, "configured review agents",
+                    "the compact completion contract must retain configured review-agent gates"
     assert_equal workflow_contract, workflow_goal_contract
     assert_equal workflow_contract, pr_batch_contract.chomp
     assert_equal workflow_contract, plan_contract.chomp
