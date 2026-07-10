@@ -56,6 +56,26 @@ or one worker's slice of a batch. A lane has a named owner plus its target or
 targets and optional dependencies.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
 
+**Model/effort assignment**:
+The worker model and supported reasoning effort selected for one lane from its
+verified complexity, risk, uncertainty, and worker-host availability. Use an
+exact model or host-stable alias when its roster is known; a dispatch-resolved
+model class may temporarily stand in when the roster or worker host is unknown.
+_Avoid_: batch model, prompt target (the prompt target is the host/chat that
+receives the batch prompt, not the worker configuration)
+
+**Dispatch-resolved model class**:
+A portable roster-unavailable fallback — `fastest-low-cost`, `balanced`, or
+`strongest` — paired with an effort level, optionally scoped to a known host,
+and bound to an exact supported worker-host pair before any worker starts.
+_Avoid_: guessed model, default model
+
+**Model/effort group**:
+A planning and dispatch view that collates lanes with the same model/effort
+assignment without merging their owners, claims, targets, dependencies, or
+file-touch ordering.
+_Avoid_: combined lane, shared worker
+
 **Thread handle**:
 The short memorable identifier shared by coordination records and handoff notes, so an operator can match a worker session to its lane.
 _Avoid_: thread name (ambiguous between chat title and backend field), session name
@@ -73,6 +93,9 @@ _Avoid_: force kill (without the cleanup steps it names)
 - A **Batch** has one or more **Lanes**; a direct PR task can also be one
   standalone **Lane** without batch planning or worker split machinery. A
   **Lane** has exactly one owner identity at a time.
+- A ready **Lane** has one verified **Model/effort assignment**; a
+  **Model/effort group** can contain several lanes but creates no ownership or
+  scheduling relationship between them.
 - A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** or a fallback claim expires — both bump the **Generation** when the backend supports fencing.
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.
