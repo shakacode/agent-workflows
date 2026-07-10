@@ -973,6 +973,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_preserves_shell_comment_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = "echo validate # caller owns forwarding"
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "#{command}\n"
+      refute_includes validate, "#{command} \"$@\""
+    end
+  end
+
   def test_init_rejects_one_explicit_command_before_writing
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(root, "--init", "--validate-command", "true")
@@ -1219,6 +1236,34 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_equal "base_branch: [\n", File.read(policy_path)
       refute File.exist?(File.join(root, "AGENTS.md"))
       refute File.exist?(File.join(root, ".agents/bin"))
+    end
+  end
+
+  def test_init_rejects_overlapping_trusted_bot_roles_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      trust_path = File.join(root, ".agents/trusted-github-actors.yml")
+      trust = {
+        "trusted_users" => [],
+        "trusted_bots" => ["@Deploy[bot]"],
+        "trusted_metadata_bots" => ["deploy"],
+        "trusted_teams" => []
+      }
+      File.write(trust_path, trust.to_yaml)
+      before = File.binread(trust_path)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bot(s) listed in both trusted_bots and trusted_metadata_bots: deploy"
+      assert_equal before, File.binread(trust_path)
+      refute File.exist?(File.join(root, ".agents/bin"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
     end
   end
 

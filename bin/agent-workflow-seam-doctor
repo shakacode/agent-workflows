@@ -202,6 +202,19 @@ module AgentWorkflowSeamDoctor
 
       raise InitError, "invalid trust config: #{TRUST_CONFIG} key #{key} must be an array"
     end
+
+    trusted_bots = trust.fetch("trusted_bots", []).map { |login| normalized_trust_bot_login(login) }
+    metadata_bots = trust.fetch("trusted_metadata_bots", []).map { |login| normalized_trust_bot_login(login) }
+    overlap = (trusted_bots & metadata_bots).sort
+    return if overlap.empty?
+
+    raise InitError,
+          "invalid trust config: #{TRUST_CONFIG} bot(s) listed in both trusted_bots and " \
+          "trusted_metadata_bots: #{overlap.join(', ')}"
+  end
+
+  def normalized_trust_bot_login(login)
+    login.to_s.delete_prefix("@").downcase.delete_suffix("[bot]")
   end
 
   def validate_explicit_wrapper_conflicts!(root)
@@ -244,7 +257,7 @@ module AgentWorkflowSeamDoctor
 
   def init_command_line(command)
     command = command.to_s
-    return command if command.match?(/[|&;<>]/)
+    return command if command.match?(/[|&;<>#]/)
 
     argument_suffix = command.match?(/\$(?:@|\{@\})/) ? "" : ' "$@"'
     return "#{command}#{argument_suffix}" if command.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
