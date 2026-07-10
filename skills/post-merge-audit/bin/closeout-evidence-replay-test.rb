@@ -9,13 +9,227 @@ require "minitest/autorun"
 SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
 
 class CloseoutEvidenceReplayTest < Minitest::Test
-  def run_replay(body)
+  def run_replay(body, expected_head_sha: nil)
     Tempfile.create("closeout-evidence") do |file|
       file.write(body)
       file.flush
-      out, status = Open3.capture2e("ruby", SCRIPT, file.path)
+      command = ["ruby", SCRIPT]
+      command.concat(["--expected-head-sha", expected_head_sha]) if expected_head_sha
+      command << file.path
+      out, status = Open3.capture2e(*command)
       assert status.success?, out
       JSON.parse(out)
+    end
+  end
+
+  def test_expected_final_head_rejects_qa_from_before_post_qa_commit
+    qa_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{qa_head_sha}
+      tested_at: PR #70 head #{qa_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", data.fetch("qa_evidence").fetch("verdict")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "head_sha"
+  end
+
+  def test_expected_final_head_rejects_duplicate_head_sha_and_stale_tested_at
+    qa_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{qa_head_sha}
+      tested_at: PR #70 head #{qa_head_sha}
+      head_sha: #{final_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal ["duplicate scalar key: head_sha"], data.fetch("qa_evidence").fetch("errors")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "tested_at.head_sha"
+  end
+
+  def test_expected_final_head_rejects_stale_tested_at_without_duplicate_keys
+    qa_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{qa_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_empty data.fetch("qa_evidence").fetch("errors")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "tested_at.head_sha"
+  end
+
+  def test_expected_final_head_requires_qa_head_sha
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      tested_at: PR #70 head #{final_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "head_sha"
+  end
+
+  def test_expected_final_head_accepts_matching_qa_evidence
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "SATISFIED", data.fetch("overall_verdict")
+    assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
+    assert_equal final_head_sha, data.fetch("qa_evidence").fetch("expected_head_sha")
+  end
+
+  def test_expected_final_head_normalizes_hex_case
+    uppercase_head_sha = "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD"
+    lowercase_head_sha = uppercase_head_sha.downcase
+    data = run_replay(<<~MARKDOWN, expected_head_sha: uppercase_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{lowercase_head_sha}
+      tested_at: PR #70 head #{uppercase_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "SATISFIED", data.fetch("overall_verdict")
+    assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
+    assert_equal lowercase_head_sha, data.fetch("qa_evidence").fetch("expected_head_sha")
+  end
+
+  def test_expected_final_head_accepts_audited_range_ending_at_expected_head
+    base_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: audited range #{base_sha}..#{final_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "SATISFIED", data.fetch("overall_verdict")
+    assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
+  end
+
+  def test_expected_final_head_rejects_audited_range_continuing_past_expected_head
+    final_head_sha = "2222222222222222222222222222222222222222"
+    later_head_sha = "3333333333333333333333333333333333333333"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: audited range #{final_head_sha}..#{later_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "tested_at.head_sha"
+  end
+
+  def test_expected_final_head_preserves_not_applicable_qa
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: no
+      status: not_applicable
+      head_sha: not_applicable
+      tested_at: not applicable: no PR/code changes
+      scope: documentation-only batch
+      automated_checks: not applicable
+      manual_checks: not applicable
+      findings: none
+      release_blocking: not_applicable
+      process_gap_disposition: not applicable
+      -->
+    MARKDOWN
+
+    assert_equal "NOT_APPLICABLE", data.fetch("overall_verdict")
+    assert_equal "NOT_APPLICABLE", data.fetch("qa_evidence").fetch("verdict")
+  end
+
+  def test_expected_final_head_must_be_a_full_sha
+    Tempfile.create("closeout-evidence") do |file|
+      file.write("<!-- qa-evidence v1 -->")
+      file.flush
+      out, status = Open3.capture2e("ruby", SCRIPT, "--expected-head-sha", "abc123", file.path)
+
+      refute status.success?, out
+      assert_includes out, "must be a full 40-character hex SHA"
     end
   end
 
@@ -300,5 +514,19 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "UNKNOWN", priority.fetch("verdict")
     assert_equal 2, priority.fetch("marker_count")
     assert_includes priority.fetch("missing"), "marker[1].finding[0].severity"
+  end
+
+  def test_duplicate_priority_scalar_key_is_unknown
+    data = run_replay(<<~MARKDOWN)
+      <!-- priority-finding-dispositions v1
+      head_sha: 1111111111111111111111111111111111111111
+      head_sha: 2222222222222222222222222222222222222222
+      finding: url=https://example.test/review/1 | severity=P1 | disposition=fixed | evidence=https://example.test/pr/123#discussion_r1
+      -->
+    MARKDOWN
+
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "UNKNOWN", priority.fetch("verdict")
+    assert_equal ["duplicate scalar key: head_sha"], priority.fetch("errors")
   end
 end

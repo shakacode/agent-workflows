@@ -32,6 +32,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Require replayable final-head QA evidence before readiness or merge so commits made after QA invalidate stale closeout evidence.**
 - **Fix post-merge audit default-batch handling so unavailable coordination verification asks before deep audit, and tighten batch-title guard coverage.**
 - **Harden `pr-security-preflight` trust resolution and warning scans for explicit global configs, missing environment configs, metadata-only bots, bounded git probes, host-qualified repo-local trust checks, and truncated timeline coverage.**
 - **Fix downstream PR-batch bootstrap guidance and sync support so consumer repos can seed repo-local base-branch and trust config without widening the packaged fallback.**

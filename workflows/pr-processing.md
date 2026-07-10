@@ -580,6 +580,7 @@ Evidence block whenever QA is required or explicitly not required:
 <!-- qa-evidence v1
 required: <yes | no>
 status: <satisfied | blocked | waived | in_progress | unknown | not_applicable>
+head_sha: <full 40-character PR head SHA tested, or not_applicable when QA is not required>
 tested_at: <PR/head SHA(s), audited range, or not applicable reason>
 scope: <changed areas, PRs, or release phase covered>
 automated_checks: <commands, CI links, or covered-by-worker-validation note>
@@ -609,6 +610,17 @@ replay these markers and report `SATISFIED`, `WAIVED`, `NOT_APPLICABLE`,
 `BLOCKED`, or `UNKNOWN` for post-merge audits. Treat `SATISFIED`, `WAIVED`,
 and `NOT_APPLICABLE` as replayed terminal evidence; carry `BLOCKED` and
 `UNKNOWN` into the audit findings for operator action.
+
+For a pre-merge current-head gate, run the helper separately for each PR or
+target with `--expected-head-sha <full-final-head-SHA>`. This is a
+`checklist+replay` control: the coordinator checklist below re-fetches the final
+head, and the replay helper returns `UNKNOWN` when required QA evidence omits
+`head_sha`, records any other SHA there, or does not list the expected head as
+the final full SHA token in `tested_at` (the endpoint for an audited range).
+Full hexadecimal SHA comparisons are case-normalized. Repeated scalar marker
+keys also return `UNKNOWN` instead of overwriting earlier values. Historical
+evidence remains replayable without this option, but it does not qualify as
+current-head readiness evidence.
 
 `Release-blocking status` is derived from `QA lane status`: `satisfied` ->
 `clear`, `blocked` -> `blocked`, `waived` -> `waived`, `not_applicable` ->
@@ -1241,7 +1253,15 @@ The closeout lane is:
    Use the resolved
    `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` helper against
    the PR body, handoff comment, or saved evidence file when QA or
-   priority-disposition replay is part of the readiness claim.
+   priority-disposition replay is part of the readiness claim. For each PR that
+   requires QA, re-fetch its full 40-character current head SHA after all
+   planned commits and pushes. A commit after QA invalidates the earlier QA
+   evidence: rerun the affected automated and manual QA at the new head, then
+   refresh `Tested at` and `head_sha`; never update the evidence marker alone.
+   Run the helper separately for that PR or target with
+   `--expected-head-sha <full-final-head-SHA>`. If the head changes again before
+   readiness or merge, repeat this checklist and replay; missing or mismatched
+   final-head evidence is `UNKNOWN` and blocks readiness.
 7. Refresh stale release-mode classification from the release tracker when
    needed. For accelerated-RC merge readiness, refresh the latest finalized
    PR-body `Agent Merge Confidence` block required by `AGENTS.md`; keep this
