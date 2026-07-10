@@ -296,9 +296,26 @@ module AgentWorkflowSeamDoctor
     words = Shellwords.shellsplit(command)
     words.shift if words.first == "exec"
     words.shift while words.first&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-    words.length >= 3 && words.first(2) == %w[npm run] && !words.fetch(2).empty?
+    return false unless words.shift == "npm"
+
+    run_index = words.index("run")
+    return false unless run_index && words[run_index + 1]
+
+    valid_npm_option_prefix?(words.first(run_index))
   rescue ArgumentError
     false
+  end
+
+  def valid_npm_option_prefix?(words)
+    index = 0
+    while index < words.length
+      option = words.fetch(index)
+      return false unless option.start_with?("-") && option != "-"
+
+      index += 1
+      index += 1 if !option.include?("=") && index < words.length && !words.fetch(index).start_with?("-")
+    end
+    true
   end
 
   def write_init_readme(root, commands, explicit_commands:, scripts_changed:)
@@ -733,6 +750,7 @@ if $PROGRAM_NAME == __FILE__
     base_branch: "main",
     validate_command: nil,
     test_command: nil,
+    init_only_options: [],
     json: false,
     shared_roots: []
   }
@@ -743,12 +761,15 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--root DIR", "Repository root to inspect") { |value| options[:root] = value }
     opts.on("--base-branch BRANCH", "Base branch for a newly initialized policy (default: main)") do |value|
       options[:base_branch] = value
+      options[:init_only_options] << "--base-branch"
     end
     opts.on("--validate-command CMD", "Explicit command for .agents/bin/validate") do |value|
       options[:validate_command] = value
+      options[:init_only_options] << "--validate-command"
     end
     opts.on("--test-command CMD", "Explicit command for .agents/bin/test") do |value|
       options[:test_command] = value
+      options[:init_only_options] << "--test-command"
     end
     opts.on("--shared DIR", "Installed shared skill/workflow root to scan; repeatable") do |value|
       options[:shared_roots] << value
@@ -762,7 +783,9 @@ if $PROGRAM_NAME == __FILE__
   parser.parse!
 
   root = File.expand_path(options.fetch(:root))
-  issues = if options.fetch(:init)
+  issues = if !options.fetch(:init) && options.fetch(:init_only_options).any?
+             options.fetch(:init_only_options).uniq.map { |option| "#{option} requires --init" }
+           elsif options.fetch(:init)
              begin
                AgentWorkflowSeamDoctor.init(
                  root,

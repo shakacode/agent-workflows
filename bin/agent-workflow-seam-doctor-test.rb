@@ -924,6 +924,21 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     assert_includes out, "--init"
   end
 
+  def test_init_only_options_require_init
+    {
+      "--base-branch" => "develop",
+      "--validate-command" => "true",
+      "--test-command" => "true"
+    }.each do |option, value|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        out, status = run_doctor(root, option, value)
+
+        refute status.success?
+        assert_includes out, "#{option} requires --init"
+      end
+    end
+  end
+
   def test_init_with_explicit_commands_creates_a_complete_seam
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
@@ -1174,6 +1189,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       test = File.read(File.join(root, ".agents/bin/test"))
       assert_includes validate, 'CI=1 npm run validate -- "$@"'
       assert_includes test, %(CI=1 LABEL='test suite' npm run test -- "$@")
+    end
+  end
+
+  def test_init_adds_npm_separator_after_npm_options
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm --prefix app run validate",
+        "--test-command", "CI=1 npm --workspace packages/core --silent run test"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec npm --prefix app run validate -- "$@"'
+      assert_includes test, 'CI=1 npm --workspace packages/core --silent run test -- "$@"'
     end
   end
 
