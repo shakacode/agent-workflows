@@ -98,6 +98,7 @@ module AgentWorkflowSeamDoctor
   def init(root, base_branch:, validate_command:, test_command:, shared_roots: [])
     raise InitError, "missing directory: #{root}" unless File.directory?(root)
 
+    validate_init_command_pair!(validate_command, test_command)
     validate_init_base_branch!(base_branch)
     validate_init_command_inputs!(validate_command, test_command)
 
@@ -119,6 +120,12 @@ module AgentWorkflowSeamDoctor
     write_init_agents(root)
 
     check(root, shared_roots:)
+  end
+
+  def validate_init_command_pair!(validate_command, test_command)
+    return if validate_command.nil? == test_command.nil?
+
+    raise InitError, "--validate-command and --test-command must be provided together"
   end
 
   def validate_init_base_branch!(base_branch)
@@ -193,7 +200,7 @@ module AgentWorkflowSeamDoctor
 
   def write_init_script(root, name, command)
     path = File.join(root, COMMANDS_DIR, name)
-    return if File.file?(path) && script_issues(root, name).empty?
+    return if command.nil? && File.file?(path) && script_issues(root, name).empty?
     return if File.file?(path) && !init_managed_file?(path)
 
     run_line = if command

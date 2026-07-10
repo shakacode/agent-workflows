@@ -958,6 +958,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_api_rejects_one_explicit_command_before_writing
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+        AgentWorkflowSeamDoctor.init(
+          root,
+          base_branch: "main",
+          validate_command: "true",
+          test_command: nil
+        )
+      end
+
+      assert_includes error.message, "--validate-command and --test-command must be provided together"
+      refute File.exist?(File.join(root, ".agents"))
+      refute File.exist?(File.join(root, "AGENTS.md"))
+    end
+  end
+
   def test_init_unknown_repo_writes_fail_closed_wrappers_and_precise_next_step
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(root, "--init")
@@ -1227,6 +1244,36 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         [path, File.binread(File.join(root, path))]
       end
       assert_equal before, after
+    end
+  end
+
+  def test_explicit_commands_replace_previously_generated_wrappers
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      first_out, first_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo first",
+        "--test-command", "echo first-test"
+      )
+      assert first_status.success?, first_out
+
+      second_out, second_status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "echo second",
+        "--test-command", "echo second-test"
+      )
+
+      assert second_status.success?, second_out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes validate, "exec echo second"
+      refute_includes validate, "exec echo first"
+      assert_includes test, "exec echo second-test"
+      refute_includes test, "exec echo first-test"
+      assert_includes readme, "`echo second`"
+      assert_includes readme, "`echo second-test`"
     end
   end
 
