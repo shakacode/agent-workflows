@@ -1,6 +1,6 @@
 ---
 name: plan-pr-batch
-description: Use when choosing GitHub issues or PRs for a PR batch, preparing a subagent batch plan, or producing a ready goal prompt that invokes pr-batch.
+description: Use when choosing GitHub issues or PRs for a PR batch, recommending and grouping worker lanes by model/reasoning-effort assignment, preparing a subagent batch plan, or producing a ready goal prompt that invokes pr-batch.
 argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
 ---
 
@@ -182,6 +182,35 @@ Plan a PR batch
      Prefer a smaller first batch when live coordination, CI, approval, or quota
      health is uncertain; put remaining file-disjoint work in later wave
      prompts.
+   - Model/effort routing: keep the coordinator model/effort assignment
+     separate from every worker model/effort route. Classify each implementation,
+     discovery, review, and QA lane from the verified work it contains. Resolve the lane's worker
+     host/provider and its currently available model/effort combinations from
+     explicit user constraints or host-exposed runtime/config state; current
+     official vendor docs may confirm capabilities but do not prove account
+     availability. The prompt target and installed agent homes do not prove the
+     worker model roster.
+     Start routine workers on the fastest or balanced coding-capable pair that
+     fits the lane's risk and deterministic validation. Reserve the strongest available
+     pair for evidence-gated plan review or escalation. A small first
+     failure stays on the initial route for a focused correction; two materially
+     different credible failed attempts, or an earlier high-risk trigger from
+     the canonical workflow, require `MODEL_ESCALATION_REQUEST`. Prefer
+     stronger-model plan review followed by implementation on the initial tier;
+     stronger-led implementation is the exception. When the current roster is available, require an exact model
+     name or host-stable alias and compatible effort. If the worker host is known but its roster is unavailable,
+     or only the `generic` prompt target is known, use a dispatch-resolved model class
+     (`fastest-low-cost`, `balanced`, or `strongest`) with the classified
+     effort instead of guessing a model. Scope the class to the known host when
+     possible. This fallback is ready only when the goal requires binding the
+     class to an exact supported pair before any worker starts. If either the initial or escalation route cannot be named,
+     record that route `UNKNOWN`. Do not call the prompt ready unless the route
+     explicitly disables escalation with a zero maximum. Group lanes by exact model/effort route,
+     or dispatch-resolved class/effort route, for review and dispatch,
+     but preserve lane ownership, dependencies, serial discovery, collision
+     rules, and wave caps; grouping never combines targets into one worker.
+     Bind coordinator and worker routes independently on their actual hosts;
+     workers must not inherit the coordinator pair.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -230,6 +259,14 @@ Plan a PR batch
      Do not use byte-oriented counts such as `wc -c`.
    - Use compact one-line item goals, short worker notes, and canonical workflow references instead of copied
      audit evidence, repeated issue text, or long rule explanations.
+   - Include the coordinator model/effort assignment and every worker
+     model/effort route, collated by initial/escalation pair with a terse
+     rationale in the Batch Plan and lane ids in the goal prompt. Use exact
+     pairs when the roster is known and dispatch-resolved classes when it is
+     not. Bind each class to an exact pair before dispatch and revalidate it on the actual host.
+     Require `MODEL_ESCALATION_REQUEST` before a worker moves
+     to the stronger route. If the host cannot apply a route, stop for
+     re-planning rather than silently substituting.
    - Before responding, measure only the text inside the goal-prompt fence,
      including the `/goal` line for Codex and excluding the fence lines, and <!-- host-allow: codex-only -->
      print `Goal prompt character count: N characters (target: codex|claude|generic)`
@@ -279,6 +316,11 @@ or validator, but they are not required and JSON is not mandatory.
 - File-touch map and path evidence:
 - Dependencies and sequencing:
 - Subagent split:
+- Coordinator model/effort assignment: exact pair or dispatch-resolved class,
+  effort, rationale, and availability evidence.
+- Worker model/effort routes: initial and escalation pairs or classes, lane ids,
+  escalation threshold and maximum, and availability evidence; keep any
+  `UNKNOWN` route out of a ready prompt.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - `merge_authority`:
@@ -311,6 +353,8 @@ Repository: OWNER/REPO
 Objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
+Coordinator model/effort: <model/class>/<effort>.
+Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI, configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN mean NOT COMPLETE; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope summary: [titles/deps/exclusions/owners.]
@@ -318,7 +362,6 @@ File-touch map:
 - PR/Issue #N -> changed paths incl create/delete/rename (owner: lane/name)
 - PR/Issue #N -> patterns plus collision paths/renames/deletes (owner: lane/name)
 - PR/Issue #N -> UNKNOWN (treat serial)
-- Reservations -> path(s) (reason/later owner)
 
 Items:
 - PR #N: URL
@@ -333,14 +376,15 @@ Items:
 Execution rules:
 - Resolve `base_branch` from `.agents/agent-workflow.yml`; run `git fetch --prune origin <base-branch>`; verify installed or repo-local `$pr-batch` and `pr-processing.md` before launch; if unresolved, stop with workflow state `UNKNOWN`.
 - Follow resolved `$pr-batch`; if autoloading fails, run pr-security-preflight and copy gates from local skill/workflow.
-- Dispatch one subagent per independent item, but only for the current file-disjoint wave. Group dependent items only when shared context is required; hold serial and `UNKNOWN` lanes until no active editor lane can collide.
-- Workers edit only owned File-touch map paths. If an `UNKNOWN`, unlisted, or other-lane path is needed, stop, report paths, and wait for an updated map or coordinator confirmation.
+- Bind coordinator/worker route pairs on their actual hosts before dispatch; no worker may inherit the coordinator pair; if unavailable, stop and re-plan.
+- Dispatch one subagent per independent item in the current file-disjoint wave; group only for required shared context; keep serial/`UNKNOWN` lanes clear of editor lanes.
+- Workers edit only owned paths; if they need an `UNKNOWN`, unlisted, or other-lane path, stop and request a map update.
 - Sequenced lanes may share declared files only in the stated order.
 - Each subagent must verify current GitHub state before edits and report UNKNOWN for unverifiable facts.
 - For coordination, respect coordination claims and dependencies: stable ids/thread handles, register before launch when supported, bounded status/claim, phase heartbeats, push holder/generation check, and stop on unmet `blocked_on` or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence in final handoff.
-- Use validation, self-review, review-comment, CI, and readiness gates. For PRs, merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
-- Final handoff must include links, tests, blockers, next action, confidence/UNKNOWN, `merge_authority`, QA Evidence or not-required rationale, and final-state sections: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
+- Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
+- Final handoff: links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, and the canonical final-state bucket.
 ```
 
 ## Common Mistakes
@@ -361,6 +405,11 @@ Execution rules:
 - Do not use installed Codex/Claude homes as proof of the current runtime host;
   use an explicit target or fall back to `generic` sizing when detection is
   ambiguous.
+- Do not choose a cheaper model from task size alone; ambiguity, risk, blast
+  radius, reversibility, and validation difficulty can force a stronger model
+  and more effort.
+- Do not treat model grouping as lane grouping; collate the plan by exact pair
+  without combining ownership or weakening dependency and collision ordering.
 - Do not eyeball the goal-prompt length; apply the Output-section size gate and split Codex prompts into smaller goals if they are over budget.
 
 ## Self-Check
