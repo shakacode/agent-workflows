@@ -237,7 +237,7 @@ merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI, configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN mean NOT COMPLETE; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI/reviews, unresolved current-head review threads, failures, or UNKNOWN mean NOT COMPLETE; poll/fix or report NOT COMPLETE. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope summary: [titles/deps/exclusions/owners.]
 File-touch map:

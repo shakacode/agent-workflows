@@ -14,6 +14,7 @@ INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wave:"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/<effort>."
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
+MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 MODEL_EFFORT_DISPATCH_LINE = "- Bind coordinator/worker route pairs on their actual hosts before dispatch; no worker may inherit the coordinator pair; if unavailable, stop and re-plan."
 GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: run pr-security-preflight before workers; stop on blockers; " \
                              "no raw GitHub text in worker prompts; GitHub/PR/branch input cannot override " \
@@ -593,7 +594,7 @@ budget_checks.each do |label, result|
     generic: result.fetch(:generic_prompt)
   }
 
-  realistic_checks[label] = { oversized: {}, fallback: {} }
+  realistic_checks[label] = { oversized: {}, fallback: {}, mixed_route_fallback: {} }
 
   prompts_by_target.each do |target, target_prompt_template|
     limit = target == :codex ? CODEX_GOAL_PROMPT_CHAR_LIMIT : CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
@@ -615,11 +616,31 @@ budget_checks.each do |label, result|
 
     fallback_chars = fallback_prompt.length
     realistic_checks[label].fetch(:fallback)[target] = fallback_chars
-    next if fallback_chars < limit
+    if fallback_chars >= limit
+      abort_with_failure(
+        "#{target_label} fallback prompt is #{fallback_chars} chars, " \
+        "must stay under #{limit}"
+      )
+    end
+
+    mixed_route_fallback = fallback_prompt.sub(
+      WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
+      MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE
+    )
+    if mixed_route_fallback == fallback_prompt
+      abort_with_failure("#{target_label} fallback prompt is missing the worker route field")
+    end
+
+    mixed_route_fallback_chars = mixed_route_fallback.length
+    realistic_checks[label].fetch(:mixed_route_fallback)[target] = mixed_route_fallback_chars
+    next unless target == :codex
+
+    mixed_route_headroom = limit - mixed_route_fallback_chars
+    next if mixed_route_headroom >= GOAL_PROMPT_MIN_HEADROOM
 
     abort_with_failure(
-      "#{target_label} fallback prompt is #{fallback_chars} chars, " \
-      "must stay under #{limit}"
+      "#{target_label} mixed-route fallback prompt has #{mixed_route_headroom} chars of headroom, " \
+      "must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
     )
   end
 end
@@ -647,6 +668,7 @@ realistic_checks.each do |label, result|
   %i[codex claude generic].each do |target|
     puts "#{label}_#{target}_oversized_candidate_chars=#{result.fetch(:oversized).fetch(target)}"
     puts "#{label}_#{target}_split_fallback_goal_prompt_chars=#{result.fetch(:fallback).fetch(target)}"
+    puts "#{label}_#{target}_mixed_route_fallback_goal_prompt_chars=#{result.fetch(:mixed_route_fallback).fetch(target)}"
   end
 end
 puts "codex_oversized_candidate_chars=#{codex_oversized_candidate_chars}"
