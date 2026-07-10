@@ -95,7 +95,8 @@ test_codex_host_install_writes_helpers_and_metadata() {
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >/tmp/install-agent-workflows-test.out
 
-  grep -q "agent-workflow-seam-doctor --init" /tmp/install-agent-workflows-test.out || fail "expected install output to advertise seam init"
+  grep -Fq "agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$ROOT\"" \
+    /tmp/install-agent-workflows-test.out || fail "expected seam init output to validate the shared root"
 
   assert_file "$target/LICENSE"
   grep -q "MIT License" "$target/LICENSE" || fail "expected installed LICENSE to contain MIT notice"

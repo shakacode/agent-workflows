@@ -1022,6 +1022,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_escapes_pipes_in_the_generated_readme_table
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'bin/validate "$@" | tee validate.log'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      readme = File.read(File.join(root, ".agents/bin/README.md"))
+      assert_includes readme, '| `validate` | Pre-push gate | `bin/validate "$@" \| tee validate.log` |'
+      refute_includes readme, '| `bin/validate "$@" | tee validate.log` |'
+    end
+  end
+
   def test_init_rejects_one_explicit_command_before_writing
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(root, "--init", "--validate-command", "true")
@@ -1181,14 +1198,14 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         root,
         "--init",
         "--validate-command", "CI=1 npm run validate",
-        "--test-command", "CI=1 LABEL='test suite' npm run test"
+        "--test-command", "CI=1 LABEL='test suite' exec npm run test"
       )
 
       assert status.success?, out
       validate = File.read(File.join(root, ".agents/bin/validate"))
       test = File.read(File.join(root, ".agents/bin/test"))
       assert_includes validate, 'CI=1 npm run validate -- "$@"'
-      assert_includes test, %(CI=1 LABEL='test suite' npm run test -- "$@")
+      assert_includes test, %(CI=1 LABEL='test suite' exec npm run test -- "$@")
     end
   end
 

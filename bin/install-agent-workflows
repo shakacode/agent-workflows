@@ -349,7 +349,7 @@ Add this to PATH if needed:
   export PATH="$target/bin:\$PATH"
 
 Initialize a consumer repo with:
-  agent-workflow-seam-doctor --init --root /path/to/consumer/repo
+  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared "$repo_root"
 
 Validate a consumer repo with:
   agent-workflow-seam-doctor --shared "$repo_root"

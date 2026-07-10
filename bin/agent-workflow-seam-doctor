@@ -298,6 +298,7 @@ module AgentWorkflowSeamDoctor
     words = Shellwords.shellsplit(command)
     words.shift if words.first == "exec"
     words.shift while words.first&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    words.shift if words.first == "exec"
     return false unless words.shift == "npm"
 
     run_index = words.index { |word| %w[run run-script].include?(word) }
@@ -332,7 +333,7 @@ module AgentWorkflowSeamDoctor
     rows = STANDARD_SCRIPTS.map do |name|
       script_path = File.join(root, COMMANDS_DIR, name)
       summary = if explicit_commands && commands[name]
-                  "`#{commands.fetch(name)}`"
+                  "`#{commands.fetch(name).gsub('|', '\\|')}`"
                 elsif File.file?(script_path) && script_issues(root, name).empty?
                   "configured wrapper"
                 elsif CORE_SCRIPTS.include?(name)
