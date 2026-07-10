@@ -1288,6 +1288,25 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_normalizes_outer_command_whitespace_before_classification
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "  exec true  ",
+        "--test-command", "  CI=1 npm run test  "
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, 'exec true "$@"'
+      refute_includes validate, "exec  exec"
+      assert_includes test, 'CI=1 npm run test -- "$@"'
+      refute_includes test, "exec  CI=1"
+    end
+  end
+
   def test_init_adds_npm_separator_after_leading_environment_assignments
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
@@ -1409,6 +1428,21 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert status.success?, out
       assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env -u CI npm run validate -- "$@"'
       assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec env --chdir app --ignore-environment npm run-script test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_after_env_option_terminator
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "env -- npm run validate",
+        "--test-command", "env -- npm run-script test"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env -- npm run validate -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec env -- npm run-script test -- "$@"'
     end
   end
 
