@@ -367,7 +367,7 @@ merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN mean NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it. Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff. If the audit is clean and there are no findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts, its final user-visible line must be `Conversation status: Ready for archiving.` Otherwise its final user-visible line must be `Conversation status: Follow-ups remain — <each exact action or blocker>.`
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN mean NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope summary: [titles/deps/exclusions/owners.]
 File-touch map:
@@ -396,7 +396,7 @@ Execution rules:
 - For coordination, respect coordination claims and dependencies: stable ids/thread handles, register before launch when supported, bounded status/claim, phase heartbeats, push holder/generation check, and stop on unmet `blocked_on` or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence.
 - Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
-- Final handoff: after the completed-batch audit required by the Goal Mode Completion Contract; include links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, and the canonical final-state bucket. Make the required conversation status the last user-visible line.
+- Final handoff: canonical closeout; links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA rationale, final-state bucket.
 ```
 
 ## Common Mistakes
