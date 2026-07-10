@@ -23,6 +23,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Require parent batch coordinators to run a completed-batch audit after every target reaches final state, then end the conversation with either an archive-ready confirmation or every remaining follow-up and blocker.**
 - **Route `$plan-pr-batch` readiness, manual-testing, and merge-sequencing requests through the target repository's readiness and review-gate policy, using inline `AGENTS.md` Agent Workflow Configuration values when `.agents/agent-workflow.yml` is absent.** [PR 47](https://github.com/shakacode/agent-workflows/pull/47) by [justin808](https://github.com/justin808).
 - **Harden `address-review` with mutual-exclusion claims, advisory public fallback rules, and non-fast-forward push re-fetch and re-triage stops, while moving detailed actions and templates into progressive-disclosure references.** [PR 70](https://github.com/shakacode/agent-workflows/pull/70) by [justin808](https://github.com/justin808).
 - **Keep the `$pr-batch` coordinator on its independently selected model/effort pair while routine workers start on modest cost-aware routes, correct once on the initial tier, and request evidence-gated stronger-model plan review or replacement only when escalation criteria are met. Stop superseded workers with durable handoffs, claim fencing, and no old/new overlap; provide a dedicated recovery prompt for in-flight batches.**

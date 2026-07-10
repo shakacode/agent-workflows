@@ -241,7 +241,7 @@ merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN mean NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN mean NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it. Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff. If the audit is clean and there are no findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts, its final user-visible line must be `Conversation status: Ready for archiving.` Otherwise its final user-visible line must be `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope summary: [titles/deps/exclusions/owners.]
 File-touch map:
@@ -270,7 +270,7 @@ Execution rules:
 - For coordination, respect coordination claims and dependencies: stable ids/thread handles, register before launch when supported, bounded status/claim, phase heartbeats, push holder/generation check, and stop on unmet `blocked_on` or dependency `UNKNOWN`.
 - Apply Batch QA Lane; include QA Evidence.
 - Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
-- Final handoff: links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, and the canonical final-state bucket.
+- Final handoff: after the completed-batch audit required by the Goal Mode Completion Contract; include links/tests/blockers/next action, confidence/UNKNOWN, `merge_authority`, QA evidence/rationale, and the canonical final-state bucket. Make the required conversation status the last user-visible line.
 
 ```
 
@@ -438,13 +438,18 @@ coordinator owns the live re-fetch, current-head checks and review-thread triage
 per-PR merge-ledger run, stale release-mode classification updates and the finalized PR-body
 `Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
 distinct), hosted-CI request and waitback when uncertainty remains, and any
-authorized ready/merge action, required QA Evidence verification, the late
-post-merge bot-finding sweep before final batch handoff, and, for non-trivial
-batches, any optional completed-batch post-merge audit from the canonical
-closeout lane. Completed-batch audit deep-audits only the verified batch subset;
-coverage catch-up mode handles user-requested un-audited PR/commit ranges;
-release/range audit remains reserved for final-release readiness, suspected bad
-merges, unverified batch scope, or credible release-readiness risk.
+authorized ready/merge action, required QA Evidence verification, and the late
+post-merge bot-finding sweep before final batch handoff. Once it detects that
+every batch target has a final state, the parent orchestration agent must run
+the completed-batch audit before its final handoff. The audit deep-audits only
+the verified batch subset; coverage catch-up mode handles user-requested
+un-audited PR/commit ranges; release/range audit remains reserved for
+final-release readiness, suspected bad merges, unverified batch scope, or
+credible release-readiness risk. A clean audit with no findings, follow-ups,
+unresolved questions, pending work, or `UNKNOWN` facts ends with
+`Conversation status: Ready for archiving.` Otherwise the final user-visible
+line must be `Conversation status: Follow-ups remain — <each exact action or
+blocker>.`
 
 When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
 target is merged + closed out (or a true blocker / no-PR with evidence), not

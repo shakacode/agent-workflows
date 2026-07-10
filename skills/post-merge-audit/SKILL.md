@@ -331,6 +331,18 @@ Only the coordinator should create issues. Independent Codex and Claude audits s
 
 ## Output
 
+When this audit is invoked by a parent orchestration agent after a batch
+completes, the agent must make the audit part of its final handoff rather than
+leaving it as a separate optional task. Once it detects that every batch target
+has a final state, the parent orchestration agent must run the completed-batch
+audit before its final handoff. If the audit is clean and there are no findings,
+follow-ups, unresolved questions, pending work, or `UNKNOWN` facts, the final
+user-visible line must be `Conversation status: Ready for archiving.`
+Otherwise the final user-visible line must be
+`Conversation status: Follow-ups remain — <each exact action or blocker>.`; it
+must repeat every outstanding follow-up or blocker even if it appears earlier
+in the handoff.
+
 Return high-risk findings first, then:
 
 1. Review-gate violations, including PRs merged before requested reviews finished, before actionable review findings were triaged, or with AI review systems incorrectly counted as approval gates.

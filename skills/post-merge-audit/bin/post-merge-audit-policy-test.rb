@@ -15,6 +15,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PR_PROCESSING_EXCEPTION = "Post-merge batch audit follow-up issues are governed by the Post-Merge Batch Audit section, not this ordinary follow-up tracking default; after dedupe, the coordinator creates those follow-up issues by default unless the user explicitly asked for report-only or no issue creation."
   REQUIRED_ISSUE_CREATION_ACCOUNTING = "issue-creation accounting: parent issue URL if created, child issue URLs, skipped duplicates with existing issue URLs, changelog recommendation, and any planned issue that could not be created"
   REQUIRED_UNAVAILABLE_COORDINATION_ASK = "ask before deep audit whether to wait for backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope"
+  REQUIRED_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
+  REQUIRED_ARCHIVE_READY_STATUS = "Conversation status: Ready for archiving."
+  REQUIRED_FOLLOW_UP_STATUS = "Conversation status: Follow-ups remain — <each exact action or blocker>."
 
   REQUIRED_FILES = [
     "skills/post-merge-audit/SKILL.md",
@@ -112,6 +115,25 @@ class PostMergeAuditPolicyTest < Minitest::Test
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_UNAVAILABLE_COORDINATION_ASK
+    end
+  end
+
+  def test_completed_batch_audit_closes_with_an_explicit_conversation_status
+    [
+      "skills/pr-batch/SKILL.md",
+      "skills/post-merge-audit/SKILL.md",
+      "workflows/post-merge-audit.md",
+      "workflows/pr-processing.md"
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      normalized_text = text.gsub(/\s+/, " ")
+
+      assert_includes normalized_text, REQUIRED_COMPLETED_BATCH_AUDIT_TRIGGER,
+                      "#{relative_path} should require the completed-batch audit"
+      assert_includes normalized_text, REQUIRED_ARCHIVE_READY_STATUS,
+                      "#{relative_path} should make the clean archive-ready status explicit"
+      assert_includes normalized_text, REQUIRED_FOLLOW_UP_STATUS,
+                      "#{relative_path} should repeat outstanding follow-ups in the final status"
     end
   end
 end
