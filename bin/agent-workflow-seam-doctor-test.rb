@@ -1338,6 +1338,21 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_adds_npm_separator_for_test_aliases
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm --prefix app tst",
+        "--test-command", "npm t"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm --prefix app tst -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec npm t -- "$@"'
+    end
+  end
+
   def test_init_adds_npm_separator_after_env_utility_assignments
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
@@ -1630,7 +1645,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   end
 
   def test_init_rejects_invalid_base_branch_before_writing
-    ["", "feature\nbranch", "feature\0branch"].each do |base_branch|
+    ["", "feature\nbranch", "feature\0branch", "feature branch", "feature~branch", "release.lock", "-hidden", "@{-1}"].each do |base_branch|
       Dir.mktmpdir("agent-workflow-seam-init") do |root|
         error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
           AgentWorkflowSeamDoctor.init(
@@ -1641,7 +1656,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
           )
         end
 
-        assert_includes error.message, "base branch must be a non-empty single-line value without NUL bytes"
+        assert_includes error.message, "base branch must be a valid Git branch name"
         refute File.exist?(File.join(root, ".agents"))
         refute File.exist?(File.join(root, "AGENTS.md"))
       end

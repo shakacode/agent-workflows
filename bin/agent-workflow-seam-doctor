@@ -137,10 +137,13 @@ module AgentWorkflowSeamDoctor
   end
 
   def validate_init_base_branch!(base_branch)
-    valid = base_branch.is_a?(String) && !base_branch.strip.empty? && !base_branch.match?(/[\0\r\n]/)
-    return if valid
+    candidate = base_branch.is_a?(String) && !base_branch.strip.empty? && !base_branch.match?(/[\0\r\n]/)
+    if candidate && !base_branch.include?("@{")
+      _out, status = Open3.capture2e("git", "check-ref-format", "--branch", base_branch)
+      return if status.success?
+    end
 
-    raise InitError, "base branch must be a non-empty single-line value without NUL bytes"
+    raise InitError, "base branch must be a valid Git branch name"
   end
 
   def validate_init_command_inputs!(*commands)
@@ -306,7 +309,7 @@ module AgentWorkflowSeamDoctor
     end
     return false unless words.shift == "npm"
 
-    command_index = words.index { |word| %w[run run-script test start stop restart].include?(word) }
+    command_index = words.index { |word| %w[run run-script test t tst start stop restart].include?(word) }
     return false unless command_index
 
     npm_command = words.fetch(command_index)
