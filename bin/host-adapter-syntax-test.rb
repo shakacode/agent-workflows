@@ -63,6 +63,18 @@ class HostAdapterSyntaxTest < Minitest::Test
     assert_includes stderr, "/goal must be inside a codex-only host branch"
   end
 
+  def test_reference_doc_goal_must_be_inside_codex_branch
+    path = File.join(@tmp, "skills/demo/references/nested/demo.md")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, "Use `/goal` here.\n")
+
+    _stdout, stderr, status = run_validator
+
+    refute status.success?
+    assert_includes stderr, "skills/demo/references/nested/demo.md"
+    assert_includes stderr, "/goal must be inside a codex-only host branch"
+  end
+
   def test_single_line_codex_allow_marker_permits_goal
     File.write(File.join(@tmp, "workflows/demo.md"), "Use `/goal` here. <!-- host-allow: codex-only -->\n")
 
