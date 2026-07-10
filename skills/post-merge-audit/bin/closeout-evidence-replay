@@ -6,6 +6,7 @@
 # interface; these hidden markers make post-merge audit recovery deterministic.
 
 require "json"
+require "optparse"
 
 module CloseoutEvidenceReplay
   module_function
@@ -18,31 +19,54 @@ module CloseoutEvidenceReplay
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
 
   def run(argv)
-    path = argv.fetch(0, nil)
-    if path.nil? || path == "-h" || path == "--help"
-      puts usage
-      return path.nil? ? 64 : 0
+    options, parser = parse_options(argv)
+    if options.fetch(:help, false)
+      puts parser
+      return 0
     end
 
+    path = argv.shift
+    if path.nil?
+      puts parser
+      return 64
+    end
+
+    raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
     text = path == "-" ? $stdin.read : File.read(path, encoding: "UTF-8")
-    puts JSON.pretty_generate(replay(text))
+    puts JSON.pretty_generate(replay(text, expected_head_sha: options[:expected_head_sha]))
     0
+  rescue OptionParser::ParseError => e
+    warn "Error: #{e.message}"
+    64
   rescue Errno::ENOENT => e
     warn "Error: #{e.message}"
     1
   end
 
-  def usage
-    <<~USAGE
-      Usage: closeout-evidence-replay <path|-> [--help]
+  def parse_options(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] <path|->"
+      opts.separator ""
+      opts.separator "Parse `qa-evidence v1` and `priority-finding-dispositions v1` markers from"
+      opts.separator "a PR body, issue comment, handoff, or stdin and emit replay JSON."
+      opts.separator ""
+      opts.on("--expected-head-sha SHA", "Require required QA evidence for this full final-head SHA") do |sha|
+        unless sha.match?(/\A[0-9a-f]{40}\z/i)
+          raise OptionParser::InvalidArgument, "--expected-head-sha must be a full 40-character hex SHA"
+        end
 
-      Parse `qa-evidence v1` and `priority-finding-dispositions v1` markers from
-      a PR body, issue comment, handoff, or stdin and emit replay JSON.
-    USAGE
+        options[:expected_head_sha] = sha.downcase
+      end
+      opts.on("-h", "--help", "Show this help") { options[:help] = true }
+    end
+    parser.parse!(argv)
+    [options, parser]
   end
 
-  def replay(text)
-    qa = replay_qa_markers(marker_bodies(text, "qa-evidence v1"))
+  def replay(text, expected_head_sha: nil)
+    qa = replay_qa_markers(marker_bodies(text, "qa-evidence v1"), expected_head_sha: expected_head_sha)
     priority = replay_priority_markers(marker_bodies(text, "priority-finding-dispositions v1"))
     {
       "overall_verdict" => overall_verdict([qa, priority]),
@@ -55,10 +79,10 @@ module CloseoutEvidenceReplay
     text.scan(/<!--\s*#{Regexp.escape(name)}\s*(.*?)-->/m).map(&:first)
   end
 
-  def replay_qa_markers(markers)
+  def replay_qa_markers(markers, expected_head_sha: nil)
     return unknown("qa-evidence marker missing") if markers.empty?
 
-    aggregate_marker_results(markers.map { |marker| replay_qa(marker) })
+    aggregate_marker_results(markers.map { |marker| replay_qa(marker, expected_head_sha: expected_head_sha) })
   end
 
   def replay_priority_markers(markers)
@@ -67,16 +91,23 @@ module CloseoutEvidenceReplay
     aggregate_marker_results(markers.map { |marker| replay_priority(marker) })
   end
 
-  def replay_qa(marker)
-    fields = parse_fields(marker)
+  def replay_qa(marker, expected_head_sha: nil)
+    fields, duplicate_keys = parse_fields(marker)
+    errors = duplicate_keys.map { |key| "duplicate scalar key: #{key}" }
     missing = missing_fields(
       fields,
       %w[required status tested_at scope automated_checks manual_checks findings release_blocking process_gap_disposition]
     )
     required = fields.fetch("required", "").to_s
     status = fields.fetch("status", "").to_s
+    head_sha = fields.fetch("head_sha", "").to_s.downcase
     release_blocking = fields.fetch("release_blocking", "").to_s
     process_gap_disposition = fields.fetch("process_gap_disposition", "").to_s
+    final_head_mismatch = expected_head_sha && required == "yes" && head_sha != expected_head_sha
+    tested_at_head_mismatch = expected_head_sha && required == "yes" &&
+                              !tested_at_matches_head?(fields.fetch("tested_at", "").to_s, expected_head_sha)
+    missing << "head_sha" if final_head_mismatch
+    missing << "tested_at.head_sha" if tested_at_head_mismatch
     missing << "required" unless required.empty? || VALID_QA_REQUIRED.include?(required)
     missing << "status" unless status.empty? || VALID_QA_STATUSES.include?(status)
     missing << "release_blocking" unless release_blocking.empty? || VALID_RELEASE_BLOCKING.include?(release_blocking)
@@ -86,7 +117,9 @@ module CloseoutEvidenceReplay
     end
 
     verdict =
-      if status == "blocked" || release_blocking == "blocked"
+      if errors.any? || final_head_mismatch || tested_at_head_mismatch
+        "UNKNOWN"
+      elsif status == "blocked" || release_blocking == "blocked"
         "BLOCKED"
       elsif missing.any?
         "UNKNOWN"
@@ -100,24 +133,29 @@ module CloseoutEvidenceReplay
         "UNKNOWN"
       end
 
-    {
+    result = {
       "verdict" => verdict,
       "fields" => fields,
-      "missing" => missing
+      "missing" => missing,
+      "errors" => errors
     }
+    result["expected_head_sha"] = expected_head_sha if expected_head_sha
+    result
   end
 
   def replay_priority(marker)
-    fields = parse_fields(marker)
+    fields, duplicate_keys = parse_fields(marker)
+    errors = duplicate_keys.map { |key| "duplicate scalar key: #{key}" }
     findings = parse_findings(marker)
     missing = []
 
-    if fields.fetch("status", "") == "not_applicable" && findings.empty?
+    if errors.empty? && fields.fetch("status", "") == "not_applicable" && findings.empty?
       return {
         "verdict" => "NOT_APPLICABLE",
         "fields" => fields,
         "findings" => [],
-        "missing" => []
+        "missing" => [],
+        "errors" => []
       }
     end
 
@@ -141,7 +179,7 @@ module CloseoutEvidenceReplay
     end
 
     verdict =
-      if missing.any?
+      if errors.any? || missing.any?
         "UNKNOWN"
       elsif findings.any? { |finding| finding.fetch("disposition", "") == "waived" }
         "WAIVED"
@@ -153,7 +191,8 @@ module CloseoutEvidenceReplay
       "verdict" => verdict,
       "fields" => fields,
       "findings" => findings,
-      "missing" => missing
+      "missing" => missing,
+      "errors" => errors
     }
   end
 
@@ -164,6 +203,7 @@ module CloseoutEvidenceReplay
       "verdict" => aggregate_verdict(results),
       "fields" => {},
       "missing" => aggregate_missing(results),
+      "errors" => aggregate_errors(results),
       "marker_count" => results.length,
       "markers" => results
     }
@@ -179,6 +219,12 @@ module CloseoutEvidenceReplay
     end
   end
 
+  def aggregate_errors(results)
+    results.each_with_index.flat_map do |result, index|
+      result.fetch("errors", []).map { |error| "marker[#{index}].#{error}" }
+    end
+  end
+
   def aggregate_verdict(results)
     verdicts = results.map { |result| result.fetch("verdict") }
     return "BLOCKED" if verdicts.include?("BLOCKED")
@@ -190,14 +236,27 @@ module CloseoutEvidenceReplay
   end
 
   def parse_fields(marker)
-    marker.each_line.with_object({}) do |line, fields|
+    fields = {}
+    duplicate_keys = []
+    marker.each_line do |line|
       next if line.strip.start_with?("finding:")
 
       key, value = line.split(":", 2)
       next if value.nil?
 
-      fields[key.strip.downcase] = value.strip
+      normalized_key = key.strip.downcase
+      if fields.key?(normalized_key)
+        duplicate_keys << normalized_key
+      else
+        fields[normalized_key] = value.strip
+      end
     end
+    [fields, duplicate_keys.uniq]
+  end
+
+  def tested_at_matches_head?(tested_at, expected_head_sha)
+    full_shas = tested_at.scan(/(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])/i).map(&:downcase)
+    full_shas.last == expected_head_sha.downcase
   end
 
   def parse_findings(marker)
