@@ -61,7 +61,8 @@ notes.
    `pnpm run` and `yarn run` pass arguments directly. Compound shell expressions
    are preserved verbatim, so include `"$@"` when they should receive wrapper
    arguments. Use `--base-branch` when the new policy should not default to
-   `main`.
+   `main`. `env -S` and `env --split-string` commands are preserved verbatim;
+   their split payload must place any desired wrapper forwarding itself.
 
    Generated wrappers that retain the init marker are tool-owned, and another
    explicit-command run rewrites both of them. Keep custom logic in the target

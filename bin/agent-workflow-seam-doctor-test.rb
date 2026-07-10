@@ -1448,6 +1448,27 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_preserves_env_split_string_commands_verbatim
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      validate_command = "env -S 'npm run validate'"
+      test_command = "env --split-string='npm run test'"
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", validate_command,
+        "--test-command", test_command
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes validate, "#{validate_command}\n"
+      refute_includes validate, "#{validate_command} \"$@\""
+      assert_includes test, "#{test_command}\n"
+      refute_includes test, "#{test_command} \"$@\""
+    end
+  end
+
   def test_init_adds_npm_separator_after_env_option_terminator
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(

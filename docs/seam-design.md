@@ -132,7 +132,9 @@ instead pass both `--validate-command` and `--test-command`; multiline, empty,
 and NUL-containing command values are rejected before any write. Simple commands
 forward arguments automatically; npm gets its required `--` separator, while
 pnpm and Yarn receive arguments directly. Compound shell expressions are kept
-verbatim and must include `"$@"` themselves when forwarding is wanted. Missing
+verbatim and must include `"$@"` themselves when forwarding is wanted. `env -S`
+and `env --split-string` commands are likewise caller-controlled because their
+split payload owns argument placement. Missing
 policy or trust keys are appended to existing block mappings so comments and
 formatting remain intact; initialization fails closed before writing when a
 safe append is not possible.

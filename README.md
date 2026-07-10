@@ -157,7 +157,9 @@ agent-workflow-seam-doctor --init \
 Simple explicit commands forward wrapper arguments automatically. Explicit
 `npm run` commands add npm's `--` separator; `pnpm run` and `yarn run` pass the
 arguments directly. Compound shell expressions are preserved verbatim; include
-`"$@"` in the expression when it should receive wrapper arguments.
+`"$@"` in the expression when it should receive wrapper arguments. `env -S`
+and `env --split-string` commands are also preserved verbatim because their
+split payload owns argument placement.
 
 Files carrying the generated init marker are tool-owned. Supplying explicit
 commands again rewrites both managed wrappers, so keep hand-written logic in the

@@ -273,6 +273,7 @@ module AgentWorkflowSeamDoctor
   def init_command_line(command)
     command = command.to_s
     return command if compound_shell_command?(command)
+    return command if env_split_string_command?(command)
 
     argument_suffix = command.match?(ARGUMENT_FORWARDING) ? "" : ' "$@"'
     has_exec = command.match?(/\Aexec\s+/)
@@ -336,6 +337,33 @@ module AgentWorkflowSeamDoctor
       end
     end
 
+    false
+  end
+
+  def env_split_string_command?(command)
+    words = Shellwords.shellsplit(command)
+    words.shift if words.first == "exec"
+    words.shift while words.first&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    words.shift if words.first == "exec"
+    return false unless words.shift == "env"
+
+    while (option = words.shift)
+      return false if option == "--"
+      return true if %w[-S --split-string].include?(option) ||
+                     option.match?(/\A-S.+/) || option.match?(/\A--split-string=.+/)
+
+      if ENV_OPTIONS_WITH_ARGUMENT.include?(option)
+        words.shift
+      elsif ENV_OPTIONS_WITHOUT_ARGUMENT.include?(option) ||
+            option.match?(/\A(?:-u|-C).+/) ||
+            option.match?(/\A--(?:unset|chdir|argv0)=.+/)
+        next
+      else
+        return false
+      end
+    end
+    false
+  rescue ArgumentError
     false
   end
 
