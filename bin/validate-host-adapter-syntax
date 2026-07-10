@@ -42,7 +42,9 @@ AVAILABILITY_WORDS = [
 ].freeze
 
 def target_files
-  ROOT.glob("skills/*/SKILL.md").sort + ROOT.glob("workflows/*.md").sort
+  ROOT.glob("skills/*/SKILL.md").sort +
+    ROOT.glob("skills/*/references/**/*.md").sort +
+    ROOT.glob("workflows/*.md").sort
 end
 
 def codex_only_lines(lines)
