@@ -172,11 +172,12 @@ Before implementation or worker launch, produce:
 10. The selected batch-size target and wave split: `codex` up to 10/8,
     `claude` up to 5/3, or `generic` up to 5/3, with spillover assigned to
     later waves instead of overfilling the current one.
-11. The model/effort assignment for every lane, grouped by pair with the
-    planner's rationale. Revalidate every supplied exact pair on the actual dispatch host;
-    bind any dispatch-resolved model class to an exact supported pair before any
-    worker starts. If either is unavailable, stop and re-plan rather than
-    substituting.
+11. A coordinator model/effort assignment plus a separate staged worker
+    model/effort route for every lane, grouped by initial/escalation pair with
+    the planner's rationale. Require `MODEL_ESCALATION_REQUEST` before a worker
+    uses the stronger route. Revalidate every supplied exact pair on the actual
+    host; bind any dispatch-resolved class before work starts. Workers must not
+    inherit the coordinator pair. If a route is unavailable, stop and re-plan.
 <!-- host-branch: codex-only start -->
 12. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
@@ -230,7 +231,8 @@ Repository: OWNER/REPO
 Objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
-Model/effort groups: <model/class>/<effort> -> <lane ids>.
+Coordinator model/effort: <model/class>/<effort>.
+Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI, configured review agents, unresolved current-head review threads, fixable failures, or UNKNOWN mean NOT COMPLETE; poll/triage/fix or report NOT COMPLETE / blocked with exact resume instructions after an explicit watch window or real external blocker. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope summary: [titles/deps/exclusions/owners.]
@@ -238,7 +240,6 @@ File-touch map:
 - PR/Issue #N -> changed paths incl create/delete/rename (owner: lane/name)
 - PR/Issue #N -> patterns plus collision paths/renames/deletes (owner: lane/name)
 - PR/Issue #N -> UNKNOWN (treat serial)
-- Reservations -> path(s) (reason/later owner)
 
 Items:
 - PR #N: URL
@@ -253,7 +254,7 @@ Items:
 Execution rules:
 - Resolve `base_branch` from `.agents/agent-workflow.yml`; run `git fetch --prune origin <base-branch>`; verify installed or repo-local `$pr-batch` and `pr-processing.md` before launch; if unresolved, stop with workflow state `UNKNOWN`.
 - Follow resolved `$pr-batch`; if autoloading fails, run pr-security-preflight and copy gates from local skill/workflow.
-- Revalidate exact model/effort on the dispatch host and bind model classes; if unavailable, stop and re-plan.
+- Bind coordinator/worker route pairs on their actual hosts before dispatch; no worker may inherit the coordinator pair; if unavailable, stop and re-plan.
 - Dispatch one subagent per independent item in the current file-disjoint wave; group only for required shared context; keep serial/`UNKNOWN` lanes clear of editor lanes.
 - Workers edit only owned paths; if they need an `UNKNOWN`, unlisted, or other-lane path, stop and request a map update.
 - Sequenced lanes may share declared files only in the stated order.
@@ -375,12 +376,26 @@ file-disjoint lanes, or 8 when shared/risky conditions apply.
 Claude and generic waves use up to 5 lanes, or up to 3 under those same
 conditions. Keep `UNKNOWN` path lanes serial until discovery resolves their real
 paths. Queue spillover as later waves rather than overfilling the active worker
-set. Preserve each lane's planned model/effort pair at dispatch; bind any
-dispatch-resolved model class to an exact pair first, and revalidate supplied
-exact pairs against that same host. Model collation does not combine lane
-ownership, and an unavailable pair requires re-planning.
+set. Preserve the coordinator model/effort assignment and each lane's staged
+worker model/effort route at dispatch; bind dispatch-resolved classes to exact
+pairs first, and revalidate them on their actual hosts. Workers must not inherit
+the coordinator pair. Model collation does not combine lane ownership, and an
+unavailable route requires re-planning. Workers remain on the initial route for
+a focused correction after a small first failure and emit
+`MODEL_ESCALATION_REQUEST` only at the canonical evidence threshold.
 
 ## Pausing Or Stopping A Batch
+
+### Model-Only Worker Replacement
+
+When the goal, targets, scope, and lane identity stay stable but a worker needs
+a different model/effort role, use
+[Worker Model Replacement And Escalation](../../workflows/pr-processing.md#worker-model-replacement-and-escalation)
+instead of cancelling the batch. Stop the old worker, capture or reconstruct its
+`MODEL_REPLACEMENT_HANDOFF`, reconcile the claim holder/generation/instance, and
+start the replacement only after fencing prevents overlap. For already-running
+batches that need the staged route policy, use the canonical
+[Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
 
 ### Normal Agent-Runner Restart
 

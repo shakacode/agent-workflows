@@ -1,4 +1,4 @@
 interface:
   display_name: "Plan PR Batch"
   short_description: "Plan batches by model, effort, and risk"
-  default_prompt: "Use $plan-pr-batch to verify PR or issue scope, recommend model/effort assignments, and prepare the batch goal."
+  default_prompt: "Use $plan-pr-batch to verify PR or issue scope, separate the coordinator assignment from staged worker model/effort routes, and prepare the batch goal."

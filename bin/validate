@@ -94,6 +94,7 @@ bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
+ruby skills/pr-batch/bin/model-routing-contract-test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb

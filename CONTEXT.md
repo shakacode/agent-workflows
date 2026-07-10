@@ -56,24 +56,49 @@ or one worker's slice of a batch. A lane has a named owner plus its target or
 targets and optional dependencies.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
 
-**Model/effort assignment**:
-The worker model and supported reasoning effort selected for one lane from its
-verified complexity, risk, uncertainty, and worker-host availability. Use an
-exact model or host-stable alias when its roster is known; a dispatch-resolved
-model class may temporarily stand in when the roster or worker host is unknown.
-_Avoid_: batch model, prompt target (the prompt target is the host/chat that
-receives the batch prompt, not the worker configuration)
+**Coordinator model/effort assignment**:
+The parent coordinator's model and supported reasoning effort, selected for
+scope, risk, routing, integration, review, and closeout independently of worker
+routes.
+_Avoid_: batch model (it does not automatically apply to every worker)
+
+**Worker model/effort route**:
+The staged policy for one lane: its initial assignment, optional escalation
+assignment and role, evidence gate, and maximum escalation cycles. Use exact
+pairs or host-stable aliases when the roster is known; dispatch-resolved classes
+may temporarily stand in when it is not.
+_Avoid_: worker model (singular static choice), coordinator assignment
+
+**Active model/effort assignment**:
+The exact model and supported reasoning effort used by the lane's current worker
+instance. A lane has at most one active assignment and instance at a time.
+_Avoid_: planned route, inherited model
+
+**Model escalation request**:
+A worker's evidence packet asking the coordinator to approve a stronger role;
+it records attempts, failures, uncertainty, risk, verification gaps, and the
+smallest recommended next action, but grants no authority by itself.
+_Avoid_: self-upgrade, automatic retry
+
+**Model replacement handoff**:
+The durable checkpoint captured before changing a lane's worker instance or
+model/effort assignment: repo/worktree/branch state, changes, claim/fencing
+state, evidence, attempts, invariants, validation, running processes, unknowns,
+and next action.
+_Avoid_: restart prompt, cancellation handoff
 
 **Dispatch-resolved model class**:
 A portable roster-unavailable fallback — `fastest-low-cost`, `balanced`, or
 `strongest` — paired with an effort level, optionally scoped to a known host,
-and bound to an exact supported worker-host pair before any worker starts.
+and bound to an exact supported worker-host pair before any worker starts. The
+prompt target identifies the destination host class; it does not prove the
+worker roster or authorize inheritance from the coordinator.
 _Avoid_: guessed model, default model
 
-**Model/effort group**:
-A planning and dispatch view that collates lanes with the same model/effort
-assignment without merging their owners, claims, targets, dependencies, or
-file-touch ordering.
+**Model/effort route group**:
+A planning and dispatch view that collates lanes with the same initial and
+escalation route without merging their owners, claims, targets, dependencies,
+instances, or file-touch ordering.
 _Avoid_: combined lane, shared worker
 
 **Thread handle**:
@@ -93,9 +118,13 @@ _Avoid_: force kill (without the cleanup steps it names)
 - A **Batch** has one or more **Lanes**; a direct PR task can also be one
   standalone **Lane** without batch planning or worker split machinery. A
   **Lane** has exactly one owner identity at a time.
-- A ready **Lane** has one verified **Model/effort assignment**; a
-  **Model/effort group** can contain several lanes but creates no ownership or
-  scheduling relationship between them.
+- A ready **Lane** has one verified **Worker model/effort route** and exactly one
+  active **Active model/effort assignment** while its current instance runs; a
+  **Model/effort route group** can contain several lanes but creates no
+  ownership or scheduling relationship between them.
+- **Model escalation request** approval can replace a lane's assignment and
+  instance only after a **Model replacement handoff**; the old and replacement
+  worker instances never overlap.
 - A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** or a fallback claim expires — both bump the **Generation** when the backend supports fencing.
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.

@@ -27,7 +27,7 @@ for cancellation, see
 | `$pause`             | An operator needs copy-paste prompts to pause an agent thread for runner restart and resume from a handoff. | Non-batch or PR-batch pause prompts plus same-thread and new-chat restart prompts.    |
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$pr-lane`           | A direct-prompt task, single issue, or one PR needs coordinated ownership in the current chat.              | One claimed lane with Lane Card, phase heartbeats, PR/readiness gates, and handoff.   |
-| `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with model/effort groups plus a target-specific ready `$pr-batch` prompt. |
+| `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
 | `$pr-batch`          | The target list is exact, trusted, and ready to run or convert into a `/goal` prompt.                       | A launch plan, worker split, or final `/goal` prompt for processing the batch.        |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
@@ -79,21 +79,20 @@ omit the queue summary and note that queue state is unavailable.
    live coordination, CI, approval, or quota health is uncertain. For multiple
    concurrent batches, keep this as a per-wave cap and apply the target repo's
    coordination-backend rules before launching.
-7. Resolve the current model roster for each lane's worker host when the runtime
-   exposes it, then recommend a supported model/effort assignment from the
-   verified item. Use the fastest,
-   lowest-cost coding-capable model with low effort for deterministic,
-   low-consequence work; a balanced coding model with medium effort for bounded
-   work; and the strongest model with high or the highest supported effort for
-   hard work. Meaningful uncertainty must move to a stronger model and more reasoning effort.
-   Group lanes by exact model/effort pair without combining
-   their ownership, dependencies, collision ordering, or wave schedule. When a
-   known host's roster is unavailable, or the generic target leaves the host
-   ambiguous, group by a portable dispatch-resolved model class and effort;
-   bind that class to an exact pair before starting workers, and revalidate any
-   planned exact pair against the actual dispatch host. Keep the assignment
-   `UNKNOWN` and the prompt unready only if neither an exact pair nor a class and
-   effort can be named.
+7. Keep the `Coordinator model/effort` assignment separate from every
+   `Worker model/effort route`. Resolve the roster on each actual host, start routine
+   workers on the fastest or balanced pair justified by lane risk and
+   verification, and reserve the strongest pair for evidence-gated escalation.
+   Workers must not inherit the coordinator pair. A small first failure gets a
+   focused correction on the initial route; two materially different credible
+   failures, or an earlier canonical high-risk trigger, require
+   `MODEL_ESCALATION_REQUEST`. Prefer stronger-model plan review followed by
+   implementation on the initial tier. Group lanes by exact model/effort route
+   without combining ownership, dependencies, collision ordering, or wave
+   schedule. When a known host's roster is unavailable, use portable
+   dispatch-resolved initial and escalation classes, then bind and revalidate
+   exact pairs before dispatch. Keep an unresolved route `UNKNOWN` and the
+   prompt unready.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
@@ -150,6 +149,13 @@ evidence, blockers, dependencies, next actions, comments, or examples, plus
 items marked deferred or out of scope. It stops to ask when no exact targets are
 visible and must not broaden continuation into all open PRs, labels, milestones,
 or inferred related work unless the operator explicitly asks for discovery.
+
+When an already-running batch needs model-route replacement rather than generic
+closeout, keep its existing goal and use the distinct
+[Model-Routing Recovery Prompt](../workflows/pr-processing.md#model-routing-recovery-prompt).
+It stops nonconforming workers with handoff documents, prevents old/new overlap,
+preserves claims and useful changes, binds the initial worker route explicitly,
+and requires `MODEL_ESCALATION_REQUEST` before stronger-model review or replacement.
 
 ## Review And Readiness
 
