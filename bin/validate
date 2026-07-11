@@ -95,10 +95,10 @@ ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contract-test.rb
+ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb
-ruby skills/pr-lane/bin/pr-lane-contract-test.rb
 ruby skills/task-observer/bin/task-observer-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
 

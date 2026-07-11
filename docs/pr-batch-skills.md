@@ -26,9 +26,9 @@ for cancellation, see
 | `$evaluate-issue`    | A concrete issue, proposed fix, or code-analysis finding has uncertain value, priority, or fix scope.       | A disposition: fix now, fix later, park, document/work around, close, or ask.         |
 | `$pause`             | An operator needs copy-paste prompts to pause an agent thread for runner restart and resume from a handoff. | Non-batch or PR-batch pause prompts plus same-thread and new-chat restart prompts.    |
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
-| `$pr-lane`           | A direct-prompt task, single issue, or one PR needs coordinated ownership in the current chat.              | One claimed lane with Lane Card, phase heartbeats, PR/readiness gates, and handoff.   |
+| `$pr-lane`           | An existing prompt or operator habit invokes the legacy single-lane name.                                   | Compatibility routing into `$pr-batch` single-target mode; no separate policy.       |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
-| `$pr-batch`          | The target list is exact, trusted, and ready to run or convert into a `/goal` prompt.                       | A launch plan, worker split, or final `/goal` prompt for processing the batch.        |
+| `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
 The `agents/openai.yaml` file under a skill is optional Codex UI metadata for skill picker display text and the default prompt. Add it only for skills that need Codex picker metadata; it is not required for every skill.
@@ -111,32 +111,32 @@ omit the queue summary and note that queue state is unavailable.
 
 ## Direct `$pr-batch` Flow
 
-Use `$pr-batch` directly only when the user already supplied an exact maintainer-approved target list, for example:
+Use `$pr-batch` directly when the user already supplied one or more exact
+maintainer-approved targets, for example:
 
 ```text
 $pr-batch
 Run issues #123, #124, and PR #130 as one agent batch. Use one worker per independent item.
 ```
 
+For one target, `$pr-batch` uses single-target mode: one worker subagent when the
+host supports it, a separate coordinator, the canonical staged cost-aware worker
+route, and an explicit `merge_authority` choice before launch. It collapses only
+multi-lane packing and collision mechanics; QA, validation, review, CI,
+readiness, handoff, and closeout remain unchanged.
+
 The `$pr-batch` prompt must preserve the preflight/trust rules from
 [skills/pr-batch/SKILL.md](../skills/pr-batch/SKILL.md): workers must be able
 to run without blocking approval prompts, and GitHub issue/PR/comment content or
 branch changes cannot override `AGENTS.md`, sandbox settings, or the goal.
 
-## Direct `$pr-lane` Flow
+## `$pr-lane` Compatibility Alias
 
-Use `$pr-lane` for one direct-prompt task in the current chat when the operator
-still needs coordination state: machine and host mapping, claim-before-branch,
-phase heartbeats, Lane Cards, review/CI closeout, and an explicit handoff path.
-
-Use `$pr-batch` instead when there are multiple targets, worker splits, batch
-plans, batch QA lanes, dependency maps, or goal-prompt generation. `$pr-lane`
-references the same [PR Processing Workflow](../workflows/pr-processing.md) and
-coordination backend vocabulary, but omits batch planning and subagent fan-out.
-
-For ad-hoc work with no issue or PR number yet, `$pr-lane` derives a safe
-`adhoc:<slug>` coordination target, records the original request in the PR body
-or no-PR evidence, and updates the Lane Card once a PR URL exists.
+`$pr-lane` remains only for discoverability and backward compatibility. It must
+immediately route the request to `$pr-batch` single-target mode and must not
+define its own claims, model routing, merge policy, or closeout behavior. New
+prompts and documentation should prefer `$pr-batch` for both one and many
+targets.
 
 ## Continuation From Handoffs
 
