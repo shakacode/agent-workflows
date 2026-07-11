@@ -164,7 +164,9 @@ def repo_option_info(repo)
   payload = run_gh_json("repo", "view", repo, "--json", "nameWithOwner,url")
   unless ENV["GH_HOST"].to_s.empty?
     resolved_repo = payload.fetch("nameWithOwner")
-    raise "gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}" unless resolved_repo == repo
+    unless resolved_repo.casecmp?(repo)
+      raise "gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}"
+    end
 
     return { repo:, github_host: expected_github_host }
   end

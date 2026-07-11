@@ -79,6 +79,8 @@ case "${TARGET_SCHEME}:${TARGET_HOST}" in
   https:*:443) TARGET_HOST="${TARGET_HOST%:443}" ;;
   http:*:80) TARGET_HOST="${TARGET_HOST%:80}" ;;
 esac
+TARGET_HOST="$(printf '%s' "${TARGET_HOST}" | tr '[:upper:]' '[:lower:]')"
+CHECKOUT_HOST="$(printf '%s' "${CHECKOUT_HOST}" | tr '[:upper:]' '[:lower:]')"
 export GH_HOST="${TARGET_HOST}"
 case "${TARGET_KIND:-}" in
   pr)
@@ -94,8 +96,10 @@ case "${TARGET_KIND:-}" in
   adhoc) REPO="${REPO:-${CHECKOUT_REPO}}" ;;
   *) echo "Refusing to continue: set TARGET_KIND to issue, pr, or adhoc." >&2; exit 1 ;;
 esac
-COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${TARGET_HOST}/${REPO}")"
-if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO}" != "${REPO}" ]; then
+REPO_CANON="$(printf '%s' "${REPO}" | tr '[:upper:]' '[:lower:]')"
+CHECKOUT_REPO_CANON="$(printf '%s' "${CHECKOUT_REPO}" | tr '[:upper:]' '[:lower:]')"
+COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${TARGET_HOST}/${REPO_CANON}")"
+if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO_CANON}" != "${REPO_CANON}" ]; then
   echo "Refusing to continue: switch temporarily to a trusted base checkout for ${REPO} before preflight." >&2
   exit 1
 fi

@@ -31,6 +31,7 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"'
     assert_includes @skill, 'https:*:443) TARGET_HOST="${TARGET_HOST%:443}"'
     assert_includes @skill, 'http:*:80) TARGET_HOST="${TARGET_HOST%:80}"'
+    assert_includes @skill, 'REPO_CANON="$(printf \'%s\' "${REPO}" | tr \'[:upper:]\' \'[:lower:]\')"'
     assert_operator @skill.index("CHECKOUT_URL="), :<, @skill.index('export GH_HOST="${TARGET_HOST}"')
     assert_includes @skill, 'COORD_REPO="github-host/$(ruby -rdigest'
     assert_includes @skill, 'CHECKOUT_URL="$(env -u GH_HOST -u GH_REPO gh repo view --json url -q .url)"'
@@ -42,7 +43,7 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @skill, ': "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"'
     assert_includes @skill, 'if [ "${TARGET_KIND}" != "adhoc" ]; then'
     assert_includes @skill,
-                    'if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO}" != "${REPO}" ]; then'
+                    'if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO_CANON}" != "${REPO_CANON}" ]; then'
     assert_includes @skill, "enter a trusted base checkout before preflight"
     assert_includes @normalized_skill, "For a fork PR, run preflight from a separate trusted checkout"
     assert_includes @normalized_skill, "then return to or create the verified fork-head checkout"
