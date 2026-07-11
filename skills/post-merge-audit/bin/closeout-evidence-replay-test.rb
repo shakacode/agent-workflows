@@ -379,6 +379,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md, skills/pr-batch
       automated_checks: bin/validate
@@ -389,7 +390,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       -->
 
       <!-- priority-finding-dispositions v1
-      head_sha: abc123
+      head_sha: 1111111111111111111111111111111111111111
       finding: url=https://example.test/review/1 | severity=P1 | disposition=fixed | evidence=https://example.test/pr/123#discussion_r1
       finding: url=https://example.test/review/2 | severity=Must-Fix | disposition=fixed | evidence=https://example.test/pr/123#discussion_r2
       -->
@@ -401,11 +402,43 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal 2, data.fetch("priority_finding_dispositions").fetch("findings").length
   end
 
+  def test_qa_marker_without_head_sha_is_unknown
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      tested_at: PR #123 head abc123
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: not applicable
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("qa_evidence").fetch("verdict")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "head_sha"
+  end
+
+  def test_priority_marker_with_abbreviated_head_sha_is_unknown
+    data = run_replay(<<~MARKDOWN)
+      <!-- priority-finding-dispositions v1
+      head_sha: abc123
+      finding: url=https://example.test/review/1 | severity=P1 | disposition=fixed | evidence=https://example.test/pr/123#discussion_r1
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("priority_finding_dispositions").fetch("verdict")
+    assert_includes data.fetch("priority_finding_dispositions").fetch("missing"), "head_sha"
+  end
+
   def test_waived_qa_marker_preserves_waived_overall
     data = run_replay(<<~MARKDOWN)
       <!-- qa-evidence v1
       required: yes
       status: waived
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -426,6 +459,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -436,7 +470,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       -->
 
       <!-- priority-finding-dispositions v1
-      head_sha: abc123
+      head_sha: 1111111111111111111111111111111111111111
       finding: url=https://example.test/review/2 | severity=Must-Fix | disposition=waived | evidence=https://example.test/pr/123#discussion_r2 | waiver=https://example.test/pr/123#issuecomment-1
       -->
     MARKDOWN
@@ -450,6 +484,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -470,6 +505,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: not_applicable
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -490,6 +526,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -509,6 +546,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: maybe
       status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -528,6 +566,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: blocked
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -547,6 +586,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -559,6 +599,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: blocked
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/post-merge-audit.md
       automated_checks: bin/validate
@@ -579,7 +620,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_priority_marker_without_dispositions_is_unknown
     data = run_replay(<<~MARKDOWN)
       <!-- priority-finding-dispositions v1
-      head_sha: abc123
+      head_sha: 1111111111111111111111111111111111111111
       finding: url=https://example.test/review/1 | severity=P1 | evidence=https://example.test/pr/123#discussion_r1
       -->
     MARKDOWN
@@ -591,7 +632,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_waived_priority_marker_without_waiver_is_unknown
     data = run_replay(<<~MARKDOWN)
       <!-- priority-finding-dispositions v1
-      head_sha: abc123
+      head_sha: 1111111111111111111111111111111111111111
       finding: url=https://example.test/review/1 | severity=P1 | disposition=waived | evidence=https://example.test/pr/123#discussion_r1
       -->
     MARKDOWN
@@ -604,7 +645,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_priority_marker_with_invalid_severity_is_unknown
     data = run_replay(<<~MARKDOWN)
       <!-- priority-finding-dispositions v1
-      head_sha: abc123
+      head_sha: 1111111111111111111111111111111111111111
       finding: url=https://example.test/review/1 | severity=Optional | disposition=fixed | evidence=https://example.test/pr/123#discussion_r1
       -->
     MARKDOWN
@@ -619,6 +660,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       <!-- qa-evidence v1
       required: yes
       status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
       tested_at: PR #123 head abc123
       scope: workflows/pr-processing.md
       automated_checks: bin/validate
@@ -629,12 +671,12 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       -->
 
       <!-- priority-finding-dispositions v1
-      head_sha: abc123
+      head_sha: 1111111111111111111111111111111111111111
       finding: url=https://example.test/review/1 | severity=P1 | disposition=fixed | evidence=https://example.test/pr/123#discussion_r1
       -->
 
       <!-- priority-finding-dispositions v1
-      head_sha: abc123
+      head_sha: 1111111111111111111111111111111111111111
       finding: url=https://example.test/review/2 | severity=Optional | disposition=fixed | evidence=https://example.test/pr/123#discussion_r2
       -->
     MARKDOWN

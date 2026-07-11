@@ -116,10 +116,11 @@ module CloseoutEvidenceReplay
     head_sha = fields.fetch("head_sha", "").to_s.downcase
     release_blocking = fields.fetch("release_blocking", "").to_s
     process_gap_disposition = fields.fetch("process_gap_disposition", "").to_s
+    head_sha_valid = full_head_sha?(head_sha) || (required == "no" && head_sha == "not_applicable")
     final_head_mismatch = expected_head_sha && head_sha != expected_head_sha
     tested_at_head_mismatch = expected_head_sha &&
                               !tested_at_matches_head?(fields.fetch("tested_at", "").to_s, expected_head_sha)
-    missing << "head_sha" if final_head_mismatch
+    missing << "head_sha" if final_head_mismatch || !head_sha_valid
     missing << "tested_at.head_sha" if tested_at_head_mismatch
     missing << "required" unless required.empty? || VALID_QA_REQUIRED.include?(required)
     missing << "status" unless status.empty? || VALID_QA_STATUSES.include?(status)
@@ -165,7 +166,8 @@ module CloseoutEvidenceReplay
 
     if errors.empty? && fields.fetch("status", "") == "not_applicable" && findings.empty?
       head_sha = fields.fetch("head_sha", "").downcase
-      missing << "head_sha" if expected_head_sha && head_sha != expected_head_sha
+      head_matches = !expected_head_sha || head_sha == expected_head_sha
+      missing << "head_sha" unless full_head_sha?(head_sha) && head_matches
       result = {
         "verdict" => missing.empty? ? "NOT_APPLICABLE" : "UNKNOWN",
         "fields" => fields,
@@ -178,7 +180,8 @@ module CloseoutEvidenceReplay
     end
 
     head_sha = fields.fetch("head_sha", "").downcase
-    missing << "head_sha" if head_sha.empty? || (expected_head_sha && head_sha != expected_head_sha)
+    head_matches = !expected_head_sha || head_sha == expected_head_sha
+    missing << "head_sha" unless full_head_sha?(head_sha) && head_matches
     missing << "finding" if findings.empty?
     findings.each_with_index do |finding, index|
       %w[url severity disposition evidence].each do |field|
@@ -278,6 +281,10 @@ module CloseoutEvidenceReplay
   def tested_at_matches_head?(tested_at, expected_head_sha)
     full_shas = tested_at.scan(/(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])/i).map(&:downcase)
     full_shas.last == expected_head_sha.downcase
+  end
+
+  def full_head_sha?(value)
+    value.match?(/\A[0-9a-f]{40}\z/i)
   end
 
   def parse_findings(marker)
