@@ -116,7 +116,7 @@ module CloseoutEvidenceReplay
     head_sha = fields.fetch("head_sha", "").to_s.downcase
     release_blocking = fields.fetch("release_blocking", "").to_s
     process_gap_disposition = fields.fetch("process_gap_disposition", "").to_s
-    head_sha_valid = full_head_sha?(head_sha) || (required == "no" && head_sha == "not_applicable")
+    head_sha_valid = full_head_sha?(head_sha)
     final_head_mismatch = expected_head_sha && head_sha != expected_head_sha
     tested_at_head_mismatch = expected_head_sha &&
                               !tested_at_matches_head?(fields.fetch("tested_at", "").to_s, expected_head_sha)

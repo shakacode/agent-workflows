@@ -652,8 +652,8 @@ Evidence block whenever QA is required or explicitly not required:
 <!-- qa-evidence v1
 required: <yes | no>
 status: <satisfied | blocked | waived | in_progress | unknown | not_applicable>
-head_sha: <full 40-character current PR head SHA, or not_applicable only when there is no PR>
-tested_at: <PR/head SHA(s), audited range, or no-PR not applicable reason>
+head_sha: <full 40-character current PR or repository head SHA>
+tested_at: <PR/head SHA(s), audited range, or no-PR reason anchored to repository HEAD>
 scope: <changed areas, PRs, or release phase covered>
 automated_checks: <commands, CI links, or covered-by-worker-validation note>
 manual_checks: <manual smoke checks or not applicable>

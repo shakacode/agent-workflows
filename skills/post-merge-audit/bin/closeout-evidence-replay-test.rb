@@ -421,6 +421,26 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes data.fetch("qa_evidence").fetch("missing"), "head_sha"
   end
 
+  def test_not_required_qa_marker_still_requires_full_head_sha
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: no
+      status: not_applicable
+      head_sha: not_applicable
+      tested_at: no PR created
+      scope: issue disposition only
+      automated_checks: not applicable
+      manual_checks: not applicable
+      findings: none
+      release_blocking: not_applicable
+      process_gap_disposition: not applicable
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("qa_evidence").fetch("verdict")
+    assert_includes data.fetch("qa_evidence").fetch("missing"), "head_sha"
+  end
+
   def test_priority_marker_with_abbreviated_head_sha_is_unknown
     data = run_replay(<<~MARKDOWN)
       <!-- priority-finding-dispositions v1
