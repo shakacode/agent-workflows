@@ -1083,6 +1083,224 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_forwards_outer_arguments_when_inner_forwarding_is_single_quoted
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'bash -c \'exec bin/validate "$@"\' _'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), %(exec #{command} "$@")
+    end
+  end
+
+  def test_init_rejects_inner_shell_forwarding_without_a_dollar_zero_placeholder
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'bash -c \'exec bin/validate "$@"\'',
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c forwarding requires an explicit \$0 placeholder after the command string"
+      assert_includes out, "add _ before forwarded wrapper arguments"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_allows_literal_forwarding_text_in_an_inner_shell_payload
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'bash -c \'echo \\$@\''
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), %(exec #{command} "$@")
+    end
+  end
+
+  def test_init_rejects_double_quoted_shell_forwarding_without_a_dollar_zero_placeholder
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c "exec bin/validate \"$@\"")
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c has active outer argument expansion inside a double-quoted command string"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_rejects_active_outer_forwarding_in_a_double_quoted_shell_payload_even_with_placeholder
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c "exec bin/validate \"$@\"" _)
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c has active outer argument expansion inside a double-quoted command string"
+      assert_includes out, "use a single-quoted command string plus an explicit $0 placeholder"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_rejects_active_outer_forwarding_despite_inner_single_quote_characters
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c "echo '$@'" _)
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c has active outer argument expansion inside a double-quoted command string"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_requires_placeholder_for_outer_escaped_forwarding_in_a_double_quoted_payload
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c "exec bin/validate \"\$@\"")
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c forwarding requires an explicit $0 placeholder"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_allows_outer_escaped_forwarding_in_a_double_quoted_payload_with_placeholder
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c "exec bin/validate \"\$@\"" _)
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), %(exec #{command} "$@")
+    end
+  end
+
+  def test_init_handles_clustered_shell_command_options_with_placeholder_safety
+    {
+      "bash -lc" => "bash -lc",
+      "zsh -cl" => "zsh -cl"
+    }.each do |prefix, label|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "#{prefix.split.first} -c forwarding requires an explicit \$0 placeholder"
+
+      command = %(#{prefix} 'exec bin/validate "$@"' _)
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), label
+    end
+  end
+
+  def test_init_handles_wrapped_and_absolute_shell_commands_with_placeholder_safety
+    [
+      "env FOO=bar bash -c",
+      "/bin/bash -c"
+    ].each do |prefix|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit \$0 placeholder"
+
+      command = %(#{prefix} 'exec bin/validate "$@"' _)
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), prefix
+    end
+  end
+
+  def test_init_distinguishes_escaped_and_braced_outer_argument_forwarding
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'printf \\$@',
+        "--test-command", 'bin/test "${@}"'
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec printf \\$@ "$@"'
+      test = File.read(File.join(root, ".agents/bin/test"))
+      assert_includes test, 'exec bin/test "${@}"'
+      refute_includes test, 'bin/test "${@}" "$@"'
+    end
+  end
+
+  def test_init_rejects_an_assignment_only_command_with_quoted_forwarding_text
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "LABEL='\$@'",
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "assignment-only commands cannot safely forward wrapper arguments"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_rejects_argument_forwarding_text_inside_a_shell_comment
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'bin/validate # "$@" is documentation',
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "argument-forwarding text inside a shell comment is ambiguous"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_allows_commented_forwarding_text_after_real_outer_forwarding
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'echo "$@" # caller forwards "$@"'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")), "#{command}\n"
+    end
+  end
+
   def test_init_escapes_pipes_in_the_generated_readme_table
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       command = 'bin/validate "$@" | tee validate.log'
@@ -1497,6 +1715,143 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec npm run validate -- "$@"'
       assert_includes File.read(File.join(root, ".agents/bin/test")), "CI=1 npm run-script test -- \$@"
     end
+  end
+
+  def test_init_adds_npm_separator_immediately_after_script_operand_with_existing_arguments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'npm run validate --grep smoke "$@"',
+        "--test-command", "npm test --watch=false"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")),
+                      'exec npm run validate -- --grep smoke "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")),
+                      'exec npm test -- --watch=false "$@"'
+    end
+  end
+
+  def test_init_repositions_a_late_npm_separator_without_duplicating_it
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", 'npm run validate --grep smoke -- "$@"',
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, 'exec npm run validate -- --grep smoke "$@"'
+      refute_includes validate, '-- --grep smoke -- "$@"'
+    end
+  end
+
+  def test_init_preserves_an_existing_npm_separator_after_the_option_prefix
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = 'npm run validate --omit=dev -- --grep smoke "$@"'
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      assert status.success?, out
+      validate = File.read(File.join(root, ".agents/bin/validate"))
+      assert_includes validate, "exec #{command}"
+      refute_includes validate, "npm run validate -- -- --grep"
+    end
+  end
+
+  def test_init_preserves_npm_cli_options_after_the_script_operand
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run validate --workspace packages/core",
+        "--test-command", "npm test --ignore-scripts"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")),
+                      'exec npm run validate --workspace packages/core -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")),
+                      'exec npm test --ignore-scripts -- "$@"'
+    end
+  end
+
+  def test_init_preserves_generic_npm_cli_options_after_the_script_operand
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run validate --loglevel silent",
+        "--test-command", "npm test --silent"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")),
+                      'exec npm run validate --loglevel silent -- "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")),
+                      'exec npm test --silent -- "$@"'
+    end
+  end
+
+  def test_init_uses_exact_npm_config_key_and_arity_metadata_before_script_arguments
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run validate --omit=dev --color=false -w2 --grep smoke",
+        "--test-command", "npm test --omit dev --silent intent"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")),
+                      'exec npm run validate --omit=dev --color=false -w2 -- --grep smoke "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")),
+                      'exec npm test --omit dev --silent -- intent "$@"'
+    end
+  end
+
+  def test_init_preserves_dash_prefixed_values_for_required_npm_options
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "npm run validate --workspace --grep smoke",
+        "--test-command", "npm test --node-options --max-old-space-size=4096 --watch=false"
+      )
+
+      assert status.success?, out
+      assert_includes File.read(File.join(root, ".agents/bin/validate")),
+                      'exec npm run validate --workspace --grep -- smoke "$@"'
+      assert_includes File.read(File.join(root, ".agents/bin/test")),
+                      'exec npm test --node-options --max-old-space-size=4096 -- --watch=false "$@"'
+      assert_equal 'exec npm test --node-options=--max-old-space-size=4096 -- --watch=false "$@"',
+                   AgentWorkflowSeamDoctor.init_command_line(
+                     "npm test --node-options=--max-old-space-size=4096 --watch=false"
+                   )
+    end
+  end
+
+  def test_init_uses_vendored_npm_metadata_without_an_npm_executable
+    original_path = ENV.fetch("PATH", nil)
+    ENV["PATH"] = "/nonexistent"
+
+    command = AgentWorkflowSeamDoctor.init_command_line(
+      "npm test -ddd --quiet --yes --production --no-production --no-audit --npm-version 11.6.0 --watch=false"
+    )
+
+    assert_equal "exec npm test -ddd --quiet --yes --production --no-production --no-audit " \
+                 '--npm-version 11.6.0 -- --watch=false "$@"',
+                 command
+  ensure
+    ENV["PATH"] = original_path
   end
 
   def test_init_appends_missing_yaml_keys_without_losing_comments_or_formatting
