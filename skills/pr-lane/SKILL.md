@@ -26,8 +26,11 @@ Resolve the real repository first, then classify the target:
   `-`. Record the original user wording in the eventual PR body or no-PR
   evidence comment.
 
+Set `TARGET_KIND` to `issue`, `pr`, or `adhoc` during this classification.
+
 A full GitHub PR URL is authoritative for repository selection. Parse its URL
-authority (`host[:port]`) into `TARGET_HOST`, its `OWNER/REPO` into `REPO`, and its final numeric
+scheme into `TARGET_SCHEME`, its authority (`host[:port]`) into `TARGET_HOST`,
+its `OWNER/REPO` into `REPO`, and its final numeric
 path component into `TARGET_NUMBER` before using checkout metadata. Export
 `GH_HOST=${TARGET_HOST}` and use those parsed values for every `gh` and preflight
 call. Derive a deterministic host-qualified `COORD_REPO` for private
@@ -56,12 +59,26 @@ if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
 fi
 CHECKOUT_URL="$(env -u GH_HOST gh repo view --json url -q .url)"
 CHECKOUT_REPO="$(env -u GH_HOST gh repo view --json nameWithOwner -q .nameWithOwner)"
+CHECKOUT_SCHEME="${CHECKOUT_URL%%://*}"
 CHECKOUT_HOST="${CHECKOUT_URL#*://}"
 CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"
+TARGET_SCHEME="${TARGET_SCHEME:-${CHECKOUT_SCHEME}}"
 TARGET_HOST="${TARGET_HOST:-${CHECKOUT_HOST}}"
+case "${CHECKOUT_SCHEME}:${CHECKOUT_HOST}" in
+  https:*:443) CHECKOUT_HOST="${CHECKOUT_HOST%:443}" ;;
+  http:*:80) CHECKOUT_HOST="${CHECKOUT_HOST%:80}" ;;
+esac
+case "${TARGET_SCHEME}:${TARGET_HOST}" in
+  https:*:443) TARGET_HOST="${TARGET_HOST%:443}" ;;
+  http:*:80) TARGET_HOST="${TARGET_HOST%:80}" ;;
+esac
 export GH_HOST="${TARGET_HOST}"
 REPO="${REPO:-${CHECKOUT_REPO}}"
-: "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
+case "${TARGET_KIND:-}" in
+  issue|pr) : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}" ;;
+  adhoc) ;;
+  *) echo "Refusing to continue: set TARGET_KIND to issue, pr, or adhoc." >&2; exit 1 ;;
+esac
 COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${TARGET_HOST}/${REPO}")"
 if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO}" != "${REPO}" ]; then
   echo "Refusing to continue: switch temporarily to a trusted base checkout for ${REPO} before preflight." >&2
@@ -78,8 +95,14 @@ if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
     exit 1
   fi
 fi
-"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo "${REPO}" "${TARGET_NUMBER}"
+if [ "${TARGET_KIND}" != "adhoc" ]; then
+  "${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo "${REPO}" "${TARGET_NUMBER}"
+fi
 ```
+
+Ad-hoc lanes have no public issue or PR content to scan, so they skip only the
+security-preflight command above. They still resolve the trusted checkout,
+derive `COORD_REPO`, claim the ad-hoc `TARGET`, and follow every later lane gate.
 
 This checkout guard applies to the preflight phase, where the helper reads the
 repo-local trust configuration. For a fork PR, run preflight from a separate
