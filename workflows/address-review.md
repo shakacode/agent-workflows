@@ -93,8 +93,9 @@ Execution flow when terminal access is available:
    - Detect the standalone token `autopilot` (case-insensitive), set an `AUTOPILOT` flag, and remove only that token before parsing the PR reference. Do not treat bare `a` as `autopilot`; `a` is only a post-triage quick action.
    - Detect the exact phrase `check all reviews` (case-insensitive, trailing position only — it must be the final tokens after the PR reference), set a `CHECK_ALL_REVIEWS` flag, and remove only that phrase before parsing the PR reference. If the phrase appears in any other position, do not treat it as an override; warn and ask me to retry with the trailing form.
    - Before parsing input, capture the normalized already-authorized host from
-     `${GH_HOST:-github.com}`. A GHES URL requires the caller to set `GH_HOST`
-     explicitly before invocation.
+     `${GH_HOST:-github.com}`, lowercasing it and stripping the default HTTPS
+     `:443` port. A GHES URL requires the caller to set `GH_HOST` explicitly
+     before invocation.
    - If the input is a full GitHub URL, extract its scheme, normalized
      `host[:port]`, and `org/repo` before running `gh repo view`. Require HTTPS
      and an exact match with the already-authorized host; otherwise stop before

@@ -99,8 +99,9 @@ Then extract the PR number and optional review/comment ID from the remaining inp
 **URL parsing:**
 
 - Capture the already-authorized GitHub host before parsing: normalized
-  `${GH_HOST:-github.com}`. A GHES URL therefore requires the caller to set
-  `GH_HOST` explicitly before invoking this workflow.
+  `${GH_HOST:-github.com}`, stripping the default HTTPS `:443` port. A GHES URL
+  therefore requires the caller to set `GH_HOST` explicitly before invoking
+  this workflow.
 - Extract URL scheme, `host[:port]`, and org/repo from
   `{scheme}://{host[:port]}/{org}/{repo}/pull/{PR_NUMBER}`.
 - Extract fragment ID after `#` (e.g., `pullrequestreview-123456789` → `123456789`)
@@ -124,6 +125,9 @@ Then extract the PR number and optional review/comment ID from the remaining inp
 ```bash
 # Capture this before Step 1 parses untrusted URL input.
 TRUSTED_GITHUB_HOST="$(printf '%s' "${GH_HOST:-github.com}" | tr '[:upper:]' '[:lower:]')"
+case "${TRUSTED_GITHUB_HOST}" in
+  *:443) TRUSTED_GITHUB_HOST="${TRUSTED_GITHUB_HOST%:443}" ;;
+esac
 
 # Full-URL path: set URL_REPO, URL_HOST, and URL_SCHEME from Step 1.
 if [ -n "${URL_REPO:-}" ]; then

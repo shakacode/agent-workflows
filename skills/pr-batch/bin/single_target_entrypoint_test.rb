@@ -84,6 +84,7 @@ assert(workflow.include?("independent current-head review signal"), "canonical p
 assert(address_review.include?("## Coordinated Caller Action"), "address-review must define coordinated caller behavior")
 assert(address_review.include?("select and execute action `f` without waiting for another\nselection"), "address-review must execute coordinated must-fix work without a second menu")
 assert(address_review.include?("TRUSTED_GITHUB_HOST="), "address-review must capture the authorized host before parsing a PR URL")
+assert(address_review.include?("TRUSTED_GITHUB_HOST=\"${TRUSTED_GITHUB_HOST%:443}\""), "address-review must normalize a trusted host's default HTTPS port")
 assert(address_review.include?("Refusing untrusted GitHub URL: require HTTPS and authorized host"), "address-review must reject arbitrary PR URL hosts")
 assert(address_review_workflow.include?("COORDINATED_AUTOFIX=1"), "address-review workflow must document coordinated autofix")
 assert(address_review_workflow.include?("Require HTTPS\n     and an exact match with the already-authorized host"), "address-review workflow must reject arbitrary PR URL hosts")
