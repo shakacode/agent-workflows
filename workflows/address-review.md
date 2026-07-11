@@ -92,12 +92,16 @@ Execution flow when terminal access is available:
      - Optional standalone `autopilot` token before or after the PR reference
    - Detect the standalone token `autopilot` (case-insensitive), set an `AUTOPILOT` flag, and remove only that token before parsing the PR reference. Do not treat bare `a` as `autopilot`; `a` is only a post-triage quick action.
    - Detect the exact phrase `check all reviews` (case-insensitive, trailing position only — it must be the final tokens after the PR reference), set a `CHECK_ALL_REVIEWS` flag, and remove only that phrase before parsing the PR reference. If the phrase appears in any other position, do not treat it as an override; warn and ask me to retry with the trailing form.
-   - If the input is a full GitHub URL, extract the URL's `org/repo` before running `gh repo view`.
+   - If the input is a full GitHub URL, extract its scheme, normalized
+     `host[:port]`, and `org/repo` before running `gh repo view`.
    - Extract the PR number and optional review/comment ID.
 
 2. Determine repository:
-   - If step 1 extracted `org/repo` from a full GitHub URL, use that as `REPO`.
-   - Otherwise run: `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)`
+   - If step 1 extracted a full GitHub URL, use its `org/repo` as `REPO` and
+     export its normalized host as `GH_HOST`.
+   - Otherwise resolve both `nameWithOwner` and `url` with `gh repo view`, use
+     the checkout repository as `REPO`, derive `GH_HOST` from the URL, and
+     export it before coordination or review calls.
    - Set parsed identifiers before running later snippets:
      ```bash
      PR_NUMBER=<the PR number parsed in step 1>

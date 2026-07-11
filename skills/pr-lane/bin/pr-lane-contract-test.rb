@@ -78,6 +78,8 @@ class PrLaneContractTest < Minitest::Test
       assert_includes text, "boilerplate skipped items without an actionable thread"
       assert_includes text, "verification checkpoint"
       assert_includes text, "clean current-head review signal independent of this coordinated address-review run"
+      assert_includes text, "export"
+      assert_includes text, "GH_HOST"
     end
     assert_includes @address_review_actions, "COORDINATED_AUTOFIX"
     assert_includes @address_review_actions, "List every autonomously resolved thread"

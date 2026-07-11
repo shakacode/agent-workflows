@@ -98,28 +98,50 @@ Then extract the PR number and optional review/comment ID from the remaining inp
 
 **URL parsing:**
 
-- Extract org/repo from URL path: `github.com/{org}/{repo}/pull/{PR_NUMBER}`
+- Extract URL scheme, `host[:port]`, and org/repo from
+  `{scheme}://{host[:port]}/{org}/{repo}/pull/{PR_NUMBER}`.
 - Extract fragment ID after `#` (e.g., `pullrequestreview-123456789` → `123456789`)
-- If a full GitHub URL is provided, capture the URL's `org/repo` now so Step 2 can use it without calling `gh repo view`.
+- If a full GitHub URL is provided, capture its normalized lowercase host
+  (stripping `:443` for HTTPS and `:80` for HTTP) and `org/repo` now so Step 2
+  can use them without calling `gh repo view`.
 
 ## Step 2: Set Repository and Parsed IDs
 
-- If Step 1 extracted `org/repo` from a full GitHub URL, use that as `REPO`.
-- Otherwise, detect the repository from the current checkout.
+- If Step 1 extracted a full GitHub URL, use its `org/repo` as `REPO`, export
+  its normalized host as `GH_HOST`, and keep that identity for every later
+  GitHub and coordination call.
+- Otherwise, detect both repository and URL from the current checkout, derive
+  and export `GH_HOST` from that URL, then use the checkout repository.
 - Set `PR_NUMBER` to the number parsed in Step 1.
 - Set `COMMENT_ID` when Step 1 parsed a specific issue or review comment ID.
 - Set `REVIEW_ID` when Step 1 parsed a specific pull request review ID.
 - Set `SPECIFIC_TARGET` to `1` when Step 1 parsed a specific review/comment URL, otherwise `0`.
 
 ```bash
-REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)  # or the org/repo extracted from the PR URL in Step 1
+# Full-URL path: set URL_REPO and URL_HOST from Step 1.
+if [ -n "${URL_REPO:-}" ]; then
+  REPO="${URL_REPO}"
+  GH_HOST="${URL_HOST:?URL_HOST must accompany URL_REPO}"
+else
+  REPO="$(env -u GH_REPO gh repo view --json nameWithOwner -q .nameWithOwner)"
+  REPO_URL="$(env -u GH_REPO gh repo view --json url -q .url)"
+  REPO_SCHEME="${REPO_URL%%://*}"
+  GH_HOST="${REPO_URL#*://}"
+  GH_HOST="${GH_HOST%%/*}"
+  case "${REPO_SCHEME}:${GH_HOST}" in
+    https:*:443) GH_HOST="${GH_HOST%:443}" ;;
+    http:*:80) GH_HOST="${GH_HOST%:80}" ;;
+  esac
+fi
+GH_HOST="$(printf '%s' "${GH_HOST}" | tr '[:upper:]' '[:lower:]')"
+export GH_HOST
 PR_NUMBER=<the PR number parsed in Step 1>
 COMMENT_ID=<the issue/review comment ID parsed in Step 1, if any>
 REVIEW_ID=<the pull request review ID parsed in Step 1, if any>
 SPECIFIC_TARGET=<0-or-1>
 ```
 
-Every subsequent snippet uses `${REPO}`, `${PR_NUMBER}`, `${COMMENT_ID}`, `${REVIEW_ID}`, and `${SPECIFIC_TARGET}` as shell variables; setting them once here means no manual substitution is required later. If `gh repo view` fails (and no URL was supplied), ensure `gh` CLI is installed and authenticated (`gh auth status`).
+Every subsequent snippet uses `${GH_HOST}`, `${REPO}`, `${PR_NUMBER}`, `${COMMENT_ID}`, `${REVIEW_ID}`, and `${SPECIFIC_TARGET}` as shell variables; setting them once here means no manual substitution is required later. If `gh repo view` fails (and no URL was supplied), ensure `gh` CLI is installed and authenticated (`gh auth status`).
 
 ## Step 3: Determine Scan Window and Summary Cutoff
 
