@@ -590,6 +590,25 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_repo_option_resolution_failure_with_explicit_host_fails_closed
+    with_fake_gh("repo-view-failure") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-explicit-host-failure")
+      FileUtils.mkdir_p(consumer_root)
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.company.example"),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, 'Refusing to continue: could not verify "owner/repo" on explicit GH_HOST "github.company.example"'
+      refute_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
   def test_repo_option_host_resolution_failure_infers_enterprise_host_from_local_git
     with_fake_gh("repo-view-failure") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer-ghes-fallback")
