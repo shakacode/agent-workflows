@@ -144,6 +144,13 @@ installed workflow adjacent to the loaded skill pack, such as
 `../../workflows/pr-processing.md` from a skill directory. Do not guess another
 checkout, substitute a different host's home, or rewrite paths at install time.
 
+For a compatibility alias that delegates its entire policy to another skill,
+an explicit path still wins, but prefer a repo-pinned canonical skill before an
+installed sibling so the alias honors the consumer's compatibility choice. If a
+picker exposes only the alias text and not its loaded directory, a reliably
+identified host may use its shared skill home from the Host Table. Do not guess
+between host homes.
+
 ## Availability Checks
 
 Host-specific tools must be checked before use:
