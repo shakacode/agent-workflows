@@ -25,6 +25,7 @@ assert(batch.include?("for one direct-prompt task, the derived `adhoc:<yyyymmdd>
 assert(lane.include?("backward-compatibility alias"), "pr-lane must identify itself as an alias")
 assert(lane.include?("Immediately load and follow `$pr-batch`"), "pr-lane must route to pr-batch")
 assert(lane.include?("from `PR_BATCH_SKILL_DIR`"), "pr-lane must honor the explicit canonical skill path")
+assert(lane.index("from `PR_BATCH_SKILL_DIR`") < lane.index("Prefer the host's skill invocation"), "pr-lane must prefer an explicit canonical path before host invocation")
 assert(lane.include?("from a sibling of the loaded `pr-lane` directory"), "pr-lane must support single-skill picker loading")
 assert(lane.include?("repo-local `.agents/skills/pr-batch/SKILL.md`"), "pr-lane must support repo-local fallback loading")
 assert(lane.index("repo-local `.agents/skills/pr-batch/SKILL.md`") < lane.index("from a sibling of the loaded `pr-lane` directory"), "pr-lane must prefer pinned canonical policy over the installed sibling")

@@ -8,13 +8,13 @@ argument-hint: '[issue, PR, or task]'
 
 `$pr-lane` is a discoverability and backward-compatibility alias, not a separate
 operating workflow. Immediately load and follow `$pr-batch` in **Single-Target
-Mode** for the supplied task. Prefer the host's skill invocation when available.
-When a picker injects only this skill text, read the complete canonical
-`SKILL.md` from `PR_BATCH_SKILL_DIR` when that explicit environment variable is
-set, then repo-local `.agents/skills/pr-batch/SKILL.md`, then
-`pr-batch/SKILL.md` from a sibling of the loaded `pr-lane` directory. If a
-picker exposes neither nested invocation nor the loaded directory, resolve the
-active host from reliable runtime signals and read its installed shared copy at
+Mode** for the supplied task. First read the complete canonical `SKILL.md` from `PR_BATCH_SKILL_DIR`
+when that explicit environment variable is set, then from repo-local `.agents/skills/pr-batch/SKILL.md`.
+If neither override exists, stop checking
+overrides. Prefer the host's skill invocation when available, then read
+`pr-batch/SKILL.md` from a sibling of the loaded `pr-lane` directory. If a picker
+exposes neither nested invocation nor the loaded directory, resolve the active
+host from reliable runtime signals and read its installed shared copy at
 `${CODEX_HOME:-$HOME/.codex}/skills/pr-batch/SKILL.md` or
 `${CLAUDE_HOME:-$HOME/.claude}/skills/pr-batch/SKILL.md`. Do not guess between
 hosts. If none resolves, stop with a precise blocker; do not implement from this
