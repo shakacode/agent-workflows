@@ -1228,7 +1228,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   def test_init_preserves_all_arguments_for_dequoted_shell_payloads_with_placeholder
     [
       %q(bash -c exec\ bin/validate\ \"\$@\" _),
-      %q(bash -c $'exec bin/validate "$@"' _)
+      %q(bash -c $'exec bin/validate "$@"' _),
+      %q(bash -c $'exec bin/validate "\044\100"' _)
     ].each do |command|
       Dir.mktmpdir("agent-workflow-seam-init") do |root|
         FileUtils.mkdir_p(File.join(root, "bin"))
@@ -1275,6 +1276,82 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_requires_placeholder_for_octal_forwarding_in_an_ansi_c_quoted_shell_payload
+    [
+      %q(bash -c $'exec bin/validate "\044\100"'),
+      %q(bash -c $'exec bin/validate "\444\500"'),
+      %q(bash -c $'exec bin/validate "\044'$'\100'$'"')
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_requires_placeholder_for_hex_forwarding_in_an_ansi_c_quoted_shell_payload
+    command = %q(bash -c $'exec bin/validate "\x24\x40"')
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_requires_placeholder_for_unicode_forwarding_in_an_ansi_c_quoted_shell_payload
+    [
+      %q(bash -c $'exec bin/validate "\u0024\u0040"'),
+      %q(bash -c $'exec bin/validate "\U00000024\U00000040"'),
+      %q(bash -c $'exec bin/validate "\u0000\u0024\u0040"')
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_rejects_malformed_or_unsupported_ansi_c_escapes_in_a_shell_payload
+    [
+      %q(bash -c $'printf "\x"'),
+      %q(bash -c $'printf "\u"'),
+      %q(bash -c $'printf "\U00110000"'),
+      %q(bash -c $'printf "\c"'),
+      %q(bash -c $'printf "\q"')
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "cannot safely decode ANSI-C command string"
+    end
+  end
+
+  def test_init_allows_benign_supported_ansi_c_escapes_in_a_shell_payload
+    command = %q(bash -c $'printf "safe\nvalue\t\?"')
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
+  def test_init_allows_high_byte_octal_and_hex_ansi_c_escapes
+    [
+      %q(bash -c $'printf "\303\251"'),
+      %q(bash -c $'printf "\xc3\xa9"')
+    ].each do |command|
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_does_not_treat_escaped_ansi_c_escape_text_as_forwarding
+    [
+      %q(bash -c $'printf "\\\\044\\\\100"'),
+      %q(bash -c $'printf "\\\\x24\\\\x40"'),
+      %q(bash -c $'printf "\\\\u0024\\\\u0040"'),
+      %q(bash -c $'printf \047\044\100\047')
+    ].each do |command|
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
   def test_init_rejects_active_outer_forwarding_in_a_mixed_quoted_shell_payload
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       command = %q(bash -c 'printf SAFE; '"$@" _)
@@ -1304,6 +1381,31 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       command = %(#{prefix} 'exec bin/validate "$@"' _)
       assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), label
+    end
+  end
+
+  def test_init_applies_placeholder_safety_to_sh_family_shell_basenames
+    %w[ash dash ksh mksh posh].each do |shell|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, shell) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{shell} -c 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "#{shell} -c forwarding requires an explicit $0 placeholder"
+
+      command = %(#{shell} -c 'exec bin/validate "$@"' _)
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_applies_placeholder_safety_to_direct_busybox_shell_applets
+    %w[sh ash].each do |applet|
+      prefix = "busybox #{applet}"
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, prefix) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} -c 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "#{prefix} -c forwarding requires an explicit $0 placeholder"
+
+      command = %(#{prefix} -c 'exec bin/validate "$@"' _)
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
     end
   end
 
@@ -1714,6 +1816,19 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
                  AgentWorkflowSeamDoctor.init_command_line("npm --prefix=test run validate")
     assert_equal 'exec npm --workspace=run test -- "$@"',
                  AgentWorkflowSeamDoctor.init_command_line("npm --workspace=run test")
+  end
+
+  def test_init_consumes_supported_npm_options_between_run_and_the_script_operand
+    {
+      "npm run --workspace packages/core validate" =>
+        'exec npm run --workspace packages/core validate -- "$@"',
+      "npm run --workspace=packages/core validate" =>
+        'exec npm run --workspace=packages/core validate -- "$@"',
+      "npm run --silent validate" =>
+        'exec npm run --silent validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
   end
 
   def test_init_adds_npm_separator_for_run_script_alias

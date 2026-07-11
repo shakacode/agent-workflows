@@ -39,6 +39,8 @@ module AgentWorkflowSeamDoctor
     --desc --help --iwr --local --no --porcelain --quiet --readonly --silent --verbose --ws
   ].freeze
   SHELL_OPTIONS_WITH_ARGUMENT = %w[-o -O --init-file --rcfile].freeze
+  SHELL_COMMANDS = %w[ash bash dash ksh mksh posh sh zsh].freeze
+  BUSYBOX_SHELL_APPLETS = %w[ash sh].freeze
   # Generated from the union of npm 11.6.0 effective config keys and @npmcli/config definition types.
   # Boolean-capable keys consume no following token and support --no-*; all other keys require a
   # value unless supplied inline with `=`. The sole effective key outside the definitions is npm-version.
@@ -142,6 +144,7 @@ module AgentWorkflowSeamDoctor
   }.freeze
 
   class InitError < StandardError; end
+  class AnsiCDecodeError < StandardError; end
 
   module_function
 
@@ -401,7 +404,15 @@ module AgentWorkflowSeamDoctor
     return nil unless strip_command_prefixes!(tokens)
 
     shell = File.basename(tokens.fetch(0, {}).fetch(:value, ""))
-    return nil unless %w[bash sh zsh].include?(shell)
+    if shell == "busybox"
+      applet = tokens.fetch(1, {}).fetch(:value, "")
+      return nil unless BUSYBOX_SHELL_APPLETS.include?(applet)
+
+      tokens.shift
+      shell = "busybox #{applet}"
+    else
+      return nil unless SHELL_COMMANDS.include?(shell)
+    end
 
     command_string_index = shell_command_string_index(tokens)
     return nil unless command_string_index
@@ -413,7 +424,12 @@ module AgentWorkflowSeamDoctor
              "use a single-quoted command string plus an explicit $0 placeholder"
     end
 
-    forwarding = outer_argument_forwarding?(command_token&.fetch(:value, "").to_s)
+    begin
+      command_value = ansi_c_decoded_shell_word(raw_command.to_s) || command_token&.fetch(:value, "").to_s
+    rescue AnsiCDecodeError => e
+      return "#{shell} -c cannot safely decode ANSI-C command string: #{e.message}"
+    end
+    forwarding = outer_argument_forwarding?(command_value)
     return nil unless forwarding
 
     placeholder = tokens[command_string_index + 1]
@@ -423,6 +439,113 @@ module AgentWorkflowSeamDoctor
     end
   rescue ArgumentError
     nil
+  end
+
+  def ansi_c_decoded_shell_word(raw)
+    rewritten = +""
+    found = false
+    quote = nil
+    index = 0
+
+    while index < raw.length
+      character = raw[index]
+      if quote
+        rewritten << character
+        if quote == '"' && character == "\\"
+          index += 1
+          rewritten << raw[index].to_s
+        elsif character == quote
+          quote = nil
+        end
+      elsif character == "\\"
+        rewritten << character
+        index += 1
+        rewritten << raw[index].to_s
+      elsif ["'", '"'].include?(character)
+        quote = character
+        rewritten << character
+      elsif character == "$" && raw[index + 1] == "'"
+        decoded, finish = decode_ansi_c_segment(raw, index + 2)
+        rewritten << Shellwords.escape(decoded)
+        found = true
+        index = finish
+      else
+        rewritten << character
+      end
+      index += 1
+    end
+    return nil unless found
+
+    words = Shellwords.shellsplit(rewritten)
+    raise ArgumentError, "ANSI-C shell tokenization mismatch" unless words.one?
+
+    words.fetch(0)
+  end
+
+  def decode_ansi_c_segment(raw, index)
+    decoded = +""
+    while index < raw.length
+      character = raw[index]
+      return [decoded, index] if character == "'"
+
+      unless character == "\\"
+        decoded << character
+        index += 1
+        next
+      end
+
+      index += 1
+      escape = raw[index]
+      raise AnsiCDecodeError, "trailing backslash escape" unless escape
+
+      if escape.match?(/[0-7]/)
+        digits = raw[index, 3].to_s[/\A[0-7]{1,3}/]
+        value = digits.to_i(8)
+        decoded << ansi_c_byte_for_syntax(value)
+        index += digits.length
+      elsif escape == "x"
+        digits = raw[index + 1, 2].to_s[/\A[0-9A-Fa-f]{1,2}/]
+        raise AnsiCDecodeError, "hex escape requires at least one digit" unless digits
+
+        value = digits.to_i(16)
+        decoded << ansi_c_byte_for_syntax(value)
+        index += digits.length + 1
+      elsif %w[u U].include?(escape)
+        limit = escape == "u" ? 4 : 8
+        digits = raw[index + 1, limit].to_s[/\A[0-9A-Fa-f]{1,#{limit}}/]
+        raise AnsiCDecodeError, "Unicode escape requires at least one digit" unless digits
+
+        value = digits.to_i(16)
+        if value > 0x10ffff || value.between?(0xd800, 0xdfff)
+          raise AnsiCDecodeError, "Unicode escape is not a scalar value"
+        end
+
+        decoded << value.chr(Encoding::UTF_8) unless value.zero?
+        index += digits.length + 1
+      elsif (value = {
+        "a" => "\a", "b" => "\b", "e" => "\e", "E" => "\e", "f" => "\f", "n" => "\n",
+        "r" => "\r", "t" => "\t", "v" => "\v", '"' => '"', "?" => "?"
+      }[escape])
+        decoded << value
+        index += 1
+      elsif escape == "\\" || escape == "'"
+        decoded << escape
+        index += 1
+      else
+        raise AnsiCDecodeError, "unsupported escape \\#{escape}"
+      end
+    end
+    raise AnsiCDecodeError, "unterminated ANSI-C quote"
+  end
+
+  def ansi_c_byte_for_syntax(value)
+    byte = value & 0xff
+    return "" if byte.zero?
+    return byte.chr if byte < 0x80
+
+    # High bytes cannot introduce ASCII shell syntax. A valid UTF-8 sentinel keeps analysis safe
+    # while the original ANSI-C command remains byte-for-byte unchanged in the generated wrapper.
+    "\ufffd"
   end
 
   def shell_command_string_index(tokens)
@@ -564,9 +687,13 @@ module AgentWorkflowSeamDoctor
     return nil unless command_index
 
     npm_command = words.fetch(command_index)
-    return nil if NPM_RUN_COMMANDS.include?(npm_command) && !words[command_index + 1]
+    operand_index = if NPM_RUN_COMMANDS.include?(npm_command)
+                      npm_run_script_operand_index(words, command_index)
+                    else
+                      command_index
+                    end
+    return nil unless operand_index
 
-    operand_index = command_index + (NPM_RUN_COMMANDS.include?(npm_command) ? 1 : 0)
     {
       words:,
       command_index:,
@@ -578,6 +705,24 @@ module AgentWorkflowSeamDoctor
       tokens:
     }
   rescue ArgumentError
+    nil
+  end
+
+  def npm_run_script_operand_index(words, command_index)
+    index = command_index + 1
+    while (word = words[index])
+      return index unless word.start_with?('-') && word != '-'
+
+      metadata = npm_option_metadata(word)
+      return nil unless metadata
+
+      index += 1
+      next unless metadata == :required
+
+      return nil unless words[index]
+
+      index += 1
+    end
     nil
   end
 
