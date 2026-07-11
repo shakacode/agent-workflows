@@ -61,5 +61,10 @@ assert(workflow.include?("heartbeat --help"), "canonical coordination must prese
 assert(workflow.include?("--thread-handle"), "canonical coordination must preserve extended lane metadata")
 assert(workflow.include?("`coordination_backend: n/a`"), "canonical coordination must define no-backend single-target behavior")
 assert(workflow.include?("single-operator assumption in the Lane Card and final handoff"), "no-backend mode must preserve its assumption in evidence")
+assert(workflow.include?("a derived `adhoc:<yyyymmdd>-<short-slug>` target"), "canonical intake must accept direct-prompt task targets")
+assert(workflow.include?("Do not pass `adhoc:` targets to `pr-security-preflight`"), "ad-hoc targets must not be sent to the GitHub preflight helper")
+assert(workflow.include?("Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`"), "canonical goal handoff must represent ad-hoc task items")
+assert(workflow.include?("Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`"), "canonical file-touch map must represent ad-hoc task lanes")
+assert(workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff"), "canonical final handoff must support ad-hoc no-PR evidence")
 
 puts "PASS pr-batch single-target entry point contract"
