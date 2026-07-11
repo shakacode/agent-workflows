@@ -85,13 +85,23 @@ module CloseoutEvidenceReplay
   def replay_qa_markers(markers, expected_head_sha: nil)
     return unknown("qa-evidence marker missing") if markers.empty?
 
+    markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
     aggregate_marker_results(markers.map { |marker| replay_qa(marker, expected_head_sha: expected_head_sha) })
   end
 
   def replay_priority_markers(markers, expected_head_sha: nil)
     return priority_not_applicable("priority-finding-dispositions marker missing") if markers.empty?
 
+    markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
     aggregate_marker_results(markers.map { |marker| replay_priority(marker, expected_head_sha:) })
+  end
+
+  def current_head_markers(markers, expected_head_sha)
+    matching = markers.select do |marker|
+      fields, = parse_fields(marker)
+      fields.fetch("head_sha", "").downcase == expected_head_sha
+    end
+    matching.empty? ? markers : matching
   end
 
   def replay_qa(marker, expected_head_sha: nil)

@@ -698,8 +698,10 @@ the final full SHA token in `tested_at` (the endpoint for an audited range). It
 also returns `UNKNOWN` when a priority-disposition marker records another head.
 Full hexadecimal SHA comparisons are case-normalized. Repeated scalar marker or
 per-finding keys also return `UNKNOWN` instead of overwriting earlier values.
-Historical evidence remains replayable without this option, but it does not
-qualify as current-head readiness evidence.
+When append-only history contains both old and current-head markers, the gate
+replays the current-head markers; when no current marker exists, stale markers
+remain `UNKNOWN`. Historical evidence remains replayable without this option,
+but it does not qualify as current-head readiness evidence.
 
 `Release-blocking status` is derived from `QA lane status`: `satisfied` ->
 `clear`, `blocked` -> `blocked`, `waived` -> `waived`, `not_applicable` ->

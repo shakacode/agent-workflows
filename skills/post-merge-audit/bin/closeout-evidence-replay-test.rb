@@ -194,6 +194,51 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal final_head_sha, priority.fetch("expected_head_sha")
   end
 
+  def test_expected_final_head_uses_current_markers_from_appended_history
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{stale_head_sha}
+      tested_at: PR #70 head #{stale_head_sha}
+      scope: old change
+      automated_checks: old checks
+      manual_checks: old smoke
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: final change
+      automated_checks: final checks
+      manual_checks: final smoke
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+      <!-- priority-finding-dispositions v1
+      head_sha: #{stale_head_sha}
+      finding: url=https://example.test/review/old | severity=P1 | disposition=fixed | evidence=https://example.test/pr/70#old
+      -->
+      <!-- priority-finding-dispositions v1
+      head_sha: #{final_head_sha}
+      finding: url=https://example.test/review/current | severity=P1 | disposition=fixed | evidence=https://example.test/pr/70#current
+      -->
+    MARKDOWN
+
+    assert_equal "SATISFIED", data.fetch("overall_verdict")
+    assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
+    assert_equal "SATISFIED", data.fetch("priority_finding_dispositions").fetch("verdict")
+    assert_equal 1, data.fetch("qa_evidence").fetch("marker_count")
+    assert_equal 1, data.fetch("priority_finding_dispositions").fetch("marker_count")
+  end
+
   def test_expected_final_head_normalizes_hex_case
     uppercase_head_sha = "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD"
     lowercase_head_sha = uppercase_head_sha.downcase
