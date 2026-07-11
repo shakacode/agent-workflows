@@ -1739,6 +1739,22 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
   end
 
+  def test_init_fails_closed_for_an_ansi_c_escaped_quote_even_with_a_safe_placeholder
+    command = <<~'COMMAND'.chomp
+      bash -c $'printf "<%s>\\n" "it\'s safe"' _
+    COMMAND
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "cannot safely parse command"
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command.delete_suffix(" _"))
+    end
+    assert_includes error.message, "cannot safely parse command"
+  end
+
   def test_init_allows_high_byte_octal_and_hex_ansi_c_escapes
     [
       %q(bash -c $'printf "\303\251"'),
@@ -3283,6 +3299,77 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_includes File.read(File.join(root, ".agents/bin/test")),
                       'exec npm test --omit dev --silent -- intent "$@"'
     end
+  end
+
+  def test_init_consumes_separated_optional_npm_config_values
+    {
+      "npm run validate --audit false" => 'exec npm run validate --audit false -- "$@"',
+      "npm run validate --color always" => 'exec npm run validate --color always -- "$@"',
+      "npm run validate --col always" => 'exec npm run validate --col always -- "$@"',
+      "npm run validate --no-audit false" => 'exec npm run validate --no-audit false -- "$@"',
+      "npm run validate --ignore-scripts false" =>
+        'exec npm run validate --ignore-scripts false -- "$@"',
+      "npm run validate -g false" => 'exec npm run validate -g false -- "$@"',
+      "npm run validate --audit" => 'exec npm run validate --audit -- "$@"',
+      "npm run validate --audit --color always" =>
+        'exec npm run validate --audit --color always -- "$@"',
+      "npm run validate --audit false -- --grep smoke" =>
+        'exec npm run validate --audit false -- --grep smoke "$@"',
+      "npm --audit false run validate" => 'exec npm --audit false run validate -- "$@"',
+      "npm run --color always validate" => 'exec npm run --color always validate -- "$@"',
+      "npm -g false test" => 'exec npm -g false test -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+  end
+
+  def test_init_preserves_optional_npm_values_in_a_generated_wrapper_at_runtime
+    Dir.mktmpdir("agent-workflow-seam-init-npm") do |root|
+      {
+        ["audit", "--audit", "false"] => "false",
+        ["color", "--color", "always"] => "always",
+        ["global", "-g", "false"] => "false",
+        ["audit", "--no-audit", "false"] => "true"
+      }.each do |arguments, expected|
+        config_out, config_status = Open3.capture2e("npm", "config", "get", *arguments)
+        assert config_status.success?, config_out
+        assert_equal expected, config_out.strip, arguments.join(" ")
+      end
+
+      marker = File.join(root, "npm-options.json")
+      node_program = <<~'JAVASCRIPT'.tr("\n", " ").strip
+        require("fs").writeFileSync(process.env.MARKER, JSON.stringify({
+          args: process.argv.slice(1)
+        }))
+      JAVASCRIPT
+      File.write(
+        File.join(root, "package.json"),
+        JSON.generate(
+          "name" => "npm-options-runtime",
+          "version" => "1.0.0",
+          "scripts" => { "capture" => "node -e #{Shellwords.escape(node_program)}" }
+        )
+      )
+      command = AgentWorkflowSeamDoctor.init_command_line(
+        "npm run capture --audit false --color always -g false"
+      )
+
+      out, status = Open3.capture2e(
+        { "MARKER" => marker }, "bash", "-c", command, "_", "CALLER", chdir: root
+      )
+
+      assert status.success?, out
+      assert_equal({ "args" => ["CALLER"] }, JSON.parse(File.read(marker)))
+    end
+  end
+
+  def test_init_rejects_a_post_script_required_npm_option_without_a_value
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line("npm run validate -w")
+    end
+
+    assert_includes error.message, 'npm option "-w" requires a value'
+    assert_includes error.message, "place npm options before the script name"
   end
 
   def test_init_preserves_dash_prefixed_values_for_required_npm_options
