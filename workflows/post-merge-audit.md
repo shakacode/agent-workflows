@@ -61,7 +61,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   cannot be verified because the coordination backend is unavailable.
 - When batch work is in scope but the batch/run id was not supplied and is not
   obvious from the current visible chat, record `worked_issue_scope: UNKNOWN
-  (needs batch confirmation)`. If candidate discovery cannot verify backend
+(needs batch confirmation)`. If candidate discovery cannot verify backend
   setup or access, record `UNKNOWN (setup)` or `UNKNOWN (access)` with the exact
   command/error, and ask before deep audit whether to wait for backend recovery
   or proceed with an explicitly `UNKNOWN` worked-issue scope.
@@ -238,9 +238,12 @@ state to shrink the worked-issue scope; report it as a QA coverage finding or
 `UNKNOWN` fact instead. When the handoff includes `qa-evidence v1` or
 `priority-finding-dispositions v1` markers, resolve
 `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill / repo-local chain,
-then run `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` against
-the PR body, handoff comment, or saved evidence file and carry `BLOCKED` /
-`UNKNOWN` replay as a QA or priority-disposition finding.
+then run `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` separately
+for each PR body, handoff comment, or saved evidence file with
+`--expected-head-sha <full-merged-head-SHA>`. Add
+`--require-priority-dispositions` when the audit relies on fixed, waived, or
+deferred priority findings. Carry `BLOCKED` / `UNKNOWN` replay as a QA or
+priority-disposition finding.
 
 Show the included/excluded worked issues, collected QA lanes and QA Evidence
 blocks, advisory `codex-claim` rows, excluded range PRs, audit coverage

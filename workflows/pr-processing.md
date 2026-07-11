@@ -671,7 +671,7 @@ work remains the source of truth when the repo adopts one:
 ```markdown
 <!-- priority-finding-dispositions v1
 head_sha: <full 40-character current PR head SHA>
-finding: url=<review/thread/check URL> | severity=<P0|P1|P2|Must-Fix|BLOCKING> | disposition=<fixed|waived|false_positive|not_applicable|deferred_with_issue> | evidence=<PR comment, commit, test, or thread URL> | waiver=<maintainer waiver URL when waived>
+finding: url=<review/thread/check URL> | severity=<P0|P1|P2|P3|Must-Fix|BLOCKING> | disposition=<fixed|waived|false_positive|not_applicable|deferred_with_issue> | evidence=<PR comment, commit, test, or thread URL> | waiver=<maintainer waiver URL when waived>
 -->
 ```
 

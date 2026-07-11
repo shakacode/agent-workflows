@@ -15,7 +15,7 @@ module CloseoutEvidenceReplay
   VALID_QA_REQUIRED = %w[yes no].freeze
   VALID_RELEASE_BLOCKING = %w[clear blocked waived not_applicable].freeze
   VALID_PROCESS_GAP_DISPOSITIONS = ["script", "schema", "checklist+replay", "park", "not applicable", "not_applicable"].freeze
-  VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 Must-Fix BLOCKING].freeze
+  VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
 
   def run(argv)

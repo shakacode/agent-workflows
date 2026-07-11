@@ -498,6 +498,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes data.fetch("priority_finding_dispositions").fetch("missing"), "head_sha"
   end
 
+  def test_p3_priority_follow_up_is_satisfied
+    data = run_replay(<<~MARKDOWN)
+      <!-- priority-finding-dispositions v1
+      head_sha: 1111111111111111111111111111111111111111
+      finding: url=https://example.test/review/3 | severity=P3 | disposition=deferred_with_issue | evidence=https://example.test/issues/123
+      -->
+    MARKDOWN
+
+    assert_equal "SATISFIED", data.fetch("priority_finding_dispositions").fetch("verdict")
+  end
+
   def test_waived_qa_marker_preserves_waived_overall
     data = run_replay(<<~MARKDOWN)
       <!-- qa-evidence v1
