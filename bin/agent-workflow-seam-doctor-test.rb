@@ -1307,6 +1307,42 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_consumes_shell_option_values_before_finding_the_command_string_option
+    ["bash -o posix -c", "bash -O extglob -c"].each do |prefix|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit \$0 placeholder"
+
+      command = %(#{prefix} 'exec bin/validate "$@"' _)
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), prefix
+    end
+  end
+
+  def test_init_consumes_values_for_options_clustered_with_the_command_string_option
+    ["bash -clo posix", "bash -oc posix"].each do |prefix|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit \$0 placeholder"
+
+      command = %(#{prefix} 'exec bin/validate "$@"' _)
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), prefix
+    end
+  end
+
+  def test_init_does_not_treat_shell_script_operands_as_command_string_options
+    command = %q(bash script.sh -c 'echo "$@"')
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
+  def test_init_stops_shell_command_string_detection_at_the_option_terminator
+    command = %q(bash -- -c 'echo "$@"')
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
   def test_init_handles_wrapped_and_absolute_shell_commands_with_placeholder_safety
     [
       "env FOO=bar bash -c",
@@ -1666,6 +1702,20 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_consumes_separated_npm_option_values_before_finding_the_lifecycle_command
+    assert_equal 'exec npm --prefix test run validate -- "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line("npm --prefix test run validate")
+    assert_equal 'exec npm --workspace run test -- "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line("npm --workspace run test")
+  end
+
+  def test_init_consumes_attached_npm_option_values_before_finding_the_lifecycle_command
+    assert_equal 'exec npm --prefix=test run validate -- "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line("npm --prefix=test run validate")
+    assert_equal 'exec npm --workspace=run test -- "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line("npm --workspace=run test")
+  end
+
   def test_init_adds_npm_separator_for_run_script_alias
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
@@ -1839,6 +1889,77 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_includes validate, 'exec npm run validate -- --grep smoke "$@"'
       refute_includes validate, '-- --grep smoke -- "$@"'
     end
+  end
+
+  def test_init_moves_known_npm_options_before_positional_script_arguments
+    assert_equal 'exec npm run validate --workspace packages/core -- smoke "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line(
+                   "npm run validate smoke --workspace packages/core"
+                 )
+    assert_equal 'exec npm run validate --workspace packages/core -- smoke "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line(
+                   'npm run validate smoke --workspace packages/core -- "$@"'
+                 )
+  end
+
+  def test_init_keeps_unknown_script_options_ordered_after_known_npm_options
+    assert_equal 'exec npm run validate --workspace packages/core -- --grep smoke --watch=false "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line(
+                   "npm run validate --grep smoke --workspace packages/core --watch=false"
+                 )
+  end
+
+  def test_init_recognizes_unique_npm_long_option_abbreviations
+    assert_equal 'exec npm test --sil -- smoke "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line("npm test smoke --sil")
+    assert_equal 'exec npm test -- smoke --worksp packages/core "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line(
+                   "npm test smoke --worksp packages/core"
+                 )
+  end
+
+  def test_init_preserves_workspace_execution_when_a_known_option_follows_a_script_argument
+    Dir.mktmpdir("agent-workflow-seam-init-npm") do |root|
+      marker = File.join(root, "which-script")
+      node_program = "require('fs').writeFileSync(process.argv[1], process.argv[2] + ':' + " \
+                     "JSON.stringify(process.argv.slice(3)))"
+      script = lambda do |label|
+        "node -e #{Shellwords.escape(node_program)} #{Shellwords.escape(marker)} #{label}"
+      end
+      File.write(
+        File.join(root, "package.json"),
+        JSON.generate(
+          "name" => "root",
+          "version" => "1.0.0",
+          "workspaces" => ["packages/*"],
+          "scripts" => { "echoargs" => script.call("ROOT") }
+        )
+      )
+      workspace = File.join(root, "packages/core")
+      FileUtils.mkdir_p(workspace)
+      File.write(
+        File.join(workspace, "package.json"),
+        JSON.generate(
+          "name" => "core",
+          "version" => "1.0.0",
+          "scripts" => { "echoargs" => script.call("WORKSPACE") }
+        )
+      )
+
+      command = AgentWorkflowSeamDoctor.init_command_line(
+        "npm run echoargs smoke --workspace packages/core --"
+      )
+      out, status = Open3.capture2e("bash", "-c", command, chdir: root)
+
+      assert status.success?, out
+      assert_equal 'WORKSPACE:["smoke"]', File.read(marker)
+    end
+  end
+
+  def test_init_preserves_an_immediate_npm_separator_as_authoritative
+    command = "npm run validate -- --workspace packages/core --grep smoke"
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
   end
 
   def test_init_preserves_an_existing_npm_separator_after_the_option_prefix
