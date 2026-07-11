@@ -1114,6 +1114,173 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_rejects_inner_shell_forwarding_without_a_placeholder_after_clustered_env_flags
+    runtime_out, _runtime_err, runtime_status = Open3.capture3(
+      "env", "-iv", "bash", "-c", 'printf "%s\\n" "$@"', "FIRST", "SECOND"
+    )
+    assert runtime_status.success?, runtime_out
+    assert_equal "SECOND\n", runtime_out
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(%q(env -iv bash -c 'exec bin/validate "$@"'))
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_preserves_runtime_arguments_after_clustered_env_flags_with_a_placeholder
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/usr/bin/env sh\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      command = %q(env -iv bash -c 'exec bin/validate "$@"' _)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+      assert status.success?, out
+
+      runtime_out, _runtime_err, runtime_status = Open3.capture3(
+        File.join(root, ".agents/bin/validate"), "FIRST", "SECOND"
+      )
+      assert runtime_status.success?, runtime_out
+      assert_equal "<FIRST>\n<SECOND>\n", runtime_out
+    end
+  end
+
+  def test_init_consumes_attached_operands_in_clustered_env_short_options
+    {
+      %q(env -iuCI bash -c 'exec bin/validate "$@"' _) =>
+        %q(exec env -iuCI bash -c 'exec bin/validate "$@"' _ "$@"),
+      %q(env -iC/tmp bash -c 'exec bin/validate "$@"' _) =>
+        %q(exec env -iC/tmp bash -c 'exec bin/validate "$@"' _ "$@")
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_consumes_gnu_long_env_option_operands_attached_with_equals
+    command = %q(env --unset=CI --chdir=/tmp bash -c 'exec bin/validate "$@"' _)
+
+    assert_equal %q(exec env --unset=CI --chdir=/tmp bash -c 'exec bin/validate "$@"' _ "$@"),
+                 AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
+  def test_init_fails_closed_when_an_env_option_operand_consumes_the_last_token
+    [
+      "env -iu CI",
+      "env -iC /tmp",
+      "env --unset CI",
+      "env --chdir /tmp"
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "cannot safely parse env command prefix"
+    end
+  end
+
+  def test_init_fails_closed_when_env_has_only_assignments_or_an_empty_split_string
+    [
+      "env -i FOO=bar",
+      "env FOO=bar",
+      "env -iu CI FOO=bar",
+      "env -- FOO=bar",
+      "env -S ''",
+      "env -ivS ''",
+      "env --split-string ''",
+      "env --split-string="
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "cannot safely parse env command prefix"
+    end
+  end
+
+  def test_init_accepts_env_assignments_followed_by_a_utility
+    {
+      "env -i FOO=bar npm run validate" => 'exec env -i FOO=bar npm run validate -- "$@"',
+      "env FOO=bar npm run validate" => 'exec env FOO=bar npm run validate -- "$@"',
+      "env -iu CI FOO=bar npm run validate" => 'exec env -iu CI FOO=bar npm run validate -- "$@"',
+      "env -- FOO=bar npm run validate" => 'exec env -- FOO=bar npm run validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_preserves_exec_as_a_literal_env_utility
+    {
+      "env exec" => 'exec env exec "$@"',
+      "env FOO=bar exec" => 'exec env FOO=bar exec "$@"',
+      "env exec npm run validate" => 'exec env exec npm run validate "$@"',
+      "env FOO=bar exec npm run validate" => 'exec env FOO=bar exec npm run validate "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_accepts_attached_empty_long_env_operands_followed_by_a_utility
+    {
+      "env --unset= npm run validate" => 'exec env --unset= npm run validate -- "$@"',
+      "env --chdir= npm run validate" => 'exec env --chdir= npm run validate -- "$@"',
+      "env --split-string= npm run validate" => 'exec env --split-string= npm run validate -- "$@"',
+      "env --argv0= npm run validate" => 'exec env --argv0= npm run validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_accepts_empty_separate_split_string_operands_followed_by_a_utility
+    {
+      "env -S '' npm run validate" => 'exec env -S \'\' npm run validate -- "$@"',
+      "env -ivS '' npm run validate" => 'exec env -ivS \'\' npm run validate -- "$@"',
+      "env --split-string '' npm run validate" => 'exec env --split-string \'\' npm run validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_accepts_next_token_env_option_operands_followed_by_a_utility
+    {
+      "env -iu CI npm run validate" => 'exec env -iu CI npm run validate -- "$@"',
+      "env -iC /tmp npm run validate" => 'exec env -iC /tmp npm run validate -- "$@"',
+      "env --unset CI npm run validate" => 'exec env --unset CI npm run validate -- "$@"',
+      "env --chdir /tmp npm run validate" => 'exec env --chdir /tmp npm run validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_fails_closed_for_unknown_or_malformed_env_options
+    [
+      %q(env -x bash -c 'exec bin/validate "$@"'),
+      %q(env -ivx bash -c 'exec bin/validate "$@"'),
+      %q(env --unknown bash -c 'exec bin/validate "$@"'),
+      "env -u",
+      "env -ivC",
+      "env -ivS"
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "cannot safely parse env command prefix"
+    end
+  end
+
+  def test_init_preserves_clustered_env_split_string_commands_verbatim
+    [
+      "env -ivS 'npm run validate'",
+      "env -ivS'npm run validate'",
+      "env --split-string 'npm run validate'"
+    ].each do |command|
+      assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
   def test_init_rejects_a_shell_comment_in_place_of_the_dollar_zero_placeholder
     command = 'bash -c \'exec bin/validate "$@"\' # not a placeholder'
 
@@ -2225,6 +2392,18 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert status.success?, out
       assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env -u CI npm run validate -- "$@"'
       assert_includes File.read(File.join(root, ".agents/bin/test")), 'exec env --chdir app --ignore-environment npm run-script test -- "$@"'
+    end
+  end
+
+  def test_init_adds_npm_separator_after_clustered_env_utility_options
+    {
+      "env -iv npm run validate" => 'exec env -iv npm run validate -- "$@"',
+      "env -iuCI npm run validate" => 'exec env -iuCI npm run validate -- "$@"',
+      "env -iC/tmp npm run validate" => 'exec env -iC/tmp npm run validate -- "$@"',
+      "env --unset=CI --chdir=/tmp npm run validate" =>
+        'exec env --unset=CI --chdir=/tmp npm run validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command)
     end
   end
 

@@ -402,7 +402,9 @@ module AgentWorkflowSeamDoctor
 
   def shell_c_forwarding_error(command)
     tokens = shell_word_spans(command)
-    return nil unless strip_command_prefixes!(tokens)
+    unless strip_command_prefixes!(tokens)
+      return "cannot safely parse env command prefix; use supported env options with their required values"
+    end
 
     shell = File.basename(tokens.fetch(0, {}).fetch(:value, ""))
     if UNSUPPORTED_C_SHELL_COMMANDS.include?(shell)
@@ -738,15 +740,33 @@ module AgentWorkflowSeamDoctor
 
     while (option = words.shift)
       return false if option == "--"
-      return true if %w[-S --split-string].include?(option) ||
-                     option.match?(/\A-S.+/) || option.match?(/\A--split-string=.+/)
+
+      if %w[-S --split-string].include?(option)
+        argument = words.shift
+        return true if argument && !argument.empty?
+
+        next
+      end
+      return true if option.match?(/\A-S.+/)
+
+      if option.match?(/\A--(?:unset|chdir|split-string|argv0)=/)
+        return true if option.match?(/\A--split-string=.+/)
+
+        next
+      end
 
       if ENV_OPTIONS_WITH_ARGUMENT.include?(option)
         words.shift
       elsif ENV_OPTIONS_WITHOUT_ARGUMENT.include?(option) ||
-            option.match?(/\A(?:-u|-C).+/) ||
-            option.match?(/\A--(?:unset|chdir|argv0)=.+/)
+            option.match?(/\A(?:-u|-C).+/)
         next
+      elsif (metadata = clustered_env_short_option_metadata(option))
+        if metadata.fetch(:argument) == :next
+          argument = words.shift
+          return true if metadata.fetch(:split_string) && argument && !argument.empty?
+        elsif metadata.fetch(:split_string)
+          return true
+        end
       else
         return false
       end
@@ -835,7 +855,6 @@ module AgentWorkflowSeamDoctor
       return false unless discard_env_options!(tokens, value_key: :value)
 
       tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-      tokens.shift if tokens.first&.fetch(:value) == "exec"
     end
     true
   end
@@ -971,22 +990,54 @@ module AgentWorkflowSeamDoctor
 
   def discard_env_options!(words, value_key: nil)
     value = ->(word) { value_key ? word.fetch(value_key) : word }
+    split_string = false
     while words.first && value.call(words.first).start_with?("-")
       option = words.shift
       option = value.call(option)
       break if option == "--"
 
       if ENV_OPTIONS_WITH_ARGUMENT.include?(option)
-        return false unless words.shift
-      elsif ENV_OPTIONS_WITHOUT_ARGUMENT.include?(option) ||
-            option.match?(/\A(?:-u|-C|-S).+/) ||
-            option.match?(/\A--(?:unset|chdir|split-string|argv0)=.+/)
+        argument = words.shift
+        return false unless argument
+
+        split_string ||= %w[-S --split-string].include?(option) && !value.call(argument).empty?
+      elsif ENV_OPTIONS_WITHOUT_ARGUMENT.include?(option)
         next
+      elsif option.match?(/\A--(?:unset|chdir|split-string|argv0)=/)
+        split_string ||= option.match?(/\A--split-string=.+/)
+      elsif (metadata = clustered_env_short_option_metadata(option))
+        if metadata.fetch(:argument) == :next
+          argument = words.shift
+          return false unless argument
+
+          split_string ||= metadata.fetch(:split_string) && !value.call(argument).empty?
+        else
+          split_string ||= metadata.fetch(:split_string)
+        end
       else
         return false
       end
     end
-    true
+    remaining = words.drop_while { |word| value.call(word).match?(/\A[A-Za-z_][A-Za-z0-9_]*=/) }
+    split_string || !remaining.empty?
+  end
+
+  def clustered_env_short_option_metadata(option)
+    return nil unless option.start_with?("-") && !option.start_with?("--")
+
+    flags = option.delete_prefix("-")
+    return nil if flags.empty?
+
+    flags.each_char.with_index do |flag, index|
+      next if %w[i 0 v].include?(flag)
+      return nil unless %w[u C S].include?(flag)
+
+      return {
+        argument: index == flags.length - 1 ? :next : :attached,
+        split_string: flag == "S"
+      }
+    end
+    { argument: :none, split_string: false }
   end
 
   def write_init_readme(root, commands, explicit_commands:, scripts_changed:)
