@@ -1169,6 +1169,60 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_rejects_an_unquoted_expansion_that_can_remove_the_dollar_zero_placeholder
+    runtime_out, runtime_status = Open3.capture2e(
+      { "EMPTY" => nil },
+      "bash", "-c", %q(bash -c 'printf "%s\n" "$@"' ${EMPTY-} FIRST SECOND)
+    )
+    assert runtime_status.success?, runtime_out
+    assert_equal "SECOND\n", runtime_out
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(%q(bash -c 'exec bin/validate "$@"' ${EMPTY-}))
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_rejects_unquoted_parameter_and_command_substitution_placeholders
+    ["$EMPTY", "$(true)", "`true`"].each do |placeholder|
+      command = %(bash -c 'exec bin/validate "$@"' #{placeholder})
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, placeholder) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_rejects_placeholder_syntax_that_can_expand_to_multiple_words
+    ["*", "file?.rb", "[ab]*", "{left,right}"].each do |placeholder|
+      command = %(bash -c 'exec bin/validate "$@"' #{placeholder})
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, placeholder) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_allows_literal_quoted_and_escaped_placeholder_metacharacters
+    [
+      "_",
+      "'$EMPTY'",
+      "'$(true)'",
+      "'*'",
+      "'{left,right}'",
+      %q(\$EMPTY),
+      %q(\*),
+      %q(\?),
+      %q(\{left,right\}),
+      %q("\$EMPTY"),
+      '"*"'
+    ].each do |placeholder|
+      command = %(bash -c 'exec bin/validate "$@"' #{placeholder})
+
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), placeholder
+    end
+  end
+
   def test_init_preserves_runtime_arguments_with_an_explicit_placeholder_before_a_comment
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       FileUtils.mkdir_p(File.join(root, "bin"))
@@ -1531,6 +1585,102 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_finds_the_command_string_after_options_following_dash_c
+    runtime_out, runtime_status = Open3.capture2e(
+      "bash", "-c", "-e", 'printf "%s\\n" "$@"', "_", "FIRST", "SECOND"
+    )
+    assert runtime_status.success?, runtime_out
+    assert_equal "FIRST\nSECOND\n", runtime_out
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(%q(bash -c -e 'exec bin/validate "$@"'))
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_finds_the_command_string_after_an_option_terminator_following_dash_c
+    runtime_out, runtime_status = Open3.capture2e(
+      "bash", "-c", "--", 'printf "%s\\n" "$@"', "_", "FIRST", "SECOND"
+    )
+    assert runtime_status.success?, runtime_out
+    assert_equal "FIRST\nSECOND\n", runtime_out
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(%q(bash -c -- 'exec bin/validate "$@"'))
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_rejects_dash_c_when_its_command_string_is_missing
+    ["bash -c", "bash -c -e", "bash -c --", "bash -c -o posix"].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c requires a command string before forwarded wrapper arguments"
+    end
+  end
+
+  def test_init_scans_option_prefixes_after_dash_c_across_supported_shell_families
+    [
+      "bash +e -c +e",
+      "bash -c -o posix",
+      "bash -c +o posix",
+      "bash -c -O extglob",
+      "bash -c +O extglob",
+      "sh -c -e",
+      "sh -c --",
+      "zsh -c -e",
+      "zsh -c --"
+    ].each do |prefix|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, prefix) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "-c forwarding requires an explicit $0 placeholder"
+
+      command = %(#{prefix} 'exec bin/validate "$@"' _)
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), prefix
+    end
+  end
+
+  def test_init_preserves_first_and_second_runtime_arguments_after_dash_c_options
+    cases = {
+      "bash" => ["-c -e", "-c --", "-c -o posix", "+e -c +e"],
+      "sh" => ["-c -e", "-c --"],
+      "zsh" => ["-c -e", "-c --"]
+    }
+    cases.each do |shell, prefixes|
+      available = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
+        path = File.join(directory, shell)
+        File.file?(path) && File.executable?(path)
+      end
+      next unless available
+
+      prefixes.each do |prefix|
+        Dir.mktmpdir("agent-workflow-seam-init") do |root|
+          FileUtils.mkdir_p(File.join(root, "bin"))
+          validate_path = File.join(root, "bin/validate")
+          File.write(validate_path, "#!/usr/bin/env sh\nprintf '<%s>\\n' \"$@\"\n")
+          File.chmod(0o755, validate_path)
+          command = %(#{shell} #{prefix} 'exec bin/validate "$@"' _)
+
+          out, status = run_doctor(
+            root,
+            "--init",
+            "--validate-command", command,
+            "--test-command", "true"
+          )
+          assert status.success?, "#{command}: #{out}"
+
+          runtime_out, runtime_status = Open3.capture2e(
+            File.join(root, ".agents/bin/validate"), "FIRST", "SECOND"
+          )
+          assert runtime_status.success?, "#{command}: #{runtime_out}"
+          assert_equal "<FIRST>\n<SECOND>\n", runtime_out, command
+        end
+      end
+    end
+  end
+
   def test_init_applies_placeholder_safety_to_sh_family_shell_basenames
     %w[ash dash ksh mksh posh].each do |shell|
       error = assert_raises(AgentWorkflowSeamDoctor::InitError, shell) do
@@ -1540,6 +1690,15 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       command = %(#{shell} -c 'exec bin/validate "$@"' _)
       assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_rejects_csh_family_dash_c_commands_outside_the_supported_forwarding_model
+    %w[csh tcsh].each do |shell|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, shell) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{shell} -c 'echo safe'))
+      end
+      assert_includes error.message, "#{shell} -c cannot safely accept generated wrapper arguments"
     end
   end
 

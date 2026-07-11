@@ -40,6 +40,7 @@ module AgentWorkflowSeamDoctor
   ].freeze
   SHELL_OPTIONS_WITH_ARGUMENT = %w[-o -O --init-file --rcfile].freeze
   SHELL_COMMANDS = %w[ash bash dash ksh mksh posh sh zsh].freeze
+  UNSUPPORTED_C_SHELL_COMMANDS = %w[csh tcsh].freeze
   BUSYBOX_SHELL_APPLETS = %w[ash sh].freeze
   # Generated from the union of npm 11.6.0 effective config keys and @npmcli/config definition types.
   # Boolean-capable keys consume no following token and support --no-*; all other keys require a
@@ -404,6 +405,13 @@ module AgentWorkflowSeamDoctor
     return nil unless strip_command_prefixes!(tokens)
 
     shell = File.basename(tokens.fetch(0, {}).fetch(:value, ""))
+    if UNSUPPORTED_C_SHELL_COMMANDS.include?(shell)
+      return nil unless shell_command_string_index(tokens)
+
+      return "#{shell} -c cannot safely accept generated wrapper arguments; " \
+             "use a supported POSIX-family shell with an explicit $0 placeholder"
+    end
+
     if shell == "busybox"
       applet = tokens.fetch(1, {}).fetch(:value, "")
       return nil unless BUSYBOX_SHELL_APPLETS.include?(applet)
@@ -418,6 +426,10 @@ module AgentWorkflowSeamDoctor
     return nil unless command_string_index
 
     command_token = tokens[command_string_index]
+    unless command_token
+      return "#{shell} -c requires a command string before forwarded wrapper arguments"
+    end
+
     raw_command = command_token&.fetch(:raw)
     if outer_argument_forwarding?(raw_command.to_s)
       return "#{shell} -c has active outer argument expansion inside its command string; " \
@@ -471,6 +483,26 @@ module AgentWorkflowSeamDoctor
   def shell_c_placeholder_word?(raw)
     return false if raw.empty? || raw.match?(/\A[#|&;()<>]/)
     return false if raw.match?(/\A(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})[<>]/)
+
+    quote = nil
+    escaped = false
+    raw.each_char do |character|
+      if escaped
+        escaped = false
+      elsif quote == "'"
+        quote = nil if character == quote
+      elsif character == "\\"
+        escaped = true
+      elsif quote == '"'
+        return false if ["$", "`"].include?(character)
+
+        quote = nil if character == quote
+      elsif ["'", '"'].include?(character)
+        quote = character
+      elsif ["$", "`", "*", "?", "[", "]", "{", "}", "(", ")", "|", "&", ";", "<", ">"].include?(character)
+        return false
+      end
+    end
 
     true
   end
@@ -588,21 +620,31 @@ module AgentWorkflowSeamDoctor
 
   def shell_command_string_index(tokens)
     index = 1
+    command_string_pending = false
     while (token = tokens[index])
       option = token.fetch(:value)
-      break if option == "--" || !option.start_with?("-", "+") || %w[- +].include?(option)
+      if option == "--"
+        index += 1
+        return index if command_string_pending && tokens[index]
 
-      command_string = option.match?(/\A-[A-Za-z]*c[A-Za-z]*\z/)
+        break
+      end
+      unless option.start_with?("-", "+") && !%w[- +].include?(option)
+        return index if command_string_pending
+
+        break
+      end
+
+      command_string_pending ||= option.match?(/\A-[A-Za-z]*c[A-Za-z]*\z/)
 
       index += 1
-      if shell_option_requires_argument?(option)
-        break unless tokens[index]
+      next unless shell_option_requires_argument?(option)
 
-        index += 1
-      end
-      return index if command_string
+      break unless tokens[index]
+
+      index += 1
     end
-    nil
+    command_string_pending ? index : nil
   end
 
   def shell_option_requires_argument?(option)
