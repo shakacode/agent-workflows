@@ -32,6 +32,16 @@ module AgentWorkflowsDeliveryState
   def codex_native_state(target)
     config_path = File.join(target, "config.toml")
     config = File.file?(config_path) ? File.binread(config_path) : ""
+    legacy_plugin_id = "agent-workflows@agent-workflows"
+    legacy_cache_pattern = File.join(target, "plugins/cache/agent-workflows/agent-workflows/*")
+    if config.include?(legacy_plugin_id) || Dir.glob(legacy_cache_pattern).any?
+      return {
+        "state" => "unknown",
+        "legacy" => true,
+        "reason" => "legacy Codex plugin #{legacy_plugin_id} is configured or cached"
+      }
+    end
+
     cache_pattern = File.join(target, "plugins/cache/agent-workflows/scw/*")
     relevant = config.include?("scw@agent-workflows") || Dir.glob(cache_pattern).any?
     return { "state" => "inactive", "reason" => "scw@agent-workflows is not configured" } unless relevant
@@ -340,6 +350,8 @@ module AgentWorkflowsDeliveryState
     guidance =
       if flat["blocking"].any?
         "The listed paths were preserved. Restore them to their recorded pack revision or move/remove them manually, then rerun."
+      elsif native["legacy"]
+        "Remove agent-workflows@agent-workflows, install and enable scw@agent-workflows, then rerun."
       elsif native["state"] == "unknown"
         "Inspect the Codex or Claude native plugin state and repair its configuration or install receipt before rerunning."
       elsif delivery_mode == "flat"

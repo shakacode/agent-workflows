@@ -246,6 +246,38 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_legacy_codex_native_plugin_blocks_both_delivery_modes_with_migration_guidance
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      legacy_root = File.join(target, "plugins/cache/agent-workflows/agent-workflows/0.1.0")
+      FileUtils.mkdir_p(File.join(legacy_root, ".codex-plugin"))
+      FileUtils.mkdir_p(File.join(legacy_root, "skills/example"))
+      File.write(
+        File.join(target, "config.toml"),
+        "[plugins.\"agent-workflows@agent-workflows\"]\nenabled = true\n"
+      )
+      File.write(
+        File.join(legacy_root, ".codex-plugin/plugin.json"),
+        "#{JSON.generate('name' => 'agent-workflows', 'skills' => './skills')}\n"
+      )
+      File.write(File.join(legacy_root, "skills/example/SKILL.md"), "legacy\n")
+
+      %w[flat plugin-companion].each do |delivery_mode|
+        out, _err, status = run_state(
+          "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", delivery_mode, "--json", codex_state: "absent"
+        )
+        payload = JSON.parse(out)
+
+        refute status.success?, "#{delivery_mode} unexpectedly allowed legacy native coexistence"
+        assert_equal "unknown", payload.dig("native", "state")
+        assert_includes payload.fetch("reason"), "agent-workflows@agent-workflows"
+        assert_includes payload.fetch("guidance").downcase, "remove"
+        assert_includes payload.fetch("guidance"), "scw@agent-workflows"
+      end
+    end
+  end
+
   def test_codex_present_but_inconclusive_plugin_config_is_unknown
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")
