@@ -68,9 +68,11 @@ resolve_auto_target() {
 
 resolve_host_and_target() {
   if [[ -n "$target" ]]; then
+    target="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$target")"
     if [[ "$host" = "auto" ]]; then
-      local codex_home="${CODEX_HOME:-$HOME/.codex}"
-      local claude_home="${CLAUDE_HOME:-$HOME/.claude}"
+      local codex_home claude_home
+      codex_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CODEX_HOME:-$HOME/.codex}")"
+      claude_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CLAUDE_HOME:-$HOME/.claude}")"
       local codex_marker=false claude_marker=false
       [[ "$target" = "$codex_home" || -f "$target/config.toml" ]] && codex_marker=true
       [[ "$target" = "$claude_home" || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true

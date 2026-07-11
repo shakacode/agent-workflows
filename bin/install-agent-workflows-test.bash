@@ -498,11 +498,15 @@ test_auto_host_with_explicit_target_resolves_the_detected_host() {
     "$ROOT/bin/upgrade-agent-workflows" --host auto --target "$target" --source "$ROOT" --dry-run --no-fetch >/dev/null
 
   HOME="$tmp/home" CODEX_HOME="$tmp/codex-home" CLAUDE_HOME="$claude_target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
-    "$ROOT/bin/install-agent-workflows" --host auto --target "$claude_target" >"$tmp/install-claude.out"
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$claude_target/" >"$tmp/install-claude.out"
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["host"] == "claude"
   ' "$claude_target/.agent-workflows-install.json"
+  HOME="$tmp/home" CODEX_HOME="$tmp/codex-home" CLAUDE_HOME="$claude_target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$ROOT/bin/agent-workflows-status" --host auto --target "$claude_target/" --source "$ROOT" >/dev/null
+  HOME="$tmp/home" CODEX_HOME="$tmp/codex-home" CLAUDE_HOME="$claude_target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$ROOT/bin/upgrade-agent-workflows" --host auto --target "$claude_target/" --source "$ROOT" --dry-run --no-fetch >/dev/null
 }
 
 test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
