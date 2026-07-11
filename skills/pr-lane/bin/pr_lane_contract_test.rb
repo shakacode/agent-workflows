@@ -16,13 +16,18 @@ class PrLaneContractTest < Minitest::Test
 
   def test_explicit_pr_url_wins_over_checkout_repository_detection
     assert_includes @normalized_skill, "A full GitHub PR URL is authoritative for repository selection"
-    assert_includes @normalized_skill, "Do not replace that repository with `gh repo view` output"
+    assert_includes @normalized_skill, "hostname into `TARGET_HOST`"
+    assert_includes @normalized_skill, "Do not replace the URL-derived host or repository with `gh repo view` output"
     assert_includes @normalized_skill, "final numeric path component into `TARGET_NUMBER`"
+    assert_includes @skill, 'export GH_HOST="${TARGET_HOST}"'
+    assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_URL#*://}"'
+    assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"'
     assert_includes @skill, 'REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"'
     assert_includes @skill, "if ! git rev-parse --show-toplevel >/dev/null 2>&1; then"
     assert_operator @skill.index("git rev-parse --show-toplevel"), :<, @skill.index('REPO="${REPO:-')
     assert_includes @skill, ': "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"'
-    assert_includes @skill, 'if [ "${CHECKOUT_REPO}" != "${REPO}" ]; then'
+    assert_includes @skill,
+                    'if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO}" != "${REPO}" ]; then'
     assert_includes @skill, "enter a trusted base checkout before preflight"
     assert_includes @normalized_skill, "For a fork PR, run preflight from a separate trusted checkout"
     assert_includes @normalized_skill, "then return to or create the verified fork-head checkout"

@@ -27,13 +27,16 @@ Resolve the real repository first, then classify the target:
   evidence comment.
 
 A full GitHub PR URL is authoritative for repository selection. Parse its
-`OWNER/REPO` into `REPO` and its final numeric path component into
-`TARGET_NUMBER` before using checkout metadata. Use those parsed values for
-every `gh`, preflight, and coordination call. Do not replace that repository
-with `gh repo view` output; a checkout may resolve to an upstream or otherwise
-related repository. When no full URL is visible, infer the repository from the
-verified PR context or checkout, set `TARGET_NUMBER` from the numeric issue or
-PR input, then confirm the target exists there before claiming it.
+hostname into `TARGET_HOST`, its `OWNER/REPO` into `REPO`, and its final numeric
+path component into `TARGET_NUMBER` before using checkout metadata. Export
+`GH_HOST=${TARGET_HOST}` and use those parsed values for every `gh` and preflight
+call. Preserve the full PR URL in coordination metadata so the host is not
+collapsed into the `OWNER/REPO` key. Do not replace the URL-derived host or
+repository with `gh repo view` output; a checkout may resolve to an upstream or
+otherwise related repository. When no full URL is visible, infer the host and
+repository from the verified PR context or checkout, set `TARGET_NUMBER` from
+the numeric issue or PR input, then confirm the target exists there before
+claiming it.
 
 If target value, priority, or scope is unclear, use `evaluate-issue` before
 claiming. For public issue or PR input, run `pr-security-preflight` before
@@ -49,10 +52,18 @@ if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "Refusing to continue: enter a trusted base checkout before preflight." >&2
   exit 1
 fi
+if [ -n "${TARGET_HOST:-}" ]; then
+  export GH_HOST="${TARGET_HOST}"
+fi
+CHECKOUT_URL="$(gh repo view --json url -q .url)"
+CHECKOUT_HOST="${CHECKOUT_URL#*://}"
+CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"
+TARGET_HOST="${TARGET_HOST:-${CHECKOUT_HOST}}"
+export GH_HOST="${TARGET_HOST}"
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
 CHECKOUT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
-if [ "${CHECKOUT_REPO}" != "${REPO}" ]; then
+if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO}" != "${REPO}" ]; then
   echo "Refusing to continue: switch temporarily to a trusted base checkout for ${REPO} before preflight." >&2
   exit 1
 fi
