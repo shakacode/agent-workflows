@@ -387,16 +387,8 @@ module AgentWorkflowSeamDoctor
 
   def shell_c_forwarding_error(command)
     tokens = shell_word_spans(command)
-    tokens.shift if tokens.first&.fetch(:value) == "exec"
-    tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-    tokens.shift if tokens.first&.fetch(:value) == "exec"
-    if tokens.first&.fetch(:value) == "env"
-      tokens.shift
-      return nil unless discard_env_options!(tokens, value_key: :value)
+    return nil unless strip_command_prefixes!(tokens)
 
-      tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-      tokens.shift if tokens.first&.fetch(:value) == "exec"
-    end
     shell = File.basename(tokens.fetch(0, {}).fetch(:value, ""))
     return nil unless %w[bash sh zsh].include?(shell)
 
@@ -407,18 +399,12 @@ module AgentWorkflowSeamDoctor
 
     command_token = tokens[command_option_index + 1]
     raw_command = command_token&.fetch(:raw)
-    forwarding = if raw_command&.start_with?("'")
-                   outer_argument_forwarding?(command_token.fetch(:value))
-                 elsif raw_command&.start_with?('"')
-                   if outer_argument_forwarding?(raw_command)
-                     return "#{shell} -c has active outer argument expansion inside a double-quoted command string; " \
-                            "use a single-quoted command string plus an explicit $0 placeholder"
-                   end
+    if outer_argument_forwarding?(raw_command.to_s)
+      return "#{shell} -c has active outer argument expansion inside its command string; " \
+             "use a single-quoted command string plus an explicit $0 placeholder"
+    end
 
-                   outer_argument_forwarding?(command_token.fetch(:value))
-                 else
-                   false
-                 end
+    forwarding = outer_argument_forwarding?(command_token&.fetch(:value, "").to_s)
     return nil unless forwarding
 
     placeholder = tokens[command_option_index + 2]
@@ -534,16 +520,8 @@ module AgentWorkflowSeamDoctor
 
   def init_npm_command_info(command)
     tokens = shell_word_spans(command)
-    tokens.shift if tokens.first&.fetch(:value) == "exec"
-    tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-    tokens.shift if tokens.first&.fetch(:value) == "exec"
-    if tokens.first&.fetch(:value) == "env"
-      tokens.shift
-      return false unless discard_env_options!(tokens, value_key: :value)
+    return false unless strip_command_prefixes!(tokens)
 
-      tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-      tokens.shift if tokens.first&.fetch(:value) == "exec"
-    end
     return false unless tokens.shift&.fetch(:value) == "npm"
 
     words = tokens.map { |token| token.fetch(:value) }
@@ -570,6 +548,21 @@ module AgentWorkflowSeamDoctor
     nil
   end
 
+  def strip_command_prefixes!(tokens)
+    tokens.shift if tokens.first&.fetch(:value) == "exec"
+    tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    tokens.shift if tokens.first&.fetch(:value) == "exec"
+    command = tokens.first&.fetch(:value, "").to_s
+    if command == "env" || (command.start_with?("/") && File.basename(command) == "env")
+      tokens.shift
+      return false unless discard_env_options!(tokens, value_key: :value)
+
+      tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+      tokens.shift if tokens.first&.fetch(:value) == "exec"
+    end
+    true
+  end
+
   def npm_argument_separator?(npm_command)
     separator_index = npm_command.fetch(:argument_boundary_index) + 1
     npm_command.fetch(:words).fetch(separator_index, nil) == "--"
@@ -593,7 +586,7 @@ module AgentWorkflowSeamDoctor
         index += 1
         index += 1
       else
-        raise InitError, npm_option_guidance(option, "has ambiguous arity")
+        raise "unexpected npm option metadata: #{metadata.inspect}"
       end
     end
     index

@@ -1140,7 +1140,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       )
 
       refute status.success?
-      assert_includes out, "bash -c has active outer argument expansion inside a double-quoted command string"
+      assert_includes out, "bash -c has active outer argument expansion inside its command string"
       refute File.exist?(File.join(root, ".agents/bin/validate"))
     end
   end
@@ -1156,7 +1156,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       )
 
       refute status.success?
-      assert_includes out, "bash -c has active outer argument expansion inside a double-quoted command string"
+      assert_includes out, "bash -c has active outer argument expansion inside its command string"
       assert_includes out, "use a single-quoted command string plus an explicit $0 placeholder"
       refute File.exist?(File.join(root, ".agents/bin/validate"))
     end
@@ -1173,7 +1173,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       )
 
       refute status.success?
-      assert_includes out, "bash -c has active outer argument expansion inside a double-quoted command string"
+      assert_includes out, "bash -c has active outer argument expansion inside its command string"
       refute File.exist?(File.join(root, ".agents/bin/validate"))
     end
   end
@@ -1209,6 +1209,89 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_requires_placeholder_for_forwarding_in_an_unquoted_escaped_shell_payload
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c exec\ bin/validate\ \"\$@\")
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c forwarding requires an explicit $0 placeholder"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_preserves_all_arguments_for_dequoted_shell_payloads_with_placeholder
+    [
+      %q(bash -c exec\ bin/validate\ \"\$@\" _),
+      %q(bash -c $'exec bin/validate "$@"' _)
+    ].each do |command|
+      Dir.mktmpdir("agent-workflow-seam-init") do |root|
+        FileUtils.mkdir_p(File.join(root, "bin"))
+        validate_path = File.join(root, "bin/validate")
+        File.write(validate_path, <<~BASH)
+          #!/usr/bin/env bash
+          printf '%s\n' "$@"
+        BASH
+        File.chmod(0o755, validate_path)
+        out, status = run_doctor(
+          root,
+          "--init",
+          "--validate-command", command,
+          "--test-command", "true"
+        )
+        assert status.success?, out
+
+        marker = File.join(root, "injected")
+        hostile_argument = "; touch #{marker}"
+        validate_out, validate_status = Open3.capture2e(
+          File.join(root, ".agents/bin/validate"), "first", hostile_argument
+        )
+
+        assert validate_status.success?, validate_out
+        assert_equal "first\n#{hostile_argument}\n", validate_out
+        refute File.exist?(marker), "forwarded argument executed as shell source"
+      end
+    end
+  end
+
+  def test_init_requires_placeholder_for_forwarding_in_an_ansi_c_quoted_shell_payload
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c $'exec bin/validate "$@"')
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c forwarding requires an explicit $0 placeholder"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_rejects_active_outer_forwarding_in_a_mixed_quoted_shell_payload
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      command = %q(bash -c 'printf SAFE; '"$@" _)
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "bash -c has active outer argument expansion inside its command string"
+      assert_includes out, "use a single-quoted command string plus an explicit $0 placeholder"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
   def test_init_handles_clustered_shell_command_options_with_placeholder_safety
     {
       "bash -lc" => "bash -lc",
@@ -1227,6 +1310,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   def test_init_handles_wrapped_and_absolute_shell_commands_with_placeholder_safety
     [
       "env FOO=bar bash -c",
+      "/usr/bin/env bash -c",
       "/bin/bash -c"
     ].each do |prefix|
       error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
@@ -1237,6 +1321,12 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       command = %(#{prefix} 'exec bin/validate "$@"' _)
       assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), prefix
     end
+  end
+
+  def test_init_does_not_treat_a_relative_env_executable_as_the_env_utility
+    command = %q(./bin/env bash -c 'echo "$@"')
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
   end
 
   def test_init_distinguishes_escaped_and_braced_outer_argument_forwarding
@@ -1642,12 +1732,13 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         root,
         "--init",
         "--validate-command", "env CI=1 npm run validate",
-        "--test-command", "env LABEL='test suite' npm run-script test"
+        "--test-command", "/usr/bin/env LABEL='test suite' npm run-script test"
       )
 
       assert status.success?, out
       assert_includes File.read(File.join(root, ".agents/bin/validate")), 'exec env CI=1 npm run validate -- "$@"'
-      assert_includes File.read(File.join(root, ".agents/bin/test")), %(exec env LABEL='test suite' npm run-script test -- "$@")
+      assert_includes File.read(File.join(root, ".agents/bin/test")),
+                      %(exec /usr/bin/env LABEL='test suite' npm run-script test -- "$@")
     end
   end
 
