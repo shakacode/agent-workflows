@@ -26,22 +26,24 @@ Resolve the real repository first, then classify the target:
   `-`. Record the original user wording in the eventual PR body or no-PR
   evidence comment.
 
-Set `TARGET_KIND` to `issue`, `pr`, or `adhoc` during this classification.
-All `TARGET_*`, `PR_*`, and `REPO` values are invocation-scoped: freshly
-overwrite them from the current visible target before running the block below;
-never reuse inherited values from an earlier lane in the same shell.
+Set fresh `PR_LANE_TARGET_KIND` and `PR_LANE_*` input values from the current
+visible target during this classification. The block below copies only those
+dedicated inputs; it never reuses ambient `TARGET_*`, `PR_*`, or `REPO` values
+from an earlier lane in the same shell.
 
 A full GitHub PR URL is authoritative for repository selection. Parse its URL
-scheme into `TARGET_SCHEME`, its authority (`host[:port]`) into `TARGET_HOST`,
-its `OWNER/REPO` into `REPO`, and its final numeric
-path component into `TARGET_NUMBER` before using checkout metadata. Export
+scheme into `PR_LANE_TARGET_SCHEME`, its authority (`host[:port]`) into
+`PR_LANE_TARGET_HOST`, its `OWNER/REPO` into `PR_LANE_REPO`, and its final
+numeric path component into `PR_LANE_TARGET_NUMBER` before using checkout
+metadata. Export
 `GH_HOST=${TARGET_HOST}` and use those parsed values for every `gh` and preflight
 call. Derive a deterministic host-qualified `COORD_REPO` for private
 coordination so repositories with the same `OWNER/REPO` on different hosts do
 not share a claim key. Preserve the full PR URL in coordination metadata too.
 Retain that authoritative URL as `PR_URL` for every later PR-specific skill
 handoff. For a numeric PR input, resolve and verify the base PR context first,
-then set `PR_BASE_REPO`, `PR_URL`, `TARGET_HOST`, and `TARGET_SCHEME`; never
+then set the fresh `PR_LANE_REPO`, `PR_LANE_PR_URL`, `PR_LANE_TARGET_HOST`, and
+`PR_LANE_TARGET_SCHEME` inputs; never
 default a PR's base repository from a possibly forked checkout.
 Do not replace the URL-derived host or
 repository with `gh repo view` output; a checkout may resolve to an upstream or
@@ -69,8 +71,28 @@ CHECKOUT_REPO="$(env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner -q 
 CHECKOUT_SCHEME="${CHECKOUT_URL%%://*}"
 CHECKOUT_HOST="${CHECKOUT_URL#*://}"
 CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"
-TARGET_SCHEME="${TARGET_SCHEME:-${CHECKOUT_SCHEME}}"
-TARGET_HOST="${TARGET_HOST:-${CHECKOUT_HOST}}"
+TARGET_KIND="${PR_LANE_TARGET_KIND:?Set fresh PR_LANE_TARGET_KIND for this lane}"
+case "${TARGET_KIND}" in
+  pr)
+    TARGET_SCHEME="${PR_LANE_TARGET_SCHEME:?Set fresh PR_LANE_TARGET_SCHEME}"
+    TARGET_HOST="${PR_LANE_TARGET_HOST:?Set fresh PR_LANE_TARGET_HOST}"
+    TARGET_NUMBER="${PR_LANE_TARGET_NUMBER:?Set fresh PR_LANE_TARGET_NUMBER}"
+    REPO="${PR_LANE_REPO:?Set fresh PR_LANE_REPO from verified base PR context}"
+    PR_URL="${PR_LANE_PR_URL:?Set fresh PR_LANE_PR_URL from verified base PR context}"
+    ;;
+  issue)
+    TARGET_SCHEME="${CHECKOUT_SCHEME}"
+    TARGET_HOST="${CHECKOUT_HOST}"
+    TARGET_NUMBER="${PR_LANE_TARGET_NUMBER:?Set fresh PR_LANE_TARGET_NUMBER}"
+    REPO="${CHECKOUT_REPO}"
+    ;;
+  adhoc)
+    TARGET_SCHEME="${CHECKOUT_SCHEME}"
+    TARGET_HOST="${CHECKOUT_HOST}"
+    REPO="${CHECKOUT_REPO}"
+    ;;
+  *) echo "Refusing to continue: PR_LANE_TARGET_KIND must be issue, pr, or adhoc." >&2; exit 1 ;;
+esac
 case "${CHECKOUT_SCHEME}:${CHECKOUT_HOST}" in
   https:*:443) CHECKOUT_HOST="${CHECKOUT_HOST%:443}" ;;
   http:*:80) CHECKOUT_HOST="${CHECKOUT_HOST%:80}" ;;
@@ -82,20 +104,6 @@ esac
 TARGET_HOST="$(printf '%s' "${TARGET_HOST}" | tr '[:upper:]' '[:lower:]')"
 CHECKOUT_HOST="$(printf '%s' "${CHECKOUT_HOST}" | tr '[:upper:]' '[:lower:]')"
 export GH_HOST="${TARGET_HOST}"
-case "${TARGET_KIND:-}" in
-  pr)
-    : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
-    REPO="${REPO:-${PR_BASE_REPO:-}}"
-    : "${REPO:?Set REPO or PR_BASE_REPO from verified base PR context}"
-    : "${PR_URL:?Set PR_URL from verified base PR context}"
-    ;;
-  issue)
-    : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
-    REPO="${REPO:-${CHECKOUT_REPO}}"
-    ;;
-  adhoc) REPO="${REPO:-${CHECKOUT_REPO}}" ;;
-  *) echo "Refusing to continue: set TARGET_KIND to issue, pr, or adhoc." >&2; exit 1 ;;
-esac
 REPO_CANON="$(printf '%s' "${REPO}" | tr '[:upper:]' '[:lower:]')"
 CHECKOUT_REPO_CANON="$(printf '%s' "${CHECKOUT_REPO}" | tr '[:upper:]' '[:lower:]')"
 COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${TARGET_HOST}/${REPO_CANON}")"

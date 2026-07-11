@@ -290,7 +290,9 @@ against the fresh data before mutating GitHub or the branch.
   fi
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
-  COORD_REPO="${COORD_REPO:-${REPO}}"
+  coord_host="$(printf '%s' "${GH_HOST:-github.com}" | tr '[:upper:]' '[:lower:]')"
+  coord_repo="$(printf '%s' "${REPO}" | tr '[:upper:]' '[:lower:]')"
+  COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${coord_host}/${coord_repo}")"
   coord_read_degraded=0
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json || coord_read_degraded=1
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${COORD_REPO}" --target "${PR_NUMBER}" --json || coord_read_degraded=1

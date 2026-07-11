@@ -19,11 +19,11 @@ class PrLaneContractTest < Minitest::Test
 
   def test_explicit_pr_url_wins_over_checkout_repository_detection
     assert_includes @normalized_skill, "A full GitHub PR URL is authoritative for repository selection"
-    assert_includes @normalized_skill, "All `TARGET_*`, `PR_*`, and `REPO` values are invocation-scoped"
-    assert_includes @normalized_skill, "authority (`host[:port]`) into `TARGET_HOST`"
-    assert_includes @normalized_skill, "scheme into `TARGET_SCHEME`"
+    assert_includes @normalized_skill, "copies only those dedicated inputs"
+    assert_includes @normalized_skill, "authority (`host[:port]`) into `PR_LANE_TARGET_HOST`"
+    assert_includes @normalized_skill, "scheme into `PR_LANE_TARGET_SCHEME`"
     assert_includes @normalized_skill, "Do not replace the URL-derived host or repository with `gh repo view` output"
-    assert_includes @normalized_skill, "final numeric path component into `TARGET_NUMBER`"
+    assert_includes @normalized_skill, "numeric path component into `PR_LANE_TARGET_NUMBER`"
     assert_includes @normalized_skill, "Retain that authoritative URL as `PR_URL`"
     assert_includes @normalized_skill, "never default a PR's base repository from a possibly forked checkout"
     assert_includes @skill, 'export GH_HOST="${TARGET_HOST}"'
@@ -36,11 +36,11 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @skill, 'COORD_REPO="github-host/$(ruby -rdigest'
     assert_includes @skill, 'CHECKOUT_URL="$(env -u GH_HOST -u GH_REPO gh repo view --json url -q .url)"'
     assert_includes @skill, 'CHECKOUT_REPO="$(env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner -q .nameWithOwner)"'
-    assert_includes @skill, 'REPO="${REPO:-${PR_BASE_REPO:-}}"'
-    assert_includes @skill, ': "${PR_URL:?Set PR_URL from verified base PR context}"'
+    assert_includes @skill, 'REPO="${PR_LANE_REPO:?Set fresh PR_LANE_REPO from verified base PR context}"'
+    assert_includes @skill, 'PR_URL="${PR_LANE_PR_URL:?Set fresh PR_LANE_PR_URL from verified base PR context}"'
     assert_includes @skill, "if ! git rev-parse --show-toplevel >/dev/null 2>&1; then"
-    assert_operator @skill.index("git rev-parse --show-toplevel"), :<, @skill.index('REPO="${REPO:-')
-    assert_includes @skill, ': "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"'
+    assert_operator @skill.index("git rev-parse --show-toplevel"), :<, @skill.index('REPO="${PR_LANE_REPO:')
+    assert_includes @skill, 'TARGET_NUMBER="${PR_LANE_TARGET_NUMBER:?Set fresh PR_LANE_TARGET_NUMBER}"'
     assert_includes @skill, 'if [ "${TARGET_KIND}" != "adhoc" ]; then'
     assert_includes @skill,
                     'if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO_CANON}" != "${REPO_CANON}" ]; then'
@@ -82,8 +82,8 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @address_review_actions, "COORDINATED_AUTOFIX"
     assert_includes @address_review_actions, "List every autonomously resolved thread"
     assert_includes @address_review_actions, "clean current-head review signal independent of this coordinated run"
-    assert_includes @address_review_skill, 'COORD_REPO="${COORD_REPO:-${REPO}}"'
-    assert_includes @address_review_workflow, 'COORD_REPO="${COORD_REPO:-${REPO}}"'
+    assert_includes @address_review_skill, 'COORD_REPO="github-host/$(ruby -rdigest'
+    assert_includes @address_review_workflow, 'COORD_REPO="github-host/$(ruby -rdigest'
   end
 
   def test_merge_authority_does_not_expand_task_scope
