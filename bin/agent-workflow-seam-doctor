@@ -1122,7 +1122,7 @@ module AgentWorkflowSeamDoctor
   end
 
   def npm_optional_option_value?(metadata, word)
-    return false unless word && word != "--" && !word.start_with?("-")
+    return false unless word && !word.empty? && (word == "-" || !word.start_with?("-"))
 
     values = case metadata
              when :optional_boolean then %w[true false]

@@ -3313,6 +3313,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       "npm run validate -n false" => 'exec npm run validate -n false -- "$@"',
       "npm run validate --ws false" => 'exec npm run validate --ws false -- "$@"',
       "npm run validate --browser firefox" => 'exec npm run validate --browser firefox -- "$@"',
+      'npm --browser "" run validate' => 'exec npm --browser "" run validate "$@"',
+      "npm --browser - run validate" => 'exec npm --browser - run validate -- "$@"',
       "npm run validate --audit" => 'exec npm run validate --audit -- "$@"',
       "npm run validate --audit --color always" =>
         'exec npm run validate --audit --color always -- "$@"',
@@ -3373,15 +3375,23 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert status.success?, out
       assert_equal({ "args" => ["CALLER"] }, JSON.parse(File.read(marker)))
 
-      ["npm --audit run capture", "npm run --audit capture"].each do |bare_boolean_command|
-        command = AgentWorkflowSeamDoctor.init_command_line(bare_boolean_command)
+      ["npm --audit run capture", "npm run --audit capture", "npm --browser - run capture"].each do |source|
+        command = AgentWorkflowSeamDoctor.init_command_line(source)
         out, status = Open3.capture2e(
           { "MARKER" => marker }, "bash", "-c", command, "_", "CALLER", chdir: root
         )
 
         assert status.success?, out
-        assert_equal({ "args" => ["CALLER"] }, JSON.parse(File.read(marker)), bare_boolean_command)
+        assert_equal({ "args" => ["CALLER"] }, JSON.parse(File.read(marker)), source)
       end
+
+      FileUtils.rm_f(marker)
+      command = AgentWorkflowSeamDoctor.init_command_line('npm --browser "" run capture')
+      out, status = Open3.capture2e(
+        { "MARKER" => marker }, "bash", "-c", command, "_", "CALLER", chdir: root
+      )
+      refute status.success?, out
+      refute File.exist?(marker), out
     end
   end
 
