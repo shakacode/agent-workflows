@@ -46,9 +46,10 @@ module AgentWorkflowSeamDoctor
   ].freeze
   SHELL_OPTIONS_WITH_ARGUMENT = %w[-o -O --init-file --rcfile].freeze
   COMPLETE_ARGUMENT_FORWARDING_WORDS = ["$@", "${@}", '"$@"', '"${@}"'].freeze
-  KSH_FAMILY_SHELLS = %w[ksh mksh].freeze
-  SHELL_COMMANDS = %w[ash bash dash ksh mksh posh sh zsh].freeze
-  SHELLS_WITH_ATTACHED_O_OPTION_VALUES = %w[ksh mksh zsh].freeze
+  KSH_FAMILY_SHELLS = %w[ksh mksh oksh loksh ksh93].freeze
+  SHELL_COMMANDS = %w[ash bash rbash dash ksh mksh oksh loksh ksh93 posh sh yash zsh].freeze
+  SHELLS_WITH_ATTACHED_O_OPTION_VALUES = [*KSH_FAMILY_SHELLS, "zsh"].freeze
+  VERSIONED_BASH_SHELL = /\A(?:r?bash)(?:-?\d+(?:\.\d+)*)\z/
   UNSUPPORTED_C_SHELL_COMMANDS = %w[csh tcsh].freeze
   BUSYBOX_SHELL_APPLETS = %w[ash sh].freeze
   # Generated from the union of npm 11.6.0 effective config keys and @npmcli/config definition types.
@@ -368,7 +369,15 @@ module AgentWorkflowSeamDoctor
       raise InitError, error
     end
     return command if compound_shell_command?(command)
-    return command if env_split_string_command?(command)
+
+    if (split_string_boundary = env_split_string_operand_boundary(command))
+      unless complete_argument_forwarding_after?(command, split_string_boundary)
+        raise InitError, "opaque env split-string commands require explicit outer argument forwarding; " \
+                         'add "$@" after the env command and a safe $0 placeholder inside shell -c payloads'
+      end
+
+      return command
+    end
 
     argument_suffix = outer_argument_forwarding?(command) ? "" : ' "$@"'
     has_exec = command.match?(/\Aexec\s+/)
@@ -454,7 +463,7 @@ module AgentWorkflowSeamDoctor
 
   def supported_shell_command_suffix?(tokens)
     shell = File.basename(tokens.fetch(0, {}).fetch(:value, ""))
-    return true if SHELL_COMMANDS.include?(shell) || UNSUPPORTED_C_SHELL_COMMANDS.include?(shell)
+    return true if supported_shell_command?(shell) || UNSUPPORTED_C_SHELL_COMMANDS.include?(shell)
     return false unless shell == "busybox"
 
     BUSYBOX_SHELL_APPLETS.include?(tokens.fetch(1, {}).fetch(:value, ""))
@@ -476,7 +485,7 @@ module AgentWorkflowSeamDoctor
       tokens.shift
       shell = "busybox #{applet}"
     else
-      return nil unless SHELL_COMMANDS.include?(shell)
+      return nil unless supported_shell_command?(shell)
     end
 
     command_string_index = shell_command_string_index(tokens)
@@ -511,6 +520,10 @@ module AgentWorkflowSeamDoctor
       "#{shell} -c forwarding requires an explicit $0 placeholder after the command string; " \
         "add _ before forwarded wrapper arguments"
     end
+  end
+
+  def supported_shell_command?(shell)
+    SHELL_COMMANDS.include?(shell) || shell.match?(VERSIONED_BASH_SHELL)
   end
 
   def unquoted_shell_boundary?(raw)
@@ -882,6 +895,12 @@ module AgentWorkflowSeamDoctor
     false
   end
 
+  def complete_argument_forwarding_after?(command, boundary)
+    shell_word_spans(command).any? do |token|
+      token.fetch(:start) >= boundary && COMPLETE_ARGUMENT_FORWARDING_WORDS.include?(token.fetch(:raw))
+    end
+  end
+
   def positional_state_reference?(command)
     active_dollar_expansion?(command) do |characters, index|
       positional_argument_expansion_at?(characters, index) ||
@@ -957,50 +976,62 @@ module AgentWorkflowSeamDoctor
     !characters[index + 3]&.match?(/\A[A-Za-z_]\z/)
   end
 
-  def env_split_string_command?(command)
-    words = Shellwords.shellsplit(command)
-    words.shift if words.first == "exec"
-    words.shift while words.first&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-    words.shift if words.first == "exec"
-    command = words.shift
-    return false unless command == "env" || (command&.start_with?("/") && File.basename(command) == "env")
+  def env_split_string_operand_boundary(command)
+    tokens = shell_word_spans(command)
+    discard_exec_prefix!(tokens)
+    tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+    discard_exec_prefix!(tokens)
+    loop do
+      return nil unless env_utility_command?(tokens.shift&.fetch(:value))
 
-    while (option = words.shift)
-      return false if option == "--"
+      while tokens.first&.fetch(:value)&.start_with?("-")
+        option_token = tokens.shift
+        option = option_token.fetch(:value)
+        break if option == "--"
 
-      if %w[-S --split-string].include?(option)
-        argument = words.shift
-        return true if argument && !argument.empty?
+        if %w[-S --split-string].include?(option)
+          argument = tokens.shift
+          return argument.fetch(:finish) if argument && !argument.fetch(:value).empty?
 
-        next
-      end
-      return true if option.match?(/\A-S.+/)
-
-      if option.match?(/\A--(?:unset|chdir|split-string|argv0)=/)
-        return true if option.match?(/\A--split-string=.+/)
-
-        next
-      end
-
-      if ENV_OPTIONS_WITH_ARGUMENT.include?(option)
-        words.shift
-      elsif ENV_OPTIONS_WITHOUT_ARGUMENT.include?(option) ||
-            option.match?(/\A(?:-u|-C).+/)
-        next
-      elsif (metadata = clustered_env_short_option_metadata(option))
-        if metadata.fetch(:argument) == :next
-          argument = words.shift
-          return true if metadata.fetch(:split_string) && argument && !argument.empty?
-        elsif metadata.fetch(:split_string)
-          return true
+          next
         end
-      else
-        return false
+        return option_token.fetch(:finish) if option.match?(/\A-S.+/)
+
+        if option.match?(/\A--(?:unset|chdir|split-string|argv0)=/)
+          return option_token.fetch(:finish) if option.match?(/\A--split-string=.+/)
+
+          next
+        end
+
+        if ENV_OPTIONS_WITH_ARGUMENT.include?(option)
+          tokens.shift
+        elsif ENV_OPTIONS_WITHOUT_ARGUMENT.include?(option) ||
+              option.match?(/\A(?:-u|-C).+/)
+          next
+        elsif (metadata = clustered_env_short_option_metadata(option))
+          if metadata.fetch(:argument) == :next
+            argument = tokens.shift
+            boundary = split_string_argument_boundary(metadata, argument)
+            return boundary if boundary
+          elsif metadata.fetch(:split_string)
+            return option_token.fetch(:finish)
+          end
+        else
+          return nil
+        end
       end
+
+      tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
+      return nil unless env_utility_command?(tokens.first&.fetch(:value))
     end
-    false
   rescue ArgumentError
-    false
+    nil
+  end
+
+  def split_string_argument_boundary(metadata, argument)
+    return unless metadata.fetch(:split_string) && argument && !argument.fetch(:value).empty?
+
+    argument.fetch(:finish)
   end
 
   def init_npm_command_info(command)
@@ -1010,12 +1041,12 @@ module AgentWorkflowSeamDoctor
     return false unless tokens.shift&.fetch(:value) == "npm"
 
     words = tokens.map { |token| token.fetch(:value) }
-    command_index = npm_lifecycle_command_index(words)
+    command_index = npm_lifecycle_command_index(words, tokens:)
     return nil unless command_index
 
     npm_command = words.fetch(command_index)
     operand_index = if NPM_RUN_COMMANDS.include?(npm_command)
-                      npm_run_script_operand_index(words, command_index)
+                      npm_run_script_operand_index(words, command_index, tokens:)
                     else
                       command_index
                     end
@@ -1035,7 +1066,7 @@ module AgentWorkflowSeamDoctor
     nil
   end
 
-  def npm_run_script_operand_index(words, command_index)
+  def npm_run_script_operand_index(words, command_index, tokens:)
     index = command_index + 1
     while (word = words[index])
       return index unless word.start_with?("-") && word != "-"
@@ -1043,10 +1074,13 @@ module AgentWorkflowSeamDoctor
       metadata = npm_option_metadata(word)
       return nil unless metadata
 
+      reject_npm_attached_positional_state!(word, tokens.fetch(index)) if metadata == :attached
+
       index += 1
       if metadata == :required
         return nil unless words[index]
 
+        reject_npm_required_forwarding_value!(word, tokens.fetch(index))
         index += 1
       elsif NPM_OPTIONAL_VALUE_KINDS.include?(metadata) &&
             npm_optional_option_value?(metadata, words[index])
@@ -1056,7 +1090,7 @@ module AgentWorkflowSeamDoctor
     nil
   end
 
-  def npm_lifecycle_command_index(words)
+  def npm_lifecycle_command_index(words, tokens:)
     index = 0
     while (word = words[index])
       return index if NPM_SCRIPT_COMMANDS.include?(word)
@@ -1065,10 +1099,13 @@ module AgentWorkflowSeamDoctor
       metadata = npm_option_metadata(word)
       return nil unless metadata
 
+      reject_npm_attached_positional_state!(word, tokens.fetch(index)) if metadata == :attached
+
       index += 1
       if metadata == :required
         return nil unless words[index]
 
+        reject_npm_required_forwarding_value!(word, tokens.fetch(index))
         index += 1
       elsif NPM_OPTIONAL_VALUE_KINDS.include?(metadata) &&
             npm_optional_option_value?(metadata, words[index])
@@ -1082,14 +1119,17 @@ module AgentWorkflowSeamDoctor
     discard_exec_prefix!(tokens)
     tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
     discard_exec_prefix!(tokens)
-    command = tokens.first&.fetch(:value, "").to_s
-    if command == "env" || (command.start_with?("/") && File.basename(command) == "env")
+    while env_utility_command?(tokens.first&.fetch(:value, nil))
       tokens.shift
       return false unless discard_env_options!(tokens, value_key: :value)
 
       tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
     end
     true
+  end
+
+  def env_utility_command?(command)
+    command == "env" || (command&.start_with?("/") && File.basename(command) == "env")
   end
 
   def discard_exec_prefix!(tokens)
@@ -1138,7 +1178,11 @@ module AgentWorkflowSeamDoctor
         next
       end
 
-      if %i[none attached].include?(metadata)
+      if metadata == :none
+        npm_tokens << tokens.fetch(index)
+        index += 1
+      elsif metadata == :attached
+        reject_npm_attached_positional_state!(option, tokens.fetch(index))
         npm_tokens << tokens.fetch(index)
         index += 1
       elsif NPM_OPTIONAL_VALUE_KINDS.include?(metadata)
@@ -1154,6 +1198,7 @@ module AgentWorkflowSeamDoctor
           raise InitError, npm_option_guidance(option, "requires a value")
         end
 
+        reject_npm_required_forwarding_value!(option, tokens.fetch(value_index))
         npm_tokens.concat(tokens.slice(index, 2))
         index += 2
       else
@@ -1209,6 +1254,26 @@ module AgentWorkflowSeamDoctor
     subject = option ? "npm option #{option.inspect} #{reason}" : reason
     "cannot safely normalize command: #{subject}; place npm options before the script name " \
       "or put -- immediately after the script operand"
+  end
+
+  def reject_npm_required_forwarding_value!(option, token)
+    return unless COMPLETE_ARGUMENT_FORWARDING_WORDS.include?(token.fetch(:raw))
+
+    raise InitError, npm_option_guidance(option, "requires a literal value, not complete argument forwarding")
+  end
+
+  def reject_npm_attached_positional_state!(option, token)
+    return unless positional_state_reference?(token.fetch(:raw))
+
+    option_name = if option.start_with?("--")
+                    option.split("=", 2).first
+                  else
+                    NPM_POST_SCRIPT_OPTIONS_WITH_ARGUMENT
+                      .reject { |candidate| candidate.start_with?("--") }
+                      .select { |candidate| option.start_with?(candidate) && option != candidate }
+                      .max_by(&:length)
+                  end
+    raise InitError, npm_option_guidance(option_name, "requires a literal value, not positional-state forwarding")
   end
 
   def insert_npm_argument_separator(command, npm_command)

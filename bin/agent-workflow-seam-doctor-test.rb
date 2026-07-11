@@ -1280,9 +1280,9 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
   def test_init_preserves_clustered_env_split_string_commands_verbatim
     [
-      "env -ivS 'npm run validate'",
-      "env -ivS'npm run validate'",
-      "env --split-string 'npm run validate'"
+      "env -ivS 'npm run validate' \"$@\"",
+      "env -ivS'npm run validate' \"$@\"",
+      "env --split-string 'npm run validate' \"$@\""
     ].each do |command|
       assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
     end
@@ -1290,10 +1290,10 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
   def test_init_preserves_absolute_env_split_string_commands_verbatim
     [
-      "/usr/bin/env -S 'npm run validate'",
-      "/usr/bin/env -ivS'npm run validate'",
-      "/usr/bin/env --split-string='npm run validate'",
-      %q(/usr/bin/env -S 'bash -c "printf \"<%s>\\n\" \"\$@\""')
+      "/usr/bin/env -S 'npm run validate' \"$@\"",
+      "/usr/bin/env -ivS'npm run validate' \"$@\"",
+      "/usr/bin/env --split-string='npm run validate' \"$@\"",
+      %q(/usr/bin/env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _' "$@")
     ].each do |command|
       assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
     end
@@ -1330,6 +1330,194 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       )
       assert runtime_status.success?, runtime_out
       assert_equal "<FIRST>\n<SECOND>\n", runtime_out
+    end
+  end
+
+  def test_init_recursively_recognizes_a_safe_nested_env_split_string
+    Dir.mktmpdir("agent-workflow-seam-init-env-nested") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/usr/bin/env sh\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      command = %q(env env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@")
+
+      assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+      assert status.success?, out
+
+      runtime_out, runtime_status = Open3.capture2e(
+        File.join(root, ".agents/bin/validate"), "FIRST", "SECOND"
+      )
+      assert runtime_status.success?, runtime_out
+      assert_equal "<FIRST>\n<SECOND>\n", runtime_out
+    end
+  end
+
+  def test_init_recursively_normalizes_npm_after_nested_env_utilities
+    assert_equal 'exec env env npm run validate -- "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line("env env npm run validate")
+
+    Dir.mktmpdir("agent-workflow-seam-init-env-npm") do |root|
+      marker = File.join(root, "args.json")
+      node_program = 'require("fs").writeFileSync(process.env.MARKER, JSON.stringify(process.argv.slice(1)))'
+      File.write(
+        File.join(root, "package.json"),
+        JSON.generate(
+          "name" => "nested-env-runtime",
+          "version" => "1.0.0",
+          "scripts" => { "capture" => "node -e #{Shellwords.escape(node_program)} --" }
+        )
+      )
+      command = AgentWorkflowSeamDoctor.init_command_line("env env npm run capture")
+      out, status = Open3.capture2e(
+        { "MARKER" => marker }, "bash", "-c", command, "_", "--caller", chdir: root
+      )
+
+      assert status.success?, out
+      assert_equal ["--caller"], JSON.parse(File.read(marker))
+    end
+  end
+
+  def test_init_rejects_opaque_env_split_strings_without_explicit_outer_forwarding
+    [
+      "env -S 'npm run validate'",
+      "/usr/bin/env --split-string='npm run validate'",
+      %q(env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(env env -S 'bash -c "printf \"<%s>\\n\" \"\$@\""')
+    ].each do |command|
+      Dir.mktmpdir("agent-workflow-seam-init-env-policy") do |root|
+        out, status = run_doctor(
+          root,
+          "--init",
+          "--validate-command", command,
+          "--test-command", "true"
+        )
+
+        refute status.success?, command
+        assert_includes out, "opaque env split-string commands require explicit outer argument forwarding"
+        refute File.exist?(File.join(root, ".agents/bin/validate"))
+        refute Dir.exist?(File.join(root, ".agents"))
+      end
+    end
+  end
+
+  def test_init_preserves_safe_bare_absolute_and_nested_env_split_strings
+    Dir.mktmpdir("agent-workflow-seam-init-env-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/usr/bin/env sh\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      [
+        %q(env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(/usr/bin/env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(env env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@")
+      ].each do |command|
+        assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+        runtime_out, runtime_status = Open3.capture2e(
+          "bash", "-c", command, "_", "FIRST", "SECOND", chdir: root
+        )
+        assert runtime_status.success?, runtime_out
+        assert_equal "<FIRST>\n<SECOND>\n", runtime_out
+      end
+    end
+  end
+
+  def test_init_rejects_opaque_env_split_strings_after_option_bearing_exec_prefixes
+    [
+      %q(exec -a wrapped env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(exec -c env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(exec -cl env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(exec -- env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(CI=1 exec -a wrapped env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(exec -cl env /usr/bin/env -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _')
+    ].each do |command|
+      Dir.mktmpdir("agent-workflow-seam-init-env-exec-policy") do |root|
+        out, status = run_doctor(
+          root,
+          "--init",
+          "--validate-command", command,
+          "--test-command", "true"
+        )
+
+        refute status.success?, command
+        assert_includes out, "opaque env split-string commands require explicit outer argument forwarding"
+        refute Dir.exist?(File.join(root, ".agents"))
+      end
+    end
+  end
+
+  def test_init_preserves_runtime_arguments_after_option_bearing_exec_prefixes
+    Dir.mktmpdir("agent-workflow-seam-init-env-exec-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/bin/sh\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      [
+        %q(exec -a wrapped env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(exec -c env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(exec -cl env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(exec -- env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(CI=1 exec -a wrapped env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(exec -cl env /usr/bin/env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@")
+      ].each do |command|
+        assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+        runtime_out, runtime_status = Open3.capture2e(
+          "bash", "-c", command, "_", "FIRST", "SECOND", chdir: root
+        )
+        assert runtime_status.success?, "#{command}: #{runtime_out}"
+        assert_equal "<FIRST>\n<SECOND>\n", runtime_out, command
+      end
+    end
+  end
+
+  def test_init_rejects_env_split_strings_when_forwarding_is_only_an_earlier_option_value
+    [
+      %q(env -u "$@" -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(env --argv0 "$@" -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(env env -u "$@" -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(env /usr/bin/env --argv0 "$@" -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _'),
+      %q(env -u '$@' -S 'bash -c "printf \"<%s>\\n\" \"\$@\"" _')
+    ].each do |command|
+      Dir.mktmpdir("agent-workflow-seam-init-env-boundary") do |root|
+        out, status = run_doctor(
+          root,
+          "--init",
+          "--validate-command", command,
+          "--test-command", "true"
+        )
+
+        refute status.success?, command
+        assert_includes out, "opaque env split-string commands require explicit outer argument forwarding"
+        refute Dir.exist?(File.join(root, ".agents"))
+      end
+    end
+  end
+
+  def test_init_requires_env_split_string_forwarding_after_the_split_operand
+    Dir.mktmpdir("agent-workflow-seam-init-env-boundary") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/bin/sh\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      [
+        %q(env -u CI -S 'bash -c "exec bin/validate \"\$@\"" _' "$@"),
+        %q(env /usr/bin/env -u CI -S 'bash -c "exec bin/validate \"\$@\"" _' "$@")
+      ].each do |command|
+        assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+        runtime_out, runtime_status = Open3.capture2e(
+          "bash", "-c", command, "_", "FIRST", "SECOND", chdir: root
+        )
+        assert runtime_status.success?, "#{command}: #{runtime_out}"
+        assert_equal "<FIRST>\n<SECOND>\n", runtime_out, command
+      end
+
+      long_option_command = %q(env --argv0 validator -S 'bash -c "exec bin/validate \"\$@\"" _' "$@")
+      assert_equal long_option_command, AgentWorkflowSeamDoctor.init_command_line(long_option_command)
     end
   end
 
@@ -2131,6 +2319,46 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       command = %(#{shell} -c 'exec bin/validate "$@"' _)
       assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_applies_placeholder_safety_to_bounded_shell_aliases_and_versioned_bash_names
+    %w[rbash oksh loksh ksh93 yash bash5 bash5.2 bash-5.3 rbash5 rbash-5.3].each do |shell|
+      command = %(#{shell} -c 'printf "%s\\n" "$@"')
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, shell) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "#{shell} -c forwarding requires an explicit $0 placeholder"
+
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder)
+    end
+
+    command = %q(genericsh -c 'printf "%s\n" "$@"')
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
+  def test_init_preserves_runtime_arguments_for_bounded_shell_aliases
+    bash = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).filter_map do |directory|
+      candidate = File.join(directory, "bash")
+      candidate if File.file?(candidate) && File.executable?(candidate)
+    end.first
+    skip "bash unavailable" unless bash
+
+    Dir.mktmpdir("agent-workflow-seam-init-shell-alias") do |root|
+      %w[rbash oksh loksh ksh93 yash bash5 bash5.2 bash-5.3 rbash5].each do |shell|
+        path = File.join(root, shell)
+        File.symlink(bash, path)
+        command = %(#{path} -c 'printf "<%s>\\n" "$@"' _)
+        generated = AgentWorkflowSeamDoctor.init_command_line(command)
+        runtime_out, runtime_status = Open3.capture2e(
+          "bash", "-c", generated, "_", "FIRST", "SECOND"
+        )
+
+        assert runtime_status.success?, "#{shell}: #{runtime_out}"
+        assert_equal "<FIRST>\n<SECOND>\n", runtime_out, shell
+      end
     end
   end
 
@@ -3281,8 +3509,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
   def test_init_preserves_env_split_string_commands_verbatim
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
-      validate_command = "env -S 'npm run validate'"
-      test_command = "env --split-string='npm run test'"
+      validate_command = "env -S 'npm run validate' \"$@\""
+      test_command = "env --split-string='npm run test' \"$@\""
       out, status = run_doctor(
         root,
         "--init",
@@ -3639,6 +3867,71 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
     assert_includes error.message, 'npm option "-w" requires a value'
     assert_includes error.message, "place npm options before the script name"
+  end
+
+  def test_init_rejects_complete_forwarding_as_a_required_npm_option_value_in_every_phase
+    ['"$@"', '"${@}"', "$@", "${@}"].each do |forwarding|
+      [
+        "npm --workspace #{forwarding} run validate",
+        "npm run --workspace #{forwarding} validate",
+        "npm run validate --workspace #{forwarding}"
+      ].each do |command|
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+          AgentWorkflowSeamDoctor.init_command_line(command)
+        end
+        assert_includes error.message, "requires a literal value, not complete argument forwarding"
+        assert_includes error.message, "put -- immediately after the script operand"
+      end
+    end
+  end
+
+  def test_init_rejects_active_positional_state_in_attached_required_npm_option_values
+    [
+      'npm --prefix="$@" run validate',
+      "npm --prefix=$@ run validate",
+      'npm run --workspace="${@}" validate',
+      "npm run --workspace=${@} validate",
+      'npm run validate --workspace="$@"',
+      "npm run validate --workspace=$@",
+      'npm run -w"$@" validate',
+      "npm run validate -w$@"
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "requires a literal value"
+      assert_includes error.message, "put -- immediately after the script operand"
+      refute_includes error.message, "$@"
+      refute_includes error.message, "${@}"
+    end
+  end
+
+  def test_init_preserves_literal_positional_text_in_attached_required_npm_option_values
+    {
+      'npm --prefix=\$@ run validate' => 'exec npm --prefix=\$@ run validate -- "$@"',
+      "npm --prefix='$@' run validate" => "exec npm --prefix='$@' run validate -- \"$@\"",
+      'npm run validate -w\$@' => 'exec npm run validate -w\$@ -- "$@"',
+      "npm run validate -w'$@'" => "exec npm run validate -w'$@' -- \"$@\""
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+  end
+
+  def test_init_preserves_literal_required_npm_values_and_forwarding_after_a_real_separator
+    {
+      "npm --workspace packages/core run validate" =>
+        'exec npm --workspace packages/core run validate -- "$@"',
+      "npm run --workspace packages/core validate" =>
+        'exec npm run --workspace packages/core validate -- "$@"',
+      "npm run validate --workspace packages/core" =>
+        'exec npm run validate --workspace packages/core -- "$@"',
+      'npm run validate -- --workspace "$@"' =>
+        'exec npm run validate -- --workspace "$@"',
+      "npm run validate --enjoy-by tomorrow" =>
+        'exec npm run validate --enjoy-by tomorrow -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
   end
 
   def test_init_preserves_dash_prefixed_values_for_required_npm_options
