@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export RUBY_BIN="${RUBY_BIN:-$(command -v ruby)}"
 tmp_paths=()
 
 make_tmp_dir() {
@@ -90,10 +91,10 @@ done
 mkdir -p "$target/bin"
 printf 'installed\n' > "$target/bin/agent-workflows-installed"
 if [[ -z "$delivery_mode" && -f "$target/.agent-workflows-install.json" ]]; then
-  delivery_mode="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode", "flat")' "$target/.agent-workflows-install.json")"
+  delivery_mode="$("$RUBY_BIN" -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode", "flat")' "$target/.agent-workflows-install.json")"
 fi
 delivery_mode="${delivery_mode:-flat}"
-ruby -rjson -e '
+"$RUBY_BIN" -rjson -e '
   path, delivery_mode = ARGV
   File.write(path, JSON.generate({"delivery_mode" => delivery_mode}) + "\n")
 ' "$target/.agent-workflows-install.json" "$delivery_mode"
@@ -209,7 +210,7 @@ test_sync_selects_and_replays_workflow_delivery_mode() {
       --agent-coord-install-dir "$install_dir" \
       --no-fetch
 
-  mode="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$target/.agent-workflows-install.json")"
+  mode="$("$RUBY_BIN" -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$target/.agent-workflows-install.json")"
   [[ "$mode" = "plugin-companion" ]] || fail "agent-stack changed delivery mode to $mode"
 }
 

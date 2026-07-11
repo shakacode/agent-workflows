@@ -14,6 +14,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     Open3.capture3("ruby", SCRIPT, *)
   end
 
+  def run_state_with_env(env, *)
+    Open3.capture3(env, "ruby", SCRIPT, *)
+  end
+
   def write_manifest(root, host:)
     manifest_dir = File.join(root, host == "codex" ? ".codex-plugin" : ".claude-plugin")
     FileUtils.mkdir_p(manifest_dir)
@@ -75,6 +79,24 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         assert status.success?, "#{host}: #{out}#{err}"
         assert_equal "active", JSON.parse(out).dig("native", "state")
       end
+    end
+  end
+
+  def test_codex_enabled_setting_accepts_indentation_and_inline_comments
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      FileUtils.mkdir_p(target)
+      File.write(File.join(target, "config.toml"), <<~TOML)
+        [plugins."scw@agent-workflows"]
+          enabled = true # managed by Codex
+      TOML
+      write_manifest(plugin_root, host: "codex")
+
+      out, err, status = run_state("check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", JSON.parse(out).dig("native", "state")
     end
   end
 
@@ -169,8 +191,6 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       FileUtils.mkdir_p(File.join(target, "skills"))
       FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
       FileUtils.cp_r(File.join(source, "skills/beta"), File.join(target, "skills/beta"))
-      FileUtils.mkdir_p(File.join(target, "skills/personal"))
-      File.write(File.join(target, "skills/personal/SKILL.md"), "personal\n")
       write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => revision)
 
       out, err, status = run_state("migrate", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "plugin-companion", "--json")
@@ -178,8 +198,28 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert status.success?, "#{out}#{err}"
       refute_path_exists File.join(target, "skills/alpha")
       refute_path_exists File.join(target, "skills/beta")
-      assert_path_exists File.join(target, "skills/personal/SKILL.md")
       assert_equal %w[alpha beta], JSON.parse(out).dig("flat", "removed").map { |path| File.basename(path) }.sort
+    end
+  end
+
+  def test_actual_skill_absent_from_recorded_revision_blocks_all_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills/stale-renamed-skill"))
+      File.write(File.join(target, "skills/stale-renamed-skill/SKILL.md"), "legacy\n")
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => revision)
+
+      out, _err, status = run_state("migrate", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "plugin-companion", "--json")
+
+      refute status.success?
+      assert_path_exists File.join(target, "skills/stale-renamed-skill/SKILL.md")
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md"), "known managed paths must remain when any direct child is unknown"
+      assert_equal [File.join(target, "skills/stale-renamed-skill")], JSON.parse(out).dig("flat", "blocking")
     end
   end
 
@@ -279,6 +319,29 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_symlinked_target_ancestor_blocks_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      real_parent = File.join(tmp, "real-parent")
+      linked_parent = File.join(tmp, "linked-parent")
+      target = File.join(linked_parent, "codex")
+      FileUtils.mkdir_p(source)
+      FileUtils.mkdir_p(real_parent)
+      File.symlink(real_parent, linked_parent)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => revision)
+
+      out, _err, status = run_state("migrate", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "plugin-companion", "--json")
+
+      refute status.success?
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+      assert_equal [linked_parent], JSON.parse(out).dig("flat", "blocking")
+    end
+  end
+
   def test_deletion_failure_blocks_migration_and_reports_remaining_paths
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")
@@ -301,6 +364,48 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_includes payload.fetch("reason"), "failed to remove"
     ensure
       FileUtils.chmod(0o755, File.join(target, "skills")) if File.directory?(File.join(target, "skills"))
+    end
+  end
+
+  def test_partial_quarantine_cleanup_failure_does_not_attempt_lossy_rollback
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      injection = File.join(tmp, "partial-cleanup-failure.rb")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      FileUtils.cp_r(File.join(source, "skills/beta"), File.join(target, "skills/beta"))
+      write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => revision)
+      File.write(injection, <<~RUBY)
+        require "fileutils"
+        module PartialCleanupFailure
+          def remove_entry(path, force = false)
+            if File.basename(path).start_with?(".agent-workflows-flat-migration-")
+              first = Dir.children(path).sort.first
+              super(File.join(path, first), force)
+              raise Errno::EACCES, path
+            end
+            super
+          end
+        end
+        FileUtils.singleton_class.prepend(PartialCleanupFailure)
+      RUBY
+
+      out, err, status = run_state_with_env(
+        { "RUBYOPT" => "-r#{injection}" },
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      refute_path_exists File.join(target, "skills/alpha")
+      refute_path_exists File.join(target, "skills/beta")
+      assert payload.dig("flat", "cleanup_pending")
+      assert_path_exists payload.dig("flat", "staging")
     end
   end
 

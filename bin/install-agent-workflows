@@ -140,7 +140,7 @@ installed_metadata_value() {
   ' "$metadata_path" "$key"
 }
 
-write_metadata() {
+prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at
@@ -165,6 +165,11 @@ write_metadata() {
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
   ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+}
+
+commit_metadata() {
+  local metadata_path="$target/$metadata_name"
+  local metadata_tmp="$metadata_path.tmp"
   mv "$metadata_tmp" "$metadata_path"
 }
 
@@ -376,6 +381,9 @@ if [[ "$delivery_status" -ne 0 ]]; then
   exit 1
 fi
 
+mkdir -p "$target"
+prepare_metadata
+
 if [[ "$mode" = "copy" ]]; then
   copy_pack_license
   if [[ "$delivery_mode" = "flat" ]]; then
@@ -445,7 +453,7 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
   fi
 fi
 
-write_metadata
+commit_metadata
 
 cat <<MSG
 Installed ShakaCode agent workflows into:

@@ -36,7 +36,8 @@ module AgentWorkflowsDeliveryState
     return { "state" => "unknown", "reason" => "invalid Codex plugin state in #{config_path}" } if malformed_section
 
     section = config[/^\[plugins\.["']scw@agent-workflows["']\]\s*$.*?(?=^\[|\z)/m]
-    return { "state" => "inactive", "reason" => "scw@agent-workflows is not enabled" } unless section&.match?(/^enabled\s*=\s*true\s*$/)
+    enabled = section&.match?(/^[ \t]*enabled\s*=\s*true(?:[ \t]+#.*)?[ \t]*$/)
+    return { "state" => "inactive", "reason" => "scw@agent-workflows is not enabled" } unless enabled
 
     roots = Dir.glob(File.join(target, "plugins/cache/agent-workflows/scw/*")).select do |root|
       plugin_manifest_valid?(root, "codex")
@@ -73,6 +74,24 @@ module AgentWorkflowsDeliveryState
 
   def native_state(host, target)
     host == "codex" ? codex_native_state(target) : claude_native_state(target)
+  end
+
+  def symlinked_target_component(target)
+    current = File::SEPARATOR
+    File.expand_path(target).split(File::SEPARATOR).reject(&:empty?).each_with_index do |component, index|
+      current = File.join(current, component)
+      # Some platforms expose root-level compatibility aliases such as
+      # /var -> /private/var. Reject user-controlled traversal below that
+      # platform boundary while retaining ordinary temporary-home support.
+      next unless File.symlink?(current)
+
+      platform_alias = index.zero? && {
+        "/tmp" => "/private/tmp",
+        "/var" => "/private/var"
+      }[current] == File.expand_path(File.readlink(current), File.dirname(current))
+      return current unless platform_alias
+    end
+    nil
   end
 
   def read_metadata(target)
@@ -173,6 +192,15 @@ module AgentWorkflowsDeliveryState
   end
 
   def managed_flat_inventory(target:, source:, delivery_mode:)
+    if delivery_mode == "plugin-companion" && (component = symlinked_target_component(target))
+      return {
+        "state" => "ambiguous",
+        "removable" => [],
+        "blocking" => [component],
+        "reason" => "target path traverses a symlink"
+      }
+    end
+
     metadata = read_metadata(target)
     prior_delivery_mode = metadata&.fetch("delivery_mode", "flat")
     revision = metadata&.fetch("source_revision", nil).to_s
@@ -214,7 +242,14 @@ module AgentWorkflowsDeliveryState
     end
 
     removable = []
-    blocking = []
+    recorded_names = names.to_h { |name| [name, true] }
+    blocking = if File.directory?(skills_path) && !File.symlink?(skills_path)
+                 Dir.children(skills_path).filter_map do |name|
+                   File.join(skills_path, name) unless recorded_names.key?(name)
+                 end
+               else
+                 []
+               end
     names.each do |name|
       path = File.join(target, "skills", name)
       next unless File.exist?(path) || File.symlink?(path)
@@ -315,14 +350,11 @@ module AgentWorkflowsDeliveryState
     begin
       FileUtils.remove_entry(staging)
     rescue SystemCallError => e
-      rollback_failed = false
-      staged.reverse_each do |original, destination|
-        File.rename(destination, original) if File.exist?(destination) || File.symlink?(destination)
-      rescue SystemCallError
-        rollback_failed = true
-      end
-      Dir.rmdir(staging) unless rollback_failed
-      return migration_failure(payload, removed, e, staging: staging)
+      payload["flat"]["removed"] = removed
+      payload["flat"]["cleanup_pending"] = true
+      payload["flat"]["staging"] = staging
+      payload["flat"]["cleanup_error"] = e.message
+      return payload
     end
 
     payload["flat"]["removed"] = removed

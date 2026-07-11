@@ -207,8 +207,8 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
   done
 }
 
-test_plugin_companion_migrates_managed_symlinks_and_preserves_unrelated_skills() {
-  local tmp target revision skill
+test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills() {
+  local tmp target revision skill output status
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   revision="$(git -C "$ROOT" rev-parse HEAD)"
@@ -224,13 +224,16 @@ test_plugin_companion_migrates_managed_symlinks_and_preserves_unrelated_skills()
     File.write(path, JSON.pretty_generate({"host" => "codex", "mode" => "symlink", "source" => source, "source_revision" => revision}) + "\n")
   ' "$target/.agent-workflows-install.json" "$ROOT" "$revision"
 
-  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
-    >"$tmp/install.out"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
 
+  [[ "$status" -ne 0 ]] || fail "unknown direct skill unexpectedly allowed migration"
+  assert_contains "$output" "$target/skills/personal"
   for skill in "$ROOT"/skills/*; do
     [[ -d "$skill" ]] || continue
-    [[ ! -e "$target/skills/$(basename "$skill")" && ! -L "$target/skills/$(basename "$skill")" ]] || \
-      fail "companion migration retained managed symlink: $(basename "$skill")"
+    assert_symlink "$target/skills/$(basename "$skill")"
   done
   assert_file "$target/skills/personal/SKILL.md"
 }
@@ -256,6 +259,28 @@ test_direct_migration_does_not_remove_skills_before_other_install_checks_pass() 
 
   [[ "$status" -ne 0 ]] || fail "expected non-skill collision to fail direct migration"
   assert_symlink "$target/skills/pr-batch"
+}
+
+test_metadata_temp_failure_preserves_flat_tree_and_prior_mode() {
+  local tmp target output status skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  mkdir "$target/.agent-workflows-install.json.tmp"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "metadata temp collision unexpectedly allowed companion migration"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+  done
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
 }
 
 test_repeat_install_replays_recorded_companion_delivery_mode() {
@@ -817,8 +842,9 @@ main() {
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_plugin_companion_installs_non_skill_assets_and_records_mode
-    test_plugin_companion_migrates_managed_symlinks_and_preserves_unrelated_skills
+    test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
+    test_metadata_temp_failure_preserves_flat_tree_and_prior_mode
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
