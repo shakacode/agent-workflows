@@ -1416,7 +1416,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
   def test_init_allows_literal_forwarding_text_in_an_inner_shell_payload
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
-      command = 'bash -c \'echo \\$@\''
+      command = 'bash -c \'echo \\$@\' _'
       out, status = run_doctor(
         root,
         "--init",
@@ -1648,7 +1648,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   end
 
   def test_init_ignores_forwarding_bytes_after_a_nul_in_the_same_ansi_c_segment
-    command = %q(bash -c $'printf safe\u0000\u0024\u0040')
+    command = %q(bash -c $'printf safe\u0000\u0024\u0040' _)
 
     assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
   end
@@ -1695,7 +1695,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   end
 
   def test_init_allows_benign_supported_ansi_c_escapes_in_a_shell_payload
-    command = %q(bash -c $'printf "safe\nvalue\t\?"')
+    command = %q(bash -c $'printf "safe\nvalue\t\?"' _)
 
     assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
   end
@@ -1705,7 +1705,9 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       %q(bash -c $'printf "\303\251"'),
       %q(bash -c $'printf "\xc3\xa9"')
     ].each do |command|
-      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder)
     end
   end
 
@@ -1716,7 +1718,9 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       %q(bash -c $'printf "\\\\u0024\\\\u0040"'),
       %q(bash -c $'printf \047\044\100\047')
     ].each do |command|
-      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder)
     end
   end
 
@@ -1749,6 +1753,65 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       command = %(#{prefix} 'exec bin/validate "$@"' _)
       assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), label
+    end
+  end
+
+  def test_init_handles_attached_shell_option_values_before_dash_c
+    {
+      "zsh" => %w[
+        -oSHWORDSPLIT -OSHWORDSPLIT +oSHWORDSPLIT +OSHWORDSPLIT
+        -foSHWORDSPLIT -fOSHWORDSPLIT +foSHWORDSPLIT +fOSHWORDSPLIT
+      ],
+      "ksh" => %w[-oemacs +oemacs -foemacs +foemacs],
+      "mksh" => %w[-oemacs +oemacs -foemacs +foemacs]
+    }.each do |shell, options|
+      options.each do |option|
+        if system(shell, "-c", "exit 0", out: File::NULL, err: File::NULL)
+          runtime_out, runtime_status = Open3.capture2e(
+            shell, option, "-c", 'printf "%s\\n" "$@"', "FIRST", "SECOND"
+          )
+          assert runtime_status.success?, runtime_out
+          assert_equal "SECOND\n", runtime_out
+        end
+
+        command = %(#{shell} #{option} -c 'printf "%s\\n" "$@"')
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError, "#{shell} #{option}") do
+          AgentWorkflowSeamDoctor.init_command_line(command)
+        end
+        assert_includes error.message, "#{shell} -c forwarding requires an explicit $0 placeholder"
+
+        command_with_placeholder = "#{command} _"
+        assert_equal %(exec #{command_with_placeholder} "$@"),
+                     AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder)
+      end
+    end
+  end
+
+  def test_init_detects_c_before_an_attached_underscored_zsh_o_operand
+    command = %q(zsh -fcoSH_WORD_SPLIT 'printf "%s\\n" "$@"')
+    runtime_out, runtime_status = Open3.capture2e(
+      "zsh", "-fcoSH_WORD_SPLIT", 'printf "%s\\n" "$@"', "FIRST", "SECOND"
+    )
+    assert runtime_status.success?, runtime_out
+    assert_equal "SECOND\n", runtime_out
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "zsh -c forwarding requires an explicit $0 placeholder"
+
+    command_with_placeholder = "#{command} _"
+    assert_equal %(exec #{command_with_placeholder} "$@"),
+                 AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder)
+  end
+
+  def test_init_ignores_c_inside_attached_zsh_o_operands
+    [
+      'zsh -oNO_CLOBBER "$@"',
+      'zsh -onoclobber "$@"',
+      'zsh +fcoSH_WORD_SPLIT "$@"'
+    ].each do |command|
+      assert_equal %(exec #{command}), AgentWorkflowSeamDoctor.init_command_line(command), command
     end
   end
 
@@ -1894,6 +1957,132 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_consumes_ksh_family_option_values_before_finding_dash_c
+    {
+      "ksh" => [["-T", "0"], ["-R", "/tmp/ksh-rc"]],
+      "mksh" => [["-T", "0"], ["-R", "/tmp/ksh-rc"]]
+    }.each do |shell, options|
+      options.each do |option, value|
+        if shell == "ksh" && option == "-T" && system(shell, "-c", "exit 0", out: File::NULL, err: File::NULL)
+          runtime_out, runtime_status = Open3.capture2e(
+            shell, option, value, "-c", 'printf "%s\\n" "$@"', "FIRST", "SECOND"
+          )
+          assert runtime_status.success?, runtime_out
+          assert_equal "SECOND\n", runtime_out
+        end
+
+        prefix = "#{shell} #{option} #{value} -c"
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError, prefix) do
+          AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} 'exec bin/validate "$@"'))
+        end
+        assert_includes error.message, "#{shell} -c forwarding requires an explicit $0 placeholder"
+
+        command = %(#{prefix} 'exec bin/validate "$@"' _)
+        assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), prefix
+      end
+    end
+  end
+
+  def test_init_does_not_treat_c_inside_attached_o_values_as_a_command_flag
+    Dir.mktmpdir("shell-attached-o-value") do |root|
+      script = File.join(root, "print-args")
+      File.write(script, 'printf "<%s>\\n" "$@"')
+
+      {
+        "zsh" => %w[-ocorrect -onoclobber],
+        "ksh" => %w[-oemacs],
+        "mksh" => %w[-oemacs]
+      }.each do |shell, options|
+        options.each do |option|
+          if system(shell, "-c", "exit 0", out: File::NULL, err: File::NULL)
+            runtime_out, runtime_status = Open3.capture2e(shell, option, script, "FIRST", "SECOND")
+            assert runtime_status.success?, runtime_out
+            assert_equal "<FIRST>\n<SECOND>\n", runtime_out
+          end
+
+          command = %(#{shell} #{option} "$@")
+          assert_equal %(exec #{command}), AgentWorkflowSeamDoctor.init_command_line(command), command
+        end
+      end
+    end
+  end
+
+  def test_init_preserves_c_before_attached_or_separate_o_values_as_a_command_flag
+    [
+      "zsh -coSHWORDSPLIT", "zsh -co SHWORDSPLIT",
+      "ksh -coemacs", "ksh -co emacs",
+      "mksh -coemacs", "mksh -co emacs"
+    ].each do |prefix|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, prefix) do
+        AgentWorkflowSeamDoctor.init_command_line(%(#{prefix} 'exec bin/validate "$@"'))
+      end
+      assert_includes error.message, "-c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_parses_attached_ksh_family_r_and_t_option_operands
+    %w[ksh mksh].each do |shell|
+      ["-Rcache", "-T0x"].each do |option|
+        command = %(#{shell} #{option} script.ksh "$@")
+        assert_equal %(exec #{command}), AgentWorkflowSeamDoctor.init_command_line(command), command
+      end
+
+      command = %(#{shell} -T0c 'printf "%s\\n" "$@"')
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, shell) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "#{shell} -c forwarding requires an explicit $0 placeholder"
+
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder)
+    end
+
+    return unless system("ksh", "-c", "exit 0", out: File::NULL, err: File::NULL)
+
+    runtime_out, runtime_status = Open3.capture2e(
+      "ksh", "-T0c", 'printf "%s\\n" "$@"', "FIRST", "SECOND"
+    )
+    assert runtime_status.success?, runtime_out
+    assert_equal "SECOND\n", runtime_out
+  end
+
+  def test_init_uses_integrated_ksh_cluster_arity_and_command_metadata
+    %w[ksh mksh].each do |shell|
+      [
+        "#{shell} -T0o emacs -c",
+        "#{shell} -T0co emacs",
+        "#{shell} -T0R db -c"
+      ].each do |prefix|
+        command = %(#{prefix} 'printf "%s\\n" "$@"')
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError, prefix) do
+          AgentWorkflowSeamDoctor.init_command_line(command)
+        end
+        assert_includes error.message, "#{shell} -c forwarding requires an explicit $0 placeholder"
+
+        command_with_placeholder = "#{command} _"
+        assert_equal %(exec #{command_with_placeholder} "$@"),
+                     AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder), prefix
+      end
+    end
+
+    return unless system("ksh", "-c", "exit 0", out: File::NULL, err: File::NULL)
+
+    Dir.mktmpdir("ksh-option-metadata") do |root|
+      {
+        "-T0o emacs -c" => [["-T0o", "emacs", "-c"], "SECOND\n"],
+        "-T0co emacs" => [["-T0co", "emacs"], "SECOND\n"],
+        "-T0R db -c" => [["-T0R", File.join(root, "db"), "-c"], ""]
+      }.each do |label, (options, expected)|
+        runtime_out, runtime_status = Open3.capture2e(
+          "ksh", *options, 'printf "%s\\n" "$@"', "FIRST", "SECOND"
+        )
+        assert runtime_status.success?, "#{label}: #{runtime_out}"
+        assert_equal expected, runtime_out, label
+      end
+    end
+  end
+
   def test_init_consumes_values_for_options_clustered_with_the_command_string_option
     ["bash -clo posix", "bash -oc posix"].each do |prefix|
       error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
@@ -1934,8 +2123,39 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_applies_placeholder_safety_to_supported_shell_suffixes_under_wrappers
+    [
+      "command bash -c",
+      "nice -n 5 bash -c",
+      "timeout 5 /bin/bash -c",
+      "command nice -n 5 timeout 5 busybox sh -c"
+    ].each do |prefix|
+      command = %(#{prefix} 'exec bin/validate "$@"')
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, prefix) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "-c forwarding requires an explicit $0 placeholder"
+
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder), prefix
+    end
+  end
+
+  def test_init_conservatively_rejects_an_exact_supported_shell_token_used_as_wrapper_data
+    command = %q(printf '%s\n' bash -c 'literal "$@"')
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+
+    non_shell_command = %q(printf '%s\n' bashful -c 'literal "$@"')
+    assert_equal %(exec #{non_shell_command} "$@"),
+                 AgentWorkflowSeamDoctor.init_command_line(non_shell_command)
+  end
+
   def test_init_does_not_treat_a_relative_env_executable_as_the_env_utility
-    command = %q(./bin/env bash -c 'echo "$@"')
+    command = "./bin/env -x true"
 
     assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
   end
@@ -1954,6 +2174,396 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       test = File.read(File.join(root, ".agents/bin/test"))
       assert_includes test, 'exec bin/test "${@}"'
       refute_includes test, 'bin/test "${@}" "$@"'
+    end
+  end
+
+  def test_init_requires_placeholder_for_active_positional_parameter_expansions
+    [
+      '"$*"',
+      '"$#"',
+      '"$1"',
+      '"$0"',
+      '"${@:-fallback}"',
+      '"${@#prefix}"',
+      '"${*:-fallback}"',
+      '"${#}"',
+      '"${#@}"',
+      '"${#:-fallback}"',
+      '"${##prefix}"',
+      '"${1:-fallback}"',
+      '"${0#prefix}"',
+      '"${!1}"',
+      '"${!0}"',
+      '"${!#}"',
+      '"${!@}"'
+    ].each do |expression|
+      command = %(bash -c 'printf "%s\\n" #{expression}')
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, expression) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder), expression
+    end
+  end
+
+  def test_init_requires_placeholder_for_every_supported_shell_c_payload
+    [
+      ["bash -c", "echo safe"],
+      ["bash -c", 'eval "$DYNAMIC_CODE"'],
+      ["bash -c", "source scripts/check.sh"],
+      ["bash -c", "run_check"],
+      ["zsh -c", 'print -r -- "${(e)code}"'],
+      ["zsh -c", 'print -r -- "${(j:P:)list}"'],
+      ["zsh -c", 'print -r -- "${(P)${:-argv}}"'],
+      ["ksh -c", "print safe"],
+      ["command nice -n 5 timeout 5 /bin/bash -c", "echo nested-safe"]
+    ].each do |prefix, payload|
+      command = "#{prefix} #{Shellwords.escape(payload)}"
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "-c forwarding requires an explicit $0 placeholder"
+
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder), command
+    end
+  end
+
+  def test_init_preserves_the_original_complete_argv_forwarding_contract
+    ['"$@"', '"${@}"'].each do |expression|
+      command = "bin/test #{expression}"
+      assert_equal "exec #{command}", AgentWorkflowSeamDoctor.init_command_line(command), expression
+    end
+  end
+
+  def test_init_appends_forwarding_when_at_expansion_is_concatenated_or_nested
+    [
+      'bin/test "$@suffix"',
+      'bin/test "prefix${@}"',
+      "bin/test ${@}suffix",
+      'bin/test "$(printf \'%s\' "$@")"'
+    ].each do |command|
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+
+    assert_equal 'FORWARDED="$@" bin/test "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line('FORWARDED="$@" bin/test')
+
+    assert_equal 'exec npm run test -- "$@suffix" "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line('npm run test "$@suffix"')
+    assert_equal 'exec env CI=1 npm run test -- "prefix${@}" "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line('env CI=1 npm run test "prefix${@}"')
+  end
+
+  def test_init_appends_complete_forwarding_after_positional_state_references
+    [
+      '"$*"', '"$#"', '"$1"', '"$0"',
+      '"${@:-fallback}"', '"${@#prefix}"', '"${*:-fallback}"',
+      '"${#}"', '"${#@}"', '"${1:-fallback}"', '"${0#prefix}"',
+      '"${!1}"', '"${!0}"', '"${!#}"', '"${!@}"'
+    ].each do |expression|
+      command = "bin/test #{expression}"
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), expression
+    end
+  end
+
+  def test_init_rejects_broad_positional_state_in_outer_double_quoted_shell_payloads
+    [
+      %q(bash -c "printf '%s\\n' \"${@:-fallback}\""),
+      %q(bash -c "printf '%s\\n' \"${@#pre}\""),
+      %q(bash -c "printf '%s\\n' \"$*\""),
+      %q(bash -c "printf '%s\\n' \"$1\"")
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "active outer argument expansion"
+    end
+  end
+
+  def test_init_rejects_active_outer_bash_indirection_and_special_argument_state
+    [
+      %q(bash -c "printf '%s\\n' \"${!name}\"" _),
+      %q(bash -c "printf '%s\\n' \"$BASH_ARGV\"" _),
+      %q(bash -c "printf '%s\\n' \"${BASH_ARGV[*]}\"" _),
+      %q(bash -c "printf '%s\\n' \"${#BASH_ARGC}\"" _),
+      %q(zsh -c "printf '%s\\n' \"${BASH_ARGV0:-fallback}\"" _)
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "active outer argument expansion"
+    end
+
+    [
+      %q(bash -c "printf '%s\\n' \"\${!name}\"" _),
+      %q(bash -c 'printf "%s\\n" "${BASH_ARGV[*]}"' _),
+      %q(bash -c "printf '%s\\n' \"$BASH_ARGV_FOO\"" _)
+    ].each do |command|
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+  end
+
+  def test_runtime_confirms_outer_bash_indirection_can_inject_the_first_wrapper_argument
+    wrapper_line = 'exec bash -c "eval \\"${!name}\\"" _ "$@"'
+    runtime_out, runtime_status = Open3.capture2e(
+      { "name" => "1" }, "bash", "-c", wrapper_line, "wrapper", "printf INJECTED"
+    )
+    assert runtime_status.success?, runtime_out
+    assert_equal "INJECTED", runtime_out
+
+    command = %q(bash -c "eval \"${!name}\"" _)
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "active outer argument expansion"
+  end
+
+  def test_init_ignores_escaped_or_single_quoted_positional_parameter_literals
+    [
+      'bin/test \\${@:-fallback}',
+      "bin/test '${@#prefix}'",
+      'bin/test \\${*:-fallback}',
+      "bin/test '${#@}'",
+      'bin/test \\${1:-fallback}',
+      "bin/test '${0#prefix}'",
+      'bin/test \\${!1}',
+      "bin/test '${!#}'"
+    ].each do |command|
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+  end
+
+  def test_init_keeps_shell_specific_state_expansions_scoped_out_of_generic_commands
+    [
+      'bin/test "${!name}"',
+      'bin/test "$argv"',
+      'bin/test "${ARGC}"',
+      'bin/test "$ZSH_ARGZERO"',
+      'bin/test "${BASH_ARGV[*]}"',
+      'bin/test "$BASH_ARGC"',
+      'bin/test "${BASH_ARGV0}"',
+      'bin/test "${(q)argv}"',
+      'bin/test "${^ARGC}"',
+      'bin/test "${(P)name}"',
+      'bin/test "${(P)${:-argv}}"'
+    ].each do |command|
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+  end
+
+  def test_init_requires_placeholder_for_zsh_positional_state_expansions
+    [
+      '"$argv"',
+      '"${argv[*]}"',
+      '"${argv[1]:-fallback}"',
+      '"$ARGC"',
+      '"${ARGC:-0}"',
+      '"$ZSH_ARGZERO"',
+      '"${ZSH_ARGZERO#prefix}"',
+      '"${#argv}"',
+      '"${#ARGC}"',
+      '"${#ZSH_ARGZERO}"',
+      '"${(q)argv}"',
+      '"${(@)argv}"',
+      '"${^argv}"',
+      '"${=argv}"',
+      '"${~argv}"',
+      '"${(q)^argv}"',
+      '"${(q)#argv}"',
+      '"${(q)ARGC}"',
+      '"${^ZSH_ARGZERO}"',
+      '"${(j:):)argv}"',
+      '"${(P)name}"',
+      '"${(P)${:-argv}}"',
+      '"${(P)${:-ARGC}}"',
+      '"${(P)${:-ZSH_ARGZERO}}"',
+      '"${(P)1}"'
+    ].each do |expression|
+      command = %(zsh -c 'printf "%s\\n" #{expression}')
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, expression) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "zsh -c forwarding requires an explicit $0 placeholder"
+
+      command_with_placeholder = "#{command} _"
+      assert_equal %(exec #{command_with_placeholder} "$@"),
+                   AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder), expression
+    end
+  end
+
+  def test_init_requires_placeholder_for_bash_positional_state_expansions
+    %w[bash sh].each do |shell|
+      [
+        '"${!name}"',
+        '"${!prefix*}"',
+        '"$BASH_ARGV"',
+        '"${BASH_ARGV[*]}"',
+        '"${#BASH_ARGV}"',
+        '"$BASH_ARGC"',
+        '"${BASH_ARGC[*]}"',
+        '"$BASH_ARGV0"',
+        '"${BASH_ARGV0:-fallback}"'
+      ].each do |expression|
+        command = %(#{shell} -c 'printf "%s\\n" #{expression}')
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError, "#{shell} #{expression}") do
+          AgentWorkflowSeamDoctor.init_command_line(command)
+        end
+        assert_includes error.message, "#{shell} -c forwarding requires an explicit $0 placeholder"
+
+        command_with_placeholder = "#{command} _"
+        assert_equal %(exec #{command_with_placeholder} "$@"),
+                     AgentWorkflowSeamDoctor.init_command_line(command_with_placeholder), expression
+      end
+    end
+  end
+
+  def test_init_ignores_literal_shell_specific_state_expansions_in_shell_payloads
+    {
+      "zsh" => [
+        'printf "%s\\n" \\${argv[*]}',
+        %(printf "%s\\n" '$ARGC'),
+        'printf "%s\\n" \\${(q)argv}',
+        %(printf "%s\\n" '${^argv}'),
+        'printf "%s\\n" \\${(j:):)argv}',
+        %(printf "%s\\n" '${(P)name}'),
+        'printf "%s\\n" \\${(P)${:-argv}}'
+      ],
+      "bash" => ['printf "%s\\n" \\${!name}', %(printf "%s\\n" '$BASH_ARGV')]
+    }.each do |shell, payloads|
+      payloads.each do |payload|
+        command = "#{shell} -c #{Shellwords.escape(payload)} _"
+        assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), command
+      end
+    end
+  end
+
+  def test_init_does_not_match_bash_special_state_variable_prefixes
+    command = 'bash -c \'printf "%s\\n" "$BASH_ARGV_FOO" "${BASH_ARGCOUNT}"\' _'
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
+  def test_init_does_not_match_zsh_state_variable_prefixes_after_parameter_flags
+    command = 'zsh -c \'printf "%s\\n" "${(q)argv_extra}" "${^ARGCOUNT}"\' _'
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
+  def test_runtime_confirms_indirect_positional_expansion_shifts_without_a_placeholder
+    environment = { "FIRST" => "first-value", "SECOND" => "second-value" }
+    payload = 'printf "%s\\n" "${!1}"'
+
+    runtime_out, runtime_status = Open3.capture2e(environment, "bash", "-c", payload, "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "second-value\n", runtime_out
+
+    runtime_out, runtime_status = Open3.capture2e(environment, "bash", "-c", payload, "_", "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "first-value\n", runtime_out
+  end
+
+  def test_runtime_confirms_zsh_named_positional_state_shifts_without_a_placeholder
+    payload = 'printf "argv=<%s> argc=<%s> argzero=<%s>\\n" "${argv[*]}" "$ARGC" "$ZSH_ARGZERO"'
+
+    runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "argv=<SECOND> argc=<1> argzero=<FIRST>\n", runtime_out
+
+    runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "_", "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "argv=<FIRST SECOND> argc=<2> argzero=<_>\n", runtime_out
+  end
+
+  def test_runtime_confirms_zsh_parameter_flag_forms_shift_without_a_placeholder
+    %w[${(q)argv} ${(@)argv} ${^argv} ${=argv} ${~argv} ${(q)^argv} ${(q)#argv}].each do |expression|
+      payload = %(printf "<%s>\\n" "#{expression}")
+      runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "FIRST", "SECOND")
+      assert runtime_status.success?, runtime_out
+      refute_includes runtime_out, "FIRST", expression
+      without_placeholder = runtime_out
+
+      runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "_", "FIRST", "SECOND")
+      assert runtime_status.success?, runtime_out
+      refute_equal without_placeholder, runtime_out, expression
+    end
+  end
+
+  def test_runtime_confirms_zsh_delimited_flags_and_indirection_shift_without_a_placeholder
+    {
+      "${(j:):)argv}" => ["<SECOND>\n", "<FIRST)SECOND>\n"],
+      "${(P)name}" => ["<SECOND>\n", "<FIRST SECOND>\n"]
+    }.each do |expression, expected|
+      assignment = expression.include?("(P)") ? "name=argv; " : ""
+      payload = %(#{assignment}printf "<%s>\\n" "#{expression}")
+
+      runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "FIRST", "SECOND")
+      assert runtime_status.success?, runtime_out
+      assert_equal expected.fetch(0), runtime_out
+
+      runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "_", "FIRST", "SECOND")
+      assert runtime_status.success?, runtime_out
+      assert_equal expected.fetch(1), runtime_out
+    end
+  end
+
+  def test_runtime_confirms_zsh_nested_and_numeric_indirection_targets
+    {
+      "${(P)${:-argv}}" => ["<SECOND>\n", "<FIRST SECOND>\n"],
+      "${(P)${:-ARGC}}" => ["<1>\n", "<2>\n"],
+      "${(P)${:-ZSH_ARGZERO}}" => ["<FIRST>\n", "<_>\n"]
+    }.each do |expression, expected|
+      payload = %(printf "<%s>\\n" "#{expression}")
+      runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "FIRST", "SECOND")
+      assert runtime_status.success?, runtime_out
+      assert_equal expected.fetch(0), runtime_out
+
+      runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "_", "FIRST", "SECOND")
+      assert runtime_status.success?, runtime_out
+      assert_equal expected.fetch(1), runtime_out
+    end
+
+    environment = { "FIRST" => "first-value", "SECOND" => "second-value" }
+    payload = 'printf "<%s>\\n" "${(P)1}"'
+    runtime_out, runtime_status = Open3.capture2e(environment, "zsh", "-c", payload, "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "<second-value>\n", runtime_out
+    runtime_out, runtime_status = Open3.capture2e(environment, "zsh", "-c", payload, "_", "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "<first-value>\n", runtime_out
+  end
+
+  def test_runtime_confirms_bash_special_arrays_shift_without_a_placeholder
+    payload = 'printf "argv=<%s> argc=<%s>\\n" "${BASH_ARGV[*]}" "${BASH_ARGC[*]}"'
+
+    runtime_out, runtime_status = Open3.capture2e("bash", "-c", payload, "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "argv=<SECOND> argc=<1>\n", runtime_out
+
+    runtime_out, runtime_status = Open3.capture2e("bash", "-c", payload, "_", "FIRST", "SECOND")
+    assert runtime_status.success?, runtime_out
+    assert_equal "argv=<SECOND FIRST> argc=<2>\n", runtime_out
+  end
+
+  def test_runtime_confirms_braced_at_operators_shift_without_a_placeholder
+    {
+      "${@:-fallback}" => { without_placeholder: "prefixSECOND\n", with_placeholder: "prefixFIRST\nprefixSECOND\n" },
+      "${@#prefix}" => { without_placeholder: "SECOND\n", with_placeholder: "FIRST\nSECOND\n" }
+    }.each do |expression, expected|
+      payload = %(printf "%s\\n" "#{expression}")
+      runtime_out, runtime_status = Open3.capture2e("bash", "-c", payload, "prefixFIRST", "prefixSECOND")
+      assert runtime_status.success?, runtime_out
+      assert_equal expected.fetch(:without_placeholder), runtime_out
+
+      runtime_out, runtime_status = Open3.capture2e(
+        "bash", "-c", payload, "_", "prefixFIRST", "prefixSECOND"
+      )
+      assert runtime_status.success?, runtime_out
+      assert_equal expected.fetch(:with_placeholder), runtime_out
     end
   end
 

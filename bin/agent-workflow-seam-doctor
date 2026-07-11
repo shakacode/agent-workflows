@@ -39,7 +39,10 @@ module AgentWorkflowSeamDoctor
     --desc --help --iwr --local --no --porcelain --quiet --readonly --silent --verbose --ws
   ].freeze
   SHELL_OPTIONS_WITH_ARGUMENT = %w[-o -O --init-file --rcfile].freeze
+  COMPLETE_ARGUMENT_FORWARDING_WORDS = ["$@", "${@}", '"$@"', '"${@}"'].freeze
+  KSH_FAMILY_SHELLS = %w[ksh mksh].freeze
   SHELL_COMMANDS = %w[ash bash dash ksh mksh posh sh zsh].freeze
+  SHELLS_WITH_ATTACHED_O_OPTION_VALUES = %w[ksh mksh zsh].freeze
   UNSUPPORTED_C_SHELL_COMMANDS = %w[csh tcsh].freeze
   BUSYBOX_SHELL_APPLETS = %w[ash sh].freeze
   # Generated from the union of npm 11.6.0 effective config keys and @npmcli/config definition types.
@@ -406,7 +409,28 @@ module AgentWorkflowSeamDoctor
       return "cannot safely parse env command prefix; use supported env options with their required values"
     end
 
+    tokens.each_index do |index|
+      suffix = tokens.drop(index)
+      next unless supported_shell_command_suffix?(suffix)
+
+      error = shell_c_forwarding_error_for_tokens(suffix)
+      return error if error
+    end
+    nil
+  rescue ArgumentError
+    nil
+  end
+
+  def supported_shell_command_suffix?(tokens)
     shell = File.basename(tokens.fetch(0, {}).fetch(:value, ""))
+    return true if SHELL_COMMANDS.include?(shell) || UNSUPPORTED_C_SHELL_COMMANDS.include?(shell)
+    return false unless shell == "busybox"
+
+    BUSYBOX_SHELL_APPLETS.include?(tokens.fetch(1, {}).fetch(:value, ""))
+  end
+
+  def shell_c_forwarding_error_for_tokens(tokens)
+    shell = File.basename(tokens.fetch(0).fetch(:value))
     if UNSUPPORTED_C_SHELL_COMMANDS.include?(shell)
       return nil unless shell_command_string_index(tokens)
 
@@ -433,18 +457,16 @@ module AgentWorkflowSeamDoctor
     end
 
     raw_command = command_token&.fetch(:raw)
-    if outer_argument_forwarding?(raw_command.to_s)
+    if positional_state_reference?(raw_command.to_s)
       return "#{shell} -c has active outer argument expansion inside its command string; " \
              "use a single-quoted command string plus an explicit $0 placeholder"
     end
 
     begin
-      command_value = ansi_c_decoded_shell_word(raw_command.to_s) || command_token&.fetch(:value, "").to_s
+      ansi_c_decoded_shell_word(raw_command.to_s)
     rescue AnsiCDecodeError => e
       return "#{shell} -c cannot safely decode ANSI-C command string: #{e.message}"
     end
-    forwarding = outer_argument_forwarding?(command_value)
-    return nil unless forwarding
 
     command_boundary = unquoted_shell_boundary?(raw_command.to_s)
     placeholder = tokens[command_string_index + 1]
@@ -453,8 +475,6 @@ module AgentWorkflowSeamDoctor
       "#{shell} -c forwarding requires an explicit $0 placeholder after the command string; " \
         "add _ before forwarded wrapper arguments"
     end
-  rescue ArgumentError
-    nil
   end
 
   def unquoted_shell_boundary?(raw)
@@ -621,6 +641,7 @@ module AgentWorkflowSeamDoctor
   end
 
   def shell_command_string_index(tokens)
+    shell = File.basename(tokens.fetch(0, {}).fetch(:value, ""))
     index = 1
     command_string_pending = false
     while (token = tokens[index])
@@ -637,10 +658,10 @@ module AgentWorkflowSeamDoctor
         break
       end
 
-      command_string_pending ||= option.match?(/\A-[A-Za-z]*c[A-Za-z]*\z/)
+      command_string_pending ||= shell_command_string_option?(option, shell:)
 
       index += 1
-      next unless shell_option_requires_argument?(option)
+      next unless shell_option_requires_argument?(option, shell:)
 
       break unless tokens[index]
 
@@ -649,11 +670,91 @@ module AgentWorkflowSeamDoctor
     command_string_pending ? index : nil
   end
 
-  def shell_option_requires_argument?(option)
+  def shell_option_requires_argument?(option, shell:)
+    if KSH_FAMILY_SHELLS.include?(shell) && (metadata = ksh_family_short_option_metadata(option))
+      return metadata.fetch(:argument) == :next
+    end
+    if shell == "zsh" && (metadata = zsh_short_option_metadata(option))
+      return metadata.fetch(:argument) == :next
+    end
+
     return true if SHELL_OPTIONS_WITH_ARGUMENT.include?(option)
     return false if option.start_with?("--")
+    if SHELLS_WITH_ATTACHED_O_OPTION_VALUES.include?(shell) && option.match?(/\A[-+][A-Za-z]*[oO].+/)
+      return false
+    end
 
     option.match?(/\A[-+][A-Za-z]*[oO][A-Za-z]*\z/)
+  end
+
+  def shell_command_string_option?(option, shell:)
+    return false unless option.start_with?("-")
+
+    flags = option.delete_prefix("-")
+    if KSH_FAMILY_SHELLS.include?(shell)
+      metadata = ksh_family_short_option_metadata(option)
+      return metadata ? metadata.fetch(:command_string) : false
+    end
+    if shell == "zsh"
+      metadata = zsh_short_option_metadata(option)
+      return metadata ? metadata.fetch(:command_string) : false
+    end
+    return false unless flags.match?(/\A[A-Za-z]+\z/)
+
+    if SHELLS_WITH_ATTACHED_O_OPTION_VALUES.include?(shell)
+      option_index = flags.index(/[oO]/)
+      flags = flags[...option_index] if option_index && option_index < flags.length - 1
+    end
+    flags.include?("c")
+  end
+
+  def ksh_family_short_option_metadata(option)
+    return nil unless option.match?(/\A[-+][^-].*/)
+
+    command_string = false
+    flags = option[1..]
+    index = 0
+    while index < flags.length
+      flag = flags[index]
+      command_string = true if option.start_with?("-") && flag == "c"
+
+      if %w[o O R].include?(flag)
+        argument = index == flags.length - 1 ? :next : :attached
+        return { argument:, command_string: }
+      end
+
+      if flag == "T"
+        index += 1
+        return { argument: :next, command_string: } unless flags[index]
+        unless flags[index].match?(/\A[0-9]\z/)
+          return { argument: :attached, command_string: }
+        end
+
+        index += 1 while flags[index]&.match?(/\A[0-9]\z/)
+        next
+      end
+
+      index += 1
+    end
+    { argument: :none, command_string: }
+  end
+
+  def zsh_short_option_metadata(option)
+    return nil unless option.match?(/\A[-+][^-].*/)
+
+    flags = option[1..]
+    option_index = flags.index(/[oO]/)
+    if option_index
+      prefix = flags[...option_index]
+      return nil unless prefix.match?(/\A[A-Za-z]*\z/)
+
+      argument = option_index == flags.length - 1 ? :next : :attached
+      command_string = option.start_with?("-") && prefix.include?("c")
+      return { argument:, command_string: }
+    end
+    return nil unless flags.match?(/\A[A-Za-z]+\z/)
+
+    { argument: :none, command_string: option.start_with?("-") && flags.include?("c") }
   end
 
   def compound_shell_command?(command)
@@ -699,6 +800,40 @@ module AgentWorkflowSeamDoctor
   end
 
   def outer_argument_forwarding?(command)
+    shell_word_spans(command).any? do |token|
+      COMPLETE_ARGUMENT_FORWARDING_WORDS.include?(token.fetch(:raw))
+    end
+  rescue ArgumentError
+    false
+  end
+
+  def positional_state_reference?(command)
+    active_dollar_expansion?(command) do |characters, index|
+      positional_argument_expansion_at?(characters, index) ||
+        bash_outer_argument_state_expansion_at?(characters, index)
+    end
+  end
+
+  def bash_outer_argument_state_expansion_at?(characters, index)
+    return true if characters[index + 1, 2] == ["{", "!"]
+
+    %w[BASH_ARGV BASH_ARGC BASH_ARGV0].any? do |name|
+      named_parameter_expansion_at?(characters, index, name)
+    end
+  end
+
+  def named_parameter_expansion_at?(characters, index, name)
+    offset = index + 1
+    if characters[offset] == "{"
+      offset += 1
+      offset += 1 if characters[offset] == "#"
+    end
+    return false unless characters[offset, name.length].join == name
+
+    !characters[offset + name.length]&.match?(/\A[A-Za-z0-9_]\z/)
+  end
+
+  def active_dollar_expansion?(command)
     characters = command.chars
     quote = nil
     escaped = false
@@ -724,11 +859,27 @@ module AgentWorkflowSeamDoctor
 
       next unless character == "$"
 
-      return true if characters[index + 1] == "@"
-      return true if characters[index + 1, 3] == ["{", "@", "}"]
+      return true if yield(characters, index)
     end
 
     false
+  end
+
+  def positional_argument_expansion_at?(characters, index)
+    marker = characters[index + 1]
+    return true if marker&.match?(/\A[@*#0-9]\z/)
+    return false unless marker == "{"
+
+    parameter = characters[index + 2]
+    return true if parameter&.match?(/\A[@*0-9]\z/)
+    if parameter == "!"
+      return characters[index + 3]&.match?(/\A[@*#0-9]\z/)
+    end
+    return false unless parameter == "#"
+
+    # `${#name}` is the length of a named variable; other `${#...}` forms address
+    # the positional-count parameter or the length of a positional parameter.
+    !characters[index + 3]&.match?(/\A[A-Za-z_]\z/)
   end
 
   def env_split_string_command?(command)
