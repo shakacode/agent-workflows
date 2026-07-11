@@ -174,7 +174,12 @@ def repo_option_info(repo)
   repo_info_from_payload(payload).merge(repo:)
 rescue StandardError => e
   warn "WARN: could not resolve GitHub host via gh repo view for #{repo.inspect}: #{e.message.lines.first&.strip}"
-  { repo:, github_host: inferred_github_host_from_local_git(repo) || expected_github_host }
+  fallback_host = if ENV["GH_HOST"].to_s.empty?
+                    inferred_github_host_from_local_git(repo) || expected_github_host
+                  else
+                    expected_github_host
+                  end
+  { repo:, github_host: fallback_host }
 end
 
 def repo_info_from_payload(payload)
