@@ -3347,6 +3347,42 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_preserves_an_npm_run_option_terminator_without_adding_a_script_separator
+    {
+      "npm run -- validate" => 'exec npm run -- validate "$@"',
+      "npm run -- validate --watch" => 'exec npm run -- validate --watch "$@"',
+      'npm run -- validate -- "$@"' => 'exec npm run -- validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+
+    assert_equal 'exec npm -- run validate "$@"',
+                 AgentWorkflowSeamDoctor.init_command_line("npm -- run validate")
+  end
+
+  def test_init_preserves_runtime_caller_options_after_an_npm_run_option_terminator
+    Dir.mktmpdir("agent-workflow-seam-init-npm-terminator") do |root|
+      marker = File.join(root, "args.json")
+      node_program = 'require("fs").writeFileSync(process.env.MARKER, JSON.stringify(process.argv.slice(1)))'
+      File.write(
+        File.join(root, "package.json"),
+        JSON.generate(
+          "name" => "npm-terminator-runtime",
+          "version" => "1.0.0",
+          "scripts" => { "capture" => "node -e #{Shellwords.escape(node_program)} --" }
+        )
+      )
+      command = AgentWorkflowSeamDoctor.init_command_line("npm run -- capture")
+
+      out, status = Open3.capture2e(
+        { "MARKER" => marker }, "bash", "-c", command, "_", "--silent", "CALLER", chdir: root
+      )
+
+      assert status.success?, out
+      assert_equal ["--silent", "CALLER"], JSON.parse(File.read(marker))
+    end
+  end
+
   def test_init_repositions_a_late_npm_separator_without_duplicating_it
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       out, status = run_doctor(
