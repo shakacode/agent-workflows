@@ -189,11 +189,28 @@ commit_metadata() {
 
 rollback_migration_staging() {
   local staging="$1"
+  local skills_root="$target/skills"
   local staged_path
   [[ -n "$staging" && -d "$staging" ]] || return 0
-  mkdir -p "$target/skills"
+  if [[ -L "$skills_root" || -e "$skills_root" && ! -d "$skills_root" ]]; then
+    echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
+    return 1
+  fi
+  mkdir -p "$skills_root"
+  if [[ -L "$skills_root" || ! -d "$skills_root" ]] || ! ruby -e '
+    target = File.realpath(ARGV.fetch(0))
+    skills = File.realpath(ARGV.fetch(1))
+    exit 1 unless File.dirname(skills) == target
+  ' "$target" "$skills_root"; then
+    echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
+    return 1
+  fi
   for staged_path in "$staging"/*; do
     [[ -e "$staged_path" || -L "$staged_path" ]] || continue
+    if [[ -L "$skills_root" || ! -d "$skills_root" ]]; then
+      echo "ROLLBACK_FAILED: skills root changed during rollback: $skills_root" >&2
+      return 1
+    fi
     if [[ -e "$target/skills/$(basename "$staged_path")" || -L "$target/skills/$(basename "$staged_path")" ]]; then
       echo "ROLLBACK_FAILED: destination appeared during migration: $target/skills/$(basename "$staged_path")" >&2
       return 1
@@ -481,12 +498,16 @@ release_install_transaction() {
     IFS= read -r migration_staging < "$migration_receipt" || true
   fi
   if [[ "$metadata_committed" != "true" && -n "$migration_staging" ]]; then
-    rollback_migration_staging "$migration_staging" || status=1
+    if rollback_migration_staging "$migration_staging"; then
+      rm -f "$migration_receipt"
+    else
+      echo "RECOVERY_FAILED: rollback incomplete; preserved $migration_receipt for $migration_staging" >&2
+      status=1
+    fi
   fi
   if [[ "$metadata_committed" != "true" && -f "$target/$metadata_name.tmp" ]]; then
     rm -f "$target/$metadata_name.tmp"
   fi
-  rm -f "$migration_receipt"
   rmdir "$install_lock" 2>/dev/null || true
   exit "$status"
 }
@@ -593,10 +614,13 @@ fi
 
 commit_metadata
 metadata_committed=true
-if [[ -n "$migration_staging" ]] && ! rm -rf "$migration_staging"; then
-  echo "CLEANUP_PENDING: committed plugin-companion mode; remove quarantine manually: $migration_staging" >&2
+if [[ -n "$migration_staging" ]]; then
+  if rm -rf "$migration_staging"; then
+    rm -f "$migration_receipt"
+  else
+    echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $migration_staging" >&2
+  fi
 fi
-rm -f "$migration_receipt"
 
 cat <<MSG
 Installed ShakaCode agent workflows into:

@@ -35,6 +35,8 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       when "error"
         warn "invalid Codex TOML"
         exit 2
+      when "sleep"
+        sleep 5
       else
         abort "unknown fake state: \#{state}"
       end
@@ -243,6 +245,25 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         assert_equal "unknown", payload.dig("native", "state")
         assert_includes payload.fetch("guidance"), "native plugin state"
       end
+    end
+  end
+
+  def test_codex_plugin_list_timeout_is_structured_unknown
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(target)
+      File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
+
+      out, _err, status = run_state_with_env(
+        { "QA_CODEX_PLUGIN_STATE" => "sleep", "AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS" => "0.05" },
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "flat", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?, out
+      assert_equal "unknown", payload.dig("native", "state")
+      assert_includes payload.fetch("reason"), "timed out"
     end
   end
 

@@ -62,11 +62,29 @@ module AgentWorkflowsDeliveryState
 
   def codex_plugin_cli_state(target)
     executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
-    output, error, status = Open3.capture3(
-      { "CODEX_HOME" => target },
-      executable,
-      "plugin", "list", "--marketplace", "agent-workflows"
-    )
+    timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", "5"))
+    return { "state" => "unknown", "reason" => "invalid Codex plugin state timeout" } unless timeout_seconds.positive?
+
+    output = error = status = nil
+    Open3.popen3(
+      { "CODEX_HOME" => target }, executable, "plugin", "list", "--marketplace", "agent-workflows",
+      pgroup: true
+    ) do |stdin, stdout, stderr, wait_thread|
+      stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
+      unless wait_thread.join(timeout_seconds)
+        Process.kill("TERM", -wait_thread.pid)
+        wait_thread.join(0.5) || Process.kill("KILL", -wait_thread.pid)
+        wait_thread.join
+        stdout_reader.join
+        stderr_reader.join
+        return { "state" => "unknown", "reason" => "Codex plugin state command timed out" }
+      end
+      output = stdout_reader.value
+      error = stderr_reader.value
+      status = wait_thread.value
+    end
     unless status.success?
       reason = error.to_s.strip
       reason = "exit #{status.exitstatus}" if reason.empty?
@@ -89,7 +107,7 @@ module AgentWorkflowsDeliveryState
     else
       { "state" => "unknown", "reason" => "unrecognized Codex scw plugin status: #{status_text || 'missing'}" }
     end
-  rescue SystemCallError => e
+  rescue ArgumentError, SystemCallError => e
     { "state" => "unknown", "reason" => "Codex plugin state command unavailable: #{e.message}" }
   end
 

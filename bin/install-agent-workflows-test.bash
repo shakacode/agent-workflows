@@ -418,6 +418,53 @@ RUBY
   fi
 }
 
+test_failed_partial_rollback_preserves_receipt_for_retry() {
+  local tmp target injection output status receipt staging retry_output retry_status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/rollback-collision.rb"
+  receipt="$target/.agent-workflows-migration-staging"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+require "json"
+module InjectRollbackCollision
+  def parse(source, *args)
+    payload = super
+    if source.is_a?(String) && payload.is_a?(Hash) && payload.dig("flat", "staging")
+      collision = payload.dig("flat", "removed").sort.first
+      FileUtils.mkdir_p(collision)
+      File.write(File.join(collision, "SKILL.md"), "concurrent collision\n")
+      exit 86
+    end
+    payload
+  end
+end
+JSON.singleton_class.prepend(InjectRollbackCollision)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "rollback collision unexpectedly committed migration"
+  assert_file "$receipt"
+  staging="$(head -1 "$receipt")"
+  [[ -d "$staging" ]] || fail "remaining quarantine is not referenced by receipt"
+  assert_contains "$output" "ROLLBACK_FAILED"
+
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  retry_status=$?
+  set -e
+  [[ "$retry_status" -ne 0 ]] || fail "retry ignored unresolved rollback collision"
+  assert_contains "$retry_output" "RECOVERY_FAILED"
+  assert_file "$receipt"
+  [[ -d "$staging" ]] || fail "retry lost remaining quarantine"
+}
+
 test_crash_receipt_recovers_flat_staging_before_new_install() {
   local tmp target staging output status skill
   tmp="$(mktemp -d)"
@@ -490,6 +537,35 @@ test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data()
   assert_file "$target/.agent-workflows-migration-staging"
   [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || fail "unsafe recovery mutated metadata"
   assert_file "$target/skills/pr-batch/SKILL.md"
+}
+
+test_flat_crash_recovery_rejects_symlink_skills_root_before_move() {
+  local tmp target outside staging output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  outside="$tmp/outside"
+  staging="$target/.agent-workflows-flat-migration-crash"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  mkdir -p "$staging" "$outside"
+  for skill in "$target"/skills/*; do mv "$skill" "$staging/"; done
+  rmdir "$target/skills"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  ln -s "$outside" "$target/skills"
+  printf '%s\n' "$staging" > "$target/.agent-workflows-migration-staging"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "recovery followed symlinked skills root"
+  assert_contains "$output" "ROLLBACK_FAILED"
+  assert_file "$outside/SENTINEL"
+  [[ ! -e "$outside/pr-batch" ]] || fail "recovery moved a skill through outside symlink"
+  assert_symlink "$target/skills"
+  assert_file "$target/.agent-workflows-migration-staging"
+  [[ -d "$staging" ]] || fail "unsafe rollback lost quarantine"
 }
 
 test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data() {
@@ -1123,9 +1199,11 @@ main() {
     test_staging_race_blocks_installer_and_preserves_flat_tree
     test_final_verification_race_rolls_back_before_metadata_commit
     test_staging_json_extraction_failure_uses_receipt_to_roll_back
+    test_failed_partial_rollback_preserves_receipt_for_retry
     test_crash_receipt_recovers_flat_staging_before_new_install
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
+    test_flat_crash_recovery_rejects_symlink_skills_root_before_move
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
