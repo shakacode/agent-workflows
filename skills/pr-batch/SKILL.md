@@ -60,8 +60,10 @@ The single lane still gets a Lane Card, claim/heartbeat behavior when configured
 a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
 checks, and the canonical terminal state and handoff evidence.
 
-Resolve the target repo's base branch from `.agents/agent-workflow.yml`
-(`base_branch`), run `git fetch --prune origin <base-branch>`, then use the
+Resolve the target repo's `base_branch` from `.agents/agent-workflow.yml` when present, otherwise from the `AGENTS.md`
+**Agent Workflow Configuration** seam. If neither declares it, report
+`base_branch: UNKNOWN` and stop before branching. Run
+`git fetch --prune origin <base-branch>`, then use the
 repo-local `.agents/workflows/pr-processing.md` when present or the installed
 `../../workflows/pr-processing.md` as the deeper operating model for each issue,
 PR, review-fix pass, or merge-readiness item. If the target scope is not
@@ -296,7 +298,7 @@ Items:
   Done when: final state follows requested `merge_authority`, with PR/no-PR evidence or no-fix rationale.
 
 Execution rules:
-- Resolve `base_branch` from `.agents/agent-workflow.yml`; run `git fetch --prune origin <base-branch>`; verify installed or repo-local `$pr-batch` and `pr-processing.md` before launch; if unresolved, stop with workflow state `UNKNOWN`.
+- Resolve `base_branch` from repo config or inline `AGENTS.md` configuration; run `git fetch --prune origin <base-branch>`; verify installed/repo-local `$pr-batch` and workflow; unresolved -> `UNKNOWN`.
 - Follow resolved `$pr-batch`; if autoload fails, apply local gates; preflight only issue/PR targets.
 - Bind coordinator/worker route pairs on their actual hosts before dispatch; no worker may inherit the coordinator pair; if unavailable, stop and re-plan.
 - Dispatch one subagent per independent item in the current file-disjoint wave; group only for required shared context; keep serial/`UNKNOWN` lanes clear of editor lanes.

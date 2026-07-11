@@ -382,7 +382,7 @@ Items:
   Done when: final state follows requested `merge_authority`, with PR/no-PR evidence or no-fix rationale.
 
 Execution rules:
-- Resolve `base_branch` from `.agents/agent-workflow.yml`; run `git fetch --prune origin <base-branch>`; verify installed or repo-local `$pr-batch` and `pr-processing.md` before launch; if unresolved, stop with workflow state `UNKNOWN`.
+- Resolve `base_branch` from repo config or inline `AGENTS.md` configuration; run `git fetch --prune origin <base-branch>`; verify installed/repo-local `$pr-batch` and workflow; unresolved -> `UNKNOWN`.
 - Follow resolved `$pr-batch`; if autoload fails, apply local gates; preflight only issue/PR targets.
 - Bind coordinator/worker route pairs on their actual hosts before dispatch; no worker may inherit the coordinator pair; if unavailable, stop and re-plan.
 - Dispatch one subagent per independent item in the current file-disjoint wave; group only for required shared context; keep serial/`UNKNOWN` lanes clear of editor lanes.
