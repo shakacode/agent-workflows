@@ -2,6 +2,25 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FAKE_CODEX_DIR="$(mktemp -d)"
+trap 'rm -rf "$FAKE_CODEX_DIR"' EXIT
+export AGENT_WORKFLOWS_CODEX_EXECUTABLE="$FAKE_CODEX_DIR/codex"
+cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
+#!/usr/bin/env ruby
+abort "unexpected arguments: #{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
+case ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
+when "enabled"
+  puts "PLUGIN STATUS VERSION PATH"
+  puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+when "disabled"
+  puts "PLUGIN STATUS VERSION PATH"
+  puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
+else
+  warn "invalid Codex TOML"
+  exit 2
+end
+RUBY
+chmod +x "$AGENT_WORKFLOWS_CODEX_EXECUTABLE"
 
 fail() {
   echo "FAIL: $*" >&2

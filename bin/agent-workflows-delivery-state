@@ -32,13 +32,15 @@ module AgentWorkflowsDeliveryState
   def codex_native_state(target)
     config_path = File.join(target, "config.toml")
     config = File.file?(config_path) ? File.binread(config_path) : ""
-    enabled = codex_plugin_enabled(config)
-    if enabled.nil?
-      return { "state" => "unknown", "reason" => "invalid or inconclusive Codex plugin state in #{config_path}" }
-    end
-    return { "state" => "inactive", "reason" => "scw@agent-workflows is not enabled" } unless enabled
+    cache_pattern = File.join(target, "plugins/cache/agent-workflows/scw/*")
+    relevant = config.include?("scw@agent-workflows") || Dir.glob(cache_pattern).any?
+    return { "state" => "inactive", "reason" => "scw@agent-workflows is not configured" } unless relevant
 
-    roots = Dir.glob(File.join(target, "plugins/cache/agent-workflows/scw/*")).select do |root|
+    cli_state = codex_plugin_cli_state(target)
+    return cli_state if cli_state["state"] == "unknown"
+    return { "state" => "inactive", "reason" => "scw@agent-workflows is disabled" } if cli_state["state"] == "disabled"
+
+    roots = Dir.glob(cache_pattern).select do |root|
       plugin_manifest_valid?(root, "codex")
     end
     return { "state" => "unknown", "reason" => "enabled Codex scw plugin has no valid installed cache" } if roots.empty?
@@ -46,44 +48,37 @@ module AgentWorkflowsDeliveryState
     { "state" => "active", "roots" => roots.sort }
   end
 
-  def codex_plugin_enabled(config)
-    plugin_id = "scw@agent-workflows"
-    quoted_plugin = /(?:"#{Regexp.escape(plugin_id)}"|'#{Regexp.escape(plugin_id)}')/
-    plugin_table = /^\s*\[plugins\.#{quoted_plugin}\]\s*(?:#.*)?$/
-    any_table = /^\s*\[[^\]]+\]\s*(?:#.*)?$/
-    enabled_key = /(?:enabled|"enabled"|'enabled')/
-    dotted_enabled = /^\s*plugins\.#{quoted_plugin}\.#{enabled_key}\s*=\s*(true|false)\s*(?:#.*)?$/
-    table_enabled = /^\s*#{enabled_key}\s*=\s*(true|false)\s*(?:#.*)?$/
-    enabled_assignment = /^\s*#{enabled_key}\s*=/
-    plugin_syntax = /^\s*\[?plugins\.#{quoted_plugin}/
-    values = []
-    present = false
-    in_plugin_table = false
-    inconclusive = false
-
-    config.each_line do |line|
-      if (match = line.match(dotted_enabled))
-        present = true
-        values << (match[1] == "true")
-      elsif line.match?(plugin_table)
-        present = true
-        in_plugin_table = true
-      elsif line.match?(any_table)
-        in_plugin_table = false
-      elsif in_plugin_table && (match = line.match(table_enabled))
-        values << (match[1] == "true")
-      elsif in_plugin_table && line.match?(enabled_assignment)
-        inconclusive = true
-      elsif line.match?(plugin_syntax)
-        present = true
-        inconclusive = true
-      end
+  def codex_plugin_cli_state(target)
+    executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
+    output, error, status = Open3.capture3(
+      { "CODEX_HOME" => target },
+      executable,
+      "plugin", "list", "--marketplace", "agent-workflows"
+    )
+    unless status.success?
+      reason = error.to_s.strip
+      reason = "exit #{status.exitstatus}" if reason.empty?
+      return { "state" => "unknown", "reason" => "Codex plugin state command failed: #{reason}" }
     end
 
-    return false unless present
-    return nil if inconclusive || values.empty? || values.uniq.length != 1
+    rows = output.lines.filter_map do |line|
+      columns = line.strip.split(/\s{2,}/)
+      columns if columns.first == "scw@agent-workflows"
+    end
+    return { "state" => "unknown", "reason" => "Codex scw plugin is absent from marketplace agent-workflows" } if rows.empty?
+    return { "state" => "unknown", "reason" => "Codex scw plugin state is ambiguous" } unless rows.length == 1
 
-    values.first
+    status_text = rows.first[1]
+    case status_text
+    when "installed, enabled"
+      { "state" => "enabled" }
+    when "installed, disabled"
+      { "state" => "disabled" }
+    else
+      { "state" => "unknown", "reason" => "unrecognized Codex scw plugin status: #{status_text || 'missing'}" }
+    end
+  rescue SystemCallError => e
+    { "state" => "unknown", "reason" => "Codex plugin state command unavailable: #{e.message}" }
   end
 
   def claude_native_state(target)
@@ -153,7 +148,7 @@ module AgentWorkflowsDeliveryState
   end
 
   def git_snapshot_root(source_roots, revision)
-    return nil if revision.to_s.empty? || revision == "unknown"
+    return nil unless revision.to_s.match?(/\A[0-9a-f]{40}\z/i)
 
     source_roots.compact.uniq.find do |root|
       File.directory?(root) && system("git", "-C", root, "cat-file", "-e", "#{revision}:skills", out: File::NULL, err: File::NULL)
@@ -241,7 +236,7 @@ module AgentWorkflowsDeliveryState
     end
 
     metadata = read_metadata(target)
-    prior_delivery_mode = metadata&.fetch("delivery_mode", "flat")
+    prior_delivery_mode = metadata&.fetch("delivery_mode", nil) || "flat"
     revision = metadata&.fetch("source_revision", nil).to_s
     skills_path = File.join(target, "skills")
     flat_tree_present = if File.symlink?(skills_path) || File.exist?(skills_path) && !File.directory?(skills_path)
@@ -345,6 +340,8 @@ module AgentWorkflowsDeliveryState
     guidance =
       if flat["blocking"].any?
         "The listed paths were preserved. Restore them to their recorded pack revision or move/remove them manually, then rerun."
+      elsif native["state"] == "unknown"
+        "Inspect the Codex or Claude native plugin state and repair its configuration or install receipt before rerunning."
       elsif delivery_mode == "flat"
         "Disable or remove scw@agent-workflows, or rerun with --delivery-mode plugin-companion."
       else

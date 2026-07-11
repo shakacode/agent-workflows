@@ -8,13 +8,29 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
 
 class AgentWorkflowsStatusTest < Minitest::Test
+  def setup
+    @fake_codex_dir = Dir.mktmpdir("status-fake-codex")
+    @fake_codex = File.join(@fake_codex_dir, "codex")
+    File.write(@fake_codex, <<~RUBY)
+      #!#{RbConfig.ruby}
+      puts "PLUGIN STATUS VERSION PATH"
+      puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+    RUBY
+    FileUtils.chmod(0o755, @fake_codex)
+  end
+
+  def teardown
+    FileUtils.remove_entry(@fake_codex_dir)
+  end
+
   def run_status(env, *)
-    Open3.capture2e(env, "ruby", SCRIPT, *)
+    Open3.capture2e({ "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex }.merge(env), "ruby", SCRIPT, *)
   end
 
   def write_metadata(target, metadata)
@@ -141,6 +157,32 @@ class AgentWorkflowsStatusTest < Minitest::Test
       # clean CHECK_FAILED status, never an uncaught encoding crash.
       assert_includes out, "CHECK_FAILED"
       assert_equal 3, status.exitstatus, out
+    end
+  end
+
+  def test_helper_system_call_failure_becomes_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        injection = File.join(target, "raise-system-call.rb")
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+        File.write(injection, <<~RUBY)
+          require "open3"
+          module RaiseSystemCall
+            def capture3(*)
+              raise Errno::EACCES, "delivery helper"
+            end
+          end
+          Open3.singleton_class.prepend(RaiseSystemCall)
+        RUBY
+
+        out, status = run_status({ "RUBYOPT" => "-r#{injection}" }, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "Permission denied"
+      end
     end
   end
 end

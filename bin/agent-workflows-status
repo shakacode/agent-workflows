@@ -134,7 +134,7 @@ module AgentWorkflowsStatus
     )
     payload = JSON.parse(output)
     [payload, status.success? ? nil : payload["reason"]]
-  rescue Errno::ENOENT, JSON::ParserError => e
+  rescue SystemCallError, JSON::ParserError, TypeError => e
     [nil, "delivery-state check failed: #{error}#{e.message}"]
   end
 
@@ -231,7 +231,7 @@ module AgentWorkflowsStatus
       checked_remote: options.fetch(:fetch),
       delivery_state: delivery
     )
-  rescue ArgumentError, RuntimeError => e
+  rescue ArgumentError, RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
     status_payload("CHECK_FAILED", target: options[:target], source: options[:source], host: options[:host], reason: e.message)
   end
 end

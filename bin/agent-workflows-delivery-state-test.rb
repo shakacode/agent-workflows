@@ -5,17 +5,61 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-delivery-state", __dir__)
 
 class AgentWorkflowsDeliveryStateTest < Minitest::Test
-  def run_state(*)
-    Open3.capture3("ruby", SCRIPT, *)
+  def setup
+    @fake_codex_dir = Dir.mktmpdir("fake-codex-plugin-list")
+    @fake_codex = File.join(@fake_codex_dir, "codex")
+    File.write(@fake_codex, <<~RUBY)
+      #!#{RbConfig.ruby}
+      state = ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
+      abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
+      case state
+      when "enabled"
+        puts "PLUGIN STATUS VERSION PATH"
+        puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+      when "disabled"
+        puts "PLUGIN STATUS VERSION PATH"
+        puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
+      when "absent"
+        puts "No plugins found in marketplace `agent-workflows`."
+      when "ambiguous"
+        puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/one"
+        puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/two"
+      when "malformed"
+        puts "scw@agent-workflows enabled maybe"
+      when "error"
+        warn "invalid Codex TOML"
+        exit 2
+      else
+        abort "unknown fake state: \#{state}"
+      end
+    RUBY
+    FileUtils.chmod(0o755, @fake_codex)
   end
 
-  def run_state_with_env(env, *)
-    Open3.capture3(env, "ruby", SCRIPT, *)
+  def teardown
+    FileUtils.remove_entry(@fake_codex_dir)
+  end
+
+  def run_state(*args, codex_state: "enabled", codex_executable: @fake_codex)
+    env = {
+      "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => codex_executable,
+      "QA_CODEX_PLUGIN_STATE" => codex_state
+    }
+    Open3.capture3(env, "ruby", SCRIPT, *args)
+  end
+
+  def run_state_with_env(env, *args)
+    defaults = {
+      "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex,
+      "QA_CODEX_PLUGIN_STATE" => "enabled"
+    }
+    Open3.capture3(defaults.merge(env), "ruby", SCRIPT, *args)
   end
 
   def write_manifest(root, host:)
@@ -119,7 +163,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       end
 
       File.write(File.join(target, "config.toml"), "plugins.\"scw@agent-workflows\".\"enabled\" = false\n")
-      out, err, status = run_state("check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "flat", "--json", codex_state: "disabled"
+      )
       assert status.success?, "#{out}#{err}"
       assert_equal "inactive", JSON.parse(out).dig("native", "state")
     end
@@ -147,6 +194,58 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_codex_cli_is_authoritative_for_inline_tables_and_plugin_looking_multiline_strings
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      FileUtils.mkdir_p(target)
+      write_manifest(plugin_root, host: "codex")
+      File.write(File.join(target, "config.toml"), <<~'TOML')
+        note = """
+        plugins."scw@agent-workflows".enabled = false
+        """
+        plugins."scw@agent-workflows" = { enabled = true }
+      TOML
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json", codex_state: "enabled"
+      )
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", JSON.parse(out).dig("native", "state")
+    end
+  end
+
+  def test_codex_cli_missing_error_absent_ambiguous_and_unparseable_states_are_unknown
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(target)
+      File.write(
+        File.join(target, "config.toml"),
+        "[plugins.\"scw@agent-workflows\"]\nenabled = true\nenabled = false # duplicate invalid TOML\n"
+      )
+
+      [
+        ["error", @fake_codex],
+        ["absent", @fake_codex],
+        ["ambiguous", @fake_codex],
+        ["malformed", @fake_codex],
+        ["enabled", File.join(tmp, "missing-codex")]
+      ].each do |state, executable|
+        out, _err, status = run_state(
+          "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+          "--delivery-mode", "flat", "--json", codex_state: state, codex_executable: executable
+        )
+
+        refute status.success?, "#{state} unexpectedly succeeded: #{out}"
+        payload = JSON.parse(out)
+        assert_equal "unknown", payload.dig("native", "state")
+        assert_includes payload.fetch("guidance"), "native plugin state"
+      end
+    end
+  end
+
   def test_codex_present_but_inconclusive_plugin_config_is_unknown
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")
@@ -156,7 +255,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         enabled = "yes"
       TOML
 
-      out, _err, status = run_state("check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "flat", "--json", codex_state: "error"
+      )
 
       refute status.success?
       assert_equal "unknown", JSON.parse(out).dig("native", "state")
@@ -174,7 +276,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       TOML
       write_manifest(cached_plugin, host: "codex")
 
-      out, err, status = run_state("check", "--host", "codex", "--target", disabled_home, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", disabled_home, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "flat", "--json", codex_state: "disabled"
+      )
       assert status.success?, "#{out}#{err}"
       assert_equal "inactive", JSON.parse(out).dig("native", "state")
 
@@ -196,7 +301,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         enabled = true
       TOML
 
-      out, _err, status = run_state("check", "--host", "codex", "--target", invalid_home, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", invalid_home, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "flat", "--json", codex_state: "error"
+      )
       refute status.success?
       assert_equal "unknown", JSON.parse(out).dig("native", "state")
 
@@ -545,6 +653,46 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       refute status.success?
       assert_path_exists File.join(target, "skills/alpha/SKILL.md")
       assert_equal "unknown", JSON.parse(out).dig("flat", "state")
+    end
+  end
+
+  def test_option_like_recorded_revision_fails_closed_without_git_option_injection
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills/alpha"))
+      File.write(File.join(target, "skills/alpha/SKILL.md"), "alpha\n")
+      write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => "--help")
+
+      out, _err, status = run_state("migrate", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "plugin-companion", "--json")
+
+      refute status.success?
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+      assert_equal "unknown", JSON.parse(out).dig("flat", "state")
+    end
+  end
+
+  def test_null_legacy_delivery_mode_falls_back_to_flat
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      write_metadata(
+        target,
+        "host" => "codex", "mode" => "copy", "delivery_mode" => nil,
+        "source" => source, "source_revision" => revision
+      )
+
+      out, err, status = run_state("check", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "flat", "--json")
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "present", JSON.parse(out).dig("flat", "state")
     end
   end
 
