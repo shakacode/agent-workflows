@@ -22,6 +22,7 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @skill, 'export GH_HOST="${TARGET_HOST}"'
     assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_URL#*://}"'
     assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"'
+    assert_includes @skill, 'COORD_REPO="github-host/$(ruby -rdigest'
     assert_includes @skill, 'REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"'
     assert_includes @skill, "if ! git rev-parse --show-toplevel >/dev/null 2>&1; then"
     assert_operator @skill.index("git rev-parse --show-toplevel"), :<, @skill.index('REPO="${REPO:-')
@@ -31,6 +32,9 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @skill, "enter a trusted base checkout before preflight"
     assert_includes @normalized_skill, "For a fork PR, run preflight from a separate trusted checkout"
     assert_includes @normalized_skill, "then return to or create the verified fork-head checkout"
+    assert_includes @normalized_skill, "`COORD_REPO` is a coordination identity only"
+    assert_includes @normalized_skill, "Public fallback uses the real `GH_HOST`, `REPO`, and target surface"
+    assert_includes @skill, "github_host: <target-host>"
     assert_includes @skill,
                     'pr-security-preflight" --repo "${REPO}" "${TARGET_NUMBER}"'
   end

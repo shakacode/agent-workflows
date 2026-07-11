@@ -30,8 +30,10 @@ A full GitHub PR URL is authoritative for repository selection. Parse its
 hostname into `TARGET_HOST`, its `OWNER/REPO` into `REPO`, and its final numeric
 path component into `TARGET_NUMBER` before using checkout metadata. Export
 `GH_HOST=${TARGET_HOST}` and use those parsed values for every `gh` and preflight
-call. Preserve the full PR URL in coordination metadata so the host is not
-collapsed into the `OWNER/REPO` key. Do not replace the URL-derived host or
+call. Derive a deterministic host-qualified `COORD_REPO` for private
+coordination so repositories with the same `OWNER/REPO` on different hosts do
+not share a claim key. Preserve the full PR URL in coordination metadata too.
+Do not replace the URL-derived host or
 repository with `gh repo view` output; a checkout may resolve to an upstream or
 otherwise related repository. When no full URL is visible, infer the host and
 repository from the verified PR context or checkout, set `TARGET_NUMBER` from
@@ -62,6 +64,7 @@ TARGET_HOST="${TARGET_HOST:-${CHECKOUT_HOST}}"
 export GH_HOST="${TARGET_HOST}"
 REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
+COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${TARGET_HOST}/${REPO}")"
 CHECKOUT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO}" != "${REPO}" ]; then
   echo "Refusing to continue: switch temporarily to a trusted base checkout for ${REPO} before preflight." >&2
@@ -103,7 +106,7 @@ only after bounded checks succeed:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
-"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo OWNER/REPO --target TARGET --json
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${COORD_REPO}" --target TARGET --json
 ```
 
 Before the first claim call, inspect the selected backend's claim support:
@@ -118,7 +121,7 @@ claim call with core fields and lane metadata:
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim \
   --agent-id AGENT_ID \
-  --repo OWNER/REPO \
+  --repo "${COORD_REPO}" \
   --target TARGET \
   --branch BRANCH \
   --thread-handle THREAD_HANDLE \
@@ -137,7 +140,7 @@ unknown options. Issue one core claim call only:
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim \
   --agent-id AGENT_ID \
-  --repo OWNER/REPO \
+  --repo "${COORD_REPO}" \
   --target TARGET \
   --branch BRANCH \
   --json
@@ -157,7 +160,7 @@ metadata with a bounded heartbeat before branching:
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 heartbeat \
   --agent-id AGENT_ID \
-  --repo OWNER/REPO \
+  --repo "${COORD_REPO}" \
   --target TARGET \
   --branch BRANCH \
   --thread-handle THREAD_HANDLE \
@@ -177,17 +180,20 @@ metadata when available, PR evidence, or final handoff:
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 heartbeat \
   --agent-id AGENT_ID \
-  --repo OWNER/REPO \
+  --repo "${COORD_REPO}" \
   --target TARGET \
   --branch BRANCH \
   --status claimed \
   --json
 ```
 
-The lane metadata must include or explicitly mark `UNKNOWN` for:
+`COORD_REPO` is a coordination identity only; never pass it to `gh` or use it
+as the GitHub repository. The lane metadata must include or explicitly mark
+`UNKNOWN` for:
 
 - stable `--agent-id`
-- target `--repo` and `--target`
+- actual GitHub `TARGET_HOST`, `REPO`, and `TARGET_NUMBER`
+- coordination `--repo` (`COORD_REPO`) and `--target`
 - intended `--branch`
 - `--thread-handle`
 - `--chat-handle` when the host exposes one, otherwise `UNKNOWN`
@@ -216,9 +222,15 @@ advisory comment before branching. For ad-hoc work with no issue or PR comment
 surface, public fallback is unavailable; stop before branching and ask for a
 coordination target or no-backend single-operator approval.
 
+Public fallback uses the real `GH_HOST`, `REPO`, and target surface, not
+`COORD_REPO`. Include the host and repository in the structured block so claim
+comparisons cannot collapse equal `OWNER/REPO` values across hosts.
+
 ```markdown
 <!-- codex-claim v1
 batch: pr-lane
+github_host: <target-host>
+repo: <owner/repo>
 machine: <machine-or-host>
 thread: <thread-handle>
 branch: <branch>
