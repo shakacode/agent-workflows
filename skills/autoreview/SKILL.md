@@ -38,6 +38,8 @@ This is the portable core. Hold it regardless of which engine runs.
 - Verify every finding by reading the real code path and adjacent files before acting.
 - Read dependency docs/source/types when a finding depends on external library/framework behavior.
 - Reject unrealistic edge cases, speculative risks, broad rewrites, and fixes that over-complicate the code.
+- Reviewer severity informs triage; it does not by itself establish scope. An accepted expansion must map to an original acceptance criterion or a direct safety property.
+- Stop the automatic fix loop when an accepted finding requires a new grammar, protocol, or schema category beyond the intended mechanism, or accepted findings broaden scope across two review waves. Re-evaluate proportionate alternatives: an authoritative source, a maintained dependency, a bounded guard, or a checklist with replay. Continue only with an option that preserves the required criterion or safety property; seek a decision when none is clearly proportionate.
 - Prefer small fixes at the right ownership boundary; no refactor unless it clearly improves the bug class. This matches `AGENTS.md`: never refactor unrelated code.
 - Keep going until the review returns no accepted/actionable findings; once it comes back clean, stop. Do not run an extra review just to get nicer "clean" wording or a redundant second opinion.
 - If a review-triggered fix changes code, rerun the focused tests for the changed surface and rerun the review.
@@ -180,7 +182,7 @@ For each finding the engine returns:
 1. Open the real code path and adjacent files. Confirm the finding is true here, not generic.
 2. Accept only concrete, actionable findings (correctness bugs, real regressions, genuine
    security gaps, clear inconsistencies with adjacent code). Reject speculation, nits, and
-   broad rewrites; note briefly why.
+   broad rewrites; note briefly why. Severity alone does not authorize a broader mechanism.
 3. Fix accepted findings with the smallest correct change at the right boundary.
 4. Rerun the **targeted** tests for the changed surface, then rerun the review. Use `/verify`'s
    Scope Guide and `.agents/bin/README.md` to pick the narrowest covering
@@ -190,6 +192,10 @@ For each finding the engine returns:
 
 Loop Steps 3-4 until the review returns no accepted/actionable findings. Once a rerun comes
 back clean, stop; do not spend another long review cycle on redundant confirmation.
+When a finding would trigger the complexity-escalation stop in the Contract, do not patch the
+new category as the next loop iteration. First re-evaluate the listed alternatives and record
+the acceptance-criterion or direct-safety-property mapping; seek a maintainer decision if the
+proportionate choice is unclear.
 If the same finding recurs after two fix attempts, or the review starts cycling through speculative
 issues, stop, report the loop, and ask the user whether to continue.
 
