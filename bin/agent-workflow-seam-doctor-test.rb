@@ -86,6 +86,13 @@ module AgentWorkflowSeamDoctorTestHelpers
   def run_doctor(root, *)
     Open3.capture2e("ruby", SCRIPT, "--root", root, *)
   end
+
+  def executable_available?(executable)
+    ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
+      path = File.join(directory, executable)
+      File.file?(path) && File.executable?(path)
+    end
+  end
 end
 
 class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
@@ -1789,11 +1796,13 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
   def test_init_detects_c_before_an_attached_underscored_zsh_o_operand
     command = %q(zsh -fcoSH_WORD_SPLIT 'printf "%s\\n" "$@"')
-    runtime_out, runtime_status = Open3.capture2e(
-      "zsh", "-fcoSH_WORD_SPLIT", 'printf "%s\\n" "$@"', "FIRST", "SECOND"
-    )
-    assert runtime_status.success?, runtime_out
-    assert_equal "SECOND\n", runtime_out
+    if executable_available?("zsh")
+      runtime_out, runtime_status = Open3.capture2e(
+        "zsh", "-fcoSH_WORD_SPLIT", 'printf "%s\\n" "$@"', "FIRST", "SECOND"
+      )
+      assert runtime_status.success?, runtime_out
+      assert_equal "SECOND\n", runtime_out
+    end
 
     error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
       AgentWorkflowSeamDoctor.init_command_line(command)
@@ -1879,11 +1888,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       "zsh" => ["-c -e", "-c --"]
     }
     cases.each do |shell, prefixes|
-      available = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
-        path = File.join(directory, shell)
-        File.file?(path) && File.executable?(path)
-      end
-      next unless available
+      next unless executable_available?(shell)
 
       prefixes.each do |prefix|
         Dir.mktmpdir("agent-workflow-seam-init") do |root|
@@ -2468,6 +2473,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   end
 
   def test_runtime_confirms_zsh_named_positional_state_shifts_without_a_placeholder
+    skip "zsh unavailable" unless executable_available?("zsh")
+
     payload = 'printf "argv=<%s> argc=<%s> argzero=<%s>\\n" "${argv[*]}" "$ARGC" "$ZSH_ARGZERO"'
 
     runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "FIRST", "SECOND")
@@ -2480,6 +2487,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   end
 
   def test_runtime_confirms_zsh_parameter_flag_forms_shift_without_a_placeholder
+    skip "zsh unavailable" unless executable_available?("zsh")
+
     %w[${(q)argv} ${(@)argv} ${^argv} ${=argv} ${~argv} ${(q)^argv} ${(q)#argv}].each do |expression|
       payload = %(printf "<%s>\\n" "#{expression}")
       runtime_out, runtime_status = Open3.capture2e("zsh", "-c", payload, "FIRST", "SECOND")
@@ -2494,6 +2503,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   end
 
   def test_runtime_confirms_zsh_delimited_flags_and_indirection_shift_without_a_placeholder
+    skip "zsh unavailable" unless executable_available?("zsh")
+
     {
       "${(j:):)argv}" => ["<SECOND>\n", "<FIRST)SECOND>\n"],
       "${(P)name}" => ["<SECOND>\n", "<FIRST SECOND>\n"]
@@ -2512,6 +2523,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
   end
 
   def test_runtime_confirms_zsh_nested_and_numeric_indirection_targets
+    skip "zsh unavailable" unless executable_available?("zsh")
+
     {
       "${(P)${:-argv}}" => ["<SECOND>\n", "<FIRST SECOND>\n"],
       "${(P)${:-ARGC}}" => ["<1>\n", "<2>\n"],
