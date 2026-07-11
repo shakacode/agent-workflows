@@ -418,7 +418,7 @@ module AgentWorkflowSeamDoctor
     end
     nil
   rescue ArgumentError
-    nil
+    "cannot safely parse command: unmatched quotes or shell tokenization mismatch; fix the command quoting"
   end
 
   def supported_shell_command_suffix?(tokens)
@@ -469,8 +469,13 @@ module AgentWorkflowSeamDoctor
     end
 
     command_boundary = unquoted_shell_boundary?(raw_command.to_s)
+    if command_boundary
+      return "#{shell} -c command string has an attached unquoted shell metacharacter; " \
+             "quote or separate the metacharacter so the command string is one unambiguous word"
+    end
+
     placeholder = tokens[command_string_index + 1]
-    if command_boundary || placeholder.nil? || !shell_c_placeholder_word?(placeholder.fetch(:raw)) ||
+    if placeholder.nil? || !shell_c_placeholder_word?(placeholder.fetch(:raw)) ||
        outer_argument_forwarding?(placeholder.fetch(:raw))
       "#{shell} -c forwarding requires an explicit $0 placeholder after the command string; " \
         "add _ before forwarded wrapper arguments"

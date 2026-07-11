@@ -1328,11 +1328,43 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     ["; true", "&& true", "|| true", "& true", "| true", "< input", "> output", "2> output"].each do |suffix|
       command = %(bash -c 'exec bin/validate "$@"'#{suffix})
 
-      error = assert_raises(AgentWorkflowSeamDoctor::InitError, suffix) do
+      [command, "#{command} _"].each do |candidate|
+        error = assert_raises(AgentWorkflowSeamDoctor::InitError, candidate) do
+          AgentWorkflowSeamDoctor.init_command_line(candidate)
+        end
+        assert_includes error.message, "bash -c command string has an attached unquoted shell metacharacter"
+        assert_includes error.message, "quote or separate the metacharacter"
+      end
+    end
+  end
+
+  def test_init_fails_closed_for_malformed_shell_and_non_shell_quoting
+    [
+      %q(bash -c 'exec bin/validate "$@"),
+      "ruby -e 'puts :ok"
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
         AgentWorkflowSeamDoctor.init_command_line(command)
       end
-      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+      assert_equal "cannot safely parse command: unmatched quotes or shell tokenization mismatch; " \
+                   "fix the command quoting", error.message
     end
+  end
+
+  def test_init_fails_closed_without_leaking_an_internal_tokenization_mismatch
+    original = AgentWorkflowSeamDoctor.method(:shell_word_spans)
+    AgentWorkflowSeamDoctor.define_singleton_method(:shell_word_spans) do |*|
+      raise ArgumentError, "shell tokenization mismatch: secret command text"
+    end
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line("true")
+    end
+    assert_equal "cannot safely parse command: unmatched quotes or shell tokenization mismatch; " \
+                 "fix the command quoting", error.message
+    refute_includes error.message, "secret command text"
+  ensure
+    AgentWorkflowSeamDoctor.define_singleton_method(:shell_word_spans, original) if original
   end
 
   def test_init_allows_shell_words_as_dollar_zero_placeholders
