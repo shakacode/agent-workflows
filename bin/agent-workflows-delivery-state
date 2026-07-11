@@ -6,6 +6,7 @@ require "fileutils"
 require "find"
 require "open3"
 require "optparse"
+require "tmpdir"
 
 module AgentWorkflowsDeliveryState
   module_function
@@ -181,6 +182,14 @@ module AgentWorkflowsDeliveryState
                         else
                           File.directory?(skills_path) && !Dir.empty?(skills_path)
                         end
+    if delivery_mode == "plugin-companion" && File.symlink?(skills_path)
+      return {
+        "state" => "ambiguous",
+        "removable" => [],
+        "blocking" => [skills_path],
+        "reason" => "skills parent is a symlink"
+      }
+    end
     if delivery_mode == "plugin-companion" && metadata && prior_delivery_mode == "flat" && flat_tree_present &&
        (revision.empty? || revision == "unknown" || !git_snapshot_root([metadata["source"], source], revision))
       return {
@@ -282,8 +291,53 @@ module AgentWorkflowsDeliveryState
     return payload unless payload.fetch("compatible")
 
     removed = payload.dig("flat", "removable")
-    removed.each { |path| FileUtils.rm_rf(path) }
+    return payload.merge("flat" => payload.fetch("flat").merge("removed" => [])) if removed.empty?
+
+    staging = Dir.mktmpdir(".agent-workflows-flat-migration-", options.fetch(:target))
+    staged = []
+    begin
+      removed.each do |path|
+        destination = File.join(staging, File.basename(path))
+        File.rename(path, destination)
+        staged << [path, destination]
+      end
+    rescue SystemCallError => e
+      rollback_failed = false
+      staged.reverse_each do |original, destination|
+        File.rename(destination, original) if File.exist?(destination) || File.symlink?(destination)
+      rescue SystemCallError
+        rollback_failed = true
+      end
+      FileUtils.rm_rf(staging) unless rollback_failed
+      return migration_failure(payload, removed, e, staging: staging)
+    end
+
+    begin
+      FileUtils.remove_entry(staging)
+    rescue SystemCallError => e
+      rollback_failed = false
+      staged.reverse_each do |original, destination|
+        File.rename(destination, original) if File.exist?(destination) || File.symlink?(destination)
+      rescue SystemCallError
+        rollback_failed = true
+      end
+      Dir.rmdir(staging) unless rollback_failed
+      return migration_failure(payload, removed, e, staging: staging)
+    end
+
     payload["flat"]["removed"] = removed
+    payload
+  end
+
+  def migration_failure(payload, paths, error, staging: nil)
+    blocking = paths.select { |path| File.exist?(path) || File.symlink?(path) }
+    blocking << staging if staging && (File.exist?(staging) || File.symlink?(staging))
+    payload["compatible"] = false
+    payload["flat"]["state"] = "ambiguous"
+    payload["flat"]["removed"] = []
+    payload["flat"]["blocking"] = blocking.sort
+    payload["reason"] = "failed to remove installer-managed flat skills: #{error.message}"
+    payload["guidance"] = "The delivery mode was not changed. Correct the filesystem permissions and rerun."
     payload
   end
 end

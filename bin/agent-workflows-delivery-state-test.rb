@@ -259,6 +259,51 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_symlinked_skills_parent_blocks_migration_without_touching_source
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      File.symlink(File.join(source, "skills"), File.join(target, "skills"))
+      write_metadata(target, "host" => "codex", "mode" => "symlink", "source" => source, "source_revision" => revision)
+
+      out, _err, status = run_state("migrate", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "plugin-companion", "--json")
+
+      refute status.success?
+      assert File.symlink?(File.join(target, "skills"))
+      assert_path_exists File.join(source, "skills/alpha/SKILL.md")
+      assert_path_exists File.join(source, "skills/beta/SKILL.md")
+      assert_equal [File.join(target, "skills")], JSON.parse(out).dig("flat", "blocking")
+    end
+  end
+
+  def test_deletion_failure_blocks_migration_and_reports_remaining_paths
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => revision)
+      FileUtils.chmod(0o555, File.join(target, "skills"))
+
+      out, _err, status = run_state("migrate", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "plugin-companion", "--json")
+
+      refute status.success?
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+      payload = JSON.parse(out)
+      refute payload.fetch("compatible")
+      assert_equal [File.join(target, "skills/alpha")], payload.dig("flat", "blocking")
+      assert_includes payload.fetch("reason"), "failed to remove"
+    ensure
+      FileUtils.chmod(0o755, File.join(target, "skills")) if File.directory?(File.join(target, "skills"))
+    end
+  end
+
   def test_missing_recorded_revision_blocks_copy_migration
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")
