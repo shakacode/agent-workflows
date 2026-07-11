@@ -46,9 +46,10 @@ configured. The flag is visible at triage time, but it does not waive local
 verification.
 
 When `COORDINATED_AUTOFIX=1`, present the triage for transparency, then verify
-each selected `MUST-FIX` item and each autonomous optional fix or recorded
-outcome is behavior-preserving and within the active task. Promote anything
-that cannot pass that checkpoint to `DISCUSS` and keep it interactive. After
+each selected `MUST-FIX` item is factually correct and within the active task,
+and each autonomous optional fix or recorded outcome is behavior-preserving and
+within the active task. Promote anything that cannot pass that checkpoint to
+`DISCUSS` and keep it interactive. After
 the checkpoint, select and execute action `f` without waiting for another
 selection, and continue through
 the normal validation, push, reply, resolution, and summary gates. Keep
