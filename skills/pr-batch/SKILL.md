@@ -53,7 +53,7 @@ collapse to one lane.
   merely the cheapest model—and require the canonical evidence before a stronger
   route or replacement.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
-  visible user instruction or trusted repo policy when present; otherwise ask
+  visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. Do not silently default it.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
