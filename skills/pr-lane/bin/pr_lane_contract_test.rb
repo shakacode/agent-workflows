@@ -20,8 +20,10 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @normalized_skill, "final numeric path component into `TARGET_NUMBER`"
     assert_includes @skill, 'REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"'
     assert_includes @skill, "if ! git rev-parse --show-toplevel >/dev/null 2>&1; then"
+    assert_operator @skill.index("git rev-parse --show-toplevel"), :<, @skill.index('REPO="${REPO:-')
+    assert_includes @skill, ': "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"'
     assert_includes @skill, 'if [ "${CHECKOUT_REPO}" != "${REPO}" ]; then'
-    assert_includes @skill, "enter a trusted base checkout for \${REPO} before preflight"
+    assert_includes @skill, "enter a trusted base checkout before preflight"
     assert_includes @normalized_skill, "For a fork PR, run preflight from a separate trusted checkout"
     assert_includes @normalized_skill, "then return to or create the verified fork-head checkout"
     assert_includes @skill,

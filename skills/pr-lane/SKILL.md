@@ -45,11 +45,12 @@ skill when the host exposes the loaded skill base directory; repo-local
 still missing.
 
 ```bash
-REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
-  echo "Refusing to continue: enter a trusted base checkout for ${REPO} before preflight." >&2
+  echo "Refusing to continue: enter a trusted base checkout before preflight." >&2
   exit 1
 fi
+REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
+: "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
 CHECKOUT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 if [ "${CHECKOUT_REPO}" != "${REPO}" ]; then
   echo "Refusing to continue: switch temporarily to a trusted base checkout for ${REPO} before preflight." >&2
