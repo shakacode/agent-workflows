@@ -16,14 +16,17 @@ class PrLaneContractTest < Minitest::Test
 
   def test_explicit_pr_url_wins_over_checkout_repository_detection
     assert_includes @normalized_skill, "A full GitHub PR URL is authoritative for repository selection"
-    assert_includes @normalized_skill, "hostname into `TARGET_HOST`"
+    assert_includes @normalized_skill, "authority (`host[:port]`) into `TARGET_HOST`"
     assert_includes @normalized_skill, "Do not replace the URL-derived host or repository with `gh repo view` output"
     assert_includes @normalized_skill, "final numeric path component into `TARGET_NUMBER`"
     assert_includes @skill, 'export GH_HOST="${TARGET_HOST}"'
     assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_URL#*://}"'
     assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"'
+    assert_operator @skill.index("CHECKOUT_URL="), :<, @skill.index('export GH_HOST="${TARGET_HOST}"')
     assert_includes @skill, 'COORD_REPO="github-host/$(ruby -rdigest'
-    assert_includes @skill, 'REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"'
+    assert_includes @skill, 'CHECKOUT_URL="$(env -u GH_HOST gh repo view --json url -q .url)"'
+    assert_includes @skill, 'CHECKOUT_REPO="$(env -u GH_HOST gh repo view --json nameWithOwner -q .nameWithOwner)"'
+    assert_includes @skill, 'REPO="${REPO:-${CHECKOUT_REPO}}"'
     assert_includes @skill, "if ! git rev-parse --show-toplevel >/dev/null 2>&1; then"
     assert_operator @skill.index("git rev-parse --show-toplevel"), :<, @skill.index('REPO="${REPO:-')
     assert_includes @skill, ': "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"'

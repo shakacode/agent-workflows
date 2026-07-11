@@ -26,8 +26,8 @@ Resolve the real repository first, then classify the target:
   `-`. Record the original user wording in the eventual PR body or no-PR
   evidence comment.
 
-A full GitHub PR URL is authoritative for repository selection. Parse its
-hostname into `TARGET_HOST`, its `OWNER/REPO` into `REPO`, and its final numeric
+A full GitHub PR URL is authoritative for repository selection. Parse its URL
+authority (`host[:port]`) into `TARGET_HOST`, its `OWNER/REPO` into `REPO`, and its final numeric
 path component into `TARGET_NUMBER` before using checkout metadata. Export
 `GH_HOST=${TARGET_HOST}` and use those parsed values for every `gh` and preflight
 call. Derive a deterministic host-qualified `COORD_REPO` for private
@@ -54,18 +54,15 @@ if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "Refusing to continue: enter a trusted base checkout before preflight." >&2
   exit 1
 fi
-if [ -n "${TARGET_HOST:-}" ]; then
-  export GH_HOST="${TARGET_HOST}"
-fi
-CHECKOUT_URL="$(gh repo view --json url -q .url)"
+CHECKOUT_URL="$(env -u GH_HOST gh repo view --json url -q .url)"
+CHECKOUT_REPO="$(env -u GH_HOST gh repo view --json nameWithOwner -q .nameWithOwner)"
 CHECKOUT_HOST="${CHECKOUT_URL#*://}"
 CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"
 TARGET_HOST="${TARGET_HOST:-${CHECKOUT_HOST}}"
 export GH_HOST="${TARGET_HOST}"
-REPO="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
+REPO="${REPO:-${CHECKOUT_REPO}}"
 : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
 COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${TARGET_HOST}/${REPO}")"
-CHECKOUT_REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 if [ "${CHECKOUT_HOST}" != "${TARGET_HOST}" ] || [ "${CHECKOUT_REPO}" != "${REPO}" ]; then
   echo "Refusing to continue: switch temporarily to a trusted base checkout for ${REPO} before preflight." >&2
   exit 1

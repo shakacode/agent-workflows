@@ -562,7 +562,11 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
   boilerplate skipped items without an actionable thread are the exception;
   record their explicit no-action outcomes in the cutoff-safe summary instead
 - For actions other than `a` and inspect-only bare `o`, post a new marked PR summary comment after completing an action only when Step 10's cutoff guard is satisfied; otherwise post a non-cutoff status comment and require `check all reviews` on the next run
-- After triage, always offer rationale replies for selected `SKIPPED`/declined items; `f` requires explicit confirmation before skipped-item replies/resolution, while `f+i` and `m` include skipped-item handling in the chosen action flow
+- After triage, offer rationale replies for selected `SKIPPED`/declined items;
+  `f` requires explicit confirmation before skipped-item replies/resolution
+  except for the locally verified duplicate or factually incorrect threads
+  handled by `COORDINATED_AUTOFIX=1`, while `f+i` and `m` include skipped-item
+  handling in the chosen action flow
 - Use the Git push confirmation rule in `references/actions.md` before running
   `git push`
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate
