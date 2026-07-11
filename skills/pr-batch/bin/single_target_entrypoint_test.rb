@@ -84,6 +84,7 @@ assert(workflow.include?("independent current-head review signal"), "canonical p
 assert(address_review.include?("## Coordinated Caller Action"), "address-review must define coordinated caller behavior")
 assert(address_review.include?("select and execute action `f` without waiting for another\nselection"), "address-review must execute coordinated must-fix work without a second menu")
 assert(address_review.include?("each selected `MUST-FIX` item is factually correct and within the active task"), "address-review must allow verified must-fix work to change behavior")
+assert(address_review.include?("Reclassify a factually incorrect reviewer claim as\n`SKIPPED`"), "address-review must not turn disproven reviewer claims into discuss blockers")
 assert(address_review.include?("TRUSTED_GITHUB_HOST="), "address-review must capture the authorized host before parsing a PR URL")
 assert(address_review.include?("TRUSTED_GITHUB_HOST=\"${TRUSTED_GITHUB_HOST%:443}\""), "address-review must normalize a trusted host's default HTTPS port")
 assert(address_review.include?("Refusing untrusted GitHub URL: require HTTPS and authorized host"), "address-review must reject arbitrary PR URL hosts")

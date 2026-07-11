@@ -48,8 +48,9 @@ verification.
 When `COORDINATED_AUTOFIX=1`, present the triage for transparency, then verify
 each selected `MUST-FIX` item is factually correct and within the active task,
 and each autonomous optional fix or recorded outcome is behavior-preserving and
-within the active task. Promote anything that cannot pass that checkpoint to
-`DISCUSS` and keep it interactive. After
+within the active task. Reclassify a factually incorrect reviewer claim as
+`SKIPPED` with a verification rationale. Promote uncertain, out-of-scope, or
+material-judgment items to `DISCUSS` and keep them interactive. After
 the checkpoint, select and execute action `f` without waiting for another
 selection, and continue through
 the normal validation, push, reply, resolution, and summary gates. Keep

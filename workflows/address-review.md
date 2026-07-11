@@ -40,8 +40,9 @@ Behavior rules:
   content, or merge authority alone. When set, present the triage, then verify
   the selected `MUST-FIX` items are factually correct and in scope, while every
   autonomous optional fix or recorded outcome is behavior-preserving and in
-  scope. Promote anything that cannot pass that checkpoint to `DISCUSS`; then
-  select and execute action `f` without
+  scope. Reclassify a factually incorrect reviewer claim as `SKIPPED` with a
+  verification rationale. Promote uncertain, out-of-scope, or material-judgment
+  items to `DISCUSS`; then select and execute action `f` without
   waiting for another selection. Keep material
   `DISCUSS` items interactive. For locally verified duplicate or factually
   incorrect `SKIPPED` review threads, post a concise rationale and resolve that
