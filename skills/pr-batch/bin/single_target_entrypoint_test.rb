@@ -23,6 +23,7 @@ assert(batch.include?("fastest or balanced worker route"), "single-target mode m
 assert(batch.include?("verified head branch cannot be pushed"), "single-target PR mode must preserve the unpushable-head fallback")
 assert(batch.include?("replacement branch/PR"), "single-target PR mode must explain the replacement path")
 assert(batch.include?("for one direct-prompt task, the derived `adhoc:<yyyymmdd>-<short-slug>`"), "the required interview must accept ad-hoc targets")
+assert(batch.include?("direct user instruction, a maintainer-approved exact list"), "the required interview must classify direct-prompt trust")
 
 assert(lane.include?("backward-compatibility alias"), "pr-lane must identify itself as an alias")
 assert(lane.include?("Immediately load and follow `$pr-batch`"), "pr-lane must route to pr-batch")
@@ -66,5 +67,8 @@ assert(workflow.include?("Do not pass `adhoc:` targets to `pr-security-preflight
 assert(workflow.include?("Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`"), "canonical goal handoff must represent ad-hoc task items")
 assert(workflow.include?("Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`"), "canonical file-touch map must represent ad-hoc task lanes")
 assert(workflow.include?("For an ad-hoc target, record the evidence and rationale directly in the final handoff"), "canonical final handoff must support ad-hoc no-PR evidence")
+assert(workflow.include?("For an ad-hoc task, the final handoff is the evidence surface"), "canonical outcome classification must support ad-hoc no-PR evidence")
+assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
+assert(workflow.include?("coordination target or explicit no-backend single-operator approval"), "ad-hoc degraded coordination must stop for a safe ownership decision")
 
 puts "PASS pr-batch single-target entry point contract"

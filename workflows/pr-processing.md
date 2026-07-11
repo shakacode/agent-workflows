@@ -32,7 +32,7 @@ For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversari
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
    - When the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) is available, acquire an `agent-coord`
-     claim for each issue/PR lane before creating that lane's worktree or
+     claim for each issue/PR/ad-hoc lane before creating that lane's worktree or
      branch. Resolve `PR_BATCH_SKILL_DIR` in this order: explicit environment
      variable; the loaded skill's base directory when the host exposes it;
      repo-local `.agents/skills/pr-batch`; then stop with a precise blocker if
@@ -566,8 +566,12 @@ Classify each target before assigning a worker:
 
 - **Implementation PR**: the issue or ad-hoc task has a concrete, scoped change.
 - **Combined investigation PR**: related issues share one exploratory or diagnostic change that would be harder to split safely.
-- **No-PR evidence comment**: the issue is duplicate, low-value, already fixed, or better closed with evidence. The posted comment is the deliverable; include live evidence, the no-PR rationale, and whether the issue should stay open, close, or wait.
-- **Product-decision blocker**: the issue needs a maintainer/product decision before code would be safe. The deliverable is a surfaced question or decision request, not a speculative branch.
+- **No-PR evidence**: the target is duplicate, low-value, already fixed, or
+  better closed with evidence. For an issue, the posted comment is the evidence
+  surface and includes the disposition. For an ad-hoc task, the final handoff is the evidence surface;
+  preserve the original request, live evidence, no-PR
+  rationale, and next action there.
+- **Product-decision blocker**: the target needs a maintainer/product decision before code would be safe. The deliverable is a surfaced question or decision request in the issue comment or ad-hoc lane handoff, not a speculative branch.
 
 For investigation or benchmark conclusions, apply the closing-evidence gate from
 the "Evaluate the fix plan separately" step in
@@ -780,7 +784,7 @@ Execution rules:
 
 Classify every unresolved question before continuing:
 
-- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
+- **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine GitHub targets, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For an ad-hoc target, record the question in the lane handoff because no target comment exists. A worker handoff should include the question, any comment URL, and that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
 
 ### Maintainer Attention Contract
@@ -925,7 +929,11 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   claims and public claim comments. Treat the run as intentionally
   single-operator, and record that single-operator assumption in the Lane Card and final handoff
   rather than reporting coordination as healthy or `UNKNOWN`.
-- Acquire an `agent-coord claim` for each issue/PR lane before creating that
+- For an ad-hoc lane when the configured private backend is unavailable, public claim fallback is unavailable because there is no issue or PR comment surface.
+  Stop before branching; require a coordination target or explicit no-backend single-operator approval.
+  Do not invent a public claim surface or silently
+  proceed without an ownership guard.
+- Acquire an `agent-coord claim` for each issue/PR/ad-hoc lane before creating that
   lane's worktree or branch. A refused claim is a hard stop for machine agents:
   report the holder, heartbeat liveness, and target instead of creating a
   competing branch.

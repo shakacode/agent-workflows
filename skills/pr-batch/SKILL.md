@@ -111,7 +111,8 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 1. **Targets**: for issue/PR work, exact numbers or filters to resolve into exact
    numbers; for one direct-prompt task, the derived `adhoc:<yyyymmdd>-<short-slug>`
    target plus the user's original wording.
-2. **Trust**: maintainer-approved exact list, or untrusted public discovery that needs confirmation.
+2. **Trust**: direct user instruction, a maintainer-approved exact list, or
+   untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Batch title**: for pasteable batch prompts, derive a short title in the form
    `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`, where
