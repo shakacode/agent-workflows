@@ -100,6 +100,69 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_codex_enabled_setting_accepts_quoted_and_dotted_toml_forms
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      FileUtils.mkdir_p(target)
+      write_manifest(plugin_root, host: "codex")
+
+      [
+        "[plugins.\"scw@agent-workflows\"] # plugin\n  \"enabled\" = true\n",
+        "plugins.\"scw@agent-workflows\".enabled = true # dotted\n"
+      ].each do |config|
+        File.write(File.join(target, "config.toml"), config)
+        out, err, status = run_state("check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+
+        assert status.success?, "#{config.inspect}: #{out}#{err}"
+        assert_equal "active", JSON.parse(out).dig("native", "state")
+      end
+
+      File.write(File.join(target, "config.toml"), "plugins.\"scw@agent-workflows\".\"enabled\" = false\n")
+      out, err, status = run_state("check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+      assert status.success?, "#{out}#{err}"
+      assert_equal "inactive", JSON.parse(out).dig("native", "state")
+    end
+  end
+
+  def test_codex_multiline_arrays_are_not_mistaken_for_malformed_tables
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      FileUtils.mkdir_p(target)
+      write_manifest(plugin_root, host: "codex")
+      File.write(File.join(target, "config.toml"), <<~TOML)
+        features = [
+          "one",
+          "two",
+        ]
+        [plugins."scw@agent-workflows"] # active plugin
+        enabled = true
+      TOML
+
+      out, err, status = run_state("check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", JSON.parse(out).dig("native", "state")
+    end
+  end
+
+  def test_codex_present_but_inconclusive_plugin_config_is_unknown
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(target)
+      File.write(File.join(target, "config.toml"), <<~TOML)
+        [plugins."scw@agent-workflows"]
+        enabled = "yes"
+      TOML
+
+      out, _err, status = run_state("check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+
+      refute status.success?
+      assert_equal "unknown", JSON.parse(out).dig("native", "state")
+    end
+  end
+
   def test_distinguishes_disabled_cache_from_uncertain_enabled_state
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       disabled_home = File.join(tmp, "disabled")
@@ -352,9 +415,24 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       FileUtils.mkdir_p(File.join(target, "skills"))
       FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
       write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => revision)
-      FileUtils.chmod(0o555, File.join(target, "skills"))
+      injection = File.join(tmp, "rename-failure.rb")
+      File.write(injection, <<~RUBY)
+        class << File
+          alias qa_original_rename rename
+          def rename(source, destination)
+            if destination.include?(".agent-workflows-flat-migration-")
+              raise Errno::EACCES, destination
+            end
+            qa_original_rename(source, destination)
+          end
+        end
+      RUBY
 
-      out, _err, status = run_state("migrate", "--host", "codex", "--target", target, "--source", source, "--delivery-mode", "plugin-companion", "--json")
+      out, _err, status = run_state_with_env(
+        { "RUBYOPT" => "-r#{injection}" },
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
 
       refute status.success?
       assert_path_exists File.join(target, "skills/alpha/SKILL.md")
@@ -362,8 +440,50 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       refute payload.fetch("compatible")
       assert_equal [File.join(target, "skills/alpha")], payload.dig("flat", "blocking")
       assert_includes payload.fetch("reason"), "failed to remove"
-    ensure
-      FileUtils.chmod(0o755, File.join(target, "skills")) if File.directory?(File.join(target, "skills"))
+    end
+  end
+
+  def test_new_direct_child_during_staging_rolls_back_and_blocks_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      injection = File.join(tmp, "staging-race.rb")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      FileUtils.cp_r(File.join(source, "skills/beta"), File.join(target, "skills/beta"))
+      write_metadata(target, "host" => "codex", "mode" => "copy", "source" => source, "source_revision" => revision)
+      File.write(injection, <<~RUBY)
+        require "fileutils"
+        class << File
+          alias qa_original_rename rename
+          def rename(source, destination)
+            result = qa_original_rename(source, destination)
+            unless defined?(@qa_race_injected) && @qa_race_injected
+              @qa_race_injected = true
+              raced = File.join(File.dirname(source), "raced-child")
+              FileUtils.mkdir_p(raced)
+              File.write(File.join(raced, "SKILL.md"), "raced\n")
+            end
+            result
+          end
+        end
+      RUBY
+
+      out, err, status = run_state_with_env(
+        { "RUBYOPT" => "-r#{injection}" },
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?, "#{out}#{err}"
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+      assert_path_exists File.join(target, "skills/beta/SKILL.md")
+      assert_path_exists File.join(target, "skills/raced-child/SKILL.md")
+      assert_equal [File.join(target, "skills/raced-child")], payload.dig("flat", "blocking")
     end
   end
 

@@ -32,11 +32,10 @@ module AgentWorkflowsDeliveryState
   def codex_native_state(target)
     config_path = File.join(target, "config.toml")
     config = File.file?(config_path) ? File.binread(config_path) : ""
-    malformed_section = config.each_line.any? { |line| line.lstrip.start_with?("[") && !line.strip.end_with?("]") }
-    return { "state" => "unknown", "reason" => "invalid Codex plugin state in #{config_path}" } if malformed_section
-
-    section = config[/^\[plugins\.["']scw@agent-workflows["']\]\s*$.*?(?=^\[|\z)/m]
-    enabled = section&.match?(/^[ \t]*enabled\s*=\s*true(?:[ \t]+#.*)?[ \t]*$/)
+    enabled = codex_plugin_enabled(config)
+    if enabled.nil?
+      return { "state" => "unknown", "reason" => "invalid or inconclusive Codex plugin state in #{config_path}" }
+    end
     return { "state" => "inactive", "reason" => "scw@agent-workflows is not enabled" } unless enabled
 
     roots = Dir.glob(File.join(target, "plugins/cache/agent-workflows/scw/*")).select do |root|
@@ -45,6 +44,46 @@ module AgentWorkflowsDeliveryState
     return { "state" => "unknown", "reason" => "enabled Codex scw plugin has no valid installed cache" } if roots.empty?
 
     { "state" => "active", "roots" => roots.sort }
+  end
+
+  def codex_plugin_enabled(config)
+    plugin_id = "scw@agent-workflows"
+    quoted_plugin = /(?:"#{Regexp.escape(plugin_id)}"|'#{Regexp.escape(plugin_id)}')/
+    plugin_table = /^\s*\[plugins\.#{quoted_plugin}\]\s*(?:#.*)?$/
+    any_table = /^\s*\[[^\]]+\]\s*(?:#.*)?$/
+    enabled_key = /(?:enabled|"enabled"|'enabled')/
+    dotted_enabled = /^\s*plugins\.#{quoted_plugin}\.#{enabled_key}\s*=\s*(true|false)\s*(?:#.*)?$/
+    table_enabled = /^\s*#{enabled_key}\s*=\s*(true|false)\s*(?:#.*)?$/
+    enabled_assignment = /^\s*#{enabled_key}\s*=/
+    plugin_syntax = /^\s*\[?plugins\.#{quoted_plugin}/
+    values = []
+    present = false
+    in_plugin_table = false
+    inconclusive = false
+
+    config.each_line do |line|
+      if (match = line.match(dotted_enabled))
+        present = true
+        values << (match[1] == "true")
+      elsif line.match?(plugin_table)
+        present = true
+        in_plugin_table = true
+      elsif line.match?(any_table)
+        in_plugin_table = false
+      elsif in_plugin_table && (match = line.match(table_enabled))
+        values << (match[1] == "true")
+      elsif in_plugin_table && line.match?(enabled_assignment)
+        inconclusive = true
+      elsif line.match?(plugin_syntax)
+        present = true
+        inconclusive = true
+      end
+    end
+
+    return false unless present
+    return nil if inconclusive || values.empty? || values.uniq.length != 1
+
+    values.first
   end
 
   def claude_native_state(target)
@@ -322,7 +361,7 @@ module AgentWorkflowsDeliveryState
   end
 
   def migrate(**options)
-    payload = check(**options)
+    payload = check(**options.slice(:host, :target, :source, :delivery_mode))
     return payload unless payload.fetch("compatible")
 
     removed = payload.dig("flat", "removable")
@@ -345,6 +384,35 @@ module AgentWorkflowsDeliveryState
       end
       FileUtils.rm_rf(staging) unless rollback_failed
       return migration_failure(payload, removed, e, staging: staging)
+    end
+
+    skills_path = File.join(options.fetch(:target), "skills")
+    residual = if File.directory?(skills_path) && !File.symlink?(skills_path)
+                 Dir.children(skills_path).map { |name| File.join(skills_path, name) }.sort
+               else
+                 [skills_path]
+               end
+    if residual.any?
+      rollback_failed = false
+      staged.reverse_each do |original, destination|
+        File.rename(destination, original) if File.exist?(destination) || File.symlink?(destination)
+      rescue SystemCallError
+        rollback_failed = true
+      end
+      FileUtils.rm_rf(staging) unless rollback_failed
+      payload["compatible"] = false
+      payload["flat"]["state"] = "ambiguous"
+      payload["flat"]["removed"] = []
+      payload["flat"]["blocking"] = residual
+      payload["reason"] = "new or residual flat skill paths appeared during migration: #{residual.join(', ')}"
+      payload["guidance"] = "The listed paths and installer-managed skills were preserved. Resolve the concurrent change, then rerun."
+      return payload
+    end
+
+    if options.fetch(:retain_staging, false)
+      payload["flat"]["removed"] = removed
+      payload["flat"]["staging"] = staging
+      return payload
     end
 
     begin
@@ -376,12 +444,13 @@ end
 
 if $PROGRAM_NAME == __FILE__
   action = ARGV.shift
-  options = { json: false }
+  options = { json: false, retain_staging: false }
   parser = OptionParser.new do |opts|
     opts.on("--host HOST") { |value| options[:host] = value }
     opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
     opts.on("--source DIR") { |value| options[:source] = File.expand_path(value) }
     opts.on("--delivery-mode MODE") { |value| options[:delivery_mode] = value }
+    opts.on("--retain-staging") { options[:retain_staging] = true }
     opts.on("--json") { options[:json] = true }
   end
   parser.parse!
@@ -391,7 +460,9 @@ if $PROGRAM_NAME == __FILE__
   abort "--host must be codex or claude" unless %w[codex claude].include?(options[:host])
   abort "--delivery-mode must be flat or plugin-companion" unless %w[flat plugin-companion].include?(options[:delivery_mode])
 
-  payload = AgentWorkflowsDeliveryState.public_send(action, **options.slice(:host, :target, :source, :delivery_mode))
+  call_options = options.slice(:host, :target, :source, :delivery_mode)
+  call_options[:retain_staging] = options[:retain_staging] if action == "migrate"
+  payload = AgentWorkflowsDeliveryState.public_send(action, **call_options)
   puts(options[:json] ? JSON.pretty_generate(payload) : payload.fetch("reason", "delivery state compatible"))
   exit(payload.fetch("compatible") ? 0 : 3)
 end

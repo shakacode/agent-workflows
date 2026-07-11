@@ -173,6 +173,22 @@ commit_metadata() {
   mv "$metadata_tmp" "$metadata_path"
 }
 
+rollback_migration_staging() {
+  local staging="$1"
+  local staged_path
+  [[ -n "$staging" && -d "$staging" ]] || return 0
+  mkdir -p "$target/skills"
+  for staged_path in "$staging"/*; do
+    [[ -e "$staged_path" || -L "$staged_path" ]] || continue
+    if [[ -e "$target/skills/$(basename "$staged_path")" || -L "$target/skills/$(basename "$staged_path")" ]]; then
+      echo "ROLLBACK_FAILED: destination appeared during migration: $target/skills/$(basename "$staged_path")" >&2
+      return 1
+    fi
+    mv "$staged_path" "$target/skills/"
+  done
+  rmdir "$staging"
+}
+
 ensure_real_directory() {
   local directory="$1"
 
@@ -382,6 +398,41 @@ if [[ "$delivery_status" -ne 0 ]]; then
 fi
 
 mkdir -p "$target"
+install_lock="$target/.agent-workflows-install.lock"
+if ! mkdir "$install_lock" 2>/dev/null; then
+  echo "DELIVERY_MODE_CONFLICT: another agent-workflows install or migration holds $install_lock" >&2
+  exit 1
+fi
+migration_staging=""
+metadata_committed=false
+release_install_transaction() {
+  local status=$?
+  trap - EXIT
+  if [[ "$metadata_committed" != "true" && -n "$migration_staging" ]]; then
+    rollback_migration_staging "$migration_staging" || status=1
+  fi
+  if [[ "$metadata_committed" != "true" && -f "$target/$metadata_name.tmp" ]]; then
+    rm -f "$target/$metadata_name.tmp"
+  fi
+  rmdir "$install_lock" 2>/dev/null || true
+  exit "$status"
+}
+trap release_install_transaction EXIT
+
+# The pre-lock check avoids mutating an obviously unsafe target. This second
+# check is authoritative and holds the advisory install lock through commit.
+set +e
+delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+delivery_status=$?
+set -e
+if [[ "$delivery_status" -ne 0 ]]; then
+  ruby -rjson -e '
+    payload = JSON.parse(STDIN.read)
+    warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
+    warn payload.fetch("guidance")
+  ' <<< "$delivery_state"
+  exit 1
+fi
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
@@ -440,7 +491,7 @@ fi
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   set +e
-  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
@@ -451,9 +502,27 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
     ' <<< "$delivery_state"
     exit 1
   fi
+  migration_staging="$(ruby -rjson -e 'payload = JSON.parse(STDIN.read); puts payload.dig("flat", "staging")' <<< "$delivery_state")"
+
+  set +e
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_status=$?
+  set -e
+  if [[ "$delivery_status" -ne 0 ]]; then
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      warn "DELIVERY_MODE_CONFLICT: final delivery verification failed: #{payload.fetch("reason")}"
+      warn payload.fetch("guidance")
+    ' <<< "$delivery_state"
+    exit 1
+  fi
 fi
 
 commit_metadata
+metadata_committed=true
+if [[ -n "$migration_staging" ]] && ! rm -rf "$migration_staging"; then
+  echo "CLEANUP_PENDING: committed plugin-companion mode; remove quarantine manually: $migration_staging" >&2
+fi
 
 cat <<MSG
 Installed ShakaCode agent workflows into:

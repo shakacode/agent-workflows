@@ -283,6 +283,105 @@ test_metadata_temp_failure_preserves_flat_tree_and_prior_mode() {
     "$target/.agent-workflows-install.json"
 }
 
+test_staging_race_blocks_installer_and_preserves_flat_tree() {
+  local tmp target injection output status skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/staging-race.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+class << File
+  alias qa_original_rename rename
+  def rename(source, destination)
+    result = qa_original_rename(source, destination)
+    unless defined?(@qa_race_injected) && @qa_race_injected
+      @qa_race_injected = true
+      raced = File.join(File.dirname(source), "raced-child")
+      FileUtils.mkdir_p(raced)
+      File.write(File.join(raced, "SKILL.md"), "raced\n")
+    end
+    result
+  end
+end
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "staging race unexpectedly allowed installer migration"
+  assert_contains "$output" "raced-child"
+  assert_file "$target/skills/raced-child/SKILL.md"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+  done
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
+}
+
+test_final_verification_race_rolls_back_before_metadata_commit() {
+  local tmp target injection counter output status skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/final-check-race.rb"
+  counter="$tmp/check-count"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+if ARGV.first == "check" && ENV["QA_CHECK_COUNTER"]
+  counter = ENV.fetch("QA_CHECK_COUNTER")
+  count = File.file?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count.to_s)
+  if count == 3
+    target = ARGV[ARGV.index("--target") + 1]
+    raced = File.join(target, "skills/final-raced-child")
+    FileUtils.mkdir_p(raced)
+    File.write(File.join(raced, "SKILL.md"), "raced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_CHECK_COUNTER="$counter" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "final-check race unexpectedly committed migration"
+  assert_contains "$output" "final delivery verification failed"
+  assert_file "$target/skills/final-raced-child/SKILL.md"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+  done
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
+}
+
+test_install_lock_blocks_concurrent_migration_before_mutation() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  mkdir "$target/.agent-workflows-install.lock"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "held install lock unexpectedly allowed migration"
+  assert_contains "$output" "another agent-workflows install or migration holds"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
+}
+
 test_repeat_install_replays_recorded_companion_delivery_mode() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -845,6 +944,9 @@ main() {
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode
+    test_staging_race_blocks_installer_and_preserves_flat_tree
+    test_final_verification_race_rolls_back_before_metadata_commit
+    test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
