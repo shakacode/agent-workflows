@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion]
 
 Installs this shared workflow pack into an agent home.
 
@@ -14,7 +14,7 @@ Default targets:
 
 Installed paths:
   <target>/LICENSE
-  <target>/skills/*
+  <target>/skills/* (flat delivery mode only)
   <target>/workflows/*
   <target>/docs/coordination-backend.md
   <target>/docs/review-finding-schema.md
@@ -31,9 +31,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 host="codex"
 target=""
 mode="copy"
+delivery_mode=""
 metadata_name=".agent-workflows-install.json"
+delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
+  agent-workflows-delivery-state
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows
@@ -82,7 +85,13 @@ resolve_auto_target() {
 
 resolve_host_and_target() {
   if [[ -n "$target" ]]; then
-    printf '%s:%s\n' "$host" "$target"
+    if [[ "$host" = "auto" ]]; then
+      local detected
+      detected="$(resolve_auto_target)"
+      printf '%s:%s\n' "${detected%%:*}" "$target"
+    else
+      printf '%s:%s\n' "$host" "$target"
+    fi
     return 0
   fi
 
@@ -142,10 +151,11 @@ write_metadata() {
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   ruby -rjson -e '
-    path, host, mode, source, version, revision, branch, remote, installed_at = ARGV
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at = ARGV
     metadata = {
       "host" => host,
       "mode" => mode,
+      "delivery_mode" => delivery_mode,
       "source" => File.expand_path(source),
       "version" => version,
       "source_revision" => revision,
@@ -154,7 +164,7 @@ write_metadata() {
       "installed_at" => installed_at
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
   mv "$metadata_tmp" "$metadata_path"
 }
 
@@ -306,6 +316,10 @@ while [[ $# -gt 0 ]]; do
       mode="${2:?--mode requires copy or symlink}"
       shift 2
       ;;
+    --delivery-mode)
+      delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -334,17 +348,43 @@ case "$mode" in
     ;;
 esac
 
+case "$delivery_mode" in
+  ""|flat|plugin-companion) ;;
+  *)
+    echo "--delivery-mode must be flat or plugin-companion, got: $delivery_mode" >&2
+    exit 64
+    ;;
+esac
+
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
+if [[ -z "$delivery_mode" ]]; then
+  delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
+fi
+
+set +e
+delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+delivery_status=$?
+set -e
+if [[ "$delivery_status" -ne 0 ]]; then
+  ruby -rjson -e '
+    payload = JSON.parse(STDIN.read)
+    warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
+    warn payload.fetch("guidance")
+  ' <<< "$delivery_state"
+  exit 1
+fi
 
 if [[ "$mode" = "copy" ]]; then
   copy_pack_license
-  ensure_real_directory "$target/skills"
+  if [[ "$delivery_mode" = "flat" ]]; then
+    ensure_real_directory "$target/skills"
+    copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
+  fi
   ensure_real_directory "$target/workflows"
   ensure_real_directory "$target/docs"
   ensure_real_directory "$target/bin"
-  copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
   copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
   copy_pack_docs "$target/docs"
   for helper in "${bin_helpers[@]}"; do
@@ -360,20 +400,23 @@ if [[ "$mode" = "copy" ]]; then
   done
 else
   link_pack_license
-  mkdir -p "$target/skills" "$target/bin"
+  mkdir -p "$target/bin"
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
     echo "Refusing to replace non-symlink path: $target/workflows" >&2
     exit 1
   fi
-  for skill in "$repo_root"/skills/*; do
-    [[ -d "$skill" ]] || continue
-    destination="$target/skills/$(basename "$skill")"
-    if [[ -e "$destination" && ! -L "$destination" ]]; then
-      echo "Refusing to replace non-symlink path: $destination" >&2
-      exit 1
-    fi
-    ln -sfn "$skill" "$destination"
-  done
+  if [[ "$delivery_mode" = "flat" ]]; then
+    mkdir -p "$target/skills"
+    for skill in "$repo_root"/skills/*; do
+      [[ -d "$skill" ]] || continue
+      destination="$target/skills/$(basename "$skill")"
+      if [[ -e "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+      ln -sfn "$skill" "$destination"
+    done
+  fi
   rm -f "$target/workflows"
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
@@ -385,6 +428,21 @@ else
     fi
     ln -sfn "$repo_root/bin/$helper" "$destination"
   done
+fi
+
+if [[ "$delivery_mode" = "plugin-companion" ]]; then
+  set +e
+  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_status=$?
+  set -e
+  if [[ "$delivery_status" -ne 0 ]]; then
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
+      warn payload.fetch("guidance")
+    ' <<< "$delivery_state"
+    exit 1
+  fi
 fi
 
 write_metadata

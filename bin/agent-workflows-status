@@ -4,6 +4,7 @@
 require "json"
 require "optparse"
 require "open3"
+require "rbconfig"
 
 module AgentWorkflowsStatus
   METADATA_NAME = ".agent-workflows-install.json"
@@ -45,7 +46,10 @@ module AgentWorkflowsStatus
   end
 
   def resolve_host_and_target(host, target)
-    return [host, File.expand_path(target)] if target
+    if target
+      resolved_host, = resolve_auto_target if host == "auto"
+      return [resolved_host || host, File.expand_path(target)]
+    end
     return resolve_auto_target if host == "auto"
 
     [host, default_target_for_host(host)]
@@ -116,7 +120,25 @@ module AgentWorkflowsStatus
     value.to_s.start_with?("version:") ? value : value.to_s[0, 12]
   end
 
-  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil)
+  def delivery_state(host:, target:, source:, delivery_mode:)
+    helper = File.expand_path("agent-workflows-delivery-state", __dir__)
+    output, error, status = Open3.capture3(
+      RbConfig.ruby,
+      helper,
+      "check",
+      "--host", host,
+      "--target", target,
+      "--source", source,
+      "--delivery-mode", delivery_mode,
+      "--json"
+    )
+    payload = JSON.parse(output)
+    [payload, status.success? ? nil : payload["reason"]]
+  rescue Errno::ENOENT, JSON::ParserError => e
+    [nil, "delivery-state check failed: #{error}#{e.message}"]
+  end
+
+  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
     {
       "status" => status,
       "host" => host,
@@ -127,22 +149,27 @@ module AgentWorkflowsStatus
       "available_version" => source && File.directory?(source) ? version_for(source) : nil,
       "available_revision" => available_revision,
       "checked_remote" => checked_remote,
-      "reason" => reason
+      "reason" => reason,
+      "guidance" => delivery_state&.fetch("guidance", nil),
+      "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
+      "native" => delivery_state&.fetch("native", nil),
+      "flat" => delivery_state&.fetch("flat", nil)
     }
   end
 
   def text_for(payload)
     case payload.fetch("status")
     when "UP_TO_DATE"
-      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} target=#{payload['target']}\n"
+      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
     when "UPGRADE_AVAILABLE"
       installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
       available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
-      "UPGRADE_AVAILABLE #{installed} #{available} target=#{payload['target']}\n"
+      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
     when "NOT_INSTALLED"
       "NOT_INSTALLED target=#{payload['target']}\n"
     when "CHECK_FAILED"
-      "CHECK_FAILED #{payload['reason']}\n"
+      guidance = payload["guidance"] ? " #{payload['guidance']}" : ""
+      "CHECK_FAILED #{payload['reason']}#{guidance}\n"
     else
       raise "unknown status: #{payload.fetch('status')}"
     end
@@ -156,6 +183,19 @@ module AgentWorkflowsStatus
     end
 
     source = File.expand_path(options[:source] || metadata["source"].to_s)
+    delivery_mode = metadata.fetch("delivery_mode", "flat")
+    delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:)
+    if delivery_error
+      return status_payload(
+        "CHECK_FAILED",
+        target:,
+        source:,
+        host:,
+        metadata:,
+        reason: delivery_error,
+        delivery_state: delivery
+      )
+    end
     revision, error = available_revision(source, metadata, fetch: options.fetch(:fetch))
     if error
       return status_payload(
@@ -165,7 +205,8 @@ module AgentWorkflowsStatus
         host:,
         metadata:,
         checked_remote: options.fetch(:fetch),
-        reason: error
+        reason: error,
+        delivery_state: delivery
       )
     end
 
@@ -187,7 +228,8 @@ module AgentWorkflowsStatus
       host:,
       metadata:,
       available_revision: revision,
-      checked_remote: options.fetch(:fetch)
+      checked_remote: options.fetch(:fetch),
+      delivery_state: delivery
     )
   rescue ArgumentError, RuntimeError => e
     status_payload("CHECK_FAILED", target: options[:target], source: options[:source], host: options[:host], reason: e.message)

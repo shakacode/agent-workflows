@@ -21,6 +21,16 @@ class AgentWorkflowsStatusTest < Minitest::Test
     File.write(File.join(target, ".agent-workflows-install.json"), "#{JSON.pretty_generate(metadata)}\n")
   end
 
+  def write_codex_native_state(target)
+    cache_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+    plugin_root = File.join(cache_root, ".codex-plugin")
+    FileUtils.mkdir_p(plugin_root)
+    FileUtils.mkdir_p(File.join(cache_root, "skills/example"))
+    File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
+    File.write(File.join(cache_root, "skills/example/SKILL.md"), "example\n")
+    File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate('name' => 'scw', 'version' => '0.1.0', 'skills' => './skills/')}\n")
+  end
+
   def test_not_installed_target_reports_not_installed
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       out, status = run_status({}, "--target", target, "--host", "claude")
@@ -40,6 +50,74 @@ class AgentWorkflowsStatusTest < Minitest::Test
 
         assert_equal 0, status.exitstatus, out
         assert_includes out, "UP_TO_DATE"
+      end
+    end
+  end
+
+  def test_companion_status_reports_delivery_and_native_state
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_codex_native_state(target)
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "delivery_mode" => "plugin-companion"
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "plugin-companion", payload.fetch("delivery_mode")
+        assert_equal "active", payload.dig("native", "state")
+        assert_equal "absent", payload.dig("flat", "state")
+      end
+    end
+  end
+
+  def test_status_fails_closed_on_native_plus_flat_collision_with_guidance
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "example\n")
+        write_codex_native_state(target)
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "delivery_mode" => "flat"
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "cannot be active"
+        assert_includes payload.fetch("guidance"), "--delivery-mode plugin-companion"
+      end
+    end
+  end
+
+  def test_flat_status_reports_present_skill_route_without_migration_warning
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        FileUtils.mkdir_p(File.join(target, "skills/example"))
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "example\n")
+        File.write(File.join(target, "skills/example/SKILL.md"), "example\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "", "delivery_mode" => "flat")
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "present", JSON.parse(out).dig("flat", "state")
       end
     end
   end

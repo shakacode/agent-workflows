@@ -86,7 +86,8 @@ workflow-pack install path for consumer repositories.
 
 Use the host installer when you need helper binaries on `PATH`, install
 metadata, `agent-workflows-status`, `upgrade-agent-workflows`, symlink mode, or
-Claude Code support.
+Claude Code support. Each host/profile must use exactly one auto-invocable skill
+delivery route: ordinary flat skills or the native `scw` plugin.
 
 Install into the default Codex home:
 
@@ -112,6 +113,20 @@ The installer copies:
 - `workflows/*` to `<target>/workflows/`;
 - selected `bin/*` helpers to `<target>/bin/`;
 - install metadata to `<target>/.agent-workflows-install.json`.
+
+The default `--delivery-mode flat` installs those skills directly. When the
+native `scw` plugin is enabled, retain the installer-managed companion assets
+without a second flat skill tree:
+
+```bash
+bin/install-agent-workflows \
+  --host codex \
+  --delivery-mode plugin-companion
+```
+
+The selected delivery mode is durable install state. Repeated installs,
+`upgrade-agent-workflows`, rollback, and `agent-stack sync` replay it unless an
+explicit `--delivery-mode` changes it.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
 `agent-workflows-status`, `agent-workflows-trust-audit`, and
@@ -153,9 +168,11 @@ the marketplace, and reinstall it as `scw`; keeping both would
 create two names for the same skill tree. The repository, source pack, helper
 commands, marketplace name, and install metadata remain `agent-workflows`.
 
-Use a native plugin path for a host-qualified skill surface. Keep using the host
-installer path for either host when you need helper binaries, copy/symlink mode,
-install metadata, or `agent-workflows-status` / `upgrade-agent-workflows`.
+Use a native plugin path for a host-qualified skill surface. Pair it with
+`--delivery-mode plugin-companion` when you also need installer-managed helper
+binaries, workflows, docs, metadata, status, or upgrades. The installer fails
+closed instead of creating native-plus-flat duplicates. Native plugin updates
+remain owned by the host plugin flow, not `upgrade-agent-workflows`.
 
 ## Consumer Repo Adoption
 

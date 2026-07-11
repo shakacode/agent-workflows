@@ -28,6 +28,27 @@ assert_not_contains() {
   [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain '$needle', got: $haystack"
 }
 
+write_native_scw_state() {
+  local host="$1"
+  local target="$2"
+  local plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+  mkdir -p "$plugin_root/skills/example"
+  printf 'example\n' > "$plugin_root/skills/example/SKILL.md"
+  if [[ "$host" = "codex" ]]; then
+    mkdir -p "$plugin_root/.codex-plugin"
+    printf '[plugins."scw@agent-workflows"]\nenabled = true\n' > "$target/config.toml"
+    printf '{"name":"scw","version":"0.1.0","skills":"./skills/"}\n' > "$plugin_root/.codex-plugin/plugin.json"
+  else
+    mkdir -p "$target/plugins" "$plugin_root/.claude-plugin"
+    printf '{"enabledPlugins":{"scw@agent-workflows":true}}\n' > "$target/settings.json"
+    ruby -rjson -e '
+      path, plugin_root = ARGV
+      File.write(path, JSON.generate({"version" => 2, "plugins" => {"scw@agent-workflows" => [{"scope" => "user", "installPath" => plugin_root, "version" => "0.1.0"}]}}) + "\n")
+    ' "$target/plugins/installed_plugins.json" "$plugin_root"
+    printf '{"name":"scw","version":"0.1.0","skills":"./skills/"}\n' > "$plugin_root/.claude-plugin/plugin.json"
+  fi
+}
+
 new_source_repo() {
   local source_dir="$1"
   rsync -a --exclude .git "$ROOT/" "$source_dir/"
@@ -102,6 +123,10 @@ BASH
   chmod +x "$root/.agents/bin/test" "$root/.agents/bin/validate"
 }
 
+test_delivery_state_helper_unit_suite() {
+  ruby "$ROOT/bin/agent-workflows-delivery-state-test.rb"
+}
+
 test_codex_host_install_writes_helpers_and_metadata() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -134,6 +159,156 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+}
+
+test_native_plugin_plus_default_flat_install_fails_before_mutation() {
+  local tmp target host output status
+
+  for host in codex claude; do
+    tmp="$(mktemp -d)"
+    target="$tmp/$host-home"
+    write_native_scw_state "$host" "$target"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$host native+flat install unexpectedly succeeded"
+    assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+    assert_contains "$output" "--delivery-mode plugin-companion"
+    [[ ! -e "$target/skills/pr-batch" ]] || fail "$host collision check mutated flat skills"
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "$host collision check wrote metadata"
+  done
+}
+
+test_plugin_companion_installs_non_skill_assets_and_records_mode() {
+  local tmp target host
+
+  for host in codex claude; do
+    tmp="$(mktemp -d)"
+    target="$tmp/$host-home"
+    write_native_scw_state "$host" "$target"
+
+    "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
+      >"$tmp/install.out"
+
+    [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
+    assert_file "$target/LICENSE"
+    assert_file "$target/workflows/pr-processing.md"
+    assert_file "$target/docs/coordination-backend.md"
+    assert_file "$target/bin/agent-workflow-seam-doctor"
+    assert_file "$target/bin/agent-workflows-status"
+    assert_file "$target/bin/agent-workflows-delivery-state"
+    ruby -rjson -e '
+      metadata = JSON.parse(File.read(ARGV.fetch(0)))
+      abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
+    ' "$target/.agent-workflows-install.json"
+  done
+}
+
+test_plugin_companion_migrates_managed_symlinks_and_preserves_unrelated_skills() {
+  local tmp target revision skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  revision="$(git -C "$ROOT" rev-parse HEAD)"
+  write_native_scw_state codex "$target"
+  mkdir -p "$target/skills/personal"
+  printf 'personal\n' > "$target/skills/personal/SKILL.md"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    ln -s "$skill" "$target/skills/$(basename "$skill")"
+  done
+  ruby -rjson -e '
+    path, source, revision = ARGV
+    File.write(path, JSON.pretty_generate({"host" => "codex", "mode" => "symlink", "source" => source, "source_revision" => revision}) + "\n")
+  ' "$target/.agent-workflows-install.json" "$ROOT" "$revision"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/install.out"
+
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    [[ ! -e "$target/skills/$(basename "$skill")" && ! -L "$target/skills/$(basename "$skill")" ]] || \
+      fail "companion migration retained managed symlink: $(basename "$skill")"
+  done
+  assert_file "$target/skills/personal/SKILL.md"
+}
+
+test_direct_migration_does_not_remove_skills_before_other_install_checks_pass() {
+  local tmp target revision
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  revision="$(git -C "$ROOT" rev-parse HEAD)"
+  write_native_scw_state codex "$target"
+  mkdir -p "$target/skills" "$target/bin/agent-workflow-seam-doctor"
+  ln -s "$ROOT/skills/pr-batch" "$target/skills/pr-batch"
+  ruby -rjson -e '
+    path, source, revision = ARGV
+    File.write(path, JSON.pretty_generate({"host" => "codex", "mode" => "symlink", "source" => source, "source_revision" => revision}) + "\n")
+  ' "$target/.agent-workflows-install.json" "$ROOT" "$revision"
+
+  set +e
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/install.out" 2>&1
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected non-skill collision to fail direct migration"
+  assert_symlink "$target/skills/pr-batch"
+}
+
+test_repeat_install_replays_recorded_companion_delivery_mode() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  write_native_scw_state codex "$target"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/first.out"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/second.out"
+
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "repeat install changed companion delivery mode"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_companion_to_flat_refuses_unowned_same_named_skill() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  write_native_scw_state codex "$target"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/companion.out"
+  printf '[plugins."scw@agent-workflows"]\nenabled = false\n' > "$target/config.toml"
+  mkdir -p "$target/skills/pr-batch"
+  printf 'user-owned replacement\n' > "$target/skills/pr-batch/SKILL.md"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion-to-flat transition replaced an unowned same-named skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -q 'user-owned replacement' "$target/skills/pr-batch/SKILL.md" || fail "unowned same-named skill was not preserved"
+}
+
+test_auto_host_with_explicit_target_resolves_the_detected_host() {
+  local tmp target ruby_dir
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  ruby_dir="$(ruby -rrbconfig -e 'puts File.dirname(RbConfig.ruby)')"
+
+  HOME="$tmp/home" CODEX_HOME="$target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$target" >"$tmp/install.out"
+
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["host"] == "codex"
+  ' "$target/.agent-workflows-install.json"
 }
 
 test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
@@ -479,6 +654,7 @@ test_status_reports_upgrade_available_between_source_commits() {
   set -e
   [[ "$status" -eq 1 ]] || fail "expected status exit 1, got $status: $output"
   assert_contains "$output" "UPGRADE_AVAILABLE"
+  assert_contains "$output" "delivery_mode=flat"
 }
 
 test_upgrade_reinstalls_new_source_revision() {
@@ -499,6 +675,28 @@ test_upgrade_reinstalls_new_source_revision() {
   assert_contains "$output" "UPGRADE_COMPLETE"
   output="$("$target/bin/agent-workflows-status" --target "$target" --source "$source" 2>&1)"
   assert_contains "$output" "UP_TO_DATE"
+}
+
+test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+  "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --no-fetch >"$tmp/upgrade-one.out"
+  "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --no-fetch >"$tmp/upgrade-two.out"
+
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "upgrade did not preserve companion delivery mode"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
 }
 
 test_upgrade_without_consumer_roots_succeeds() {
@@ -562,6 +760,37 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
 }
 
+test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
+  local tmp source target consumer output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source" "$consumer"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/install.out"
+  printf '0.1.1\n' > "$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  printf '# incomplete seam\n' > "$consumer/AGENTS.md"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "expected companion upgrade failure"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "rollback introduced flat skills into companion layout"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+}
+
 test_upgrade_validates_consumer_root_after_install() {
   local tmp source target consumer output
   tmp="$(mktemp -d)"
@@ -585,6 +814,14 @@ test_upgrade_validates_consumer_root_after_install() {
 
 main() {
   local tests=(
+    test_delivery_state_helper_unit_suite
+    test_native_plugin_plus_default_flat_install_fails_before_mutation
+    test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_plugin_companion_migrates_managed_symlinks_and_preserves_unrelated_skills
+    test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
+    test_repeat_install_replays_recorded_companion_delivery_mode
+    test_companion_to_flat_refuses_unowned_same_named_skill
+    test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
     test_install_preserves_exact_content_generic_collision_without_source_evidence
@@ -602,9 +839,11 @@ main() {
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
+    test_upgrade_can_select_and_then_replay_companion_delivery_mode
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
+    test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
   )
 

@@ -77,9 +77,11 @@ BASH
 #!/usr/bin/env bash
 set -euo pipefail
 target=""
+delivery_mode=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) target="$2"; shift 2 ;;
+    --delivery-mode) delivery_mode="$2"; shift 2 ;;
     --host|--mode) shift 2 ;;
     *) shift ;;
   esac
@@ -87,6 +89,14 @@ done
 : "${target:?missing --target}"
 mkdir -p "$target/bin"
 printf 'installed\n' > "$target/bin/agent-workflows-installed"
+if [[ -z "$delivery_mode" && -f "$target/.agent-workflows-install.json" ]]; then
+  delivery_mode="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode", "flat")' "$target/.agent-workflows-install.json")"
+fi
+delivery_mode="${delivery_mode:-flat}"
+ruby -rjson -e '
+  path, delivery_mode = ARGV
+  File.write(path, JSON.generate({"delivery_mode" => delivery_mode}) + "\n")
+' "$target/.agent-workflows-install.json" "$delivery_mode"
 BASH
       chmod +x "$work/bin/install-agent-workflows"
       ;;
@@ -165,6 +175,42 @@ test_sync_clones_installs_and_links_the_stack() {
   [[ -d "$runtime_root/logs" ]] || fail "expected runtime logs directory"
   [[ -d "$runtime_root/state" ]] || fail "expected runtime state directory"
   assert_file "$runtime_root/env"
+}
+
+test_sync_selects_and_replays_workflow_delivery_mode() {
+  local tmp source_root compat_root runtime_root target install_dir mode
+  tmp="$(make_tmp_dir)"
+  source_root="$tmp/src"
+  compat_root="$tmp/compat"
+  runtime_root="$tmp/runtime"
+  target="$tmp/codex-home"
+  install_dir="$tmp/local-bin"
+  with_origins "$tmp"
+
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$ROOT/bin/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$compat_root" \
+      --runtime-root "$runtime_root" \
+      --target "$target" \
+      --agent-coord-install-dir "$install_dir" \
+      --delivery-mode plugin-companion
+
+  AGENT_STACK_AGENT_WORKFLOWS_URL="$tmp/origins/agent-workflows.git" \
+  AGENT_STACK_AGENT_COORDINATION_URL="$tmp/origins/agent-coordination.git" \
+  AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL="$tmp/origins/agent-coordination-dashboard.git" \
+    "$ROOT/bin/agent-stack" sync \
+      --source-root "$source_root" \
+      --compat-root "$compat_root" \
+      --runtime-root "$runtime_root" \
+      --target "$target" \
+      --agent-coord-install-dir "$install_dir" \
+      --no-fetch
+
+  mode="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$target/.agent-workflows-install.json")"
+  [[ "$mode" = "plugin-companion" ]] || fail "agent-stack changed delivery mode to $mode"
 }
 
 test_sync_preserves_preexisting_agent_coord_file() {
@@ -668,6 +714,7 @@ test_help_documents_path_overrides_and_force_stash_behavior() {
 }
 
 test_sync_clones_installs_and_links_the_stack
+test_sync_selects_and_replays_workflow_delivery_mode
 test_sync_preserves_preexisting_agent_coord_file
 test_sync_updates_running_installed_agent_stack_via_temp_file
 test_sync_refuses_dirty_repo_without_force_stash

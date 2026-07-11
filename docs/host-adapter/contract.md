@@ -46,10 +46,12 @@ so resolve them before the installed home.
 
 Native plugins add a host namespace without changing the portable skill name:
 Codex uses the plugin-qualified `scw:<skill>` surface and Claude Code uses
-`/scw:<skill>`. The Host Installer Path remains flat and unqualified. Do not
-enable native and flat copies of the same pack in one isolated profile unless
-the host has an explicit collision policy; plugin migration must fail closed on
-that shadow surface.
+`/scw:<skill>`. The Host Installer Path defaults to flat and unqualified skills;
+its `plugin-companion` delivery mode installs only workflows, docs, helpers, and
+metadata. Use exactly one auto-invocable skill delivery route per host/profile.
+Native-plus-flat collisions and uncertain migration ownership must fail closed.
+Compatibility shims are allowed only when the host proves they are
+explicit-invocation-only; never leave two auto-invocable aliases.
 
 ## Runtime Host Detection
 

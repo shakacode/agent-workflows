@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
 - **Add Codex catalog plus Claude Code native-plugin and marketplace metadata for installing the complete semantic skill tree under `scw`, with isolated plugin-root and no-shadow validation.**
 - **Add `agent-workflow-seam-doctor --init` for conservative, fail-closed consumer seam scaffolding and immediate contract validation.**
 - **Add an MIT license for the workflow pack and install the license notice with copied or symlinked agent homes.**
@@ -40,6 +41,7 @@ All notable changes to this portable workflow pack are documented here.
 #### Fixed
 
 - **Hardened seam-init argument forwarding across nested shells, env split strings, exec prefixes, and npm options, preserving caller arguments or failing closed for unsafe command shapes.** [PR 119](https://github.com/shakacode/agent-workflows/pull/119) by [justin808](https://github.com/justin808).
+- **Fail closed on native-plus-flat Agent Workflows collisions and preserve modified, ambiguous, mismatched, or unowned skill paths during migration and rollback.**
 - **Require replayable final-head QA evidence before readiness or merge so commits made after QA invalidate stale closeout evidence.**
 - **Fix post-merge audit default-batch handling so unavailable coordination verification asks before deep audit, and tighten batch-title guard coverage.**
 - **Harden `pr-security-preflight` trust resolution and warning scans for explicit global configs, missing environment configs, metadata-only bots, bounded git probes, host-qualified repo-local trust checks, and truncated timeline coverage.**

@@ -23,6 +23,7 @@ Options:
   --host codex|claude|auto       workflow install host (default: codex)
   --target DIR                   workflow install target
   --mode copy|symlink            workflow install mode (default: copy)
+  --delivery-mode MODE           flat or plugin-companion (replays install metadata when omitted)
   --agent-coord-install-dir DIR  agent-coord install dir (default: ~/.local/bin)
   --force-stash                  stash dirty main checkouts before syncing; not restored automatically
   --replace-compat               archive existing compatibility paths before symlinking
@@ -60,6 +61,7 @@ runtime_root="${AGENT_STACK_RUNTIME_ROOT:-$HOME/.agent-workflows}"
 host="codex"
 target=""
 mode="copy"
+delivery_mode=""
 agent_coord_install_dir="$HOME/.local/bin"
 force_stash=false
 replace_compat=false
@@ -92,6 +94,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mode)
       mode="${2:?--mode requires copy or symlink}"
+      shift 2
+      ;;
+    --delivery-mode)
+      delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
       shift 2
       ;;
     --agent-coord-install-dir)
@@ -138,6 +144,14 @@ case "$mode" in
   copy|symlink) ;;
   *)
     echo "--mode must be copy or symlink, got: $mode" >&2
+    exit 64
+    ;;
+esac
+
+case "$delivery_mode" in
+  ""|flat|plugin-companion) ;;
+  *)
+    echo "--delivery-mode must be flat or plugin-companion, got: $delivery_mode" >&2
     exit 64
     ;;
 esac
@@ -453,6 +467,9 @@ install_agent_coord() {
 install_workflows() {
   local repo="$source_root/agent-workflows"
   local args=(--host "$host" --mode "$mode")
+  if [[ -n "$delivery_mode" ]]; then
+    args+=(--delivery-mode "$delivery_mode")
+  fi
   if [[ -n "$target" ]]; then
     args+=(--target "$target")
   fi

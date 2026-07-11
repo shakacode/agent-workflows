@@ -37,6 +37,21 @@ Claude:
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
 
+## Skill Delivery Modes
+
+Use exactly one auto-invocable Agent Workflows skill delivery route per
+host/profile:
+
+| Delivery mode | Auto-invocable skills | Installer-managed companion assets |
+| --- | --- | --- |
+| `flat` | `<target>/skills/*` | License, workflows, docs, helpers, metadata, status, and upgrades |
+| `plugin-companion` | Native `scw` plugin only | License, workflows, docs, helpers, metadata, status, and upgrades |
+
+`--mode copy|symlink` controls how installer-managed assets are materialized.
+It is separate from `--delivery-mode flat|plugin-companion`. New installs
+default to `flat`; metadata written before delivery modes existed is also read
+as `flat`.
+
 ## Native Plugin Paths
 
 This repository ships native plugin metadata for Codex at
@@ -80,20 +95,23 @@ come from that repository's `AGENTS.md` seam and `.agents/` contract.
 
 ## Native Plugin And Host Installer Boundaries
 
-The native paths do not replace the Host Installer Path. Continue to use the
-installer on either host when you need helper binaries, managed metadata,
-copy/symlink mode, or status and upgrade behavior:
+The native paths do not replace installer-managed companion assets. With the
+native `scw` plugin enabled, install those assets without flat skills:
 
 ```bash
-bin/install-agent-workflows --host claude
-bin/install-agent-workflows --host codex
+bin/install-agent-workflows --host claude --delivery-mode plugin-companion
+bin/install-agent-workflows --host codex --delivery-mode plugin-companion
 ```
 
 Native plugin installation does not install helper binaries on `PATH`, write
-`<target>/.agent-workflows-install.json`, or participate in
-`agent-workflows-status` and `upgrade-agent-workflows`. Use the host installer
-path for Codex or Claude when you need those helper binaries, install metadata,
-copy/symlink mode, status checks, or managed upgrades.
+`<target>/.agent-workflows-install.json`, or participate in status and upgrade
+behavior by itself. Companion mode supplies those pieces while leaving native
+plugin installation and updates under the host plugin flow.
+
+The installer and status helper detect enabled native `scw` state separately
+from cached-but-disabled plugin files. They fail closed when native state is
+enabled but its install receipt/cache cannot be verified, or when native and
+installer-managed flat skills would coexist.
 
 Validate both native manifests, the Claude marketplace, and the complete shared
 skill tree from the source pack root with:
@@ -128,6 +146,20 @@ Install into an explicit shared agent home:
 ```bash
 bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
+
+Install companion assets for an already-enabled native plugin:
+
+```bash
+bin/install-agent-workflows \
+  --host codex \
+  --delivery-mode plugin-companion
+```
+
+When migrating a previous flat install, the installer inventories every known
+pack skill before deleting anything. It removes only managed symlinks or copies
+that still match the metadata-recorded source revision. Modified, mismatched,
+ambiguous, and unowned paths are preserved; the migration stops with exact
+manual cleanup guidance. Unrelated skill names are never removed.
 
 Then initialize and validate the seam from a consumer repository:
 
@@ -176,11 +208,13 @@ and installs the shorter `agent-stack` command for future runs:
   state/
 ```
 
-After the first sync, update the stack with `agent-stack sync`.
+After the first sync, update the stack with `agent-stack sync`. Select companion
+mode once with `agent-stack sync --delivery-mode plugin-companion`; later syncs
+replay the install metadata when the option is omitted.
 
 The installer writes:
 
-- `<target>/skills/*`
+- `<target>/skills/*` in `flat` delivery mode only
 - `<target>/LICENSE`
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
@@ -188,6 +222,7 @@ The installer writes:
 - `<target>/docs/agent-workflows-model-routing.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
@@ -199,10 +234,10 @@ pack-owned docs listed above; it preserves unrelated files already present in
 the target agent home, including generic consumer-owned docs under
 `<target>/docs`.
 
-The metadata file records host, mode, source clone, pack version, source
-revision, branch, remote, and install time. The status and upgrade helpers use
-that metadata so they can run from either the source clone or the installed
-host.
+The metadata file records host, artifact mode, skill delivery mode, source
+clone, pack version, source revision, branch, remote, and install time. The
+status and upgrade helpers use that metadata so they can run from either the
+source clone or the installed host.
 
 ## Status Checks
 
@@ -231,7 +266,9 @@ Stable status tokens:
 
 Use `--json` for machine-readable output. Use `--fetch` only when you want a
 network check against `origin`; without `--fetch`, status compares against the
-current local source clone.
+current local source clone. Status also reports `delivery_mode`, native plugin
+evidence, and flat-skill inventory. A collision, ambiguous native state, or an
+invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
 ## Upgrade
 
@@ -264,13 +301,15 @@ Upgrade behavior:
 1. Resolve target and source from arguments or install metadata.
 2. Fetch and fast-forward the source clone unless `--no-fetch` is set.
 3. Back up the target install.
-4. Reinstall with the recorded or requested mode.
+4. Reinstall with the recorded or requested artifact and delivery modes.
 5. Run `agent-workflow-seam-doctor --root <consumer> --shared <source>` for
    every `--consumer-root`.
 6. Restore the previous install if reinstall or seam validation fails.
 
 The command prints `UPGRADE_COMPLETE` on success and `ROLLBACK_COMPLETE` when it
-restores the prior install after a failed upgrade.
+restores the prior install after a failed upgrade. Rollback restores the prior
+delivery mode and skill layout. `upgrade-agent-workflows` never installs or
+updates the native plugin itself.
 
 ## Verification After Upgrade
 
@@ -331,6 +370,11 @@ the session must avoid network access.
   `--host codex` or `--host claude`.
 - `Refusing to replace non-symlink path`: symlink mode will not overwrite a real
   file or directory. Use copy mode or remove the conflicting path deliberately.
+- `DELIVERY_MODE_CONFLICT`: keep one skill delivery route. Disable/remove the
+  native `scw` plugin before a flat install, or use
+  `--delivery-mode plugin-companion`. If exact paths are listed, they were
+  preserved because ownership or content could not be proved; inspect and move,
+  restore, or remove them manually before retrying.
 - `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby
   helper: an older install is running under a non-UTF-8 locale (`LANG=C` /
   `LC_ALL=C`, common in CI and headless agents). The pack Ruby tools now read
