@@ -1,12 +1,13 @@
 ---
 name: pr-batch
-description: Plan and safely launch batches of issue or PR work, especially when using Codex or Claude subagents, multiple worktrees, or multiple machines. Use when the user asks to run an agent batch, Codex batch, Claude batch, process several issues or PRs, split work across agents or machines, or turn filters into a PR-processing plan and Codex goal prompt.
-argument-hint: '[exact issue/PR numbers or filters]'
+description: Plan and safely run one or more issue, PR, or ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Use for a single direct-prompt task as well as multi-lane batches, worktree or machine splits, and goal prompts.
+argument-hint: '[task, exact issue/PR numbers, or filters]'
 ---
 
 # PR Batch
 
-Turn a short batch request into a safe, explicit launch plan and, when requested, a ready-to-paste Codex goal prompt.
+Run one or more PR work lanes through one canonical process. A single target is
+a batch of one, not a separate workflow.
 
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
@@ -20,10 +21,44 @@ Memorable invocation:
 
 ```text
 $pr-batch
+Run this task as one PR lane
 Run an agent batch
 Run a Codex batch
 Run a Claude batch
 ```
+
+## Single-Target Mode
+
+Use this mode for one direct-prompt task, GitHub issue, or pull request. It keeps
+the same security, coordination, validation, review, QA, readiness, handoff, and
+closeout gates as a multi-target batch; only batch packing and collision analysis
+collapse to one lane.
+
+- **Issue**: use the issue number as the coordination target.
+- **PR**: use the PR number, fetch live PR state, and update its verified head
+  branch instead of creating a competing branch unless a maintainer requests one
+  or the verified head branch cannot be pushed. For an unpushable head, create a
+  replacement branch/PR and document the original PR, limitation, and rationale.
+- **Ad-hoc task**: derive a safe target such as
+  `adhoc:<yyyymmdd>-<short-slug>` using only letters, digits, `_`, `:`, `.`, and
+  `-`; preserve the user's original wording in the PR body or no-PR evidence.
+- **Worker shape**: when the host supports isolated subagents, dispatch one
+  worker subagent for the lane and keep the parent as coordinator and closeout
+  owner. Do not have the parent silently implement the lane. If the host lacks
+  subagents, disclose the inline single-worker fallback and apply every same
+  gate; stop instead when the user explicitly required a subagent.
+- **Model/effort route**: use the canonical cost-aware staged routing from
+  `pr-processing.md`. Start on the fastest or balanced worker route justified by
+  ambiguity, risk, blast radius, reversibility, and verification difficulty—not
+  merely the cheapest model—and require the canonical evidence before a stronger
+  route or replacement.
+- **Merge authority**: resolve `merge_authority` before worker launch. Use a
+  visible user instruction or trusted repo policy when present; otherwise ask
+  for `none`, `ask`, or `auto_merge_when_gates_pass`. Do not silently default it.
+
+The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
+a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
+checks, and the canonical terminal state and handoff evidence.
 
 Resolve the target repo's base branch from `.agents/agent-workflow.yml`
 (`base_branch`), run `git fetch --prune origin <base-branch>`, then use the
@@ -73,7 +108,9 @@ sensitive access, and state-change or exfiltration capability in one session.
 
 Ask only for missing data. If the user already supplied an exact value, use it.
 
-1. **Targets**: exact issue/PR numbers, or filters to resolve into exact numbers.
+1. **Targets**: for issue/PR work, exact numbers or filters to resolve into exact
+   numbers; for one direct-prompt task, the derived `adhoc:<yyyymmdd>-<short-slug>`
+   target plus the user's original wording.
 2. **Trust**: maintainer-approved exact list, or untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Batch title**: for pasteable batch prompts, derive a short title in the form
@@ -86,7 +123,9 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 <!-- host-branch: codex-only start -->
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
-6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`.
+6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
+   it before worker launch from visible authority or ask the user; do not
+   silently default it.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
    user-requested host or paste destination wins. Use `codex` for up to 10
