@@ -10,7 +10,7 @@ Installs this shared workflow pack into an agent home.
 Default targets:
   --host codex   ${CODEX_HOME:-$HOME/.codex}
   --host claude  ${CLAUDE_HOME:-$HOME/.claude}
-  --host auto    an existing Codex or Claude home, if exactly one is detectable
+  --host auto    infer from an explicit target's host markers; an unmarked explicit target defaults to Codex
 
 Installed paths:
   <target>/LICENSE
@@ -86,9 +86,21 @@ resolve_auto_target() {
 resolve_host_and_target() {
   if [[ -n "$target" ]]; then
     if [[ "$host" = "auto" ]]; then
-      local detected
-      detected="$(resolve_auto_target)"
-      printf '%s:%s\n' "${detected%%:*}" "$target"
+      local codex_home="${CODEX_HOME:-$HOME/.codex}"
+      local claude_home="${CLAUDE_HOME:-$HOME/.claude}"
+      local codex_marker=false claude_marker=false
+      [[ "$target" = "$codex_home" || -f "$target/config.toml" ]] && codex_marker=true
+      [[ "$target" = "$claude_home" || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
+      if [[ "$codex_marker" = true && "$claude_marker" = true ]]; then
+        echo "Explicit target has both Codex and Claude markers; pass --host codex or --host claude." >&2
+        return 64
+      elif [[ "$claude_marker" = true ]]; then
+        printf 'claude:%s\n' "$target"
+      elif [[ "$codex_marker" = true ]]; then
+        printf 'codex:%s\n' "$target"
+      else
+        printf 'codex:%s\n' "$target"
+      fi
     else
       printf '%s:%s\n' "$host" "$target"
     fi
@@ -404,16 +416,22 @@ if ! mkdir "$install_lock" 2>/dev/null; then
   exit 1
 fi
 migration_staging=""
+migration_receipt="$target/.agent-workflows-migration-staging"
+rm -f "$migration_receipt"
 metadata_committed=false
 release_install_transaction() {
   local status=$?
   trap - EXIT
+  if [[ -z "$migration_staging" && -f "$migration_receipt" ]]; then
+    IFS= read -r migration_staging < "$migration_receipt" || true
+  fi
   if [[ "$metadata_committed" != "true" && -n "$migration_staging" ]]; then
     rollback_migration_staging "$migration_staging" || status=1
   fi
   if [[ "$metadata_committed" != "true" && -f "$target/$metadata_name.tmp" ]]; then
     rm -f "$target/$metadata_name.tmp"
   fi
+  rm -f "$migration_receipt"
   rmdir "$install_lock" 2>/dev/null || true
   exit "$status"
 }
@@ -491,7 +509,7 @@ fi
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   set +e
-  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
@@ -523,6 +541,7 @@ metadata_committed=true
 if [[ -n "$migration_staging" ]] && ! rm -rf "$migration_staging"; then
   echo "CLEANUP_PENDING: committed plugin-companion mode; remove quarantine manually: $migration_staging" >&2
 fi
+rm -f "$migration_receipt"
 
 cat <<MSG
 Installed ShakaCode agent workflows into:

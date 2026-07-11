@@ -47,8 +47,23 @@ module AgentWorkflowsStatus
 
   def resolve_host_and_target(host, target)
     if target
-      resolved_host, = resolve_auto_target if host == "auto"
-      return [resolved_host || host, File.expand_path(target)]
+      expanded = File.expand_path(target)
+      if host == "auto"
+        codex_home = File.expand_path(default_target_for_host("codex"))
+        claude_home = File.expand_path(default_target_for_host("claude"))
+        codex_marker = expanded == codex_home || File.file?(File.join(expanded, "config.toml"))
+        claude_marker = expanded == claude_home || File.file?(File.join(expanded, "settings.json")) ||
+                        File.file?(File.join(expanded, "plugins/installed_plugins.json"))
+        raise ArgumentError, "explicit target has both Codex and Claude markers; pass --host" if codex_marker && claude_marker
+
+        resolved_host = if claude_marker
+                          "claude"
+                        else
+                          "codex"
+                        end
+        return [resolved_host, expanded]
+      end
+      return [host, expanded]
     end
     return resolve_auto_target if host == "auto"
 
@@ -240,7 +255,10 @@ if $PROGRAM_NAME == __FILE__
   options = { host: "codex", target: nil, source: nil, fetch: false, json: false }
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--fetch] [--json]"
-    opts.on("--host HOST", "Agent host: codex, claude, or auto") { |value| options[:host] = value }
+    opts.on(
+      "--host HOST",
+      "Agent host: codex, claude, or auto (unmarked explicit targets default to codex)"
+    ) { |value| options[:host] = value }
     opts.on("--target DIR", "Installed agent home to inspect") { |value| options[:target] = value }
     opts.on("--source DIR", "Source shakacode/agent-workflows clone") { |value| options[:source] = value }
     opts.on("--fetch", "Fetch origin before checking the source revision") { options[:fetch] = true }

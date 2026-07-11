@@ -365,6 +365,31 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_unreadable_or_looping_codex_cache_path_is_structured_unknown
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      cache_root = File.join(target, "plugins/cache/agent-workflows/scw")
+      plugin_root = File.join(cache_root, "0.1.0")
+      FileUtils.mkdir_p(File.join(plugin_root, ".codex-plugin"))
+      File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
+      File.write(
+        File.join(plugin_root, ".codex-plugin/plugin.json"),
+        "#{JSON.generate('name' => 'scw', 'skills' => './loop')}\n"
+      )
+      File.symlink("loop", File.join(plugin_root, "loop"))
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?, out
+      assert_equal "unknown", payload.dig("native", "state")
+      assert_includes payload.fetch("reason"), "no valid installed cache"
+    end
+  end
+
   def test_malformed_claude_state_shapes_are_unknown
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "claude")

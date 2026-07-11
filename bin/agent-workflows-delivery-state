@@ -25,7 +25,7 @@ module AgentWorkflowsDeliveryState
     manifest.fetch("name") == "scw" &&
       (skills_root == plugin_root || skills_root.start_with?("#{plugin_root}/")) &&
       Dir.glob(File.join(skills_root, "*", "SKILL.md")).any?
-  rescue Errno::ENOENT, JSON::ParserError, KeyError, TypeError
+  rescue SystemCallError, JSON::ParserError, KeyError, TypeError
     false
   end
 
@@ -377,6 +377,8 @@ module AgentWorkflowsDeliveryState
     return payload.merge("flat" => payload.fetch("flat").merge("removed" => [])) if removed.empty?
 
     staging = Dir.mktmpdir(".agent-workflows-flat-migration-", options.fetch(:target))
+    staging_receipt = options[:staging_receipt]
+    File.write(staging_receipt, "#{staging}\n") if staging_receipt
     staged = []
     begin
       removed.each do |path|
@@ -392,6 +394,7 @@ module AgentWorkflowsDeliveryState
         rollback_failed = true
       end
       FileUtils.rm_rf(staging) unless rollback_failed
+      FileUtils.rm_f(staging_receipt) if staging_receipt && !rollback_failed
       return migration_failure(payload, removed, e, staging: staging)
     end
 
@@ -409,6 +412,7 @@ module AgentWorkflowsDeliveryState
         rollback_failed = true
       end
       FileUtils.rm_rf(staging) unless rollback_failed
+      FileUtils.rm_f(staging_receipt) if staging_receipt && !rollback_failed
       payload["compatible"] = false
       payload["flat"]["state"] = "ambiguous"
       payload["flat"]["removed"] = []
@@ -426,6 +430,7 @@ module AgentWorkflowsDeliveryState
 
     begin
       FileUtils.remove_entry(staging)
+      FileUtils.rm_f(staging_receipt) if staging_receipt
     rescue SystemCallError => e
       payload["flat"]["removed"] = removed
       payload["flat"]["cleanup_pending"] = true
@@ -460,6 +465,7 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--source DIR") { |value| options[:source] = File.expand_path(value) }
     opts.on("--delivery-mode MODE") { |value| options[:delivery_mode] = value }
     opts.on("--retain-staging") { options[:retain_staging] = true }
+    opts.on("--staging-receipt PATH") { |value| options[:staging_receipt] = File.expand_path(value) }
     opts.on("--json") { options[:json] = true }
   end
   parser.parse!
@@ -471,6 +477,7 @@ if $PROGRAM_NAME == __FILE__
 
   call_options = options.slice(:host, :target, :source, :delivery_mode)
   call_options[:retain_staging] = options[:retain_staging] if action == "migrate"
+  call_options[:staging_receipt] = options[:staging_receipt] if action == "migrate" && options[:staging_receipt]
   payload = AgentWorkflowsDeliveryState.public_send(action, **call_options)
   puts(options[:json] ? JSON.pretty_generate(payload) : payload.fetch("reason", "delivery state compatible"))
   exit(payload.fetch("compatible") ? 0 : 3)

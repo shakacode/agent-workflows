@@ -381,6 +381,43 @@ RUBY
     "$target/.agent-workflows-install.json"
 }
 
+test_staging_json_extraction_failure_uses_receipt_to_roll_back() {
+  local tmp target injection output status skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/json-extraction-failure.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+require "json"
+module FailStagingJsonExtraction
+  def parse(source, *args)
+    exit 86 if source.is_a?(String) && source.include?('"staging"')
+    super
+  end
+end
+JSON.singleton_class.prepend(FailStagingJsonExtraction)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "staging JSON extraction failure unexpectedly committed migration"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+  done
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
+  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "staging receipt was not removed"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "install lock was not removed"
+  if compgen -G "$target/.agent-workflows-flat-migration-*" >/dev/null; then
+    fail "orphaned migration quarantine"
+  fi
+}
+
 test_install_lock_blocks_concurrent_migration_before_mutation() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -440,18 +477,32 @@ test_companion_to_flat_refuses_unowned_same_named_skill() {
 }
 
 test_auto_host_with_explicit_target_resolves_the_detected_host() {
-  local tmp target ruby_dir
+  local tmp target claude_target ruby_dir
   tmp="$(mktemp -d)"
-  target="$tmp/codex-home"
+  target="$tmp/unrelated-empty-target"
+  claude_target="$tmp/claude-home"
   ruby_dir="$(ruby -rrbconfig -e 'puts File.dirname(RbConfig.ruby)')"
+  mkdir -p "$tmp/codex-home" "$claude_target"
 
-  HOME="$tmp/home" CODEX_HOME="$target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+  HOME="$tmp/home" CODEX_HOME="$tmp/codex-home" CLAUDE_HOME="$claude_target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
     "$ROOT/bin/install-agent-workflows" --host auto --target "$target" >"$tmp/install.out"
 
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["host"] == "codex"
   ' "$target/.agent-workflows-install.json"
+
+  HOME="$tmp/home" CODEX_HOME="$tmp/codex-home" CLAUDE_HOME="$claude_target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$ROOT/bin/agent-workflows-status" --host auto --target "$target" --source "$ROOT" >/dev/null
+  HOME="$tmp/home" CODEX_HOME="$tmp/codex-home" CLAUDE_HOME="$claude_target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$ROOT/bin/upgrade-agent-workflows" --host auto --target "$target" --source "$ROOT" --dry-run --no-fetch >/dev/null
+
+  HOME="$tmp/home" CODEX_HOME="$tmp/codex-home" CLAUDE_HOME="$claude_target" PATH="$ruby_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$claude_target" >"$tmp/install-claude.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["host"] == "claude"
+  ' "$claude_target/.agent-workflows-install.json"
 }
 
 test_install_namespaces_model_routing_doc_and_preserves_generic_collision() {
@@ -965,6 +1016,7 @@ main() {
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode
     test_staging_race_blocks_installer_and_preserves_flat_tree
     test_final_verification_race_rolls_back_before_metadata_commit
+    test_staging_json_extraction_failure_uses_receipt_to_roll_back
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_companion_to_flat_refuses_unowned_same_named_skill
