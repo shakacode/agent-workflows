@@ -502,6 +502,13 @@ block, not the normal-handoff note) for the maintainer to merge. Do not merge
 without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
 
+For an authorized auto-merge target, invoke the canonical `address-review`
+closeout with trusted parent state `COORDINATED_AUTOFIX=1` so verified review
+fixes run through action `f` without an extra quick-action pause. Follow
+`workflows/pr-processing.md` and the child workflow's verification, audit, and
+independent-current-head-review requirements; this does not expand task scope
+or make material `DISCUSS` items autonomous.
+
 For Goal-mode closeout, follow the canonical
 [Goal Mode Completion Contract](../../workflows/pr-processing.md#goal-mode-completion-contract).
 In short, `waiting-on-checks-or-review` is per-target progress, not an overall
