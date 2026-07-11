@@ -9,17 +9,62 @@ require "minitest/autorun"
 SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
 
 class CloseoutEvidenceReplayTest < Minitest::Test
-  def run_replay(body, expected_head_sha: nil)
+  def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false)
     Tempfile.create("closeout-evidence") do |file|
       file.write(body)
       file.flush
       command = ["ruby", SCRIPT]
       command.concat(["--expected-head-sha", expected_head_sha]) if expected_head_sha
+      command << "--require-priority-dispositions" if require_priority_dispositions
       command << file.path
       out, status = Open3.capture2e(*command)
       assert status.success?, out
       JSON.parse(out)
     end
+  end
+
+  def test_required_priority_dispositions_reject_missing_marker
+    head_sha = "1111111111111111111111111111111111111111"
+    data = run_replay(<<~MARKDOWN, require_priority_dispositions: true)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: not applicable
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      -->
+    MARKDOWN
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", data.fetch("priority_finding_dispositions").fetch("verdict")
+  end
+
+  def test_not_required_qa_marker_rejects_inconsistent_terminal_fields
+    head_sha = "1111111111111111111111111111111111111111"
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: no
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: repository head #{head_sha}
+      scope: documentation-only change
+      automated_checks: not applicable
+      manual_checks: not applicable
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: not applicable
+      -->
+    MARKDOWN
+
+    qa = data.fetch("qa_evidence")
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "status"
+    assert_includes qa.fetch("missing"), "release_blocking"
   end
 
   def test_expected_final_head_rejects_qa_from_before_post_qa_commit

@@ -699,7 +699,7 @@ also returns `UNKNOWN` when a priority-disposition marker records another head.
 Full hexadecimal SHA comparisons are case-normalized. Repeated scalar marker or
 per-finding keys also return `UNKNOWN` instead of overwriting earlier values.
 When append-only history contains both old and current-head markers, the gate
-replays the current-head markers; when no current marker exists, stale markers
+replays the latest current-head marker; when no current marker exists, stale markers
 remain `UNKNOWN`. Historical evidence remains replayable without this option,
 but it does not qualify as current-head readiness evidence.
 
@@ -1512,7 +1512,9 @@ The closeout lane is:
    evidence: rerun the affected automated and manual QA at the new head, then
    refresh `Tested at` and `head_sha`; never update the evidence marker alone.
    Run the helper separately for that PR or target with
-   `--expected-head-sha <full-final-head-SHA>`. If the head changes again before
+   `--expected-head-sha <full-final-head-SHA>`. Add
+   `--require-priority-dispositions` whenever the merge ledger or handoff relies
+   on fixed, waived, or deferred priority findings. If the head changes again before
    readiness or merge, repeat this checklist and replay; missing or mismatched
    final-head evidence is `UNKNOWN` and blocks readiness.
 7. Refresh stale release-mode classification from the release tracker when

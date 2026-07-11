@@ -34,7 +34,13 @@ module CloseoutEvidenceReplay
     raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
 
     text = path == "-" ? $stdin.read : File.read(path, encoding: "UTF-8")
-    puts JSON.pretty_generate(replay(text, expected_head_sha: options[:expected_head_sha]))
+    puts JSON.pretty_generate(
+      replay(
+        text,
+        expected_head_sha: options[:expected_head_sha],
+        require_priority_dispositions: options.fetch(:require_priority_dispositions, false)
+      )
+    )
     0
   rescue OptionParser::ParseError => e
     warn "Error: #{e.message}"
@@ -47,7 +53,7 @@ module CloseoutEvidenceReplay
   def parse_options(argv)
     options = {}
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] <path|->"
+      opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] [--require-priority-dispositions] <path|->"
       opts.separator ""
       opts.separator "Parse `qa-evidence v1` and `priority-finding-dispositions v1` markers from"
       opts.separator "a PR body, issue comment, handoff, or stdin and emit replay JSON."
@@ -59,17 +65,21 @@ module CloseoutEvidenceReplay
 
         options[:expected_head_sha] = sha.downcase
       end
+      opts.on("--require-priority-dispositions", "Fail when the priority disposition marker is missing") do
+        options[:require_priority_dispositions] = true
+      end
       opts.on("-h", "--help", "Show this help") { options[:help] = true }
     end
     parser.parse!(argv)
     [options, parser]
   end
 
-  def replay(text, expected_head_sha: nil)
+  def replay(text, expected_head_sha: nil, require_priority_dispositions: false)
     qa = replay_qa_markers(marker_bodies(text, "qa-evidence v1"), expected_head_sha: expected_head_sha)
     priority = replay_priority_markers(
       marker_bodies(text, "priority-finding-dispositions v1"),
-      expected_head_sha:
+      expected_head_sha:,
+      required: require_priority_dispositions
     )
     {
       "overall_verdict" => overall_verdict([qa, priority]),
@@ -89,8 +99,12 @@ module CloseoutEvidenceReplay
     aggregate_marker_results(markers.map { |marker| replay_qa(marker, expected_head_sha: expected_head_sha) })
   end
 
-  def replay_priority_markers(markers, expected_head_sha: nil)
-    return priority_not_applicable("priority-finding-dispositions marker missing") if markers.empty?
+  def replay_priority_markers(markers, expected_head_sha: nil, required: false)
+    if markers.empty?
+      return unknown("priority-finding-dispositions marker missing") if required
+
+      return priority_not_applicable("priority-finding-dispositions marker missing")
+    end
 
     markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
     aggregate_marker_results(markers.map { |marker| replay_priority(marker, expected_head_sha:) })
@@ -101,7 +115,7 @@ module CloseoutEvidenceReplay
       fields, = parse_fields(marker)
       fields.fetch("head_sha", "").downcase == expected_head_sha
     end
-    matching.empty? ? markers : matching
+    matching.empty? ? markers : [matching.last]
   end
 
   def replay_qa(marker, expected_head_sha: nil)
@@ -126,6 +140,10 @@ module CloseoutEvidenceReplay
     missing << "status" unless status.empty? || VALID_QA_STATUSES.include?(status)
     missing << "release_blocking" unless release_blocking.empty? || VALID_RELEASE_BLOCKING.include?(release_blocking)
     missing << "status" if required == "yes" && status == "not_applicable"
+    if required == "no"
+      missing << "status" unless status == "not_applicable"
+      missing << "release_blocking" unless release_blocking == "not_applicable"
+    end
     unless process_gap_disposition.empty? || VALID_PROCESS_GAP_DISPOSITIONS.include?(process_gap_disposition)
       missing << "process_gap_disposition"
     end
