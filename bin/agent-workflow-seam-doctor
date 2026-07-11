@@ -349,6 +349,10 @@ module AgentWorkflowSeamDoctor
     if assignment_only_command?(command)
       raise InitError, "assignment-only commands cannot safely forward wrapper arguments; add an executable command"
     end
+    if active_outer_command_substitution?(command)
+      raise InitError, "cannot safely initialize command with active outer command substitution; " \
+                       "remove it or single-quote literal command-substitution text"
+    end
 
     comment_index = shell_comment_index(command)
     if comment_index && command[comment_index..].match?(/\$(?:@|\{@\})/) &&
@@ -827,6 +831,35 @@ module AgentWorkflowSeamDoctor
     false
   end
 
+  def active_outer_command_substitution?(command)
+    characters = command.chars
+    quote = nil
+    escaped = false
+
+    characters.each_with_index do |character, index|
+      if escaped
+        escaped = false
+        next
+      end
+      if quote == "'"
+        quote = nil if character == quote
+        next
+      end
+
+      if character == "\\"
+        escaped = true
+      elsif character == "'"
+        quote = character
+      elsif character == '"'
+        quote = quote == character ? nil : character
+      elsif character == "`" || (character == "$" && characters[index + 1] == "(")
+        return true
+      end
+    end
+
+    false
+  end
+
   def outer_argument_forwarding?(command)
     shell_word_spans(command).any? do |token|
       COMPLETE_ARGUMENT_FORWARDING_WORDS.include?(token.fetch(:raw))
@@ -915,7 +948,8 @@ module AgentWorkflowSeamDoctor
     words.shift if words.first == "exec"
     words.shift while words.first&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
     words.shift if words.first == "exec"
-    return false unless words.shift == "env"
+    command = words.shift
+    return false unless command == "env" || (command&.start_with?("/") && File.basename(command) == "env")
 
     while (option = words.shift)
       return false if option == "--"

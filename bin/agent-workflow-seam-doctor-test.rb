@@ -1288,6 +1288,51 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_preserves_absolute_env_split_string_commands_verbatim
+    [
+      "/usr/bin/env -S 'npm run validate'",
+      "/usr/bin/env -ivS'npm run validate'",
+      "/usr/bin/env --split-string='npm run validate'",
+      %q(/usr/bin/env -S 'bash -c "printf \"<%s>\\n\" \"\$@\""')
+    ].each do |command|
+      assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+  end
+
+  def test_init_rejects_an_empty_absolute_env_split_string
+    ["/usr/bin/env -S ''", "/usr/bin/env --split-string="].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "cannot safely parse env command prefix"
+    end
+  end
+
+  def test_init_preserves_runtime_arguments_through_an_absolute_env_split_string
+    Dir.mktmpdir("agent-workflow-seam-init-env-split") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/usr/bin/env sh\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      command = %q(/usr/bin/env -S 'bash -c "exec bin/validate \"\$@\"" _' "$@")
+
+      assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+      assert status.success?, out
+
+      runtime_out, runtime_status = Open3.capture2e(
+        File.join(root, ".agents/bin/validate"), "FIRST", "SECOND"
+      )
+      assert runtime_status.success?, runtime_out
+      assert_equal "<FIRST>\n<SECOND>\n", runtime_out
+    end
+  end
+
   def test_init_rejects_a_shell_comment_in_place_of_the_dollar_zero_placeholder
     command = 'bash -c \'exec bin/validate "$@"\' # not a placeholder'
 
@@ -1335,6 +1380,50 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         assert_includes error.message, "bash -c command string has an attached unquoted shell metacharacter"
         assert_includes error.message, "quote or separate the metacharacter"
       end
+    end
+  end
+
+  def test_init_rejects_backtick_substitution_attached_to_a_shell_command_string
+    Dir.mktmpdir("agent-workflow-seam-init-substitution") do |root|
+      marker = File.join(root, "should-not-exist")
+      substitution = File.join(root, "attempt-substitution")
+      File.write(substitution, "#!/bin/sh\ntouch #{Shellwords.escape(marker)}\n")
+      File.chmod(0o755, substitution)
+      command = %(bash -c 'printf safe'`#{substitution}` _)
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+
+      refute status.success?
+      assert_includes out, "active outer command substitution"
+      refute_includes out, substitution
+      refute File.exist?(marker)
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+    end
+  end
+
+  def test_init_rejects_top_level_outer_command_substitution
+    ["`touch secret-marker`", "$(touch secret-marker)"].each do |substitution|
+      command = "printf safe#{substitution}"
+
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, substitution) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "active outer command substitution"
+      refute_includes error.message, "secret-marker"
+    end
+  end
+
+  def test_init_allows_command_substitution_inside_a_single_quoted_shell_payload
+    [
+      %q(bash -c 'printf "%s\n" "$(printf safe)"' _),
+      %q(bash -c 'printf "%s\n" "`printf safe`"' _)
+    ].each do |command|
+      assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
     end
   end
 
@@ -1389,13 +1478,22 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
   end
 
-  def test_init_rejects_unquoted_parameter_and_command_substitution_placeholders
-    ["$EMPTY", "$(true)", "`true`"].each do |placeholder|
+  def test_init_rejects_an_unquoted_parameter_expansion_placeholder
+    placeholder = "$EMPTY"
+    command = %(bash -c 'exec bin/validate "$@"' #{placeholder})
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_rejects_unquoted_command_substitution_placeholders
+    ["$(true)", "`true`"].each do |placeholder|
       command = %(bash -c 'exec bin/validate "$@"' #{placeholder})
       error = assert_raises(AgentWorkflowSeamDoctor::InitError, placeholder) do
         AgentWorkflowSeamDoctor.init_command_line(command)
       end
-      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+      assert_includes error.message, "active outer command substitution"
     end
   end
 
@@ -2297,8 +2395,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     [
       'bin/test "$@suffix"',
       'bin/test "prefix${@}"',
-      "bin/test ${@}suffix",
-      'bin/test "$(printf \'%s\' "$@")"'
+      "bin/test ${@}suffix"
     ].each do |command|
       assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command), command
     end
@@ -2692,7 +2789,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
   def test_init_uses_a_safe_markdown_code_span_for_commands_with_backticks
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
-      command = "echo `date`"
+      command = %q(echo \`date\`)
       out, status = run_doctor(
         root,
         "--init",
@@ -2702,8 +2799,8 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       assert status.success?, out
       readme = File.read(File.join(root, ".agents/bin/README.md"))
-      assert_includes readme, "| `validate` | Pre-push gate | `` echo `date` `` |"
-      refute_includes readme, "| `validate` | Pre-push gate | `echo `date`` |"
+      assert_includes readme, '| `validate` | Pre-push gate | `` echo \`date\` `` |'
+      refute_includes readme, '| `validate` | Pre-push gate | `echo \`date\`` |'
     end
   end
 
