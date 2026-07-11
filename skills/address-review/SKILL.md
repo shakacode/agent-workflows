@@ -277,6 +277,7 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 - Do not skip bot-generated comments by default. Many actionable review comments in this repository come from bots.
 - Deduplicate repeated bot comments and skip bot status posts, summaries, and acknowledgments that do not require a code or documentation change
 - Reserve default `MUST-FIX` classification for correctness bugs, regressions, security issues, missing tests, and clear inconsistencies with adjacent code
+- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
 - Classify as `OPTIONAL` by default: style nits, speculative suggestions, changelog wording, comment requests, test-shape preferences, and "could consider" feedback. Low-risk behavior-preserving optional nits may be handled or logged after an action is selected; broader optional work becomes active when the user explicitly asks for polish work, chooses `a`, `f+o`, or specific optional selections via `o` after triage, or initiates with `autopilot`
 - Focus on actionable feedback, not acknowledgments or thank-you messages
 
@@ -411,6 +412,7 @@ Triage rules:
 
 - Deduplicate overlapping comments before classifying them. Keep one representative item for the underlying issue.
 - Verify factual claims locally before classifying a comment as `MUST-FIX`.
+- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
 - If a claim appears wrong, classify it as `SKIPPED` and note briefly why.
 - When a reviewer identifies an unexplained sibling-lock version split, platform-precompiled/source-build transition, or new build-time dependency, treat the lockfile dependency drift item as `MUST-FIX`.
   - Verify the lockfile diff and require either alignment or an explicit rationale in PR evidence before classifying the item as resolved.

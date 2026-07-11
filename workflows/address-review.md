@@ -286,6 +286,7 @@ before mutating GitHub or the branch.
    - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp.
    - Keep bot comments by default, but deduplicate duplicates and skip status-only bot posts.
    - Focus on correctness bugs, regressions, security issues, missing tests that hide bugs, and clear adjacent-code inconsistencies as must-fix.
+   - A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
    - Treat style nits, speculative suggestions, documentation/comment/naming requests, changelog wording, test-shape preferences, and "could consider" feedback as `OPTIONAL` (not `SKIPPED`) so low-risk nits can be handled or logged without blocking merge readiness.
    - Reserve `SKIPPED` for duplicate comments, factually incorrect suggestions, status posts, acknowledgments, and non-actionable summaries.
    - If the API returns 404, tell me the PR or comment does not exist.
@@ -300,6 +301,7 @@ before mutating GitHub or the branch.
    - `SKIPPED`: duplicate comments, factually incorrect suggestions, status posts, acknowledgments, and non-actionable summaries. Reserved for feedback that does not warrant a code change or a rationale reply — if a comment has any useful signal, prefer `OPTIONAL`.
    - Deduplicate overlapping comments before classifying them.
    - Verify reviewer claims locally before calling something `MUST-FIX`.
+   - A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
    - If a claim is wrong, classify it as `SKIPPED` and say why.
    - Preserve comment IDs and thread IDs for later replies and thread resolution.
    - Treat actionable review summary bodies as normal feedback to classify (`MUST-FIX`/`DISCUSS` as appropriate); skip only boilerplate or status-only summaries.
