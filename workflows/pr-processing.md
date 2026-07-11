@@ -687,11 +687,12 @@ target with `--expected-head-sha <full-final-head-SHA>`. This is a
 `checklist+replay` control: the coordinator checklist below re-fetches the final
 head, and the replay helper returns `UNKNOWN` when required QA evidence omits
 `head_sha`, records any other SHA there, or does not list the expected head as
-the final full SHA token in `tested_at` (the endpoint for an audited range).
-Full hexadecimal SHA comparisons are case-normalized. Repeated scalar marker
-keys also return `UNKNOWN` instead of overwriting earlier values. Historical
-evidence remains replayable without this option, but it does not qualify as
-current-head readiness evidence.
+the final full SHA token in `tested_at` (the endpoint for an audited range). It
+also returns `UNKNOWN` when a priority-disposition marker records another head.
+Full hexadecimal SHA comparisons are case-normalized. Repeated scalar marker or
+per-finding keys also return `UNKNOWN` instead of overwriting earlier values.
+Historical evidence remains replayable without this option, but it does not
+qualify as current-head readiness evidence.
 
 `Release-blocking status` is derived from `QA lane status`: `satisfied` ->
 `clear`, `blocked` -> `blocked`, `waived` -> `waived`, `not_applicable` ->

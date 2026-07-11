@@ -134,6 +134,66 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal final_head_sha, data.fetch("qa_evidence").fetch("expected_head_sha")
   end
 
+  def test_expected_final_head_rejects_stale_priority_dispositions
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+
+      <!-- priority-finding-dispositions v1
+      head_sha: #{stale_head_sha}
+      finding: url=https://example.test/review/1 | severity=P1 | disposition=fixed | evidence=https://example.test/pr/70#discussion_r1
+      -->
+    MARKDOWN
+
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", priority.fetch("verdict")
+    assert_includes priority.fetch("missing"), "head_sha"
+    assert_equal final_head_sha, priority.fetch("expected_head_sha")
+  end
+
+  def test_expected_final_head_rejects_stale_not_applicable_priority_marker
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+
+      <!-- priority-finding-dispositions v1
+      status: not_applicable
+      head_sha: #{stale_head_sha}
+      -->
+    MARKDOWN
+
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", priority.fetch("verdict")
+    assert_includes priority.fetch("missing"), "head_sha"
+    assert_equal final_head_sha, priority.fetch("expected_head_sha")
+  end
+
   def test_expected_final_head_normalizes_hex_case
     uppercase_head_sha = "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD"
     lowercase_head_sha = uppercase_head_sha.downcase
@@ -528,5 +588,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     priority = data.fetch("priority_finding_dispositions")
     assert_equal "UNKNOWN", priority.fetch("verdict")
     assert_equal ["duplicate scalar key: head_sha"], priority.fetch("errors")
+  end
+
+  def test_duplicate_priority_finding_key_is_unknown
+    data = run_replay(<<~MARKDOWN)
+      <!-- priority-finding-dispositions v1
+      head_sha: 2222222222222222222222222222222222222222
+      finding: url=https://example.test/review/1 | severity=P1 | disposition=fixed | disposition=waived | evidence=https://example.test/pr/123#discussion_r1 | waiver=https://example.test/pr/123#issuecomment-1
+      -->
+    MARKDOWN
+
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "UNKNOWN", priority.fetch("verdict")
+    assert_equal ["finding[0].duplicate key: disposition"], priority.fetch("errors")
   end
 end
