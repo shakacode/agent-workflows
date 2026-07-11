@@ -28,8 +28,8 @@ skills, workflows, helper binaries, and metadata into a Codex or Claude home.
 _Avoid_: legacy path.
 
 **Native Plugin Path**:
-A host-specific plugin manifest route, such as a Codex plugin manifest, that
-exposes Source Pack skills through the host's plugin mechanism.
+A host-specific plugin manifest route, such as the Codex or Claude Code `scw`
+manifest, that exposes Source Pack skills through the host's plugin mechanism.
 _Avoid_: universal plugin path.
 
 **Workflow Lessons Library**:
@@ -72,7 +72,7 @@ _Avoid_: broad prose-only hardening.
 
 ## Flagged Ambiguities
 
-- "plugin" can mean the Codex-native manifest surface or the entire Source
+- "plugin" can mean a host-native manifest surface or the entire Source
   Pack. Resolved: use **Native Plugin Path** for host plugin manifests and
   **Source Pack** for the repository as a whole.
 - `docs/solutions/` could mean a broad knowledge system or a small curated

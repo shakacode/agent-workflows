@@ -115,6 +115,8 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/LICENSE"
   grep -q "MIT License" "$target/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
   assert_file "$target/skills/pr-batch/SKILL.md"
+  cmp -s "$target/skills/pr-batch/SKILL.md" "$ROOT/skills/pr-batch/SKILL.md" || \
+    fail "Codex copy install must preserve byte-identical skill Markdown"
   assert_file "$target/skills/pr-batch/agents/openai.yaml"
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/docs/coordination-backend.md"
@@ -128,6 +130,9 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
+  [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
+  [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
+  [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
 }
 
@@ -310,6 +315,8 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/LICENSE"
   grep -q "MIT License" "$tmp/.claude/LICENSE" || fail "expected installed LICENSE to contain MIT notice"
   assert_file "$tmp/.claude/skills/pr-batch/SKILL.md"
+  cmp -s "$tmp/.claude/skills/pr-batch/SKILL.md" "$ROOT/skills/pr-batch/SKILL.md" || \
+    fail "Claude copy install must preserve byte-identical skill Markdown"
   assert_file "$tmp/.claude/skills/pr-batch/agents/openai.yaml"
   assert_file "$tmp/.claude/workflows/pr-processing.md"
   assert_file "$tmp/.claude/docs/coordination-backend.md"
@@ -320,6 +327,9 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
   [[ ! -e "$tmp/.claude/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   [[ ! -e "$tmp/.claude/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be installed into Claude home metadata"
+  [[ ! -e "$tmp/.claude/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata must not be installed into Claude home metadata"
+  [[ ! -e "$tmp/.claude/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest must not be copied into the flat Claude home"
+  [[ ! -e "$tmp/.claude/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata must not be copied into the flat Claude home"
 }
 
 test_copy_mode_preserves_unrelated_agent_files() {
@@ -373,6 +383,8 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
 
   assert_symlink "$target/LICENSE"
   assert_symlink "$target/skills/pr-batch"
+  cmp -s "$target/skills/pr-batch/SKILL.md" "$ROOT/skills/pr-batch/SKILL.md" || \
+    fail "symlink install must preserve byte-identical skill Markdown"
   assert_symlink "$target/workflows"
   assert_file "$target/docs/personal.md"
   assert_symlink "$target/docs/coordination-backend.md"

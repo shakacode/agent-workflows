@@ -4,11 +4,25 @@
 require "json"
 require "optparse"
 require "pathname"
+require "yaml"
 
 module CodexPluginManifestCheck
   MANIFEST_RELATIVE_PATH = ".codex-plugin/plugin.json"
-  EXPECTED_NAME = "agent-workflows"
+  CODEX_MARKETPLACE_RELATIVE_PATH = ".agents/plugins/marketplace.json"
+  CLAUDE_MANIFEST_RELATIVE_PATH = ".claude-plugin/plugin.json"
+  CLAUDE_MARKETPLACE_RELATIVE_PATH = ".claude-plugin/marketplace.json"
+  EXPECTED_NAME = "scw"
+  EXPECTED_MARKETPLACE_NAME = "agent-workflows"
   EXPECTED_REPOSITORY = "https://github.com/shakacode/agent-workflows"
+  EXPECTED_CODEX_PLUGIN_SOURCE = {
+    "source" => "url",
+    "url" => "#{EXPECTED_REPOSITORY}.git"
+  }.freeze
+  EXPECTED_CODEX_PLUGIN_POLICY = {
+    "installation" => "AVAILABLE",
+    "authentication" => "ON_USE"
+  }.freeze
+  EXPECTED_CODEX_PLUGIN_CATEGORY = "Developer Tools"
   EXPECTED_SKILLS_PATH = "skills"
   EXPECTED_SKILLS_MANIFEST_PATH = "./#{EXPECTED_SKILLS_PATH}/".freeze
   REQUIRED_INTERFACE_FIELDS = %w[
@@ -41,10 +55,10 @@ module CodexPluginManifestCheck
     errors = validate(root)
 
     if errors.empty?
-      puts "PASS Codex plugin manifest"
+      puts "PASS native plugin manifests: #{skill_names(File.join(root, EXPECTED_SKILLS_PATH)).length} skills under #{EXPECTED_NAME}"
       0
     else
-      warn "FAIL Codex plugin manifest"
+      warn "FAIL native plugin manifests"
       errors.each { |error| warn "- #{error}" }
       1
     end
@@ -63,32 +77,106 @@ module CodexPluginManifestCheck
 
   def validate(root)
     errors = []
-    manifest = load_manifest(root, errors)
-    return errors unless manifest
+    codex_manifest = load_manifest(root, errors)
+    codex_marketplace = load_manifest(root, errors, CODEX_MARKETPLACE_RELATIVE_PATH)
+    claude_manifest = load_manifest(root, errors, CLAUDE_MANIFEST_RELATIVE_PATH)
+    marketplace = load_manifest(root, errors, CLAUDE_MARKETPLACE_RELATIVE_PATH)
 
-    validate_manifest_metadata(root, manifest, errors)
-    validate_skills_path(root, manifest, errors)
-    validate_interface(manifest, errors)
-    validate_no_consumer_policy(manifest, errors)
+    if codex_manifest
+      validate_manifest_metadata(root, codex_manifest, errors)
+      validate_skills_path(root, codex_manifest, errors)
+      validate_interface(codex_manifest, errors)
+      validate_no_consumer_policy(codex_manifest, errors)
+    end
+    if codex_marketplace
+      validate_codex_marketplace(codex_marketplace, errors)
+      validate_no_consumer_policy(codex_marketplace, errors)
+    end
+    validate_manifest_metadata(root, claude_manifest, errors) if claude_manifest
+    validate_skills_path(root, claude_manifest, errors) if claude_manifest
+    validate_no_consumer_policy(claude_manifest, errors) if claude_manifest
+    if marketplace
+      validate_marketplace(marketplace, errors)
+      validate_no_consumer_policy(marketplace, errors)
+    end
+    validate_semantic_skill_names(root, errors)
     errors
   end
 
-  def load_manifest(root, errors)
-    path = File.join(root, MANIFEST_RELATIVE_PATH)
+  def validate_semantic_skill_names(root, errors)
+    skills_root = File.join(root, EXPECTED_SKILLS_PATH)
+    skill_names(skills_root).each do |name|
+      path = File.join(skills_root, name, "SKILL.md")
+      next unless File.file?(path)
+
+      text = File.read(path, encoding: "UTF-8")
+      frontmatter_text = text[/\A---\n(.*?)\n---(?:\n|\z)/m, 1]
+      unless frontmatter_text
+        errors << "skill #{name.inspect} is missing YAML frontmatter"
+        next
+      end
+
+      frontmatter = YAML.safe_load(frontmatter_text, aliases: false) || {}
+      errors << "skill #{name.inspect} frontmatter name must be #{name.inspect}" unless frontmatter["name"] == name
+    rescue Psych::SyntaxError => e
+      errors << "skill #{name.inspect} has invalid YAML frontmatter: #{e.message}"
+    end
+  end
+
+  def validate_codex_marketplace(marketplace, errors)
+    unless marketplace["name"] == EXPECTED_MARKETPLACE_NAME
+      errors << "Codex marketplace name must be #{EXPECTED_MARKETPLACE_NAME.inspect}"
+    end
+
+    plugins = marketplace["plugins"]
+    unless plugins.is_a?(Array) && plugins.length == 1 && plugins.first.is_a?(Hash)
+      errors << "Codex marketplace plugins must contain exactly one plugin object"
+      return
+    end
+
+    plugin = plugins.first
+    errors << "Codex marketplace plugin name must be #{EXPECTED_NAME.inspect}" unless plugin["name"] == EXPECTED_NAME
+    unless plugin["source"] == EXPECTED_CODEX_PLUGIN_SOURCE
+      errors << "Codex marketplace plugin source must use the repository URL"
+    end
+    unless plugin["policy"] == EXPECTED_CODEX_PLUGIN_POLICY
+      errors << "Codex marketplace plugin policy must use AVAILABLE/ON_USE"
+    end
+    return if plugin["category"] == EXPECTED_CODEX_PLUGIN_CATEGORY
+
+    errors << "Codex marketplace plugin category must be #{EXPECTED_CODEX_PLUGIN_CATEGORY.inspect}"
+  end
+
+  def validate_marketplace(marketplace, errors)
+    errors << "marketplace name must be #{EXPECTED_MARKETPLACE_NAME.inspect}" unless marketplace["name"] == EXPECTED_MARKETPLACE_NAME
+
+    plugins = marketplace["plugins"]
+    unless plugins.is_a?(Array) && plugins.length == 1 && plugins.first.is_a?(Hash)
+      errors << "marketplace plugins must contain exactly one plugin object"
+      return
+    end
+
+    plugin = plugins.first
+    errors << "marketplace plugin name must be #{EXPECTED_NAME.inspect}" unless plugin["name"] == EXPECTED_NAME
+    errors << 'marketplace plugin source must be "./"' unless plugin["source"] == "./"
+  end
+
+  def load_manifest(root, errors, relative_path = MANIFEST_RELATIVE_PATH)
+    path = File.join(root, relative_path)
     unless File.file?(path)
-      errors << "missing #{MANIFEST_RELATIVE_PATH}"
+      errors << "missing #{relative_path}"
       return nil
     end
 
     payload = JSON.parse(File.read(path, encoding: "UTF-8"))
     unless payload.is_a?(Hash)
-      errors << "#{MANIFEST_RELATIVE_PATH} must contain a JSON object"
+      errors << "#{relative_path} must contain a JSON object"
       return nil
     end
 
     payload
   rescue JSON::ParserError => e
-    errors << "#{MANIFEST_RELATIVE_PATH} must be valid JSON: #{e.message}"
+    errors << "#{relative_path} must be valid JSON: #{e.message}"
     nil
   end
 

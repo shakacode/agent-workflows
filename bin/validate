@@ -43,7 +43,7 @@ else
 end
 RUBY
 
-echo "== Codex plugin manifest =="
+echo "== native plugin manifests =="
 ruby bin/codex-plugin-manifest-check
 
 echo "== OpenAI picker metadata =="

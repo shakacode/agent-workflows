@@ -36,13 +36,20 @@ adapter maps those verbs to the current host's mechanisms at runtime.
 | Shared skill location | `${CODEX_HOME:-$HOME/.codex}/skills` | `${CLAUDE_HOME:-$HOME/.claude}/skills` |
 | Shared workflow location | `${CODEX_HOME:-$HOME/.codex}/workflows` | `${CLAUDE_HOME:-$HOME/.claude}/workflows` |
 | Shared helper location | `${CODEX_HOME:-$HOME/.codex}/bin` | `${CLAUDE_HOME:-$HOME/.claude}/bin` |
-| Optional metadata | `skills/*/agents/openai.yaml` and Codex plugin manifests | Claude Code project or slash-command metadata when available |
+| Optional metadata | `skills/*/agents/openai.yaml`, `.agents/plugins/marketplace.json`, and `.codex-plugin/plugin.json` (`scw`) | `.claude-plugin/plugin.json` plus marketplace metadata (`scw`) |
 | Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check |
 | Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source |
 
 If a host cannot load installed shared skills, use a repo-pinned `.agents/`
 copy as the fallback. Repo-local copies may carry pinned compatibility changes,
 so resolve them before the installed home.
+
+Native plugins add a host namespace without changing the portable skill name:
+Codex uses the plugin-qualified `scw:<skill>` surface and Claude Code uses
+`/scw:<skill>`. The Host Installer Path remains flat and unqualified. Do not
+enable native and flat copies of the same pack in one isolated profile unless
+the host has an explicit collision policy; plugin migration must fail closed on
+that shadow surface.
 
 ## Runtime Host Detection
 

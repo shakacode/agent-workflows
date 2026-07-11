@@ -50,7 +50,9 @@ default.
 
 | Path | Purpose |
 | --- | --- |
-| `.codex-plugin/plugin.json` | Codex native plugin manifest for consuming this source pack through Codex plugin metadata. |
+| `.agents/plugins/marketplace.json` | Codex marketplace catalog that publishes the root plugin as `scw`. |
+| `.codex-plugin/plugin.json` | Codex native plugin manifest for the `scw` plugin namespace. |
+| `.claude-plugin/` | Claude Code `scw` plugin manifest and `agent-workflows` marketplace catalog. |
 | `skills/` | Agent skill folders. Copy or symlink these under a Codex or Claude skill root. |
 | `workflows/` | Longer workflow prompts and shared operating models referenced by skills. |
 | `bin/` | Install, status, upgrade, validation, and maintainer sync helpers. |
@@ -119,18 +121,41 @@ See [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 host selection, status states, upgrades, rollback behavior, and Codex/Claude
 notes.
 
-### Codex Native Plugin Path
+### Native Plugin Paths
 
-Codex can also consume this source pack through native plugin metadata. The
-manifest at `.codex-plugin/plugin.json` is Codex-only and points at the existing
-`./skills/` tree; it does not copy helper binaries, write
+Codex and Claude Code can also consume this source pack through native plugin
+metadata. Both native paths publish the semantic skills under the short `scw`
+plugin namespace without renaming anything under `skills/`. For example, Claude
+Code exposes `skills/verify/SKILL.md` as `/scw:verify`.
+
+Add and install the Claude Code marketplace plugin with:
+
+```text
+/plugin marketplace add shakacode/agent-workflows
+/plugin install scw@agent-workflows
+```
+
+Add and install the Codex marketplace plugin with:
+
+```bash
+codex plugin marketplace add shakacode/agent-workflows
+codex plugin add scw@agent-workflows
+```
+
+The manifests point at the existing `./skills/` tree; native installation does
+not copy helper binaries, write
 `.agent-workflows-install.json`, or replace the installer-managed status and
 upgrade flow.
 
-Use the Codex native plugin path when a Codex marketplace or plugin source
-points at this cloned or released source pack. Use the host installer path for
-Claude Code and for Codex installs that need helper binaries or
-status/upgrade behavior.
+The Codex plugin identifier changed from `agent-workflows` to `scw`. Existing
+Codex native-plugin users must remove the old `agent-workflows` entry, refresh
+the marketplace, and reinstall it as `scw`; keeping both would
+create two names for the same skill tree. The repository, source pack, helper
+commands, marketplace name, and install metadata remain `agent-workflows`.
+
+Use a native plugin path for a host-qualified skill surface. Keep using the host
+installer path for either host when you need helper binaries, copy/symlink mode,
+install metadata, or `agent-workflows-status` / `upgrade-agent-workflows`.
 
 ## Consumer Repo Adoption
 
@@ -304,7 +329,7 @@ bin/validate
 
 The gate checks skill frontmatter, helper script tests, prompt-size invariants,
 and the seam doctor against a fixture consumer repo while scanning this shared
-repo as an installed pack. Validate the Codex native plugin surface directly
+repo as an installed pack. Validate both native plugin surfaces directly
 with:
 
 ```bash
