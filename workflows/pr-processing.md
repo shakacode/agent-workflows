@@ -1607,7 +1607,15 @@ asking GitHub reviewers or CI to spend another cycle.
 4. Verify every Codex or Claude finding against the real code before acting. Accept only concrete
    blockers or clear simplifications that preserve behavior; reject speculative rewrites, broad
    refactors, and style churn.
-5. For those high-risk cases, run `/simplify` after all required review passes for that case are
+5. Before accepting a finding that adds a grammar, protocol, or schema category, or when a second
+   review wave broadens the mechanism, stop patching and make a scope decision. Map the proposed
+   change to an original acceptance criterion or direct safety property, then compare an
+   authoritative source of truth, maintained dependency, bounded guard, and checklist-plus-replay
+   alternative. Record the triaged decision. An agent may defer or decline the proposed mechanism
+   only when another option preserves the criterion or safety property; waiving a verified blocker
+   or safety property requires explicit maintainer evidence. A bot severity label alone does not
+   authorize scope expansion.
+6. For those high-risk cases, run `/simplify` after all required review passes for that case are
    clean, including Claude Code review when required, and before the final push or readiness report.
    Resolve the base branch from `.agents/agent-workflow.yml` or the PR metadata before choosing the
    target. Prefer `claude -p '/simplify origin/<base>' --model <default-simplify-model> --max-budget-usd 20`,
@@ -1621,12 +1629,12 @@ asking GitHub reviewers or CI to spend another cycle.
    churn, and changes outside the PR's target scope. Record unavailable,
    timed-out, over-budget, unsupported-model, or bad-target runs as skipped with
    exact evidence.
-6. After accepting any review or `/simplify` change, rerun the targeted validation for the changed
+7. After accepting any review or `/simplify` change, rerun the targeted validation for the changed
    surface and rerun the relevant review gate before pushing, continuing until there are no
    accepted/actionable findings.
-7. In PR evidence/churn notes, record the primary review gate, Claude review pass if run or
-   skipped, `/simplify` outcome, and any automated review findings waived, deferred, or classified
-   as noise.
+8. In PR evidence/churn notes, record the primary review gate, Claude review pass if run or
+   skipped, any scope-decision outcome, `/simplify` outcome, and automated review findings waived,
+   deferred, or classified as noise.
 
 For small focused PRs, avoid multiple public inline-review bots. If both Codex and Claude are used
 locally, keep at least one pass local/report-only unless the user explicitly asks for public review.
@@ -1851,6 +1859,12 @@ spend). Converge deliberately:
   push restarts it. Never resolve a confirmed blocker by reply alone.
 - When the same class of finding recurs across rounds at different code sites, stop patching per-site
   and apply one root-cause fix — recurrence across entry points is the signal to centralize.
+- Stop expanding the mechanism and make the scope decision from the Pre-Push AI Review And Simplify
+  Gate when an accepted finding adds a grammar, protocol, or schema category, or when a second review
+  wave broadens the mechanism. Map the change to the original acceptance criteria or a direct safety
+  property; compare an authoritative source of truth, maintained dependency, bounded guard, and
+  checklist-plus-replay. A bot severity label alone is not scope authority: triage and record the
+  decision before proceeding.
 - Terminating state: authoritative/local review clean + the CI-readiness verdict is `READY`
   (from the resolved `pr-ci-readiness` helper — required checks, falling back to the full
   current-head check list when no required checks are configured; an empty list is `UNKNOWN`/not
