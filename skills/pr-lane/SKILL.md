@@ -36,6 +36,10 @@ path component into `TARGET_NUMBER` before using checkout metadata. Export
 call. Derive a deterministic host-qualified `COORD_REPO` for private
 coordination so repositories with the same `OWNER/REPO` on different hosts do
 not share a claim key. Preserve the full PR URL in coordination metadata too.
+Retain that authoritative URL as `PR_URL` for every later PR-specific skill
+handoff. For a numeric PR input, resolve and verify the base PR context first,
+then set `PR_BASE_REPO`, `PR_URL`, `TARGET_HOST`, and `TARGET_SCHEME`; never
+default a PR's base repository from a possibly forked checkout.
 Do not replace the URL-derived host or
 repository with `gh repo view` output; a checkout may resolve to an upstream or
 otherwise related repository. When no full URL is visible, infer the host and
@@ -73,10 +77,18 @@ case "${TARGET_SCHEME}:${TARGET_HOST}" in
   http:*:80) TARGET_HOST="${TARGET_HOST%:80}" ;;
 esac
 export GH_HOST="${TARGET_HOST}"
-REPO="${REPO:-${CHECKOUT_REPO}}"
 case "${TARGET_KIND:-}" in
-  issue|pr) : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}" ;;
-  adhoc) ;;
+  pr)
+    : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
+    REPO="${REPO:-${PR_BASE_REPO:-}}"
+    : "${REPO:?Set REPO or PR_BASE_REPO from verified base PR context}"
+    : "${PR_URL:?Set PR_URL from verified base PR context}"
+    ;;
+  issue)
+    : "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"
+    REPO="${REPO:-${CHECKOUT_REPO}}"
+    ;;
+  adhoc) REPO="${REPO:-${CHECKOUT_REPO}}" ;;
   *) echo "Refusing to continue: set TARGET_KIND to issue, pr, or adhoc." >&2; exit 1 ;;
 esac
 COORD_REPO="github-host/$(ruby -rdigest -e 'print Digest::SHA256.hexdigest(ARGV.fetch(0))[0,32]' "${TARGET_HOST}/${REPO}")"
@@ -318,6 +330,9 @@ single-lane shortcuts are:
    visible; otherwise default to `none`.
    Valid values are `none`, `ask`, and `auto_merge_when_gates_pass`.
 6. Use `verify`, `pr-monitoring`, and `address-review` when those skills apply.
+   Invoke PR-specific skills with the authoritative full `PR_URL`, not a bare
+   number, and preserve `GH_HOST=${TARGET_HOST}` and the verified base `REPO`
+   when implementation is running from a fork-head checkout.
    In a direct-prompt lane that authorizes updating the PR and sets
    `merge_authority: auto_merge_when_gates_pass`, use `address-review` to
    classify feedback, then select the `f` action without presenting the

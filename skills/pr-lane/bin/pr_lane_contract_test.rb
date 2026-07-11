@@ -20,6 +20,8 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @normalized_skill, "scheme into `TARGET_SCHEME`"
     assert_includes @normalized_skill, "Do not replace the URL-derived host or repository with `gh repo view` output"
     assert_includes @normalized_skill, "final numeric path component into `TARGET_NUMBER`"
+    assert_includes @normalized_skill, "Retain that authoritative URL as `PR_URL`"
+    assert_includes @normalized_skill, "never default a PR's base repository from a possibly forked checkout"
     assert_includes @skill, 'export GH_HOST="${TARGET_HOST}"'
     assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_URL#*://}"'
     assert_includes @skill, 'CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"'
@@ -29,7 +31,8 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @skill, 'COORD_REPO="github-host/$(ruby -rdigest'
     assert_includes @skill, 'CHECKOUT_URL="$(env -u GH_HOST gh repo view --json url -q .url)"'
     assert_includes @skill, 'CHECKOUT_REPO="$(env -u GH_HOST gh repo view --json nameWithOwner -q .nameWithOwner)"'
-    assert_includes @skill, 'REPO="${REPO:-${CHECKOUT_REPO}}"'
+    assert_includes @skill, 'REPO="${REPO:-${PR_BASE_REPO:-}}"'
+    assert_includes @skill, ': "${PR_URL:?Set PR_URL from verified base PR context}"'
     assert_includes @skill, "if ! git rev-parse --show-toplevel >/dev/null 2>&1; then"
     assert_operator @skill.index("git rev-parse --show-toplevel"), :<, @skill.index('REPO="${REPO:-')
     assert_includes @skill, ': "${TARGET_NUMBER:?TARGET_NUMBER must be set before preflight}"'
@@ -41,6 +44,7 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @normalized_skill, "then return to or create the verified fork-head checkout"
     assert_includes @normalized_skill, "`COORD_REPO` is a coordination identity only"
     assert_includes @normalized_skill, "Public fallback uses the real `GH_HOST`, `REPO`, and target surface"
+    assert_includes @normalized_skill, "Invoke PR-specific skills with the authoritative full `PR_URL`"
     assert_includes @skill, "github_host: <target-host>"
     assert_includes @skill,
                     'pr-security-preflight" --repo "${REPO}" "${TARGET_NUMBER}"'
