@@ -1114,6 +1114,85 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_rejects_a_shell_comment_in_place_of_the_dollar_zero_placeholder
+    command = 'bash -c \'exec bin/validate "$@"\' # not a placeholder'
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_rejects_shell_boundaries_in_place_of_the_dollar_zero_placeholder
+    [
+      "# comment",
+      "< input",
+      "<input",
+      "> output",
+      ">output",
+      "2> output",
+      "2>output",
+      "{fd}>output",
+      "&& true",
+      "|| true",
+      "; true",
+      "& true",
+      "| true",
+      "( true",
+      ")"
+    ].each do |boundary|
+      command = %(bash -c 'exec bin/validate "$@"' #{boundary})
+
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, boundary) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_rejects_shell_boundaries_attached_to_the_command_string
+    ["; true", "&& true", "|| true", "& true", "| true", "< input", "> output", "2> output"].each do |suffix|
+      command = %(bash -c 'exec bin/validate "$@"'#{suffix})
+
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, suffix) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_allows_shell_words_as_dollar_zero_placeholders
+    ["_", "'#'", "\\#", "'<input'", "\\>output", "'&&'"].each do |placeholder|
+      command = %(bash -c 'exec bin/validate "$@"' #{placeholder} "$@")
+
+      assert_equal %(exec #{command}), AgentWorkflowSeamDoctor.init_command_line(command), placeholder
+    end
+  end
+
+  def test_init_preserves_runtime_arguments_with_an_explicit_placeholder_before_a_comment
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/usr/bin/env bash\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      command = 'bash -c \'exec bin/validate "$@"\' _ "$@" # caller owns forwarding'
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+      assert status.success?, out
+
+      validate_out, validate_status = Open3.capture2e(
+        File.join(root, ".agents/bin/validate"), "first argument", "; touch should-not-run"
+      )
+      assert validate_status.success?, validate_out
+      assert_equal "<first argument>\n<; touch should-not-run>\n", validate_out
+    end
+  end
+
   def test_init_allows_literal_forwarding_text_in_an_inner_shell_payload
     Dir.mktmpdir("agent-workflow-seam-init") do |root|
       command = 'bash -c \'echo \\$@\''
@@ -1276,6 +1355,42 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_rejects_forwarding_exposed_by_ansi_c_nul_truncation
+    command = <<~'COMMAND'.chomp
+      bash -c $'exec bin/validate \0\\''$@'
+    COMMAND
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
+  def test_init_rejects_forwarding_in_fragments_concatenated_after_encoded_ansi_c_nuls
+    [
+      %q(bash -c $'exec bin/validate \000\047''"$@"'),
+      %q(bash -c $'exec bin/validate \x00\047''"$@"'),
+      %q(bash -c $'exec bin/validate \u0000\047''"$@"'),
+      %q(bash -c $'exec bin/validate \U00000000\047''"$@"')
+    ].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_rejects_forwarding_exposed_by_wrapped_octal_nul_truncation
+    command = <<~'COMMAND'.chomp
+      bash -c $'exec bin/validate \400\047''"$@"'
+    COMMAND
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line(command)
+    end
+    assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+  end
+
   def test_init_requires_placeholder_for_octal_forwarding_in_an_ansi_c_quoted_shell_payload
     [
       %q(bash -c $'exec bin/validate "\044\100"'),
@@ -1302,12 +1417,44 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     [
       %q(bash -c $'exec bin/validate "\u0024\u0040"'),
       %q(bash -c $'exec bin/validate "\U00000024\U00000040"'),
-      %q(bash -c $'exec bin/validate "\u0000\u0024\u0040"')
+      %q(bash -c $'exec bin/validate "\u0024\u0040\u0000"')
     ].each do |command|
       error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
         AgentWorkflowSeamDoctor.init_command_line(command)
       end
       assert_includes error.message, "bash -c forwarding requires an explicit $0 placeholder"
+    end
+  end
+
+  def test_init_ignores_forwarding_bytes_after_a_nul_in_the_same_ansi_c_segment
+    command = %q(bash -c $'printf safe\u0000\u0024\u0040')
+
+    assert_equal %(exec #{command} "$@"), AgentWorkflowSeamDoctor.init_command_line(command)
+  end
+
+  def test_init_preserves_runtime_arguments_after_ansi_c_nul_truncation_with_a_placeholder
+    Dir.mktmpdir("agent-workflow-seam-init") do |root|
+      FileUtils.mkdir_p(File.join(root, "bin"))
+      validate_path = File.join(root, "bin/validate")
+      File.write(validate_path, "#!/usr/bin/env bash\nprintf '<%s>\\n' \"$@\"\n")
+      File.chmod(0o755, validate_path)
+      command = <<~'COMMAND'.chomp
+        bash -c $'exec bin/validate \x00\047''"$@"' _ "$@"
+      COMMAND
+
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", command,
+        "--test-command", "true"
+      )
+      assert status.success?, out
+
+      validate_out, validate_status = Open3.capture2e(
+        File.join(root, ".agents/bin/validate"), "first argument", "; touch should-not-run"
+      )
+      assert validate_status.success?, validate_out
+      assert_equal "<first argument>\n<; touch should-not-run>\n", validate_out
     end
   end
 

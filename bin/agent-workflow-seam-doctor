@@ -432,13 +432,47 @@ module AgentWorkflowSeamDoctor
     forwarding = outer_argument_forwarding?(command_value)
     return nil unless forwarding
 
+    command_boundary = unquoted_shell_boundary?(raw_command.to_s)
     placeholder = tokens[command_string_index + 1]
-    if placeholder.nil? || outer_argument_forwarding?(placeholder.fetch(:raw))
+    if command_boundary || placeholder.nil? || !shell_c_placeholder_word?(placeholder.fetch(:raw)) ||
+       outer_argument_forwarding?(placeholder.fetch(:raw))
       "#{shell} -c forwarding requires an explicit $0 placeholder after the command string; " \
         "add _ before forwarded wrapper arguments"
     end
   rescue ArgumentError
     nil
+  end
+
+  def unquoted_shell_boundary?(raw)
+    quote = nil
+    escaped = false
+
+    raw.each_char do |character|
+      if escaped
+        escaped = false
+      elsif quote
+        if quote == '"' && character == "\\"
+          escaped = true
+        elsif character == quote
+          quote = nil
+        end
+      elsif character == "\\"
+        escaped = true
+      elsif ["'", '"'].include?(character)
+        quote = character
+      elsif character.match?(/[|&;()<>]/)
+        return true
+      end
+    end
+
+    false
+  end
+
+  def shell_c_placeholder_word?(raw)
+    return false if raw.empty? || raw.match?(/\A[#|&;()<>]/)
+    return false if raw.match?(/\A(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})[<>]/)
+
+    true
   end
 
   def ansi_c_decoded_shell_word(raw)
@@ -484,12 +518,13 @@ module AgentWorkflowSeamDoctor
 
   def decode_ansi_c_segment(raw, index)
     decoded = +""
+    truncated = false
     while index < raw.length
       character = raw[index]
       return [decoded, index] if character == "'"
 
       unless character == "\\"
-        decoded << character
+        decoded << character unless truncated
         index += 1
         next
       end
@@ -501,14 +536,16 @@ module AgentWorkflowSeamDoctor
       if escape.match?(/[0-7]/)
         digits = raw[index, 3].to_s[/\A[0-7]{1,3}/]
         value = digits.to_i(8)
-        decoded << ansi_c_byte_for_syntax(value)
+        truncated = true if (value & 0xff).zero?
+        decoded << ansi_c_byte_for_syntax(value) unless truncated
         index += digits.length
       elsif escape == "x"
         digits = raw[index + 1, 2].to_s[/\A[0-9A-Fa-f]{1,2}/]
         raise AnsiCDecodeError, "hex escape requires at least one digit" unless digits
 
         value = digits.to_i(16)
-        decoded << ansi_c_byte_for_syntax(value)
+        truncated = true if (value & 0xff).zero?
+        decoded << ansi_c_byte_for_syntax(value) unless truncated
         index += digits.length + 1
       elsif %w[u U].include?(escape)
         limit = escape == "u" ? 4 : 8
@@ -520,16 +557,17 @@ module AgentWorkflowSeamDoctor
           raise AnsiCDecodeError, "Unicode escape is not a scalar value"
         end
 
-        decoded << value.chr(Encoding::UTF_8) unless value.zero?
+        truncated = true if value.zero?
+        decoded << value.chr(Encoding::UTF_8) unless truncated
         index += digits.length + 1
       elsif (value = {
         "a" => "\a", "b" => "\b", "e" => "\e", "E" => "\e", "f" => "\f", "n" => "\n",
         "r" => "\r", "t" => "\t", "v" => "\v", '"' => '"', "?" => "?"
       }[escape])
-        decoded << value
+        decoded << value unless truncated
         index += 1
-      elsif escape == "\\" || escape == "'"
-        decoded << escape
+      elsif ["\\", "'"].include?(escape)
+        decoded << escape unless truncated
         index += 1
       else
         raise AnsiCDecodeError, "unsupported escape \\#{escape}"
@@ -711,7 +749,7 @@ module AgentWorkflowSeamDoctor
   def npm_run_script_operand_index(words, command_index)
     index = command_index + 1
     while (word = words[index])
-      return index unless word.start_with?('-') && word != '-'
+      return index unless word.start_with?("-") && word != "-"
 
       metadata = npm_option_metadata(word)
       return nil unless metadata
