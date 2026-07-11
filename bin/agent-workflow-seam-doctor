@@ -197,10 +197,11 @@ module AgentWorkflowSeamDoctor
       "validate" => validate_command || detected_commands&.[]("validate"),
       "test" => test_command || detected_commands&.[]("test")
     }
+    run_lines = commands.to_h { |name, command| [name, init_script_run_line(name, command)] }
 
     FileUtils.mkdir_p(File.join(root, COMMANDS_DIR))
-    scripts_changed = commands.map do |name, command|
-      write_init_script(root, name, command, replace_managed: explicit_commands)
+    scripts_changed = commands.map do |name, _command|
+      write_init_script(root, name, run_lines.fetch(name), replace_managed: explicit_commands)
     end.any?
     write_init_readme(root, commands, explicit_commands:, scripts_changed:)
     write_init_mapping(policy_update)
@@ -308,7 +309,17 @@ module AgentWorkflowSeamDoctor
           "edit those wrappers directly or rerun --init without explicit commands"
   end
 
-  def write_init_script(root, name, command, replace_managed:)
+  def init_script_run_line(name, command)
+    return init_command_line(command) if command
+
+    <<~FAIL.chomp
+      #{INIT_PLACEHOLDER_MARKER}
+      echo "Configure .agents/bin/#{name}, then rerun agent-workflow-seam-doctor." >&2
+      exit 1
+    FAIL
+  end
+
+  def write_init_script(root, name, run_line, replace_managed:)
     path = File.join(root, COMMANDS_DIR, name)
     if File.file?(path) && !replace_managed
       issues = script_issues(root, name)
@@ -322,15 +333,6 @@ module AgentWorkflowSeamDoctor
     end
     return false if File.file?(path) && !init_managed_file?(path)
 
-    run_line = if command
-                 init_command_line(command)
-               else
-                 <<~FAIL.chomp
-                   #{INIT_PLACEHOLDER_MARKER}
-                   echo "Configure .agents/bin/#{name}, then rerun agent-workflow-seam-doctor." >&2
-                   exit 1
-                 FAIL
-               end
     content = <<~BASH
       #!/usr/bin/env bash
       #{INIT_SCRIPT_MARKER}
@@ -349,12 +351,14 @@ module AgentWorkflowSeamDoctor
     if assignment_only_command?(command)
       raise InitError, "assignment-only commands cannot safely forward wrapper arguments; add an executable command"
     end
-    if active_outer_command_substitution?(command)
+
+    comment_index = shell_comment_index(command)
+    executable_command = comment_index ? command[...comment_index] : command
+    if active_outer_command_substitution?(executable_command)
       raise InitError, "cannot safely initialize command with active outer command substitution; " \
                        "remove it or single-quote literal command-substitution text"
     end
 
-    comment_index = shell_comment_index(command)
     if comment_index && command[comment_index..].match?(/\$(?:@|\{@\})/) &&
        !outer_argument_forwarding?(command[...comment_index])
       raise InitError, "argument-forwarding text inside a shell comment is ambiguous; remove the comment or " \
@@ -845,13 +849,23 @@ module AgentWorkflowSeamDoctor
         quote = nil if character == quote
         next
       end
+      if quote == '"'
+        if character == "\\"
+          escaped = true
+        elsif character == quote
+          quote = nil
+        elsif character == "`" || (character == "$" && characters[index + 1] == "(")
+          return true
+        end
+        next
+      end
 
       if character == "\\"
         escaped = true
       elsif character == "'"
         quote = character
       elsif character == '"'
-        quote = quote == character ? nil : character
+        quote = character
       elsif character == "`" || (character == "$" && characters[index + 1] == "(")
         return true
       end
@@ -1065,9 +1079,9 @@ module AgentWorkflowSeamDoctor
   end
 
   def strip_command_prefixes!(tokens)
-    tokens.shift if tokens.first&.fetch(:value) == "exec"
+    discard_exec_prefix!(tokens)
     tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
-    tokens.shift if tokens.first&.fetch(:value) == "exec"
+    discard_exec_prefix!(tokens)
     command = tokens.first&.fetch(:value, "").to_s
     if command == "env" || (command.start_with?("/") && File.basename(command) == "env")
       tokens.shift
@@ -1076,6 +1090,29 @@ module AgentWorkflowSeamDoctor
       tokens.shift while tokens.first&.fetch(:value)&.match?(/\A[A-Za-z_][A-Za-z0-9_]*=/)
     end
     true
+  end
+
+  def discard_exec_prefix!(tokens)
+    return unless tokens.first&.fetch(:value) == "exec"
+
+    tokens.shift
+    while (option = tokens.first&.fetch(:value))&.start_with?("-")
+      tokens.shift
+      break if option == "--"
+
+      if option == "-a"
+        exec_name = tokens.shift
+        raise_exec_prefix_error unless exec_name
+      elsif !option.match?(/\A-[cl]+\z/)
+        raise_exec_prefix_error
+      end
+    end
+    raise_exec_prefix_error if tokens.empty?
+  end
+
+  def raise_exec_prefix_error
+    raise InitError, "cannot safely parse exec command prefix; use exec [-cl] [-a name] [--] " \
+                     "followed by a command"
   end
 
   def npm_argument_separator?(npm_command)

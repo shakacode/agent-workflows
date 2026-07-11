@@ -1418,6 +1418,66 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
     end
   end
 
+  def test_init_rejects_substitution_after_an_apostrophe_inside_double_quotes
+    accepted = []
+
+    %w[dollar backtick].each do |form|
+      Dir.mktmpdir("agent-workflow-seam-init-substitution") do |root|
+        marker = File.join(root, "executed")
+        trigger = File.join(root, "trigger")
+        File.write(trigger, "#!/bin/sh\ntouch #{Shellwords.escape(marker)}\n")
+        File.chmod(0o755, trigger)
+        substitution = form == "dollar" ? "$(#{trigger})" : "`#{trigger}`"
+        command = %(printf "%s\\n" "it's #{substitution}")
+
+        out, status = run_doctor(
+          root,
+          "--init",
+          "--validate-command", command,
+          "--test-command", "true"
+        )
+        if status.success?
+          runtime_out, runtime_status = Open3.capture2e(File.join(root, ".agents/bin/validate"))
+          accepted << "#{form}:runtime=#{runtime_status.success?}:marker=#{File.exist?(marker)}:#{runtime_out}"
+        else
+          assert_includes out, "active outer command substitution"
+          refute_includes out, trigger
+          refute File.exist?(marker)
+        end
+      end
+    end
+
+    assert_empty accepted, accepted.join("; ")
+  end
+
+  def test_init_validates_all_commands_before_writing_any_wrapper
+    Dir.mktmpdir("agent-workflow-seam-init-transaction") do |root|
+      out, status = run_doctor(
+        root,
+        "--init",
+        "--validate-command", "true",
+        "--test-command", 'printf "$(true)"'
+      )
+
+      refute status.success?
+      assert_includes out, "active outer command substitution"
+      refute File.exist?(File.join(root, ".agents/bin/validate"))
+      refute File.exist?(File.join(root, ".agents/bin/test"))
+      refute Dir.exist?(File.join(root, ".agents"))
+    end
+  end
+
+  def test_init_ignores_substitution_text_in_an_inert_shell_comment
+    command = "printf safe # $(docs example)"
+
+    assert_equal command, AgentWorkflowSeamDoctor.init_command_line(command)
+
+    error = assert_raises(AgentWorkflowSeamDoctor::InitError) do
+      AgentWorkflowSeamDoctor.init_command_line("printf safe#$(true)")
+    end
+    assert_includes error.message, "active outer command substitution"
+  end
+
   def test_init_allows_command_substitution_inside_a_single_quoted_shell_payload
     [
       %q(bash -c 'printf "%s\n" "$(printf safe)"' _),
@@ -2989,6 +3049,50 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       refute_includes validate, "exec exec"
       assert_includes test, 'exec npm run test -- "$@"'
       refute_includes test, "exec exec"
+    end
+  end
+
+  def test_init_normalizes_npm_after_option_bearing_exec_prefixes
+    {
+      "exec -a npm npm run validate" => 'exec -a npm npm run validate -- "$@"',
+      "exec -a npm -- npm run validate" => 'exec -a npm -- npm run validate -- "$@"',
+      "CI=1 exec -cl -a npm -- npm run validate" =>
+        'CI=1 exec -cl -a npm -- npm run validate -- "$@"'
+    }.each do |command, expected|
+      assert_equal expected, AgentWorkflowSeamDoctor.init_command_line(command), command
+    end
+  end
+
+  def test_init_fails_closed_for_malformed_option_bearing_exec_prefixes
+    ["exec -a", "exec -a npm", "exec -x npm run validate", "exec -a npm --"].each do |command|
+      error = assert_raises(AgentWorkflowSeamDoctor::InitError, command) do
+        AgentWorkflowSeamDoctor.init_command_line(command)
+      end
+      assert_includes error.message, "cannot safely parse exec command prefix"
+      refute_includes error.message, command
+    end
+  end
+
+  def test_init_preserves_runtime_caller_options_through_an_option_bearing_exec_prefix
+    Dir.mktmpdir("agent-workflow-seam-init-exec-npm") do |root|
+      marker = File.join(root, "args.json")
+      node_program = 'require("fs").writeFileSync(process.env.MARKER, JSON.stringify(process.argv.slice(1)))'
+      File.write(
+        File.join(root, "package.json"),
+        JSON.generate(
+          "name" => "exec-prefix-runtime",
+          "version" => "1.0.0",
+          "scripts" => { "capture" => "node -e #{Shellwords.escape(node_program)} --" }
+        )
+      )
+      command = AgentWorkflowSeamDoctor.init_command_line("exec -a npm -- npm run capture")
+
+      out, status = Open3.capture2e(
+        { "MARKER" => marker }, "bash", "-c", command, "_", "--caller-option", chdir: root
+      )
+
+      assert status.success?, out
+      assert_equal ["--caller-option"], JSON.parse(File.read(marker))
     end
   end
 
