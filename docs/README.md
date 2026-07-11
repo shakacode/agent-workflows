@@ -40,8 +40,8 @@ These are the most common entry points.
 - **Adoption and installation**: install the shared pack once per Codex or
   Claude host, then validate each consumer repo through its `.agents/bin/`
   wrappers, `.agents/agent-workflow.yml`, and `AGENTS.md` pointer.
-- **Single-lane and batch execution**: route both one-PR work and multi-lane work
-  through `$pr-batch`; `$pr-lane` remains a compatibility alias. Route broad
+- **Single-target and batch execution**: route both one-PR work and multi-lane work
+  through `$pr-batch`. Route broad
   issue/PR work through triage, planning, security preflight, lane ownership,
   and final handoff rules.
 - **Review and readiness**: triage review threads, run local verification,

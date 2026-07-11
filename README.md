@@ -231,7 +231,6 @@ This project is available under the MIT License.
 | `plan-review` | Review implementation plans before coding or launching workers. |
 | `post-merge-audit` | Audit merged batch work or release-candidate risk. |
 | `pr-batch` | Run one or more issue, PR, or ad-hoc lanes through the canonical coordinated subagent workflow. |
-| `pr-lane` | Compatibility alias for `pr-batch` single-target mode. |
 | `pr-monitoring` | Monitor opened PRs through checks, comments, conflicts, and handoff. |
 | `qa-stress` | Run destructive QA stress campaigns against repo-owned targets. |
 | `replicate-ci` | Reproduce hosted-CI/local parity gaps. |

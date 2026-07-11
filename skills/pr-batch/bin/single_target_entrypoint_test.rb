@@ -11,7 +11,6 @@ def assert(condition, message)
 end
 
 batch = read_repo_file("skills/pr-batch/SKILL.md")
-lane = read_repo_file("skills/pr-lane/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 workflow = read_repo_file("workflows/pr-processing.md")
 batch_metadata = read_repo_file("skills/pr-batch/agents/openai.yaml")
@@ -30,35 +29,19 @@ assert(batch.include?("for one direct-prompt task, the derived `adhoc:<yyyymmdd>
 assert(batch.include?("direct user instruction, a maintainer-approved exact list"), "the required interview must classify direct-prompt trust")
 assert(batch.include?("when present, otherwise from the `AGENTS.md`"), "canonical base-branch resolution must support inline AGENTS configuration")
 
-assert(lane.include?("backward-compatibility alias"), "pr-lane must identify itself as an alias")
-assert(lane.include?("Immediately load and follow `$pr-batch`"), "pr-lane must route to pr-batch")
-assert(lane.include?("from `PR_BATCH_SKILL_DIR`"), "pr-lane must honor the explicit canonical skill path")
-assert(lane.index("from `PR_BATCH_SKILL_DIR`") < lane.index("Prefer the host's skill invocation"), "pr-lane must prefer an explicit canonical path before host invocation")
-assert(lane.include?("from a sibling of the loaded `pr-lane` directory"), "pr-lane must support single-skill picker loading")
-assert(lane.include?("repo-local `.agents/skills/pr-batch/SKILL.md`"), "pr-lane must support repo-local fallback loading")
-assert(lane.index("repo-local `.agents/skills/pr-batch/SKILL.md`") < lane.index("from a sibling of the loaded `pr-lane` directory"), "pr-lane must prefer pinned canonical policy over the installed sibling")
-assert(lane.include?("${CODEX_HOME:-$HOME/.codex}/skills/pr-batch/SKILL.md"), "pr-lane must support picker-only Codex installs")
-assert(lane.include?("${CLAUDE_HOME:-$HOME/.claude}/skills/pr-batch/SKILL.md"), "pr-lane must support picker-only Claude installs")
-assert(lane.include?("Do not guess between\nhosts"), "pr-lane must not guess an active host")
-assert(lane.include?("both installed host copies exist but active host identity is ambiguous"), "pr-lane must handle ambiguous dual-home installs")
-assert(lane.include?("complete installed shared packs"), "ambiguous dual-home fallback must compare the complete shared packs")
-assert(lane.include?("not only their `pr-batch/SKILL.md` files"), "ambiguous dual-home fallback must include adjacent workflows and helpers")
-assert(lane.include?("byte-identical"), "ambiguous dual-home fallback must require identical shared packs")
-assert(lane.include?("If they differ, stop"), "ambiguous dual-home fallback must reject divergent policy")
-assert(lane.include?("This follows `docs/host-adapter/contract.md`"), "pr-lane must document the cross-file support boundary")
-assert(lane.include?("Do not restore a standalone copy"), "pr-lane must reject policy duplication as a fallback")
-assert(lane.lines.length < 60, "pr-lane must stay a thin compatibility entry point")
-[
-  "Claim Before Branch",
-  "Work Loop",
-  "Coordinator Closeout Lane"
-].each do |heading|
-  assert(!lane.include?("## #{heading}"), "pr-lane must not duplicate #{heading}")
+legacy_skill = %w[pr lane].join("-")
+legacy_display_name = %w[PR Lane].join(" ")
+assert(!File.exist?(File.join(ROOT, "skills", legacy_skill, "SKILL.md")), "the legacy single-lane skill must be removed")
+
+public_paths = ["README.md", "CHANGELOG.md"] +
+               Dir.glob(File.join(ROOT, "{docs,skills,workflows}", "**", "*.md")).map { |path| path.delete_prefix("#{ROOT}/") }
+public_paths.each do |path|
+  text = read_repo_file(path)
+  assert(!text.include?(legacy_skill), "#{path} must not reference the removed legacy skill")
+  assert(!text.include?(legacy_display_name), "#{path} must not reference the removed legacy display name")
 end
 
-assert(guide.include?("`$pr-lane` Compatibility Alias"), "guide must describe pr-lane as an alias")
 assert(guide.include?("one worker subagent"), "guide must document the single-target worker shape")
-assert(!File.exist?(File.join(ROOT, "skills/pr-lane/agents/openai.yaml")), "the compatibility alias must not be promoted in picker metadata")
 assert(batch_metadata.include?("one or more"), "canonical picker metadata must advertise single- and multi-target work")
 assert(batch_metadata.include?("ad-hoc"), "canonical picker metadata must advertise direct ad-hoc tasks")
 
@@ -94,6 +77,5 @@ assert(address_review_workflow.include?("Require HTTPS\n     and an exact match 
 assert(address_review_actions.include?("COORDINATED_AUTOFIX=1"), "address-review actions must document coordinated autofix")
 assert(address_review_actions.include?("locally verified duplicate or factually incorrect review threads"), "address-review actions must keep autonomous skipped-thread resolution narrow")
 assert(address_review_actions.include?("clean current-head review signal independent of this coordinated run"), "address-review actions must require independent review before merge")
-assert(!lane.include?("COORDINATED_AUTOFIX"), "pr-lane alias must not duplicate coordinated closeout policy")
 
 puts "PASS pr-batch single-target entry point contract"
