@@ -3310,12 +3310,21 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       "npm run validate --ignore-scripts false" =>
         'exec npm run validate --ignore-scripts false -- "$@"',
       "npm run validate -g false" => 'exec npm run validate -g false -- "$@"',
+      "npm run validate -n false" => 'exec npm run validate -n false -- "$@"',
+      "npm run validate --ws false" => 'exec npm run validate --ws false -- "$@"',
+      "npm run validate --browser firefox" => 'exec npm run validate --browser firefox -- "$@"',
       "npm run validate --audit" => 'exec npm run validate --audit -- "$@"',
       "npm run validate --audit --color always" =>
         'exec npm run validate --audit --color always -- "$@"',
       "npm run validate --audit false -- --grep smoke" =>
         'exec npm run validate --audit false -- --grep smoke "$@"',
       "npm --audit false run validate" => 'exec npm --audit false run validate -- "$@"',
+      "npm --audit run validate" => 'exec npm --audit run validate -- "$@"',
+      "npm run --audit validate" => 'exec npm run --audit validate -- "$@"',
+      "npm --optional null run validate" => 'exec npm --optional null run validate -- "$@"',
+      "npm --optional run validate" => 'exec npm --optional run validate -- "$@"',
+      "npm --color always run validate" => 'exec npm --color always run validate -- "$@"',
+      "npm --color run validate" => 'exec npm --color run validate -- "$@"',
       "npm run --color always validate" => 'exec npm run --color always validate -- "$@"',
       "npm -g false test" => 'exec npm -g false test -- "$@"'
     }.each do |command, expected|
@@ -3329,11 +3338,14 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
         ["audit", "--audit", "false"] => "false",
         ["color", "--color", "always"] => "always",
         ["global", "-g", "false"] => "false",
-        ["audit", "--no-audit", "false"] => "true"
+        ["audit", "--no-audit", "false"] => "true",
+        ["yes", "-n", "false"] => "true",
+        ["workspaces", "--ws", "false"] => "false",
+        ["optional", "--optional", "null"] => "null"
       }.each do |arguments, expected|
         config_out, config_status = Open3.capture2e("npm", "config", "get", *arguments)
         assert config_status.success?, config_out
-        assert_equal expected, config_out.strip, arguments.join(" ")
+        assert_equal expected, config_out.lines.last.to_s.strip, arguments.join(" ")
       end
 
       marker = File.join(root, "npm-options.json")
@@ -3360,6 +3372,16 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       assert status.success?, out
       assert_equal({ "args" => ["CALLER"] }, JSON.parse(File.read(marker)))
+
+      ["npm --audit run capture", "npm run --audit capture"].each do |bare_boolean_command|
+        command = AgentWorkflowSeamDoctor.init_command_line(bare_boolean_command)
+        out, status = Open3.capture2e(
+          { "MARKER" => marker }, "bash", "-c", command, "_", "CALLER", chdir: root
+        )
+
+        assert status.success?, out
+        assert_equal({ "args" => ["CALLER"] }, JSON.parse(File.read(marker)), bare_boolean_command)
+      end
     end
   end
 

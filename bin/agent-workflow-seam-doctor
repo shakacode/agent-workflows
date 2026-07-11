@@ -39,7 +39,10 @@ module AgentWorkflowSeamDoctor
     --desc --help --iwr --local --no --porcelain --quiet --readonly --silent --verbose --ws
   ].freeze
   NPM_BOOLEAN_SHORT_OPTIONS_WITH_OPTIONAL_ARGUMENT = %w[
-    -a -f -g -l -p -S -B -D -E -O -P -? -H -h -v -y
+    -a -f -g -l -n -p -S -B -D -E -O -P -? -H -h -v -y
+  ].freeze
+  NPM_OPTIONAL_VALUE_KINDS = %i[
+    optional_boolean optional_nullable_boolean optional_color optional_string
   ].freeze
   SHELL_OPTIONS_WITH_ARGUMENT = %w[-o -O --init-file --rcfile].freeze
   COMPLETE_ARGUMENT_FORWARDING_WORDS = ["$@", "${@}", '"$@"', '"${@}"'].freeze
@@ -63,6 +66,17 @@ module AgentWorkflowSeamDoctor
     strict-peer-deps strict-ssl timing unicode update-notifier usage version versions workspaces
     workspaces-update yes
   ].freeze
+  NPM_NULLABLE_BOOLEAN_KEYS = %w[expect-results optional production workspaces yes].freeze
+  NPM_LONG_BOOLEAN_ALIAS_KINDS = {
+    "desc" => :optional_boolean,
+    "help" => :optional_boolean,
+    "iwr" => :optional_boolean,
+    "local" => :optional_boolean,
+    "no" => :optional_boolean,
+    "porcelain" => :optional_boolean,
+    "readonly" => :optional_boolean,
+    "ws" => :optional_nullable_boolean
+  }.freeze
   NPM_CONFIG_VALUE_KEYS = %w[
     _auth access also audit-level auth-type before ca cache cache-max cache-min cafile call cert cidr cpu depth
     diff diff-dst-prefix diff-src-prefix diff-unified editor expect-result-count fetch-retries
@@ -76,11 +90,15 @@ module AgentWorkflowSeamDoctor
     userconfig viewer which workspace
   ].freeze
   NPM_LONG_OPTION_KINDS = {}.tap do |options|
-    NPM_CONFIG_BOOLEAN_KEYS.each { |key| options[key] = :optional }
+    NPM_CONFIG_BOOLEAN_KEYS.each { |key| options[key] = :optional_boolean }
+    NPM_NULLABLE_BOOLEAN_KEYS.each { |key| options[key] = :optional_nullable_boolean }
+    options["browser"] = :optional_string
+    options["color"] = :optional_color
+    NPM_LONG_BOOLEAN_ALIAS_KINDS.each { |key, kind| options[key] = kind }
     NPM_CONFIG_VALUE_KEYS.each { |key| options[key] = :required }
     NPM_POST_SCRIPT_OPTIONS_WITHOUT_ARGUMENT.grep(/\A--/).each do |option|
       key = option.delete_prefix("--")
-      options[key] = :none unless NPM_CONFIG_BOOLEAN_KEYS.include?(key)
+      options[key] = :none unless options.key?(key)
     end
     NPM_POST_SCRIPT_OPTIONS_WITH_ARGUMENT.grep(/\A--/).each do |option|
       options[option.delete_prefix("--")] = :required
@@ -982,7 +1000,8 @@ module AgentWorkflowSeamDoctor
         return nil unless words[index]
 
         index += 1
-      elsif metadata == :optional && npm_optional_option_value?(words[index])
+      elsif NPM_OPTIONAL_VALUE_KINDS.include?(metadata) &&
+            npm_optional_option_value?(metadata, words[index])
         index += 1
       end
     end
@@ -1003,7 +1022,8 @@ module AgentWorkflowSeamDoctor
         return nil unless words[index]
 
         index += 1
-      elsif metadata == :optional && npm_optional_option_value?(words[index])
+      elsif NPM_OPTIONAL_VALUE_KINDS.include?(metadata) &&
+            npm_optional_option_value?(metadata, words[index])
         index += 1
       end
     end
@@ -1050,10 +1070,10 @@ module AgentWorkflowSeamDoctor
       if %i[none attached].include?(metadata)
         npm_tokens << tokens.fetch(index)
         index += 1
-      elsif metadata == :optional
+      elsif NPM_OPTIONAL_VALUE_KINDS.include?(metadata)
         npm_tokens << tokens.fetch(index)
         index += 1
-        if index < segment_end && npm_optional_option_value?(words[index])
+        if index < segment_end && npm_optional_option_value?(metadata, words[index])
           npm_tokens << tokens.fetch(index)
           index += 1
         end
@@ -1075,7 +1095,7 @@ module AgentWorkflowSeamDoctor
   end
 
   def npm_option_metadata(option)
-    return :optional if NPM_BOOLEAN_SHORT_OPTIONS_WITH_OPTIONAL_ARGUMENT.include?(option)
+    return :optional_boolean if NPM_BOOLEAN_SHORT_OPTIONS_WITH_OPTIONAL_ARGUMENT.include?(option)
     return :none if !option.start_with?("--") && NPM_POST_SCRIPT_OPTIONS_WITHOUT_ARGUMENT.include?(option)
     return :required if !option.start_with?("--") && NPM_POST_SCRIPT_OPTIONS_WITH_ARGUMENT.include?(option)
 
@@ -1091,7 +1111,7 @@ module AgentWorkflowSeamDoctor
     negated = key.start_with?("no-")
     key = key.delete_prefix("no-") if negated
     candidates = NPM_LONG_OPTION_KINDS.select do |candidate, kind|
-      candidate.start_with?(key) && (!negated || %i[none optional].include?(kind))
+      candidate.start_with?(key) && (!negated || kind == :none || NPM_OPTIONAL_VALUE_KINDS.include?(kind))
     end
     kind = candidates.fetch(key, nil)
     kind ||= candidates.values.first if candidates.one?
@@ -1101,8 +1121,17 @@ module AgentWorkflowSeamDoctor
     kind
   end
 
-  def npm_optional_option_value?(word)
-    word && word != "--" && (word == "-" || !word.start_with?("-"))
+  def npm_optional_option_value?(metadata, word)
+    return false unless word && word != "--" && !word.start_with?("-")
+
+    values = case metadata
+             when :optional_boolean then %w[true false]
+             when :optional_nullable_boolean then %w[true false null]
+             when :optional_color then %w[true false always]
+             when :optional_string then nil
+             else return false
+             end
+    values.nil? || values.include?(word)
   end
 
   def npm_option_guidance(option, reason)
