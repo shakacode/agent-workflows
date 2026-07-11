@@ -1,3 +1,4 @@
+#!/usr/bin/env ruby
 # frozen_string_literal: true
 
 require "minitest/autorun"
@@ -5,17 +6,20 @@ require "minitest/autorun"
 class PrLaneContractTest < Minitest::Test
   SKILL_PATH = File.expand_path("../SKILL.md", __dir__)
   ADDRESS_REVIEW_SKILL_PATH = File.expand_path("../../address-review/SKILL.md", __dir__)
+  ADDRESS_REVIEW_ACTIONS_PATH = File.expand_path("../../address-review/references/actions.md", __dir__)
   ADDRESS_REVIEW_WORKFLOW_PATH = File.expand_path("../../../workflows/address-review.md", __dir__)
 
   def setup
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
     @normalized_skill = @skill.gsub(/\s+/, " ")
     @address_review_skill = File.read(ADDRESS_REVIEW_SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
+    @address_review_actions = File.read(ADDRESS_REVIEW_ACTIONS_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
     @address_review_workflow = File.read(ADDRESS_REVIEW_WORKFLOW_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
   end
 
   def test_explicit_pr_url_wins_over_checkout_repository_detection
     assert_includes @normalized_skill, "A full GitHub PR URL is authoritative for repository selection"
+    assert_includes @normalized_skill, "All `TARGET_*`, `PR_*`, and `REPO` values are invocation-scoped"
     assert_includes @normalized_skill, "authority (`host[:port]`) into `TARGET_HOST`"
     assert_includes @normalized_skill, "scheme into `TARGET_SCHEME`"
     assert_includes @normalized_skill, "Do not replace the URL-derived host or repository with `gh repo view` output"
@@ -29,8 +33,8 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @skill, 'http:*:80) TARGET_HOST="${TARGET_HOST%:80}"'
     assert_operator @skill.index("CHECKOUT_URL="), :<, @skill.index('export GH_HOST="${TARGET_HOST}"')
     assert_includes @skill, 'COORD_REPO="github-host/$(ruby -rdigest'
-    assert_includes @skill, 'CHECKOUT_URL="$(env -u GH_HOST gh repo view --json url -q .url)"'
-    assert_includes @skill, 'CHECKOUT_REPO="$(env -u GH_HOST gh repo view --json nameWithOwner -q .nameWithOwner)"'
+    assert_includes @skill, 'CHECKOUT_URL="$(env -u GH_HOST -u GH_REPO gh repo view --json url -q .url)"'
+    assert_includes @skill, 'CHECKOUT_REPO="$(env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner -q .nameWithOwner)"'
     assert_includes @skill, 'REPO="${REPO:-${PR_BASE_REPO:-}}"'
     assert_includes @skill, ': "${PR_URL:?Set PR_URL from verified base PR context}"'
     assert_includes @skill, "if ! git rev-parse --show-toplevel >/dev/null 2>&1; then"
@@ -45,6 +49,7 @@ class PrLaneContractTest < Minitest::Test
     assert_includes @normalized_skill, "`COORD_REPO` is a coordination identity only"
     assert_includes @normalized_skill, "Public fallback uses the real `GH_HOST`, `REPO`, and target surface"
     assert_includes @normalized_skill, "Invoke PR-specific skills with the authoritative full `PR_URL`"
+    assert_includes @normalized_skill, "Pass the same host-qualified `COORD_REPO` into `address-review`"
     assert_includes @skill, "github_host: <target-host>"
     assert_includes @skill,
                     'pr-security-preflight" --repo "${REPO}" "${TARGET_NUMBER}"'
@@ -57,10 +62,9 @@ class PrLaneContractTest < Minitest::Test
     assert_operator authority_index, :<, address_review_index
     assert_includes @normalized_skill, "select the `f` action without presenting the quick-action menu"
     assert_includes @normalized_skill, "Do not classify routine verified review fixes as `blocked-user-input`"
+    assert_includes @normalized_skill, "documented post-triage verification checkpoint"
     assert_includes @normalized_skill,
-                    "every behavior-preserving optional fix or recorded outcome is within the active task"
-    assert_includes @normalized_skill,
-                    "set trusted parent state `COORDINATED_AUTOFIX=1` for the `address-review` invocation"
+                    "Set trusted parent state `COORDINATED_AUTOFIX=1` before invoking `address-review`"
     [@address_review_skill, @address_review_workflow].each do |text|
       assert_includes text, "COORDINATED_AUTOFIX"
       assert_includes text, "execute action `f` without waiting for another selection"
@@ -71,7 +75,14 @@ class PrLaneContractTest < Minitest::Test
       assert_includes text, "explicit no-action outcome in the cutoff-safe summary"
       assert_includes text, "Re-present any other skipped item for an explicit decision"
       assert_includes text, "boilerplate skipped items without an actionable thread"
+      assert_includes text, "verification checkpoint"
+      assert_includes text, "clean current-head review signal independent of this coordinated address-review run"
     end
+    assert_includes @address_review_actions, "COORDINATED_AUTOFIX"
+    assert_includes @address_review_actions, "List every autonomously resolved thread"
+    assert_includes @address_review_actions, "clean current-head review signal independent of this coordinated run"
+    assert_includes @address_review_skill, 'COORD_REPO="${COORD_REPO:-${REPO}}"'
+    assert_includes @address_review_workflow, 'COORD_REPO="${COORD_REPO:-${REPO}}"'
   end
 
   def test_merge_authority_does_not_expand_task_scope

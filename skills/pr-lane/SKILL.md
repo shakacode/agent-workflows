@@ -27,6 +27,9 @@ Resolve the real repository first, then classify the target:
   evidence comment.
 
 Set `TARGET_KIND` to `issue`, `pr`, or `adhoc` during this classification.
+All `TARGET_*`, `PR_*`, and `REPO` values are invocation-scoped: freshly
+overwrite them from the current visible target before running the block below;
+never reuse inherited values from an earlier lane in the same shell.
 
 A full GitHub PR URL is authoritative for repository selection. Parse its URL
 scheme into `TARGET_SCHEME`, its authority (`host[:port]`) into `TARGET_HOST`,
@@ -61,8 +64,8 @@ if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "Refusing to continue: enter a trusted base checkout before preflight." >&2
   exit 1
 fi
-CHECKOUT_URL="$(env -u GH_HOST gh repo view --json url -q .url)"
-CHECKOUT_REPO="$(env -u GH_HOST gh repo view --json nameWithOwner -q .nameWithOwner)"
+CHECKOUT_URL="$(env -u GH_HOST -u GH_REPO gh repo view --json url -q .url)"
+CHECKOUT_REPO="$(env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner -q .nameWithOwner)"
 CHECKOUT_SCHEME="${CHECKOUT_URL%%://*}"
 CHECKOUT_HOST="${CHECKOUT_URL#*://}"
 CHECKOUT_HOST="${CHECKOUT_HOST%%/*}"
@@ -332,15 +335,17 @@ single-lane shortcuts are:
 6. Use `verify`, `pr-monitoring`, and `address-review` when those skills apply.
    Invoke PR-specific skills with the authoritative full `PR_URL`, not a bare
    number, and preserve `GH_HOST=${TARGET_HOST}` and the verified base `REPO`
-   when implementation is running from a fork-head checkout.
+   when implementation is running from a fork-head checkout. Pass the same
+   host-qualified `COORD_REPO` into `address-review` so the parent and child use
+   one coordination claim key.
    In a direct-prompt lane that authorizes updating the PR and sets
    `merge_authority: auto_merge_when_gates_pass`, use `address-review` to
-   classify feedback, then select the `f` action without presenting the
-   quick-action menu only after locally verifying that every selected
-   `MUST-FIX` and every behavior-preserving optional fix or recorded outcome is
-   within the active task. After those prerequisites pass, set trusted parent
-   state `COORDINATED_AUTOFIX=1` for the `address-review` invocation; do not
-   persist that state outside this lane. Continue through one batched fix,
+   classify feedback and select the `f` action without presenting the
+   quick-action menu. Set trusted parent state `COORDINATED_AUTOFIX=1` before
+   invoking `address-review` so it is visible during triage; the child workflow
+   must then run its documented post-triage verification checkpoint before it
+   edits or resolves anything. Do not persist that state outside this lane.
+   Continue through one batched fix,
    validation, push, replies, thread resolution, and refreshed current-head
    gates. Do not classify routine verified review fixes as
    `blocked-user-input`.

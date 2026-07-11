@@ -161,9 +161,14 @@ def current_repo_info
 end
 
 def repo_option_info(repo)
-  return { repo:, github_host: expected_github_host } unless ENV["GH_HOST"].to_s.empty?
-
   payload = run_gh_json("repo", "view", repo, "--json", "nameWithOwner,url")
+  unless ENV["GH_HOST"].to_s.empty?
+    resolved_repo = payload.fetch("nameWithOwner")
+    raise "gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}" unless resolved_repo == repo
+
+    return { repo:, github_host: expected_github_host }
+  end
+
   repo_info_from_payload(payload).merge(repo:)
 rescue StandardError => e
   warn "WARN: could not resolve GitHub host via gh repo view for #{repo.inspect}: #{e.message.lines.first&.strip}"
