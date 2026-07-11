@@ -652,8 +652,8 @@ Evidence block whenever QA is required or explicitly not required:
 <!-- qa-evidence v1
 required: <yes | no>
 status: <satisfied | blocked | waived | in_progress | unknown | not_applicable>
-head_sha: <full 40-character PR head SHA tested, or not_applicable when QA is not required>
-tested_at: <PR/head SHA(s), audited range, or not applicable reason>
+head_sha: <full 40-character current PR head SHA, or not_applicable only when there is no PR>
+tested_at: <PR/head SHA(s), audited range, or no-PR not applicable reason>
 scope: <changed areas, PRs, or release phase covered>
 automated_checks: <commands, CI links, or covered-by-worker-validation note>
 manual_checks: <manual smoke checks or not applicable>
@@ -683,12 +683,16 @@ replay these markers and report `SATISFIED`, `WAIVED`, `NOT_APPLICABLE`,
 and `NOT_APPLICABLE` as replayed terminal evidence; carry `BLOCKED` and
 `UNKNOWN` into the audit findings for operator action.
 
+When a repository pins this helper under `.agents/skills/post-merge-audit`, use
+that repo-local copy for the pre-merge gate so the helper version stays aligned
+with the repository's schema and workflow text.
+
 For a pre-merge current-head gate, run the helper separately for each PR or
 target with `--expected-head-sha <full-final-head-SHA>`, feeding it only that
 PR's evidence block or a per-PR evidence file. Do not pass a combined multi-PR
 handoff to a single expected SHA. This is a
 `checklist+replay` control: the coordinator checklist below re-fetches the final
-head, and the replay helper returns `UNKNOWN` when required QA evidence omits
+head, and the replay helper returns `UNKNOWN` when QA evidence omits
 `head_sha`, records any other SHA there, or does not list the expected head as
 the final full SHA token in `tested_at` (the endpoint for an audited range). It
 also returns `UNKNOWN` when a priority-disposition marker records another head.

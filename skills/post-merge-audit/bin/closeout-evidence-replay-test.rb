@@ -261,14 +261,14 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes data.fetch("qa_evidence").fetch("missing"), "tested_at.head_sha"
   end
 
-  def test_expected_final_head_preserves_not_applicable_qa
+  def test_expected_final_head_accepts_current_not_applicable_qa
     final_head_sha = "2222222222222222222222222222222222222222"
     data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
       <!-- qa-evidence v1
       required: no
       status: not_applicable
-      head_sha: not_applicable
-      tested_at: not applicable: no PR/code changes
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}; QA not required for documentation-only change
       scope: documentation-only batch
       automated_checks: not applicable
       manual_checks: not applicable
@@ -280,6 +280,31 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "NOT_APPLICABLE", data.fetch("overall_verdict")
     assert_equal "NOT_APPLICABLE", data.fetch("qa_evidence").fetch("verdict")
+  end
+
+  def test_expected_final_head_rejects_stale_not_applicable_qa
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: no
+      status: not_applicable
+      head_sha: #{stale_head_sha}
+      tested_at: PR #70 head #{stale_head_sha}; QA not required for documentation-only change
+      scope: documentation-only batch
+      automated_checks: not applicable
+      manual_checks: not applicable
+      findings: none
+      release_blocking: not_applicable
+      process_gap_disposition: not applicable
+      -->
+    MARKDOWN
+
+    qa = data.fetch("qa_evidence")
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "head_sha"
+    assert_includes qa.fetch("missing"), "tested_at.head_sha"
   end
 
   def test_expected_final_head_must_be_a_full_sha
