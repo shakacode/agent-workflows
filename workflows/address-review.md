@@ -92,13 +92,18 @@ Execution flow when terminal access is available:
      - Optional standalone `autopilot` token before or after the PR reference
    - Detect the standalone token `autopilot` (case-insensitive), set an `AUTOPILOT` flag, and remove only that token before parsing the PR reference. Do not treat bare `a` as `autopilot`; `a` is only a post-triage quick action.
    - Detect the exact phrase `check all reviews` (case-insensitive, trailing position only — it must be the final tokens after the PR reference), set a `CHECK_ALL_REVIEWS` flag, and remove only that phrase before parsing the PR reference. If the phrase appears in any other position, do not treat it as an override; warn and ask me to retry with the trailing form.
+   - Before parsing input, capture the normalized already-authorized host from
+     `${GH_HOST:-github.com}`. A GHES URL requires the caller to set `GH_HOST`
+     explicitly before invocation.
    - If the input is a full GitHub URL, extract its scheme, normalized
-     `host[:port]`, and `org/repo` before running `gh repo view`.
+     `host[:port]`, and `org/repo` before running `gh repo view`. Require HTTPS
+     and an exact match with the already-authorized host; otherwise stop before
+     any `gh` call.
    - Extract the PR number and optional review/comment ID.
 
 2. Determine repository:
-   - If step 1 extracted a full GitHub URL, use its `org/repo` as `REPO` and
-     export its normalized host as `GH_HOST`.
+   - If step 1 extracted and verified a full GitHub URL, use its `org/repo` as
+     `REPO` and export its normalized host as `GH_HOST`.
    - Otherwise clear ambient `GH_HOST` and `GH_REPO`, resolve both
      `nameWithOwner` and `url` with `gh repo view`, use
      the checkout repository as `REPO`, derive `GH_HOST` from the URL, and

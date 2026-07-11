@@ -98,18 +98,22 @@ Then extract the PR number and optional review/comment ID from the remaining inp
 
 **URL parsing:**
 
+- Capture the already-authorized GitHub host before parsing: normalized
+  `${GH_HOST:-github.com}`. A GHES URL therefore requires the caller to set
+  `GH_HOST` explicitly before invoking this workflow.
 - Extract URL scheme, `host[:port]`, and org/repo from
   `{scheme}://{host[:port]}/{org}/{repo}/pull/{PR_NUMBER}`.
 - Extract fragment ID after `#` (e.g., `pullrequestreview-123456789` → `123456789`)
-- If a full GitHub URL is provided, capture its normalized lowercase host
-  (stripping `:443` for HTTPS and `:80` for HTTP) and `org/repo` now so Step 2
-  can use them without calling `gh repo view`.
+- If a full GitHub URL is provided, require HTTPS and require its normalized
+  lowercase host (stripping `:443`) to equal the already-authorized GitHub
+  host. Stop before any `gh` call when either check fails. Capture the verified
+  host and `org/repo` so Step 2 can use them without calling `gh repo view`.
 
 ## Step 2: Set Repository and Parsed IDs
 
-- If Step 1 extracted a full GitHub URL, use its `org/repo` as `REPO`, export
-  its normalized host as `GH_HOST`, and keep that identity for every later
-  GitHub and coordination call.
+- If Step 1 extracted and verified a full GitHub URL, use its `org/repo` as
+  `REPO`, export its normalized host as `GH_HOST`, and keep that identity for
+  every later GitHub and coordination call.
 - Otherwise, detect both repository and URL from the current checkout, derive
   and export `GH_HOST` from that URL, then use the checkout repository.
 - Set `PR_NUMBER` to the number parsed in Step 1.
@@ -118,8 +122,15 @@ Then extract the PR number and optional review/comment ID from the remaining inp
 - Set `SPECIFIC_TARGET` to `1` when Step 1 parsed a specific review/comment URL, otherwise `0`.
 
 ```bash
-# Full-URL path: set URL_REPO and URL_HOST from Step 1.
+# Capture this before Step 1 parses untrusted URL input.
+TRUSTED_GITHUB_HOST="$(printf '%s' "${GH_HOST:-github.com}" | tr '[:upper:]' '[:lower:]')"
+
+# Full-URL path: set URL_REPO, URL_HOST, and URL_SCHEME from Step 1.
 if [ -n "${URL_REPO:-}" ]; then
+  if [ "${URL_SCHEME:-}" != "https" ] || [ "${URL_HOST:-}" != "${TRUSTED_GITHUB_HOST}" ]; then
+    echo "Refusing untrusted GitHub URL: require HTTPS and authorized host ${TRUSTED_GITHUB_HOST}" >&2
+    exit 1
+  fi
   REPO="${URL_REPO}"
   GH_HOST="${URL_HOST:?URL_HOST must accompany URL_REPO}"
 else
