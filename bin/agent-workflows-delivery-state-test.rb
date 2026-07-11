@@ -409,6 +409,63 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_claude_installed_plugin_defaults_enabled_and_explicit_false_overrides
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "claude")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      FileUtils.mkdir_p(File.join(target, "plugins"))
+      write_manifest(plugin_root, host: "claude")
+      File.write(File.join(target, "settings.json"), "{}\n")
+      File.write(
+        File.join(target, "plugins/installed_plugins.json"),
+        "#{JSON.generate('plugins' => { 'scw@agent-workflows' => [{ 'installPath' => plugin_root }] })}\n"
+      )
+
+      out, err, status = run_state("check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", JSON.parse(out).dig("native", "state")
+
+      File.write(File.join(target, "settings.json"), "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => false })}\n")
+      out, err, status = run_state("check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+      assert status.success?, "#{out}#{err}"
+      assert_equal "inactive", JSON.parse(out).dig("native", "state")
+
+      File.write(File.join(target, "settings.json"), "{}\n")
+      FileUtils.rm_f(File.join(target, "plugins/installed_plugins.json"))
+      out, err, status = run_state("check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json")
+      assert status.success?, "#{out}#{err}"
+      assert_equal "inactive", JSON.parse(out).dig("native", "state")
+    end
+  end
+
+  def test_native_state_read_errors_are_structured_unknown
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      injection = File.join(tmp, "binread-error.rb")
+      File.write(injection, <<~RUBY)
+        module InjectNativeBinreadError
+          def binread(path, *)
+            raise Errno::EIO, path if path.end_with?("config.toml", "settings.json")
+            super
+          end
+        end
+        File.singleton_class.prepend(InjectNativeBinreadError)
+      RUBY
+
+      { "codex" => "config.toml", "claude" => "settings.json" }.each do |host, state_file|
+        target = File.join(tmp, host)
+        FileUtils.mkdir_p(target)
+        File.write(File.join(target, state_file), "{}\n")
+        out, _err, status = run_state_with_env(
+          { "RUBYOPT" => "-r#{injection}" }, "check", "--host", host, "--target", target,
+          "--source", File.expand_path("..", __dir__), "--delivery-mode", "flat", "--json"
+        )
+
+        refute status.success?, host
+        assert_equal "unknown", JSON.parse(out).dig("native", "state")
+      end
+    end
+  end
+
   def test_migrates_only_unchanged_legacy_managed_copies
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")

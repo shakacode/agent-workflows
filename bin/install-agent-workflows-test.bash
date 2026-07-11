@@ -418,6 +418,52 @@ RUBY
   fi
 }
 
+test_crash_receipt_recovers_flat_staging_before_new_install() {
+  local tmp target staging output status skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-crash"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  mkdir -p "$staging"
+  for skill in "$target"/skills/*; do mv "$skill" "$staging/"; done
+  printf '%s\n' "$staging" > "$target/.agent-workflows-migration-staging"
+  mkdir "$target/.agent-workflows-install.json.tmp"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "metadata preflight unexpectedly succeeded"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    assert_file "$target/skills/$(basename "$skill")/SKILL.md"
+  done
+  [[ ! -e "$staging" ]] || fail "recovered flat staging remains"
+  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "recovered receipt remains"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
+}
+
+test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
+  local tmp target staging
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-crash"
+  write_native_scw_state codex "$target"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/companion.out"
+  mkdir -p "$staging/pr-batch"
+  printf 'quarantined\n' > "$staging/pr-batch/SKILL.md"
+  printf '%s\n' "$staging" > "$target/.agent-workflows-migration-staging"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/recover.out"
+
+  [[ ! -e "$staging" ]] || fail "committed quarantine was not cleaned"
+  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "committed receipt remains"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "committed companion recovery restored flat skills"
+}
+
 test_install_lock_blocks_concurrent_migration_before_mutation() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -1021,6 +1067,8 @@ main() {
     test_staging_race_blocks_installer_and_preserves_flat_tree
     test_final_verification_race_rolls_back_before_metadata_commit
     test_staging_json_extraction_failure_uses_receipt_to_roll_back
+    test_crash_receipt_recovers_flat_staging_before_new_install
+    test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_companion_to_flat_refuses_unowned_same_named_skill

@@ -56,6 +56,8 @@ module AgentWorkflowsDeliveryState
     return { "state" => "unknown", "reason" => "enabled Codex scw plugin has no valid installed cache" } if roots.empty?
 
     { "state" => "active", "roots" => roots.sort }
+  rescue SystemCallError => e
+    { "state" => "unknown", "reason" => "unable to read Codex plugin state: #{e.message}" }
   end
 
   def codex_plugin_cli_state(target)
@@ -95,10 +97,23 @@ module AgentWorkflowsDeliveryState
     settings_path = File.join(target, "settings.json")
     settings = File.file?(settings_path) ? JSON.parse(File.binread(settings_path)) : {}
     return { "state" => "unknown", "reason" => "invalid Claude plugin settings shape" } unless settings.is_a?(Hash)
-    return { "state" => "inactive", "reason" => "scw@agent-workflows is not enabled" } unless settings.dig("enabledPlugins", "scw@agent-workflows") == true
+
+    enabled_plugins = settings["enabledPlugins"]
+    unless enabled_plugins.nil? || enabled_plugins.is_a?(Hash)
+      return { "state" => "unknown", "reason" => "invalid Claude enabledPlugins shape" }
+    end
+
+    explicit = enabled_plugins&.key?("scw@agent-workflows")
+    enabled = enabled_plugins&.fetch("scw@agent-workflows", nil)
+    return { "state" => "unknown", "reason" => "invalid Claude enabledPlugins value" } if explicit && ![true, false].include?(enabled)
+    return { "state" => "inactive", "reason" => "scw@agent-workflows is explicitly disabled" } if explicit && !enabled
 
     receipt_path = File.join(target, "plugins/installed_plugins.json")
-    return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no install receipt" } unless File.file?(receipt_path)
+    unless File.file?(receipt_path)
+      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no install receipt" } if explicit
+
+      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" }
+    end
 
     receipt_state = JSON.parse(File.binread(receipt_path))
     unless receipt_state.is_a?(Hash) && receipt_state["plugins"].is_a?(Hash)
@@ -109,10 +124,15 @@ module AgentWorkflowsDeliveryState
     roots = Array(receipts).filter_map { |receipt| receipt["installPath"] if receipt.is_a?(Hash) }.select do |root|
       plugin_manifest_valid?(root, "claude")
     end
-    return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no valid installed cache" } if roots.empty?
+    if roots.empty?
+      missing = receipts.nil? || Array(receipts).empty?
+      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" } if !explicit && missing
+
+      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no valid installed cache" }
+    end
 
     { "state" => "active", "roots" => roots.sort }
-  rescue JSON::ParserError, TypeError => e
+  rescue SystemCallError, JSON::ParserError, TypeError => e
     { "state" => "unknown", "reason" => "invalid Claude plugin state: #{e.message}" }
   end
 

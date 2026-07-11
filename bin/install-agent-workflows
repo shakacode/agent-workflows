@@ -398,17 +398,20 @@ if [[ -z "$delivery_mode" ]]; then
   delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
 fi
 
-set +e
-delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
-delivery_status=$?
-set -e
-if [[ "$delivery_status" -ne 0 ]]; then
-  ruby -rjson -e '
-    payload = JSON.parse(STDIN.read)
-    warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
-    warn payload.fetch("guidance")
-  ' <<< "$delivery_state"
-  exit 1
+pending_migration_receipt="$target/.agent-workflows-migration-staging"
+if [[ ! -f "$pending_migration_receipt" ]]; then
+  set +e
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_status=$?
+  set -e
+  if [[ "$delivery_status" -ne 0 ]]; then
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
+      warn payload.fetch("guidance")
+    ' <<< "$delivery_state"
+    exit 1
+  fi
 fi
 
 mkdir -p "$target"
@@ -419,7 +422,35 @@ if ! mkdir "$install_lock" 2>/dev/null; then
 fi
 migration_staging=""
 migration_receipt="$target/.agent-workflows-migration-staging"
-rm -f "$migration_receipt"
+if [[ -f "$migration_receipt" ]]; then
+  IFS= read -r recovered_staging < "$migration_receipt" || recovered_staging=""
+  recovered_staging="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$recovered_staging")"
+  case "$recovered_staging" in
+    "$target"/.agent-workflows-flat-migration-*) ;;
+    *)
+      echo "RECOVERY_FAILED: invalid migration staging receipt; preserved $migration_receipt" >&2
+      rmdir "$install_lock" 2>/dev/null || true
+      exit 1
+      ;;
+  esac
+  prior_delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
+  if [[ "$prior_delivery_mode" = "plugin-companion" ]]; then
+    if ! rm -rf "$recovered_staging"; then
+      echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $recovered_staging" >&2
+      rmdir "$install_lock" 2>/dev/null || true
+      exit 1
+    fi
+  elif [[ ! -d "$recovered_staging" ]]; then
+    echo "RECOVERY_FAILED: flat migration staging is missing; preserved $migration_receipt" >&2
+    rmdir "$install_lock" 2>/dev/null || true
+    exit 1
+  elif ! rollback_migration_staging "$recovered_staging"; then
+    echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
+    rmdir "$install_lock" 2>/dev/null || true
+    exit 1
+  fi
+  rm -f "$migration_receipt"
+fi
 metadata_committed=false
 release_install_transaction() {
   local status=$?
