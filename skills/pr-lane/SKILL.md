@@ -17,9 +17,10 @@ exposes neither nested invocation nor the loaded directory, resolve the active
 host from reliable runtime signals and read its installed shared copy at
 `${CODEX_HOME:-$HOME/.codex}/skills/pr-batch/SKILL.md` or
 `${CLAUDE_HOME:-$HOME/.claude}/skills/pr-batch/SKILL.md`. When both installed host copies exist but active host identity is ambiguous,
-compare their complete `SKILL.md` files. If they are byte-identical, read either
-copy; the canonical policy is the same. If they differ, stop and require an
-explicit `PR_BATCH_SKILL_DIR` or repo-pinned copy. Do not guess between
+compare the complete installed shared packs, not only their `pr-batch/SKILL.md` files.
+Read either copy only when every policy, workflow, helper, and metadata file is
+byte-identical. If they differ, stop. If a complete comparison is unavailable,
+also stop and require an explicit `PR_BATCH_SKILL_DIR` or repo-pinned copy. Do not guess between
 hosts. If none resolves, stop with a precise blocker; do not implement from this
 file alone.
 
