@@ -14,6 +14,7 @@ batch = read_repo_file("skills/pr-batch/SKILL.md")
 lane = read_repo_file("skills/pr-lane/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 workflow = read_repo_file("workflows/pr-processing.md")
+batch_metadata = read_repo_file("skills/pr-batch/agents/openai.yaml")
 
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
@@ -50,6 +51,8 @@ end
 assert(guide.include?("`$pr-lane` Compatibility Alias"), "guide must describe pr-lane as an alias")
 assert(guide.include?("one worker subagent"), "guide must document the single-target worker shape")
 assert(!File.exist?(File.join(ROOT, "skills/pr-lane/agents/openai.yaml")), "the compatibility alias must not be promoted in picker metadata")
+assert(batch_metadata.include?("one or more"), "canonical picker metadata must advertise single- and multi-target work")
+assert(batch_metadata.include?("ad-hoc"), "canonical picker metadata must advertise direct ad-hoc tasks")
 
 assert(workflow.include?("claim --help"), "canonical coordination must preserve claim capability detection")
 assert(workflow.include?("heartbeat --help"), "canonical coordination must preserve heartbeat capability detection")
