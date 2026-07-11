@@ -1611,8 +1611,10 @@ asking GitHub reviewers or CI to spend another cycle.
    review wave broadens the mechanism, stop patching and make a scope decision. Map the proposed
    change to an original acceptance criterion or direct safety property, then compare an
    authoritative source of truth, maintained dependency, bounded guard, and checklist-plus-replay
-   alternative. Record the triaged decision to adopt, defer, or waive it; a bot severity label
-   alone does not authorize scope expansion.
+   alternative. Record the triaged decision. An agent may defer or decline the proposed mechanism
+   only when another option preserves the criterion or safety property; waiving a verified blocker
+   or safety property requires explicit maintainer evidence. A bot severity label alone does not
+   authorize scope expansion.
 6. For those high-risk cases, run `/simplify` after all required review passes for that case are
    clean, including Claude Code review when required, and before the final push or readiness report.
    Resolve the base branch from `.agents/agent-workflow.yml` or the PR metadata before choosing the
