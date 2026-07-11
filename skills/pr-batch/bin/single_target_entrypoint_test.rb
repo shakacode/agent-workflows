@@ -17,6 +17,7 @@ workflow = read_repo_file("workflows/pr-processing.md")
 batch_metadata = read_repo_file("skills/pr-batch/agents/openai.yaml")
 address_review = read_repo_file("skills/address-review/SKILL.md")
 address_review_workflow = read_repo_file("workflows/address-review.md")
+address_review_actions = read_repo_file("skills/address-review/references/actions.md")
 
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
@@ -90,6 +91,9 @@ assert(address_review.include?("TRUSTED_GITHUB_HOST=\"${TRUSTED_GITHUB_HOST%:443
 assert(address_review.include?("Refusing untrusted GitHub URL: require HTTPS and authorized host"), "address-review must reject arbitrary PR URL hosts")
 assert(address_review_workflow.include?("COORDINATED_AUTOFIX=1"), "address-review workflow must document coordinated autofix")
 assert(address_review_workflow.include?("Require HTTPS\n     and an exact match with the already-authorized host"), "address-review workflow must reject arbitrary PR URL hosts")
+assert(address_review_actions.include?("COORDINATED_AUTOFIX=1"), "address-review actions must document coordinated autofix")
+assert(address_review_actions.include?("locally verified duplicate or factually incorrect review threads"), "address-review actions must keep autonomous skipped-thread resolution narrow")
+assert(address_review_actions.include?("clean current-head review signal independent of this coordinated run"), "address-review actions must require independent review before merge")
 assert(!lane.include?("COORDINATED_AUTOFIX"), "pr-lane alias must not duplicate coordinated closeout policy")
 
 puts "PASS pr-batch single-target entry point contract"
