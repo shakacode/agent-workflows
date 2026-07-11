@@ -18,6 +18,7 @@ These are the most common entry points.
 | Understand the agent workflow contract model | [Seam Design](seam-design.md) |
 | Choose between issue triage, one-PR lanes, batch planning, and batch execution | [PR Batch Skills Usage](pr-batch-skills.md) |
 | Route coordinators and workers by capability, cost, risk, and escalation evidence | [Cost-aware model routing](agent-workflows-model-routing.md) |
+| Use Compound Engineering inside an Agent Workflows lane | [Using Compound Engineering With Agent Workflows](compound-engineering.md) |
 | Configure trusted GitHub actors and public-PR preflight | [Trust And Preflight](trust-and-preflight.md) |
 | Understand the broader prompt-injection safety posture | [Security Posture](security-posture.md) |
 | Pause or resume work around an agent runner restart | [Agent Runner Restarts](agent-runner-restarts.md) |
@@ -32,7 +33,8 @@ These are the most common entry points.
 | Release branch policy | [Release Branching](release-branching.md) |
 | Review finding schema | [Review Finding Schema](review-finding-schema.md) |
 | Host adapter contract | [Host Adapter Contract](host-adapter/contract.md) |
-| Architecture decisions | [ADR: Identical Skill Text Across Hosts](adr/0001-identical-skill-text-across-hosts.md) |
+| Host-text architecture decision | [ADR 0001: Identical Skill Text Across Hosts](adr/0001-identical-skill-text-across-hosts.md) |
+| Compound Engineering architecture decision | [ADR 0002: Compose Compound Engineering Inside Agent Workflows](adr/0002-compose-compound-engineering-inside-agent-workflows.md) |
 | Troubleshooting playbooks | [Solutions](solutions/README.md) |
 
 ## Workflow Areas
