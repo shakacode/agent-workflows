@@ -1,0 +1,14 @@
+{
+  "name": "agent-workflows",
+  "description": "Portable workflow skills for ShakaCode repositories.",
+  "owner": {
+    "name": "ShakaCode"
+  },
+  "plugins": [
+    {
+      "name": "scw",
+      "source": "./",
+      "description": "Portable Codex and Claude workflow pack for ShakaCode repositories."
+    }
+  ]
+}

@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add Codex catalog plus Claude Code native-plugin and marketplace metadata for installing the complete semantic skill tree under `scw`, with isolated plugin-root and no-shadow validation.**
 - **Add `agent-workflow-seam-doctor --init` for conservative, fail-closed consumer seam scaffolding and immediate contract validation.**
 - **Add an MIT license for the workflow pack and install the license notice with copied or symlinked agent homes.**
 - **Add portable plan-review, type-design-review, manual-testing, benchmark-verification, and pr-monitoring skills adapted from `lucasfcosta/backpressured` workflow ideas.**
@@ -23,6 +24,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Change the public Codex native-plugin identifier from `agent-workflows` to `scw`; existing native-plugin users must remove the old entry and reinstall `scw`, while the repository, marketplace, helper, installer, status, and upgrade identities remain `agent-workflows`.**
 - **Make `$pr-batch` the sole workflow for one or more targets, with a default single-target worker subagent, staged cost-aware model routing, and explicit merge authority before launch.**
 - **Require parent batch coordinators to run a completed-batch audit after every target reaches final state, then end the conversation with either an archive-ready confirmation or every remaining follow-up and blocker.**
 - **Route `$plan-pr-batch` readiness, manual-testing, and merge-sequencing requests through the target repository's readiness and review-gate policy, using inline `AGENTS.md` Agent Workflow Configuration values when `.agents/agent-workflow.yml` is absent.** [PR 47](https://github.com/shakacode/agent-workflows/pull/47) by [justin808](https://github.com/justin808).
