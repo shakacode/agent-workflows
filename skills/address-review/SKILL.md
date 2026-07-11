@@ -123,8 +123,8 @@ if [ -n "${URL_REPO:-}" ]; then
   REPO="${URL_REPO}"
   GH_HOST="${URL_HOST:?URL_HOST must accompany URL_REPO}"
 else
-  REPO="$(env -u GH_REPO gh repo view --json nameWithOwner -q .nameWithOwner)"
-  REPO_URL="$(env -u GH_REPO gh repo view --json url -q .url)"
+  REPO="$(env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner -q .nameWithOwner)"
+  REPO_URL="$(env -u GH_HOST -u GH_REPO gh repo view --json url -q .url)"
   REPO_SCHEME="${REPO_URL%%://*}"
   GH_HOST="${REPO_URL#*://}"
   GH_HOST="${GH_HOST%%/*}"

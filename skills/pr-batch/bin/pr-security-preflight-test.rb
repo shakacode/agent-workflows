@@ -571,6 +571,25 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_repo_option_mismatch_fails_closed
+    with_fake_gh("repo-view-mismatch") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer-mismatch")
+      FileUtils.mkdir_p(consumer_root)
+
+      out, status = run_script(
+        env.merge("GH_HOST" => "github.company.example"),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, 'gh repo view resolved "other/repo", expected "owner/repo"'
+      refute_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
   def test_repo_option_host_resolution_failure_infers_enterprise_host_from_local_git
     with_fake_gh("repo-view-failure") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer-ghes-fallback")
@@ -2427,6 +2446,10 @@ class PrSecurityPreflightTest < Minitest::Test
         if [ "$mode" = "repo-view-requires-clean-git-env" ] && [ "$3" = "--json" ] && { [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; }; then
           printf 'fake gh saw inherited git env\\n' >&2
           exit 1
+        fi
+        if [ "$mode" = "repo-view-mismatch" ]; then
+          printf '{"nameWithOwner":"other/repo","url":"https://github.company.example/other/repo"}\\n'
+          exit 0
         fi
         repo_url="${PREFLIGHT_TEST_REPO_URL:-https://github.com/owner/repo}"
         printf '{"nameWithOwner":"owner/repo","url":"%s"}\\n' "$repo_url"

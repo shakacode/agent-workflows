@@ -99,7 +99,8 @@ Execution flow when terminal access is available:
 2. Determine repository:
    - If step 1 extracted a full GitHub URL, use its `org/repo` as `REPO` and
      export its normalized host as `GH_HOST`.
-   - Otherwise resolve both `nameWithOwner` and `url` with `gh repo view`, use
+   - Otherwise clear ambient `GH_HOST` and `GH_REPO`, resolve both
+     `nameWithOwner` and `url` with `gh repo view`, use
      the checkout repository as `REPO`, derive `GH_HOST` from the URL, and
      export it before coordination or review calls.
    - Set parsed identifiers before running later snippets:

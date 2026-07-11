@@ -165,7 +165,7 @@ def repo_option_info(repo)
   unless ENV["GH_HOST"].to_s.empty?
     resolved_repo = payload.fetch("nameWithOwner")
     unless resolved_repo.casecmp?(repo)
-      raise "gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}"
+      abort "gh repo view resolved #{resolved_repo.inspect}, expected #{repo.inspect}"
     end
 
     return { repo:, github_host: expected_github_host }
