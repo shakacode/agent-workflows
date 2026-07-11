@@ -13,6 +13,7 @@ end
 batch = read_repo_file("skills/pr-batch/SKILL.md")
 lane = read_repo_file("skills/pr-lane/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
+workflow = read_repo_file("workflows/pr-processing.md")
 
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
@@ -46,5 +47,11 @@ end
 assert(guide.include?("`$pr-lane` Compatibility Alias"), "guide must describe pr-lane as an alias")
 assert(guide.include?("one worker subagent"), "guide must document the single-target worker shape")
 assert(!File.exist?(File.join(ROOT, "skills/pr-lane/agents/openai.yaml")), "the compatibility alias must not be promoted in picker metadata")
+
+assert(workflow.include?("claim --help"), "canonical coordination must preserve claim capability detection")
+assert(workflow.include?("heartbeat --help"), "canonical coordination must preserve heartbeat capability detection")
+assert(workflow.include?("--thread-handle"), "canonical coordination must preserve extended lane metadata")
+assert(workflow.include?("`coordination_backend: n/a`"), "canonical coordination must define no-backend single-target behavior")
+assert(workflow.include?("single-operator assumption in the Lane Card and final handoff"), "no-backend mode must preserve its assumption in evidence")
 
 puts "PASS pr-batch single-target entry point contract"

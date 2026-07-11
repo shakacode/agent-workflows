@@ -906,6 +906,20 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   means private state is `UNKNOWN` / degraded for that read. A refused
   `agent-coord claim` after a successful status check returns `CLAIM_REFUSED` /
   exit code 3 and remains a hard stop.
+- Before the first claim on a backend whose lane-metadata support is not already
+  verified, inspect `agent-coord-bounded claim --help`. Pass extended metadata
+  flags only when advertised: `--thread-handle`, `--chat-handle`, `--host`,
+  `--operator`, `--phase`, `--instance-id`, and `--status`. Otherwise issue the
+  core claim with agent, repo, target, and branch only, then inspect
+  `agent-coord-bounded heartbeat --help`. When heartbeat advertises the extended
+  flags, record the lane metadata there immediately; otherwise send a core
+  heartbeat and preserve unsupported metadata, or explicit `UNKNOWN`, in the
+  Lane Card, PR evidence, and final handoff. Never pass an unadvertised flag and
+  do not infer support from a different backend implementation.
+- When the trusted repo seam sets `coordination_backend: n/a`, skip private
+  claims and public claim comments. Treat the run as intentionally
+  single-operator, and record that single-operator assumption in the Lane Card and final handoff
+  rather than reporting coordination as healthy or `UNKNOWN`.
 - Acquire an `agent-coord claim` for each issue/PR lane before creating that
   lane's worktree or branch. A refused claim is a hard stop for machine agents:
   report the holder, heartbeat liveness, and target instead of creating a
