@@ -203,6 +203,31 @@ rollback_migration_staging() {
   rmdir "$staging"
 }
 
+valid_migration_staging_path() {
+  ruby -e '
+    target = File.expand_path(ARGV.fetch(0))
+    staging = File.expand_path(ARGV.fetch(1))
+    exit 1 unless File.dirname(staging) == target
+    exit 1 unless File.basename(staging).match?(/\A\.agent-workflows-flat-migration-.+\z/)
+
+    current = File::SEPARATOR
+    target.split(File::SEPARATOR).reject(&:empty?).each_with_index do |component, index|
+      current = File.join(current, component)
+      next unless File.symlink?(current)
+
+      platform_alias = index.zero? && {
+        "/tmp" => "/private/tmp",
+        "/var" => "/private/var"
+      }[current] == File.expand_path(File.readlink(current), File.dirname(current))
+      exit 1 unless platform_alias
+    end
+
+    stat = File.lstat(staging)
+    exit 1 unless stat.directory? && !stat.symlink?
+    exit 1 unless File.realpath(File.dirname(staging)) == File.realpath(target)
+  ' "$1" "$2"
+}
+
 ensure_real_directory() {
   local directory="$1"
 
@@ -425,14 +450,11 @@ migration_receipt="$target/.agent-workflows-migration-staging"
 if [[ -f "$migration_receipt" ]]; then
   IFS= read -r recovered_staging < "$migration_receipt" || recovered_staging=""
   recovered_staging="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$recovered_staging")"
-  case "$recovered_staging" in
-    "$target"/.agent-workflows-flat-migration-*) ;;
-    *)
-      echo "RECOVERY_FAILED: invalid migration staging receipt; preserved $migration_receipt" >&2
-      rmdir "$install_lock" 2>/dev/null || true
-      exit 1
-      ;;
-  esac
+  if ! valid_migration_staging_path "$target" "$recovered_staging"; then
+    echo "RECOVERY_FAILED: unsafe migration staging receipt; preserved $migration_receipt" >&2
+    rmdir "$install_lock" 2>/dev/null || true
+    exit 1
+  fi
   prior_delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
   if [[ "$prior_delivery_mode" = "plugin-companion" ]]; then
     if ! rm -rf "$recovered_staging"; then

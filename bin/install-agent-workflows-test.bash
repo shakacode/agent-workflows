@@ -464,6 +464,62 @@ test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat(
   [[ ! -e "$target/skills/pr-batch" ]] || fail "committed companion recovery restored flat skills"
 }
 
+test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data() {
+  local tmp target outside staging metadata_before output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  outside="$tmp/outside"
+  staging="$target/.agent-workflows-flat-migration-evil"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+  mkdir -p "$outside"
+  printf 'outside sentinel\n' > "$outside/SKILL.md"
+  ln -s "$outside" "$staging"
+  printf '%s\n' "$staging" > "$target/.agent-workflows-migration-staging"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat recovery followed a symlink staging receipt"
+  assert_contains "$output" "unsafe migration staging receipt"
+  assert_file "$outside/SKILL.md"
+  assert_symlink "$staging"
+  assert_file "$target/.agent-workflows-migration-staging"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || fail "unsafe recovery mutated metadata"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+}
+
+test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data() {
+  local tmp target outside staging metadata_before output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  outside="$tmp/outside"
+  staging="$target/.agent-workflows-flat-migration-evil"
+  write_native_scw_state codex "$target"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion >"$tmp/companion.out"
+  mkdir -p "$outside"
+  printf 'outside sentinel\n' > "$outside/SKILL.md"
+  ln -s "$outside" "$staging"
+  printf '%s\n' "$staging" > "$target/.agent-workflows-migration-staging"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion cleanup accepted a symlink staging receipt"
+  assert_contains "$output" "unsafe migration staging receipt"
+  assert_file "$outside/SKILL.md"
+  assert_symlink "$staging"
+  assert_file "$target/.agent-workflows-migration-staging"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || fail "unsafe cleanup mutated metadata"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "unsafe cleanup introduced flat skills"
+}
+
 test_install_lock_blocks_concurrent_migration_before_mutation() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -1069,6 +1125,8 @@ main() {
     test_staging_json_extraction_failure_uses_receipt_to_roll_back
     test_crash_receipt_recovers_flat_staging_before_new_install
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
+    test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
+    test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_companion_to_flat_refuses_unowned_same_named_skill
