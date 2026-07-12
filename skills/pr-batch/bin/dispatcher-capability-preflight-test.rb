@@ -202,6 +202,111 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute malformed_replay.key?("required_action")
   end
 
+  def test_irrelevant_replacement_key_cannot_bypass_stale_assignment_requested_policy
+    input = {
+      "lane_id" => "incident-stale-policy-with-replacement-key",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "in-process" },
+      "authority" => { "dispatch" => true, "route" => false },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "stale-policy-instance"
+      }]
+    }
+    selected = dispatch(input)
+    pending_assignment = selected.fetch("active_assignments").first
+    irrelevant_proof = {
+      "type" => "replacement-proof", "version" => 1, "id" => "irrelevant-proof",
+      "consumed" => false,
+      "prior_assignment" => pending_assignment,
+      "replacement_assignment" => pending_assignment.merge(
+        "instance_id" => "irrelevant-instance", "launch_token" => "irrelevant-token"
+      ),
+      "stop_attestation" => "stopped", "reconciliation_attestation" => "reconciled"
+    }
+    changed_input = input.merge(
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "local" },
+      "replacement" => irrelevant_proof
+    )
+    outputs = [
+      dispatch(changed_input.merge("active_assignments" => [pending_assignment])),
+      dispatch(changed_input.merge("active_assignments" => [pending_assignment.merge("lifecycle" => "confirmed-active")]))
+    ]
+
+    outputs.each do |output|
+      assert_equal "blocked-replacement-fencing", output.fetch("status")
+      assert_equal false, output.fetch("resume_goal")
+      refute output.key?("dispatch")
+    end
+  end
+
+  def test_assignment_requested_policy_treats_omitted_hard_route_as_false_in_both_replay_paths
+    omitted_request = {
+      "route" => { "model" => "Sol", "effort" => "high" },
+      "dispatcher" => "remote"
+    }
+    explicit_false_request = {
+      "dispatcher" => "remote",
+      "route" => { "effort" => "high", "model" => "Sol" },
+      "hard_route" => false
+    }
+    base = {
+      "lane_id" => "incident-semantic-assignment-policy",
+      "authority" => {},
+      "candidates" => [{
+        "route" => omitted_request.fetch("route"),
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "semantic-policy-instance"
+      }]
+    }
+    selected_omitted = dispatch(base.merge("requested" => omitted_request))
+    selected_false = dispatch(base.merge("requested" => explicit_false_request))
+    omitted_assignment = selected_omitted.fetch("active_assignments").first
+    irrelevant_proof = {
+      "type" => "replacement-proof", "version" => 1, "id" => "semantic-policy-irrelevant-proof",
+      "consumed" => false,
+      "prior_assignment" => omitted_assignment,
+      "replacement_assignment" => omitted_assignment.merge(
+        "instance_id" => "semantic-policy-other-instance", "launch_token" => "semantic-policy-other-token"
+      ),
+      "stop_attestation" => "stopped", "reconciliation_attestation" => "reconciled"
+    }
+
+    omitted_to_false = dispatch(
+      base.merge(
+        "requested" => explicit_false_request,
+        "active_assignments" => [omitted_assignment],
+        "replacement" => irrelevant_proof
+      )
+    )
+    false_to_omitted = dispatch(
+      base.merge(
+        "requested" => omitted_request,
+        "candidates" => [],
+        "active_assignments" => selected_false.fetch("active_assignments")
+      )
+    )
+    true_mismatch = dispatch(
+      base.merge(
+        "requested" => explicit_false_request.merge("hard_route" => true),
+        "candidates" => [],
+        "active_assignments" => [omitted_assignment]
+      )
+    )
+
+    assert_equal "launch-pending", omitted_to_false.fetch("status")
+    assert_equal omitted_assignment.fetch("launch_token"), omitted_to_false.dig("dispatch", "launch_token")
+    assert_equal "launch-pending", false_to_omitted.fetch("status")
+    assert_equal selected_false.dig("dispatch", "launch_token"), false_to_omitted.dig("dispatch", "launch_token")
+    assert_equal "blocked-replacement-fencing", true_mismatch.fetch("status")
+    refute true_mismatch.key?("dispatch")
+  end
+
   def test_rejects_an_unattested_dispatcher_before_a_later_authorized_candidate
     output = dispatch(
       "lane_id" => "incident-attestation",
@@ -1614,6 +1719,46 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     unchanged = dispatch(input.merge(persisted_state, "requested" => reordered_request))
     assert_equal "selected", unchanged.fetch("status")
     assert_equal selected.fetch("dispatch"), unchanged.fetch("dispatch")
+  end
+
+  def test_persisted_decision_requested_policy_treats_omitted_hard_route_as_false
+    omitted_request = {
+      "route" => { "model" => "Sol", "effort" => "high" },
+      "dispatcher" => "remote"
+    }
+    explicit_false_request = {
+      "dispatcher" => "remote",
+      "route" => { "effort" => "high", "model" => "Sol" },
+      "hard_route" => false
+    }
+    base = { "lane_id" => "incident-semantic-request-policy", "authority" => {}, "candidates" => [] }
+    omitted = dispatch(base.merge("requested" => omitted_request))
+    explicit_false = dispatch(base.merge("requested" => explicit_false_request))
+
+    omitted_to_false = dispatch(
+      base.merge(
+        "requested" => explicit_false_request,
+        "dispatch_decision_request" => omitted.fetch("dispatch_decision_request")
+      )
+    )
+    false_to_omitted = dispatch(
+      base.merge(
+        "requested" => omitted_request,
+        "dispatch_decision_request" => explicit_false.fetch("dispatch_decision_request")
+      )
+    )
+    true_mismatch = dispatch(
+      base.merge(
+        "requested" => explicit_false_request.merge("hard_route" => true),
+        "dispatch_decision_request" => omitted.fetch("dispatch_decision_request")
+      )
+    )
+
+    assert_equal "blocked-user-input", omitted_to_false.fetch("status")
+    assert_equal omitted.fetch("dispatch_decision_request"), omitted_to_false.fetch("dispatch_decision_request")
+    assert_equal "blocked-user-input", false_to_omitted.fetch("status")
+    assert_equal explicit_false.fetch("dispatch_decision_request"), false_to_omitted.fetch("dispatch_decision_request")
+    assert_equal "invalid-input", true_mismatch.fetch("status")
   end
 
   def test_present_malformed_decision_resolution_values_return_structured_invalid_input

@@ -29,6 +29,18 @@ def canonicalize(value)
   end
 end
 
+def canonical_requested_policy(requested)
+  return requested unless requested.is_a?(Hash)
+
+  canonical = canonicalize(requested)
+  canonical["hard_route"] = false unless canonical.key?("hard_route")
+  canonical
+end
+
+def requested_policy_equal?(left, right)
+  canonical_requested_policy(left) == canonical_requested_policy(right)
+end
+
 def stable_digest(value)
   Digest::SHA256.hexdigest(JSON.generate(canonicalize(value)))
 end
@@ -525,7 +537,8 @@ if input.key?("dispatch_decision_request") &&
    !persisted_request_shape?(input["dispatch_decision_request"], input["lane_id"])
   fail_input("dispatch_decision_request must be a well-formed persisted request history for this lane")
 end
-if input.key?("dispatch_decision_request") && input["requested"] != input.dig("dispatch_decision_request", "requested")
+if input.key?("dispatch_decision_request") &&
+   !requested_policy_equal?(input["requested"], input.dig("dispatch_decision_request", "requested"))
   fail_input("dispatch_decision_request requested tuple must match current requested tuple; refresh persisted decision state")
 end
 
@@ -596,15 +609,15 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
       entry["instance_id"] == persisted_assignment["instance_id"]
   end
   assignment_requested_unchanged = !persisted_assignment.key?("requested") ||
-                                   persisted_assignment["requested"] == input["requested"]
+                                   requested_policy_equal?(persisted_assignment["requested"], input["requested"])
   requested_identity_replayable = same_requested_identity && assignment_requested_unchanged &&
                                   (candidate_inputs.empty? || current_candidate_matches)
   persisted_request_unchanged = persisted_decision_history &&
-                                input["requested"] == persisted_decision_history["requested"]
+                                requested_policy_equal?(input["requested"], persisted_decision_history["requested"])
   resolved_identity_replayable = history_resolution&.dig("action") == "dispatch-decision" &&
                                  persisted_request_unchanged && current_candidate_matches
   provenance_identity_replayable = persisted_assignment["selection_provenance"] == "top-level-authorized-fallback" &&
-                                   persisted_assignment["requested"] == input["requested"] &&
+                                   requested_policy_equal?(persisted_assignment["requested"], input["requested"]) &&
                                    (candidate_inputs.empty? || current_candidate_matches)
   unless requested_identity_replayable || resolved_identity_replayable || provenance_identity_replayable
     prospective_candidate, prospective_index, prospective_rejections = select_candidate(candidate_inputs, requested, authority)
@@ -689,6 +702,13 @@ if !existing_assignments.empty? && !matching_assignment &&
 end
 
 if matching_assignment
+  if matching_assignment.key?("requested") &&
+     !requested_policy_equal?(matching_assignment["requested"], input["requested"])
+    puts JSON.generate(
+      replacement_fencing_output(input:, requested:, authority:, candidate:, rejections:, prospective_assignment: assignment)
+    )
+    exit
+  end
   confirmation = input["launch_confirmation"]
   if confirmation && !assignment_identity_matches?(confirmation["assignment"], matching_assignment)
     fail_input("launch_confirmation must match the persisted assignment identity")
