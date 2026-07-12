@@ -299,6 +299,9 @@ class ModelRoutingContractTest < Minitest::Test
     refute_nil launch_gate
     refute_nil target_verification
     assert_operator launch_gate, :<, target_verification
+    [DISPATCH_PERSISTENCE_RULE, EVIDENCE_VOCABULARY_RULE].each do |rule|
+      assert_match(/^   #{Regexp.escape(rule)}/, docs, "item 4 continuation must retain exactly three spaces")
+    end
   end
 
   def test_planning_and_dispatch_surfaces_propagate_routes
