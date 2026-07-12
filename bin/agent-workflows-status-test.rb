@@ -120,6 +120,51 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_delivery_mode_override_previews_flat_to_companion_migration
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        FileUtils.mkdir_p(File.join(target, "skills/example"))
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "example\n")
+        File.write(File.join(target, "skills/example/SKILL.md"), "example\n")
+        system("git", "-C", source, "init", "--quiet", exception: true)
+        system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+        system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+        system("git", "-C", source, "add", ".", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "fixture", exception: true)
+        revision, revision_status = Open3.capture2("git", "-C", source, "rev-parse", "HEAD")
+        assert revision_status.success?, revision
+        revision = revision.strip
+        write_codex_native_state(target)
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => revision,
+          "delivery_mode" => "flat"
+        )
+
+        out, status = run_status(
+          {}, "--target", target, "--host", "codex", "--delivery-mode", "plugin-companion", "--json"
+        )
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        assert_equal "plugin-companion", payload.fetch("delivery_mode")
+        assert_equal "managed", payload.dig("flat", "state")
+      end
+    end
+  end
+
+  def test_invalid_delivery_mode_override_is_check_failed
+    out, status = run_status({}, "--delivery-mode", "hybrid", "--json")
+
+    assert_equal 3, status.exitstatus, out
+    assert_includes out, "--delivery-mode must be flat or plugin-companion"
+  end
+
   def test_flat_status_reports_present_skill_route_without_migration_warning
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|

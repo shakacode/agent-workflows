@@ -191,6 +191,11 @@ module AgentWorkflowsStatus
   end
 
   def build_payload(options)
+    requested_delivery_mode = options[:delivery_mode]
+    if requested_delivery_mode && !%w[flat plugin-companion].include?(requested_delivery_mode)
+      raise ArgumentError, "--delivery-mode must be flat or plugin-companion, got: #{requested_delivery_mode}"
+    end
+
     host, target = resolve_host_and_target(options.fetch(:host), options[:target])
     metadata = read_metadata(target)
     unless metadata
@@ -198,7 +203,7 @@ module AgentWorkflowsStatus
     end
 
     source = File.expand_path(options[:source] || metadata["source"].to_s)
-    delivery_mode = metadata.fetch("delivery_mode", "flat")
+    delivery_mode = requested_delivery_mode || metadata.fetch("delivery_mode", "flat")
     delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:)
     if delivery_error
       return status_payload(
@@ -252,15 +257,18 @@ module AgentWorkflowsStatus
 end
 
 if $PROGRAM_NAME == __FILE__
-  options = { host: "codex", target: nil, source: nil, fetch: false, json: false }
+  options = { host: "codex", target: nil, source: nil, delivery_mode: nil, fetch: false, json: false }
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--fetch] [--json]"
+    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--delivery-mode flat|plugin-companion] [--fetch] [--json]"
     opts.on(
       "--host HOST",
       "Agent host: codex, claude, or auto (unmarked explicit targets default to codex)"
     ) { |value| options[:host] = value }
     opts.on("--target DIR", "Installed agent home to inspect") { |value| options[:target] = value }
     opts.on("--source DIR", "Source shakacode/agent-workflows clone") { |value| options[:source] = value }
+    opts.on("--delivery-mode MODE", "Evaluate compatibility for flat or plugin-companion") do |value|
+      options[:delivery_mode] = value
+    end
     opts.on("--fetch", "Fetch origin before checking the source revision") { options[:fetch] = true }
     opts.on("--json", "Print JSON output") { options[:json] = true }
     opts.on("-h", "--help", "Show help") do
@@ -272,6 +280,10 @@ if $PROGRAM_NAME == __FILE__
 
   unless %w[codex claude auto].include?(options.fetch(:host))
     warn "--host must be codex, claude, or auto, got: #{options.fetch(:host)}"
+    exit AgentWorkflowsStatus::STATUS_EXIT.fetch("CHECK_FAILED")
+  end
+  if options[:delivery_mode] && !%w[flat plugin-companion].include?(options[:delivery_mode])
+    warn "--delivery-mode must be flat or plugin-companion, got: #{options[:delivery_mode]}"
     exit AgentWorkflowsStatus::STATUS_EXIT.fetch("CHECK_FAILED")
   end
 

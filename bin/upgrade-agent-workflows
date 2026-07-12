@@ -253,7 +253,7 @@ if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
 fi
 
 if [[ "$dry_run" = "true" ]]; then
-  status_args=(--host "$host" --target "$target" --source "$source")
+  status_args=(--host "$host" --target "$target" --source "$source" --delivery-mode "$delivery_mode")
   if [[ "$fetch" = "true" ]]; then
     status_args+=(--fetch)
   fi

@@ -465,6 +465,41 @@ RUBY
   [[ -d "$staging" ]] || fail "retry lost remaining quarantine"
 }
 
+test_recovery_normalization_failure_releases_install_lock() {
+  local tmp target staging receipt injection output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-crash"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-recovery-normalization.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/flat.out"
+  mkdir -p "$staging"
+  mv "$target/skills/pr-batch" "$staging/"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailRecoveredStagingNormalization
+  def expand_path(path, *)
+    raise "injected recovered-staging normalization failure" if path == ENV["QA_RECOVERED_STAGING"] && ARGV == [path]
+
+    super
+  end
+end
+File.singleton_class.prepend(FailRecoveredStagingNormalization)
+RUBY
+
+  set +e
+  output="$(QA_RECOVERED_STAGING="$staging" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "recovered-staging normalization failure unexpectedly succeeded"
+  assert_contains "$output" "injected recovered-staging normalization failure"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "normalization failure leaked install lock"
+  assert_file "$receipt"
+  [[ -d "$staging" ]] || fail "normalization failure removed staged recovery data"
+}
+
 test_crash_receipt_recovers_flat_staging_before_new_install() {
   local tmp target staging output status skill
   tmp="$(mktemp -d)"
@@ -1075,6 +1110,30 @@ test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_upgrade_dry_run_checks_requested_delivery_mode() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode plugin-companion --dry-run --no-fetch 2>&1)"
+  assert_contains "$output" "delivery_mode=plugin-companion"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --delivery-mode flat --dry-run --no-fetch 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "incompatible requested flat mode did not return CHECK_FAILED: $output"
+  assert_contains "$output" "CHECK_FAILED"
+}
+
 test_upgrade_without_consumer_roots_succeeds() {
   local tmp source target output
   tmp="$(mktemp -d)"
@@ -1200,6 +1259,7 @@ main() {
     test_final_verification_race_rolls_back_before_metadata_commit
     test_staging_json_extraction_failure_uses_receipt_to_roll_back
     test_failed_partial_rollback_preserves_receipt_for_retry
+    test_recovery_normalization_failure_releases_install_lock
     test_crash_receipt_recovers_flat_staging_before_new_install
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
@@ -1227,6 +1287,7 @@ main() {
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
+    test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails

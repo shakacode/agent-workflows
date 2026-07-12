@@ -462,6 +462,13 @@ if ! mkdir "$install_lock" 2>/dev/null; then
   echo "DELIVERY_MODE_CONFLICT: another agent-workflows install or migration holds $install_lock" >&2
   exit 1
 fi
+release_install_lock() {
+  local status=$?
+  trap - EXIT
+  rmdir "$install_lock" 2>/dev/null || true
+  exit "$status"
+}
+trap release_install_lock EXIT
 migration_staging=""
 migration_receipt="$target/.agent-workflows-migration-staging"
 if [[ -f "$migration_receipt" ]]; then
