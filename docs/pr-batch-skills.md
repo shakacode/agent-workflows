@@ -66,9 +66,19 @@ omit the queue summary and note that queue state is unavailable.
    start with `$spec` to produce requirements, design, and executable tasks.
 2. If the target scope is a filter, label, milestone, pasted list, or ambiguous bare number for implementation planning, start with `$plan-pr-batch`.
 3. If exact candidate issues are already known and may be hypothetical, AI/code-analysis-only, over-scoped, or better handled with a no-PR evidence comment, start with `$evaluate-issue` directly.
-4. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
-5. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
-6. Shape the batch into independent worker lanes and choose the batch-size
+4. Record `Launch assurance` separately from every `Worker model/effort route`:
+   exact initiating coordinator model/effort, host/runtime or explicit
+   operator-selected binding source, and exact independent-checker model/effort
+   with qualifying binding evidence. Record it before reading targets, planning,
+   or dispatch. When operator policy requires an exact parent or checker, prompt
+   text, model self-report, installed rosters, and a dispatch-resolved class do
+   not qualify; a missing, mismatched, or `UNKNOWN` binding stops for a correctly
+   bound parent relaunch or checker reservation. Without that policy, preserve
+   unavailable binding as `UNKNOWN` and continue portable class-based planning.
+   Reverify checker freshness and independence when its instance starts.
+5. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
+6. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
+7. Shape the batch into independent worker lanes and choose the batch-size
    target before final lane packing. Codex-targeted waves may use up to 10
    fully independent file-disjoint items, or 8 when verified file-disjoint lanes
    touch shared or risky surfaces. Claude and generic waves use up to 5
@@ -78,31 +88,22 @@ omit the queue summary and note that queue state is unavailable.
    live coordination, CI, approval, or quota health is uncertain. For multiple
    concurrent batches, keep this as a per-wave cap and apply the target repo's
    coordination-backend rules before launching.
-7. Record `Launch assurance` separately from every `Worker model/effort route`:
-   exact initiating coordinator model/effort, host/runtime or explicit
-   operator-selected binding source, and exact independent-checker model/effort.
-   Record it before reading targets, planning, or dispatch. When operator policy
-   requires an exact parent or checker, prompt text, model self-report, installed
-   rosters, and a dispatch-resolved class do not qualify; mismatch or `UNKNOWN`
-   requires a correctly bound relaunch. Without that policy, preserve unavailable
-   binding as `UNKNOWN` and continue portable class-based planning. Keep the
-   `Coordinator model/effort` assignment
-   separate from every worker route. Resolve the roster on each actual host, start routine
-   workers on the fastest or balanced pair justified by lane risk and
-   verification, and reserve the strongest pair for evidence-gated escalation.
-   Workers must not inherit the coordinator pair. A small first failure gets a
-   focused correction on the initial route; two materially different credible
-   failures, or an earlier canonical high-risk trigger, require
-   `MODEL_ESCALATION_REQUEST`. Prefer stronger-model plan review followed by
-   implementation on the initial tier. Group lanes by exact model/effort route
-   without combining ownership, dependencies, collision ordering, or wave
-   schedule. When a known host's roster is unavailable, use portable
-   dispatch-resolved initial and escalation classes, then bind and revalidate
-   exact pairs before dispatch. Keep an unresolved route `UNKNOWN` and the
-   prompt unready. Give lower-capability workers a coordinator-approved execution
-   envelope and require immediate return to the coordinator on contradictory
-   evidence, ambiguity, scope/risk growth, weakened verification, or
-   consequential judgment.
+   Keep the `Coordinator model/effort` assignment separate from every worker
+   route. Resolve the roster on each actual host, start routine workers on the
+   fastest or balanced pair justified by lane risk and verification, and reserve
+   the strongest pair for evidence-gated escalation. Workers must not inherit
+   the coordinator pair. A small first failure gets a focused correction on the
+   initial route; two materially different credible failures, or an earlier
+   canonical high-risk trigger, require `MODEL_ESCALATION_REQUEST`. Prefer
+   stronger-model plan review followed by implementation on the initial tier.
+   Group lanes by exact model/effort route without combining ownership,
+   dependencies, collision ordering, or wave schedule. When a known host's
+   roster is unavailable, use portable dispatch-resolved initial and escalation
+   classes, then bind and revalidate exact pairs before dispatch. Keep an
+   unresolved route `UNKNOWN` and the prompt unready. Give lower-capability
+   workers a coordinator-approved execution envelope and require immediate
+   return to the coordinator on contradictory evidence, ambiguity, scope/risk
+   growth, weakened verification, or consequential judgment.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`

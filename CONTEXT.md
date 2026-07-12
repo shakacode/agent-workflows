@@ -65,12 +65,14 @@ _Avoid_: batch model (it does not automatically apply to every worker)
 **Batch launch assurance**:
 The fail-closed pre-dispatch record that the already-running initiating parent
 has the exact coordinator model/effort required by operator policy, with a
-host/runtime or explicit operator-selected binding source, and that the
-independent checker route is reserved. Prompt text, model self-report, installed
-rosters, mutable default configuration, and dispatch-resolved classes do not
-prove the active parent; runtime evidence must be effective and instance-bound. A
+host/runtime or explicit operator-selected binding source, and that the exact
+checker model/effort required by operator policy is reserved with qualifying
+binding evidence. Prompt text, model self-report, installed rosters, mutable
+default configuration, and dispatch-resolved classes do not prove the active
+parent or checker; runtime evidence must be effective and instance-bound. A
 mismatch or `UNKNOWN` blocks planning or dispatch when the policy requires an
-exact parent.
+exact parent or checker. Checker freshness and independence are reverified when
+the checker instance starts and before its verdict is accepted.
 _Avoid_: requested model, prompt model
 
 **Worker model/effort route**:

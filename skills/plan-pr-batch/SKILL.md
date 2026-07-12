@@ -64,11 +64,15 @@ Plan a PR batch
      policy. When it requires an exact parent or checker, verify the
      already-running coordinator's exact model/effort from host session metadata,
      effective instance-bound runtime state, or explicit operator-selected launch
-     configuration. Mutable default configuration alone, prompt text, model
-     self-report, installed rosters, and dispatch-resolved classes do not
-     qualify; mismatch or `UNKNOWN` stops for relaunch. Without
-     an exact-parent policy, preserve unavailable binding as `UNKNOWN` and
-     continue portable class-based planning; a prompt cannot upgrade its own session.
+     configuration, and verify that the exact policy-required checker route is
+     available and reserved with qualifying binding evidence. Mutable default
+     configuration alone, prompt text, model self-report, installed rosters, and
+     dispatch-resolved classes do not qualify. A missing, mismatched, or `UNKNOWN`
+     exact-policy parent or checker binding stops for a correctly bound parent
+     relaunch or checker reservation. Without an exact-parent or exact-checker
+     policy, preserve unavailable binding as `UNKNOWN` and continue portable
+     class-based planning; a prompt cannot upgrade its own session. Reverify the
+     checker instance's exact binding, freshness, and independence when it starts.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified
      `merge_authority`, ask for `none`, `ask`, or

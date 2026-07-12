@@ -213,6 +213,8 @@ class ModelRoutingContractTest < Minitest::Test
     [
       "**Coordinator model/effort assignment**",
       "**Batch launch assurance**",
+      "exact checker model/effort required by operator policy",
+      "exact parent or checker",
       "**Worker execution envelope**",
       "**Worker model/effort route**",
       "**Active model/effort assignment**",
@@ -226,6 +228,18 @@ class ModelRoutingContractTest < Minitest::Test
     end
 
     refute_includes context, "**Model/effort group**"
+  end
+
+  def test_source_docs_gate_launch_assurance_before_target_verification
+    skip "source-pack docs are not installed" unless source_checkout?
+
+    docs = read_repo_file("docs/pr-batch-skills.md")
+    launch_gate = docs.index("4. Record `Launch assurance`")
+    target_verification = docs.index("5. Verify every candidate through GitHub")
+
+    refute_nil launch_gate
+    refute_nil target_verification
+    assert_operator launch_gate, :<, target_verification
   end
 
   def test_planning_and_dispatch_surfaces_propagate_routes
@@ -250,9 +264,12 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes pr_batch, "Worker Model Replacement And Escalation"
     assert_includes pr_batch, "Without that policy, preserve unavailable binding as `UNKNOWN`"
 
-    planner = read_repo_file("skills/plan-pr-batch/SKILL.md")
-    assert_includes planner, "an exact-parent policy"
+    planner = normalized(read_repo_file("skills/plan-pr-batch/SKILL.md"))
+    assert_includes planner, "exact-parent or exact-checker"
     assert_includes planner, "continue portable class-based planning"
+    assert_includes planner, "exact policy-required checker route"
+    assert_includes planner, "checker reservation"
+    assert_includes planner, "freshness, and independence when it starts"
   end
 
   def test_continuous_checker_is_strong_independent_and_fail_closed
