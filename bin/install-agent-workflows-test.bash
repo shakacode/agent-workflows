@@ -668,6 +668,47 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_invalid_recorded_delivery_mode_fails_before_mutation() {
+  local tmp target output status metadata_before sentinel_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target"
+  printf 'preserve me\n' > "$target/sentinel.txt"
+  ruby -rjson -e '
+    path, source = ARGV
+    metadata = {
+      "host" => "codex",
+      "mode" => "copy",
+      "delivery_mode" => "hybrid",
+      "source" => source,
+      "source_revision" => "0000000000000000000000000000000000000000"
+    }
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json" "$ROOT"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  sentinel_before="$(shasum "$target/sentinel.txt")"
+  target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 64 ]] || fail "invalid recorded delivery mode exited $status: $output"
+  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion, got: hybrid"
+  assert_not_contains "$output" "JSON::ParserError"
+  assert_not_contains "$output" "common.rb"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "invalid recorded delivery mode mutated metadata"
+  [[ "$sentinel_before" = "$(shasum "$target/sentinel.txt")" ]] || \
+    fail "invalid recorded delivery mode mutated sentinel"
+  [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+    fail "invalid recorded delivery mode changed the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid recorded delivery mode created install lock"
+  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "invalid recorded delivery mode created staging receipt"
+  [[ ! -e "$target/skills" ]] || fail "invalid recorded delivery mode created a flat skill layout"
+}
+
 test_companion_to_flat_refuses_unowned_same_named_skill() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -1267,6 +1308,7 @@ main() {
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
+    test_invalid_recorded_delivery_mode_fails_before_mutation
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
