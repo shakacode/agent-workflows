@@ -86,6 +86,50 @@ def fallback_authorized?(candidate, requested, authority)
   (!dispatcher_changed || authority["dispatch"] == true) && (!route_changed || authority["route"] == true)
 end
 
+def select_candidate(candidate_inputs, requested, authority)
+  rejections = []
+  requested_candidates, fallback_candidates = candidate_inputs.each_with_index.partition do |entry, _index|
+    requested_tuple?(entry, requested)
+  end
+  selected = (requested_candidates + fallback_candidates).find do |entry, _index|
+    next false unless entry.is_a?(Hash)
+    next false unless requested_tuple?(entry, requested) || fallback_authorized?(entry, requested, authority)
+
+    candidate_reason = unusable_reason(entry)
+    if candidate_reason
+      rejections << { "dispatcher" => entry["dispatcher"], "reason" => candidate_reason }
+      next false
+    end
+
+    true
+  end
+  candidate, candidate_index = selected if selected
+  [candidate, candidate_index, rejections]
+end
+
+def prospective_assignment(lane_id:, candidate:, candidate_index:, requested:, history_resolution:)
+  token = "dispatch-#{stable_digest([lane_id, candidate['route'], candidate['dispatcher'], candidate['instance_id'], candidate['attestation']])[0, 16]}"
+  selection_provenance = if requested_tuple?(candidate, requested)
+                           "requested-tuple"
+                         elsif history_resolution&.dig("action") == "dispatch-decision"
+                           "dispatch-decision-fallback"
+                         else
+                           "top-level-authorized-fallback"
+                         end
+  {
+    "lane_id" => lane_id,
+    "route" => candidate["route"],
+    "dispatcher" => candidate["dispatcher"],
+    "instance_id" => candidate["instance_id"],
+    "launch_token" => token,
+    "lifecycle" => "launch-pending",
+    "requested" => requested,
+    "selection_provenance" => selection_provenance,
+    # Discovery metadata only: a replay identity is the lane/route/dispatcher/instance/token tuple.
+    "candidate_index" => candidate_index
+  }
+end
+
 def assignment_identity_matches?(persisted, canonical)
   persisted.is_a?(Hash) && %w[lane_id route dispatcher instance_id launch_token].all? do |field|
     persisted[field] == canonical[field]
@@ -286,8 +330,8 @@ def with_decision_history(output, request, decision = nil, resolution: nil)
   output
 end
 
-def replacement_fencing_output(input:, requested:, authority:, candidate:, rejections:)
-  {
+def replacement_fencing_output(input:, requested:, authority:, candidate:, rejections:, prospective_assignment: nil)
+  output = {
     "status" => "blocked-replacement-fencing",
     "requested_route" => requested["route"],
     "requested_dispatcher" => requested["dispatcher"],
@@ -302,6 +346,8 @@ def replacement_fencing_output(input:, requested:, authority:, candidate:, rejec
     "rejections" => rejections,
     "persistence" => persistence("replacement_fence")
   }
+  output["prospective_replacement_assignment"] = canonical_assignment(prospective_assignment) if prospective_assignment
+  output
 end
 
 def decision_choice_valid?(choice, lane_id, requested)
@@ -561,13 +607,21 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
                                    persisted_assignment["requested"] == input["requested"] &&
                                    (candidate_inputs.empty? || current_candidate_matches)
   unless requested_identity_replayable || resolved_identity_replayable || provenance_identity_replayable
+    prospective_candidate, prospective_index, prospective_rejections = select_candidate(candidate_inputs, requested, authority)
+    prospective = if prospective_candidate
+                    prospective_assignment(
+                      lane_id: input["lane_id"], candidate: prospective_candidate,
+                      candidate_index: prospective_index, requested:, history_resolution:
+                    )
+                  end
     puts JSON.generate(
       replacement_fencing_output(
         input:,
         requested:,
         authority:,
-        candidate: { "route" => requested["route"], "dispatcher" => requested["dispatcher"] },
-        rejections: []
+        candidate: prospective_candidate || { "route" => requested["route"], "dispatcher" => requested["dispatcher"] },
+        rejections: prospective_rejections,
+        prospective_assignment: prospective
       )
     )
     exit
@@ -597,28 +651,8 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
   exit
 end
 
-rejections = []
-candidate = nil
-candidate_index = nil
+candidate, candidate_index, rejections = select_candidate(candidate_inputs, requested, authority)
 reason = nil
-
-candidates = candidate_inputs.each_with_index.to_a
-requested_candidates, fallback_candidates = candidates.partition do |entry, _index|
-  requested_tuple?(entry, requested)
-end
-selected = (requested_candidates + fallback_candidates).find do |entry, _index|
-  next false unless entry.is_a?(Hash)
-  next false unless requested_tuple?(entry, requested) || fallback_authorized?(entry, requested, authority)
-
-  candidate_reason = unusable_reason(entry)
-  if candidate_reason
-    rejections << { "dispatcher" => entry["dispatcher"], "reason" => candidate_reason }
-    next false
-  end
-
-  true
-end
-candidate, candidate_index = selected if selected
 
 unless candidate
   if requested["hard_route"] && candidate_inputs.any? do |entry|
@@ -641,31 +675,16 @@ unless candidate
   exit
 end
 
-token = "dispatch-#{stable_digest([input['lane_id'], candidate['route'], candidate['dispatcher'], candidate['instance_id'], candidate['attestation']])[0, 16]}"
-selection_provenance = if requested_tuple?(candidate, requested)
-                         "requested-tuple"
-                       elsif history_resolution&.dig("action") == "dispatch-decision"
-                         "dispatch-decision-fallback"
-                       else
-                         "top-level-authorized-fallback"
-                       end
-assignment = {
-  "lane_id" => input["lane_id"],
-  "route" => candidate["route"],
-  "dispatcher" => candidate["dispatcher"],
-  "instance_id" => candidate["instance_id"],
-  "launch_token" => token,
-  "lifecycle" => "launch-pending",
-  "requested" => requested,
-  "selection_provenance" => selection_provenance,
-  # Discovery metadata only: a replay identity is the lane/route/dispatcher/instance/token tuple.
-  "candidate_index" => candidate_index
-}
+assignment = prospective_assignment(
+  lane_id: input["lane_id"], candidate:, candidate_index:, requested:, history_resolution:
+)
 matching_assignment = existing_assignments.find { |entry| assignment_identity_matches?(entry, assignment) }
 replacement = input["replacement"].is_a?(Hash) ? input["replacement"] : {}
 if !existing_assignments.empty? && !matching_assignment &&
    !replacement_proof_authorizes?(replacement, existing_assignments.first, assignment)
-  puts JSON.generate(replacement_fencing_output(input:, requested:, authority:, candidate:, rejections:))
+  puts JSON.generate(
+    replacement_fencing_output(input:, requested:, authority:, candidate:, rejections:, prospective_assignment: assignment)
+  )
   exit
 end
 

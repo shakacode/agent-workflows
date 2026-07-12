@@ -631,7 +631,6 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       )
     )
     replacement_candidate = input.fetch("candidates").map { |candidate| candidate.merge("instance_id" => "worker-new") }
-    expected_replacement = dispatch(input.merge("candidates" => replacement_candidate)).fetch("dispatch")
 
     generic = dispatch(
       input.merge(
@@ -640,6 +639,13 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         "replacement" => { "prior_instance_stopped" => true, "reconciled" => true }
       )
     )
+    fenced = dispatch(
+      input.merge(
+        "candidates" => replacement_candidate,
+        "active_assignments" => confirmed.fetch("active_assignments")
+      )
+    )
+    expected_replacement = fenced.fetch("prospective_replacement_assignment")
     proof = {
       "type" => "replacement-proof",
       "version" => 1,
@@ -657,6 +663,27 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         "replacement" => proof
       )
     )
+    tampered_outputs = [
+      { "launch_token" => "tampered-token" },
+      { "instance_id" => "tampered-instance" }
+    ].map do |tampering|
+      dispatch(
+        input.merge(
+          "candidates" => replacement_candidate,
+          "active_assignments" => confirmed.fetch("active_assignments"),
+          "replacement" => proof.merge(
+            "replacement_assignment" => expected_replacement.merge(tampering)
+          )
+        )
+      )
+    end
+    early_fence = dispatch(
+      input.merge(
+        "requested" => { "route" => { "model" => "Terra", "effort" => "high" }, "dispatcher" => "remote" },
+        "candidates" => [],
+        "active_assignments" => confirmed.fetch("active_assignments")
+      )
+    )
     reused = dispatch(
       input.merge(
         "candidates" => replacement_candidate,
@@ -666,9 +693,23 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     )
 
     assert_equal "invalid-input", generic.fetch("status")
+    assert_equal "blocked-replacement-fencing", fenced.fetch("status")
+    assert_equal false, fenced.fetch("resume_goal")
+    refute fenced.key?("dispatch")
+    assert_equal "replacement_fence", fenced.dig("persistence", "record")
+    assert_equal "launch-pending", expected_replacement.fetch("lifecycle")
+    assert_equal replacement_candidate.first.fetch("instance_id"), expected_replacement.fetch("instance_id")
+    assert expected_replacement.fetch("launch_token").start_with?("dispatch-")
     assert_equal "selected", replaced.fetch("status")
+    assert_equal expected_replacement, replaced.fetch("dispatch")
     assert_equal "replacement-proof-1", replaced.dig("replacement_transition", "proof_id")
     assert_equal true, replaced.dig("replacement_transition", "consumed")
+    tampered_outputs.each do |tampered|
+      assert_equal "blocked-replacement-fencing", tampered.fetch("status")
+      assert_equal expected_replacement, tampered.fetch("prospective_replacement_assignment")
+    end
+    assert_equal "blocked-replacement-fencing", early_fence.fetch("status")
+    refute early_fence.key?("prospective_replacement_assignment")
     assert_equal "blocked-replacement-fencing", reused.fetch("status")
   end
 
