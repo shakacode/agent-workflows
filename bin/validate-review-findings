@@ -246,8 +246,12 @@ module ValidateReviewFindings
     failures.concat(validate_target(finding["target"], label)) if finding.key?("target")
     finding_target = finding["target"]
     finding_head = finding_target["head_sha"] if finding_target.is_a?(Hash)
-    if non_empty_string?(receipt_head) && non_empty_string?(finding_head) && !receipt_head.casecmp?(finding_head)
-      failures << "#{label}: target.head_sha must match review_receipt.target.head_sha"
+    if non_empty_string?(receipt_head) && finding_target.is_a?(Hash) && finding_target.key?("head_sha")
+      if !non_empty_string?(finding_head)
+        failures << "#{label}: target.head_sha must be a non-empty string when review_receipt target is present"
+      elsif !receipt_head.casecmp?(finding_head)
+        failures << "#{label}: target.head_sha must match review_receipt.target.head_sha"
+      end
     end
     failures.concat(validate_enum(finding, "severity", SEVERITIES, label))
     failures.concat(validate_enum(finding, "disposition", DISPOSITIONS, label))

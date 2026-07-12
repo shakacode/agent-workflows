@@ -161,7 +161,8 @@ valid. Symbolic refs such as `HEAD` and
 When an individual finding's `target` also includes `head_sha`, it must name
 the same Git object as `review_receipt.target.head_sha` (hexadecimal case is
 ignored). A finding may omit `head_sha` and inherit the report-level target,
-but it must not name a different reviewed head.
+but a present `head_sha` must be a non-empty string and must not name a
+different reviewed head.
 
 ## Severities
 

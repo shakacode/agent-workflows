@@ -227,6 +227,15 @@ class ValidateReviewFindingsTest < Minitest::Test
 
     finding_target["head_sha"] = receipt_head.upcase
     assert_empty ValidateReviewFindings.validate_document(document, "report")
+
+    finding_target.delete("head_sha")
+    assert_empty ValidateReviewFindings.validate_document(document, "report")
+
+    ["", " ", 123].each do |malformed_head|
+      finding_target["head_sha"] = malformed_head
+      assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                      "report: review_findings[0]: target.head_sha must be a non-empty string when review_receipt target is present"
+    end
   end
 
   def test_autoreview_receipt_requires_source_and_unique_core_lenses
