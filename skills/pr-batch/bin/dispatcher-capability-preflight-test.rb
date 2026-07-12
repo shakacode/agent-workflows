@@ -1015,6 +1015,47 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute replay_active.key?("dispatch")
   end
 
+  def test_launch_confirmation_fails_closed_without_its_matching_persisted_assignment
+    assignment = {
+      "lane_id" => "incident-orphan-confirmation",
+      "route" => { "model" => "Sol", "effort" => "high" },
+      "dispatcher" => "remote",
+      "instance_id" => "confirmed-instance",
+      "launch_token" => "dispatch-confirmed-instance"
+    }
+    input = {
+      "lane_id" => assignment.fetch("lane_id"),
+      "requested" => { "route" => assignment.fetch("route"), "dispatcher" => assignment.fetch("dispatcher") },
+      "candidates" => [{
+        "route" => assignment.fetch("route"),
+        "dispatcher" => assignment.fetch("dispatcher"),
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => assignment.fetch("instance_id")
+      }],
+      "launch_confirmation" => {
+        "type" => "launch-confirmation", "version" => 1, "id" => "orphan-confirmation",
+        "assignment" => assignment
+      }
+    }
+    wrong_lane_assignment = assignment.merge(
+      "lane_id" => "unrelated-lane",
+      "lifecycle" => "launch-pending"
+    )
+
+    outputs = [
+      dispatch(input.merge("active_assignments" => [])),
+      dispatch(input.merge("active_assignments" => [wrong_lane_assignment]))
+    ]
+
+    outputs.each do |output|
+      assert_equal "invalid-input", output.fetch("status")
+      assert_equal "launch_confirmation requires a matching active assignment identity", output.fetch("reason")
+      refute output.key?("dispatch")
+      refute output.key?("resume_goal")
+    end
+  end
+
   def test_launch_pending_does_not_bypass_replacement_fencing_after_the_requested_identity_changes
     input = {
       "lane_id" => "incident-pending-route-change",

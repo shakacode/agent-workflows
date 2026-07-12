@@ -439,6 +439,12 @@ active_assignments_invalid = input.key?("active_assignments") &&
 fail_input("active_assignments must contain at most one well-formed persisted assignment") if active_assignments_invalid
 fail_input("replacement must be a well-formed replacement proof") if input.key?("replacement") && !replacement_proof_shape?(input["replacement"])
 fail_input("launch_confirmation must be a well-formed identity-bound confirmation") if input.key?("launch_confirmation") && !confirmation_shape?(input["launch_confirmation"])
+if input.key?("launch_confirmation")
+  confirmed_assignment = input.fetch("active_assignments", []).find do |entry|
+    entry["lane_id"] == input["lane_id"] && assignment_identity_matches?(input.dig("launch_confirmation", "assignment"), entry)
+  end
+  fail_input("launch_confirmation requires a matching active assignment identity") unless confirmed_assignment
+end
 fail_input("decision_resolution requires a persisted dispatch_decision_request") if input.key?("decision_resolution") && !input.key?("dispatch_decision_request")
 
 authority = input.fetch("authority", {})
@@ -581,7 +587,7 @@ end
 candidate, candidate_index = selected if selected
 
 unless candidate
-  if reason.nil? && requested["hard_route"] && candidate_inputs.any? do |entry|
+  if requested["hard_route"] && candidate_inputs.any? do |entry|
        entry.is_a?(Hash) && entry["fallback_authorized"] == true &&
        !route_equal?(entry["route"], requested["route"]) && unusable_reason(entry).nil?
      end
