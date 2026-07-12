@@ -102,11 +102,27 @@ def assignment_identity?(assignment)
 end
 
 def persisted_assignment?(assignment)
-  assignment_identity?(assignment) && %w[launch-pending confirmed-active].include?(assignment["lifecycle"])
+  assignment_identity?(assignment) && assignment_provenance_valid?(assignment) &&
+    %w[launch-pending confirmed-active].include?(assignment["lifecycle"])
 end
 
 def canonical_assignment(assignment)
-  assignment.slice("lane_id", "route", "dispatcher", "instance_id", "launch_token", "lifecycle", "candidate_index")
+  assignment.slice(
+    "lane_id", "route", "dispatcher", "instance_id", "launch_token", "lifecycle", "candidate_index",
+    "requested", "selection_provenance"
+  )
+end
+
+def assignment_provenance_valid?(assignment)
+  has_requested = assignment.key?("requested")
+  has_provenance = assignment.key?("selection_provenance")
+  return true unless has_requested || has_provenance
+  return false unless has_requested && has_provenance && requested_shape?(assignment["requested"])
+  return false unless %w[requested-tuple top-level-authorized-fallback dispatch-decision-fallback].include?(assignment["selection_provenance"])
+
+  matches_requested = route_equal?(assignment["route"], assignment.dig("requested", "route")) &&
+                      assignment["dispatcher"] == assignment.dig("requested", "dispatcher")
+  (assignment["selection_provenance"] == "requested-tuple") == matches_requested
 end
 
 def authority_shape?(authority)
@@ -533,13 +549,18 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
       entry["dispatcher"] == persisted_assignment["dispatcher"] &&
       entry["instance_id"] == persisted_assignment["instance_id"]
   end
-  requested_identity_replayable = same_requested_identity &&
+  assignment_requested_unchanged = !persisted_assignment.key?("requested") ||
+                                   persisted_assignment["requested"] == input["requested"]
+  requested_identity_replayable = same_requested_identity && assignment_requested_unchanged &&
                                   (candidate_inputs.empty? || current_candidate_matches)
   persisted_request_unchanged = persisted_decision_history &&
                                 input["requested"] == persisted_decision_history["requested"]
   resolved_identity_replayable = history_resolution&.dig("action") == "dispatch-decision" &&
                                  persisted_request_unchanged && current_candidate_matches
-  unless requested_identity_replayable || resolved_identity_replayable
+  provenance_identity_replayable = persisted_assignment["selection_provenance"] == "top-level-authorized-fallback" &&
+                                   persisted_assignment["requested"] == input["requested"] &&
+                                   (candidate_inputs.empty? || current_candidate_matches)
+  unless requested_identity_replayable || resolved_identity_replayable || provenance_identity_replayable
     puts JSON.generate(
       replacement_fencing_output(
         input:,
@@ -621,6 +642,13 @@ unless candidate
 end
 
 token = "dispatch-#{stable_digest([input['lane_id'], candidate['route'], candidate['dispatcher'], candidate['instance_id'], candidate['attestation']])[0, 16]}"
+selection_provenance = if requested_tuple?(candidate, requested)
+                         "requested-tuple"
+                       elsif history_resolution&.dig("action") == "dispatch-decision"
+                         "dispatch-decision-fallback"
+                       else
+                         "top-level-authorized-fallback"
+                       end
 assignment = {
   "lane_id" => input["lane_id"],
   "route" => candidate["route"],
@@ -628,6 +656,8 @@ assignment = {
   "instance_id" => candidate["instance_id"],
   "launch_token" => token,
   "lifecycle" => "launch-pending",
+  "requested" => requested,
+  "selection_provenance" => selection_provenance,
   # Discovery metadata only: a replay identity is the lane/route/dispatcher/instance/token tuple.
   "candidate_index" => candidate_index
 }

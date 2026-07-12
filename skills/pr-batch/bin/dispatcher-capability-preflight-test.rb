@@ -108,6 +108,100 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal 1, output.fetch("active_assignments").length
   end
 
+  def test_direct_authorized_fallback_assignment_replays_without_rediscovery
+    input = {
+      "lane_id" => "incident-direct-fallback-recovery",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "in-process" },
+      "authority" => { "dispatch" => true, "route" => false },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "direct-fallback-instance"
+      }]
+    }
+    selected = dispatch(input)
+    pending_assignment = selected.fetch("active_assignments").first
+    active_assignment = pending_assignment.merge("lifecycle" => "confirmed-active")
+
+    pending_replay = dispatch(
+      input.merge("candidates" => [], "active_assignments" => [pending_assignment])
+    )
+    active_replay = dispatch(
+      input.merge("candidates" => [], "active_assignments" => [active_assignment])
+    )
+
+    assert_equal input.fetch("requested"), pending_assignment.fetch("requested")
+    assert_equal "top-level-authorized-fallback", pending_assignment.fetch("selection_provenance")
+    assert_equal "launch-pending", pending_replay.fetch("status")
+    assert_equal pending_assignment.fetch("launch_token"), pending_replay.dig("dispatch", "launch_token")
+    assert_equal "replay-already-active", active_replay.fetch("status")
+    refute active_replay.key?("dispatch")
+  end
+
+  def test_direct_fallback_replay_provenance_fails_closed_for_changed_or_malformed_state
+    input = {
+      "lane_id" => "incident-direct-fallback-guards",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "in-process" },
+      "authority" => { "dispatch" => true, "route" => false },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "guarded-fallback-instance"
+      }]
+    }
+    selected = dispatch(input)
+    assignment = selected.fetch("active_assignments").first
+    changed_request = dispatch(
+      input.merge(
+        "requested" => { "route" => { "model" => "Terra", "effort" => "high" }, "dispatcher" => "in-process" },
+        "candidates" => [],
+        "active_assignments" => [assignment]
+      )
+    )
+    changed_to_selected_tuple = dispatch(
+      input.merge(
+        "requested" => { "route" => assignment.fetch("route"), "dispatcher" => assignment.fetch("dispatcher") },
+        "candidates" => [],
+        "active_assignments" => [assignment]
+      )
+    )
+    unusable_evidence = dispatch(
+      input.merge(
+        "candidates" => [input.fetch("candidates").first.merge("binding" => "UNKNOWN")],
+        "active_assignments" => [assignment]
+      )
+    )
+    different_instance = dispatch(
+      input.merge(
+        "candidates" => [input.fetch("candidates").first.merge("instance_id" => "different-instance")],
+        "active_assignments" => [assignment]
+      )
+    )
+    legacy_assignment = assignment.reject { |key, _value| %w[requested selection_provenance].include?(key) }
+    legacy_replay = dispatch(
+      input.merge("candidates" => [], "active_assignments" => [legacy_assignment])
+    )
+    partial_provenance = assignment.reject { |key, _value| key == "selection_provenance" }
+    malformed_replay = dispatch(
+      input.merge("candidates" => [], "active_assignments" => [partial_provenance])
+    )
+
+    [changed_request, changed_to_selected_tuple, unusable_evidence, different_instance, legacy_replay].each do |output|
+      assert_equal "blocked-replacement-fencing", output.fetch("status")
+      refute output.key?("dispatch")
+    end
+    assert_equal "invalid-input", malformed_replay.fetch("status")
+    assert_equal "active_assignments must contain at most one well-formed persisted assignment",
+                 malformed_replay.fetch("reason")
+    refute malformed_replay.key?("required_action")
+  end
+
   def test_rejects_an_unattested_dispatcher_before_a_later_authorized_candidate
     output = dispatch(
       "lane_id" => "incident-attestation",
@@ -371,7 +465,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "route" => { "model" => "Terra", "effort" => "low" },
       "dispatcher" => "untrusted",
       "candidate_index" => 99
-    )
+    ).reject { |key, _value| %w[requested selection_provenance].include?(key) }
 
     replay = dispatch(input.merge("active_assignments" => [corrupt]))
 
