@@ -15,7 +15,7 @@ module CloseoutEvidenceReplay
   VALID_QA_REQUIRED = %w[yes no].freeze
   VALID_RELEASE_BLOCKING = %w[clear blocked waived not_applicable].freeze
   VALID_PROCESS_GAP_DISPOSITIONS = ["script", "schema", "checklist+replay", "park", "not applicable", "not_applicable"].freeze
-  VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 Must-Fix BLOCKING].freeze
+  VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
 
   def run(argv)
@@ -34,7 +34,13 @@ module CloseoutEvidenceReplay
     raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
 
     text = path == "-" ? $stdin.read : File.read(path, encoding: "UTF-8")
-    puts JSON.pretty_generate(replay(text, expected_head_sha: options[:expected_head_sha]))
+    puts JSON.pretty_generate(
+      replay(
+        text,
+        expected_head_sha: options[:expected_head_sha],
+        require_priority_dispositions: options.fetch(:require_priority_dispositions, false)
+      )
+    )
     0
   rescue OptionParser::ParseError => e
     warn "Error: #{e.message}"
@@ -47,17 +53,20 @@ module CloseoutEvidenceReplay
   def parse_options(argv)
     options = {}
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] <path|->"
+      opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] [--require-priority-dispositions] <path|->"
       opts.separator ""
       opts.separator "Parse `qa-evidence v1` and `priority-finding-dispositions v1` markers from"
       opts.separator "a PR body, issue comment, handoff, or stdin and emit replay JSON."
       opts.separator ""
-      opts.on("--expected-head-sha SHA", "Require required QA evidence for this full final-head SHA") do |sha|
+      opts.on("--expected-head-sha SHA", "Require QA and priority evidence for this full final-head SHA") do |sha|
         unless sha.match?(/\A[0-9a-f]{40}\z/i)
           raise OptionParser::InvalidArgument, "--expected-head-sha must be a full 40-character hex SHA"
         end
 
         options[:expected_head_sha] = sha.downcase
+      end
+      opts.on("--require-priority-dispositions", "Fail when priority evidence is missing or explicitly not_applicable") do
+        options[:require_priority_dispositions] = true
       end
       opts.on("-h", "--help", "Show this help") { options[:help] = true }
     end
@@ -65,9 +74,13 @@ module CloseoutEvidenceReplay
     [options, parser]
   end
 
-  def replay(text, expected_head_sha: nil)
+  def replay(text, expected_head_sha: nil, require_priority_dispositions: false)
     qa = replay_qa_markers(marker_bodies(text, "qa-evidence v1"), expected_head_sha: expected_head_sha)
-    priority = replay_priority_markers(marker_bodies(text, "priority-finding-dispositions v1"))
+    priority = replay_priority_markers(
+      marker_bodies(text, "priority-finding-dispositions v1"),
+      expected_head_sha:,
+      required: require_priority_dispositions
+    )
     {
       "overall_verdict" => overall_verdict([qa, priority]),
       "qa_evidence" => qa,
@@ -82,13 +95,27 @@ module CloseoutEvidenceReplay
   def replay_qa_markers(markers, expected_head_sha: nil)
     return unknown("qa-evidence marker missing") if markers.empty?
 
+    markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
     aggregate_marker_results(markers.map { |marker| replay_qa(marker, expected_head_sha: expected_head_sha) })
   end
 
-  def replay_priority_markers(markers)
-    return priority_not_applicable("priority-finding-dispositions marker missing") if markers.empty?
+  def replay_priority_markers(markers, expected_head_sha: nil, required: false)
+    if markers.empty?
+      return priority_unknown("priority-finding-dispositions marker missing") if required
 
-    aggregate_marker_results(markers.map { |marker| replay_priority(marker) })
+      return priority_not_applicable("priority-finding-dispositions marker missing")
+    end
+
+    markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
+    aggregate_marker_results(markers.map { |marker| replay_priority(marker, expected_head_sha:, required:) })
+  end
+
+  def current_head_markers(markers, expected_head_sha)
+    matching = markers.select do |marker|
+      fields, duplicate_keys = parse_fields(marker)
+      fields.fetch("head_sha", "").downcase == expected_head_sha || duplicate_keys.include?("head_sha")
+    end
+    matching.empty? ? markers : matching
   end
 
   def replay_qa(marker, expected_head_sha: nil)
@@ -103,15 +130,21 @@ module CloseoutEvidenceReplay
     head_sha = fields.fetch("head_sha", "").to_s.downcase
     release_blocking = fields.fetch("release_blocking", "").to_s
     process_gap_disposition = fields.fetch("process_gap_disposition", "").to_s
-    final_head_mismatch = expected_head_sha && required == "yes" && head_sha != expected_head_sha
-    tested_at_head_mismatch = expected_head_sha && required == "yes" &&
+    legacy_not_required_historical_marker = expected_head_sha.nil? && required == "no" && head_sha == "not_applicable"
+    head_sha_valid = full_head_sha?(head_sha) || legacy_not_required_historical_marker
+    final_head_mismatch = expected_head_sha && head_sha != expected_head_sha
+    tested_at_head_mismatch = expected_head_sha &&
                               !tested_at_matches_head?(fields.fetch("tested_at", "").to_s, expected_head_sha)
-    missing << "head_sha" if final_head_mismatch
+    missing << "head_sha" if final_head_mismatch || !head_sha_valid
     missing << "tested_at.head_sha" if tested_at_head_mismatch
     missing << "required" unless required.empty? || VALID_QA_REQUIRED.include?(required)
     missing << "status" unless status.empty? || VALID_QA_STATUSES.include?(status)
     missing << "release_blocking" unless release_blocking.empty? || VALID_RELEASE_BLOCKING.include?(release_blocking)
     missing << "status" if required == "yes" && status == "not_applicable"
+    if expected_head_sha && required == "no"
+      missing << "status" unless status == "not_applicable"
+      missing << "release_blocking" unless release_blocking == "not_applicable"
+    end
     unless process_gap_disposition.empty? || VALID_PROCESS_GAP_DISPOSITIONS.include?(process_gap_disposition)
       missing << "process_gap_disposition"
     end
@@ -143,23 +176,32 @@ module CloseoutEvidenceReplay
     result
   end
 
-  def replay_priority(marker)
+  def replay_priority(marker, expected_head_sha: nil, required: false)
     fields, duplicate_keys = parse_fields(marker)
     errors = duplicate_keys.map { |key| "duplicate scalar key: #{key}" }
-    findings = parse_findings(marker)
+    findings, finding_errors = parse_findings(marker)
+    errors.concat(finding_errors)
     missing = []
 
     if errors.empty? && fields.fetch("status", "") == "not_applicable" && findings.empty?
-      return {
-        "verdict" => "NOT_APPLICABLE",
+      head_sha = fields.fetch("head_sha", "").downcase
+      head_matches = !expected_head_sha || head_sha == expected_head_sha
+      missing << "head_sha" unless full_head_sha?(head_sha) && head_matches
+      missing << "finding" if required
+      result = {
+        "verdict" => missing.empty? ? "NOT_APPLICABLE" : "UNKNOWN",
         "fields" => fields,
         "findings" => [],
-        "missing" => [],
+        "missing" => missing,
         "errors" => []
       }
+      result["expected_head_sha"] = expected_head_sha if expected_head_sha
+      return result
     end
 
-    missing << "head_sha" if fields.fetch("head_sha", "").empty?
+    head_sha = fields.fetch("head_sha", "").downcase
+    head_matches = !expected_head_sha || head_sha == expected_head_sha
+    missing << "head_sha" unless full_head_sha?(head_sha) && head_matches
     missing << "finding" if findings.empty?
     findings.each_with_index do |finding, index|
       %w[url severity disposition evidence].each do |field|
@@ -187,13 +229,15 @@ module CloseoutEvidenceReplay
         "SATISFIED"
       end
 
-    {
+    result = {
       "verdict" => verdict,
       "fields" => fields,
       "findings" => findings,
       "missing" => missing,
       "errors" => errors
     }
+    result["expected_head_sha"] = expected_head_sha if expected_head_sha
+    result
   end
 
   def aggregate_marker_results(results)
@@ -259,18 +303,35 @@ module CloseoutEvidenceReplay
     full_shas.last == expected_head_sha.downcase
   end
 
+  def full_head_sha?(value)
+    value.match?(/\A[0-9a-f]{40}\z/i)
+  end
+
   def parse_findings(marker)
-    marker.each_line.filter_map do |line|
+    findings = []
+    errors = []
+    marker.each_line do |line|
       next unless line.strip.start_with?("finding:")
 
       raw = line.split(":", 2).last.to_s
-      raw.split("|").each_with_object({}) do |part, finding|
+      finding = {}
+      duplicate_keys = []
+      raw.split("|").each do |part|
         key, value = part.split("=", 2)
         next if value.nil?
 
-        finding[key.strip.downcase] = value.strip
+        normalized_key = key.strip.downcase
+        if finding.key?(normalized_key)
+          duplicate_keys << normalized_key
+        else
+          finding[normalized_key] = value.strip
+        end
       end
+      finding_index = findings.length
+      findings << finding
+      errors.concat(duplicate_keys.uniq.map { |key| "finding[#{finding_index}].duplicate key: #{key}" })
     end
+    [findings, errors]
   end
 
   def missing_fields(fields, required)
@@ -291,7 +352,18 @@ module CloseoutEvidenceReplay
       "fields" => { "status" => "not_applicable" },
       "findings" => [],
       "missing" => [],
+      "errors" => [],
       "reason" => reason
+    }
+  end
+
+  def priority_unknown(reason)
+    {
+      "verdict" => "UNKNOWN",
+      "fields" => {},
+      "findings" => [],
+      "missing" => [reason],
+      "errors" => []
     }
   end
 
