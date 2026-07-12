@@ -16,10 +16,38 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
 ```json review-findings
 {
   "schema": "review-finding-v0",
+  "review_receipt": {
+    "target": {
+      "base_ref": "origin/main",
+      "head_sha": "abc123"
+    },
+    "provenance": {
+      "engine": "codex review",
+      "invocation": "codex review --base origin/main"
+    },
+    "risk_lenses": [
+      {
+        "name": "correctness",
+        "status": "applied",
+        "reason": "Core lens for every non-trivial diff."
+      },
+      {
+        "name": "security",
+        "status": "not_applicable",
+        "reason": "No changed trust, input, permission, secret, or execution boundary."
+      }
+    ],
+    "coverage": {
+      "status": "complete",
+      "included_paths": ["workflows/pr-processing.md"],
+      "excluded_paths": [],
+      "limitations": []
+    }
+  },
   "review_findings": [
     {
-      "id": "adv-001",
-      "source": "adversarial-pr-review",
+      "id": "auto-001",
+      "source": "autoreview",
       "target": {
         "repo": "OWNER/REPO",
         "pr": 123,
@@ -33,6 +61,11 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
         "status": "verified",
         "current_head_state": "stale",
         "checked_at": "2026-07-02T12:34:56Z"
+      },
+      "independent_validation": {
+        "status": "confirmed",
+        "validator": "independent-reviewer",
+        "evidence": ["Reproduced against head abc123 with the focused readiness check."]
       },
       "location": {
         "file": "workflows/pr-processing.md",
@@ -78,7 +111,35 @@ workflow into the same shape:
 - `links`: array of URLs for PRs, issues, comments, runs, logs, or docs.
 - `related_ids`: array of finding ids this finding duplicates, supersedes, or
   depends on.
+- `consequential`: boolean. Set it to `true` when a P2, P3, or INFO finding
+  still has material correctness, security, compatibility, data-loss, or
+  release-process consequences. P0 and P1 findings are consequential whenever
+  the report includes a `review_receipt`.
+- `independent_validation`: independent check of a consequential finding, as
+  described below.
 - `notes`: short extra context for humans. Do not put required facts only here.
+
+## Review Receipt
+
+`review_receipt` is an optional additive top-level object. Existing
+`review-finding-v0` reports without it remain valid. Autoreview uses it to make
+review scope and limitations replayable without making another review engine a
+dependency.
+
+The receipt includes:
+
+- `target`: non-empty `base_ref` and `head_sha` strings for the reviewed diff;
+- `provenance`: non-empty `engine` and `invocation` strings;
+- `risk_lenses`: a non-empty array whose entries have non-empty `name` and
+  `reason` strings plus `status` of `applied`, `not_applicable`, `degraded`, or
+  `unknown`;
+- `coverage`: `status` of `complete`, `partial`, or `unknown`, plus
+  `included_paths`, `excluded_paths`, and `limitations` string arrays.
+
+Receipts describe what actually ran. Do not mark a lens `applied` merely
+because a reviewer was requested, and do not use `complete` when excluded
+paths, unavailable tooling, stale scope, or another limitation leaves material
+coverage uncertain.
 
 ## Severities
 
@@ -131,3 +192,20 @@ Use one of:
 Findings with `verification.status` other than `verified`, or
 `current_head_state` of `stale` or `unknown`, must not be treated as merge
 blockers without a separate current-head verification step.
+
+## Independent Validation
+
+Every P0 or P1 finding in a report with `review_receipt`, and every
+lower-severity finding with `consequential: true`, requires an
+`independent_validation` object. It contains:
+
+- `status`: `confirmed`, `rejected`, or `degraded`;
+- `validator`: non-empty identity for the independent reviewer or validator;
+- `evidence`: a non-empty array of short strings naming the reproduced fact,
+  focused test, or other independent proof.
+
+The validator must use a distinct review context and check the real diff or
+code path. Agreement, severity, and the primary reviewer's own verification are
+not independent proof. If independent validation is unavailable, malformed, or
+times out, use `degraded` and keep the finding at `must_fix`, `needs_decision`,
+or `unknown`. A degraded result must never clear a consequential finding.

@@ -9,6 +9,8 @@ SCRIPT = File.expand_path("validate-review-findings", __dir__)
 load SCRIPT
 
 class ValidateReviewFindingsTest < Minitest::Test
+  FIXTURE_ROOT = File.expand_path("../test/fixtures/review-findings", __dir__)
+
   def valid_document
     {
       "schema" => "review-finding-v0",
@@ -42,14 +44,105 @@ class ValidateReviewFindingsTest < Minitest::Test
     }
   end
 
+  def fixture_document(name)
+    JSON.parse(File.read(File.join(FIXTURE_ROOT, name)))
+  end
+
   def test_docs_example_passes
     path = File.expand_path("../docs/review-finding-schema.md", __dir__)
 
     assert_empty ValidateReviewFindings.validate_path(path)
   end
 
-  def test_valid_document_passes
+  def test_legacy_v0_document_without_receipt_still_passes
     assert_empty ValidateReviewFindings.validate_document(valid_document, "report")
+  end
+
+  def test_receipt_fixture_requires_independent_validation_for_p1
+    path = File.join(FIXTURE_ROOT, "autoreview-receipt-invalid.json")
+
+    assert_includes ValidateReviewFindings.validate_path(path),
+                    "#{path}: review_findings[0]: consequential finding requires independent_validation"
+  end
+
+  def test_valid_receipt_fixture_passes
+    path = File.join(FIXTURE_ROOT, "autoreview-receipt-valid.json")
+
+    assert_empty ValidateReviewFindings.validate_path(path)
+  end
+
+  def test_review_receipt_shape_is_validated
+    document = fixture_document("autoreview-receipt-valid.json")
+    receipt = document.fetch("review_receipt")
+    receipt.fetch("target").delete("head_sha")
+    receipt.fetch("provenance")["engine"] = " "
+    receipt.fetch("risk_lenses").first["status"] = "selected"
+    receipt.fetch("coverage")["status"] = "covered"
+    receipt.fetch("coverage")["limitations"] = "none"
+
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures, "report: review_receipt: target.head_sha must be a non-empty string"
+    assert_includes failures, "report: review_receipt: provenance.engine must be a non-empty string"
+    assert_includes failures,
+                    "report: review_receipt: risk_lenses[0]: status must be one of: applied, not_applicable, degraded, unknown"
+    assert_includes failures, "report: review_receipt: coverage: status must be one of: complete, partial, unknown"
+    assert_includes failures, "report: review_receipt: coverage: limitations must be an array"
+  end
+
+  def test_independent_validation_shape_is_validated
+    document = fixture_document("autoreview-receipt-valid.json")
+    validation = document.fetch("review_findings").first.fetch("independent_validation")
+    validation["status"] = "approved"
+    validation["validator"] = " "
+    validation["evidence"] = []
+
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures,
+                    "report: review_findings[0]: independent_validation: status must be one of: confirmed, rejected, degraded"
+    assert_includes failures,
+                    "report: review_findings[0]: independent_validation.validator must be a non-empty string"
+    assert_includes failures,
+                    "report: review_findings[0]: independent_validation.evidence must be a non-empty array of strings"
+  end
+
+  def test_explicit_lower_severity_consequential_finding_requires_validation
+    document = valid_document
+    finding = document.fetch("review_findings").first
+    finding["severity"] = "P2"
+    finding["consequential"] = true
+
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_findings[0]: consequential finding requires independent_validation"
+
+    finding["consequential"] = "yes"
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_findings[0]: consequential must be true or false"
+  end
+
+  def test_degraded_independent_validation_cannot_clear_consequential_finding
+    document = fixture_document("autoreview-receipt-valid.json")
+    finding = document.fetch("review_findings").first
+    finding.fetch("independent_validation")["status"] = "degraded"
+    finding["disposition"] = "accepted_fixed"
+
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_findings[0]: degraded independent validation requires must_fix, needs_decision, or unknown disposition"
+
+    finding["disposition"] = "unknown"
+    assert_empty ValidateReviewFindings.validate_document(document, "report")
+  end
+
+  def test_receipt_status_fields_are_required
+    document = fixture_document("autoreview-receipt-valid.json")
+    receipt = document.fetch("review_receipt")
+    receipt.fetch("risk_lenses").first.delete("status")
+    receipt.fetch("coverage").delete("status")
+    document.fetch("review_findings").first.fetch("independent_validation").delete("status")
+
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures, "report: review_receipt: risk_lenses[0].status must be present"
+    assert_includes failures, "report: review_receipt: coverage.status must be present"
+    assert_includes failures, "report: review_findings[0]: independent_validation.status must be present"
   end
 
   def test_missing_required_field_fails

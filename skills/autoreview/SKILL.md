@@ -44,6 +44,9 @@ This is the portable core. Hold it regardless of which engine runs.
 - Keep going until the review returns no accepted/actionable findings; once it comes back clean, stop. Do not run an extra review just to get nicer "clean" wording or a redundant second opinion.
 - If a review-triggered fix changes code, rerun the focused tests for the changed surface and rerun the review.
 - Security perspective is always included, but it must not cripple legitimate functionality. Report a security finding only when the change creates a concrete, actionable risk or removes an important safety check.
+- Record a compact risk and coverage receipt for every completed non-trivial review: exact target/base/head, engine invocation, applied or unavailable risk lenses, included and excluded paths, and material limitations. Report actual coverage, not requested coverage.
+- Treat P0/P1 findings, plus any lower-severity finding with material correctness, security, compatibility, data-loss, or release-process consequences, as consequential. Require an independent validation receipt before clearing or acting on one; primary-review agreement is not independent evidence.
+- When independent validation of a consequential finding is unavailable, times out, or returns malformed evidence, keep the finding blocking or `unknown` and record validation as degraded. Never silently drop it.
 - Be patient. `codex review` runs an external model when available and can take several minutes on a large diff. Progress that looks quiet is usually still working; do not kill it before about 5 minutes unless it has clearly errored.
 - Do not launch multiple reviewers by default. One selected engine, one structured result, then verify it.
 - A gated second-engine pass is appropriate only when the user asks or the diff falls into the
@@ -161,6 +164,13 @@ Never silently switch the engine the user asked for. If the requested engine hit
 capacity, retry the same engine a few times rather than swapping it.
 <!-- host-branch: available-tool end -->
 
+Before running the engine, select risk lenses from the actual diff and repository policy.
+Correctness and security are always considered; add testing/coverage, compatibility,
+reliability, performance, data migration, release/process, or another bounded lens when the
+changed surface warrants it. A lens that does not apply still belongs in the receipt with a
+short reason. Mark unavailable or incomplete lenses `degraded` or `unknown`; do not infer
+coverage from a successful process exit alone.
+
 ### High-risk second pass
 
 For high-risk changes in the hosted-CI-ready, force-full hosted-CI, or benchmark
@@ -190,6 +200,13 @@ For each finding the engine returns:
    integration/app spec for an integration change, and the package test plus type-check/lint for
    touched TypeScript. Also rerun any signature/type validation when typed interfaces changed.
 
+For every consequential finding, use a fresh independent reviewer or validator context to
+confirm or reject the finding against the same diff and cited code path. Give it the finding,
+target/base/head, and relevant diff, but do not present agreement as the desired outcome. Record
+the validator identity, `confirmed`, `rejected`, or `degraded` status, and concrete evidence. A
+degraded P0/P1 remains `must_fix`, `needs_decision`, or `unknown`; the primary session's direct
+inspection may supplement this check but cannot replace its independence.
+
 Loop Steps 3-4 until the review returns no accepted/actionable findings. Once a rerun comes
 back clean, stop; do not spend another long review cycle on redundant confirmation.
 When a finding would trigger the complexity-escalation stop in the Contract, do not patch the
@@ -211,8 +228,12 @@ Report:
 
 - diff target reviewed (local / branch / commit) and base
 - review engine used (`codex review` or the available Claude review command)
+- risk and coverage receipt: target/base/head, invocation provenance, each selected or
+  not-applicable lens and why, included/excluded paths, and limitations
 - tests/proof run, with pass/fail
 - findings accepted vs rejected, briefly why
+- independent-validation outcome and evidence for every consequential finding, including any
+  degraded validation that remains blocking or unknown
 - PR label recommendation from `.agents/agent-workflow.yml` (none, the hosted-CI-ready label,
   the force-full hosted-CI label, a benchmark label, or a valid combination of these) when the
   work is headed to a PR
@@ -220,3 +241,8 @@ Report:
 
 Do not run another review solely to improve the report wording. If the final review came back
 with no accepted/actionable findings, report that run as clean.
+
+When machine-readable findings are requested, emit the same receipt and consequential-finding
+validation using `docs/review-finding-schema.md`. The additive receipt does not require another
+review engine for ordinary clean reviews and does not transfer commit, push, PR, or merge
+ownership to review tooling.

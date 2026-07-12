@@ -30,6 +30,9 @@ module ValidateReviewFindings
   ].freeze
   VERIFICATION_STATUSES = %w[unverified verified contradicted unknown].freeze
   CURRENT_HEAD_STATES = %w[current stale not_applicable unknown].freeze
+  RISK_LENS_STATUSES = %w[applied not_applicable degraded unknown].freeze
+  COVERAGE_STATUSES = %w[complete partial unknown].freeze
+  INDEPENDENT_VALIDATION_STATUSES = %w[confirmed rejected degraded].freeze
   STRING_ARRAY_FIELDS = %w[evidence links related_ids].freeze
 
   module_function
@@ -89,15 +92,65 @@ module ValidateReviewFindings
       return failures << "#{label}: review_findings must be an array"
     end
 
-    failures.concat(validate_findings(findings, label))
+    if document.key?("review_receipt")
+      failures.concat(validate_review_receipt(document["review_receipt"], "#{label}: review_receipt"))
+    end
+    failures.concat(validate_findings(findings, label, receipt_present: document.key?("review_receipt")))
     failures
   end
 
-  def validate_findings(findings, label)
+  def validate_review_receipt(receipt, label)
+    return ["#{label} must be an object"] unless receipt.is_a?(Hash)
+
+    failures = []
+    failures.concat(validate_required_string_fields(receipt["target"], %w[base_ref head_sha], "#{label}: target"))
+    failures.concat(validate_required_string_fields(receipt["provenance"], %w[engine invocation], "#{label}: provenance"))
+    failures.concat(validate_risk_lenses(receipt["risk_lenses"], label))
+    failures.concat(validate_coverage(receipt["coverage"], label))
+    failures
+  end
+
+  def validate_required_string_fields(object, fields, label)
+    return ["#{label} must be an object"] unless object.is_a?(Hash)
+
+    fields.filter_map do |field|
+      "#{label}.#{field} must be a non-empty string" unless non_empty_string?(object[field])
+    end
+  end
+
+  def validate_risk_lenses(lenses, label)
+    return ["#{label}: risk_lenses must be a non-empty array"] unless lenses.is_a?(Array) && !lenses.empty?
+
+    lenses.each_with_index.flat_map do |lens, index|
+      lens_label = "#{label}: risk_lenses[#{index}]"
+      if lens.is_a?(Hash)
+        failures = validate_required_string_fields(lens, %w[name reason], lens_label) +
+                   validate_enum(lens, "status", RISK_LENS_STATUSES, lens_label)
+        failures << "#{lens_label}.status must be present" unless lens.key?("status")
+        failures
+      else
+        ["#{lens_label} must be an object"]
+      end
+    end
+  end
+
+  def validate_coverage(coverage, label)
+    return ["#{label}: coverage must be an object"] unless coverage.is_a?(Hash)
+
+    failures = validate_enum(coverage, "status", COVERAGE_STATUSES, "#{label}: coverage")
+    failures << "#{label}: coverage.status must be present" unless coverage.key?("status")
+    %w[included_paths excluded_paths limitations].each do |field|
+      failures.concat(validate_string_array(coverage, field, "#{label}: coverage"))
+      failures << "#{label}: coverage.#{field} must be present" unless coverage.key?(field)
+    end
+    failures
+  end
+
+  def validate_findings(findings, label, receipt_present: false)
     seen_ids = {}
     findings.each_with_index.flat_map do |finding, index|
       finding_label = "#{label}: review_findings[#{index}]"
-      failures = validate_finding(finding, finding_label)
+      failures = validate_finding(finding, finding_label, receipt_present:)
       id = finding["id"] if finding.is_a?(Hash)
       failures << "#{finding_label}: id must be unique within the report" if id && seen_ids[id]
       seen_ids[id] = true if id
@@ -105,7 +158,7 @@ module ValidateReviewFindings
     end
   end
 
-  def validate_finding(finding, label)
+  def validate_finding(finding, label, receipt_present: false)
     return ["#{label}: finding must be an object"] unless finding.is_a?(Hash)
 
     failures = []
@@ -122,6 +175,21 @@ module ValidateReviewFindings
     failures.concat(validate_enum(finding, "severity", SEVERITIES, label))
     failures.concat(validate_enum(finding, "disposition", DISPOSITIONS, label))
     failures.concat(validate_verification(finding["verification"], label)) if finding.key?("verification")
+    if finding.key?("consequential") && ![true, false].include?(finding["consequential"])
+      failures << "#{label}: consequential must be true or false"
+    end
+    consequential = (receipt_present && %w[P0 P1].include?(finding["severity"])) || finding["consequential"] == true
+    if consequential && !finding.key?("independent_validation")
+      failures << "#{label}: consequential finding requires independent_validation"
+    end
+    if finding.key?("independent_validation")
+      failures.concat(validate_independent_validation(finding["independent_validation"], label))
+    end
+    validation = finding["independent_validation"]
+    if consequential && validation.is_a?(Hash) && validation["status"] == "degraded" &&
+       !%w[must_fix needs_decision unknown].include?(finding["disposition"])
+      failures << "#{label}: degraded independent validation requires must_fix, needs_decision, or unknown disposition"
+    end
     failures.concat(validate_location(finding["location"], label)) if finding.key?("location")
     STRING_ARRAY_FIELDS.each { |field| failures.concat(validate_string_array(finding, field, label)) }
     failures
@@ -159,6 +227,22 @@ module ValidateReviewFindings
       next unless location.key?(field)
 
       failures << "#{label}: location.#{field} must be a positive integer" unless positive_integer?(location[field])
+    end
+    failures
+  end
+
+  def validate_independent_validation(validation, label)
+    validation_label = "#{label}: independent_validation"
+    return ["#{validation_label} must be an object"] unless validation.is_a?(Hash)
+
+    failures = validate_enum(validation, "status", INDEPENDENT_VALIDATION_STATUSES, validation_label)
+    failures << "#{label}: independent_validation.status must be present" unless validation.key?("status")
+    unless non_empty_string?(validation["validator"])
+      failures << "#{label}: independent_validation.validator must be a non-empty string"
+    end
+    evidence = validation["evidence"]
+    unless evidence.is_a?(Array) && !evidence.empty? && evidence.all? { |entry| non_empty_string?(entry) }
+      failures << "#{label}: independent_validation.evidence must be a non-empty array of strings"
     end
     failures
   end

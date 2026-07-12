@@ -1,0 +1,62 @@
+{
+  "schema": "review-finding-v0",
+  "review_receipt": {
+    "target": {
+      "base_ref": "origin/main",
+      "head_sha": "abc123"
+    },
+    "provenance": {
+      "engine": "codex review",
+      "invocation": "codex review --base origin/main"
+    },
+    "risk_lenses": [
+      {
+        "name": "correctness",
+        "status": "applied",
+        "reason": "Core lens for every non-trivial diff."
+      },
+      {
+        "name": "security",
+        "status": "degraded",
+        "reason": "The independent security reviewer was unavailable."
+      }
+    ],
+    "coverage": {
+      "status": "partial",
+      "included_paths": [
+        "lib/example.rb",
+        "test/example_test.rb"
+      ],
+      "excluded_paths": [],
+      "limitations": [
+        "Independent security coverage was unavailable."
+      ]
+    }
+  },
+  "review_findings": [
+    {
+      "id": "auto-001",
+      "source": "autoreview",
+      "target": {
+        "repo": "OWNER/REPO",
+        "base_ref": "origin/main",
+        "head_sha": "abc123"
+      },
+      "severity": "P1",
+      "disposition": "must_fix",
+      "title": "Authorization guard is bypassed",
+      "body": "The changed branch skips the required authorization guard.",
+      "verification": {
+        "status": "verified",
+        "current_head_state": "current"
+      },
+      "independent_validation": {
+        "status": "confirmed",
+        "validator": "independent-reviewer",
+        "evidence": [
+          "Reproduced against head abc123 with the focused authorization test."
+        ]
+      }
+    }
+  ]
+}

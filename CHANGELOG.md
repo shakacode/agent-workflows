@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
 - **Add Codex catalog plus Claude Code native-plugin and marketplace metadata for installing the complete semantic skill tree under `scw`, with isolated plugin-root and no-shadow validation.**
 - **Add `agent-workflow-seam-doctor --init` for conservative, fail-closed consumer seam scaffolding and immediate contract validation.**
