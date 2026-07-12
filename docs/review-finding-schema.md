@@ -153,8 +153,9 @@ Set `kind` to `uncommitted`, use `partial` or `unknown` coverage, and record a
 non-empty limitation. Use `committed` only when the reviewed diff is anchored
 entirely by the recorded base and head SHAs; `base_ref` remains human context
 and is not the immutable anchor. For `committed`, both SHA fields must be full
-lowercase hexadecimal Git object IDs: 40 characters for SHA-1 repositories or
-64 characters for SHA-256 repositories. Symbolic refs such as `HEAD` and
+hexadecimal Git object IDs: 40 characters for SHA-1 repositories or 64
+characters for SHA-256 repositories. Uppercase or lowercase hexadecimal is
+valid. Symbolic refs such as `HEAD` and
 `origin/main`, and abbreviated object IDs, are invalid.
 
 ## Severities

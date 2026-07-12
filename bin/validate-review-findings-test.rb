@@ -197,6 +197,18 @@ class ValidateReviewFindingsTest < Minitest::Test
     target["base_sha"] = "a" * 64
     target["head_sha"] = "b" * 64
     assert_empty ValidateReviewFindings.validate_document(document, "report")
+
+    target["base_sha"] = "A" * 40
+    target["head_sha"] = "B" * 64
+    assert_empty ValidateReviewFindings.validate_document(document, "report")
+
+    target["base_sha"] = "a" * 39
+    target["head_sha"] = "g" * 40
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures,
+                    "report: review_receipt: committed target.base_sha must be a full hexadecimal Git object ID"
+    assert_includes failures,
+                    "report: review_receipt: committed target.head_sha must be a full hexadecimal Git object ID"
   end
 
   def test_autoreview_receipt_requires_source_and_unique_core_lenses
