@@ -51,7 +51,9 @@ of `READY`, `NOT_READY`, or `UNKNOWN` plus the `failing`/`pending` check names
 (`required_used` records whether required checks gated the verdict). Treat its
 `UNKNOWN` verdict (an empty check list) as not ready and request hosted CI or
 maintainer status-check configuration before merge; skipped checks still need CI
-selector or maintainer-waiver evidence allowed by `AGENTS.md`. Avoid long-lived
+selector or maintainer-waiver evidence allowed by `AGENTS.md`.
+Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
+Avoid long-lived
 `gh ... --watch` commands in agent sessions; instead re-run the readiness check
 once per review pass while checks are still pending. If live CI or review-agent
 state cannot be verified (for example, tool unavailable or API error), report

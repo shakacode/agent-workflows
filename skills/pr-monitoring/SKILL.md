@@ -57,6 +57,7 @@ or commands.
      pass `--repo "${REPO}"`; report that readiness is based on the fallback.
    - Distinguish required checks from advisory checks.
    - Treat empty or unavailable check state as `UNKNOWN`, not ready.
+   - Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
    - Read failing logs before retrying or pushing a fix.
 
 3. **Triage comments and review threads.**

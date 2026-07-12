@@ -101,16 +101,37 @@ class PrCiReadinessTest < Minitest::Test
     assert_includes text, "failing: lint"
     assert_includes text, "pending: (none)"
   end
+
+  def test_text_summary_labels_review_drafts_as_authenticated_viewer_scoped
+    text = PrCiReadiness.text_summary(
+      "verdict" => "NOT_READY",
+      "required_used" => true,
+      "failing" => [],
+      "pending" => [],
+      "viewer_pending_review_drafts" => [{ "id" => "PRR_one" }],
+      "viewer_review_inventory" => { "scope" => "authenticated_viewer", "complete" => true }
+    )
+
+    assert_includes text, "viewer_pending_review_drafts: PRR_one"
+    assert_includes text, "viewer_review_inventory: complete (scope: authenticated_viewer)"
+  end
+
+  def test_usage_describes_authenticated_viewer_scope_and_unobservable_drafts
+    assert_includes PrCiReadiness::USAGE, "visible to the current authenticated"
+    assert_includes PrCiReadiness::USAGE, "Other reviewers'"
+    assert_includes PrCiReadiness::USAGE, '"viewer_pending_review_drafts"'
+    assert_includes PrCiReadiness::USAGE, '"scope": "authenticated_viewer"'
+  end
 end
 
 # CLI / Runner integration via a fake gh on PATH.
 class PrCiReadinessCliTest < Minitest::Test
   # Build a temp dir with a fake `gh` executable that emits canned `gh pr
   # checks` JSON, then run the real script with that dir prepended to PATH.
-  def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", runs: {})
+  def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", runs: {}, review_pages: {}, review_error: false)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
-      File.write(gh, fake_gh_script(required_json, full_json, pr_head, runs))
+      File.write(gh, fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error))
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
@@ -120,7 +141,7 @@ class PrCiReadinessCliTest < Minitest::Test
   # The fake gh handles `gh repo view ...` (so --repo is optional) and
   # `gh pr checks ...`, returning the required vs full payload based on the
   # presence of the --required flag. Non-JSON ("") models "no required checks".
-  def fake_gh_script(required_json, full_json, pr_head, runs)
+  def fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error)
     run_cases = runs.map do |run_id, payload|
       run_json = JSON.generate(payload.fetch(:run))
       jobs_json = JSON.generate("total_count" => payload.fetch(:jobs).length, "jobs" => payload.fetch(:jobs))
@@ -153,6 +174,31 @@ class PrCiReadinessCliTest < Minitest::Test
       BASH
     end.join("\n")
 
+    review_cases = review_pages.filter_map do |cursor, payload|
+      next if cursor.nil?
+
+      <<~BASH
+        if [[ "$*" = *"endCursor=#{cursor}"* ]]; then
+          cat <<'JSON'
+        #{JSON.generate(payload)}
+        JSON
+          exit 0
+        fi
+      BASH
+    end.join("\n")
+    first_page = review_pages.fetch(nil, {
+                                      "data" => {
+                                        "repository" => {
+                                          "pullRequest" => {
+                                            "reviews" => {
+                                              "nodes" => [],
+                                              "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    })
+
     <<~SH
       #!/usr/bin/env bash
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
@@ -176,6 +222,16 @@ class PrCiReadinessCliTest < Minitest::Test
         exit 0
       fi
       if [ "$1" = "api" ]; then
+        if [ "$2" = "graphql" ]; then
+          if #{review_error}; then
+            exit 1
+          fi
+      #{review_cases}
+          cat <<'JSON'
+      #{JSON.generate(first_page)}
+      JSON
+          exit 0
+        fi
       #{run_cases}
       fi
       exit 1
@@ -197,6 +253,294 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", data["verdict"]
       assert_equal true, data["required_used"]
       assert_equal 123, data["pr"]
+    end
+  end
+
+  def test_pending_current_head_review_drafts_block_ready_checks
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "3f67da47c44b7f403c72be2ed8f5bf4505666974",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [
+                    { "id" => "PRR_one", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => "3f67da47c44b7f403c72be2ed8f5bf4505666974" } },
+                    { "id" => "PRR_two", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => "3f67da47c44b7f403c72be2ed8f5bf4505666974" } }
+                  ],
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal(%w[PRR_one PRR_two], data.fetch("viewer_pending_review_drafts").map { |review| review["id"] })
+      assert_equal "authenticated_viewer", data.fetch("viewer_review_inventory").fetch("scope")
+    end
+  end
+
+  def test_pending_current_head_review_drafts_block_unknown_checks
+    with_fake_gh(
+      required_json: "",
+      full_json: "[]",
+      pr_head: "current-head",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [
+                    { "id" => "PRR_one", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => "current-head" } }
+                  ],
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal(["PRR_one"], data.fetch("viewer_pending_review_drafts").map { |review| review["id"] })
+    end
+  end
+
+  def test_submitted_dismissed_and_old_head_drafts_do_not_block_ready_checks
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "current-head",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [
+                    { "id" => "PRR_submitted", "state" => "COMMENTED", "submittedAt" => "2026-07-12T00:00:00Z",
+                      "commit" => { "oid" => "current-head" } },
+                    { "id" => "PRR_dismissed", "state" => "DISMISSED", "submittedAt" => nil,
+                      "commit" => { "oid" => "current-head" } },
+                    { "id" => "PRR_old", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => "old-head" } }
+                  ],
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data["verdict"]
+      assert_empty data.fetch("viewer_pending_review_drafts")
+      assert_equal true, data.fetch("viewer_review_inventory").fetch("complete")
+    end
+  end
+
+  def test_incomplete_review_inventory_is_unknown
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [],
+                  "pageInfo" => { "hasNextPage" => true, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data["verdict"]
+      assert_equal "authenticated_viewer", data.fetch("viewer_review_inventory").fetch("scope")
+      assert_equal false, data.fetch("viewer_review_inventory").fetch("complete")
+    end
+  end
+
+  def test_incomplete_review_inventory_does_not_overwrite_not_ready_checks
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pending"}]',
+      full_json: "[]",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => {},
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal false, data.fetch("viewer_review_inventory").fetch("complete")
+    end
+  end
+
+  def test_unavailable_review_inventory_is_unknown
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      review_error: true
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data["verdict"]
+      assert_equal "authenticated_viewer", data.fetch("viewer_review_inventory").fetch("scope")
+      assert_equal false, data.fetch("viewer_review_inventory").fetch("complete")
+    end
+  end
+
+  def test_malformed_review_inventory_is_unknown
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => {},
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data["verdict"]
+      assert_equal "authenticated_viewer", data.fetch("viewer_review_inventory").fetch("scope")
+      assert_equal false, data.fetch("viewer_review_inventory").fetch("complete")
+    end
+  end
+
+  def test_pending_current_head_draft_on_later_review_page_blocks_ready_checks
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "current-head",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [],
+                  "pageInfo" => { "hasNextPage" => true, "endCursor" => "cursor-1" }
+                }
+              }
+            }
+          }
+        },
+        "cursor-1" => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [
+                    { "id" => "PRR_later", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => "current-head" } }
+                  ],
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal(["PRR_later"], data.fetch("viewer_pending_review_drafts").map { |review| review["id"] })
+      assert_equal 2, data.fetch("viewer_review_inventory").fetch("pages")
+    end
+  end
+
+  def test_partial_review_inventory_keeps_early_pending_drafts
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "current-head",
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [
+                    { "id" => "PRR_early", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => "current-head" } }
+                  ],
+                  "pageInfo" => { "hasNextPage" => true, "endCursor" => "cursor-1" }
+                }
+              }
+            }
+          }
+        },
+        "cursor-1" => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => {},
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal(["PRR_early"], data.fetch("viewer_pending_review_drafts").map { |review| review["id"] })
+      assert_equal false, data.fetch("viewer_review_inventory").fetch("complete")
+      assert_equal 1, data.fetch("viewer_review_inventory").fetch("pages")
     end
   end
 
@@ -348,6 +692,42 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "NOT_READY", data["verdict"]
       assert_equal(["hosted", "hosted / linux"], data.fetch("requested_hosted").fetch("pending").map { |row| row["name"] })
       assert_empty data.fetch("requested_hosted").fetch("failing")
+    end
+  end
+
+  def test_incomplete_review_inventory_does_not_overwrite_not_ready_requested_hosted_run
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "in_progress",
+                 "conclusion" => nil, "html_url" => "https://example.test/runs/42" },
+          jobs: []
+        }
+      },
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => {},
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal false, data.fetch("viewer_review_inventory").fetch("complete")
+      assert_equal(["hosted"], data.fetch("requested_hosted").fetch("pending").map { |row| row["name"] })
     end
   end
 
