@@ -7,24 +7,9 @@ and push repository-specific policy into each consumer repo's `AGENTS.md` seam.
 
 ## Agent Workflow Configuration
 
-- **Base branch**: `main`.
-- **Pre-push local validation**: `bin/validate`.
-- **CI change detector**: `n/a`.
-- **Hosted-CI trigger**: `n/a`.
-- **CI parity environment**: `n/a`; consumer repos may name an `act` mapping, runner image, or reproduction guide.
-- **Secret redaction patterns**: conservative default; consumer repos may define repo-specific CI parity redaction patterns.
-- **Benchmark labels**: `n/a`.
-- **Follow-up issue prefix**: `Follow-up:`.
-- **Changelog**: `CHANGELOG.md`.
-- **Lint / format**: `bin/validate` (includes RuboCop) plus Markdown review for changed docs.
-- **Merge ledger**: `n/a`.
-- **Docs checks**: `bin/validate` and manual link/path review for changed docs.
-- **Tests**: helper tests invoked by `bin/validate`.
-- **Build / type checks**: `n/a`.
-- **Review gate**: independent code review for non-trivial workflow or helper changes.
-- **Default simplify model**: `n/a`.
-- **Approval-exempt change categories**: docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable.
-- **Coordination backend**: consumer repos choose their backend in their own seam; this repo does not require one.
+Portable shared skills resolve this repo's commands and policy through:
+- **Commands** — run `.agents/bin/<name>` (`setup`, `validate`, `test`, ...); see `.agents/bin/README.md`. A missing script means that capability is n/a here.
+- **Policy / config** — `.agents/agent-workflow.yml`.
 
 ## Editing Rules
 
