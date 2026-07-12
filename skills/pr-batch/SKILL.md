@@ -60,6 +60,26 @@ The single lane still gets a Lane Card, claim/heartbeat behavior when configured
 a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
 checks, and the canonical terminal state and handoff evidence.
 
+## Release Backport Granularity
+
+When consumer policy selects merged base-branch work for a release branch,
+default to **one merged source PR per release backport PR**. Give each source its
+own target, lane, branch, validation, and release PR. Serialize work to the same
+release line: merge one, refresh the release tip, then branch the next. Do not
+combine independent sources because they share a destination, component,
+milestone, or changelog. A shared changelog is a serialization reason, not a
+bundling reason.
+
+Combine only behaviorally inseparable sources that cannot be reviewed, tested,
+or reverted safely alone; record the exact refs, dependency proof, and
+maintainer-approved exception rationale first.
+Use the consumer's cherry-pick/provenance method, preserve release-only
+divergence, and stamp release notes after accepted backports.
+
+If an aggregate backport PR already exists, do not keep extending it by default.
+Recommend separate replacements; close the aggregate only with explicit write
+authorization, and retain its branch unless branch deletion was also authorized.
+
 Resolve the target repo's `base_branch` from `.agents/agent-workflow.yml` when present, otherwise from the `AGENTS.md`
 **Agent Workflow Configuration** seam. If neither declares it, report
 `base_branch: UNKNOWN` and stop before branching. Run

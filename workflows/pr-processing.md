@@ -231,6 +231,36 @@ Worker path:
 4. If the published phase and the tracker disagree, treat it as a
    `release-mode-conflict` per `AGENTS.md`, report it, and do not auto-merge.
 
+### Release Backport Granularity
+
+When the consumer repo permits a merged base-branch fix to enter a release
+branch, use one source PR per release backport PR unless the consumer policy is
+stricter:
+
+1. Verify the source PR is merged, belongs on the selected release line, is not
+   already present or superseded there, and can be validated independently.
+2. Assign that source PR its own lane, branch, provenance record, release PR,
+   review cycle, QA evidence, and rollback boundary.
+3. Serialize backports to the same release line. Re-fetch the release branch
+   after each merge and branch the next backport from that exact tip.
+4. Do not combine independent source PRs merely because they target the same
+   release, touch related code, or edit the same changelog. A shared changelog is
+   a serialization reason, not a bundling reason; stamp or regenerate release
+   notes after all selected backports land.
+5. Combine source PRs only when they are behaviorally inseparable and separate
+   review, validation, or rollback would be unsafe. Record the constituent
+   source refs, dependency proof, and maintainer-approved exception before
+   implementation.
+6. Apply the consumer repo's required cherry-pick/provenance method. Preserve
+   release-only divergence instead of replacing files with base-branch
+   post-images, and document every conflict resolution.
+
+Before creating a release branch, search open release-targeted PRs for an
+existing aggregate of the selected sources. Do not extend or silently adopt an
+aggregate PR that violates this rule. Recommend closing it in favor of separate
+backports; close it only when the user or maintainer explicitly authorizes that
+write, and do not delete its branch without separate authorization.
+
 ### Tracker Update Safety
 
 Tracker issue bodies are shared mutable state. Avoid clobbering another agent's update:

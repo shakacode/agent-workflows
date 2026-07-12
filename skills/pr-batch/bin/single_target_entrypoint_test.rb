@@ -10,6 +10,10 @@ def assert(condition, message)
   abort("FAIL: #{message}") unless condition
 end
 
+def includes_words?(text, phrase)
+  text.gsub(/\s+/, " ").include?(phrase)
+end
+
 batch = read_repo_file("skills/pr-batch/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 workflow = read_repo_file("workflows/pr-processing.md")
@@ -59,6 +63,17 @@ assert(workflow.include?("For an ad-hoc task, the final handoff is the evidence 
 assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
 assert(workflow.include?("coordination target or explicit no-backend single-operator approval"), "ad-hoc degraded coordination must stop for a safe ownership decision")
 assert(workflow.include?("or inline `AGENTS.md` configuration"), "canonical goal handoff must support inline AGENTS configuration")
+
+assert(batch.include?("one merged source PR per release backport PR"), "pr-batch must keep release backports source-atomic")
+assert(includes_words?(batch, "refresh the release tip, then branch the next"), "pr-batch must refresh the release tip between backports")
+assert(includes_words?(batch, "A shared changelog is a serialization reason, not a bundling reason"), "pr-batch must serialize shared-changelog backports")
+assert(workflow.include?("### Release Backport Granularity"), "canonical processing must define release backport granularity")
+assert(includes_words?(workflow, "Assign that source PR its own lane, branch, provenance record, release PR"), "canonical processing must preserve one source per release lane")
+assert(includes_words?(workflow, "branch the next backport from that exact tip"), "canonical processing must branch from the refreshed release tip")
+assert(includes_words?(workflow, "close it only when the user or maintainer explicitly authorizes that write"), "canonical processing must require authority to close aggregate PRs")
+assert(guide.include?("one source PR -> one release PR"), "guide must document source-atomic release backports")
+assert(includes_words?(guide, "explicit maintainer-approved exception"), "guide must require approval to combine backports")
+assert(guide.include?("Closing the aggregate is a GitHub write"), "guide must preserve aggregate-PR close authority")
 
 assert(batch.include?("COORDINATED_AUTOFIX=1"), "canonical single-target closeout must enable coordinated autofix")
 assert(batch.include?("fixes run through action `f` without an extra quick-action pause"), "canonical closeout must preselect must-fix review work")
