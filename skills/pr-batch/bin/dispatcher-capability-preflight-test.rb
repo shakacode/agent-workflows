@@ -1006,6 +1006,38 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal pending.fetch("active_assignments"), changed.fetch("active_assignments")
   end
 
+  def test_changed_requested_identity_fences_when_discovery_still_lists_the_old_assignment
+    input = {
+      "lane_id" => "incident-stale-candidate-after-route-change",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote", "binding" => "operator-selected",
+        "attestation" => "instance-bound", "instance_id" => "old-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = {
+      "type" => "launch-confirmation", "version" => 1, "id" => "old-instance-confirmation",
+      "assignment" => pending.fetch("dispatch")
+    }
+    active = dispatch(input.merge("active_assignments" => pending.fetch("active_assignments"),
+                                  "launch_confirmation" => confirmation))
+    changed_request = {
+      "requested" => { "route" => { "model" => "Terra", "effort" => "high" },
+                       "dispatcher" => "remote", "hard_route" => true },
+      "candidates" => input.fetch("candidates")
+    }
+
+    pending_change = dispatch(input.merge(changed_request,
+                                          "active_assignments" => pending.fetch("active_assignments")))
+    active_change = dispatch(input.merge(changed_request,
+                                         "active_assignments" => active.fetch("active_assignments")))
+
+    assert_equal "blocked-replacement-fencing", pending_change.fetch("status")
+    assert_equal "blocked-replacement-fencing", active_change.fetch("status")
+  end
+
   def test_confirmed_active_replays_without_requiring_fresh_discovery
     input = {
       "lane_id" => "incident-active-empty-discovery",

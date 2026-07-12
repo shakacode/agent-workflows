@@ -516,13 +516,11 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
   end
   requested_identity_replayable = same_requested_identity &&
                                   (candidate_inputs.empty? || current_candidate_matches)
-  same_resolved_identity = candidate_inputs.any? do |entry|
-    entry.is_a?(Hash) && unusable_reason(entry).nil? &&
-      route_equal?(entry["route"], persisted_assignment["route"]) &&
-      entry["dispatcher"] == persisted_assignment["dispatcher"] &&
-      entry["instance_id"] == persisted_assignment["instance_id"]
-  end
-  unless requested_identity_replayable || same_resolved_identity
+  persisted_request_unchanged = persisted_decision_history &&
+                                input["requested"] == persisted_decision_history["requested"]
+  resolved_identity_replayable = history_resolution&.dig("action") == "dispatch-decision" &&
+                                 persisted_request_unchanged && current_candidate_matches
+  unless requested_identity_replayable || resolved_identity_replayable
     puts JSON.generate(
       replacement_fencing_output(
         input:,
