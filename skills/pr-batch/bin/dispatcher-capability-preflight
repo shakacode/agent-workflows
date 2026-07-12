@@ -484,7 +484,11 @@ if (persisted_decision = input["dispatch_decision_request"])
 
   if selected_choice
     requested = persisted_requested
-    authority = persisted_resolution ? persisted_resolution.fetch("updated_authority") : input.fetch("operator_decision").fetch("updated_authority")
+    authority = if persisted_resolution&.dig("action") == "dispatch-decision"
+                  persisted_resolution.fetch("updated_authority")
+                else
+                  input.fetch("operator_decision").fetch("updated_authority")
+                end
     candidate_inputs = [selected_choice.merge("fallback_authorized" => true)]
     persisted_decision_history = persisted_decision
     resolved_operator_decision = input["operator_decision"]

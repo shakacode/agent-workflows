@@ -929,6 +929,58 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "operator-refresh-2", later_available.dig("decision_resolution", "decision_id")
   end
 
+  def test_fresh_dispatch_decision_after_persisted_refresh_resolution_uses_fresh_authority
+    input = {
+      "lane_id" => "incident-refresh-then-dispatch",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "authority" => { "dispatch" => false, "route" => false },
+      "candidates" => [{
+        "route" => { "model" => "Terra", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "refresh-then-dispatch-instance"
+      }]
+    }
+    initial = dispatch(input)
+    refresh = {
+      "type" => "dispatch-decision-refresh", "version" => 1,
+      "id" => "refresh-before-dispatch", "request_id" => initial.dig("dispatch_decision_request", "id"),
+      "lane_id" => input.fetch("lane_id")
+    }
+    refreshed = dispatch(
+      input.merge(
+        "dispatch_decision_request" => initial.fetch("dispatch_decision_request"),
+        "operator_decision" => refresh
+      )
+    )
+    refreshed_request = refreshed.fetch("dispatch_decision_request")
+    choice = refreshed_request.fetch("viable_fallback_choices").first
+    approval = {
+      "type" => "dispatch-decision", "version" => 1, "id" => "dispatch-after-refresh",
+      "request_id" => refreshed_request.fetch("id"), "lane_id" => input.fetch("lane_id"),
+      "choice_id" => choice.fetch("choice_id"),
+      "updated_authority" => { "dispatch" => false, "route" => true }
+    }
+
+    selected = dispatch(
+      input.merge(
+        "dispatch_decision_request" => refreshed_request,
+        "decision_resolution" => refreshed.fetch("decision_resolution"),
+        "operator_decision" => approval
+      )
+    )
+
+    assert_equal 2, refreshed_request.fetch("revision")
+    assert_equal "dispatch-decision-refresh", refreshed.dig("decision_resolution", "action")
+    refute refreshed.fetch("decision_resolution").key?("updated_authority")
+    assert_equal "selected", selected.fetch("status")
+    assert_equal approval.fetch("updated_authority"), selected.fetch("authority")
+    assert_equal choice.fetch("route"), selected.fetch("actual_route")
+    assert selected.key?("dispatch")
+  end
+
   def test_decision_replay_with_active_assignment_preserves_the_request_and_resolution
     input = {
       "lane_id" => "incident-decision-replay",
