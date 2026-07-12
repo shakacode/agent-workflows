@@ -53,6 +53,60 @@ class ValidateSolutionsTest < Minitest::Test
     end
   end
 
+  def test_hidden_flat_markdown_is_rejected_and_not_counted
+    with_solution_root do |root|
+      write_solution(root, "README.md", "# Solutions\n")
+      write_solution(root, ".README.md", "# Hidden invalid lesson\n")
+      write_solution(root, ".sneaky.md", valid_solution)
+      write_solution(root, "coordination-unknown-state.md", valid_solution)
+
+      basenames = ValidateSolutions.solution_paths(root).map { |path| File.basename(path) }
+      assert_equal ["coordination-unknown-state.md"], basenames
+      expected = [
+        "docs/solutions/.README.md: hidden solution docs are not allowed",
+        "docs/solutions/.sneaky.md: hidden solution docs are not allowed"
+      ]
+      assert_equal expected, ValidateSolutions.validate(root)
+    end
+  end
+
+  def test_nested_solution_docs_fail_while_flat_solution_remains_valid
+    with_solution_root do |root|
+      write_solution(root, "coordination-unknown-state.md", valid_solution)
+      %w[review/deep/second.md coordination/first.md .archive/deep/hidden.md].each do |relative|
+        path = File.join(root, "docs/solutions", relative)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, valid_solution)
+      end
+
+      expected = [
+        "docs/solutions/.archive/deep/hidden.md: nested solution docs are not allowed",
+        "docs/solutions/coordination/first.md: nested solution docs are not allowed",
+        "docs/solutions/review/deep/second.md: nested solution docs are not allowed"
+      ]
+      assert_equal expected, ValidateSolutions.validate(root)
+    end
+  end
+
+  def test_solution_directory_symlink_is_not_traversed
+    with_solution_root do |root|
+      write_solution(root, "coordination-unknown-state.md", valid_solution)
+
+      Dir.mktmpdir("external-solutions") do |external_dir|
+        File.write(File.join(external_dir, "external-lesson.md"), valid_solution)
+        link = File.join(root, "docs/solutions/external")
+
+        begin
+          File.symlink(external_dir, link)
+        rescue NotImplementedError, Errno::EACCES, Errno::EPERM => e
+          skip "directory symlinks unavailable: #{e.class}"
+        end
+
+        assert_empty ValidateSolutions.validate(root)
+      end
+    end
+  end
+
   def test_missing_solution_docs_fails
     with_solution_root do |root|
       write_solution(root, "README.md", "# Solutions\n")
