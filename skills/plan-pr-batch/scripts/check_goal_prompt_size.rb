@@ -6,7 +6,6 @@ require "stringio"
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 300
-REQUIRED_GOAL_PROMPT_MIN_HEADROOM = 300
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
@@ -26,8 +25,8 @@ GOAL_MODE_COMPACT_CONTRACT = "GMCC-v1: `waiting-on-checks-or-review`; pending/mi
                              "current-head CI/reviews/review agents; unresolved current-head review threads; " \
                              "failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; " \
                              "`ready-no-merge-authority` only without merge auth; " \
-                             "`auto_merge_when_gates_pass` => merged+closed out when a PR exists; " \
-                             "target closed out; issue closed where applicable unless real blocker."
+                             "`auto_merge_when_gates_pass` => unless real blocker: " \
+                             "PR merged+closed out when present; target closed out; issue closed where applicable."
 GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                                 "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
                                 "CI or configured review agents, unresolved current-head review threads, failures, " \
@@ -43,9 +42,10 @@ GOAL_MODE_REQUIRED_SEMANTICS = [
   "failures/UNKNOWN => NOT COMPLETE",
   "poll/fix then bounded-watch resume handoff",
   "`ready-no-merge-authority` only without merge auth",
-  "`auto_merge_when_gates_pass` => merged+closed out when a PR exists",
+  "`auto_merge_when_gates_pass` => unless real blocker:",
+  "PR merged+closed out when present",
   "target closed out",
-  "issue closed where applicable unless real blocker"
+  "issue closed where applicable"
 ].freeze
 GOAL_MODE_AUTOLOAD_NORMATIVE_PHRASES = [
   "inline semantics remain normative when the workflow reference is",
@@ -138,13 +138,6 @@ ALLOWED_PRESSURE_SCENARIO_REFS = %w[
 
 def abort_with_failure(message)
   abort "FAIL: #{message}"
-end
-
-if GOAL_PROMPT_MIN_HEADROOM < REQUIRED_GOAL_PROMPT_MIN_HEADROOM
-  abort_with_failure(
-    "Codex goal prompt headroom floor is #{GOAL_PROMPT_MIN_HEADROOM}; " \
-    "must keep at least #{REQUIRED_GOAL_PROMPT_MIN_HEADROOM}"
-  )
 end
 
 def read_repo_file(path)

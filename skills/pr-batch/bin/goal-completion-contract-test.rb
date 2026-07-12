@@ -21,8 +21,8 @@ COMPACT_CONTRACT_LINE = "GMCC-v1: `waiting-on-checks-or-review`; pending/missing
                         "current-head CI/reviews/review agents; unresolved current-head review threads; " \
                         "failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; " \
                         "`ready-no-merge-authority` only without merge auth; " \
-                        "`auto_merge_when_gates_pass` => merged+closed out when a PR exists; " \
-                        "target closed out; issue closed where applicable unless real blocker."
+                        "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; " \
+                        "target closed out; issue closed where applicable."
 CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                           "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
                           "CI or configured review agents, unresolved current-head review threads, failures, " \
@@ -38,9 +38,10 @@ COMPACT_CONTRACT_INVARIANTS = [
   "failures/UNKNOWN => NOT COMPLETE",
   "poll/fix then bounded-watch resume handoff",
   "`ready-no-merge-authority` only without merge auth",
-  "`auto_merge_when_gates_pass` => merged+closed out when a PR exists",
+  "`auto_merge_when_gates_pass` => unless real blocker:",
+  "PR merged+closed out when present",
   "target closed out",
-  "issue closed where applicable unless real blocker"
+  "issue closed where applicable"
 ].freeze
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
 CANONICAL_CLOSEOUT_PROMPT_LINE = "Final handoff: canonical closeout;"
@@ -185,12 +186,14 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "`auto_merge_when_gates_pass` => merged+closed out when a PR exists",
+                           "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present",
                            "compact completion contract"
       assert_text_includes line, "target closed out", "compact completion contract"
       assert_text_includes line, "issue closed where applicable", "compact completion contract"
       refute_includes line, "merged+issue closed",
                       "PR-only and ad-hoc closeout must not require an issue that does not exist"
+      refute_match(/issue closed where applicable unless real blocker/, line,
+                   "the real-blocker exception must scope the entire auto-merge closeout clause")
     end
   end
 
@@ -431,10 +434,10 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text,
-                           "`auto_merge_when_gates_pass` => merged+closed out when a PR exists",
+                           "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present",
                            label
       assert_text_includes text, "target closed out", label
-      assert_text_includes text, "issue closed where applicable unless real blocker", label
+      assert_text_includes text, "issue closed where applicable", label
     end
   end
 
