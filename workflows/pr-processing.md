@@ -1348,10 +1348,6 @@ Use this prompt after filling the route placeholders:
 Use $pr-batch to recover and continue this in-flight batch.
 Continue the existing goal; do not clear it or start a new batch.
 
-Keep the parent coordinator on <coordinator model/class>/<effort>. Do not stop,
-replace, or downgrade the parent. It owns planning, risk classification, route
-decisions, integration, review, readiness, merge sequencing, and closeout.
-
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
 When the existing goal requires an exact parent, verify the current parent
 against this assurance. Prompt text cannot change its model. On mismatch or
@@ -1361,6 +1357,11 @@ assurance. On mismatch or UNKNOWN, stop until a fresh qualifying checker is
 reserved. Only when neither an exact-parent nor exact-checker policy applies,
 preserve unavailable evidence as UNKNOWN and continue portable class-based
 recovery.
+
+After launch assurance passes, keep the compliant parent coordinator on
+<coordinator model/class>/<effort>. Do not replace or downgrade it. It owns
+planning, risk classification, route decisions, integration, review, readiness,
+merge sequencing, and closeout.
 
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Preserve each lane's route mapping from the existing goal. Use one route entry

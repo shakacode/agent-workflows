@@ -129,7 +129,10 @@ If you do not know or cannot verify an item from GitHub/local git, say UNKNOWN r
 
 ## Independent Audit Prompt
 
-Run this separately in Codex and Claude. Do not share one agent's output with the other until both are done.
+Run this separately in Codex and Claude. For completed-batch audit, designate
+one launch-assured policy-compliant run as the qualifying checker (Sol under the
+conservative GPT-5.6 profile) and the other run as an advisory auditor. Do not
+share one agent's output with the other until both are done.
 
 ```text
 Run an independent post-merge audit of merged PRs (and, when a batch id is known, its worked-issue scope)
@@ -138,10 +141,32 @@ for the requested audit mode.
 Use visible chat only to choose the obvious just-run batch default; use git,
 GitHub, and agent-coord ground truth for every audit fact.
 
+For completed-batch audit with `Audit role: qualifying-checker`, before deep
+audit verify that the checker is a fresh instance independent from every maker.
+Record its identity, exact model/effort, binding source, the maker identities,
+checker independence, and `checker_route_compliance`. Host session metadata,
+effective instance-bound runtime state, or explicit operator-selected launch
+configuration qualify as binding evidence; mutable default configuration,
+installed rosters, dispatch-resolved classes, prompt text, and model self-report
+do not. Under the conservative GPT-5.6 profile use Sol/high minimum, or the
+highest supported Sol effort for high-risk or exceptionally ambiguous work.
+Terra may collect mechanical evidence but must not issue the qualifying audit
+verdict. If checker identity, exact model/effort, binding source, or
+independence is unavailable, below policy, or `UNKNOWN`, do not return a clean
+verdict; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
+checker reservation or relaunch needed. For `Audit role: advisory-auditor`,
+record `checker_route_compliance: not_applicable (advisory)`; collect evidence
+and report concrete findings, but do not issue the qualifying clean/ready
+verdict. Concrete advisory findings still require coordinator triage. If
+`Audit role` is missing, unresolved, invalid, or `UNKNOWN`, record
+`checker_route_compliance: UNKNOWN`; collect and report evidence only, and do
+not issue the qualifying clean/ready verdict.
+
 Scope:
 - Repository: <OWNER>/<REPO>
 - Batch id: <BATCH_ID | UNKNOWN | not applicable; default to the obvious just-run exact id, or resolve a visible label/target-set hint first>
 - Audit mode: <completed-batch | release/range | coverage catch-up>
+- Audit role: <qualifying-checker | advisory-auditor>
 - Base: for completed-batch audit, prefer the user-supplied or batch-recorded lower bound that covers the batch merges; for coverage catch-up, use the explicit lower bound I provide; otherwise resolve the most recent release candidate tag/commit unless I provide one explicitly
 - Head: current main unless I provide one explicitly
 - Focus: for completed-batch audit, only the verified batch subset; for release/range audit, the selected range; for coverage catch-up, candidate un-audited PRs/commits in the explicit range

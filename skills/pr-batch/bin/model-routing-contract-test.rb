@@ -144,7 +144,7 @@ class ModelRoutingContractTest < Minitest::Test
 
     [
       "Continue the existing goal; do not clear it or start a new batch",
-      "Keep the parent coordinator on <coordinator model/class>/<effort>",
+      "After launch assurance passes, keep the compliant parent coordinator on",
       LAUNCH_ASSURANCE,
       "When the existing goal requires an exact checker",
       "On mismatch or UNKNOWN, stop until a fresh qualifying checker is reserved",
@@ -164,6 +164,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     refute_includes prompt, "Worker initial route: <model/class>/<effort>",
                     "recovery prompt must not collapse per-lane routes into one batch-wide pair"
+    refute_includes prompt, "Do not stop, replace, or downgrade the parent",
+                    "recovery prompt must not preserve a parent before launch assurance passes"
   end
 
   def test_continuation_entry_points_distinguish_batch_recovery_from_worker_restart
@@ -294,7 +296,10 @@ class ModelRoutingContractTest < Minitest::Test
       "Sol/high minimum",
       "Terra may collect mechanical evidence",
       "may not issue the qualifying intent-achievement or final-risk verdict",
-      "do not return a clean/`realized` verdict"
+      "do not return a clean/`realized` verdict",
+      "Without an exact-checker policy",
+      "continue portable class-based evaluation",
+      "missing binding alone does not block an otherwise evidence-backed `realized` classification"
     ].each do |phrase|
       assert_includes checker, phrase, "continuous checker contract is missing: #{phrase}"
     end
@@ -303,12 +308,46 @@ class ModelRoutingContractTest < Minitest::Test
     [
       "distinct from every maker",
       "exact model/effort",
-      "stop short of a clean/realized verdict",
-      "If checker identity, model/effort, binding, or independence is unavailable",
-      "below policy, or `UNKNOWN`",
+      "Checker policy: <exact model>/<effort> via <binding source> | no exact-checker policy",
+      "If independence is unavailable or UNKNOWN, stop short of a clean/realized verdict",
+      "When an exact checker is required",
+      "mismatched, unavailable, below-policy, or UNKNOWN exact model/effort or binding also blocks",
+      "Without an exact-checker policy",
+      "continue portable class-based evaluation",
+      "do not block an otherwise evidence-backed clean/realized verdict solely for that reason",
       "checker_route_compliance: UNKNOWN|failed"
     ].each do |phrase|
       assert_includes loop_prompt, phrase, "continuous checker Loop Prompt is missing: #{phrase}"
+    end
+  end
+
+  def test_post_merge_independent_audit_prompt_is_fail_closed
+    audit_text = read_repo_file("workflows/post-merge-audit.md")
+    audit_prompt = normalized(extract_prompt(audit_text, "## Independent Audit Prompt"))
+
+    assert_includes normalized(audit_text),
+                    "one launch-assured policy-compliant run as the qualifying checker"
+    refute_includes normalized(audit_text), "one launch-assured Sol run as the qualifying checker"
+
+    [
+      "Audit role: <qualifying-checker | advisory-auditor>",
+      "For completed-batch audit with `Audit role: qualifying-checker`",
+      "fresh instance independent from every maker",
+      "identity, exact model/effort, binding source",
+      "Host session metadata, effective instance-bound runtime state, or explicit operator-selected launch configuration",
+      "mutable default configuration, installed rosters, dispatch-resolved classes, prompt text, and model self-report do not",
+      "Terra may collect mechanical evidence but must not issue the qualifying audit verdict",
+      "If checker identity, exact model/effort, binding source, or independence is unavailable",
+      "below policy, or `UNKNOWN`",
+      "do not return a clean verdict",
+      "checker_route_compliance: UNKNOWN|failed",
+      "For `Audit role: advisory-auditor`",
+      "checker_route_compliance: not_applicable (advisory)",
+      "do not issue the qualifying clean/ready verdict",
+      "Concrete advisory findings still require coordinator triage",
+      "If `Audit role` is missing, unresolved, invalid, or `UNKNOWN`, record `checker_route_compliance: UNKNOWN`; collect and report evidence only, and do not issue the qualifying clean/ready verdict"
+    ].each do |phrase|
+      assert_includes audit_prompt, phrase, "post-merge Independent Audit Prompt is missing: #{phrase}"
     end
   end
 
