@@ -71,6 +71,25 @@ class ValidateSolutionsTest < Minitest::Test
     end
   end
 
+  def test_solution_directory_symlink_is_not_traversed
+    with_solution_root do |root|
+      write_solution(root, "coordination-unknown-state.md", valid_solution)
+
+      Dir.mktmpdir("external-solutions") do |external_dir|
+        File.write(File.join(external_dir, "external-lesson.md"), valid_solution)
+        link = File.join(root, "docs/solutions/external")
+
+        begin
+          File.symlink(external_dir, link)
+        rescue NotImplementedError, Errno::EACCES, Errno::EPERM => e
+          skip "directory symlinks unavailable: #{e.class}"
+        end
+
+        assert_empty ValidateSolutions.validate(root)
+      end
+    end
+  end
+
   def test_missing_solution_docs_fails
     with_solution_root do |root|
       write_solution(root, "README.md", "# Solutions\n")
