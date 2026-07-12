@@ -190,8 +190,13 @@ For each included PR:
   owner and branch/worktree before treating QA coverage as satisfied. Use the
   resolved `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` helper
   when a PR body, handoff, or issue comment includes replay markers for QA
-  Evidence or priority finding dispositions; missing or `UNKNOWN` replay is a
-  process finding unless a maintainer explicitly waived replay for that scope.
+  Evidence or priority finding dispositions. For current-head audits, pass
+  `--expected-head-sha <full-merged-head-SHA>` and replay each PR or per-PR
+  evidence file separately; do not feed a combined multi-PR handoff to one
+  expected SHA. Add `--require-priority-dispositions` when the audit depends on
+  fixed, waived, or deferred priority findings. Missing or `UNKNOWN` replay is
+  a process finding unless a maintainer explicitly waived replay for that
+  scope.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.
 - Decision log: inspect any `Codex Decision Log` or equivalent section and verify the decisions still hold after the merge.
 
