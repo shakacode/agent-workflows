@@ -360,6 +360,8 @@ def persisted_resolution_valid?(resolution, request, lane_id)
   return false unless resolved_request && resolved_request["revision"] == resolution["request_revision"]
 
   if resolution["action"] == "dispatch-decision"
+    return false unless resolution["request_id"] == request["id"] &&
+                        resolution["request_revision"] == request["revision"]
     return false unless nonempty_string?(resolution["choice_id"]) && authority_shape?(resolution["updated_authority"])
 
     choice = resolved_request["viable_fallback_choices"].find { |entry| entry["choice_id"] == resolution["choice_id"] }

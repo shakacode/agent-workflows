@@ -981,6 +981,82 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert selected.key?("dispatch")
   end
 
+  def test_persisted_dispatch_resolution_must_target_the_current_request_id_and_revision
+    input = {
+      "lane_id" => "incident-resolution-revision-binding",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "authority" => { "dispatch" => false, "route" => false },
+      "candidates" => [{
+        "route" => { "model" => "Terra", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "revision-binding-instance"
+      }]
+    }
+    initial = dispatch(input)
+    request_v1 = initial.fetch("dispatch_decision_request")
+    choice_v1 = request_v1.fetch("viable_fallback_choices").first
+    approval_v1 = {
+      "type" => "dispatch-decision", "version" => 1, "id" => "revision-one-approval",
+      "request_id" => request_v1.fetch("id"), "lane_id" => input.fetch("lane_id"),
+      "choice_id" => choice_v1.fetch("choice_id"),
+      "updated_authority" => { "dispatch" => false, "route" => true }
+    }
+    approved_v1 = dispatch(
+      input.merge("dispatch_decision_request" => request_v1, "operator_decision" => approval_v1)
+    )
+    refreshed = dispatch(
+      input.merge(
+        "dispatch_decision_request" => request_v1,
+        "operator_decision" => {
+          "type" => "dispatch-decision-refresh", "version" => 1, "id" => "revision-two-refresh",
+          "request_id" => request_v1.fetch("id"), "lane_id" => input.fetch("lane_id")
+        }
+      )
+    )
+    request_v2 = refreshed.fetch("dispatch_decision_request")
+    resolution_v1 = approved_v1.fetch("decision_resolution")
+    stale_resolutions = [
+      resolution_v1,
+      resolution_v1.merge("request_id" => request_v2.fetch("id")),
+      resolution_v1.merge("request_revision" => request_v2.fetch("revision"))
+    ]
+
+    assert_equal 1, request_v1.fetch("revision")
+    assert_equal 2, request_v2.fetch("revision")
+    assert_equal request_v1, request_v2.fetch("prior_request")
+    assert_equal choice_v1.fetch("choice_id"), request_v2.dig("viable_fallback_choices", 0, "choice_id")
+    stale_resolutions.each do |resolution|
+      output = dispatch(
+        input.merge("dispatch_decision_request" => request_v2, "decision_resolution" => resolution)
+      )
+
+      assert_equal "invalid-input", output.fetch("status"), resolution.inspect
+      assert_equal "decision_resolution must be a well-formed persisted resolution for this request",
+                   output.fetch("reason")
+      refute output.key?("dispatch")
+      refute output.key?("resume_goal")
+    end
+
+    approval_v2 = approval_v1.merge(
+      "id" => "revision-two-approval",
+      "request_id" => request_v2.fetch("id")
+    )
+    approved_v2 = dispatch(
+      input.merge("dispatch_decision_request" => request_v2, "operator_decision" => approval_v2)
+    )
+    current_replay = dispatch(
+      input.merge(
+        "dispatch_decision_request" => request_v2,
+        "decision_resolution" => approved_v2.fetch("decision_resolution")
+      )
+    )
+    assert_equal "selected", current_replay.fetch("status")
+    assert current_replay.key?("dispatch")
+  end
+
   def test_decision_replay_with_active_assignment_preserves_the_request_and_resolution
     input = {
       "lane_id" => "incident-decision-replay",
