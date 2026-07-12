@@ -21,8 +21,8 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
     "target": {
       "kind": "committed",
       "base_ref": "origin/main",
-      "base_sha": "def456",
-      "head_sha": "abc123"
+      "base_sha": "0123456789abcdef0123456789abcdef01234567",
+      "head_sha": "89abcdef0123456789abcdef0123456789abcdef"
     },
     "provenance": {
       "engine": "codex review",
@@ -152,7 +152,10 @@ An uncommitted target is mutable and cannot be identified by `head_sha` alone.
 Set `kind` to `uncommitted`, use `partial` or `unknown` coverage, and record a
 non-empty limitation. Use `committed` only when the reviewed diff is anchored
 entirely by the recorded base and head SHAs; `base_ref` remains human context
-and is not the immutable anchor.
+and is not the immutable anchor. For `committed`, both SHA fields must be full
+lowercase hexadecimal Git object IDs: 40 characters for SHA-1 repositories or
+64 characters for SHA-256 repositories. Symbolic refs such as `HEAD` and
+`origin/main`, and abbreviated object IDs, are invalid.
 
 ## Severities
 

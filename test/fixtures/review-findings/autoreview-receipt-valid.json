@@ -5,8 +5,8 @@
     "target": {
       "kind": "committed",
       "base_ref": "origin/main",
-      "base_sha": "def456",
-      "head_sha": "abc123"
+      "base_sha": "0123456789abcdef0123456789abcdef01234567",
+      "head_sha": "89abcdef0123456789abcdef0123456789abcdef"
     },
     "provenance": {
       "engine": "codex review",

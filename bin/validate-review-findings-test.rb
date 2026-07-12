@@ -182,6 +182,23 @@ class ValidateReviewFindingsTest < Minitest::Test
                     "report: review_receipt: target.base_sha must be a non-empty string"
   end
 
+  def test_committed_receipt_rejects_symbolic_or_abbreviated_object_ids
+    document = fixture_document("autoreview-receipt-valid.json")
+    target = document.fetch("review_receipt").fetch("target")
+    target["base_sha"] = "origin/main"
+    target["head_sha"] = "HEAD"
+
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures,
+                    "report: review_receipt: committed target.base_sha must be a full hexadecimal Git object ID"
+    assert_includes failures,
+                    "report: review_receipt: committed target.head_sha must be a full hexadecimal Git object ID"
+
+    target["base_sha"] = "a" * 64
+    target["head_sha"] = "b" * 64
+    assert_empty ValidateReviewFindings.validate_document(document, "report")
+  end
+
   def test_autoreview_receipt_requires_source_and_unique_core_lenses
     document = fixture_document("autoreview-receipt-valid.json")
     receipt = document.fetch("review_receipt")

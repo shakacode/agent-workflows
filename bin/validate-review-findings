@@ -127,6 +127,14 @@ module ValidateReviewFindings
     if target.is_a?(Hash) && !RECEIPT_TARGET_KINDS.include?(target["kind"])
       failures << "#{label}: target.kind must be one of: #{RECEIPT_TARGET_KINDS.join(', ')}"
     end
+    if target.is_a?(Hash) && target["kind"] == "committed"
+      %w[base_sha head_sha].each do |field|
+        next unless non_empty_string?(target[field])
+        next if full_git_object_id?(target[field])
+
+        failures << "#{label}: committed target.#{field} must be a full hexadecimal Git object ID"
+      end
+    end
     failures
   end
 
@@ -342,6 +350,10 @@ module ValidateReviewFindings
 
   def positive_integer?(value)
     value.is_a?(Integer) && value.positive?
+  end
+
+  def full_git_object_id?(value)
+    value.match?(/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/)
   end
 end
 
