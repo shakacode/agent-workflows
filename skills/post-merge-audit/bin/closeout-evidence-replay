@@ -65,7 +65,7 @@ module CloseoutEvidenceReplay
 
         options[:expected_head_sha] = sha.downcase
       end
-      opts.on("--require-priority-dispositions", "Fail when the priority disposition marker is missing") do
+      opts.on("--require-priority-dispositions", "Fail when priority evidence is missing or explicitly not_applicable") do
         options[:require_priority_dispositions] = true
       end
       opts.on("-h", "--help", "Show this help") { options[:help] = true }
@@ -112,8 +112,8 @@ module CloseoutEvidenceReplay
 
   def current_head_markers(markers, expected_head_sha)
     matching = markers.select do |marker|
-      fields, = parse_fields(marker)
-      fields.fetch("head_sha", "").downcase == expected_head_sha
+      fields, duplicate_keys = parse_fields(marker)
+      fields.fetch("head_sha", "").downcase == expected_head_sha || duplicate_keys.include?("head_sha")
     end
     matching.empty? ? markers : matching
   end
@@ -352,6 +352,7 @@ module CloseoutEvidenceReplay
       "fields" => { "status" => "not_applicable" },
       "findings" => [],
       "missing" => [],
+      "errors" => [],
       "reason" => reason
     }
   end

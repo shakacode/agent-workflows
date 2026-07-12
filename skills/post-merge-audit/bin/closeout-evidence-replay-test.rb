@@ -23,6 +23,13 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_help_describes_required_priority_evidence
+    out, status = Open3.capture2e("ruby", SCRIPT, "--help")
+
+    assert status.success?, out
+    assert_includes out, "Fail when priority evidence is missing or explicitly not_applicable"
+  end
+
   def test_required_priority_dispositions_reject_missing_marker
     head_sha = "1111111111111111111111111111111111111111"
     data = run_replay(<<~MARKDOWN, require_priority_dispositions: true)
@@ -44,6 +51,27 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     priority = data.fetch("priority_finding_dispositions")
     assert_equal "UNKNOWN", priority.fetch("verdict")
     assert_equal [], priority.fetch("findings")
+    assert_equal [], priority.fetch("errors")
+  end
+
+  def test_optional_missing_priority_marker_has_stable_error_shape
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
+      tested_at: PR #123 head 1111111111111111111111111111111111111111
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: not applicable
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      -->
+    MARKDOWN
+
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "NOT_APPLICABLE", priority.fetch("verdict")
     assert_equal [], priority.fetch("errors")
   end
 
@@ -368,6 +396,44 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "BLOCKED", data.fetch("overall_verdict")
     assert_equal "BLOCKED", qa.fetch("verdict")
     assert_equal 2, qa.fetch("marker_count")
+  end
+
+  def test_expected_final_head_does_not_filter_out_duplicate_head_qa_marker
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: valid current-head evidence
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{stale_head_sha}
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: malformed duplicate-head evidence
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    qa = data.fetch("qa_evidence")
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_equal 2, qa.fetch("marker_count")
+    assert_includes qa.fetch("errors"), "marker[1].duplicate scalar key: head_sha"
   end
 
   def test_expected_final_head_aggregates_all_current_head_priority_markers
