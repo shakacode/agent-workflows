@@ -24,6 +24,16 @@ Use `.agents/workflows/post-merge-audit.md` for reusable copy-paste prompts, inc
 Start by resolving the exact audit range and, when auditing a named agent
 batch/run, the exact worked-issue scope.
 
+For a completed-batch audit, also resolve launch assurance before deep audit:
+the checker must be a fresh instance independent from every maker, with exact
+model/effort and binding evidence satisfying the batch's operator policy. Under
+the conservative GPT-5.6 profile this means Sol/high minimum, or Sol at the
+highest supported effort for high-risk or exceptionally ambiguous work. Terra
+may collect mechanical evidence but does not issue the qualifying verdict. If
+checker route or independence is below policy or `UNKNOWN`, the audit cannot be
+clean; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
+qualifying-checker reservation needed.
+
 Default batch selection: when the current visible chat, active goal, restart
 handoff, or immediately preceding batch closeout names exactly one just-run
 batch, default to it. If the visible value is an exact coordination batch id,
