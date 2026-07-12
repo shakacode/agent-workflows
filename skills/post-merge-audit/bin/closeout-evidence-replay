@@ -130,7 +130,8 @@ module CloseoutEvidenceReplay
     head_sha = fields.fetch("head_sha", "").to_s.downcase
     release_blocking = fields.fetch("release_blocking", "").to_s
     process_gap_disposition = fields.fetch("process_gap_disposition", "").to_s
-    head_sha_valid = full_head_sha?(head_sha)
+    legacy_not_required_historical_marker = expected_head_sha.nil? && required == "no" && head_sha == "not_applicable"
+    head_sha_valid = full_head_sha?(head_sha) || legacy_not_required_historical_marker
     final_head_mismatch = expected_head_sha && head_sha != expected_head_sha
     tested_at_head_mismatch = expected_head_sha &&
                               !tested_at_matches_head?(fields.fetch("tested_at", "").to_s, expected_head_sha)
@@ -140,7 +141,7 @@ module CloseoutEvidenceReplay
     missing << "status" unless status.empty? || VALID_QA_STATUSES.include?(status)
     missing << "release_blocking" unless release_blocking.empty? || VALID_RELEASE_BLOCKING.include?(release_blocking)
     missing << "status" if required == "yes" && status == "not_applicable"
-    if required == "no"
+    if expected_head_sha && required == "no"
       missing << "status" unless status == "not_applicable"
       missing << "release_blocking" unless release_blocking == "not_applicable"
     end

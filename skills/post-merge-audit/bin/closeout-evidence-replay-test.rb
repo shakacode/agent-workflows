@@ -75,9 +75,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes priority.fetch("missing"), "finding"
   end
 
-  def test_not_required_qa_marker_rejects_inconsistent_terminal_fields
+  def test_current_head_not_required_qa_marker_rejects_inconsistent_terminal_fields
     head_sha = "1111111111111111111111111111111111111111"
-    data = run_replay(<<~MARKDOWN)
+    data = run_replay(<<~MARKDOWN, expected_head_sha: head_sha)
       <!-- qa-evidence v1
       required: no
       status: satisfied
@@ -96,6 +96,26 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "UNKNOWN", qa.fetch("verdict")
     assert_includes qa.fetch("missing"), "status"
     assert_includes qa.fetch("missing"), "release_blocking"
+  end
+
+  def test_historical_not_required_qa_marker_preserves_legacy_terminal_fields
+    data = run_replay(<<~MARKDOWN)
+      <!-- qa-evidence v1
+      required: no
+      status: satisfied
+      head_sha: not_applicable
+      tested_at: no PR created
+      scope: issue disposition only
+      automated_checks: not applicable
+      manual_checks: not applicable
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: not applicable
+      -->
+    MARKDOWN
+
+    assert_equal "NOT_APPLICABLE", data.fetch("overall_verdict")
+    assert_equal "NOT_APPLICABLE", data.fetch("qa_evidence").fetch("verdict")
   end
 
   def test_expected_final_head_rejects_qa_from_before_post_qa_commit
@@ -564,7 +584,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes data.fetch("qa_evidence").fetch("missing"), "head_sha"
   end
 
-  def test_not_required_qa_marker_still_requires_full_head_sha
+  def test_historical_not_required_qa_marker_accepts_legacy_head_placeholder
     data = run_replay(<<~MARKDOWN)
       <!-- qa-evidence v1
       required: no
@@ -580,8 +600,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       -->
     MARKDOWN
 
-    assert_equal "UNKNOWN", data.fetch("qa_evidence").fetch("verdict")
-    assert_includes data.fetch("qa_evidence").fetch("missing"), "head_sha"
+    assert_equal "NOT_APPLICABLE", data.fetch("qa_evidence").fetch("verdict")
   end
 
   def test_priority_marker_with_abbreviated_head_sha_is_unknown
