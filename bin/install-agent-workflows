@@ -154,6 +154,17 @@ installed_metadata_value() {
   ' "$metadata_path" "$key"
 }
 
+validate_delivery_mode() {
+  local label="$1"
+  case "$delivery_mode" in
+    ""|flat|plugin-companion) ;;
+    *)
+      echo "$label must be flat or plugin-companion, got: $delivery_mode" >&2
+      exit 64
+      ;;
+  esac
+}
+
 prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
@@ -425,19 +436,14 @@ case "$mode" in
     ;;
 esac
 
-case "$delivery_mode" in
-  ""|flat|plugin-companion) ;;
-  *)
-    echo "--delivery-mode must be flat or plugin-companion, got: $delivery_mode" >&2
-    exit 64
-    ;;
-esac
+validate_delivery_mode "--delivery-mode"
 
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
 if [[ -z "$delivery_mode" ]]; then
   delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
+  validate_delivery_mode "Installed metadata delivery_mode"
 fi
 
 pending_migration_receipt="$target/.agent-workflows-migration-staging"
