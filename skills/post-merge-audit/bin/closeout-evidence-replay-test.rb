@@ -41,7 +41,38 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
 
     assert_equal "UNKNOWN", data.fetch("overall_verdict")
-    assert_equal "UNKNOWN", data.fetch("priority_finding_dispositions").fetch("verdict")
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "UNKNOWN", priority.fetch("verdict")
+    assert_equal [], priority.fetch("findings")
+    assert_equal [], priority.fetch("errors")
+  end
+
+  def test_required_priority_dispositions_reject_not_applicable_marker
+    head_sha = "1111111111111111111111111111111111111111"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: head_sha, require_priority_dispositions: true)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR #123 head #{head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: not applicable
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: schema
+      -->
+
+      <!-- priority-finding-dispositions v1
+      status: not_applicable
+      head_sha: #{head_sha}
+      -->
+    MARKDOWN
+
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", priority.fetch("verdict")
+    assert_includes priority.fetch("missing"), "finding"
   end
 
   def test_not_required_qa_marker_rejects_inconsistent_terminal_fields

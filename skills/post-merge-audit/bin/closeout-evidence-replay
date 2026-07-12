@@ -101,13 +101,13 @@ module CloseoutEvidenceReplay
 
   def replay_priority_markers(markers, expected_head_sha: nil, required: false)
     if markers.empty?
-      return unknown("priority-finding-dispositions marker missing") if required
+      return priority_unknown("priority-finding-dispositions marker missing") if required
 
       return priority_not_applicable("priority-finding-dispositions marker missing")
     end
 
     markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
-    aggregate_marker_results(markers.map { |marker| replay_priority(marker, expected_head_sha:) })
+    aggregate_marker_results(markers.map { |marker| replay_priority(marker, expected_head_sha:, required:) })
   end
 
   def current_head_markers(markers, expected_head_sha)
@@ -175,7 +175,7 @@ module CloseoutEvidenceReplay
     result
   end
 
-  def replay_priority(marker, expected_head_sha: nil)
+  def replay_priority(marker, expected_head_sha: nil, required: false)
     fields, duplicate_keys = parse_fields(marker)
     errors = duplicate_keys.map { |key| "duplicate scalar key: #{key}" }
     findings, finding_errors = parse_findings(marker)
@@ -186,6 +186,7 @@ module CloseoutEvidenceReplay
       head_sha = fields.fetch("head_sha", "").downcase
       head_matches = !expected_head_sha || head_sha == expected_head_sha
       missing << "head_sha" unless full_head_sha?(head_sha) && head_matches
+      missing << "finding" if required
       result = {
         "verdict" => missing.empty? ? "NOT_APPLICABLE" : "UNKNOWN",
         "fields" => fields,
@@ -351,6 +352,16 @@ module CloseoutEvidenceReplay
       "findings" => [],
       "missing" => [],
       "reason" => reason
+    }
+  end
+
+  def priority_unknown(reason)
+    {
+      "verdict" => "UNKNOWN",
+      "fields" => {},
+      "findings" => [],
+      "missing" => [reason],
+      "errors" => []
     }
   end
 
