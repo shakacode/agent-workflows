@@ -18,7 +18,7 @@ CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion
 CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
 COMPACT_CONTRACT_LINE = "GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged " \
-                        "current-head CI/reviews/review agents; unresolved current-head review threads; " \
+                        "current-head CI/review agents; unresolved current-head review threads; " \
                         "failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; " \
                         "`ready-no-merge-authority` only without merge auth; " \
                         "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; " \
@@ -33,7 +33,7 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "means merged and closed out unless a real blocker prevents it."
 COMPACT_CONTRACT_INVARIANTS = [
   "`waiting-on-checks-or-review`",
-  "pending/missing/untriaged current-head CI/reviews/review agents",
+  "pending/missing/untriaged current-head CI/review agents",
   "unresolved current-head review threads",
   "failures/UNKNOWN => NOT COMPLETE",
   "poll/fix then bounded-watch resume handoff",
@@ -199,6 +199,22 @@ class GoalCompletionContractTest < Minitest::Test
       line = compact_contract_line(prompt)
       assert_text_includes line, "unresolved current-head review threads", "compact completion contract"
       assert_operator line.index("unresolved current-head review threads"), :<, line.index("=> NOT COMPLETE")
+    end
+  end
+
+  def test_compact_current_head_gate_categories_match_the_canonical_contract
+    assert_text_includes @workflow_contract_section,
+                         "current-head CI or configured review agents, unresolved current-head review threads",
+                         "canonical completion contract"
+
+    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+      line = compact_contract_line(prompt)
+      assert_text_includes line,
+                           "pending/missing/untriaged current-head CI/review agents; " \
+                           "unresolved current-head review threads",
+                           "compact completion contract"
+      refute_includes line, "CI/reviews/review agents",
+                      "compact completion contract must not duplicate the review category"
     end
   end
 

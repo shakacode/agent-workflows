@@ -22,7 +22,7 @@ MODEL_EFFORT_DISPATCH_LINE = "- Bind actors on-host; unbound -> stop; no inherit
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged " \
-                             "current-head CI/reviews/review agents; unresolved current-head review threads; " \
+                             "current-head CI/review agents; unresolved current-head review threads; " \
                              "failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; " \
                              "`ready-no-merge-authority` only without merge auth; " \
                              "`auto_merge_when_gates_pass` => unless real blocker: " \
@@ -37,7 +37,7 @@ GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-chec
                                 "means merged and closed out unless a real blocker prevents it."
 GOAL_MODE_REQUIRED_SEMANTICS = [
   "`waiting-on-checks-or-review`",
-  "pending/missing/untriaged current-head CI/reviews/review agents",
+  "pending/missing/untriaged current-head CI/review agents",
   "unresolved current-head review threads",
   "failures/UNKNOWN => NOT COMPLETE",
   "poll/fix then bounded-watch resume handoff",
