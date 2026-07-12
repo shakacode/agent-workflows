@@ -53,6 +53,19 @@ class ValidateSolutionsTest < Minitest::Test
     end
   end
 
+  def test_hidden_flat_markdown_is_validated_and_counted
+    with_solution_root do |root|
+      write_solution(root, "README.md", "# Solutions\n")
+      write_solution(root, ".README.md", "# Hidden invalid lesson\n")
+      write_solution(root, ".sneaky.md", valid_solution)
+      write_solution(root, "coordination-unknown-state.md", valid_solution)
+
+      basenames = ValidateSolutions.solution_paths(root).map { |path| File.basename(path) }
+      assert_equal [".README.md", ".sneaky.md", "coordination-unknown-state.md"], basenames
+      assert_equal ["docs/solutions/.README.md: missing YAML frontmatter"], ValidateSolutions.validate(root)
+    end
+  end
+
   def test_nested_solution_docs_fail_while_flat_solution_remains_valid
     with_solution_root do |root|
       write_solution(root, "coordination-unknown-state.md", valid_solution)

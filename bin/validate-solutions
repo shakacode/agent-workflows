@@ -49,7 +49,7 @@ module ValidateSolutions
   end
 
   def solution_paths(root)
-    Dir.glob(File.join(root, "docs/solutions/*.md")).reject do |path|
+    Dir.glob(File.join(root, "docs/solutions/*.md"), File::FNM_DOTMATCH).reject do |path|
       File.basename(path).casecmp("README.md").zero?
     end.sort
   end
