@@ -154,7 +154,7 @@ Terra may collect mechanical evidence but must not issue the qualifying audit
 verdict. If checker identity, exact model/effort, binding source, or
 independence is unavailable, below policy, or `UNKNOWN`, do not return a clean
 verdict; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
-checker reservation or relaunch needed. For `Audit role: advisory-auditor`,
+qualifying-checker reservation needed. For `Audit role: advisory-auditor`,
 record `checker_route_compliance: not_applicable (advisory)`; collect evidence
 and report concrete findings, but do not issue the qualifying clean/ready
 verdict. Concrete advisory findings still require coordinator triage. If

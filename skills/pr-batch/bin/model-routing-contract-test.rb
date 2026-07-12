@@ -285,6 +285,27 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes planner, "freshness, and independence when it starts"
   end
 
+  def test_triage_launch_assurance_precedes_inventory
+    triage = read_repo_file("skills/triage/SKILL.md")
+    launch_gate = triage.index("2. **Launch assurance**")
+    inventory = triage.index("## Phase 1: Inventory And Graph")
+
+    refute_nil launch_gate
+    refute_nil inventory
+    assert_operator launch_gate, :<, inventory
+
+    preconditions = normalized(triage[launch_gate...inventory])
+    [
+      "before repository or target interpretation",
+      "Under an exact-parent policy, a parent mismatch or `UNKNOWN` requires a correctly bound coordinator relaunch",
+      "Under an exact-checker policy, a checker mismatch or `UNKNOWN` requires reserving a fresh qualifying checker",
+      "For either actor without an exact policy, preserve that actor's unavailable binding as `UNKNOWN`",
+      "continue portable class-based triage"
+    ].each do |phrase|
+      assert_includes preconditions, phrase, "triage launch precondition is missing: #{phrase}"
+    end
+  end
+
   def test_continuous_checker_is_strong_independent_and_fail_closed
     checker_text = read_repo_file("workflows/continuous-evaluation-loop.md")
     checker = normalized(checker_text)
@@ -324,10 +345,13 @@ class ModelRoutingContractTest < Minitest::Test
   def test_post_merge_independent_audit_prompt_is_fail_closed
     audit_text = read_repo_file("workflows/post-merge-audit.md")
     audit_prompt = normalized(extract_prompt(audit_text, "## Independent Audit Prompt"))
+    audit_skill = normalized(read_repo_file("skills/post-merge-audit/SKILL.md"))
 
     assert_includes normalized(audit_text),
                     "one launch-assured policy-compliant run as the qualifying checker"
     refute_includes normalized(audit_text), "one launch-assured Sol run as the qualifying checker"
+    assert_includes audit_skill, "exact fresh qualifying-checker reservation needed"
+    refute_includes audit_skill, "the relaunch needed"
 
     [
       "Audit role: <qualifying-checker | advisory-auditor>",
@@ -341,6 +365,7 @@ class ModelRoutingContractTest < Minitest::Test
       "below policy, or `UNKNOWN`",
       "do not return a clean verdict",
       "checker_route_compliance: UNKNOWN|failed",
+      "exact fresh qualifying-checker reservation needed",
       "For `Audit role: advisory-auditor`",
       "checker_route_compliance: not_applicable (advisory)",
       "do not issue the qualifying clean/ready verdict",
@@ -349,6 +374,8 @@ class ModelRoutingContractTest < Minitest::Test
     ].each do |phrase|
       assert_includes audit_prompt, phrase, "post-merge Independent Audit Prompt is missing: #{phrase}"
     end
+
+    refute_includes audit_prompt, "checker reservation or relaunch needed"
   end
 
   def test_worker_assignment_evidence_is_carried_in_lane_cards

@@ -31,7 +31,8 @@ the conservative GPT-5.6 profile this means Sol/high minimum, or Sol at the
 highest supported effort for high-risk or exceptionally ambiguous work. Terra
 may collect mechanical evidence but does not issue the qualifying verdict. If
 checker route or independence is below policy or `UNKNOWN`, the audit cannot be
-clean; report `checker_route_compliance: UNKNOWN|failed` and the relaunch needed.
+clean; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
+qualifying-checker reservation needed.
 
 Default batch selection: when the current visible chat, active goal, restart
 handoff, or immediately preceding batch closeout names exactly one just-run
