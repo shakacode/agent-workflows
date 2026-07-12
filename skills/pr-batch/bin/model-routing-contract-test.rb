@@ -8,9 +8,11 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 COORDINATOR_ROUTE = "Coordinator model/effort: <model/class>/<effort>."
 LAUNCH_ASSURANCE = "Launch assurance: parent <exact model>/<effort>@<binding source>; " \
-                   "checker <exact model>/<effort>; UNKNOWN blocks."
+                   "checker <exact model>/<effort>; exact-policy UNKNOWN blocks."
 WORKER_ROUTE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; " \
                "escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
+DISPATCH_RULE = "Bind workers on-host pre-start; worker unbound -> stop; prompt cannot change parent; " \
+                "no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch"
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -60,6 +62,7 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes prompt, COORDINATOR_ROUTE, "#{label} prompt must pin the parent separately"
       assert_includes prompt, LAUNCH_ASSURANCE, "#{label} prompt must carry fail-closed launch assurance"
       assert_includes prompt, WORKER_ROUTE, "#{label} prompt must carry an initial and escalation route"
+      assert_includes prompt, DISPATCH_RULE, "#{label} prompt must separate worker binding from exact-parent relaunch"
       refute_includes prompt, "Model/effort groups:", "#{label} prompt must not use the static assignment field"
     end
   end
@@ -73,7 +76,11 @@ class ModelRoutingContractTest < Minitest::Test
       "Coordinator assignment",
       "Launch assurance",
       "before target interpretation, planning, or dispatch",
+      "When operator policy requires an exact parent or checker",
+      "effective instance-bound runtime state",
+      "mutable default configuration alone",
       "A prompt cannot upgrade its parent",
+      "Without an exact-parent policy",
       "Independent checker assignment",
       "Sol/high",
       "Terra/medium",
@@ -89,7 +96,7 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes routing, phrase, "canonical workflow is missing staged-routing rule: #{phrase}"
     end
 
-    refute_includes routing, "when operator policy requires an exact parent"
+    assert_includes routing, "preserve unavailable binding as `UNKNOWN` and continue portable class-based planning"
   end
 
   def test_worker_replacement_is_checkpointed_fenced_and_non_overlapping
@@ -241,6 +248,11 @@ class ModelRoutingContractTest < Minitest::Test
     pr_batch = read_repo_file("skills/pr-batch/SKILL.md")
     assert_includes pr_batch, "Model-Routing Recovery Prompt"
     assert_includes pr_batch, "Worker Model Replacement And Escalation"
+    assert_includes pr_batch, "Without that policy, preserve unavailable binding as `UNKNOWN`"
+
+    planner = read_repo_file("skills/plan-pr-batch/SKILL.md")
+    assert_includes planner, "an exact-parent policy"
+    assert_includes planner, "continue portable class-based planning"
   end
 
   def test_continuous_checker_is_strong_independent_and_fail_closed

@@ -67,7 +67,8 @@ The fail-closed pre-dispatch record that the already-running initiating parent
 has the exact coordinator model/effort required by operator policy, with a
 host/runtime or explicit operator-selected binding source, and that the
 independent checker route is reserved. Prompt text, model self-report, installed
-rosters, and dispatch-resolved classes do not prove the active parent. A
+rosters, mutable default configuration, and dispatch-resolved classes do not
+prove the active parent; runtime evidence must be effective and instance-bound. A
 mismatch or `UNKNOWN` blocks planning or dispatch when the policy requires an
 exact parent.
 _Avoid_: requested model, prompt model

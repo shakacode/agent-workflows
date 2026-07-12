@@ -81,9 +81,12 @@ omit the queue summary and note that queue state is unavailable.
 7. Record `Launch assurance` separately from every `Worker model/effort route`:
    exact initiating coordinator model/effort, host/runtime or explicit
    operator-selected binding source, and exact independent-checker model/effort.
-   Verify it before reading targets, planning, or dispatch. Prompt text, model self-report, installed rosters, and a
-   dispatch-resolved class do not qualify; mismatch or `UNKNOWN` requires a
-   correctly bound relaunch. Keep the `Coordinator model/effort` assignment
+   Record it before reading targets, planning, or dispatch. When operator policy
+   requires an exact parent or checker, prompt text, model self-report, installed
+   rosters, and a dispatch-resolved class do not qualify; mismatch or `UNKNOWN`
+   requires a correctly bound relaunch. Without that policy, preserve unavailable
+   binding as `UNKNOWN` and continue portable class-based planning. Keep the
+   `Coordinator model/effort` assignment
    separate from every worker route. Resolve the roster on each actual host, start routine
    workers on the fastest or balanced pair justified by lane risk and
    verification, and reserve the strongest pair for evidence-gated escalation.

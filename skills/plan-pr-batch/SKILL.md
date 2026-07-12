@@ -60,12 +60,15 @@ Plan a PR batch
 ## Workflow
 
 1. Intake
-   - Before reading GitHub targets or shaping the batch, resolve launch assurance.
-     Verify the already-running coordinator's exact model/effort from host session metadata,
-     runtime configuration, or explicit operator-selected launch configuration.
-     Prompt text, model self-report, installed rosters, and dispatch-resolved
-     classes do not qualify. On mismatch or `UNKNOWN`, stop and ask for relaunch
-     on the required parent; a prompt cannot upgrade its own session.
+   - Before reading GitHub targets or shaping the batch, resolve launch-assurance
+     policy. When it requires an exact parent or checker, verify the
+     already-running coordinator's exact model/effort from host session metadata,
+     effective instance-bound runtime state, or explicit operator-selected launch
+     configuration. Mutable default configuration alone, prompt text, model
+     self-report, installed rosters, and dispatch-resolved classes do not
+     qualify; mismatch or `UNKNOWN` stops for relaunch. Without
+     an exact-parent policy, preserve unavailable binding as `UNKNOWN` and
+     continue portable class-based planning; a prompt cannot upgrade its own session.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified
      `merge_authority`, ask for `none`, `ask`, or
@@ -386,7 +389,7 @@ Objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
-Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; UNKNOWN blocks.
+Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; exact-policy UNKNOWN blocks.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <owner/scope | none+rationale>.
@@ -405,7 +408,7 @@ Items:
 Execution rules:
 - Resolve `base_branch` from repo config or inline `AGENTS.md` configuration; fetch/prune origin; verify `$pr-batch`+workflow; unresolved -> UNKNOWN.
 - Follow resolved `$pr-batch`; if autoload fails, apply local gates; preflight only issue/PR targets.
-- Verify launch assurance and bind worker routes on actual hosts; prompt cannot change parent; no inheritance/substitution; mismatch/UNKNOWN -> stop/relaunch.
+- Bind workers on-host pre-start; worker unbound -> stop; prompt cannot change parent; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch
 - Dispatch one subagent per disjoint current-wave item; group only for shared context; keep serial/UNKNOWN apart.
 - Workers obey owned paths and the approved execution envelope; unlisted paths, contradiction, ambiguity, scope/risk growth, or weaker verification -> stop for coordinator.
 - Sequenced lanes may share declared files only in the stated order.

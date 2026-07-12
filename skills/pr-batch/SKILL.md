@@ -139,10 +139,12 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    capacity is explicitly verified.
 9. **Launch assurance**: exact initiating coordinator model/effort, its
    host/runtime or explicit operator-selected binding source, and the exact
-   independent-checker model/effort. Verify it before target interpretation,
-   planning, or dispatch. Prompt text, model
-   self-report, installed rosters, and a dispatch-resolved class are not proof;
-   mismatch or `UNKNOWN` requires relaunch on the required parent.
+   independent-checker model/effort. Record assurance before target
+   interpretation, planning, or dispatch. When operator policy requires an exact
+   parent or checker, prompt text, model self-report, installed rosters, and a
+   dispatch-resolved class are not proof; mismatch or `UNKNOWN` requires
+   relaunch. Without that policy, preserve unavailable binding as `UNKNOWN` and
+   continue portable class-based planning.
 10. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
 11. **Permissions**: confirm the current session can run without blocking worker approval prompts.
 12. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
@@ -236,7 +238,8 @@ Before implementation or worker launch, produce:
     host; bind any dispatch-resolved class before work starts. Workers must not
     inherit the coordinator pair. Every lower-capability worker gets the
     coordinator-approved execution envelope from the canonical workflow. If a
-    route or launch assurance is unavailable, stop and re-plan.
+    route or exact-policy launch assurance is unavailable, stop and re-plan;
+    otherwise preserve unavailable binding as `UNKNOWN`.
 <!-- host-branch: codex-only start -->
 12. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
@@ -291,7 +294,7 @@ Objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
-Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; UNKNOWN blocks.
+Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; exact-policy UNKNOWN blocks.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <owner/scope | none+rationale>.
@@ -310,7 +313,7 @@ Items:
 Execution rules:
 - Resolve `base_branch` from repo config or inline `AGENTS.md` configuration; fetch/prune origin; verify `$pr-batch`+workflow; unresolved -> UNKNOWN.
 - Follow resolved `$pr-batch`; if autoload fails, apply local gates; preflight only issue/PR targets.
-- Verify launch assurance and bind worker routes on actual hosts; prompt cannot change parent; no inheritance/substitution; mismatch/UNKNOWN -> stop/relaunch.
+- Bind workers on-host pre-start; worker unbound -> stop; prompt cannot change parent; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch
 - Dispatch one subagent per disjoint current-wave item; group only for shared context; keep serial/UNKNOWN apart.
 - Workers obey owned paths and the approved execution envelope; unlisted paths, contradiction, ambiguity, scope/risk growth, or weaker verification -> stop for coordinator.
 - Sequenced lanes may share declared files only in the stated order.

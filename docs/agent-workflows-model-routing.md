@@ -47,11 +47,12 @@ do not expose these models:
 
 The initiating parent must already be bound to Sol at the required effort before
 it interprets targets, approves the plan, or dispatches workers. Record the
-binding source from host session metadata, runtime configuration, or explicit
-operator-selected launch configuration. Prompt text, a model's self-report, an
-installed model list, or a dispatch-resolved `strongest` class does not prove the
-active parent assignment. A mismatch or `UNKNOWN` stops the batch for relaunch
-on the required parent.
+binding source from host session metadata, effective instance-bound runtime
+state, or explicit operator-selected launch configuration. Mutable default
+configuration alone, prompt text, a model's self-report, an installed model
+list, or a dispatch-resolved `strongest` class does not prove the active parent
+assignment. A mismatch or `UNKNOWN` stops the batch for relaunch on the required
+parent.
 
 The independent checker is a fresh Sol instance, distinct from every maker, at
 high effort or the highest supported effort for high-risk work. Terra may gather
