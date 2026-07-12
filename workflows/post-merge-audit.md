@@ -61,7 +61,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   cannot be verified because the coordination backend is unavailable.
 - When batch work is in scope but the batch/run id was not supplied and is not
   obvious from the current visible chat, record `worked_issue_scope: UNKNOWN
-(needs batch confirmation)`. If candidate discovery cannot verify backend
+  (needs batch confirmation)`. If candidate discovery cannot verify backend
   setup or access, record `UNKNOWN (setup)` or `UNKNOWN (access)` with the exact
   command/error, and ask before deep audit whether to wait for backend recovery
   or proceed with an explicitly `UNKNOWN` worked-issue scope.

@@ -284,6 +284,73 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal 1, data.fetch("priority_finding_dispositions").fetch("marker_count")
   end
 
+  def test_expected_final_head_aggregates_all_current_head_qa_markers
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: blocked
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: first current-head pass
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: blocked by review regression
+      release_blocking: blocked
+      process_gap_disposition: checklist+replay
+      -->
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: later current-head pass
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+
+    qa = data.fetch("qa_evidence")
+    assert_equal "BLOCKED", data.fetch("overall_verdict")
+    assert_equal "BLOCKED", qa.fetch("verdict")
+    assert_equal 2, qa.fetch("marker_count")
+  end
+
+  def test_expected_final_head_aggregates_all_current_head_priority_markers
+    final_head_sha = "2222222222222222222222222222222222222222"
+    data = run_replay(<<~MARKDOWN, expected_head_sha: final_head_sha)
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{final_head_sha}
+      tested_at: PR #70 head #{final_head_sha}
+      scope: workflows/pr-processing.md
+      automated_checks: bin/validate
+      manual_checks: closeout replay
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+      <!-- priority-finding-dispositions v1
+      head_sha: #{final_head_sha}
+      finding: url=https://example.test/review/waived | severity=P1 | disposition=waived | evidence=https://example.test/pr/70#discussion_r1 | waiver=https://example.test/pr/70#issuecomment-1
+      -->
+      <!-- priority-finding-dispositions v1
+      head_sha: #{final_head_sha}
+      finding: url=https://example.test/review/fixed | severity=P2 | disposition=fixed | evidence=https://example.test/pr/70#discussion_r2
+      -->
+    MARKDOWN
+
+    priority = data.fetch("priority_finding_dispositions")
+    assert_equal "WAIVED", data.fetch("overall_verdict")
+    assert_equal "WAIVED", priority.fetch("verdict")
+    assert_equal 2, priority.fetch("marker_count")
+    assert_equal 2, priority.fetch("findings").length
+  end
+
   def test_expected_final_head_normalizes_hex_case
     uppercase_head_sha = "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD"
     lowercase_head_sha = uppercase_head_sha.downcase

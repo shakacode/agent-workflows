@@ -115,7 +115,7 @@ module CloseoutEvidenceReplay
       fields, = parse_fields(marker)
       fields.fetch("head_sha", "").downcase == expected_head_sha
     end
-    matching.empty? ? markers : [matching.last]
+    matching.empty? ? markers : matching
   end
 
   def replay_qa(marker, expected_head_sha: nil)
