@@ -21,6 +21,7 @@ module ValidateSolutions
   REQUIRED_FIELDS = (REQUIRED_STRING_FIELDS + REQUIRED_LIST_FIELDS + ["date"]).freeze
   FRONTMATTER_CLOSE = "\n---\n"
   DATE_FORMAT = /\A\d{4}-\d{2}-\d{2}\z/
+  SOLUTIONS_DIR = "docs/solutions"
 
   module_function
 
@@ -39,23 +40,35 @@ module ValidateSolutions
 
   def validate(root)
     paths = solution_paths(root)
-    failures = nested_solution_paths(root).map do |path|
+    failures = hidden_solution_paths(root).map do |path|
+      relative = path.delete_prefix("#{root}/")
+      "#{relative}: hidden solution docs are not allowed"
+    end
+    failures.concat(nested_solution_paths(root).map do |path|
       relative = path.delete_prefix("#{root}/")
       "#{relative}: nested solution docs are not allowed"
-    end
-    return failures + ["docs/solutions: no solution docs found"] if paths.empty?
+    end)
+    return failures + ["#{SOLUTIONS_DIR}: no solution docs found"] if paths.empty?
 
     failures + paths.flat_map { |path| validate_file(path, root) }
   end
 
   def solution_paths(root)
-    Dir.glob(File.join(root, "docs/solutions/*.md"), File::FNM_DOTMATCH).reject do |path|
+    Dir.glob(File.join(root, SOLUTIONS_DIR, "*.md")).reject do |path|
       File.basename(path).casecmp("README.md").zero?
     end.sort
   end
 
+  def hidden_solution_paths(root)
+    solutions_dir = File.join(root, SOLUTIONS_DIR)
+    Dir.glob(File.join(solutions_dir, "*.md"), File::FNM_DOTMATCH).select do |path|
+      File.basename(path).start_with?(".")
+    end.sort
+  end
+
   def nested_solution_paths(root)
-    solutions_dir = File.join(root, "docs/solutions")
+    solutions_dir = File.join(root, SOLUTIONS_DIR)
+    # Ruby's recursive glob intentionally does not follow directory symlinks outside the solution tree.
     Dir.glob(File.join(solutions_dir, "**/*.md"), File::FNM_DOTMATCH).reject do |path|
       File.dirname(path) == solutions_dir
     end.sort
