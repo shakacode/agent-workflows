@@ -461,6 +461,9 @@ if input.key?("dispatch_decision_request") &&
    !persisted_request_shape?(input["dispatch_decision_request"], input["lane_id"])
   fail_input("dispatch_decision_request must be a well-formed persisted request history for this lane")
 end
+if input.key?("dispatch_decision_request") && input["requested"] != input.dig("dispatch_decision_request", "requested")
+  fail_input("dispatch_decision_request requested tuple must match current requested tuple; refresh persisted decision state")
+end
 
 if (persisted_decision = input["dispatch_decision_request"])
   persisted_requested = persisted_decision["requested"]

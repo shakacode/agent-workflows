@@ -1296,6 +1296,63 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal selected.fetch("decision_resolution"), replay.fetch("decision_resolution")
   end
 
+  def test_persisted_resolution_rejects_a_stale_requested_tuple_before_selecting_the_old_choice
+    input = {
+      "lane_id" => "incident-stale-resolution-request",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "authority" => { "dispatch" => true },
+      "candidates" => [{
+        "route" => { "model" => "Terra", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "stale-resolution-instance"
+      }]
+    }
+    blocked = dispatch(input)
+    choice = blocked.dig("dispatch_decision_request", "viable_fallback_choices", 0)
+    selected = dispatch(
+      input.merge(
+        "dispatch_decision_request" => blocked.fetch("dispatch_decision_request"),
+        "operator_decision" => {
+          "type" => "dispatch-decision", "version" => 1, "id" => "stale-resolution-decision",
+          "request_id" => blocked.dig("dispatch_decision_request", "id"),
+          "lane_id" => input.fetch("lane_id"),
+          "choice_id" => choice.fetch("choice_id"),
+          "updated_authority" => { "dispatch" => true, "route" => true }
+        }
+      )
+    )
+    persisted_state = {
+      "dispatch_decision_request" => selected.fetch("dispatch_decision_request"),
+      "decision_resolution" => selected.fetch("decision_resolution")
+    }
+    changed_requests = [
+      { "route" => { "model" => "Terra", "effort" => "high" }, "dispatcher" => "remote" },
+      { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "local" },
+      { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote", "hard_route" => true }
+    ]
+
+    changed_requests.each do |changed_request|
+      output = dispatch(input.merge(persisted_state, "requested" => changed_request))
+
+      assert_equal "invalid-input", output.fetch("status"), changed_request.inspect
+      assert_equal "dispatch_decision_request requested tuple must match current requested tuple; refresh persisted decision state",
+                   output.fetch("reason")
+      refute output.key?("dispatch")
+      refute output.key?("resume_goal")
+    end
+
+    reordered_request = {
+      "dispatcher" => "remote",
+      "route" => { "effort" => "high", "model" => "Sol" }
+    }
+    unchanged = dispatch(input.merge(persisted_state, "requested" => reordered_request))
+    assert_equal "selected", unchanged.fetch("status")
+    assert_equal selected.fetch("dispatch"), unchanged.fetch("dispatch")
+  end
+
   def test_present_malformed_decision_resolution_values_return_structured_invalid_input
     input = {
       "lane_id" => "incident-malformed-resolution-shape",
