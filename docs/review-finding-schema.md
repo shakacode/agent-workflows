@@ -54,7 +54,7 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
       "target": {
         "repo": "OWNER/REPO",
         "pr": 123,
-        "head_sha": "abc123"
+        "head_sha": "89abcdef0123456789abcdef0123456789abcdef"
       },
       "severity": "P1",
       "disposition": "must_fix",
@@ -68,14 +68,14 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
       "independent_validation": {
         "status": "confirmed",
         "validator": "independent-reviewer",
-        "evidence": ["Reproduced against head abc123 with the focused readiness check."]
+        "evidence": ["Reproduced against head 89abcdef0123456789abcdef0123456789abcdef with the focused readiness check."]
       },
       "location": {
         "file": "workflows/pr-processing.md",
         "line": 650
       },
       "evidence": [
-        "PR head SHA: abc123",
+        "PR head SHA: 89abcdef0123456789abcdef0123456789abcdef",
         "Check run SHA: def456"
       ]
     }
@@ -157,6 +157,11 @@ hexadecimal Git object IDs: 40 characters for SHA-1 repositories or 64
 characters for SHA-256 repositories. Uppercase or lowercase hexadecimal is
 valid. Symbolic refs such as `HEAD` and
 `origin/main`, and abbreviated object IDs, are invalid.
+
+When an individual finding's `target` also includes `head_sha`, it must name
+the same Git object as `review_receipt.target.head_sha` (hexadecimal case is
+ignored). A finding may omit `head_sha` and inherit the report-level target,
+but it must not name a different reviewed head.
 
 ## Severities
 

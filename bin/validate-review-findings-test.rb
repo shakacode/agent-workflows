@@ -185,8 +185,10 @@ class ValidateReviewFindingsTest < Minitest::Test
   def test_committed_receipt_rejects_symbolic_or_abbreviated_object_ids
     document = fixture_document("autoreview-receipt-valid.json")
     target = document.fetch("review_receipt").fetch("target")
+    finding_target = document.fetch("review_findings").first.fetch("target")
     target["base_sha"] = "origin/main"
     target["head_sha"] = "HEAD"
+    finding_target["head_sha"] = target["head_sha"]
 
     failures = ValidateReviewFindings.validate_document(document, "report")
     assert_includes failures,
@@ -196,19 +198,35 @@ class ValidateReviewFindingsTest < Minitest::Test
 
     target["base_sha"] = "a" * 64
     target["head_sha"] = "b" * 64
+    finding_target["head_sha"] = target["head_sha"]
     assert_empty ValidateReviewFindings.validate_document(document, "report")
 
     target["base_sha"] = "A" * 40
     target["head_sha"] = "B" * 64
+    finding_target["head_sha"] = target["head_sha"]
     assert_empty ValidateReviewFindings.validate_document(document, "report")
 
     target["base_sha"] = "a" * 39
     target["head_sha"] = "g" * 40
+    finding_target["head_sha"] = target["head_sha"]
     failures = ValidateReviewFindings.validate_document(document, "report")
     assert_includes failures,
                     "report: review_receipt: committed target.base_sha must be a full hexadecimal Git object ID"
     assert_includes failures,
                     "report: review_receipt: committed target.head_sha must be a full hexadecimal Git object ID"
+  end
+
+  def test_finding_head_must_match_receipt_head_when_both_are_present
+    document = fixture_document("autoreview-receipt-valid.json")
+    receipt_head = document.fetch("review_receipt").fetch("target").fetch("head_sha")
+    finding_target = document.fetch("review_findings").first.fetch("target")
+    finding_target["head_sha"] = "f" * 40
+
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_findings[0]: target.head_sha must match review_receipt.target.head_sha"
+
+    finding_target["head_sha"] = receipt_head.upcase
+    assert_empty ValidateReviewFindings.validate_document(document, "report")
   end
 
   def test_autoreview_receipt_requires_source_and_unique_core_lenses

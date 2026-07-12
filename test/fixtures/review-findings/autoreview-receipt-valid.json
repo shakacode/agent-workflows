@@ -43,7 +43,7 @@
       "target": {
         "repo": "OWNER/REPO",
         "base_ref": "origin/main",
-        "head_sha": "abc123"
+        "head_sha": "89abcdef0123456789abcdef0123456789abcdef"
       },
       "severity": "P1",
       "disposition": "must_fix",
@@ -57,7 +57,7 @@
         "status": "confirmed",
         "validator": "independent-reviewer",
         "evidence": [
-          "Reproduced against head abc123 with the focused authorization test."
+          "Reproduced against head 89abcdef0123456789abcdef0123456789abcdef with the focused authorization test."
         ]
       }
     }

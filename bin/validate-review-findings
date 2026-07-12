@@ -97,7 +97,10 @@ module ValidateReviewFindings
     if document.key?("review_receipt")
       failures.concat(validate_review_receipt(document["review_receipt"], "#{label}: review_receipt"))
     end
-    failures.concat(validate_findings(findings, label, receipt_present: document.key?("review_receipt")))
+    receipt = document["review_receipt"]
+    receipt_target = receipt["target"] if receipt.is_a?(Hash)
+    receipt_head = receipt_target["head_sha"] if receipt_target.is_a?(Hash)
+    failures.concat(validate_findings(findings, label, receipt_present: document.key?("review_receipt"), receipt_head:))
     failures
   end
 
@@ -215,11 +218,11 @@ module ValidateReviewFindings
     failures
   end
 
-  def validate_findings(findings, label, receipt_present: false)
+  def validate_findings(findings, label, receipt_present: false, receipt_head: nil)
     seen_ids = {}
     findings.each_with_index.flat_map do |finding, index|
       finding_label = "#{label}: review_findings[#{index}]"
-      failures = validate_finding(finding, finding_label, receipt_present:)
+      failures = validate_finding(finding, finding_label, receipt_present:, receipt_head:)
       id = finding["id"] if finding.is_a?(Hash)
       failures << "#{finding_label}: id must be unique within the report" if id && seen_ids[id]
       seen_ids[id] = true if id
@@ -227,7 +230,7 @@ module ValidateReviewFindings
     end
   end
 
-  def validate_finding(finding, label, receipt_present: false)
+  def validate_finding(finding, label, receipt_present: false, receipt_head: nil)
     return ["#{label}: finding must be an object"] unless finding.is_a?(Hash)
 
     failures = []
@@ -241,6 +244,11 @@ module ValidateReviewFindings
     end
 
     failures.concat(validate_target(finding["target"], label)) if finding.key?("target")
+    finding_target = finding["target"]
+    finding_head = finding_target["head_sha"] if finding_target.is_a?(Hash)
+    if non_empty_string?(receipt_head) && non_empty_string?(finding_head) && !receipt_head.casecmp?(finding_head)
+      failures << "#{label}: target.head_sha must match review_receipt.target.head_sha"
+    end
     failures.concat(validate_enum(finding, "severity", SEVERITIES, label))
     failures.concat(validate_enum(finding, "disposition", DISPOSITIONS, label))
     failures.concat(validate_verification(finding["verification"], label)) if finding.key?("verification")
