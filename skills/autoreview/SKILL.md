@@ -44,7 +44,7 @@ This is the portable core. Hold it regardless of which engine runs.
 - Keep going until the review returns no accepted/actionable findings; once it comes back clean, stop. Do not run an extra review just to get nicer "clean" wording or a redundant second opinion.
 - If a review-triggered fix changes code, rerun the focused tests for the changed surface and rerun the review.
 - Security perspective is always included, but it must not cripple legitimate functionality. Report a security finding only when the change creates a concrete, actionable risk or removes an important safety check.
-- Record a compact risk and coverage receipt for every completed non-trivial review: exact target/base/head, engine invocation, applied or unavailable risk lenses, included and excluded paths, and material limitations. Report actual coverage, not requested coverage.
+- Record a compact risk and coverage receipt for every completed non-trivial review: committed or uncommitted target kind, base/head, engine invocation, applied or unavailable risk lenses, included and excluded paths, and material limitations. Report actual coverage, not requested coverage. An uncommitted target is mutable, so its receipt is always partial or unknown with that limitation recorded.
 - Treat P0/P1 findings, plus any lower-severity finding with material correctness, security, compatibility, data-loss, or release-process consequences, as consequential. Require an independent validation receipt before clearing or acting on one; primary-review agreement is not independent evidence.
 - When independent validation of a consequential finding is unavailable, times out, or returns malformed evidence, keep the finding blocking or `unknown` and record validation as degraded. Never silently drop it.
 - Be patient. `codex review` runs an external model when available and can take several minutes on a large diff. Progress that looks quiet is usually still working; do not kill it before about 5 minutes unless it has clearly errored.
@@ -164,8 +164,8 @@ Never silently switch the engine the user asked for. If the requested engine hit
 capacity, retry the same engine a few times rather than swapping it.
 <!-- host-branch: available-tool end -->
 
-Before running the engine, select risk lenses from the actual diff and repository policy.
-Correctness and security are always considered; add testing/coverage, compatibility,
+Before running the engine, select uniquely named risk lenses from the actual diff and repository policy.
+Correctness and security are always present in the receipt; add testing/coverage, compatibility,
 reliability, performance, data migration, release/process, or another bounded lens when the
 changed surface warrants it. A lens that does not apply still belongs in the receipt with a
 short reason. Mark unavailable or incomplete lenses `degraded` or `unknown`; do not infer
@@ -231,7 +231,7 @@ Report:
 
 - diff target reviewed (local / branch / commit) and base
 - review engine used (`codex review` or the available Claude review command)
-- risk and coverage receipt: target/base/head, invocation provenance, each selected or
+- risk and coverage receipt: target kind/base/head, invocation provenance, each selected or
   not-applicable lens and why, included/excluded paths, and limitations
 - tests/proof run, with pass/fail
 - findings accepted vs rejected, briefly why

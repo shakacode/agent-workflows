@@ -33,6 +33,7 @@ module ValidateReviewFindings
   RISK_LENS_STATUSES = %w[applied not_applicable degraded unknown].freeze
   COVERAGE_STATUSES = %w[complete partial unknown].freeze
   INDEPENDENT_VALIDATION_STATUSES = %w[confirmed rejected degraded].freeze
+  RECEIPT_TARGET_KINDS = %w[committed uncommitted].freeze
   STRING_ARRAY_FIELDS = %w[evidence links related_ids].freeze
 
   module_function
@@ -103,12 +104,34 @@ module ValidateReviewFindings
     return ["#{label} must be an object"] unless receipt.is_a?(Hash)
 
     failures = []
-    failures.concat(validate_required_string_fields(receipt["target"], %w[base_ref head_sha], "#{label}: target"))
+    failures << "#{label}.source must be a non-empty string" unless non_empty_string?(receipt["source"])
+    failures.concat(validate_receipt_target(receipt["target"], label))
     failures.concat(validate_required_string_fields(receipt["provenance"], %w[engine invocation], "#{label}: provenance"))
     failures.concat(validate_risk_lenses(receipt["risk_lenses"], label))
+    failures.concat(validate_autoreview_lenses(receipt, label))
     failures.concat(validate_coverage(receipt["coverage"], label))
     failures.concat(validate_complete_coverage(receipt, label))
+    failures.concat(validate_uncommitted_coverage(receipt, label))
     failures
+  end
+
+  def validate_receipt_target(target, label)
+    failures = validate_required_string_fields(target, %w[base_ref head_sha], "#{label}: target")
+    if target.is_a?(Hash) && !RECEIPT_TARGET_KINDS.include?(target["kind"])
+      failures << "#{label}: target.kind must be one of: #{RECEIPT_TARGET_KINDS.join(', ')}"
+    end
+    failures
+  end
+
+  def validate_uncommitted_coverage(receipt, label)
+    target = receipt["target"]
+    coverage = receipt["coverage"]
+    return [] unless target.is_a?(Hash) && target["kind"] == "uncommitted" && coverage.is_a?(Hash)
+
+    limitations = coverage["limitations"]
+    return [] if %w[partial unknown].include?(coverage["status"]) && limitations.is_a?(Array) && !limitations.empty?
+
+    ["#{label}: uncommitted target requires partial or unknown coverage with limitations"]
   end
 
   def validate_complete_coverage(receipt, label)
@@ -139,7 +162,7 @@ module ValidateReviewFindings
   def validate_risk_lenses(lenses, label)
     return ["#{label}: risk_lenses must be a non-empty array"] unless lenses.is_a?(Array) && !lenses.empty?
 
-    lenses.each_with_index.flat_map do |lens, index|
+    failures = lenses.each_with_index.flat_map do |lens, index|
       lens_label = "#{label}: risk_lenses[#{index}]"
       if lens.is_a?(Hash)
         failures = validate_required_string_fields(lens, %w[name reason], lens_label) +
@@ -150,6 +173,19 @@ module ValidateReviewFindings
         ["#{lens_label} must be an object"]
       end
     end
+    names = lenses.filter_map { |lens| lens["name"] if lens.is_a?(Hash) && non_empty_string?(lens["name"]) }
+    failures << "#{label}: risk_lenses names must be unique" unless names.uniq.length == names.length
+    failures
+  end
+
+  def validate_autoreview_lenses(receipt, label)
+    return [] unless receipt["source"] == "autoreview" && receipt["risk_lenses"].is_a?(Array)
+
+    names = receipt["risk_lenses"].filter_map { |lens| lens["name"] if lens.is_a?(Hash) }
+    missing = %w[correctness security] - names
+    return [] if missing.empty?
+
+    ["#{label}: autoreview risk_lenses must include: #{missing.join(', ')}"]
   end
 
   def validate_coverage(coverage, label)

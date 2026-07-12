@@ -17,7 +17,9 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
 {
   "schema": "review-finding-v0",
   "review_receipt": {
+    "source": "autoreview",
     "target": {
+      "kind": "committed",
       "base_ref": "origin/main",
       "head_sha": "abc123"
     },
@@ -128,11 +130,14 @@ dependency.
 
 The receipt includes:
 
-- `target`: non-empty `base_ref` and `head_sha` strings for the reviewed diff;
+- `source`: non-empty workflow or skill name such as `autoreview`;
+- `target`: `kind` of `committed` or `uncommitted`, plus non-empty `base_ref`
+  and `head_sha` strings for the reviewed diff;
 - `provenance`: non-empty `engine` and `invocation` strings;
 - `risk_lenses`: a non-empty array whose entries have non-empty `name` and
   `reason` strings plus `status` of `applied`, `not_applicable`, `degraded`, or
-  `unknown`;
+  `unknown`; lens names must be unique, and `autoreview` receipts always include
+  `correctness` and `security`;
 - `coverage`: `status` of `complete`, `partial`, or `unknown`, plus
   `included_paths`, `excluded_paths`, and `limitations` string arrays.
 
@@ -140,6 +145,11 @@ Receipts describe what actually ran. Do not mark a lens `applied` merely
 because a reviewer was requested. `complete` requires every lens to be
 `applied` or `not_applicable`, with empty `excluded_paths` and `limitations`;
 otherwise use `partial` or `unknown`.
+
+An uncommitted target is mutable and cannot be identified by `head_sha` alone.
+Set `kind` to `uncommitted`, use `partial` or `unknown` coverage, and record a
+non-empty limitation. Use `committed` only when the reviewed diff is anchored
+entirely by the recorded Git refs and head SHA.
 
 ## Severities
 

@@ -1,7 +1,9 @@
 {
   "schema": "review-finding-v0",
   "review_receipt": {
+    "source": "autoreview",
     "target": {
+      "kind": "committed",
       "base_ref": "origin/main",
       "head_sha": "abc123"
     },

@@ -158,6 +158,46 @@ class ValidateReviewFindingsTest < Minitest::Test
                     "report: review_receipt: complete coverage cannot include degraded or unknown lenses, excluded paths, or limitations"
   end
 
+  def test_receipt_target_kind_is_required_and_uncommitted_cannot_be_complete
+    document = fixture_document("autoreview-receipt-valid.json")
+    target = document.fetch("review_receipt").fetch("target")
+
+    target.delete("kind")
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt: target.kind must be one of: committed, uncommitted"
+
+    target["kind"] = "uncommitted"
+    coverage = document.fetch("review_receipt").fetch("coverage")
+    coverage["status"] = "complete"
+    coverage["limitations"] = []
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt: uncommitted target requires partial or unknown coverage with limitations"
+  end
+
+  def test_autoreview_receipt_requires_source_and_unique_core_lenses
+    document = fixture_document("autoreview-receipt-valid.json")
+    receipt = document.fetch("review_receipt")
+
+    receipt.delete("source")
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt.source must be a non-empty string"
+
+    receipt["source"] = "autoreview"
+    receipt["risk_lenses"] = [
+      { "name" => "performance", "status" => "not_applicable", "reason" => "No performance-sensitive changes." }
+    ]
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt: autoreview risk_lenses must include: correctness, security"
+
+    receipt["risk_lenses"] = [
+      { "name" => "correctness", "status" => "applied", "reason" => "Core lens." },
+      { "name" => "correctness", "status" => "applied", "reason" => "Duplicate lens." },
+      { "name" => "security", "status" => "applied", "reason" => "Core lens." }
+    ]
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt: risk_lenses names must be unique"
+  end
+
   def test_receipt_status_fields_are_required
     document = fixture_document("autoreview-receipt-valid.json")
     receipt = document.fetch("review_receipt")
