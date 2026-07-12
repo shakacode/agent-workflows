@@ -21,6 +21,7 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
     "target": {
       "kind": "committed",
       "base_ref": "origin/main",
+      "base_sha": "def456",
       "head_sha": "abc123"
     },
     "provenance": {
@@ -130,9 +131,10 @@ dependency.
 
 The receipt includes:
 
-- `source`: non-empty workflow or skill name such as `autoreview`;
-- `target`: `kind` of `committed` or `uncommitted`, plus non-empty `base_ref`
-  and `head_sha` strings for the reviewed diff;
+- `source`: currently `autoreview`; future receipt producers require an
+  explicit schema/validator addition rather than an unchecked alias;
+- `target`: `kind` of `committed` or `uncommitted`, plus non-empty `base_ref`,
+  immutable `base_sha`, and `head_sha` strings for the reviewed diff;
 - `provenance`: non-empty `engine` and `invocation` strings;
 - `risk_lenses`: a non-empty array whose entries have non-empty `name` and
   `reason` strings plus `status` of `applied`, `not_applicable`, `degraded`, or
@@ -149,7 +151,8 @@ otherwise use `partial` or `unknown`.
 An uncommitted target is mutable and cannot be identified by `head_sha` alone.
 Set `kind` to `uncommitted`, use `partial` or `unknown` coverage, and record a
 non-empty limitation. Use `committed` only when the reviewed diff is anchored
-entirely by the recorded Git refs and head SHA.
+entirely by the recorded base and head SHAs; `base_ref` remains human context
+and is not the immutable anchor.
 
 ## Severities
 

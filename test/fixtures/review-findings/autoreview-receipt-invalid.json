@@ -5,6 +5,7 @@
     "target": {
       "kind": "committed",
       "base_ref": "origin/main",
+      "base_sha": "def456",
       "head_sha": "abc123"
     },
     "provenance": {

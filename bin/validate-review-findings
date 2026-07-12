@@ -34,6 +34,7 @@ module ValidateReviewFindings
   COVERAGE_STATUSES = %w[complete partial unknown].freeze
   INDEPENDENT_VALIDATION_STATUSES = %w[confirmed rejected degraded].freeze
   RECEIPT_TARGET_KINDS = %w[committed uncommitted].freeze
+  RECEIPT_SOURCES = %w[autoreview].freeze
   STRING_ARRAY_FIELDS = %w[evidence links related_ids].freeze
 
   module_function
@@ -104,7 +105,13 @@ module ValidateReviewFindings
     return ["#{label} must be an object"] unless receipt.is_a?(Hash)
 
     failures = []
-    failures << "#{label}.source must be a non-empty string" unless non_empty_string?(receipt["source"])
+    if non_empty_string?(receipt["source"])
+      unless RECEIPT_SOURCES.include?(receipt["source"])
+        failures << "#{label}.source must be one of: #{RECEIPT_SOURCES.join(', ')}"
+      end
+    else
+      failures << "#{label}.source must be a non-empty string"
+    end
     failures.concat(validate_receipt_target(receipt["target"], label))
     failures.concat(validate_required_string_fields(receipt["provenance"], %w[engine invocation], "#{label}: provenance"))
     failures.concat(validate_risk_lenses(receipt["risk_lenses"], label))
@@ -116,7 +123,7 @@ module ValidateReviewFindings
   end
 
   def validate_receipt_target(target, label)
-    failures = validate_required_string_fields(target, %w[base_ref head_sha], "#{label}: target")
+    failures = validate_required_string_fields(target, %w[base_ref base_sha head_sha], "#{label}: target")
     if target.is_a?(Hash) && !RECEIPT_TARGET_KINDS.include?(target["kind"])
       failures << "#{label}: target.kind must be one of: #{RECEIPT_TARGET_KINDS.join(', ')}"
     end

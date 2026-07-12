@@ -174,6 +174,14 @@ class ValidateReviewFindingsTest < Minitest::Test
                     "report: review_receipt: uncommitted target requires partial or unknown coverage with limitations"
   end
 
+  def test_committed_receipt_requires_immutable_base_sha
+    document = fixture_document("autoreview-receipt-valid.json")
+    document.fetch("review_receipt").fetch("target").delete("base_sha")
+
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt: target.base_sha must be a non-empty string"
+  end
+
   def test_autoreview_receipt_requires_source_and_unique_core_lenses
     document = fixture_document("autoreview-receipt-valid.json")
     receipt = document.fetch("review_receipt")
@@ -196,6 +204,18 @@ class ValidateReviewFindingsTest < Minitest::Test
     ]
     assert_includes ValidateReviewFindings.validate_document(document, "report"),
                     "report: review_receipt: risk_lenses names must be unique"
+  end
+
+  def test_receipt_source_cannot_bypass_autoreview_lenses_with_alias
+    document = fixture_document("autoreview-receipt-valid.json")
+    receipt = document.fetch("review_receipt")
+    receipt["source"] = "autoreview "
+    receipt["risk_lenses"] = [
+      { "name" => "performance", "status" => "not_applicable", "reason" => "No performance-sensitive changes." }
+    ]
+
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt.source must be one of: autoreview"
   end
 
   def test_receipt_status_fields_are_required
