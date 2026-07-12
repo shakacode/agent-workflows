@@ -7,12 +7,14 @@ the least expensive safe route, and escalates only with evidence.
 
 Shared workflow policy uses portable classes: `fastest-low-cost`, `balanced`,
 and `strongest`. Exact model names and supported effort levels come from the
-operator or the verified runtime roster.
+operator or the verified runtime roster. An operator-required exact model is a
+launch invariant, not a preference that a dispatcher may silently substitute.
 
 ## Default Policy
 
-- Use the strongest suitable coordinator for scope, diagnosis, architecture,
-  risk, routing, integration, final review, and closeout.
+- Use the strongest suitable coordinator for batch initiation, scope,
+  diagnosis, architecture, risk, routing, integration, final review, and
+  closeout.
 - Use balanced workers for most bounded implementation.
 - Use fastest-low-cost workers only for tightly specified, deterministic,
   low-risk work with strong verification.
@@ -28,22 +30,43 @@ validating the plan is the difficult part.
 Model choice never replaces tests, types, linting, review, functional or visual
 verification, migration safeguards, least privilege, or human approval.
 
-## GPT-5.6 Example Profile
+## Conservative GPT-5.6 Profile
 
-This is an informative binding for operators whose verified roster supports it,
-not a hardcoded shared default:
+Use this fail-closed profile when an operator requires GPT-5.6 Sol control of a
+batch. It is an exact operator binding, not a portable default for runtimes that
+do not expose these models:
 
 | Role | Example binding |
 | --- | --- |
-| Coordinator and difficult/consequential reasoning | GPT-5.6 Sol |
-| Everyday implementation and evidence gathering | GPT-5.6 Terra |
-| Narrow, repeatable, low-risk work | GPT-5.6 Luna |
+| Batch initiator and coordinator | GPT-5.6 Sol, high minimum |
+| Independent checker, plan challenge, and consequential review | GPT-5.6 Sol, high minimum |
+| High-risk or exceptionally ambiguous coordinator/checker work | GPT-5.6 Sol, highest supported effort |
+| Bounded implementation and evidence gathering | GPT-5.6 Terra, medium minimum |
+| Difficult but already-bounded implementation | GPT-5.6 Terra, high |
 | Independent comparison or family-specific fallback | GPT-5.5 |
 
-For a cost-aware batch, keep the Sol coordinator focused on high-leverage
-decisions while Terra performs most implementation. A current recovery may use
-Terra at Extra High when explicitly requested even though ordinary balanced
-workers usually start at low or medium effort.
+The initiating parent must already be bound to Sol at the required effort before
+it interprets targets, approves the plan, or dispatches workers. Record the
+binding source from host session metadata, runtime configuration, or explicit
+operator-selected launch configuration. Prompt text, a model's self-report, an
+installed model list, or a dispatch-resolved `strongest` class does not prove the
+active parent assignment. A mismatch or `UNKNOWN` stops the batch for relaunch
+on the required parent.
+
+The independent checker is a fresh Sol instance, distinct from every maker, at
+high effort or the highest supported effort for high-risk work. Terra may gather
+mechanical evidence for the checker, but Terra does not issue the qualifying
+intent-achievement, risk, or final-readiness verdict.
+
+Terra workers start at medium effort and receive a Sol-approved execution
+envelope: exact goal and non-goals, owned paths, supported diagnosis, invariants,
+acceptance criteria, required verification, and stop conditions. Terra/high is
+for execution complexity inside that envelope, not a substitute for Sol
+diagnosis. Terra stops without editing further and returns to Sol when evidence
+contradicts the diagnosis, acceptance criteria are ambiguous, scope or blast
+radius grows, a high-risk boundary appears, verification weakens, or the change
+requires architecture, security, performance, compatibility, or product
+judgment. Luna is outside this conservative profile.
 
 ## Decision Framework
 
@@ -95,18 +118,20 @@ the worker reaches for an unjustified rewrite.
 Use for ordinary bounded work: inspect, state the plan and acceptance criteria,
 implement, run focused and broader checks, and review the diff for scope.
 
-### Terra investigation → Sol review → Terra implementation
+### Sol diagnosis and envelope → Terra implementation → Sol check
 
-This is the preferred moderate-risk GPT-5.6 pattern:
+This is the conservative GPT-5.6 pattern:
 
-1. Terra investigates without editing and returns reproduction, diagnosis,
-   affected files, risks, plan, invariants, and verification.
-2. Sol challenges the evidence, constraints, boundaries, and verification.
-3. Terra implements the corrected bounded plan.
-4. Tests and review determine acceptance.
+1. Sol investigates or validates the diagnosis and approves the execution
+   envelope.
+2. Terra implements only that bounded envelope and returns evidence plus every
+   uncertainty.
+3. A fresh Sol checker challenges intent achievement, the diff, evidence,
+   invariants, and residual risk.
+4. The Sol coordinator integrates the result and owns readiness and closeout.
 
-In portable terms: balanced investigation → strongest plan review → balanced
-implementation.
+In portable terms: strongest diagnosis/plan → balanced implementation →
+independent strongest check.
 
 ### Strongest-led
 

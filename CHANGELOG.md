@@ -26,6 +26,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Harden model-routed batches with fail-closed launch assurance, Sol-controlled conservative GPT-5.6 coordination and checking, bounded Terra execution envelopes, and auditable worker assignment evidence.**
 - **Change the public Codex native-plugin identifier from `agent-workflows` to `scw`; existing native-plugin users must remove the old entry and reinstall `scw`, while the repository, marketplace, helper, installer, status, and upgrade identities remain `agent-workflows`.**
 - **Make `$pr-batch` the sole workflow for one or more targets, with a default single-target worker subagent, staged cost-aware model routing, and explicit merge authority before launch.**
 - **Require parent batch coordinators to run a completed-batch audit after every target reaches final state, then end the conversation with either an archive-ready confirmation or every remaining follow-up and blocker.**

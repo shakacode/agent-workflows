@@ -78,8 +78,13 @@ omit the queue summary and note that queue state is unavailable.
    live coordination, CI, approval, or quota health is uncertain. For multiple
    concurrent batches, keep this as a per-wave cap and apply the target repo's
    coordination-backend rules before launching.
-7. Keep the `Coordinator model/effort` assignment separate from every
-   `Worker model/effort route`. Resolve the roster on each actual host, start routine
+7. Record `Launch assurance` separately from every `Worker model/effort route`:
+   exact initiating coordinator model/effort, host/runtime or explicit
+   operator-selected binding source, and exact independent-checker model/effort.
+   Verify it before reading targets, planning, or dispatch. Prompt text, model self-report, installed rosters, and a
+   dispatch-resolved class do not qualify; mismatch or `UNKNOWN` requires a
+   correctly bound relaunch. Keep the `Coordinator model/effort` assignment
+   separate from every worker route. Resolve the roster on each actual host, start routine
    workers on the fastest or balanced pair justified by lane risk and
    verification, and reserve the strongest pair for evidence-gated escalation.
    Workers must not inherit the coordinator pair. A small first failure gets a
@@ -91,7 +96,10 @@ omit the queue summary and note that queue state is unavailable.
    schedule. When a known host's roster is unavailable, use portable
    dispatch-resolved initial and escalation classes, then bind and revalidate
    exact pairs before dispatch. Keep an unresolved route `UNKNOWN` and the
-   prompt unready.
+   prompt unready. Give lower-capability workers a coordinator-approved execution
+   envelope and require immediate return to the coordinator on contradictory
+   evidence, ambiguity, scope/risk growth, weakened verification, or
+   consequential judgment.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`

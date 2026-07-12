@@ -28,6 +28,14 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   PR was never audited unless the repo has a durable audit coverage marker or
   ledger that records completed audit coverage.
 - Run Codex and Claude independently first. Do not give either agent the other agent's report until both reports are complete.
+- For completed-batch audit, verify launch assurance before deep audit. The
+  qualifying checker is a fresh instance independent from every maker and its
+  exact model/effort plus binding source must satisfy operator policy. Under the
+  conservative GPT-5.6 profile use Sol/high minimum, or the highest supported
+  Sol effort for high-risk or exceptionally ambiguous work. Terra may collect
+  mechanical evidence but does not issue the qualifying verdict. Below-policy,
+  non-independent, or `UNKNOWN` checker state makes the audit non-clean and must
+  be reported as `checker_route_compliance: UNKNOWN|failed`.
 - During independent audits, agents may draft issue bodies but must not create issues, comments, labels, fixes, reverts, branches, or PRs.
 - Use one coordinator to compare reports, dedupe findings, finalize the issue plan, and create follow-up issues.
 - When invoked by a parent orchestration agent after a batch completes, the audit must be part of its final handoff. Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff. If the audit is clean and there are no findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts, its final user-visible line must be `Conversation status: Ready for archiving.` Otherwise its final user-visible line must be `Conversation status: Follow-ups remain — <each exact action or blocker>.`

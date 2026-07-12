@@ -62,12 +62,30 @@ scope, risk, routing, integration, review, and closeout independently of worker
 routes.
 _Avoid_: batch model (it does not automatically apply to every worker)
 
+**Batch launch assurance**:
+The fail-closed pre-dispatch record that the already-running initiating parent
+has the exact coordinator model/effort required by operator policy, with a
+host/runtime or explicit operator-selected binding source, and that the
+independent checker route is reserved. Prompt text, model self-report, installed
+rosters, and dispatch-resolved classes do not prove the active parent. A
+mismatch or `UNKNOWN` blocks planning or dispatch when the policy requires an
+exact parent.
+_Avoid_: requested model, prompt model
+
 **Worker model/effort route**:
 The staged policy for one lane: its initial assignment, optional escalation
 assignment and role, evidence gate, and maximum escalation cycles. Use exact
 pairs or host-stable aliases when the roster is known; dispatch-resolved classes
 may temporarily stand in when it is not.
 _Avoid_: worker model (singular static choice), coordinator assignment
+
+**Worker execution envelope**:
+The coordinator-approved bounded contract a lower-capability worker executes:
+goal and non-goals, owned paths, supported diagnosis, invariants, acceptance
+criteria, verification, and stop conditions. Contradictory evidence, ambiguity,
+scope growth, high-risk judgment, or weakened verification returns control to
+the coordinator instead of authorizing worker re-planning.
+_Avoid_: task prompt, broad plan
 
 **Active model/effort assignment**:
 The exact model and supported reasoning effort used by the lane's current worker

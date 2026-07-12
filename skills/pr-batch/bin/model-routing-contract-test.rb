@@ -7,6 +7,8 @@ ROOT = File.expand_path("../../..", __dir__)
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 COORDINATOR_ROUTE = "Coordinator model/effort: <model/class>/<effort>."
+LAUNCH_ASSURANCE = "Launch assurance: parent <exact model>/<effort>@<binding source>; " \
+                   "checker <exact model>/<effort>; UNKNOWN blocks."
 WORKER_ROUTE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; " \
                "escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 
@@ -56,6 +58,7 @@ class ModelRoutingContractTest < Minitest::Test
 
     prompts.each do |label, prompt|
       assert_includes prompt, COORDINATOR_ROUTE, "#{label} prompt must pin the parent separately"
+      assert_includes prompt, LAUNCH_ASSURANCE, "#{label} prompt must carry fail-closed launch assurance"
       assert_includes prompt, WORKER_ROUTE, "#{label} prompt must carry an initial and escalation route"
       refute_includes prompt, "Model/effort groups:", "#{label} prompt must not use the static assignment field"
     end
@@ -68,6 +71,13 @@ class ModelRoutingContractTest < Minitest::Test
 
     [
       "Coordinator assignment",
+      "Launch assurance",
+      "before target interpretation, planning, or dispatch",
+      "A prompt cannot upgrade its parent",
+      "Independent checker assignment",
+      "Sol/high",
+      "Terra/medium",
+      "coordinator-approved execution envelope",
       "workers must not inherit the coordinator assignment",
       "A small, explainable first failure stays on the initial route",
       "two materially different, credible attempts",
@@ -78,6 +88,8 @@ class ModelRoutingContractTest < Minitest::Test
     ].each do |phrase|
       assert_includes routing, phrase, "canonical workflow is missing staged-routing rule: #{phrase}"
     end
+
+    refute_includes routing, "when operator policy requires an exact parent"
   end
 
   def test_worker_replacement_is_checkpointed_fenced_and_non_overlapping
@@ -169,9 +181,10 @@ class ModelRoutingContractTest < Minitest::Test
     [
       "GPT-5.6 Sol",
       "GPT-5.6 Terra",
-      "GPT-5.6 Luna",
       "GPT-5.5",
-      "Terra investigation → Sol review → Terra implementation",
+      "Conservative GPT-5.6 Profile",
+      "Sol diagnosis and envelope → Terra implementation → Sol check",
+      "Luna is outside this conservative profile",
       "## Verification Matrix",
       "First-pass acceptance rate",
       "Percentage of tasks escalated",
@@ -192,6 +205,8 @@ class ModelRoutingContractTest < Minitest::Test
 
     [
       "**Coordinator model/effort assignment**",
+      "**Batch launch assurance**",
+      "**Worker execution envelope**",
       "**Worker model/effort route**",
       "**Active model/effort assignment**",
       "**Model escalation request**",
@@ -217,6 +232,7 @@ class ModelRoutingContractTest < Minitest::Test
     paths.each do |path|
       text = read_repo_file(path)
       assert_includes text, "Coordinator model/effort", "#{path} must separate the parent assignment"
+      assert_includes text, "Launch assurance", "#{path} must preserve the launch gate"
       assert_includes text, "Worker model/effort route", "#{path} must plan staged worker routes"
       assert_includes text, "MODEL_ESCALATION_REQUEST", "#{path} must carry the escalation gate"
       refute_includes text, "Model/effort groups:", "#{path} must not retain the static prompt field"
@@ -225,5 +241,61 @@ class ModelRoutingContractTest < Minitest::Test
     pr_batch = read_repo_file("skills/pr-batch/SKILL.md")
     assert_includes pr_batch, "Model-Routing Recovery Prompt"
     assert_includes pr_batch, "Worker Model Replacement And Escalation"
+  end
+
+  def test_continuous_checker_is_strong_independent_and_fail_closed
+    checker = normalized(read_repo_file("workflows/continuous-evaluation-loop.md"))
+
+    [
+      "distinct from every maker",
+      "exact model/effort",
+      "conservative GPT-5.6 profile",
+      "Sol/high minimum",
+      "Terra may collect mechanical evidence",
+      "may not issue the qualifying intent-achievement or final-risk verdict",
+      "checker_route_compliance: UNKNOWN|failed",
+      "do not return a clean/`realized` verdict"
+    ].each do |phrase|
+      assert_includes checker, phrase, "continuous checker contract is missing: #{phrase}"
+    end
+  end
+
+  def test_worker_assignment_evidence_is_carried_in_lane_cards
+    %w[
+      workflows/pr-processing.md
+      skills/pr-batch/SKILL.md
+      skills/plan-pr-batch/SKILL.md
+      skills/triage/SKILL.md
+    ].each do |path|
+      assert_includes read_repo_file(path), "exact model/effort+binding",
+                      "#{path} Lane Card must expose worker assignment evidence"
+    end
+
+    worker_rules = normalized(
+      extract_markdown_section(read_repo_file("workflows/pr-processing.md"), "### Worker Rules")
+    )
+    assert_includes worker_rules, "`Assignment:` `<exact-model>/<effort>`"
+    assert_includes worker_rules, "`binding:` `<host/session/runtime/operator source|UNKNOWN>`"
+    assert_includes worker_rules, "Prompt text or worker self-report alone is not binding evidence"
+  end
+
+  def test_planners_preserve_checker_independence_and_worker_stop_conditions
+    %w[
+      skills/plan-pr-batch/SKILL.md
+      skills/triage/SKILL.md
+    ].each do |path|
+      planner = normalized(read_repo_file(path)).downcase
+      [
+        "fresh strongest-capability instance distinct from every maker",
+        "may collect mechanical evidence but may not issue the qualifying intent, risk, or readiness verdict",
+        "contradictory evidence",
+        "ambiguous criteria",
+        "scope or risk growth",
+        "weakened verification",
+        "consequential judgment"
+      ].each do |phrase|
+        assert_includes planner, phrase, "#{path} is missing checker/envelope rule: #{phrase}"
+      end
+    end
   end
 end

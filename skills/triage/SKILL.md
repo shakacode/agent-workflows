@@ -123,6 +123,13 @@ precise blocker.
    dependencies, collision ordering, or wave caps. If neither exact pairs nor
    ready initial/escalation class-and-effort routes can be named, keep the route
    `UNKNOWN` and the prompt unready.
+   Reserve the checker as a fresh strongest-capability instance distinct from
+   every maker. A cheaper route may collect mechanical evidence but may not
+   issue the qualifying intent, risk, or readiness verdict. Every
+   lower-capability worker receives the canonical coordinator-approved execution
+   envelope and returns control before further edits on contradictory evidence,
+   ambiguous criteria, scope or risk growth, weakened verification, or
+   consequential judgment.
    The current-wave item cap applies across all generated groups in aggregate;
    never multiply it by `N`, registered profiles, inboxes, or machines. If
    actionable work exceeds the capped current wave, report the remaining
@@ -136,8 +143,9 @@ precise blocker.
    coordination hooks. Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
    `Coordinator model/effort: <model/class>/<effort>.` and
+   `Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; UNKNOWN blocks.` and
    `Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`
-   It must also say `Bind coordinator/worker route pairs on their actual hosts before dispatch; no worker may inherit the coordinator pair; if unavailable, stop and re-plan.`
+   It must also say `Verify launch assurance and bind worker routes on actual hosts; prompt cannot change parent; no inheritance/substitution; mismatch/UNKNOWN -> stop/relaunch.`
    For Codex prompts, keep the
    prompt under the `$plan-pr-batch` Codex 4 000-character limit, including the
    Codex invocation line; for Claude/generic prompts, measure the actual prompt,
@@ -150,13 +158,15 @@ precise blocker.
    Use `Thread handle:` as the first worker-specific line:
    `Thread handle: <batch-short>-<lane>-<word>.`, with `<word>` as a short
    coordinator-chosen session word. Then add the compact
-   `Lane Card: claim/PR-open/block/cancel/final; holder, branch/PR, phase, URLs or UNKNOWN.`
+   `Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder, branch/PR, phase, URLs or UNKNOWN.`
    line so workers emit the canonical Lane Card after a successful claim, on
    blocked/cancelled state, and in final handoff. The actor that opens or
    updates the PR emits the PR-open Lane Card when the PR is opened. The
-   canonical card carries claim holder and `dashboard_url` from backend
+   canonical card carries active exact model/effort, binding source,
+   execution-envelope receipt, claim holder and `dashboard_url` from backend
    metadata, plus `pr_url` from backend metadata or verified GitHub PR state,
-   with `UNKNOWN` when unavailable.
+   with `UNKNOWN` when unavailable. Prompt text or worker self-report alone is
+   not binding evidence.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire a coordination claim before editing.
