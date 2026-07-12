@@ -43,6 +43,8 @@ COMPACT_CONTRACT_INVARIANTS = [
   "target closed out",
   "issue closed where applicable"
 ].freeze
+GMCC_ALIGNMENT_SENTENCE = "`GMCC-v1` is a version key that pins drift, not an external-only pointer; " \
+                          "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
 CANONICAL_CLOSEOUT_PROMPT_LINE = "Final handoff: canonical closeout;"
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
@@ -171,6 +173,24 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes normalized,
                            "inline semantics remain normative when the workflow reference is missing or cannot autoload",
                            "autoload-failure completion guidance"
+    end
+  end
+
+  def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces
+    surfaces = {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
+    }
+    actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
+    expected_counts = surfaces.transform_values { 1 }
+    assert_equal expected_counts, actual_counts,
+                 "all generation surfaces must carry the exact GMCC-v1 alignment sentence once"
+
+    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+      refute_includes prompt, GMCC_ALIGNMENT_SENTENCE,
+                      "the non-prompt alignment sentence must not consume goal-prompt headroom"
     end
   end
 

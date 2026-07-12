@@ -948,8 +948,8 @@ use the documented fallback evidence.
 ### Goal Mode Completion Contract
 
 Use this compact, self-contained `GMCC-v1` line verbatim in PR-batch goal
-prompts. Its inline semantics remain normative when the workflow reference is
-missing or cannot autoload:
+prompts.
+`GMCC-v1` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/reviews/review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
 

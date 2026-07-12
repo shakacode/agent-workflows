@@ -287,8 +287,7 @@ Keep this template aligned with the matching plan-to-goal prompt in the
 resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
-The compact `GMCC-v1` line is different: its version key pins drift, while its
-inline semantics remain executable when the workflow reference cannot autoload.
+`GMCC-v1` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 Use this template when creating Codex goal text:
 
