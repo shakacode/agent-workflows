@@ -107,7 +107,25 @@ module ValidateReviewFindings
     failures.concat(validate_required_string_fields(receipt["provenance"], %w[engine invocation], "#{label}: provenance"))
     failures.concat(validate_risk_lenses(receipt["risk_lenses"], label))
     failures.concat(validate_coverage(receipt["coverage"], label))
+    failures.concat(validate_complete_coverage(receipt, label))
     failures
+  end
+
+  def validate_complete_coverage(receipt, label)
+    coverage = receipt["coverage"]
+    return [] unless coverage.is_a?(Hash) && coverage["status"] == "complete"
+
+    lenses = receipt["risk_lenses"]
+    degraded_lens = lenses.is_a?(Array) && lenses.any? do |lens|
+      lens.is_a?(Hash) && %w[degraded unknown].include?(lens["status"])
+    end
+    excluded = coverage["excluded_paths"]
+    limitations = coverage["limitations"]
+    incomplete = degraded_lens || excluded.is_a?(Array) && !excluded.empty? ||
+                 limitations.is_a?(Array) && !limitations.empty?
+    return [] unless incomplete
+
+    ["#{label}: complete coverage cannot include degraded or unknown lenses, excluded paths, or limitations"]
   end
 
   def validate_required_string_fields(object, fields, label)
@@ -186,9 +204,18 @@ module ValidateReviewFindings
       failures.concat(validate_independent_validation(finding["independent_validation"], label))
     end
     validation = finding["independent_validation"]
-    if consequential && validation.is_a?(Hash) && validation["status"] == "degraded" &&
-       !%w[must_fix needs_decision unknown].include?(finding["disposition"])
-      failures << "#{label}: degraded independent validation requires must_fix, needs_decision, or unknown disposition"
+    if validation.is_a?(Hash)
+      validation_status = validation["status"]
+      disposition = finding["disposition"]
+      if validation_status == "confirmed" && disposition.to_s.start_with?("rejected_")
+        failures << "#{label}: confirmed independent validation cannot use a rejected disposition"
+      elsif validation_status == "rejected" &&
+            !%w[rejected_false_positive rejected_not_actionable unknown].include?(disposition)
+        failures << "#{label}: rejected independent validation requires a rejected or unknown disposition"
+      elsif consequential && validation_status == "degraded" &&
+            !%w[must_fix needs_decision unknown].include?(disposition)
+        failures << "#{label}: degraded independent validation requires must_fix, needs_decision, or unknown disposition"
+      end
     end
     failures.concat(validate_location(finding["location"], label)) if finding.key?("location")
     STRING_ARRAY_FIELDS.each { |field| failures.concat(validate_string_array(finding, field, label)) }

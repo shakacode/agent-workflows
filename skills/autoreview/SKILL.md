@@ -193,21 +193,24 @@ For each finding the engine returns:
 2. Accept only concrete, actionable findings (correctness bugs, real regressions, genuine
    security gaps, clear inconsistencies with adjacent code). Reject speculation, nits, and
    broad rewrites; note briefly why. Severity alone does not authorize a broader mechanism.
-3. Fix accepted findings with the smallest correct change at the right boundary.
-4. Rerun the **targeted** tests for the changed surface, then rerun the review. Use `/verify`'s
+3. Before acting on a consequential finding, use a fresh independent reviewer or validator
+   context to check it against the same diff and cited code path. Give it the finding,
+   target/base/head, and relevant diff, but do not present agreement as the desired outcome.
+   Record the validator identity, status, and evidence:
+   - `confirmed`: continue to the fix or explicit disposition;
+   - `rejected`: do not fix from that finding; record the rejected disposition and evidence;
+   - `degraded`: do not fix or clear it automatically; keep it `must_fix`, `needs_decision`, or
+     `unknown` until independent validation succeeds or a maintainer decides it.
+   The primary session's inspection may supplement this check but cannot replace independence.
+4. Fix accepted non-consequential findings and independently confirmed consequential findings
+   with the smallest correct change at the right boundary.
+5. Rerun the **targeted** tests for the changed surface, then rerun the review. Use `/verify`'s
    Scope Guide and `.agents/bin/README.md` to pick the narrowest covering
    tests for the changed surface, e.g. the unit spec for a library-code change, the
    integration/app spec for an integration change, and the package test plus type-check/lint for
    touched TypeScript. Also rerun any signature/type validation when typed interfaces changed.
 
-For every consequential finding, use a fresh independent reviewer or validator context to
-confirm or reject the finding against the same diff and cited code path. Give it the finding,
-target/base/head, and relevant diff, but do not present agreement as the desired outcome. Record
-the validator identity, `confirmed`, `rejected`, or `degraded` status, and concrete evidence. A
-degraded P0/P1 remains `must_fix`, `needs_decision`, or `unknown`; the primary session's direct
-inspection may supplement this check but cannot replace its independence.
-
-Loop Steps 3-4 until the review returns no accepted/actionable findings. Once a rerun comes
+Loop Steps 3-5 until the review returns no accepted/actionable findings. Once a rerun comes
 back clean, stop; do not spend another long review cycle on redundant confirmation.
 When a finding would trigger the complexity-escalation stop in the Contract, do not patch the
 new category as the next loop iteration. First re-evaluate the listed alternatives and record

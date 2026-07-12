@@ -137,9 +137,9 @@ The receipt includes:
   `included_paths`, `excluded_paths`, and `limitations` string arrays.
 
 Receipts describe what actually ran. Do not mark a lens `applied` merely
-because a reviewer was requested, and do not use `complete` when excluded
-paths, unavailable tooling, stale scope, or another limitation leaves material
-coverage uncertain.
+because a reviewer was requested. `complete` requires every lens to be
+`applied` or `not_applicable`, with empty `excluded_paths` and `limitations`;
+otherwise use `partial` or `unknown`.
 
 ## Severities
 
@@ -206,6 +206,9 @@ lower-severity finding with `consequential: true`, requires an
 
 The validator must use a distinct review context and check the real diff or
 code path. Agreement, severity, and the primary reviewer's own verification are
-not independent proof. If independent validation is unavailable, malformed, or
-times out, use `degraded` and keep the finding at `must_fix`, `needs_decision`,
-or `unknown`. A degraded result must never clear a consequential finding.
+not independent proof. A `confirmed` result cannot use a rejected disposition.
+A `rejected` result uses `rejected_false_positive`,
+`rejected_not_actionable`, or `unknown` and must not trigger a fix. If
+independent validation is unavailable, malformed, or times out, use `degraded`
+and keep the finding at `must_fix`, `needs_decision`, or `unknown`. A degraded
+result must never clear a consequential finding.

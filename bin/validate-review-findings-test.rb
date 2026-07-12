@@ -132,6 +132,32 @@ class ValidateReviewFindingsTest < Minitest::Test
     assert_empty ValidateReviewFindings.validate_document(document, "report")
   end
 
+  def test_confirmed_and_rejected_validation_match_finding_disposition
+    document = fixture_document("autoreview-receipt-valid.json")
+    finding = document.fetch("review_findings").first
+
+    finding["disposition"] = "rejected_false_positive"
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_findings[0]: confirmed independent validation cannot use a rejected disposition"
+
+    finding.fetch("independent_validation")["status"] = "rejected"
+    finding["disposition"] = "must_fix"
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_findings[0]: rejected independent validation requires a rejected or unknown disposition"
+
+    finding["disposition"] = "rejected_false_positive"
+    assert_empty ValidateReviewFindings.validate_document(document, "report")
+  end
+
+  def test_complete_coverage_rejects_degraded_or_excluded_surface
+    document = fixture_document("autoreview-receipt-valid.json")
+    coverage = document.fetch("review_receipt").fetch("coverage")
+    coverage["status"] = "complete"
+
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt: complete coverage cannot include degraded or unknown lenses, excluded paths, or limitations"
+  end
+
   def test_receipt_status_fields_are_required
     document = fixture_document("autoreview-receipt-valid.json")
     receipt = document.fetch("review_receipt")
