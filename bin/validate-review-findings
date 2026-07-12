@@ -90,13 +90,14 @@ module ValidateReviewFindings
 
     failures << "#{label}: schema must be #{SCHEMA.inspect}" unless document["schema"] == SCHEMA
     findings = document["review_findings"]
-    unless findings.is_a?(Array)
-      return failures << "#{label}: review_findings must be an array"
-    end
-
     if document.key?("review_receipt")
       failures.concat(validate_review_receipt(document["review_receipt"], "#{label}: review_receipt"))
     end
+    unless findings.is_a?(Array)
+      failures << "#{label}: review_findings must be an array"
+      return failures
+    end
+
     receipt = document["review_receipt"]
     receipt_target = receipt["target"] if receipt.is_a?(Hash)
     receipt_head = receipt_target["head_sha"] if receipt_target.is_a?(Hash)
@@ -136,6 +137,11 @@ module ValidateReviewFindings
         next if full_git_object_id?(target[field])
 
         failures << "#{label}: committed target.#{field} must be a full hexadecimal Git object ID"
+      end
+      base_sha = target["base_sha"]
+      head_sha = target["head_sha"]
+      if full_git_object_id?(base_sha) && full_git_object_id?(head_sha) && base_sha.length != head_sha.length
+        failures << "#{label}: committed target base_sha and head_sha must use the same Git object format"
       end
     end
     failures
@@ -183,10 +189,10 @@ module ValidateReviewFindings
     failures = lenses.each_with_index.flat_map do |lens, index|
       lens_label = "#{label}: risk_lenses[#{index}]"
       if lens.is_a?(Hash)
-        failures = validate_required_string_fields(lens, %w[name reason], lens_label) +
-                   validate_enum(lens, "status", RISK_LENS_STATUSES, lens_label)
-        failures << "#{lens_label}.status must be present" unless lens.key?("status")
-        failures
+        lens_failures = validate_required_string_fields(lens, %w[name reason], lens_label) +
+                        validate_enum(lens, "status", RISK_LENS_STATUSES, lens_label)
+        lens_failures << "#{lens_label}.status must be present" unless lens.key?("status")
+        lens_failures
       else
         ["#{lens_label} must be an object"]
       end
@@ -365,7 +371,7 @@ module ValidateReviewFindings
   end
 
   def full_git_object_id?(value)
-    value.match?(/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/)
+    value.is_a?(String) && value.match?(/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/)
   end
 end
 

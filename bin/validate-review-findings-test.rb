@@ -202,9 +202,15 @@ class ValidateReviewFindingsTest < Minitest::Test
     assert_empty ValidateReviewFindings.validate_document(document, "report")
 
     target["base_sha"] = "A" * 40
-    target["head_sha"] = "B" * 64
+    target["head_sha"] = "B" * 40
     finding_target["head_sha"] = target["head_sha"]
     assert_empty ValidateReviewFindings.validate_document(document, "report")
+
+    target["base_sha"] = "A" * 40
+    target["head_sha"] = "B" * 64
+    finding_target["head_sha"] = target["head_sha"]
+    assert_includes ValidateReviewFindings.validate_document(document, "report"),
+                    "report: review_receipt: committed target base_sha and head_sha must use the same Git object format"
 
     target["base_sha"] = "a" * 39
     target["head_sha"] = "g" * 40
@@ -285,6 +291,16 @@ class ValidateReviewFindingsTest < Minitest::Test
     assert_includes failures, "report: review_receipt: risk_lenses[0].status must be present"
     assert_includes failures, "report: review_receipt: coverage.status must be present"
     assert_includes failures, "report: review_findings[0]: independent_validation.status must be present"
+  end
+
+  def test_invalid_findings_container_does_not_hide_receipt_failures
+    document = fixture_document("autoreview-receipt-valid.json")
+    document["review_findings"] = {}
+    document.fetch("review_receipt").delete("source")
+
+    failures = ValidateReviewFindings.validate_document(document, "report")
+    assert_includes failures, "report: review_findings must be an array"
+    assert_includes failures, "report: review_receipt.source must be a non-empty string"
   end
 
   def test_missing_required_field_fails

@@ -156,7 +156,8 @@ and is not the immutable anchor. For `committed`, both SHA fields must be full
 hexadecimal Git object IDs: 40 characters for SHA-1 repositories or 64
 characters for SHA-256 repositories. Uppercase or lowercase hexadecimal is
 valid. Symbolic refs such as `HEAD` and
-`origin/main`, and abbreviated object IDs, are invalid.
+`origin/main`, and abbreviated object IDs, are invalid. The two IDs must have
+the same length because one repository uses one Git object format.
 
 When an individual finding's `target` also includes `head_sha`, it must name
 the same Git object as `review_receipt.target.head_sha` (hexadecimal case is
