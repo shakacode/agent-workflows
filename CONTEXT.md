@@ -95,6 +95,19 @@ The exact model and supported reasoning effort used by the lane's current worker
 instance. A lane has at most one active assignment and instance at a time.
 _Avoid_: planned route, inherited model
 
+**Dispatcher capability preflight**:
+The portable JSON-in/JSON-out decision that records a lane's requested and
+actual route/dispatcher only after binding and attestation. It chooses the
+requested tuple or the first explicitly authorized ordered fallback, never
+inherits the coordinator route or generic subagent authority, preserves lane
+state, and emits one durable `dispatch-decision-request v1` when blocked. Use
+`dispatcher-capability-preflight` before launch; it never launches or mutates.
+Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
+Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice.
+Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch.
+Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+_Avoid_: worker launcher, backend mutation
+
 **Model escalation request**:
 A worker's evidence packet asking the coordinator to approve a stronger role;
 it records attempts, failures, uncertainty, risk, verification gaps, and the
@@ -143,6 +156,9 @@ _Avoid_: force kill (without the cleanup steps it names)
   active **Active model/effort assignment** while its current instance runs; a
   **Model/effort route group** can contain several lanes but creates no
   ownership or scheduling relationship between them.
+- A **Dispatcher capability preflight** records at most one active assignment
+  and launch token for a **Lane**; replacement requires the prior instance to
+  stop and reconcile before a new assignment is recorded.
 - **Model escalation request** approval can replace a lane's assignment and
   instance only after a **Model replacement handoff**; the old and replacement
   worker instances never overlap.
