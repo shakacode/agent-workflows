@@ -1355,8 +1355,12 @@ decisions, integration, review, readiness, merge sequencing, and closeout.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
 When the existing goal requires an exact parent, verify the current parent
 against this assurance. Prompt text cannot change its model. On mismatch or
-UNKNOWN, stop for a correctly bound coordinator relaunch; otherwise preserve
-unavailable evidence as UNKNOWN and continue portable class-based recovery.
+UNKNOWN, stop for a correctly bound coordinator relaunch. When the existing
+goal requires an exact checker, verify the reserved checker against this
+assurance. On mismatch or UNKNOWN, stop until a fresh qualifying checker is
+reserved. Only when neither an exact-parent nor exact-checker policy applies,
+preserve unavailable evidence as UNKNOWN and continue portable class-based
+recovery.
 
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Preserve each lane's route mapping from the existing goal. Use one route entry

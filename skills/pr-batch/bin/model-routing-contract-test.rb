@@ -145,6 +145,10 @@ class ModelRoutingContractTest < Minitest::Test
     [
       "Continue the existing goal; do not clear it or start a new batch",
       "Keep the parent coordinator on <coordinator model/class>/<effort>",
+      LAUNCH_ASSURANCE,
+      "When the existing goal requires an exact checker",
+      "On mismatch or UNKNOWN, stop until a fresh qualifying checker is reserved",
+      "Only when neither an exact-parent nor exact-checker policy applies",
       "Inventory every active worker",
       "`MODEL_REPLACEMENT_HANDOFF`",
       "Confirm the old instance has stopped",
@@ -261,9 +265,15 @@ class ModelRoutingContractTest < Minitest::Test
     end
 
     pr_batch = read_repo_file("skills/pr-batch/SKILL.md")
+    pr_batch_normalized = normalized(pr_batch)
     assert_includes pr_batch, "Model-Routing Recovery Prompt"
     assert_includes pr_batch, "Worker Model Replacement And Escalation"
-    assert_includes pr_batch, "Without that policy, preserve unavailable binding as `UNKNOWN`"
+    assert_includes pr_batch_normalized, "independent-checker model/effort plus its qualifying binding source"
+    assert_includes pr_batch_normalized, "parent mismatch or `UNKNOWN`"
+    assert_includes pr_batch_normalized, "correctly bound coordinator relaunch"
+    assert_includes pr_batch_normalized,
+                    "checker mismatch or `UNKNOWN` requires reserving a fresh qualifying checker"
+    assert_includes pr_batch_normalized, "Without an exact-parent or exact-checker policy"
 
     planner = normalized(read_repo_file("skills/plan-pr-batch/SKILL.md"))
     assert_includes planner, "exact-parent or exact-checker"

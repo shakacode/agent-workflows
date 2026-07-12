@@ -137,14 +137,16 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    same conditions. Items with `UNKNOWN` path evidence stay serial discovery
    lanes. Use the Claude-sized 5/3 limit for `generic` unless a larger host
    capacity is explicitly verified.
-9. **Launch assurance**: exact initiating coordinator model/effort, its
+9. **Launch assurance**: exact initiating coordinator model/effort plus its
    host/runtime or explicit operator-selected binding source, and the exact
-   independent-checker model/effort. Record assurance before target
-   interpretation, planning, or dispatch. When operator policy requires an exact
+   independent-checker model/effort plus its qualifying binding source. Record
+   assurance before target interpretation, planning, or dispatch. When operator policy requires an exact
    parent or checker, prompt text, model self-report, installed rosters, and a
-   dispatch-resolved class are not proof; mismatch or `UNKNOWN` requires
-   relaunch. Without that policy, preserve unavailable binding as `UNKNOWN` and
-   continue portable class-based planning.
+   dispatch-resolved class are not proof. A parent mismatch or `UNKNOWN`
+   requires a correctly bound coordinator relaunch; a checker mismatch or
+   `UNKNOWN` requires reserving a fresh qualifying checker. Without an
+   exact-parent or exact-checker policy, preserve unavailable binding as
+   `UNKNOWN` and continue portable class-based planning.
 10. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
 11. **Permissions**: confirm the current session can run without blocking worker approval prompts.
 12. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
