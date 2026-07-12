@@ -141,6 +141,95 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute active_replay.key?("dispatch")
   end
 
+  def test_direct_fallback_empty_discovery_revalidates_current_authority_for_pending_and_active
+    input = {
+      "lane_id" => "incident-direct-fallback-authority-revoked",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "in-process" },
+      "authority" => { "dispatch" => true, "route" => false },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "revoked-authority-instance"
+      }]
+    }
+    selected = dispatch(input)
+    pending_assignment = selected.fetch("active_assignments").first
+    revoked_input = input.merge(
+      "authority" => { "dispatch" => false, "route" => false },
+      "candidates" => []
+    )
+    outputs = [
+      dispatch(revoked_input.merge("active_assignments" => [pending_assignment])),
+      dispatch(revoked_input.merge("active_assignments" => [pending_assignment.merge("lifecycle" => "confirmed-active")]))
+    ]
+
+    outputs.each do |output|
+      assert_equal "blocked-replacement-fencing", output.fetch("status")
+      assert_equal false, output.fetch("resume_goal")
+      refute output.key?("dispatch")
+    end
+  end
+
+  def test_direct_fallback_empty_discovery_revalidates_route_and_combined_authority
+    scenarios = [
+      {
+        "name" => "route-only",
+        "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+        "candidate_route" => { "model" => "Terra", "effort" => "high" },
+        "candidate_dispatcher" => "remote",
+        "authority" => { "dispatch" => false, "route" => true },
+        "revoked" => [{ "dispatch" => false, "route" => false }]
+      },
+      {
+        "name" => "route-and-dispatcher",
+        "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "in-process" },
+        "candidate_route" => { "model" => "Terra", "effort" => "high" },
+        "candidate_dispatcher" => "remote",
+        "authority" => { "dispatch" => true, "route" => true },
+        "revoked" => [{ "dispatch" => false, "route" => true }, { "dispatch" => true, "route" => false }]
+      }
+    ]
+
+    scenarios.each do |scenario|
+      input = {
+        "lane_id" => "incident-#{scenario.fetch('name')}-authority",
+        "requested" => scenario.fetch("requested"),
+        "authority" => scenario.fetch("authority"),
+        "candidates" => [{
+          "route" => scenario.fetch("candidate_route"),
+          "dispatcher" => scenario.fetch("candidate_dispatcher"),
+          "fallback_authorized" => true,
+          "binding" => "operator-selected",
+          "attestation" => "instance-bound",
+          "instance_id" => "#{scenario.fetch('name')}-instance"
+        }]
+      }
+      selected = dispatch(input)
+      pending_assignment = selected.fetch("active_assignments").first
+      durable_replay = dispatch(input.merge("candidates" => [], "active_assignments" => [pending_assignment]))
+      assert_equal "launch-pending", durable_replay.fetch("status"), scenario.fetch("name")
+
+      scenario.fetch("revoked").each do |revoked_authority|
+        %w[launch-pending confirmed-active].each do |lifecycle|
+          output = dispatch(
+            input.merge(
+              "authority" => revoked_authority,
+              "candidates" => [],
+              "active_assignments" => [pending_assignment.merge("lifecycle" => lifecycle)]
+            )
+          )
+          assert_equal "blocked-replacement-fencing", output.fetch("status"),
+                       "#{scenario.fetch('name')} #{revoked_authority.inspect} #{lifecycle}"
+          assert_equal false, output.fetch("resume_goal")
+          refute output.key?("dispatch")
+        end
+      end
+    end
+  end
+
   def test_direct_fallback_replay_provenance_fails_closed_for_changed_or_malformed_state
     input = {
       "lane_id" => "incident-direct-fallback-guards",
@@ -183,6 +272,24 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         "active_assignments" => [assignment]
       )
     )
+    missing_fallback_flag = dispatch(
+      input.merge(
+        "candidates" => [input.fetch("candidates").first.reject { |key, _value| key == "fallback_authorized" }],
+        "active_assignments" => [assignment]
+      )
+    )
+    false_fallback_flag = dispatch(
+      input.merge(
+        "candidates" => [input.fetch("candidates").first.merge("fallback_authorized" => false)],
+        "active_assignments" => [assignment.merge("lifecycle" => "confirmed-active")]
+      )
+    )
+    unknown_fallback_flag = dispatch(
+      input.merge(
+        "candidates" => [input.fetch("candidates").first.merge("fallback_authorized" => "UNKNOWN")],
+        "active_assignments" => [assignment]
+      )
+    )
     legacy_assignment = assignment.reject { |key, _value| %w[requested selection_provenance].include?(key) }
     legacy_replay = dispatch(
       input.merge("candidates" => [], "active_assignments" => [legacy_assignment])
@@ -192,7 +299,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       input.merge("candidates" => [], "active_assignments" => [partial_provenance])
     )
 
-    [changed_request, changed_to_selected_tuple, unusable_evidence, different_instance, legacy_replay].each do |output|
+    [changed_request, changed_to_selected_tuple, unusable_evidence, different_instance,
+     missing_fallback_flag, false_fallback_flag, unknown_fallback_flag, legacy_replay].each do |output|
       assert_equal "blocked-replacement-fencing", output.fetch("status")
       refute output.key?("dispatch")
     end

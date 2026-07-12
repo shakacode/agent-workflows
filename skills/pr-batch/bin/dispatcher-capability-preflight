@@ -87,15 +87,17 @@ def selection_reason(candidate, requested)
   "authorized-fallback-bound-and-attested"
 end
 
-def fallback_authorized?(candidate, requested, authority)
-  return false unless candidate["fallback_authorized"] == true
-
+def fallback_authority_sufficient?(candidate, requested, authority)
   exact_route = route_equal?(candidate["route"], requested["route"])
   return false if requested["hard_route"] && !exact_route
 
   dispatcher_changed = candidate["dispatcher"] != requested["dispatcher"]
   route_changed = !exact_route
   (!dispatcher_changed || authority["dispatch"] == true) && (!route_changed || authority["route"] == true)
+end
+
+def fallback_authorized?(candidate, requested, authority)
+  candidate["fallback_authorized"] == true && fallback_authority_sufficient?(candidate, requested, authority)
 end
 
 def select_candidate(candidate_inputs, requested, authority)
@@ -608,6 +610,12 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
       entry["dispatcher"] == persisted_assignment["dispatcher"] &&
       entry["instance_id"] == persisted_assignment["instance_id"]
   end
+  current_fallback_candidate_matches = candidate_inputs.any? do |entry|
+    entry.is_a?(Hash) && unusable_reason(entry).nil? && fallback_authorized?(entry, requested, authority) &&
+      route_equal?(entry["route"], persisted_assignment["route"]) &&
+      entry["dispatcher"] == persisted_assignment["dispatcher"] &&
+      entry["instance_id"] == persisted_assignment["instance_id"]
+  end
   assignment_requested_unchanged = !persisted_assignment.key?("requested") ||
                                    requested_policy_equal?(persisted_assignment["requested"], input["requested"])
   requested_identity_replayable = same_requested_identity && assignment_requested_unchanged &&
@@ -618,7 +626,8 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
                                  persisted_request_unchanged && current_candidate_matches
   provenance_identity_replayable = persisted_assignment["selection_provenance"] == "top-level-authorized-fallback" &&
                                    requested_policy_equal?(persisted_assignment["requested"], input["requested"]) &&
-                                   (candidate_inputs.empty? || current_candidate_matches)
+                                   fallback_authority_sufficient?(persisted_assignment, requested, authority) &&
+                                   (candidate_inputs.empty? || current_fallback_candidate_matches)
   unless requested_identity_replayable || resolved_identity_replayable || provenance_identity_replayable
     prospective_candidate, prospective_index, prospective_rejections = select_candidate(candidate_inputs, requested, authority)
     prospective = if prospective_candidate
