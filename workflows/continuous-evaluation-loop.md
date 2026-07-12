@@ -180,8 +180,10 @@ as in_progress unless they have a stalled, regressed, partial, missed, or
 unknown signal.
 Verify a checker identity distinct from every maker plus its exact model/effort
 and binding source. Prompt text and model self-report are not binding evidence.
-Otherwise record `checker_identity: UNKNOWN`, `checker_independence: UNKNOWN`,
-or `checker_route_compliance: UNKNOWN|failed` as applicable.
+If checker identity, model/effort, binding, or independence is unavailable,
+below policy, or `UNKNOWN`, record `checker_identity: UNKNOWN`,
+`checker_independence: UNKNOWN`, or
+`checker_route_compliance: UNKNOWN|failed` as applicable.
 
 Surface stalled and dead (lost-heartbeat) runs as resume/reassign/drop decisions. For
 merged non-OK findings, prepare post-merge-audit intake entries and draft

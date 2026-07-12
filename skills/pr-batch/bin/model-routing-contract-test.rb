@@ -7,12 +7,12 @@ ROOT = File.expand_path("../../..", __dir__)
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 COORDINATOR_ROUTE = "Coordinator model/effort: <model/class>/<effort>."
-LAUNCH_ASSURANCE = "Launch assurance: parent <exact model>/<effort>@<binding source>; " \
-                   "checker <exact model>/<effort>; exact-policy UNKNOWN blocks."
+LAUNCH_ASSURANCE = "Launch assurance: parent <exact model>/<effort>@<source>; " \
+                   "checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
 WORKER_ROUTE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; " \
                "escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
-DISPATCH_RULE = "Bind workers on-host pre-start; worker unbound -> stop; prompt cannot change parent; " \
-                "no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch"
+DISPATCH_RULE = "Bind actors on-host; unbound -> stop; no inheritance/substitution; " \
+                "exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh"
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -80,7 +80,8 @@ class ModelRoutingContractTest < Minitest::Test
       "effective instance-bound runtime state",
       "mutable default configuration alone",
       "A prompt cannot upgrade its parent",
-      "Without an exact-parent policy",
+      "fresh qualifying checker is reserved",
+      "Without an exact-parent or exact-checker policy",
       "Independent checker assignment",
       "Sol/high",
       "Terra/medium",
@@ -273,7 +274,8 @@ class ModelRoutingContractTest < Minitest::Test
   end
 
   def test_continuous_checker_is_strong_independent_and_fail_closed
-    checker = normalized(read_repo_file("workflows/continuous-evaluation-loop.md"))
+    checker_text = read_repo_file("workflows/continuous-evaluation-loop.md")
+    checker = normalized(checker_text)
 
     [
       "distinct from every maker",
@@ -282,10 +284,21 @@ class ModelRoutingContractTest < Minitest::Test
       "Sol/high minimum",
       "Terra may collect mechanical evidence",
       "may not issue the qualifying intent-achievement or final-risk verdict",
-      "checker_route_compliance: UNKNOWN|failed",
       "do not return a clean/`realized` verdict"
     ].each do |phrase|
       assert_includes checker, phrase, "continuous checker contract is missing: #{phrase}"
+    end
+
+    loop_prompt = normalized(extract_prompt(checker_text, "## Loop Prompt"))
+    [
+      "distinct from every maker",
+      "exact model/effort",
+      "stop short of a clean/realized verdict",
+      "If checker identity, model/effort, binding, or independence is unavailable",
+      "below policy, or `UNKNOWN`",
+      "checker_route_compliance: UNKNOWN|failed"
+    ].each do |phrase|
+      assert_includes loop_prompt, phrase, "continuous checker Loop Prompt is missing: #{phrase}"
     end
   end
 

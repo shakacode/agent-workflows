@@ -143,9 +143,9 @@ precise blocker.
    coordination hooks. Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
    `Coordinator model/effort: <model/class>/<effort>.` and
-   `Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; exact-policy UNKNOWN blocks.` and
+   `Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.` and
    `Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`
-   It must also say `Bind workers on-host pre-start; worker unbound -> stop; prompt cannot change parent; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch`
+   It must also say `Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh`
    For Codex prompts, keep the
    prompt under the `$plan-pr-batch` Codex 4 000-character limit, including the
    Codex invocation line; for Claude/generic prompts, measure the actual prompt,

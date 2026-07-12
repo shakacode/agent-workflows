@@ -451,10 +451,11 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   runtime state, or explicit operator-selected launch configuration qualify;
   mutable default configuration alone, prompt text, model self-report, installed
   rosters, and dispatch-resolved classes do not. A prompt cannot upgrade its
-  parent. A mismatch or `UNKNOWN` blocks that exact-policy
-  batch until relaunch on the required parent. Without an exact-parent policy,
-  preserve unavailable binding as `UNKNOWN` and continue portable class-based
-  planning; this does not waive exact binding before a dispatched actor starts.
+  parent. A parent mismatch or `UNKNOWN` blocks until relaunch; a checker
+  mismatch or `UNKNOWN` blocks until a fresh qualifying checker is reserved.
+  Without an exact-parent or exact-checker policy, preserve unavailable binding
+  as `UNKNOWN` and continue portable class-based planning; this does not waive
+  exact binding before a dispatched actor starts.
 - **Coordinator assignment:** use the strongest supported pair needed to shape
   scope, classify risk, challenge and approve plans, decide escalation, integrate
   results, and close out the batch. This high-leverage parent role does not imply
@@ -808,7 +809,7 @@ Objective: ...
 merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
-Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; exact-policy UNKNOWN blocks.
+Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
 Batch QA Lane: <owner/scope | none+rationale>.
@@ -827,7 +828,7 @@ Items:
 Execution rules:
 - Resolve `base_branch` from repo config or inline `AGENTS.md` configuration; fetch/prune origin; verify `$pr-batch`+workflow; unresolved -> UNKNOWN.
 - Follow resolved `$pr-batch`; if autoload fails, apply local gates; preflight only issue/PR targets.
-- Bind workers on-host pre-start; worker unbound -> stop; prompt cannot change parent; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch
+- Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch one subagent per disjoint current-wave item; group only for shared context; keep serial/UNKNOWN apart.
 - Workers obey owned paths and the approved execution envelope; unlisted paths, contradiction, ambiguity, scope/risk growth, or weaker verification -> stop for coordinator.
 - Sequenced lanes may share declared files only in the stated order.
@@ -1351,7 +1352,7 @@ Keep the parent coordinator on <coordinator model/class>/<effort>. Do not stop,
 replace, or downgrade the parent. It owns planning, risk classification, route
 decisions, integration, review, readiness, merge sequencing, and closeout.
 
-Launch assurance: parent <exact model>/<effort>@<binding source>; checker <exact model>/<effort>; exact-policy UNKNOWN blocks.
+Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
 When the existing goal requires an exact parent, verify the current parent
 against this assurance. Prompt text cannot change its model. On mismatch or
 UNKNOWN, stop for a correctly bound coordinator relaunch; otherwise preserve
