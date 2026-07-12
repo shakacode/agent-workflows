@@ -3,18 +3,18 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion]
 
 Installs this shared workflow pack into an agent home.
 
 Default targets:
   --host codex   ${CODEX_HOME:-$HOME/.codex}
   --host claude  ${CLAUDE_HOME:-$HOME/.claude}
-  --host auto    an existing Codex or Claude home, if exactly one is detectable
+  --host auto    infer from an explicit target's host markers; an unmarked explicit target defaults to Codex
 
 Installed paths:
   <target>/LICENSE
-  <target>/skills/*
+  <target>/skills/* (flat delivery mode only)
   <target>/workflows/*
   <target>/docs/coordination-backend.md
   <target>/docs/review-finding-schema.md
@@ -31,9 +31,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 host="codex"
 target=""
 mode="copy"
+delivery_mode=""
 metadata_name=".agent-workflows-install.json"
+delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
+  agent-workflows-delivery-state
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows
@@ -82,7 +85,27 @@ resolve_auto_target() {
 
 resolve_host_and_target() {
   if [[ -n "$target" ]]; then
-    printf '%s:%s\n' "$host" "$target"
+    target="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$target")"
+    if [[ "$host" = "auto" ]]; then
+      local codex_home claude_home
+      codex_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CODEX_HOME:-$HOME/.codex}")"
+      claude_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CLAUDE_HOME:-$HOME/.claude}")"
+      local codex_marker=false claude_marker=false
+      [[ "$target" = "$codex_home" || -f "$target/config.toml" ]] && codex_marker=true
+      [[ "$target" = "$claude_home" || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
+      if [[ "$codex_marker" = true && "$claude_marker" = true ]]; then
+        echo "Explicit target has both Codex and Claude markers; pass --host codex or --host claude." >&2
+        return 64
+      elif [[ "$claude_marker" = true ]]; then
+        printf 'claude:%s\n' "$target"
+      elif [[ "$codex_marker" = true ]]; then
+        printf 'codex:%s\n' "$target"
+      else
+        printf 'codex:%s\n' "$target"
+      fi
+    else
+      printf '%s:%s\n' "$host" "$target"
+    fi
     return 0
   fi
 
@@ -131,7 +154,7 @@ installed_metadata_value() {
   ' "$metadata_path" "$key"
 }
 
-write_metadata() {
+prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at
@@ -142,10 +165,11 @@ write_metadata() {
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   ruby -rjson -e '
-    path, host, mode, source, version, revision, branch, remote, installed_at = ARGV
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at = ARGV
     metadata = {
       "host" => host,
       "mode" => mode,
+      "delivery_mode" => delivery_mode,
       "source" => File.expand_path(source),
       "version" => version,
       "source_revision" => revision,
@@ -154,8 +178,71 @@ write_metadata() {
       "installed_at" => installed_at
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+}
+
+commit_metadata() {
+  local metadata_path="$target/$metadata_name"
+  local metadata_tmp="$metadata_path.tmp"
   mv "$metadata_tmp" "$metadata_path"
+}
+
+rollback_migration_staging() {
+  local staging="$1"
+  local skills_root="$target/skills"
+  local staged_path
+  [[ -n "$staging" && -d "$staging" ]] || return 0
+  if [[ -L "$skills_root" || -e "$skills_root" && ! -d "$skills_root" ]]; then
+    echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
+    return 1
+  fi
+  mkdir -p "$skills_root"
+  if [[ -L "$skills_root" || ! -d "$skills_root" ]] || ! ruby -e '
+    target = File.realpath(ARGV.fetch(0))
+    skills = File.realpath(ARGV.fetch(1))
+    exit 1 unless File.dirname(skills) == target
+  ' "$target" "$skills_root"; then
+    echo "ROLLBACK_FAILED: unsafe skills root: $skills_root" >&2
+    return 1
+  fi
+  for staged_path in "$staging"/*; do
+    [[ -e "$staged_path" || -L "$staged_path" ]] || continue
+    if [[ -L "$skills_root" || ! -d "$skills_root" ]]; then
+      echo "ROLLBACK_FAILED: skills root changed during rollback: $skills_root" >&2
+      return 1
+    fi
+    if [[ -e "$target/skills/$(basename "$staged_path")" || -L "$target/skills/$(basename "$staged_path")" ]]; then
+      echo "ROLLBACK_FAILED: destination appeared during migration: $target/skills/$(basename "$staged_path")" >&2
+      return 1
+    fi
+    mv "$staged_path" "$target/skills/"
+  done
+  rmdir "$staging"
+}
+
+valid_migration_staging_path() {
+  ruby -e '
+    target = File.expand_path(ARGV.fetch(0))
+    staging = File.expand_path(ARGV.fetch(1))
+    exit 1 unless File.dirname(staging) == target
+    exit 1 unless File.basename(staging).match?(/\A\.agent-workflows-flat-migration-.+\z/)
+
+    current = File::SEPARATOR
+    target.split(File::SEPARATOR).reject(&:empty?).each_with_index do |component, index|
+      current = File.join(current, component)
+      next unless File.symlink?(current)
+
+      platform_alias = index.zero? && {
+        "/tmp" => "/private/tmp",
+        "/var" => "/private/var"
+      }[current] == File.expand_path(File.readlink(current), File.dirname(current))
+      exit 1 unless platform_alias
+    end
+
+    stat = File.lstat(staging)
+    exit 1 unless stat.directory? && !stat.symlink?
+    exit 1 unless File.realpath(File.dirname(staging)) == File.realpath(target)
+  ' "$1" "$2"
 }
 
 ensure_real_directory() {
@@ -306,6 +393,10 @@ while [[ $# -gt 0 ]]; do
       mode="${2:?--mode requires copy or symlink}"
       shift 2
       ;;
+    --delivery-mode)
+      delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -334,17 +425,126 @@ case "$mode" in
     ;;
 esac
 
+case "$delivery_mode" in
+  ""|flat|plugin-companion) ;;
+  *)
+    echo "--delivery-mode must be flat or plugin-companion, got: $delivery_mode" >&2
+    exit 64
+    ;;
+esac
+
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
+if [[ -z "$delivery_mode" ]]; then
+  delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
+fi
+
+pending_migration_receipt="$target/.agent-workflows-migration-staging"
+if [[ ! -f "$pending_migration_receipt" ]]; then
+  set +e
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_status=$?
+  set -e
+  if [[ "$delivery_status" -ne 0 ]]; then
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
+      warn payload.fetch("guidance")
+    ' <<< "$delivery_state"
+    exit 1
+  fi
+fi
+
+mkdir -p "$target"
+install_lock="$target/.agent-workflows-install.lock"
+if ! mkdir "$install_lock" 2>/dev/null; then
+  echo "DELIVERY_MODE_CONFLICT: another agent-workflows install or migration holds $install_lock" >&2
+  exit 1
+fi
+release_install_lock() {
+  local status=$?
+  trap - EXIT
+  rmdir "$install_lock" 2>/dev/null || true
+  exit "$status"
+}
+trap release_install_lock EXIT
+migration_staging=""
+migration_receipt="$target/.agent-workflows-migration-staging"
+if [[ -f "$migration_receipt" ]]; then
+  IFS= read -r recovered_staging < "$migration_receipt" || recovered_staging=""
+  recovered_staging="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$recovered_staging")"
+  if ! valid_migration_staging_path "$target" "$recovered_staging"; then
+    echo "RECOVERY_FAILED: unsafe migration staging receipt; preserved $migration_receipt" >&2
+    rmdir "$install_lock" 2>/dev/null || true
+    exit 1
+  fi
+  prior_delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
+  if [[ "$prior_delivery_mode" = "plugin-companion" ]]; then
+    if ! rm -rf "$recovered_staging"; then
+      echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $recovered_staging" >&2
+      rmdir "$install_lock" 2>/dev/null || true
+      exit 1
+    fi
+  elif [[ ! -d "$recovered_staging" ]]; then
+    echo "RECOVERY_FAILED: flat migration staging is missing; preserved $migration_receipt" >&2
+    rmdir "$install_lock" 2>/dev/null || true
+    exit 1
+  elif ! rollback_migration_staging "$recovered_staging"; then
+    echo "RECOVERY_FAILED: preserved $migration_receipt for $recovered_staging" >&2
+    rmdir "$install_lock" 2>/dev/null || true
+    exit 1
+  fi
+  rm -f "$migration_receipt"
+fi
+metadata_committed=false
+release_install_transaction() {
+  local status=$?
+  trap - EXIT
+  if [[ -z "$migration_staging" && -f "$migration_receipt" ]]; then
+    IFS= read -r migration_staging < "$migration_receipt" || true
+  fi
+  if [[ "$metadata_committed" != "true" && -n "$migration_staging" ]]; then
+    if rollback_migration_staging "$migration_staging"; then
+      rm -f "$migration_receipt"
+    else
+      echo "RECOVERY_FAILED: rollback incomplete; preserved $migration_receipt for $migration_staging" >&2
+      status=1
+    fi
+  fi
+  if [[ "$metadata_committed" != "true" && -f "$target/$metadata_name.tmp" ]]; then
+    rm -f "$target/$metadata_name.tmp"
+  fi
+  rmdir "$install_lock" 2>/dev/null || true
+  exit "$status"
+}
+trap release_install_transaction EXIT
+
+# The pre-lock check avoids mutating an obviously unsafe target. This second
+# check is authoritative and holds the advisory install lock through commit.
+set +e
+delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+delivery_status=$?
+set -e
+if [[ "$delivery_status" -ne 0 ]]; then
+  ruby -rjson -e '
+    payload = JSON.parse(STDIN.read)
+    warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
+    warn payload.fetch("guidance")
+  ' <<< "$delivery_state"
+  exit 1
+fi
+prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
   copy_pack_license
-  ensure_real_directory "$target/skills"
+  if [[ "$delivery_mode" = "flat" ]]; then
+    ensure_real_directory "$target/skills"
+    copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
+  fi
   ensure_real_directory "$target/workflows"
   ensure_real_directory "$target/docs"
   ensure_real_directory "$target/bin"
-  copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
   copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
   copy_pack_docs "$target/docs"
   for helper in "${bin_helpers[@]}"; do
@@ -360,20 +560,23 @@ if [[ "$mode" = "copy" ]]; then
   done
 else
   link_pack_license
-  mkdir -p "$target/skills" "$target/bin"
+  mkdir -p "$target/bin"
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
     echo "Refusing to replace non-symlink path: $target/workflows" >&2
     exit 1
   fi
-  for skill in "$repo_root"/skills/*; do
-    [[ -d "$skill" ]] || continue
-    destination="$target/skills/$(basename "$skill")"
-    if [[ -e "$destination" && ! -L "$destination" ]]; then
-      echo "Refusing to replace non-symlink path: $destination" >&2
-      exit 1
-    fi
-    ln -sfn "$skill" "$destination"
-  done
+  if [[ "$delivery_mode" = "flat" ]]; then
+    mkdir -p "$target/skills"
+    for skill in "$repo_root"/skills/*; do
+      [[ -d "$skill" ]] || continue
+      destination="$target/skills/$(basename "$skill")"
+      if [[ -e "$destination" && ! -L "$destination" ]]; then
+        echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+      ln -sfn "$skill" "$destination"
+    done
+  fi
   rm -f "$target/workflows"
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
@@ -387,7 +590,44 @@ else
   done
 fi
 
-write_metadata
+if [[ "$delivery_mode" = "plugin-companion" ]]; then
+  set +e
+  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
+  delivery_status=$?
+  set -e
+  if [[ "$delivery_status" -ne 0 ]]; then
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
+      warn payload.fetch("guidance")
+    ' <<< "$delivery_state"
+    exit 1
+  fi
+  migration_staging="$(ruby -rjson -e 'payload = JSON.parse(STDIN.read); puts payload.dig("flat", "staging")' <<< "$delivery_state")"
+
+  set +e
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_status=$?
+  set -e
+  if [[ "$delivery_status" -ne 0 ]]; then
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      warn "DELIVERY_MODE_CONFLICT: final delivery verification failed: #{payload.fetch("reason")}"
+      warn payload.fetch("guidance")
+    ' <<< "$delivery_state"
+    exit 1
+  fi
+fi
+
+commit_metadata
+metadata_committed=true
+if [[ -n "$migration_staging" ]]; then
+  if rm -rf "$migration_staging"; then
+    rm -f "$migration_receipt"
+  else
+    echo "CLEANUP_PENDING: committed plugin-companion mode; preserved $migration_receipt for $migration_staging" >&2
+  fi
+fi
 
 cat <<MSG
 Installed ShakaCode agent workflows into:

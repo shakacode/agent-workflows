@@ -4,6 +4,7 @@
 require "json"
 require "optparse"
 require "open3"
+require "rbconfig"
 
 module AgentWorkflowsStatus
   METADATA_NAME = ".agent-workflows-install.json"
@@ -45,7 +46,25 @@ module AgentWorkflowsStatus
   end
 
   def resolve_host_and_target(host, target)
-    return [host, File.expand_path(target)] if target
+    if target
+      expanded = File.expand_path(target)
+      if host == "auto"
+        codex_home = File.expand_path(default_target_for_host("codex"))
+        claude_home = File.expand_path(default_target_for_host("claude"))
+        codex_marker = expanded == codex_home || File.file?(File.join(expanded, "config.toml"))
+        claude_marker = expanded == claude_home || File.file?(File.join(expanded, "settings.json")) ||
+                        File.file?(File.join(expanded, "plugins/installed_plugins.json"))
+        raise ArgumentError, "explicit target has both Codex and Claude markers; pass --host" if codex_marker && claude_marker
+
+        resolved_host = if claude_marker
+                          "claude"
+                        else
+                          "codex"
+                        end
+        return [resolved_host, expanded]
+      end
+      return [host, expanded]
+    end
     return resolve_auto_target if host == "auto"
 
     [host, default_target_for_host(host)]
@@ -116,7 +135,25 @@ module AgentWorkflowsStatus
     value.to_s.start_with?("version:") ? value : value.to_s[0, 12]
   end
 
-  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil)
+  def delivery_state(host:, target:, source:, delivery_mode:)
+    helper = File.expand_path("agent-workflows-delivery-state", __dir__)
+    output, error, status = Open3.capture3(
+      RbConfig.ruby,
+      helper,
+      "check",
+      "--host", host,
+      "--target", target,
+      "--source", source,
+      "--delivery-mode", delivery_mode,
+      "--json"
+    )
+    payload = JSON.parse(output)
+    [payload, status.success? ? nil : payload["reason"]]
+  rescue SystemCallError, JSON::ParserError, TypeError => e
+    [nil, "delivery-state check failed: #{error}#{e.message}"]
+  end
+
+  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
     {
       "status" => status,
       "host" => host,
@@ -127,28 +164,38 @@ module AgentWorkflowsStatus
       "available_version" => source && File.directory?(source) ? version_for(source) : nil,
       "available_revision" => available_revision,
       "checked_remote" => checked_remote,
-      "reason" => reason
+      "reason" => reason,
+      "guidance" => delivery_state&.fetch("guidance", nil),
+      "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
+      "native" => delivery_state&.fetch("native", nil),
+      "flat" => delivery_state&.fetch("flat", nil)
     }
   end
 
   def text_for(payload)
     case payload.fetch("status")
     when "UP_TO_DATE"
-      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} target=#{payload['target']}\n"
+      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
     when "UPGRADE_AVAILABLE"
       installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
       available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
-      "UPGRADE_AVAILABLE #{installed} #{available} target=#{payload['target']}\n"
+      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
     when "NOT_INSTALLED"
       "NOT_INSTALLED target=#{payload['target']}\n"
     when "CHECK_FAILED"
-      "CHECK_FAILED #{payload['reason']}\n"
+      guidance = payload["guidance"] ? " #{payload['guidance']}" : ""
+      "CHECK_FAILED #{payload['reason']}#{guidance}\n"
     else
       raise "unknown status: #{payload.fetch('status')}"
     end
   end
 
   def build_payload(options)
+    requested_delivery_mode = options[:delivery_mode]
+    if requested_delivery_mode && !%w[flat plugin-companion].include?(requested_delivery_mode)
+      raise ArgumentError, "--delivery-mode must be flat or plugin-companion, got: #{requested_delivery_mode}"
+    end
+
     host, target = resolve_host_and_target(options.fetch(:host), options[:target])
     metadata = read_metadata(target)
     unless metadata
@@ -156,6 +203,19 @@ module AgentWorkflowsStatus
     end
 
     source = File.expand_path(options[:source] || metadata["source"].to_s)
+    delivery_mode = requested_delivery_mode || metadata.fetch("delivery_mode", "flat")
+    delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:)
+    if delivery_error
+      return status_payload(
+        "CHECK_FAILED",
+        target:,
+        source:,
+        host:,
+        metadata:,
+        reason: delivery_error,
+        delivery_state: delivery
+      )
+    end
     revision, error = available_revision(source, metadata, fetch: options.fetch(:fetch))
     if error
       return status_payload(
@@ -165,7 +225,8 @@ module AgentWorkflowsStatus
         host:,
         metadata:,
         checked_remote: options.fetch(:fetch),
-        reason: error
+        reason: error,
+        delivery_state: delivery
       )
     end
 
@@ -187,20 +248,27 @@ module AgentWorkflowsStatus
       host:,
       metadata:,
       available_revision: revision,
-      checked_remote: options.fetch(:fetch)
+      checked_remote: options.fetch(:fetch),
+      delivery_state: delivery
     )
-  rescue ArgumentError, RuntimeError => e
+  rescue ArgumentError, RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
     status_payload("CHECK_FAILED", target: options[:target], source: options[:source], host: options[:host], reason: e.message)
   end
 end
 
 if $PROGRAM_NAME == __FILE__
-  options = { host: "codex", target: nil, source: nil, fetch: false, json: false }
+  options = { host: "codex", target: nil, source: nil, delivery_mode: nil, fetch: false, json: false }
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--fetch] [--json]"
-    opts.on("--host HOST", "Agent host: codex, claude, or auto") { |value| options[:host] = value }
+    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--delivery-mode flat|plugin-companion] [--fetch] [--json]"
+    opts.on(
+      "--host HOST",
+      "Agent host: codex, claude, or auto (unmarked explicit targets default to codex)"
+    ) { |value| options[:host] = value }
     opts.on("--target DIR", "Installed agent home to inspect") { |value| options[:target] = value }
     opts.on("--source DIR", "Source shakacode/agent-workflows clone") { |value| options[:source] = value }
+    opts.on("--delivery-mode MODE", "Evaluate compatibility for flat or plugin-companion") do |value|
+      options[:delivery_mode] = value
+    end
     opts.on("--fetch", "Fetch origin before checking the source revision") { options[:fetch] = true }
     opts.on("--json", "Print JSON output") { options[:json] = true }
     opts.on("-h", "--help", "Show help") do
@@ -212,6 +280,10 @@ if $PROGRAM_NAME == __FILE__
 
   unless %w[codex claude auto].include?(options.fetch(:host))
     warn "--host must be codex, claude, or auto, got: #{options.fetch(:host)}"
+    exit AgentWorkflowsStatus::STATUS_EXIT.fetch("CHECK_FAILED")
+  end
+  if options[:delivery_mode] && !%w[flat plugin-companion].include?(options[:delivery_mode])
+    warn "--delivery-mode must be flat or plugin-companion, got: #{options[:delivery_mode]}"
     exit AgentWorkflowsStatus::STATUS_EXIT.fetch("CHECK_FAILED")
   end
 

@@ -1,0 +1,522 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require "find"
+require "open3"
+require "optparse"
+require "tmpdir"
+
+module AgentWorkflowsDeliveryState
+  module_function
+
+  def plugin_manifest_valid?(root, host)
+    directory = host == "codex" ? ".codex-plugin" : ".claude-plugin"
+    path = File.join(root, directory, "plugin.json")
+    return false unless File.file?(path)
+
+    manifest = JSON.parse(File.binread(path))
+    skills = manifest.fetch("skills")
+    return false unless skills.is_a?(String) && !skills.empty?
+
+    skills_root = File.realpath(File.expand_path(skills, root))
+    plugin_root = File.realpath(root)
+    manifest.fetch("name") == "scw" &&
+      (skills_root == plugin_root || skills_root.start_with?("#{plugin_root}/")) &&
+      Dir.glob(File.join(skills_root, "*", "SKILL.md")).any?
+  rescue SystemCallError, JSON::ParserError, KeyError, TypeError
+    false
+  end
+
+  def codex_native_state(target)
+    config_path = File.join(target, "config.toml")
+    config = File.file?(config_path) ? File.binread(config_path) : ""
+    legacy_plugin_id = "agent-workflows@agent-workflows"
+    legacy_cache_pattern = File.join(target, "plugins/cache/agent-workflows/agent-workflows/*")
+    if config.include?(legacy_plugin_id) || Dir.glob(legacy_cache_pattern).any?
+      return {
+        "state" => "unknown",
+        "legacy" => true,
+        "reason" => "legacy Codex plugin #{legacy_plugin_id} is configured or cached"
+      }
+    end
+
+    cache_pattern = File.join(target, "plugins/cache/agent-workflows/scw/*")
+    relevant = config.include?("scw@agent-workflows") || Dir.glob(cache_pattern).any?
+    return { "state" => "inactive", "reason" => "scw@agent-workflows is not configured" } unless relevant
+
+    cli_state = codex_plugin_cli_state(target)
+    return cli_state if cli_state["state"] == "unknown"
+    return { "state" => "inactive", "reason" => "scw@agent-workflows is disabled" } if cli_state["state"] == "disabled"
+
+    roots = Dir.glob(cache_pattern).select do |root|
+      plugin_manifest_valid?(root, "codex")
+    end
+    return { "state" => "unknown", "reason" => "enabled Codex scw plugin has no valid installed cache" } if roots.empty?
+
+    { "state" => "active", "roots" => roots.sort }
+  rescue SystemCallError => e
+    { "state" => "unknown", "reason" => "unable to read Codex plugin state: #{e.message}" }
+  end
+
+  def codex_plugin_cli_state(target)
+    executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
+    timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", "5"))
+    return { "state" => "unknown", "reason" => "invalid Codex plugin state timeout" } unless timeout_seconds.positive?
+
+    output = error = status = nil
+    Open3.popen3(
+      { "CODEX_HOME" => target }, executable, "plugin", "list", "--marketplace", "agent-workflows",
+      pgroup: true
+    ) do |stdin, stdout, stderr, wait_thread|
+      stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
+      unless wait_thread.join(timeout_seconds)
+        Process.kill("TERM", -wait_thread.pid)
+        wait_thread.join(0.5) || Process.kill("KILL", -wait_thread.pid)
+        wait_thread.join
+        stdout_reader.join
+        stderr_reader.join
+        return { "state" => "unknown", "reason" => "Codex plugin state command timed out" }
+      end
+      output = stdout_reader.value
+      error = stderr_reader.value
+      status = wait_thread.value
+    end
+    unless status.success?
+      reason = error.to_s.strip
+      reason = "exit #{status.exitstatus}" if reason.empty?
+      return { "state" => "unknown", "reason" => "Codex plugin state command failed: #{reason}" }
+    end
+
+    rows = output.lines.filter_map do |line|
+      columns = line.strip.split(/\s{2,}/)
+      columns if columns.first == "scw@agent-workflows"
+    end
+    return { "state" => "unknown", "reason" => "Codex scw plugin is absent from marketplace agent-workflows" } if rows.empty?
+    return { "state" => "unknown", "reason" => "Codex scw plugin state is ambiguous" } unless rows.length == 1
+
+    status_text = rows.first[1]
+    case status_text
+    when "installed, enabled"
+      { "state" => "enabled" }
+    when "installed, disabled"
+      { "state" => "disabled" }
+    else
+      { "state" => "unknown", "reason" => "unrecognized Codex scw plugin status: #{status_text || 'missing'}" }
+    end
+  rescue ArgumentError, SystemCallError => e
+    { "state" => "unknown", "reason" => "Codex plugin state command unavailable: #{e.message}" }
+  end
+
+  def claude_native_state(target)
+    settings_path = File.join(target, "settings.json")
+    settings = File.file?(settings_path) ? JSON.parse(File.binread(settings_path)) : {}
+    return { "state" => "unknown", "reason" => "invalid Claude plugin settings shape" } unless settings.is_a?(Hash)
+
+    enabled_plugins = settings["enabledPlugins"]
+    unless enabled_plugins.nil? || enabled_plugins.is_a?(Hash)
+      return { "state" => "unknown", "reason" => "invalid Claude enabledPlugins shape" }
+    end
+
+    explicit = enabled_plugins&.key?("scw@agent-workflows")
+    enabled = enabled_plugins&.fetch("scw@agent-workflows", nil)
+    return { "state" => "unknown", "reason" => "invalid Claude enabledPlugins value" } if explicit && ![true, false].include?(enabled)
+    return { "state" => "inactive", "reason" => "scw@agent-workflows is explicitly disabled" } if explicit && !enabled
+
+    receipt_path = File.join(target, "plugins/installed_plugins.json")
+    unless File.file?(receipt_path)
+      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no install receipt" } if explicit
+
+      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" }
+    end
+
+    receipt_state = JSON.parse(File.binread(receipt_path))
+    unless receipt_state.is_a?(Hash) && receipt_state["plugins"].is_a?(Hash)
+      return { "state" => "unknown", "reason" => "invalid Claude plugin receipt shape" }
+    end
+
+    receipts = receipt_state.dig("plugins", "scw@agent-workflows")
+    roots = Array(receipts).filter_map { |receipt| receipt["installPath"] if receipt.is_a?(Hash) }.select do |root|
+      plugin_manifest_valid?(root, "claude")
+    end
+    if roots.empty?
+      missing = receipts.nil? || Array(receipts).empty?
+      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" } if !explicit && missing
+
+      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no valid installed cache" }
+    end
+
+    { "state" => "active", "roots" => roots.sort }
+  rescue SystemCallError, JSON::ParserError, TypeError => e
+    { "state" => "unknown", "reason" => "invalid Claude plugin state: #{e.message}" }
+  end
+
+  def native_state(host, target)
+    host == "codex" ? codex_native_state(target) : claude_native_state(target)
+  end
+
+  def symlinked_target_component(target)
+    current = File::SEPARATOR
+    File.expand_path(target).split(File::SEPARATOR).reject(&:empty?).each_with_index do |component, index|
+      current = File.join(current, component)
+      # Some platforms expose root-level compatibility aliases such as
+      # /var -> /private/var. Reject user-controlled traversal below that
+      # platform boundary while retaining ordinary temporary-home support.
+      next unless File.symlink?(current)
+
+      platform_alias = index.zero? && {
+        "/tmp" => "/private/tmp",
+        "/var" => "/private/var"
+      }[current] == File.expand_path(File.readlink(current), File.dirname(current))
+      return current unless platform_alias
+    end
+    nil
+  end
+
+  def read_metadata(target)
+    path = File.join(target, ".agent-workflows-install.json")
+    return nil unless File.file?(path)
+
+    metadata = JSON.parse(File.binread(path))
+    raise JSON::ParserError, "metadata root must be an object" unless metadata.is_a?(Hash)
+
+    %w[source source_revision delivery_mode].each do |key|
+      value = metadata[key]
+      raise JSON::ParserError, "metadata #{key} must be a string" if !value.nil? && !value.is_a?(String)
+    end
+    delivery_mode = metadata["delivery_mode"]
+    if delivery_mode && !%w[flat plugin-companion].include?(delivery_mode)
+      raise JSON::ParserError, "metadata delivery_mode must be flat or plugin-companion"
+    end
+
+    metadata
+  end
+
+  def git_snapshot_root(source_roots, revision)
+    return nil unless revision.to_s.match?(/\A[0-9a-f]{40}\z/i)
+
+    source_roots.compact.uniq.find do |root|
+      File.directory?(root) && system("git", "-C", root, "cat-file", "-e", "#{revision}:skills", out: File::NULL, err: File::NULL)
+    end
+  end
+
+  def skill_names(source, metadata)
+    revision = metadata&.fetch("source_revision", nil)
+    roots = [metadata&.fetch("source", nil), source]
+    if (git_root = git_snapshot_root(roots, revision))
+      output, status = Open3.capture2e("git", "-C", git_root, "ls-tree", "--name-only", "#{revision}:skills")
+      return [output.lines.map(&:strip).reject(&:empty?).sort, { type: :git, root: git_root, revision: revision }] if status.success?
+    end
+
+    source_root = roots.compact.find { |root| File.directory?(File.join(root, "skills")) }
+    names = source_root ? Dir.children(File.join(source_root, "skills")).select { |name| File.directory?(File.join(source_root, "skills", name)) }.sort : []
+    [names, source_root ? { type: :directory, root: source_root } : nil]
+  end
+
+  def filesystem_entries(root)
+    return nil unless File.directory?(root) && !File.symlink?(root)
+
+    entries = {}
+    Find.find(root) do |path|
+      next if path == root || File.directory?(path) && !File.symlink?(path)
+
+      entries[path.delete_prefix("#{root}/")] = path
+    end
+    entries
+  end
+
+  def matches_directory_snapshot?(installed, snapshot, skill_name)
+    actual = filesystem_entries(installed)
+    return false unless actual
+
+    expected_root = File.join(snapshot.fetch(:root), "skills", skill_name)
+    if snapshot.fetch(:type) == :directory
+      expected = filesystem_entries(expected_root)
+      return false unless expected && actual.keys.sort == expected.keys.sort
+
+      return actual.all? do |relative, path|
+        other = expected.fetch(relative)
+        if File.symlink?(path) || File.symlink?(other)
+          File.symlink?(path) && File.symlink?(other) && File.readlink(path) == File.readlink(other)
+        else
+          File.file?(path) && File.file?(other) && File.binread(path) == File.binread(other) &&
+          (File.stat(path).mode & 0o111).positive? == (File.stat(other).mode & 0o111).positive?
+        end
+      end
+    end
+
+    revision = snapshot.fetch(:revision)
+    output, status = Open3.capture2e("git", "-C", snapshot.fetch(:root), "ls-tree", "-r", revision, "--", "skills/#{skill_name}")
+    return false unless status.success?
+
+    expected = output.lines.to_h do |line|
+      metadata, path = line.chomp.split("\t", 2)
+      mode, type, = metadata.split
+      [path.delete_prefix("skills/#{skill_name}/"), [mode, type, path]]
+    end
+    return false unless actual.keys.sort == expected.keys.sort
+
+    actual.all? do |relative, path|
+      mode, type, git_path = expected.fetch(relative)
+      blob, blob_status = Open3.capture2("git", "-C", snapshot.fetch(:root), "show", "#{revision}:#{git_path}")
+      next false unless blob_status.success?
+
+      if mode == "120000"
+        File.symlink?(path) && File.readlink(path) == blob
+      else
+        type == "blob" && File.file?(path) && !File.symlink?(path) && File.binread(path) == blob.b &&
+          (File.stat(path).mode & 0o111).positive? == (mode == "100755")
+      end
+    end
+  end
+
+  def managed_flat_inventory(target:, source:, delivery_mode:)
+    if delivery_mode == "plugin-companion" && (component = symlinked_target_component(target))
+      return {
+        "state" => "ambiguous",
+        "removable" => [],
+        "blocking" => [component],
+        "reason" => "target path traverses a symlink"
+      }
+    end
+
+    metadata = read_metadata(target)
+    prior_delivery_mode = metadata&.fetch("delivery_mode", nil) || "flat"
+    revision = metadata&.fetch("source_revision", nil).to_s
+    skills_path = File.join(target, "skills")
+    flat_tree_present = if File.symlink?(skills_path) || File.exist?(skills_path) && !File.directory?(skills_path)
+                          true
+                        else
+                          File.directory?(skills_path) && !Dir.empty?(skills_path)
+                        end
+    if delivery_mode == "plugin-companion" && File.symlink?(skills_path)
+      return {
+        "state" => "ambiguous",
+        "removable" => [],
+        "blocking" => [skills_path],
+        "reason" => "skills parent is a symlink"
+      }
+    end
+    if delivery_mode == "plugin-companion" && metadata && prior_delivery_mode == "flat" && flat_tree_present &&
+       (revision.empty? || revision == "unknown" || !git_snapshot_root([metadata["source"], source], revision))
+      return {
+        "state" => "unknown",
+        "removable" => [],
+        "blocking" => [skills_path],
+        "reason" => "recorded source revision is unavailable: #{revision}"
+      }
+    end
+
+    names, snapshot = skill_names(source, metadata)
+    if delivery_mode == "flat"
+      present = names.filter_map do |name|
+        path = File.join(target, "skills", name)
+        path if File.exist?(path) || File.symlink?(path)
+      end
+      if present.any? && (!metadata || prior_delivery_mode != "flat")
+        return { "state" => "ambiguous", "paths" => present.sort, "removable" => [], "blocking" => present.sort }
+      end
+
+      return { "state" => present.empty? ? "absent" : "present", "paths" => present.sort, "removable" => [], "blocking" => [] }
+    end
+
+    removable = []
+    recorded_names = names.to_h { |name| [name, true] }
+    blocking = if File.directory?(skills_path) && !File.symlink?(skills_path)
+                 Dir.children(skills_path).filter_map do |name|
+                   File.join(skills_path, name) unless recorded_names.key?(name)
+                 end
+               else
+                 []
+               end
+    names.each do |name|
+      path = File.join(target, "skills", name)
+      next unless File.exist?(path) || File.symlink?(path)
+
+      unless delivery_mode == "plugin-companion" && metadata && prior_delivery_mode == "flat" && snapshot
+        blocking << path
+        next
+      end
+
+      if File.symlink?(path)
+        resolved = File.expand_path(File.readlink(path), File.dirname(path))
+        allowed = [metadata["source"], source].compact.map { |root| File.expand_path(File.join(root, "skills", name)) }
+        (allowed.include?(resolved) ? removable : blocking) << path
+      elsif matches_directory_snapshot?(path, snapshot, name)
+        removable << path
+      else
+        blocking << path
+      end
+    end
+
+    { "state" => if blocking.empty?
+                   removable.empty? ? "absent" : "managed"
+                 else
+                   "ambiguous"
+                 end, "removable" => removable.sort, "blocking" => blocking.sort }
+  rescue JSON::ParserError => e
+    {
+      "state" => "unknown",
+      "removable" => [],
+      "blocking" => [File.join(target, ".agent-workflows-install.json")],
+      "reason" => "invalid install metadata: #{e.message}"
+    }
+  end
+
+  def check(host:, target:, source:, delivery_mode:)
+    native = native_state(host, target)
+    flat = managed_flat_inventory(target: target, source: source, delivery_mode: delivery_mode)
+    native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive")
+    compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty?
+    reason =
+      if compatible
+        nil
+      elsif flat["state"] == "unknown"
+        flat["reason"]
+      elsif flat["blocking"].any?
+        "refusing to remove modified, ambiguous, or unowned skill paths: #{flat['blocking'].join(', ')}"
+      elsif native["state"] == "unknown"
+        native["reason"]
+      elsif delivery_mode == "flat"
+        "native scw and installer-managed flat skills cannot be active in one host/profile"
+      else
+        "plugin-companion mode requires an enabled native scw plugin"
+      end
+    guidance =
+      if flat["blocking"].any?
+        "The listed paths were preserved. Restore them to their recorded pack revision or move/remove them manually, then rerun."
+      elsif native["legacy"]
+        "Remove agent-workflows@agent-workflows, install and enable scw@agent-workflows, then rerun."
+      elsif native["state"] == "unknown"
+        "Inspect the Codex or Claude native plugin state and repair its configuration or install receipt before rerunning."
+      elsif delivery_mode == "flat"
+        "Disable or remove scw@agent-workflows, or rerun with --delivery-mode plugin-companion."
+      else
+        "Install and enable scw@agent-workflows, then rerun with --delivery-mode plugin-companion."
+      end
+    {
+      "compatible" => compatible,
+      "delivery_mode" => delivery_mode,
+      "native" => native,
+      "flat" => flat,
+      "reason" => reason,
+      "guidance" => compatible ? nil : guidance
+    }
+  end
+
+  def migrate(**options)
+    payload = check(**options.slice(:host, :target, :source, :delivery_mode))
+    return payload unless payload.fetch("compatible")
+
+    removed = payload.dig("flat", "removable")
+    return payload.merge("flat" => payload.fetch("flat").merge("removed" => [])) if removed.empty?
+
+    staging = Dir.mktmpdir(".agent-workflows-flat-migration-", options.fetch(:target))
+    staging_receipt = options[:staging_receipt]
+    File.write(staging_receipt, "#{staging}\n") if staging_receipt
+    staged = []
+    begin
+      removed.each do |path|
+        destination = File.join(staging, File.basename(path))
+        File.rename(path, destination)
+        staged << [path, destination]
+      end
+    rescue SystemCallError => e
+      rollback_failed = false
+      staged.reverse_each do |original, destination|
+        File.rename(destination, original) if File.exist?(destination) || File.symlink?(destination)
+      rescue SystemCallError
+        rollback_failed = true
+      end
+      FileUtils.rm_rf(staging) unless rollback_failed
+      FileUtils.rm_f(staging_receipt) if staging_receipt && !rollback_failed
+      return migration_failure(payload, removed, e, staging: staging)
+    end
+
+    skills_path = File.join(options.fetch(:target), "skills")
+    residual = if File.directory?(skills_path) && !File.symlink?(skills_path)
+                 Dir.children(skills_path).map { |name| File.join(skills_path, name) }.sort
+               else
+                 [skills_path]
+               end
+    if residual.any?
+      rollback_failed = false
+      staged.reverse_each do |original, destination|
+        File.rename(destination, original) if File.exist?(destination) || File.symlink?(destination)
+      rescue SystemCallError
+        rollback_failed = true
+      end
+      FileUtils.rm_rf(staging) unless rollback_failed
+      FileUtils.rm_f(staging_receipt) if staging_receipt && !rollback_failed
+      payload["compatible"] = false
+      payload["flat"]["state"] = "ambiguous"
+      payload["flat"]["removed"] = []
+      payload["flat"]["blocking"] = residual
+      payload["reason"] = "new or residual flat skill paths appeared during migration: #{residual.join(', ')}"
+      payload["guidance"] = "The listed paths and installer-managed skills were preserved. Resolve the concurrent change, then rerun."
+      return payload
+    end
+
+    if options.fetch(:retain_staging, false)
+      payload["flat"]["removed"] = removed
+      payload["flat"]["staging"] = staging
+      return payload
+    end
+
+    begin
+      FileUtils.remove_entry(staging)
+      FileUtils.rm_f(staging_receipt) if staging_receipt
+    rescue SystemCallError => e
+      payload["flat"]["removed"] = removed
+      payload["flat"]["cleanup_pending"] = true
+      payload["flat"]["staging"] = staging
+      payload["flat"]["cleanup_error"] = e.message
+      return payload
+    end
+
+    payload["flat"]["removed"] = removed
+    payload
+  end
+
+  def migration_failure(payload, paths, error, staging: nil)
+    blocking = paths.select { |path| File.exist?(path) || File.symlink?(path) }
+    blocking << staging if staging && (File.exist?(staging) || File.symlink?(staging))
+    payload["compatible"] = false
+    payload["flat"]["state"] = "ambiguous"
+    payload["flat"]["removed"] = []
+    payload["flat"]["blocking"] = blocking.sort
+    payload["reason"] = "failed to remove installer-managed flat skills: #{error.message}"
+    payload["guidance"] = "The delivery mode was not changed. Correct the filesystem permissions and rerun."
+    payload
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  action = ARGV.shift
+  options = { json: false, retain_staging: false }
+  parser = OptionParser.new do |opts|
+    opts.on("--host HOST") { |value| options[:host] = value }
+    opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
+    opts.on("--source DIR") { |value| options[:source] = File.expand_path(value) }
+    opts.on("--delivery-mode MODE") { |value| options[:delivery_mode] = value }
+    opts.on("--retain-staging") { options[:retain_staging] = true }
+    opts.on("--staging-receipt PATH") { |value| options[:staging_receipt] = File.expand_path(value) }
+    opts.on("--json") { options[:json] = true }
+  end
+  parser.parse!
+
+  abort "action must be check or migrate" unless %w[check migrate].include?(action)
+  abort "--host, --target, --source, and --delivery-mode are required" unless %i[host target source delivery_mode].all? { |key| options[key] }
+  abort "--host must be codex or claude" unless %w[codex claude].include?(options[:host])
+  abort "--delivery-mode must be flat or plugin-companion" unless %w[flat plugin-companion].include?(options[:delivery_mode])
+
+  call_options = options.slice(:host, :target, :source, :delivery_mode)
+  call_options[:retain_staging] = options[:retain_staging] if action == "migrate"
+  call_options[:staging_receipt] = options[:staging_receipt] if action == "migrate" && options[:staging_receipt]
+  payload = AgentWorkflowsDeliveryState.public_send(action, **call_options)
+  puts(options[:json] ? JSON.pretty_generate(payload) : payload.fetch("reason", "delivery state compatible"))
+  exit(payload.fetch("compatible") ? 0 : 3)
+end

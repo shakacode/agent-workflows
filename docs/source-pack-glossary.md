@@ -32,6 +32,18 @@ A host-specific plugin manifest route, such as the Codex or Claude Code `scw`
 manifest, that exposes Source Pack skills through the host's plugin mechanism.
 _Avoid_: universal plugin path.
 
+**Skill Delivery Route**:
+The one auto-invocable path by which a host/profile loads Source Pack skills:
+either flat installer-managed skills or the native `scw` namespace.
+_Avoid_: treating helper binaries, workflows, docs, or metadata as a second
+skill delivery route.
+
+**Plugin Companion Mode**:
+The Host Installer Path mode that retains workflows, docs, helper binaries,
+metadata, status, and upgrades while the native `scw` plugin is the sole skill
+delivery route.
+_Avoid_: plugin install mode; native plugin installation remains host-owned.
+
 **Workflow Lessons Library**:
 A lightweight, curated `docs/solutions/` area for reusable Source Pack workflow
 failure modes and fixes.
@@ -58,9 +70,9 @@ _Avoid_: broad prose-only hardening.
   **Native Plugin Path**.
 - A **Consumer Repo** owns exactly one canonical **Agent Workflow Configuration
   Seam**.
-- The **Native Plugin Path** and **Host Installer Path** are separate delivery
-  routes; choose the route that supplies the helper binaries, metadata, and host
-  behavior the repo needs.
+- Each host/profile uses exactly one **Skill Delivery Route**. The **Native
+  Plugin Path** may be paired with **Plugin Companion Mode** because companion
+  assets do not expose a second skill tree.
 - The **Workflow Lessons Library** captures portable Source Pack lessons, not
   Consumer Repo domain policy.
 - The **Readiness Vocabulary** must preserve explicit `UNKNOWN` states and must

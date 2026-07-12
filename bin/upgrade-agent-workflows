@@ -3,13 +3,15 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--consumer-root DIR] [--dry-run] [--no-fetch]
+Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--consumer-root DIR] [--dry-run] [--no-fetch]
 
 Updates the source clone, reinstalls this shared workflow pack into an agent
 home, and optionally validates one or more consumer repository seams.
 
 Network note: by default this command runs git fetch/pull in the source clone.
 Use --no-fetch for an already-updated local clone.
+With --host auto and an explicit unmarked target, Codex is the deterministic
+backward-compatible default; pass --host claude for arbitrary Claude targets.
 USAGE
 }
 
@@ -18,6 +20,7 @@ host="codex"
 target=""
 source=""
 mode=""
+delivery_mode=""
 dry_run=false
 fetch=true
 consumer_roots=()
@@ -65,7 +68,27 @@ resolve_auto_target() {
 
 resolve_host_and_target() {
   if [[ -n "$target" ]]; then
-    printf '%s:%s\n' "$host" "$target"
+    target="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "$target")"
+    if [[ "$host" = "auto" ]]; then
+      local codex_home claude_home
+      codex_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CODEX_HOME:-$HOME/.codex}")"
+      claude_home="$(ruby -e 'puts File.expand_path(ARGV.fetch(0))' "${CLAUDE_HOME:-$HOME/.claude}")"
+      local codex_marker=false claude_marker=false
+      [[ "$target" = "$codex_home" || -f "$target/config.toml" ]] && codex_marker=true
+      [[ "$target" = "$claude_home" || -f "$target/settings.json" || -f "$target/plugins/installed_plugins.json" ]] && claude_marker=true
+      if [[ "$codex_marker" = true && "$claude_marker" = true ]]; then
+        echo "Explicit target has both Codex and Claude markers; pass --host codex or --host claude." >&2
+        return 64
+      elif [[ "$claude_marker" = true ]]; then
+        printf 'claude:%s\n' "$target"
+      elif [[ "$codex_marker" = true ]]; then
+        printf 'codex:%s\n' "$target"
+      else
+        printf 'codex:%s\n' "$target"
+      fi
+    else
+      printf '%s:%s\n' "$host" "$target"
+    fi
     return 0
   fi
 
@@ -148,6 +171,10 @@ while [[ $# -gt 0 ]]; do
       mode="${2:?--mode requires copy or symlink}"
       shift 2
       ;;
+    --delivery-mode)
+      delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
+      shift 2
+      ;;
     --consumer-root)
       consumer_roots+=("${2:?--consumer-root requires a directory}")
       shift 2
@@ -188,6 +215,14 @@ case "${mode:-copy}" in
     ;;
 esac
 
+case "${delivery_mode:-flat}" in
+  flat|plugin-companion) ;;
+  *)
+    echo "--delivery-mode must be flat or plugin-companion, got: $delivery_mode" >&2
+    exit 64
+    ;;
+esac
+
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
@@ -205,6 +240,9 @@ source="$(cd "$source" && pwd)"
 if [[ -z "$mode" ]]; then
   mode="$(metadata_value "$metadata_path" mode 2>/dev/null || printf 'copy\n')"
 fi
+if [[ -z "$delivery_mode" ]]; then
+  delivery_mode="$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')"
+fi
 
 status_script="$source/bin/agent-workflows-status"
 install_script="$source/bin/install-agent-workflows"
@@ -215,7 +253,7 @@ if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
 fi
 
 if [[ "$dry_run" = "true" ]]; then
-  status_args=(--host "$host" --target "$target" --source "$source")
+  status_args=(--host "$host" --target "$target" --source "$source" --delivery-mode "$delivery_mode")
   if [[ "$fetch" = "true" ]]; then
     status_args+=(--fetch)
   fi
@@ -239,7 +277,7 @@ backup_target
 completed=false
 trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
 
-"$install_script" --host "$host" --target "$target" --mode "$mode"
+"$install_script" --host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode"
 
 if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
   for consumer_root in "${consumer_roots[@]}"; do
