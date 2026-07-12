@@ -53,6 +53,24 @@ class ValidateSolutionsTest < Minitest::Test
     end
   end
 
+  def test_nested_solution_docs_fail_while_flat_solution_remains_valid
+    with_solution_root do |root|
+      write_solution(root, "coordination-unknown-state.md", valid_solution)
+      %w[review/deep/second.md coordination/first.md .archive/deep/hidden.md].each do |relative|
+        path = File.join(root, "docs/solutions", relative)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, valid_solution)
+      end
+
+      expected = [
+        "docs/solutions/.archive/deep/hidden.md: nested solution docs are not allowed",
+        "docs/solutions/coordination/first.md: nested solution docs are not allowed",
+        "docs/solutions/review/deep/second.md: nested solution docs are not allowed"
+      ]
+      assert_equal expected, ValidateSolutions.validate(root)
+    end
+  end
+
   def test_missing_solution_docs_fails
     with_solution_root do |root|
       write_solution(root, "README.md", "# Solutions\n")

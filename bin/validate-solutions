@@ -39,14 +39,25 @@ module ValidateSolutions
 
   def validate(root)
     paths = solution_paths(root)
-    return ["docs/solutions: no solution docs found"] if paths.empty?
+    failures = nested_solution_paths(root).map do |path|
+      relative = path.delete_prefix("#{root}/")
+      "#{relative}: nested solution docs are not allowed"
+    end
+    return failures + ["docs/solutions: no solution docs found"] if paths.empty?
 
-    paths.flat_map { |path| validate_file(path, root) }
+    failures + paths.flat_map { |path| validate_file(path, root) }
   end
 
   def solution_paths(root)
     Dir.glob(File.join(root, "docs/solutions/*.md")).reject do |path|
       File.basename(path).casecmp("README.md").zero?
+    end.sort
+  end
+
+  def nested_solution_paths(root)
+    solutions_dir = File.join(root, "docs/solutions")
+    Dir.glob(File.join(solutions_dir, "**/*.md"), File::FNM_DOTMATCH).reject do |path|
+      File.dirname(path) == solutions_dir
     end.sort
   end
 
