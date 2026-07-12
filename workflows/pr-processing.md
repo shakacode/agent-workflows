@@ -1862,6 +1862,7 @@ then blocks only those requested current-head hosted runs while leaving unrelate
 advisory checks advisory. When no usable required checks exist, the requested
 runs become the gate instead of the full advisory list. A stale requested run for
 an older head is `UNKNOWN`, not success.
+Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
 `statusCheckRollup` alone when `gh pr checks` can answer the readiness question more

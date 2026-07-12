@@ -525,6 +525,7 @@ recorded (the `Agent Merge Confidence` block is the accelerated-RC auto-merge
 block, not the normal-handoff note) for the maintainer to merge. Do not merge
 without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
+Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 For an authorized auto-merge target, invoke the canonical `address-review`
 closeout with trusted parent state `COORDINATED_AUTOFIX=1` so verified review

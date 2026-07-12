@@ -177,6 +177,7 @@ and requires `MODEL_ESCALATION_REQUEST` before stronger-model review or replacem
   readiness waits for the explicitly requested current-head hosted runs only; in
   repos with no usable required checks, those requested runs gate readiness
   instead of the full advisory check list.
+- Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
 - Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, and explicit `UNKNOWN` entries.

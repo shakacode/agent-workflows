@@ -13,6 +13,10 @@
 #   3. Ignore superseded/cancelled rows (bucket "cancel").
 #   4. Otherwise READY only when no failing (bucket "fail") and no pending
 #      (bucket "pending") rows remain. Passing and skipping rows are fine.
+#   5. Inventory current-head PENDING review drafts visible to the current
+#      authenticated viewer. READY requires a complete viewer-scoped inventory
+#      with no drafts; other reviewers' unsubmitted drafts are not observable
+#      or covered, and an unavailable inventory is UNKNOWN.
 #
 # `gh pr checks` exits non-zero when checks are failing or pending, so this
 # captures stdout and inspects the rows rather than trusting the exit status.
@@ -106,6 +110,10 @@ module PrCiReadiness
                      "requested_hosted_unknown: #{requested_unknown(requested)}"
                    ])
     end
+    reviews = result.fetch("viewer_pending_review_drafts", [])
+    lines << "viewer_pending_review_drafts: #{reviews.empty? ? '(none)' : reviews.map { |review| review['id'] }.join(', ')}" if result.key?("viewer_pending_review_drafts")
+    inventory = result["viewer_review_inventory"]
+    lines << "viewer_review_inventory: #{inventory['complete'] ? 'complete' : 'incomplete'} (scope: #{inventory['scope']})" if inventory
     lines.join("\n")
   end
 
@@ -135,6 +143,10 @@ module PrCiReadiness
     falls back to the full `gh pr checks <PR>` list. An empty list is
     UNKNOWN/not-ready. Cancelled/superseded rows are ignored.
     The PR is READY only when no failing or pending checks remain.
+    Current-head PENDING review drafts visible to the current authenticated
+    viewer also block readiness. The viewer-scoped inventory is paginated;
+    complete means pagination completed only in that scope. Other reviewers'
+    unsubmitted drafts are not observable or covered.
 
     Arguments:
       <pr-number>        PR number to inspect (integer).
@@ -158,6 +170,12 @@ module PrCiReadiness
         "required_used": true | false,
         "failing": [ "check name", ... ],
         "pending": [ "check name", ... ],
+        "viewer_pending_review_drafts": [ { "id": "PRR_...", "commit_oid": "..." }, ... ],
+        "viewer_review_inventory": {
+          "scope": "authenticated_viewer",
+          "complete": true | false,
+          "pages": 1
+        },
         "requested_hosted": {
           "run_ids": [ "1234567890", ... ],
           "pending": [ { "run_id": "1234567890", "name": "job", "url": "..." }, ... ],
@@ -269,7 +287,8 @@ module PrCiReadiness
         else
           PrCiReadiness.assess(pr_number:, required_used:, rows:)
         end
-      apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
+      result = apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
+      apply_viewer_review_inventory(result, repo, pr_number)
     end
 
     # `gh pr checks` exits non-zero when checks are failing/pending and also when
@@ -317,6 +336,75 @@ module PrCiReadiness
         "failing" => [],
         "pending" => []
       }
+    end
+
+    def apply_viewer_review_inventory(result, repo, pr_number)
+      inventory = viewer_pending_review_draft_inventory(repo, pr_number)
+      result["viewer_pending_review_drafts"] = inventory.fetch("viewer_pending_review_drafts")
+      result["viewer_review_inventory"] = inventory.reject { |key, _value| key == "viewer_pending_review_drafts" }
+      if inventory.fetch("viewer_pending_review_drafts").any?
+        result["verdict"] = "NOT_READY"
+      elsif !inventory.fetch("complete") && result["verdict"] == "READY"
+        result["verdict"] = "UNKNOWN"
+      end
+      result
+    end
+
+    REVIEW_DRAFTS_QUERY = <<~GRAPHQL
+      query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
+        repository(owner:$owner, name:$name) {
+          pullRequest(number:$pr) {
+            reviews(first:100, after:$endCursor) {
+              nodes { id state submittedAt commit { oid } }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    GRAPHQL
+
+    def viewer_pending_review_draft_inventory(repo, pr_number)
+      owner, name = repo.split("/", 2)
+      expected_head_sha = fetch_pr_head_oid(repo, pr_number)
+      viewer_pending_review_drafts = []
+      cursor = nil
+      pages = 0
+
+      loop do
+        reviews = fetch_reviews_page(owner, name, pr_number, cursor)
+        nodes = reviews.fetch("nodes")
+        page_info = reviews.fetch("pageInfo")
+        raise Error, "review inventory returned non-array nodes" unless nodes.is_a?(Array)
+        raise Error, "review inventory returned incomplete page info" unless page_info.is_a?(Hash)
+
+        pending_reviews = nodes.select do |review|
+          review["state"] == "PENDING" && review["submittedAt"].nil? &&
+            review.dig("commit", "oid") == expected_head_sha
+        end
+        viewer_pending_review_drafts.concat(pending_reviews.map do |review|
+          { "id" => review.fetch("id"), "commit_oid" => expected_head_sha }
+        end)
+        pages += 1
+        break unless page_info["hasNextPage"]
+
+        cursor = page_info["endCursor"]
+        raise Error, "review inventory pagination cursor was missing" if cursor.to_s.empty?
+      end
+
+      { "scope" => "authenticated_viewer", "complete" => true, "pages" => pages,
+        "viewer_pending_review_drafts" => viewer_pending_review_drafts }
+    rescue StandardError => e
+      { "scope" => "authenticated_viewer", "complete" => false, "pages" => pages || 0,
+        "viewer_pending_review_drafts" => viewer_pending_review_drafts || [], "error" => e.message }
+    end
+
+    def fetch_reviews_page(owner, name, pr_number, cursor)
+      cmd = ["gh", "api", "graphql", "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "pr=#{pr_number}"]
+      cmd += ["-f", "endCursor=#{cursor}"] unless cursor.nil?
+      cmd += ["-f", "query=#{REVIEW_DRAFTS_QUERY}"]
+      data = capture_json!(*cmd)
+      data.dig("data", "repository", "pullRequest", "reviews") ||
+        raise(Error, "review inventory response was incomplete")
     end
 
     def requested_hosted_summary(repo, pr_number, requested_hosted_runs)
