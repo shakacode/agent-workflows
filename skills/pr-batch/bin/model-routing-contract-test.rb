@@ -13,6 +13,20 @@ WORKER_ROUTE = "Worker model/effort routes: <initial model/class>/<effort> -> <l
                "escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 DISPATCH_RULE = "Bind actors on-host; unbound -> stop; no inheritance/substitution; " \
                 "exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh"
+DISPATCH_PREFLIGHT_RULE = "Dispatch preflight: JSON-in/JSON-out; select only bound+attested requested tuple or first explicitly authorized ordered fallback; otherwise one dispatch-decision-request v1."
+GOAL_DISPATCH_PREFLIGHT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
+GOAL_PERSISTED_STATE_LINE = "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only."
+DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
+PROSPECTIVE_INSTANCE_ID_RULE = "Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker."
+UNKNOWN_DISPATCH_EVIDENCE_RULE = "Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode."
+REPLAY_IDENTITY_RULE = "Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order."
+REPLACEMENT_FENCING_RULE = "Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice."
+DISPATCH_PERSISTENCE_RULE = "Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch."
+EVIDENCE_VOCABULARY_RULE = "Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed."
+REPLACEMENT_PROOF_RULE = "A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences."
+REPLAY_OUTCOME_RULE = "A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction."
+DECISION_RESOLUTION_RULE = "Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`."
+SELF_CONTAINED_PERSISTENCE_RULE = "Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch."
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -63,6 +77,12 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes prompt, LAUNCH_ASSURANCE, "#{label} prompt must carry fail-closed launch assurance"
       assert_includes prompt, WORKER_ROUTE, "#{label} prompt must carry an initial and escalation route"
       assert_includes prompt, DISPATCH_RULE, "#{label} prompt must separate worker binding from exact-parent relaunch"
+      assert_includes prompt, GOAL_DISPATCH_PREFLIGHT_LINE,
+                      "#{label} prompt must gate automatic Goal-mode resume on dispatcher preflight"
+      assert_includes prompt, GOAL_PERSISTED_STATE_LINE,
+                      "#{label} prompt must persist dispatch state on every autoload fallback path"
+      assert_includes prompt, DISPATCH_PLAN_PROMPT_LINE,
+                      "#{label} prompt must carry lane-keyed dispatcher, fallback, and authority input"
       refute_includes prompt, "Model/effort groups:", "#{label} prompt must not use the static assignment field"
     end
   end
@@ -98,6 +118,38 @@ class ModelRoutingContractTest < Minitest::Test
     end
 
     assert_includes routing, "preserve unavailable binding as `UNKNOWN` and continue portable class-based planning"
+    assert_includes routing, DISPATCH_PREFLIGHT_RULE
+  end
+
+  def test_dispatcher_capability_preflight_is_portable_and_documented
+    helper = File.join(ROOT, "skills/pr-batch/bin/dispatcher-capability-preflight")
+    assert File.executable?(helper), "dispatcher capability preflight must be executable"
+
+    guide = read_repo_file("docs/agent-workflows-model-routing.md")
+    docs = read_repo_file("docs/pr-batch-skills.md")
+    context = read_repo_file("CONTEXT.md")
+    [guide, docs, context, read_repo_file("skills/plan-pr-batch/SKILL.md"), read_repo_file("skills/pr-batch/SKILL.md"),
+     read_repo_file("skills/triage/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
+      assert_includes text, "dispatch-decision-request v1"
+      assert_includes text, "dispatcher-capability-preflight"
+      assert_includes text, PROSPECTIVE_INSTANCE_ID_RULE
+      assert_includes text, UNKNOWN_DISPATCH_EVIDENCE_RULE
+      assert_includes text, REPLAY_IDENTITY_RULE
+      assert_includes text, REPLACEMENT_FENCING_RULE
+      assert_includes text, DISPATCH_PERSISTENCE_RULE
+      assert_includes text, EVIDENCE_VOCABULARY_RULE
+      assert_includes text, REPLACEMENT_PROOF_RULE
+      assert_includes text, REPLAY_OUTCOME_RULE
+      assert_includes text, DECISION_RESOLUTION_RULE
+      assert_includes text, SELF_CONTAINED_PERSISTENCE_RULE
+    end
+
+    portable_call = '"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"'
+    [guide, docs, read_repo_file("skills/plan-pr-batch/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
+      assert_includes text, "PR_BATCH_SKILL_DIR"
+      assert_includes text, portable_call
+      refute_includes text, "skills/pr-batch/bin/dispatcher-capability-preflight"
+    end
   end
 
   def test_worker_replacement_is_checkpointed_fenced_and_non_overlapping
@@ -247,6 +299,9 @@ class ModelRoutingContractTest < Minitest::Test
     refute_nil launch_gate
     refute_nil target_verification
     assert_operator launch_gate, :<, target_verification
+    [DISPATCH_PERSISTENCE_RULE, EVIDENCE_VOCABULARY_RULE].each do |rule|
+      assert_match(/^   #{Regexp.escape(rule)}/, docs, "item 4 continuation must retain exactly three spaces")
+    end
   end
 
   def test_planning_and_dispatch_surfaces_propagate_routes
