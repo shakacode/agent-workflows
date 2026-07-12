@@ -284,6 +284,39 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "hard-route-restriction", output.fetch("reason")
   end
 
+  def test_hard_route_does_not_mask_unusable_evidence_as_a_route_restriction
+    output = dispatch(
+      "lane_id" => "incident-unusable-hard-route-fallback",
+      "requested" => {
+        "route" => { "model" => "Terra", "effort" => "high" },
+        "dispatcher" => "remote",
+        "hard_route" => true
+      },
+      "authority" => { "dispatch" => true, "route" => true },
+      "candidates" => [
+        {
+          "route" => { "model" => "Terra", "effort" => "high" },
+          "dispatcher" => "remote",
+          "binding" => "unbound",
+          "attestation" => "instance-bound",
+          "instance_id" => "requested-instance"
+        },
+        {
+          "route" => { "model" => "Sol", "effort" => "high" },
+          "dispatcher" => "remote",
+          "fallback_authorized" => true,
+          "binding" => "unbound",
+          "attestation" => "instance-bound",
+          "instance_id" => "fallback-instance"
+        }
+      ]
+    )
+
+    assert_equal "blocked-user-input", output.fetch("status")
+    assert_equal "no-authorized-bound-attested-candidate", output.fetch("reason")
+    assert_equal [], output.dig("dispatch_decision_request", "viable_fallback_choices")
+  end
+
   def test_round_trips_lane_state_and_replay_uses_one_stable_assignment
     lane_state = {
       "claim" => { "holder" => "worker-7", "generation" => 3 },

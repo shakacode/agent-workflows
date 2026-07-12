@@ -582,7 +582,8 @@ candidate, candidate_index = selected if selected
 
 unless candidate
   if reason.nil? && requested["hard_route"] && candidate_inputs.any? do |entry|
-       entry.is_a?(Hash) && entry["fallback_authorized"] == true && !route_equal?(entry["route"], requested["route"])
+       entry.is_a?(Hash) && entry["fallback_authorized"] == true &&
+       !route_equal?(entry["route"], requested["route"]) && unusable_reason(entry).nil?
      end
     reason = "hard-route-restriction"
   end
