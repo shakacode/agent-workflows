@@ -16,14 +16,45 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
 ```json review-findings
 {
   "schema": "review-finding-v0",
+  "review_receipt": {
+    "source": "autoreview",
+    "target": {
+      "kind": "committed",
+      "base_ref": "origin/main",
+      "base_sha": "0123456789abcdef0123456789abcdef01234567",
+      "head_sha": "89abcdef0123456789abcdef0123456789abcdef"
+    },
+    "provenance": {
+      "engine": "codex review",
+      "invocation": "codex review --base origin/main"
+    },
+    "risk_lenses": [
+      {
+        "name": "correctness",
+        "status": "applied",
+        "reason": "Core lens for every non-trivial diff."
+      },
+      {
+        "name": "security",
+        "status": "not_applicable",
+        "reason": "No changed trust, input, permission, secret, or execution boundary."
+      }
+    ],
+    "coverage": {
+      "status": "complete",
+      "included_paths": ["workflows/pr-processing.md"],
+      "excluded_paths": [],
+      "limitations": []
+    }
+  },
   "review_findings": [
     {
-      "id": "adv-001",
-      "source": "adversarial-pr-review",
+      "id": "auto-001",
+      "source": "autoreview",
       "target": {
         "repo": "OWNER/REPO",
         "pr": 123,
-        "head_sha": "abc123"
+        "head_sha": "89abcdef0123456789abcdef0123456789abcdef"
       },
       "severity": "P1",
       "disposition": "must_fix",
@@ -34,12 +65,17 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
         "current_head_state": "stale",
         "checked_at": "2026-07-02T12:34:56Z"
       },
+      "independent_validation": {
+        "status": "confirmed",
+        "validator": "independent-reviewer",
+        "evidence": ["Reproduced against head 89abcdef0123456789abcdef0123456789abcdef with the focused readiness check."]
+      },
       "location": {
         "file": "workflows/pr-processing.md",
         "line": 650
       },
       "evidence": [
-        "PR head SHA: abc123",
+        "PR head SHA: 89abcdef0123456789abcdef0123456789abcdef",
         "Check run SHA: def456"
       ]
     }
@@ -78,7 +114,56 @@ workflow into the same shape:
 - `links`: array of URLs for PRs, issues, comments, runs, logs, or docs.
 - `related_ids`: array of finding ids this finding duplicates, supersedes, or
   depends on.
+- `consequential`: boolean. Set it to `true` when a P2, P3, or INFO finding
+  still has material correctness, security, compatibility, data-loss, or
+  release-process consequences. P0 and P1 findings are consequential whenever
+  the report includes a `review_receipt`.
+- `independent_validation`: independent check of a consequential finding, as
+  described below.
 - `notes`: short extra context for humans. Do not put required facts only here.
+
+## Review Receipt
+
+`review_receipt` is an optional additive top-level object. Existing
+`review-finding-v0` reports without it remain valid. Autoreview uses it to make
+review scope and limitations replayable without making another review engine a
+dependency.
+
+The receipt includes:
+
+- `source`: currently `autoreview`; future receipt producers require an
+  explicit schema/validator addition rather than an unchecked alias;
+- `target`: `kind` of `committed` or `uncommitted`, plus non-empty `base_ref`,
+  immutable `base_sha`, and `head_sha` strings for the reviewed diff;
+- `provenance`: non-empty `engine` and `invocation` strings;
+- `risk_lenses`: a non-empty array whose entries have non-empty `name` and
+  `reason` strings plus `status` of `applied`, `not_applicable`, `degraded`, or
+  `unknown`; lens names must be unique, and `autoreview` receipts always include
+  `correctness` and `security`;
+- `coverage`: `status` of `complete`, `partial`, or `unknown`, plus
+  `included_paths`, `excluded_paths`, and `limitations` string arrays.
+
+Receipts describe what actually ran. Do not mark a lens `applied` merely
+because a reviewer was requested. `complete` requires every lens to be
+`applied` or `not_applicable`, with empty `excluded_paths` and `limitations`;
+otherwise use `partial` or `unknown`.
+
+An uncommitted target is mutable and cannot be identified by `head_sha` alone.
+Set `kind` to `uncommitted`, use `partial` or `unknown` coverage, and record a
+non-empty limitation. Use `committed` only when the reviewed diff is anchored
+entirely by the recorded base and head SHAs; `base_ref` remains human context
+and is not the immutable anchor. For `committed`, both SHA fields must be full
+hexadecimal Git object IDs: 40 characters for SHA-1 repositories or 64
+characters for SHA-256 repositories. Uppercase or lowercase hexadecimal is
+valid. Symbolic refs such as `HEAD` and
+`origin/main`, and abbreviated object IDs, are invalid. The two IDs must have
+the same length because one repository uses one Git object format.
+
+When an individual finding's `target` also includes `head_sha`, it must name
+the same Git object as `review_receipt.target.head_sha` (hexadecimal case is
+ignored). A finding may omit `head_sha` and inherit the report-level target,
+but a present `head_sha` must be a non-empty string and must not name a
+different reviewed head.
 
 ## Severities
 
@@ -131,3 +216,23 @@ Use one of:
 Findings with `verification.status` other than `verified`, or
 `current_head_state` of `stale` or `unknown`, must not be treated as merge
 blockers without a separate current-head verification step.
+
+## Independent Validation
+
+Every P0 or P1 finding in a report with `review_receipt`, and every
+lower-severity finding with `consequential: true`, requires an
+`independent_validation` object. It contains:
+
+- `status`: `confirmed`, `rejected`, or `degraded`;
+- `validator`: non-empty identity for the independent reviewer or validator;
+- `evidence`: a non-empty array of short strings naming the reproduced fact,
+  focused test, or other independent proof.
+
+The validator must use a distinct review context and check the real diff or
+code path. Agreement, severity, and the primary reviewer's own verification are
+not independent proof. A `confirmed` result cannot use a rejected disposition.
+A `rejected` result uses `rejected_false_positive`,
+`rejected_not_actionable`, or `unknown` and must not trigger a fix. If
+independent validation is unavailable, malformed, or times out, use `degraded`
+and keep the finding at `must_fix`, `needs_decision`, or `unknown`. A degraded
+result must never clear a consequential finding.
