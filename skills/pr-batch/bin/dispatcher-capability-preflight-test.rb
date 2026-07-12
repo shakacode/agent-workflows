@@ -368,7 +368,6 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     }
     first = dispatch(input)
     corrupt = first.fetch("active_assignments").first.merge(
-      "lane_id" => "other-lane",
       "route" => { "model" => "Terra", "effort" => "low" },
       "dispatcher" => "untrusted",
       "candidate_index" => 99
@@ -1043,14 +1042,16 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "lifecycle" => "launch-pending"
     )
 
-    outputs = [
-      dispatch(input.merge("active_assignments" => [])),
-      dispatch(input.merge("active_assignments" => [wrong_lane_assignment]))
-    ]
+    outputs = {
+      "launch_confirmation requires a matching active assignment identity" =>
+        dispatch(input.merge("active_assignments" => [])),
+      "active_assignments lane_id must match input lane_id" =>
+        dispatch(input.merge("active_assignments" => [wrong_lane_assignment]))
+    }
 
-    outputs.each do |output|
+    outputs.each do |reason, output|
       assert_equal "invalid-input", output.fetch("status")
-      assert_equal "launch_confirmation requires a matching active assignment identity", output.fetch("reason")
+      assert_equal reason, output.fetch("reason")
       refute output.key?("dispatch")
       refute output.key?("resume_goal")
     end
@@ -1172,7 +1173,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "blocked-replacement-fencing", unknown_evidence.fetch("status")
   end
 
-  def test_cross_lane_replacement_proof_cannot_authorize_a_current_lane_replacement
+  def test_cross_lane_replacement_state_is_invalid_before_replacement_fencing
     input = {
       "lane_id" => "incident-current-lane",
       "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
@@ -1221,8 +1222,35 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
     output = dispatch(input)
 
-    assert_equal "blocked-replacement-fencing", output.fetch("status")
-    assert_equal "stop-and-reconcile-prior-instance", output.fetch("required_action")
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "active_assignments lane_id must match input lane_id", output.fetch("reason")
+    refute output.key?("required_action")
+  end
+
+  def test_cross_lane_active_assignment_is_invalid_instead_of_fencing_an_unrelated_instance
+    output = dispatch(
+      "lane_id" => "incident-current-lane-state",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "current-lane-instance"
+      }],
+      "active_assignments" => [{
+        "lane_id" => "unrelated-lane",
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "instance_id" => "unrelated-instance",
+        "launch_token" => "dispatch-unrelated-instance",
+        "lifecycle" => "confirmed-active"
+      }]
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "active_assignments lane_id must match input lane_id", output.fetch("reason")
+    refute output.key?("required_action")
   end
 
   def test_persisted_decision_resolution_replays_without_a_transient_operator_decision
@@ -1266,6 +1294,36 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "launch-pending", replay.fetch("status")
     assert_equal selected.fetch("dispatch"), replay.fetch("dispatch")
     assert_equal selected.fetch("decision_resolution"), replay.fetch("decision_resolution")
+  end
+
+  def test_present_malformed_decision_resolution_values_return_structured_invalid_input
+    input = {
+      "lane_id" => "incident-malformed-resolution-shape",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "authority" => { "dispatch" => true },
+      "candidates" => [{
+        "route" => { "model" => "Terra", "effort" => "high" },
+        "dispatcher" => "remote",
+        "fallback_authorized" => true,
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "malformed-resolution-instance"
+      }]
+    }
+    blocked = dispatch(input)
+
+    [false, nil, true, 0, "not-a-resolution", [], {}].each do |malformed_resolution|
+      output = dispatch(
+        input.merge(
+          "dispatch_decision_request" => blocked.fetch("dispatch_decision_request"),
+          "decision_resolution" => malformed_resolution
+        )
+      )
+
+      assert_equal "invalid-input", output.fetch("status"), malformed_resolution.inspect
+      assert_equal "decision_resolution must be a well-formed persisted resolution for this request",
+                   output.fetch("reason")
+    end
   end
 
   def test_deeply_malformed_persisted_state_is_invalid_input_instead_of_an_exception

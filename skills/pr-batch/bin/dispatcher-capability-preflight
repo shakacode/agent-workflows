@@ -437,6 +437,9 @@ active_assignments_invalid = input.key?("active_assignments") &&
                              (!input["active_assignments"].is_a?(Array) || input["active_assignments"].length > 1 ||
                               !input["active_assignments"].all? { |entry| persisted_assignment?(entry) })
 fail_input("active_assignments must contain at most one well-formed persisted assignment") if active_assignments_invalid
+if input.fetch("active_assignments", []).any? { |entry| entry["lane_id"] != input["lane_id"] }
+  fail_input("active_assignments lane_id must match input lane_id")
+end
 fail_input("replacement must be a well-formed replacement proof") if input.key?("replacement") && !replacement_proof_shape?(input["replacement"])
 fail_input("launch_confirmation must be a well-formed identity-bound confirmation") if input.key?("launch_confirmation") && !confirmation_shape?(input["launch_confirmation"])
 if input.key?("launch_confirmation")
@@ -463,7 +466,8 @@ if (persisted_decision = input["dispatch_decision_request"])
   persisted_requested = persisted_decision["requested"]
   persisted_authority = persisted_decision.fetch("authority", {})
   fail_input("decision_resolution must be a well-formed persisted resolution for this request") if
-    persisted_resolution && !persisted_resolution_valid?(persisted_resolution, persisted_decision, input["lane_id"])
+    input.key?("decision_resolution") &&
+    !persisted_resolution_valid?(persisted_resolution, persisted_decision, input["lane_id"])
 
   persisted_choices = persisted_decision.fetch("viable_fallback_choices", [])
   valid_choices = persisted_choices.select { |choice| decision_choice_valid?(choice, input["lane_id"], persisted_requested) }
