@@ -27,6 +27,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Default autonomously clearable blocked Goal-mode batches to one deduplicated 15-minute current-thread monitor when supported, with manual-resume fallback and no polling for user-input blockers.**
 - **Harden model-routed batches with fail-closed launch assurance, Sol-controlled conservative GPT-5.6 coordination and checking, bounded Terra execution envelopes, and auditable worker assignment evidence.**
 - **Change the public Codex native-plugin identifier from `agent-workflows` to `scw`; existing native-plugin users must remove the old entry and reinstall `scw`, while the repository, marketplace, helper, installer, status, and upgrade identities remain `agent-workflows`.**
 - **Make `$pr-batch` the sole workflow for one or more targets, with a default single-target worker subagent, staged cost-aware model routing, and explicit merge authority before launch.**
