@@ -70,11 +70,11 @@ PROMPT_ONLY_ARCHIVE_RULE = "Do not archive if an unhanded-off question or planne
 PROMPT_ONLY_NON_CLEAN_STATUS_RULE = "otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker."
 PROMPT_ONLY_ARCHIVE_PREREQUISITE = "all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat"
 PROMPT_ONLY_ARCHIVE_EXPECTATION = "Prompt-only conversation-status/archive expectation: use exactly `Conversation status: Ready for archiving.` only when #{PROMPT_ONLY_ARCHIVE_PREREQUISITE}; no unhanded-off question or planner-owned `UNKNOWN` remains; a durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive; #{PROMPT_ONLY_NON_CLEAN_STATUS_RULE}".freeze
-PROMPT_ONLY_DISTINCT_COORDINATOR_HANDOFF_RULE = "Prompt-only is eligible only after durable handoff to a distinct batch coordinator."
+PROMPT_ONLY_PRE_LAUNCH_DURABLE_HANDOFF_RULE = "For `prompt-only`, durable handoff is satisfied when every goal prompt is delivered or durably registered for a named distinct future batch coordinator and stable batch/lane/dependency/ownership state is durable outside the chat. The future coordinator need not be launched; the planner waits for neither worker start nor completion, and prompt delivery or durable registration does not start workers."
 PLANNING_CHAT_SELF_LAUNCH_TRANSITION_RULE = "After same-chat self-launch, transition to the batch-coordinator lifecycle only when no cross-batch, dependency, release, or shared-follow-up responsibility is retained."
 SELF_LAUNCH_RETAINED_DUTY_PARENT_RULE = "For same-chat launch with retained cross-batch, dependency, release, or shared-follow-up duties, select and record `parent-orchestrator` immediately because retained duties determine the mandatory planning role; list each exact retained responsibility, do not use `prompt-only`, and do not record `Retained responsibilities: none`."
-RETAINED_DUTY_NO_HANDOFF_BLOCK_RULE = "Before durable handoff/launch of a distinct batch coordinator succeeds, this is a BLOCKED parent-orchestrator: it stays read-only, starts no workers, records the exact distinct-coordinator handoff blocker/follow-up, and uses final `Conversation status: Follow-ups remain — <each exact action or blocker>.`"
-RETAINED_DUTY_DISTINCT_COORDINATOR_RULE = "Once durable handoff/launch of a distinct batch coordinator succeeds, workers may start under that coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only."
+RETAINED_DUTY_PRE_LAUNCH_BLOCK_RULE = "Only a retained-duty `parent-orchestrator` is BLOCKED before launch of a distinct batch coordinator succeeds: it remains read-only and starts no workers."
+RETAINED_DUTY_POST_LAUNCH_WORKER_START_RULE = "Once that launch succeeds, workers may start under the distinct batch coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only."
 PLANNING_CHAT_ROLE_RULE = "While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`."
 PARENT_ORCHESTRATOR_SELECTOR_RULE = "While the chat remains a planning chat, select `parent-orchestrator` only when the planner explicitly retains one or more cross-batch dependency, release, or shared-follow-up responsibilities."
 SELF_LAUNCH_LIFECYCLE_TRANSITION = "Lifecycle transition: transitioned-to-batch-coordinator."
@@ -85,6 +85,7 @@ SELF_LAUNCH_NOT_A_THIRD_PLANNING_ROLE = "This is a transition out of planning, n
 PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
 TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
 PARENT_RECONCILIATION_RULE = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
+PARENT_RECONCILIATION_FORWARD_REFERENCE = "This reconciliation is the post-batch/pre-release-or-archive gate below."
 RELEASE_AUTHORITY_RECONCILIATION_RULE = "Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority."
 OBSOLETE_RELEASE_AUTHORITY_RECONCILIATION_RULE = "may authorize a coordinated release action"
 TERMINAL_FOLLOW_UP_EVIDENCE_RULE = "A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref."
@@ -95,6 +96,7 @@ COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE = "Replay only the exact versioned `<!--
 COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE = "A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`."
 COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE = "Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records."
 COMPLETED_BATCH_AUDIT_RECORD_GRAMMAR_RULE = "Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid."
+COMPLETED_BATCH_AUDIT_UNKNOWN_VALIDATION_RULE = "`UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence."
 COMPLETED_BATCH_AUDIT_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
 COMPLETED_BATCH_AUDIT_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
 COMPLETED_BATCH_AUDIT_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
@@ -420,7 +422,7 @@ def exact_unknown?(value)
 end
 
 def unknown_value?(value)
-  value.match?(/UNKNOWN/i)
+  value.unicode_normalize(:nfkc).match?(/UNKNOWN/i)
 end
 
 def followups_disposition_records(value)
@@ -1019,6 +1021,7 @@ class GoalCompletionContractTest < Minitest::Test
                     "all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat"
     assert_includes lifecycle, "It does not wait for workers."
     assert_includes lifecycle, PROMPT_ONLY_ARCHIVE_RULE
+    assert_includes lifecycle, PARENT_RECONCILIATION_FORWARD_REFERENCE
 
     {
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
@@ -1041,7 +1044,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md Batch Plan Format" => batch_plan,
       "skills/triage/SKILL.md Output" => triage_output
     }.each do |label, text|
-      assert_includes text, PROMPT_ONLY_DISTINCT_COORDINATOR_HANDOFF_RULE, label
+      assert_includes text, PROMPT_ONLY_PRE_LAUNCH_DURABLE_HANDOFF_RULE, label
       assert_includes text, PLANNING_CHAT_SELF_LAUNCH_TRANSITION_RULE, label
       assert_includes text, SELF_LAUNCH_RETAINED_DUTY_PARENT_RULE, label
     end
@@ -1083,7 +1086,7 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_same_chat_launch_with_retained_duties_blocks_read_only_before_distinct_coordinator_handoff
+  def test_retained_duty_parent_is_blocked_read_only_before_distinct_coordinator_launch
     lifecycle = extract_markdown_section(@workflow, "### Planning-Chat Lifecycle", end_heading: /^###\s+/)
     batch_plan = extract_markdown_section(@plan_pr_batch_skill, "## Batch Plan Format", end_heading: /^##\s+/)
     triage_output = extract_markdown_section(@triage_skill, "## Output", end_heading: /^##\s+/)
@@ -1093,11 +1096,11 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md Batch Plan Format" => batch_plan,
       "skills/triage/SKILL.md Output" => triage_output
     }.each do |label, text|
-      assert_includes text, RETAINED_DUTY_NO_HANDOFF_BLOCK_RULE, label
+      assert_includes text, RETAINED_DUTY_PRE_LAUNCH_BLOCK_RULE, label
     end
   end
 
-  def test_same_chat_launch_with_retained_duties_starts_workers_only_under_the_distinct_coordinator
+  def test_retained_duty_parent_starts_workers_only_under_the_distinct_coordinator_after_launch
     lifecycle = extract_markdown_section(@workflow, "### Planning-Chat Lifecycle", end_heading: /^###\s+/)
     batch_plan = extract_markdown_section(@plan_pr_batch_skill, "## Batch Plan Format", end_heading: /^##\s+/)
     triage_output = extract_markdown_section(@triage_skill, "## Output", end_heading: /^##\s+/)
@@ -1107,7 +1110,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md Batch Plan Format" => batch_plan,
       "skills/triage/SKILL.md Output" => triage_output
     }.each do |label, text|
-      assert_includes text, RETAINED_DUTY_DISTINCT_COORDINATOR_RULE, label
+      assert_includes text, RETAINED_DUTY_POST_LAUNCH_WORKER_START_RULE, label
     end
   end
 
@@ -1898,6 +1901,27 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal [COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER], unparseable.blockers
   end
 
+  def test_completed_batch_audit_replay_rejects_nfkc_unknown_in_scalars_and_terminal_evidence
+    fullwidth_unknown = "ＵＮＫＮＯＷＮ"
+    fixtures = {
+      "scope evidence" => completed_batch_audit_marker(
+        "batch_id: batch-117\naudit_status: complete\nverdict: clean\nscope_evidence: audit #{fullwidth_unknown} report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: none"
+      ),
+      "terminal evidence" => completed_batch_audit_marker(
+        "batch_id: batch-117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: ref: #117; owner: maintainer; current status: terminal; disposition: accepted-waiver; evidence: issue #{fullwidth_unknown}"
+      )
+    }
+
+    fixtures.each do |label, marker|
+      result = completed_batch_audit_replay_result(marker)
+
+      assert_equal false, result.well_formed, "#{label} fullwidth UNKNOWN marker must fail closed"
+      assert_equal false, result.ready, "#{label} fullwidth UNKNOWN marker must be non-ready"
+      assert_equal [COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER], result.blockers,
+                   "#{label} fullwidth UNKNOWN marker must replay the invalid-marker blocker"
+    end
+  end
+
   def test_completed_batch_audit_followup_only_and_mixed_findings_replay_matrix
     followup_only = %w[open pending unresolved UNKNOWN].map do |status|
       action = { "open" => "fix", "pending" => "await-input", "unresolved" => "investigate", "UNKNOWN" => "track" }.fetch(status)
@@ -2055,6 +2079,7 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       normalized_text = text.gsub(/\s+/, " ")
       [COMPLETED_BATCH_AUDIT_RECORD_GRAMMAR_RULE,
+       COMPLETED_BATCH_AUDIT_UNKNOWN_VALIDATION_RULE,
        COMPLETED_BATCH_AUDIT_RECORD_REF_CANONICALIZATION_RULE,
        COMPLETED_BATCH_AUDIT_CANONICAL_DISPLAY_SAFETY_RULE,
        COMPLETED_BATCH_AUDIT_SINGLE_LINE_VALUE_RULE,
