@@ -110,10 +110,16 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     normalized_skill = skill.gsub(/\s+/, " ")
 
-    assert_includes normalized_skill, "Set PR_REF to the exact URL or number, REPO to the resolved owner/repo, PR_NUMBER to the numeric pull request number, and GH_HOST to the canonical URL host."
-    assert_includes normalized_skill, "For URL input, use metadata-only `gh pr view \"$PR_REF\" --json number,url` to resolve numeric PR_NUMBER and canonical URL, then derive REPO and GH_HOST from that canonical URL, preserving Enterprise hosts."
-    assert_includes normalized_skill, "For numeric input, require current trusted checkout and use `gh repo view --json nameWithOwner,url` to resolve REPO and canonical repository URL, then derive GH_HOST."
-    assert_includes normalized_skill, "If exact REPO, PR_NUMBER, and GH_HOST cannot be resolved, stop and report BLOCKED."
+    assert_includes normalized_skill, "Set PR_REF to the exact URL or number, REPO to the resolved owner/repo, PR_NUMBER to the numeric pull request number, and GH_HOST to normalized canonical URL authority host[:port]."
+    refute_includes normalized_skill, "`gh pr view \"$PR_REF\" --json number,url`"
+    assert_includes normalized_skill, "For URL input, use metadata-only `env -u GH_HOST -u GH_REPO gh pr view \"$PR_REF\" --json number,url` to resolve numeric PR_NUMBER and canonical URL, then derive REPO and GH_HOST from that canonical URL, preserving Enterprise hosts."
+    refute_includes normalized_skill, "`gh repo view --json nameWithOwner,url`"
+    assert_includes normalized_skill, "For numeric input, require current trusted checkout and use `env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner,url` to resolve REPO and canonical repository URL, then derive GH_HOST."
+    assert_includes normalized_skill, "GH_HOST strips userinfo and path, preserves non-default port, and omits only default port."
+    assert_includes normalized_skill, "Apply this authority normalization to both canonical PR and canonical repository URLs."
+    assert_includes normalized_skill, "Example: https://github.company.example:8443/owner/repo/pull/42 -> GH_HOST github.company.example:8443."
+    assert_includes normalized_skill, "Default-port behavior: omit :443 for https and :80 for http."
+    assert_includes normalized_skill, "If exact REPO, PR_NUMBER, and GH_HOST cannot be resolved, or canonical authority is absent or invalid, stop and report BLOCKED."
     assert_includes skill, "- Normalized input: PR_REF <URL|number>; REPO <owner/repo>; PR_NUMBER <numeric>; GH_HOST <host>; canonical URL <url>."
   end
 

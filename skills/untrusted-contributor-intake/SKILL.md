@@ -28,14 +28,20 @@ Do not execute, install, source, or check out fork content. Do not read or
 expose secrets.
 
 Set PR_REF to the exact URL or number, REPO to the resolved owner/repo,
-PR_NUMBER to the numeric pull request number, and GH_HOST to the canonical URL
-host. For URL input, use metadata-only
-`gh pr view "$PR_REF" --json number,url` to resolve numeric PR_NUMBER and
-canonical URL, then derive REPO and GH_HOST from that canonical URL, preserving
-Enterprise hosts. For numeric input, require current trusted checkout and use
-`gh repo view --json nameWithOwner,url` to resolve REPO and canonical repository
-URL, then derive GH_HOST. If exact REPO, PR_NUMBER, and GH_HOST cannot be
-resolved, stop and report BLOCKED.
+PR_NUMBER to the numeric pull request number, and GH_HOST to normalized
+canonical URL authority host[:port]. For URL input, use metadata-only
+`env -u GH_HOST -u GH_REPO gh pr view "$PR_REF" --json number,url` to resolve
+numeric PR_NUMBER and canonical URL, then derive REPO and GH_HOST from that
+canonical URL, preserving Enterprise hosts. For numeric input, require current
+trusted checkout and use
+`env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner,url` to resolve
+REPO and canonical repository URL, then derive GH_HOST. GH_HOST strips userinfo
+and path, preserves non-default port, and omits only default port. Apply this
+authority normalization to both canonical PR and canonical repository URLs.
+Example: https://github.company.example:8443/owner/repo/pull/42 -> GH_HOST
+github.company.example:8443. Default-port behavior: omit :443 for https and
+:80 for http. If exact REPO, PR_NUMBER, and GH_HOST cannot be resolved, or
+canonical authority is absent or invalid, stop and report BLOCKED.
 
 ## Host Boundary
 
