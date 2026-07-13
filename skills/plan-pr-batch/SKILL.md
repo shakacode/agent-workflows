@@ -319,11 +319,11 @@ Plan a PR batch
      headroom floor, split along route groups so each generated goal carries only
      the included lanes' complete routes;
      preserve omitted lanes and routes in the Batch Plan for later prompts.
-   - Before responding, measure only the text inside the goal-prompt fence,
+  - Before responding, measure only the text inside the goal-prompt fence,
      including the `/goal` line for Codex and excluding the fence lines, and <!-- host-allow: codex-only -->
      print `Goal prompt character count: N characters (target: codex|claude|generic)`
      after the fence.
-   - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. Also split
+  - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. Also split
      before overflow when less than 300 characters of headroom remain. Output only
      the first ready goal; list omitted ready items in the Batch Plan for later goal prompts.
    - For Claude or generic targets, do not split solely because the prompt is
