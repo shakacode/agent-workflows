@@ -50,6 +50,16 @@ environment variable; the loaded skill's base directory when the host exposes
 it; repo-local `.agents/skills/<skill>`; then stop with a precise blocker if the
 helper is still missing.
 
+For a verified Codex GPT-5.6 host, use this recommended exact profile while
+keeping provider-neutral classes for other runtimes:
+
+- Multi-lane coordinator: Sol/xhigh
+- Simple, positively classified worker: Terra/high
+- Unknown or uncertain worker: Sol/high
+- High-risk or escalated work: Sol/xhigh
+- Independent adversarial QA: Sol/xhigh
+- Routine deterministic QA: Sol/high
+
 Memorable invocation:
 
 ```text

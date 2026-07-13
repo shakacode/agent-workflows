@@ -27,6 +27,16 @@ REPLACEMENT_PROOF_RULE = "A replacement proof is single-use and identity-bound t
 REPLAY_OUTCOME_RULE = "A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction."
 DECISION_RESOLUTION_RULE = "Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`."
 SELF_CONTAINED_PERSISTENCE_RULE = "Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch."
+INDEPENDENT_ADVERSARIAL_QA_ROUTE = "Independent adversarial QA: Sol/xhigh"
+ROUTINE_DETERMINISTIC_QA_ROUTE = "Routine deterministic QA: Sol/high"
+CODEX_GPT56_RECOMMENDED_ROUTES = [
+  "Multi-lane coordinator: Sol/xhigh",
+  "Simple, positively classified worker: Terra/high",
+  "Unknown or uncertain worker: Sol/high",
+  "High-risk or escalated work: Sol/xhigh",
+  INDEPENDENT_ADVERSARIAL_QA_ROUTE,
+  ROUTINE_DETERMINISTIC_QA_ROUTE
+].freeze
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -104,7 +114,7 @@ class ModelRoutingContractTest < Minitest::Test
       "Without an exact-parent or exact-checker policy",
       "Independent checker assignment",
       "Sol/high",
-      "Terra/medium",
+      "Terra/high",
       "coordinator-approved execution envelope",
       "workers must not inherit the coordinator assignment",
       "A small, explainable first failure stays on the initial route",
@@ -264,6 +274,65 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes read_repo_file("docs/README.md"), "[Cost-aware model routing](agent-workflows-model-routing.md)"
   end
 
+  def test_codex_gpt56_recommendation_is_memorialized_across_routing_surfaces
+    paths = %w[
+      docs/agent-workflows-model-routing.md
+      docs/pr-batch-skills.md
+      skills/plan-pr-batch/SKILL.md
+      skills/post-merge-audit/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/triage/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-processing.md
+    ]
+
+    paths.each do |path|
+      text = normalized(read_repo_file(path))
+
+      CODEX_GPT56_RECOMMENDED_ROUTES.each do |route|
+        assert_includes text, route, "#{path} is missing the recommended Codex route: #{route}"
+      end
+
+      refute_includes text, "Terra/medium", "#{path} must not restore Terra/medium to the Codex profile"
+    end
+
+    checker = normalized(read_repo_file("workflows/continuous-evaluation-loop.md"))
+    assert_includes checker, INDEPENDENT_ADVERSARIAL_QA_ROUTE
+    assert_includes checker, ROUTINE_DETERMINISTIC_QA_ROUTE
+
+    %w[
+      skills/adversarial-pr-review/SKILL.md
+      workflows/adversarial-pr-review.md
+    ].each do |path|
+      assert_includes normalized(read_repo_file(path)), INDEPENDENT_ADVERSARIAL_QA_ROUTE
+    end
+
+    triage = normalized(read_repo_file("skills/triage/SKILL.md"))
+    assert_includes triage, "Do not encode unverified exact model or tool names as portable defaults"
+    refute_includes triage, "Do not encode model or tool names in the skill"
+
+    guide = normalized(read_repo_file("docs/agent-workflows-model-routing.md"))
+    assert_includes guide, "Routine deterministic QA uses Sol/high"
+    refute_includes guide, "Routine deterministic QA may use Sol/high"
+    assert_includes guide, "`xhigh` is the extra-high reasoning-effort tier above `high`"
+    assert_includes guide, "deliberate conservative baselines for multi-lane coordination and independent adversarial QA"
+
+    {
+      "docs/agent-workflows-model-routing.md" => "Other unknown or uncertainty routes to Sol/high",
+      "workflows/pr-processing.md" => "Any other missing or disputed simplicity criterion routes to Sol/high"
+    }.each do |path, uncertainty_fallback|
+      text = normalized(read_repo_file(path))
+      assert_includes text, "explicit acceptance criteria"
+      assert_includes text, "known bounded file surface"
+      assert_includes text, "strong deterministic verification oracle"
+      assert_includes text, "no unresolved design decision"
+      assert_includes text, "no security, authorization, concurrency, persistence, lifecycle, routing, or public-contract change"
+      assert_includes text, "easy failure detection and rollback"
+      assert_includes text, "Any present or disputed high-risk boundary routes to Sol/xhigh"
+      assert_includes text, uncertainty_fallback
+    end
+  end
+
   def test_glossary_models_staged_routes_and_replacement_evidence
     skip "source-pack glossary is not installed" unless source_checkout?
 
@@ -369,7 +438,8 @@ class ModelRoutingContractTest < Minitest::Test
       "distinct from every maker",
       "exact model/effort",
       "conservative GPT-5.6 profile",
-      "Sol/high minimum",
+      "Independent adversarial QA: Sol/xhigh",
+      "Routine deterministic QA: Sol/high",
       "Terra may collect mechanical evidence",
       "may not issue the qualifying intent-achievement or final-risk verdict",
       "do not return a clean/`realized` verdict",

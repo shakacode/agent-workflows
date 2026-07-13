@@ -3,6 +3,13 @@
 Use this workflow when a PR needs a skeptical release-risk review from Codex,
 Claude, or both. It is intentionally stricter than a normal PR review.
 
+For a verified Codex GPT-5.6 route profile:
+
+- Independent adversarial QA: Sol/xhigh
+
+Sol/high remains the route for routine deterministic QA, not this qualifying
+adversarial verdict.
+
 ## Safety Rules
 
 - Report only by default. Do not create commits, comments, labels, issues, review approvals, thread resolutions, pushes, merges, or changelog edits without explicit user approval.

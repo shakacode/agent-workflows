@@ -15,9 +15,10 @@ role, not a maker role.
   operator policy requires an exact checker, verify its exact model/effort and
   binding source. Prompt text, model self-report, installed rosters, and
   dispatch-resolved classes are not binding evidence. Under the conservative
-  GPT-5.6 profile, the checker is Sol/high minimum and Sol at the highest
-  supported effort for high-risk or exceptionally ambiguous work. Terra may
-  collect mechanical evidence but may not issue the qualifying
+  GPT-5.6 profile, use these QA routes:
+  - Independent adversarial QA: Sol/xhigh
+  - Routine deterministic QA: Sol/high
+  Terra may collect mechanical evidence but may not issue the qualifying
   intent-achievement or final-risk verdict. If exact-policy checker model,
   binding, or effort is mismatched, unavailable, below policy, or `UNKNOWN`, report
   `checker_route_compliance: UNKNOWN|failed` and do not return a clean/`realized`
