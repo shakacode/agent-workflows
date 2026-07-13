@@ -18,7 +18,7 @@ CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion
 CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
 COMPACT_CONTRACT_LINE = "GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged " \
-                        "current-head CI/review agents; unresolved current-head review threads; " \
+                        "current-head CI/configured review agents; unresolved current-head review threads; " \
                         "failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; " \
                         "`ready-no-merge-authority` only without merge auth; " \
                         "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; " \
@@ -33,7 +33,7 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "means merged and closed out unless a real blocker prevents it."
 COMPACT_CONTRACT_INVARIANTS = [
   "`waiting-on-checks-or-review`",
-  "pending/missing/untriaged current-head CI/review agents",
+  "pending/missing/untriaged current-head CI/configured review agents",
   "unresolved current-head review threads",
   "failures/UNKNOWN => NOT COMPLETE",
   "poll/fix then bounded-watch resume handoff",
@@ -210,11 +210,25 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "pending/missing/untriaged current-head CI/review agents; " \
+                           "pending/missing/untriaged current-head CI/configured review agents; " \
                            "unresolved current-head review threads",
                            "compact completion contract"
       refute_includes line, "CI/reviews/review agents",
                       "compact completion contract must not duplicate the review category"
+    end
+  end
+
+  def test_compact_contract_rejects_configured_reviewer_omission
+    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+      line = compact_contract_line(prompt)
+      assert_includes line, "CI/configured review agents",
+                      "standalone completion must retain the configured-reviewer gate"
+
+      omission_mutation = line.sub("configured review agents", "review agents")
+      refute_includes omission_mutation, "CI/configured review agents",
+                      "configured-reviewer omission mutation must lose the required invariant"
+      assert_includes omission_mutation, "CI/review agents",
+                      "mutation fixture must exercise the exact reviewer qualifier omission"
     end
   end
 

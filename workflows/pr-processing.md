@@ -818,7 +818,7 @@ Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
-GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
+GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/configured review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope: titles/deps/exclusions/owners.
 File-touch map:
@@ -951,7 +951,7 @@ Use this compact, self-contained `GMCC-v1` line verbatim in PR-batch goal
 prompts.
 `GMCC-v1` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
+GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/configured review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
 
 `GMCC-v1` expands to this canonical contract:
 
