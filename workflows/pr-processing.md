@@ -493,7 +493,8 @@ Terra/high requires an affirmative simple-task classification: explicit
 acceptance criteria, a known bounded file surface, a strong deterministic
 verification oracle, no unresolved design decision, no security,
 authorization, concurrency, persistence, lifecycle, routing, or public-contract
-change, and easy failure detection and rollback. Any missing or disputed
+change, and easy failure detection and rollback. Any present or disputed
+high-risk boundary routes to Sol/xhigh. Any other missing or disputed simplicity
 criterion routes to Sol/high. Terra and Luna may not initiate or coordinate the
 batch, and Luna is not a worker route in this profile. Shared workflow text
 remains portable for other providers and model generations.

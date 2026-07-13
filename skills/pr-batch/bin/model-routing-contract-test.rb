@@ -314,11 +314,13 @@ class ModelRoutingContractTest < Minitest::Test
     guide = normalized(read_repo_file("docs/agent-workflows-model-routing.md"))
     assert_includes guide, "Routine deterministic QA uses Sol/high"
     refute_includes guide, "Routine deterministic QA may use Sol/high"
+    assert_includes guide, "`xhigh` is the extra-high reasoning-effort tier above `high`"
+    assert_includes guide, "deliberate conservative baselines for multi-lane coordination and independent adversarial QA"
 
     {
-      "docs/agent-workflows-model-routing.md" => "Any unknown or uncertainty routes to Sol/high",
-      "workflows/pr-processing.md" => "Any missing or disputed criterion routes to Sol/high"
-    }.each do |path, fallback_rule|
+      "docs/agent-workflows-model-routing.md" => "Other unknown or uncertainty routes to Sol/high",
+      "workflows/pr-processing.md" => "Any other missing or disputed simplicity criterion routes to Sol/high"
+    }.each do |path, uncertainty_fallback|
       text = normalized(read_repo_file(path))
       assert_includes text, "explicit acceptance criteria"
       assert_includes text, "known bounded file surface"
@@ -326,7 +328,8 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes text, "no unresolved design decision"
       assert_includes text, "no security, authorization, concurrency, persistence, lifecycle, routing, or public-contract change"
       assert_includes text, "easy failure detection and rollback"
-      assert_includes text, fallback_rule
+      assert_includes text, "Any present or disputed high-risk boundary routes to Sol/xhigh"
+      assert_includes text, uncertainty_fallback
     end
   end
 

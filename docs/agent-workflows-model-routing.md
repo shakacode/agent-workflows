@@ -34,7 +34,9 @@ verification, migration safeguards, least privilege, or human approval.
 
 Use this recommended fail-closed profile for Codex GPT-5.6 batches. It is an
 informative exact binding, not a portable default for runtimes that do not
-expose these models. `Sol` means GPT-5.6 Sol and `Terra` means GPT-5.6 Terra:
+expose these models. `Sol` means GPT-5.6 Sol, `Terra` means GPT-5.6 Terra, and
+`xhigh` is the extra-high reasoning-effort tier above `high`; verify that exact
+effort token on the selected runtime before launch:
 
 - Multi-lane coordinator: Sol/xhigh
 - Simple, positively classified worker: Terra/high
@@ -42,6 +44,12 @@ expose these models. `Sol` means GPT-5.6 Sol and `Terra` means GPT-5.6 Terra:
 - High-risk or escalated work: Sol/xhigh
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
+
+The Sol/xhigh choices are deliberate conservative baselines for multi-lane
+coordination and independent adversarial QA, where shaping or challenging the
+plan is the high-leverage work. They do not imply maximum effort for every
+worker or for routine deterministic QA; task-specific routing still follows
+ambiguity, consequence, and verification strength.
 
 GPT-5.5 remains available only for an explicitly requested independent
 comparison or family-specific fallback.
@@ -67,11 +75,12 @@ authorization, concurrency, persistence, lifecycle, routing, or public-contract
 change, and easy failure detection and rollback. Every Terra worker receives a
 Sol-approved execution envelope with the exact goal and non-goals, owned paths,
 supported diagnosis, invariants, acceptance criteria, required verification,
-and stop conditions. Any unknown or uncertainty routes to Sol/high. Terra stops
-without editing further and returns to Sol when evidence contradicts the
-diagnosis, scope or blast radius grows, a high-risk boundary appears,
-verification weakens, or consequential judgment is required. High-risk or
-qualified escalated work uses Sol/xhigh.
+and stop conditions. Any present or disputed high-risk boundary routes to
+Sol/xhigh. Other unknown or uncertainty routes to Sol/high. Terra stops without
+editing further and returns to Sol when evidence contradicts the diagnosis,
+scope or blast radius grows, a high-risk boundary appears, verification
+weakens, or consequential judgment is required. High-risk or qualified
+escalated work uses Sol/xhigh.
 
 Luna is outside this conservative profile.
 
