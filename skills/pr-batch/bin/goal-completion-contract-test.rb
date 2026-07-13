@@ -1682,7 +1682,7 @@ class GoalCompletionContractTest < Minitest::Test
         completed_batch_audit_marker("batch_id: UNKNOWN\naudit_status: UNKNOWN\nverdict: UNKNOWN\nscope_evidence: UNKNOWN\nchecker_evidence: UNKNOWN\nfindings: UNKNOWN\nfollowups_dispositions: none"),
         true
       ],
-      "exact UNKNOWN findings remains structurally valid" => [
+      "partial UNKNOWN findings is cross-field inconsistent" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: UNKNOWN\nfollowups_dispositions: none"),
         false
       ]
