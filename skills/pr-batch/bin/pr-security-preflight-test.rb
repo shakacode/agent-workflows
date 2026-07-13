@@ -1270,7 +1270,7 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_missing_user_configs_use_empty_packaged_default_and_fail_closed_in_strict_trust
+  def test_missing_user_configs_use_metadata_only_packaged_default_and_fail_closed_for_humans
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
       home = File.join(dir, "home")
@@ -1345,7 +1345,7 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_packaged_fallback_stays_empty_and_blocks_maintainer_targets_in_strict_trust
+  def test_packaged_fallback_only_trusts_github_actions_as_metadata_and_blocks_maintainer_targets
     with_fake_gh("repo-local-maintainer-targets") do |env, _trust_config_path, _log_path, dir|
       packaged_config = YAML.safe_load_file(
         File.expand_path("../trusted-github-actors.yml", __dir__),
@@ -1353,7 +1353,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
       assert_equal [], packaged_config.fetch("trusted_users")
       assert_equal [], packaged_config.fetch("trusted_bots")
-      assert_equal [], packaged_config.fetch("trusted_metadata_bots")
+      assert_equal ["github-actions"], packaged_config.fetch("trusted_metadata_bots")
       assert_equal [], packaged_config.fetch("trusted_teams")
 
       consumer_root = File.join(dir, "consumer")
@@ -1378,6 +1378,33 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "- #701: untrusted, hidden, or unidentifiable participant(s)"
       assert_includes out, "- #701: untrusted comment/review author(s)"
       assert_includes out, "maintainer-login issue comment"
+    end
+  end
+
+  def test_packaged_fallback_treats_github_actions_comments_as_metadata_only
+    with_fake_gh("metadata-bot-comment") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      home = File.join(dir, "home")
+      FileUtils.mkdir_p([consumer_root, home])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => home),
+        "--repo",
+        "owner/repo",
+        "--strict-trust",
+        "123",
+        chdir: consumer_root
+      )
+
+      refute status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "justin808: not in trusted actor allowlist"
+      assert_includes out, "Untrusted comment/review queue: none"
+      assert_includes out, "Metadata-only comment/review queue:"
+      assert_includes out, "github-actions[bot] issue comment"
+      assert_includes out, "Suspicious text findings: none"
+      assert_includes out, "Suspicious text warnings:"
+      assert_includes out, "issue comment 701 by github-actions[bot]"
     end
   end
 

@@ -13,7 +13,8 @@ or maintainer review comments could block every batch until a human hand-wrote
 
 The durable fix is layered trust:
 
-1. Keep the packaged fallback empty.
+1. Keep the packaged fallback fail-closed: only `github-actions[bot]` is trusted
+   as metadata, with no trusted humans or actionable bots.
 2. Put cross-repo humans and review bots in a user-global trust config.
 3. Put repo-specific automation and maintainer teams in repo-local trust config.
 4. Add `--strict-trust` when non-allowlisted or hidden actor findings should
