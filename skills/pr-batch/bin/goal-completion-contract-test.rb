@@ -370,7 +370,8 @@ def well_formed_findings?(value, records: [])
 
   refs = completed_batch_audit_finding_refs(value, records:)
   structurally_valid_scalar?(value) && value.match?(/\AOUTSTANDING\s+\S(?:.*\S)?\z/) &&
-    !unknown_value?(value) && refs && !refs.empty? && refs.all? { |ref| safe_canonical_completed_batch_audit_ref?(ref) }
+    !unknown_value?(value) && refs && !refs.empty? && refs.all? { |ref| safe_canonical_completed_batch_audit_ref?(ref) } &&
+    refs.map(&:identity).uniq.length == refs.length
 end
 
 def completed_batch_audit_fields_are_consistent?(fields, records)
@@ -1817,6 +1818,27 @@ class GoalCompletionContractTest < Minitest::Test
       marker,
       "Conversation status: Follow-ups remain — #117."
     )
+  end
+
+  def test_completed_batch_audit_rejects_duplicate_canonical_finding_refs
+    fixtures = {
+      "literal whitespace-separated duplicate" => ["#117 #117", "none"],
+      "Unicode full-fold duplicate" => ["Straße STRASSE", "none"],
+      "whitespace-normalized duplicate matching one record" => [
+        "Issue  117 Issue\t117",
+        "ref: Issue 117; owner: maintainer; current status: open; disposition: fix; evidence: issue #117"
+      ],
+      "comma-separated duplicate" => ["#117, #117", "none"]
+    }
+
+    fixtures.each do |label, (findings, followups_dispositions)|
+      marker = completed_batch_audit_marker(
+        "batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #{findings}\nfollowups_dispositions: #{followups_dispositions}"
+      )
+
+      refute completed_batch_audit_marker_well_formed?(marker), "#{label} must be malformed"
+      refute completed_batch_audit_release_or_archive_ready?(marker), "#{label} must be non-ready"
+    end
   end
 
   def test_completed_batch_audit_rejects_control_line_breaks_in_every_scalar_and_record_value
