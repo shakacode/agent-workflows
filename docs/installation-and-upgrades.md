@@ -212,6 +212,48 @@ After the first sync, update the stack with `agent-stack sync`. Select companion
 mode once with `agent-stack sync --delivery-mode plugin-companion`; later syncs
 replay the install metadata when the option is omitted.
 
+### Verify The Stack After Sync
+
+`agent-stack sync` updates the source checkouts and installed tools. It does not
+restart the coordination dashboard or active agent runners.
+
+The installed `agent-dashboard` launcher must support the current-shell
+environment handoff described below before this sequence can recover rotated or
+removed API credentials. Upgrade that launcher first if it still relies on a
+long-lived background session's environment; restarting an older launcher can
+reuse the same stale credentials.
+
+Use this sequence after a sync:
+
+```bash
+agent-stack sync
+agent-coord doctor --deep
+agent-dashboard restart
+agent-dashboard status
+```
+
+Run the doctor and dashboard restart from the same terminal. If the coordination
+credentials were just provisioned or rotated, first open a new terminal so the
+current `AGENT_COORD_API_URL` and `AGENT_COORD_API_TOKEN` are loaded from the
+machine's shell configuration. Do not restart the dashboard until
+`agent-coord doctor --deep` succeeds. When a wrapper syncs multiple machines,
+repeat the doctor, restart, and status checks on each machine; a remote source
+sync does not refresh that machine's existing dashboard process.
+
+A background launcher must copy the invoking shell's current coordination API
+environment into the new dashboard process. In particular, a tmux-based
+launcher must securely inject the API URL and token into the new process instead
+of relying on the long-lived tmux server environment, which may still contain an
+older token. Tokens must not appear in process arguments or pane commands. The
+launcher must also pass empty values when the invoking shell has unset the HTTP
+backend so stale tmux values cannot select it again.
+
+If the dashboard reports `401` while `agent-coord doctor --deep` succeeds in the
+same terminal, restart only the dashboard. Restarting Codex does not refresh the
+dashboard process. Existing agent tasks also do not need to restart merely
+because the stack was synced; follow [Active Batches](#active-batches) when a
+task genuinely needs newly installed workflow instructions.
+
 The installer writes:
 
 - `<target>/skills/*` in `flat` delivery mode only
