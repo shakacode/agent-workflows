@@ -218,7 +218,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes normalized_skill, "After successful preflight, gather report metadata only."
     assert_includes skill, "GH_HOST=\"${GH_HOST}\" gh pr view \"${PR_NUMBER}\" --repo \"${REPO}\""
     assert_includes skill, "number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,statusCheckRollup,reviews,closingIssuesReferences"
-    assert_includes skill, "statusCheckRollup: [.statusCheckRollup[]? | {name: (.name // .context), state: (.conclusion // .status // .state)}]"
+    assert_includes skill, "statusCheckRollup: [.statusCheckRollup[]? | {name: (.name // .context), state: ((.conclusion | select(. != null and . != \"\")) // .status // .state)}]"
     assert_includes skill, "reviews: [.reviews[]? | {actor: .author.login, state}]"
     assert_includes skill, "GH_HOST=\"${GH_HOST}\" gh api --hostname \"${GH_HOST}\" \"repos/${REPO}/pulls/${PR_NUMBER}\""
     assert_includes skill, "author_association"
@@ -232,6 +232,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     payload = {
       "statusCheckRollup" => [
         { "name" => "build", "status" => "COMPLETED", "conclusion" => "SUCCESS" },
+        { "name" => "deploy", "status" => "IN_PROGRESS", "conclusion" => "" },
         { "context" => "lint", "state" => "SUCCESS" }
       ]
     }
@@ -242,6 +243,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     entries = JSON.parse(output).fetch("statusCheckRollup")
     assert_equal [
       { "name" => "build", "state" => "SUCCESS" },
+      { "name" => "deploy", "state" => "IN_PROGRESS" },
       { "name" => "lint", "state" => "SUCCESS" }
     ], entries
     entries.each do |entry|
