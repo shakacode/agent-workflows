@@ -129,6 +129,52 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     refute_path_exists sentinel
   end
 
+  def test_degraded_source_blocks_hardlinked_installed_delegate
+    sentinel = path("hardlinked-workflow-executed")
+    source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
+    installed = path("target/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(source_helper))
+    write_delegate(source_helper, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    FileUtils.rm_f(installed)
+    File.link(source_helper, installed)
+
+    orchestrator.call
+
+    refute_path_exists sentinel
+  end
+
+  def test_degraded_source_allows_external_copy_of_source_delegate
+    sentinel = path("copied-workflow-executed")
+    source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
+    installed = path("target/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(source_helper))
+    write_delegate(source_helper, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    FileUtils.rm_f(installed)
+    FileUtils.cp(source_helper, installed, preserve: true)
+
+    refute File.identical?(source_helper, installed)
+    orchestrator.call
+
+    assert_path_exists sentinel
+  end
+
+  def test_healthy_source_allows_hardlinked_installed_delegate
+    sentinel = path("healthy-hardlinked-workflow-executed")
+    source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
+    installed = path("target/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(source_helper))
+    write_delegate(source_helper, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    system("git", "-C", path("src/agent-workflows"), "add", "bin/agent-workflows-doctor", exception: true)
+    system("git", "-C", path("src/agent-workflows"), "commit", "--quiet", "-m", "delegate fixture", exception: true)
+    FileUtils.rm_f(installed)
+    File.link(source_helper, installed)
+
+    payload = orchestrator.call
+
+    assert_path_exists sentinel
+    assert_equal "healthy", payload.fetch("components").first.fetch("status")
+  end
+
   def test_degraded_sources_still_allow_external_installed_delegates
     delegates = [
       ["agent-workflows", path("target/bin/agent-workflows-doctor"), "workflows.installation"],

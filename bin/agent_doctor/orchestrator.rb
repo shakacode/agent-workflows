@@ -123,6 +123,9 @@ module AgentDoctor
       resolved_source = File.realpath(source)
       candidate = File.expand_path(executable)
       visited = {}
+      source_helper = File.join(resolved_source, "bin", File.basename(candidate))
+
+      return true if identical_file?(candidate, source_helper)
 
       loop do
         return true if within_source?(candidate, resolved_source)
@@ -135,6 +138,12 @@ module AgentDoctor
         visited[candidate] = true
         candidate = File.expand_path(File.readlink(candidate), resolved_parent)
       end
+    rescue SystemCallError
+      false
+    end
+
+    def identical_file?(first, second)
+      File.identical?(first, second)
     rescue SystemCallError
       false
     end
