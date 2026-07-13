@@ -204,6 +204,19 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     assert_equal "healthy", payload.fetch("components").first.fetch("status")
   end
 
+  def test_degraded_source_reports_missing_delegate_instead_of_source_trust_failure
+    File.open(path("src/agent-workflows/README.md"), "a") { |file| file.puts "tracked dirty change" }
+    FileUtils.rm_f(path("target/bin/agent-workflows-doctor"))
+
+    payload = orchestrator.call
+    doctor = payload.fetch("components").first.fetch("checks").find do |check|
+      check.fetch("id") == "agent-workflows.doctor"
+    end
+
+    assert_equal "component doctor executable is missing", doctor.fetch("summary")
+    assert_equal "Install or repair the component doctor, then rerun `agent-stack doctor`.", doctor.fetch("guidance")
+  end
+
   def test_degraded_sources_still_allow_external_installed_delegates
     delegates = [
       ["agent-workflows", path("target/bin/agent-workflows-doctor"), "workflows.installation"],

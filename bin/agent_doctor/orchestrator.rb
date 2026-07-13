@@ -142,7 +142,11 @@ module AgentDoctor
     end
 
     def source_contains_inode?(candidate, source)
-      candidate_stat = File.stat(candidate)
+      candidate_stat = begin
+        File.stat(candidate)
+      rescue Errno::ENOENT, Errno::ENOTDIR
+        return false
+      end
       source_stat = File.stat(source)
       return false if candidate_stat.nlink <= 1 || candidate_stat.dev != source_stat.dev
 
