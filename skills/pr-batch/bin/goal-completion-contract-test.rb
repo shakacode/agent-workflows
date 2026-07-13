@@ -23,14 +23,18 @@ COMPACT_CONTRACT_LINE = "GMCC-v1: `waiting-on-checks-or-review`; pending/missing
                         "`ready-no-merge-authority` only without merge auth; " \
                         "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; " \
                         "target closed out; issue closed where applicable."
+CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, unless a real blocker prevents it, " \
+                                 "done means the PR is merged and closed out when present, the target is " \
+                                 "closed out, and the issue is closed where applicable."
+LEGACY_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done means merged and closed out " \
+                              "unless a real blocker prevents it."
 CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                           "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
                           "CI or configured review agents, unresolved current-head review threads, failures, " \
                           "or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE " \
                           "with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean " \
                           "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
-                          "`merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done " \
-                          "means merged and closed out unless a real blocker prevents it."
+                          "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
   "`waiting-on-checks-or-review`",
   "pending/missing/untriaged current-head CI/configured review agents",
@@ -114,6 +118,14 @@ end
 def invalid_readiness_marker_values(text)
   allowed = CANONICAL_READINESS_STATES + ["UNKNOWN"]
   text.scan(READINESS_STATE_KEYS).flatten.reject { |value| allowed.include?(value) }.uniq
+end
+
+def canonical_auto_merge_parity_errors(text)
+  errors = []
+  count = text.scan(CANONICAL_AUTO_MERGE_EXPANSION).length
+  errors << "expected 2 aligned canonical closeout copies, found #{count}" unless count == 2
+  errors << "legacy generic closeout sentence remains" if text.include?(LEGACY_AUTO_MERGE_EXPANSION)
+  errors
 end
 
 class GoalCompletionContractTest < Minitest::Test
@@ -474,9 +486,8 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_auto_merge_done_means_merged_or_blocked
-    assert_text_includes @workflow_contract_section,
-                         "With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it",
-                         "workflows/pr-processing.md"
+    assert_empty canonical_auto_merge_parity_errors(@workflow_contract_section),
+                 "canonical expansion and pressure check must preserve PR, target, and issue closeout parity"
 
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
@@ -489,6 +500,17 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "target closed out", label
       assert_text_includes text, "issue closed where applicable", label
     end
+  end
+
+  def test_canonical_auto_merge_parity_rejects_legacy_closeout_mutation
+    legacy_mutation = @workflow_contract_section.sub(
+      CANONICAL_AUTO_MERGE_EXPANSION,
+      LEGACY_AUTO_MERGE_EXPANSION
+    )
+
+    errors = canonical_auto_merge_parity_errors(legacy_mutation)
+    assert_includes errors, "expected 2 aligned canonical closeout copies, found 1"
+    assert_includes errors, "legacy generic closeout sentence remains"
   end
 
   def test_goal_prompts_route_final_handoff_to_canonical_closeout

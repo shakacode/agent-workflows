@@ -955,13 +955,13 @@ GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head C
 
 `GMCC-v1` expands to this canonical contract:
 
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
 
 Pressure checks:
 
 - A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
-- With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+- With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
 
 ### Coordination State
 
