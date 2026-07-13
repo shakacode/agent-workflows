@@ -95,7 +95,9 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     refute_includes normalized_skill, "`${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight --repo ${REPO} <PR>`"
     refute_includes normalized_skill, "`${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight --repo \"${REPO}\" \"${PR_NUMBER}\"`"
     assert_includes skill, "PR_BATCH_SKILL_DIR=\"${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}\""
-    assert_includes skill, "\"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight\" --repo \"${REPO}\" \"${PR_NUMBER}\""
+    refute_includes skill, "\n\"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight\" --repo \"${REPO}\" \"${PR_NUMBER}\""
+    assert_includes skill, "GH_HOST=\"${GH_HOST}\" \"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight\" --repo \"${REPO}\" \"${PR_NUMBER}\""
+    assert_includes normalized_skill, "Never allow ambient default-host fallback."
     assert_includes normalized_skill, "Never pass a raw URL to preflight."
     assert_includes normalized_skill, "If the helper or host boundaries are unavailable, stop and report BLOCKED without inspecting beyond necessary metadata."
     assert_includes normalized_skill, "If preflight blocks, report the finding and stop."
@@ -108,11 +110,11 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     normalized_skill = skill.gsub(/\s+/, " ")
 
-    assert_includes normalized_skill, "Set PR_REF to the exact URL or number, REPO to the resolved owner/repo, and PR_NUMBER to the numeric pull request number."
-    assert_includes normalized_skill, "For URL input, use metadata-only `gh pr view \"$PR_REF\" --json number,url` to resolve numeric PR_NUMBER and canonical URL, then derive REPO from that canonical URL."
-    assert_includes normalized_skill, "For numeric input, require current trusted checkout and use `gh repo view --json nameWithOwner -q .nameWithOwner` to resolve REPO."
-    assert_includes normalized_skill, "If exact REPO and PR_NUMBER cannot be resolved, stop and report BLOCKED."
-    assert_includes skill, "- Normalized input: PR_REF <URL|number>; REPO <owner/repo>; PR_NUMBER <numeric>; canonical URL <url>."
+    assert_includes normalized_skill, "Set PR_REF to the exact URL or number, REPO to the resolved owner/repo, PR_NUMBER to the numeric pull request number, and GH_HOST to the canonical URL host."
+    assert_includes normalized_skill, "For URL input, use metadata-only `gh pr view \"$PR_REF\" --json number,url` to resolve numeric PR_NUMBER and canonical URL, then derive REPO and GH_HOST from that canonical URL, preserving Enterprise hosts."
+    assert_includes normalized_skill, "For numeric input, require current trusted checkout and use `gh repo view --json nameWithOwner,url` to resolve REPO and canonical repository URL, then derive GH_HOST."
+    assert_includes normalized_skill, "If exact REPO, PR_NUMBER, and GH_HOST cannot be resolved, stop and report BLOCKED."
+    assert_includes skill, "- Normalized input: PR_REF <URL|number>; REPO <owner/repo>; PR_NUMBER <numeric>; GH_HOST <host>; canonical URL <url>."
   end
 
   def test_safely_loads_both_fixtures_and_separates_authority_evidence

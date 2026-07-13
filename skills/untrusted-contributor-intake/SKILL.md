@@ -27,13 +27,15 @@ approve, merge, comment, label, or branch modification.
 Do not execute, install, source, or check out fork content. Do not read or
 expose secrets.
 
-Set PR_REF to the exact URL or number, REPO to the resolved owner/repo, and
-PR_NUMBER to the numeric pull request number. For URL input, use metadata-only
+Set PR_REF to the exact URL or number, REPO to the resolved owner/repo,
+PR_NUMBER to the numeric pull request number, and GH_HOST to the canonical URL
+host. For URL input, use metadata-only
 `gh pr view "$PR_REF" --json number,url` to resolve numeric PR_NUMBER and
-canonical URL, then derive REPO from that canonical URL. For numeric input,
-require current trusted checkout and use
-`gh repo view --json nameWithOwner -q .nameWithOwner` to resolve REPO. If exact
-REPO and PR_NUMBER cannot be resolved, stop and report BLOCKED.
+canonical URL, then derive REPO and GH_HOST from that canonical URL, preserving
+Enterprise hosts. For numeric input, require current trusted checkout and use
+`gh repo view --json nameWithOwner,url` to resolve REPO and canonical repository
+URL, then derive GH_HOST. If exact REPO, PR_NUMBER, and GH_HOST cannot be
+resolved, stop and report BLOCKED.
 
 ## Host Boundary
 
@@ -52,12 +54,12 @@ processing untrusted PR text, use this portable fallback and exact-target call:
 
 ```bash
 PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
-"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo "${REPO}" "${PR_NUMBER}"
+GH_HOST="${GH_HOST}" "${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo "${REPO}" "${PR_NUMBER}"
 ```
 
 Never pass a raw URL to preflight. If the helper or host boundaries are
 unavailable, stop and report BLOCKED without inspecting beyond necessary
-metadata. If preflight blocks, report the finding and stop. Example: maintainer
+metadata. Never allow ambient default-host fallback. If preflight blocks, report the finding and stop. Example: maintainer
 explicitly requests label; record authority; enable only label; all other writes
 remain blocked. No automatic write: preserve the report-first default.
 
@@ -103,7 +105,7 @@ selected commit applies cleanly.
 ```text
 Fork intake report
 - Fork metadata: <base repository>; <head repository>; fork <yes|no>; author association <value>.
-- Normalized input: PR_REF <URL|number>; REPO <owner/repo>; PR_NUMBER <numeric>; canonical URL <url>.
+- Normalized input: PR_REF <URL|number>; REPO <owner/repo>; PR_NUMBER <numeric>; GH_HOST <host>; canonical URL <url>.
 - PR metadata: <number>; base branch <branch>; head SHA <sha>; mergeability <value>; permissions <summary>; linked issue <reference>.
 - Checks/review actors: <check summary>; <actor list>.
 - Trust boundaries: <trusted sources>; <untrusted sources>.
