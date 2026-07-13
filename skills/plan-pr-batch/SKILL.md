@@ -354,6 +354,9 @@ Plan a PR batch
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
+   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+
+Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
 ## Canonical Readiness Vocabulary
 
@@ -385,6 +388,21 @@ or validator, but they are not required and JSON is not mandatory.
   `UNKNOWN` route out of a ready prompt.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
+- While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
+- Planning-chat role selector: default to `prompt-only`.
+- While the chat remains a planning chat, select `parent-orchestrator` only when the planner explicitly retains one or more cross-batch dependency, release, or shared-follow-up responsibilities.
+- For `prompt-only`, durable handoff is satisfied when every goal prompt is delivered or durably registered for a named distinct future batch coordinator and stable batch/lane/dependency/ownership state is durable outside the chat. The future coordinator need not be launched; the planner waits for neither worker start nor completion, and prompt delivery or durable registration does not start workers.
+- After same-chat self-launch, transition to the batch-coordinator lifecycle only when no cross-batch, dependency, release, or shared-follow-up responsibility is retained.
+- While the chat remains a planning chat, Retained responsibilities: list each exact retained responsibility.
+- While the chat remains a planning chat, Archive/closeout owner: prompt-only chat archives; parent-orchestrator archives after reconciliation.
+- After same-chat self-launch with no retained responsibility, record: Lifecycle transition: transitioned-to-batch-coordinator. Planning-chat role: not applicable after self-launch. Archive/closeout owner: batch coordinator. Retained responsibilities: none (no cross-batch, dependency, release, or shared-follow-up responsibility is retained).
+- This is a transition out of planning, not a third planning role; neither `prompt-only` nor `parent-orchestrator` is selectable after the transition.
+- For same-chat launch with retained cross-batch, dependency, release, or shared-follow-up duties, select and record `parent-orchestrator` immediately because retained duties determine the mandatory planning role; list each exact retained responsibility, do not use `prompt-only`, and do not record `Retained responsibilities: none`.
+- Only a retained-duty `parent-orchestrator` is BLOCKED before launch of a distinct batch coordinator succeeds: it remains read-only and starts no workers. It records the exact distinct-coordinator launch blocker/follow-up and uses final `Conversation status: Follow-ups remain — <each exact action or blocker>.`
+- Once that launch succeeds, workers may start under the distinct batch coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only.
+- Prompt-only conversation-status/archive expectation: use exactly `Conversation status: Ready for archiving.` only when all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat; no unhanded-off question or planner-owned `UNKNOWN` remains; a durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
+- Parent-orchestrator conversation-status/archive expectation: clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then use exactly `Conversation status: Ready for archiving.` Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
+- Keep this lifecycle metadata in the Batch Plan, outside the generated goal prompt.
 - `merge_authority`:
 - Concurrent activity and dependency status:
 - Coordination hooks, including backend claim exclusions:
