@@ -139,7 +139,7 @@ decision authorize an authority-dependent disposition.
 After successful preflight, gather report metadata only.
 
 ```bash
-GH_HOST="${GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${REPO}" --json number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,statusCheckRollup,reviews,closingIssuesReferences --jq '{number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,statusCheckRollup: [.statusCheckRollup[]? | {name, state}],reviews: [.reviews[]? | {actor: .author.login, state}],closingIssuesReferences}'
+GH_HOST="${GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${REPO}" --json number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,statusCheckRollup,reviews,closingIssuesReferences --jq '{number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,statusCheckRollup: [.statusCheckRollup[]? | {name: (.name // .context), state: (.conclusion // .status // .state)}],reviews: [.reviews[]? | {actor: .author.login, state}],closingIssuesReferences}'
 GH_HOST="${GH_HOST}" gh api --hostname "${GH_HOST}" "repos/${REPO}/pulls/${PR_NUMBER}" --jq '{author_association,base_repository: .base.repo.full_name,base_fork: .base.repo.fork,head_repository: .head.repo.full_name,head_fork: .head.repo.fork}'
 GH_HOST="${GH_HOST}" gh api --hostname "${GH_HOST}" "repos/${REPO}" --jq '{permissions}'
 ```
