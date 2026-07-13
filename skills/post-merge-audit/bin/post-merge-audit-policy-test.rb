@@ -34,10 +34,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   OBSOLETE_BATCH_IDENTITY_FIELD = "batch_id: <id|UNKNOWN>"
   REQUIRED_FINDINGS_FIELD = "findings: <none|OUTSTANDING concise refs|UNKNOWN>"
   OBSOLETE_FINDINGS_FIELD = "findings: <none|concise refs|UNKNOWN>"
-  REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>"
+  REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>"
   OBSOLETE_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated terminal disposition records"
   REQUIRED_STRICT_MARKER_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
-  REQUIRED_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Ruby full case-fold (`downcase(:fold)`). Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
+  REQUIRED_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
+  REQUIRED_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
   REQUIRED_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
   REQUIRED_SINGLE_LINE_VALUE_RULE = "Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens."
   REQUIRED_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
@@ -186,6 +187,43 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
   end
 
+  def test_completed_batch_only_guard_structurally_contains_ownership_and_marker_rules
+    text = File.read(File.join(ROOT, "workflows/post-merge-audit.md"), encoding: "UTF-8")
+    guarded_block = text.match(
+      /^- In completed-batch mode only:\n(?<body>(?:  .*\n|\n)*)^- Create follow-up issues by default/m
+    )
+
+    refute_nil guarded_block, "completed-batch-only guard must use a nested Markdown block before general follow-up issue rules"
+
+    body = guarded_block[:body]
+    [
+      REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP,
+      COMPLETED_BATCH_AUDIT_MARKER_HEADER,
+      REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD
+    ].each do |rule|
+      assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
+    end
+    nested_marker_rule = "  - Only in completed-batch mode, include this visible report marker and fill every field explicitly; use `none` rather than omitting a field:\n\n"
+    indented_marker_block = [
+      "    ```markdown\n",
+      "    #{COMPLETED_BATCH_AUDIT_MARKER_HEADER}\n",
+      "    #{REQUIRED_BATCH_IDENTITY_FIELD}\n",
+      "    audit_status: <complete|blocked|UNKNOWN>\n",
+      "    verdict: <clean|follow-ups-remain|UNKNOWN>\n",
+      "    scope_evidence: <concise refs|UNKNOWN>\n",
+      "    checker_evidence: <identity/route/independence refs|UNKNOWN>\n",
+      "    #{REQUIRED_FINDINGS_FIELD}\n",
+      "    #{REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD}\n",
+      "    -->\n",
+      "    ```\n"
+    ].join
+
+    assert_includes body, nested_marker_rule + indented_marker_block,
+                    "completed-batch-only guard must keep the marker rule, fence, wrapper, and every marker line four-space indented"
+    refute_includes body, REQUIRED_DEFAULT,
+                    "general follow-up issue rules must remain outside the completed-batch-only guard"
+  end
+
   def test_primary_and_mirror_fail_closed_before_marking_a_conversation_archive_ready
     [
       "skills/post-merge-audit/SKILL.md",
@@ -260,6 +298,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} must not require terminal-only follow-up statuses"
       assert_includes text, REQUIRED_STRICT_MARKER_REPLAY_RULE,
                       "#{relative_path} should make exact marker replay fail closed"
+      assert_includes text, REQUIRED_RECORD_DELIMITER_RULE,
+                      "#{relative_path} should explicitly reserve record delimiters"
       assert_includes text, REQUIRED_STRUCTURAL_VS_READINESS_RULE,
                       "#{relative_path} should distinguish structural marker validity from readiness"
       assert_includes text, REQUIRED_BATCH_IDENTITY_REPLAY_RULE,

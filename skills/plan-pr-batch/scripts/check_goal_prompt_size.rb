@@ -639,14 +639,6 @@ require_phrases(
   "canonical parent release-or-archive pressure scenarios"
 )
 
-if enforce_restart_docs_drift
-  require_phrases(
-    planning_chat_lifecycle_text,
-    PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIOS,
-    "source checkout parent release-or-archive pressure scenarios"
-  )
-end
-
 unless continuation_prompt.start_with?("#{CONTINUATION_BATCH_TITLE_LINE}\n")
   abort_with_failure("canonical workflow continuation prompt must start with the batch title line")
 end

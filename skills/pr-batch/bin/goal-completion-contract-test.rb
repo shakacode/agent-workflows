@@ -95,7 +95,8 @@ COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE = "Replay only the exact versioned `<!--
 COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE = "A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`."
 COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE = "Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records."
 COMPLETED_BATCH_AUDIT_RECORD_GRAMMAR_RULE = "Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid."
-COMPLETED_BATCH_AUDIT_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Ruby full case-fold (`downcase(:fold)`). Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
+COMPLETED_BATCH_AUDIT_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
+COMPLETED_BATCH_AUDIT_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
 COMPLETED_BATCH_AUDIT_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
 COMPLETED_BATCH_AUDIT_SINGLE_LINE_VALUE_RULE = "Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens."
 COMPLETED_BATCH_AUDIT_STRUCTURAL_READINESS_RULE = "A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker."
@@ -430,7 +431,7 @@ def followups_disposition_records(value)
 
   seen_refs = {}
   records.map do |record|
-    fields = record.split(/\s*;\s*/).each_with_object({}) do |entry, parsed|
+    fields = record.split(/\s*;\s*/, -1).each_with_object({}) do |entry, parsed|
       match = entry.match(/\A(ref|owner|current status|disposition|evidence):\s*(.*)\z/i)
       break nil unless match
 
@@ -1487,6 +1488,66 @@ class GoalCompletionContractTest < Minitest::Test
       refute completed_batch_audit_release_or_archive_ready?(marker),
              "#{label} must not replay as release/archive-ready"
     end
+  end
+
+  def test_completed_batch_audit_record_field_delimiters_are_rejected
+    ["ref", "owner", "current status", "disposition", "evidence"].each do |field|
+      [";", "|"].each do |delimiter|
+        field_value = "safe#{delimiter}value"
+        record = {
+          "ref" => "#117",
+          "owner" => "maintainer",
+          "current status" => "open",
+          "disposition" => "fix",
+          "evidence" => "issue #117"
+        }
+        record[field] = field_value
+        marker = completed_batch_audit_marker(
+          "batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: ref: #{record.fetch('ref')}; owner: #{record.fetch('owner')}; current status: #{record.fetch('current status')}; disposition: #{record.fetch('disposition')}; evidence: #{record.fetch('evidence')}"
+        )
+
+        refute completed_batch_audit_marker_well_formed?(marker),
+               "#{field} containing #{delimiter.inspect} must be rejected"
+      end
+    end
+
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md")),
+      "workflows/post-merge-audit.md" => read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md"))
+    }.each do |label, text|
+      assert_text_includes text.gsub(/\s+/, " "), COMPLETED_BATCH_AUDIT_RECORD_DELIMITER_RULE, label
+    end
+
+    ["Issue, 117", "Issue: 117"].each do |ref|
+      marker = completed_batch_audit_marker(
+        "batch_id: batch:117; lane:closeout\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #{ref}\nfollowups_dispositions: ref: #{ref}; owner: maintainer; current status: open; disposition: fix; evidence: issue #117"
+      )
+
+      assert completed_batch_audit_marker_well_formed?(marker),
+             "#{ref.inspect} remains an accepted ref while coordination-backed batch_id semicolons remain opaque"
+    end
+
+    terminal_record = "ref: #117; owner: maintainer; current status: terminal; disposition: accepted-waiver; evidence: issue #117"
+    {
+      "trailing semicolon" => "#{terminal_record};",
+      "leading semicolon" => "; #{terminal_record}",
+      "doubled semicolon" => terminal_record.sub("; owner", ";; owner")
+    }.each do |label, record|
+      marker = completed_batch_audit_marker(
+        "batch_id: batch-117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: #{record}"
+      )
+
+      refute completed_batch_audit_marker_well_formed?(marker), "#{label} terminal record must be malformed"
+      refute completed_batch_audit_release_or_archive_ready?(marker), "#{label} terminal record must be non-ready"
+    end
+
+    valid_terminal_marker = completed_batch_audit_marker(
+      "batch_id: batch-117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: #{terminal_record}"
+    )
+    assert completed_batch_audit_marker_well_formed?(valid_terminal_marker)
+    assert completed_batch_audit_release_or_archive_ready?(valid_terminal_marker)
   end
 
   def test_completed_batch_audit_marker_well_formedness_distinguishes_nonterminal_followups_from_readiness
