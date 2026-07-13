@@ -20,7 +20,7 @@ PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clea
 COMPACT_CONTRACT_LINE = "GMCC-v2: waiting-on-checks-or-review; pending/missing/untriaged " \
                         "current-head CI/configured review agents; unresolved current-head review threads; " \
                         "fail/UNKNOWN=>NOT COMPLETE; poll/fix; bounded-watch resume handoff; " \
-                        "non-user block=>upsert 1 15m current-thread watch if able, else manual resume; " \
+                        "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume; " \
                         "stop unblocked/done; ready-no-merge-authority iff no auth; " \
                         "auto_merge_when_gates_pass=>no real blocker: merge+close any PR; " \
                         "close target+any issue."
@@ -34,8 +34,9 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "CI or configured review agents, unresolved current-head review threads, failures, " \
                           "or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE " \
                           "with resume instructions. When the overall Goal is genuinely blocked by a condition " \
-                          "that can clear without user input and the host " \
-                          "supports recurring current-thread wake-ups, create or update one active 15-minute " \
+                          "that can clear without user input, treat the host's recurring automation/wakeup " \
+                          "capability as available only if it can re-enter this same thread on schedule and be inspected, " \
+                          "updated, and stopped; create or update one active 15-minute " \
                           "current-thread monitor before the blocked handoff; do not create a duplicate. On each " \
                           "wake, refresh live blocker evidence and resume work if a blocker clears. Stop the monitor " \
                           "when the goal is unblocked or before completing it. `blocked-user-input` does not start " \
@@ -51,7 +52,7 @@ COMPACT_CONTRACT_INVARIANTS = [
   "unresolved current-head review threads",
   "fail/UNKNOWN=>NOT COMPLETE",
   "poll/fix; bounded-watch resume handoff",
-  "non-user block=>upsert 1 15m current-thread watch if able, else manual resume",
+  "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume",
   "stop unblocked/done",
   "ready-no-merge-authority iff no auth",
   "auto_merge_when_gates_pass=>no real blocker:",
@@ -210,12 +211,19 @@ class GoalCompletionContractTest < Minitest::Test
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
       line = compact_contract_line(text)
-      assert_text_includes line, "non-user block=>upsert 1 15m current-thread watch if able, else manual resume",
+      assert_text_includes line, "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume",
                            "compact completion contract"
       refute_includes line, "`blocked`=>", "compact completion contract"
-      assert_text_includes line, "else manual resume", "compact completion contract"
+      refute_includes line, "non-user block=>", "compact completion contract"
+      assert_text_includes line, "else exact manual resume", "compact completion contract"
       assert_text_includes line, "stop unblocked/done", "compact completion contract"
     end
+
+    assert_text_includes @workflow_contract_section, "recurring automation/wakeup capability",
+                         "canonical completion contract"
+    assert_text_includes @workflow_contract_section,
+                         "re-enter this same thread on schedule and be inspected, updated, and stopped",
+                         "canonical completion contract"
   end
 
   def test_continuation_prompt_preserves_blocked_goal_monitor_semantics
@@ -227,6 +235,10 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_text_includes continuation, "overall goal is genuinely blocked", "continuation prompt"
     assert_text_includes continuation, "can clear without user input", "continuation prompt"
+    assert_text_includes continuation, "recurring automation/wakeup capability", "continuation prompt"
+    assert_text_includes continuation,
+                         "re-enter this same thread on schedule and be inspected, updated, and stopped",
+                         "continuation prompt"
     assert_text_includes continuation, "reuse or create one 15-minute current-thread monitor", "continuation prompt"
     assert_text_includes continuation, "do not create a duplicate", "continuation prompt"
     assert_text_includes continuation, "On each wake", "continuation prompt"
