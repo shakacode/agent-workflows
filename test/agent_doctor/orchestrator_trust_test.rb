@@ -143,6 +143,20 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     refute_path_exists sentinel
   end
 
+  def test_degraded_source_blocks_installed_delegate_hardlinked_to_renamed_checkout_file
+    sentinel = path("renamed-hardlinked-workflow-executed")
+    source_file = path("src/agent-workflows/tools/renamed-helper")
+    installed = path("target/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(source_file))
+    write_delegate(source_file, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    FileUtils.rm_f(installed)
+    File.link(source_file, installed)
+
+    orchestrator.call
+
+    refute_path_exists sentinel
+  end
+
   def test_degraded_source_allows_external_copy_of_source_delegate
     sentinel = path("copied-workflow-executed")
     source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
@@ -153,6 +167,21 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     FileUtils.cp(source_helper, installed, preserve: true)
 
     refute File.identical?(source_helper, installed)
+    orchestrator.call
+
+    assert_path_exists sentinel
+  end
+
+  def test_degraded_source_allows_delegate_hardlinked_only_to_external_path
+    sentinel = path("external-hardlinked-workflow-executed")
+    external = path("trusted/renamed-helper")
+    installed = path("target/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(external))
+    write_delegate(external, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    FileUtils.rm_f(installed)
+    File.link(external, installed)
+    File.open(path("src/agent-workflows/README.md"), "a") { |file| file.puts "tracked dirty change" }
+
     orchestrator.call
 
     assert_path_exists sentinel

@@ -123,9 +123,8 @@ module AgentDoctor
       resolved_source = File.realpath(source)
       candidate = File.expand_path(executable)
       visited = {}
-      source_helper = File.join(resolved_source, "bin", File.basename(candidate))
 
-      return true if identical_file?(candidate, source_helper)
+      return true if source_contains_inode?(candidate, resolved_source)
 
       loop do
         return true if within_source?(candidate, resolved_source)
@@ -142,10 +141,27 @@ module AgentDoctor
       false
     end
 
-    def identical_file?(first, second)
-      File.identical?(first, second)
-    rescue SystemCallError
+    def source_contains_inode?(candidate, source)
+      candidate_stat = File.stat(candidate)
+      source_stat = File.stat(source)
+      return false if candidate_stat.nlink <= 1 || candidate_stat.dev != source_stat.dev
+
+      directories = [source]
+      until directories.empty?
+        directory = directories.pop
+        entries = Dir.children(directory)
+        entries.each do |entry|
+          path = File.join(directory, entry)
+          entry_stat = File.lstat(path)
+          return true if entry_stat.dev == candidate_stat.dev && entry_stat.ino == candidate_stat.ino
+
+          directories << path if entry_stat.directory? && entry_stat.dev == candidate_stat.dev
+        end
+      end
+
       false
+    rescue SystemCallError
+      true
     end
 
     def within_source?(path, source)
