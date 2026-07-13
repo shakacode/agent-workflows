@@ -91,10 +91,10 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     end
 
     payload = orchestrator.call
+    component_statuses = payload.fetch("components").map { |component| component.fetch("status") }
 
     sentinels.each { |sentinel| refute_path_exists sentinel }
-    assert_equal %w[failed failed degraded],
-                 (payload.fetch("components").map { |component| component.fetch("status") })
+    assert_equal %w[failed failed degraded], component_statuses
   end
 
   def test_off_main_source_blocks_source_resident_delegate
@@ -126,10 +126,10 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     end
 
     payload = orchestrator.call
+    component_statuses = payload.fetch("components").map { |component| component.fetch("status") }
 
     sentinels.each { |sentinel| assert_path_exists sentinel }
-    assert_equal %w[degraded degraded degraded],
-                 (payload.fetch("components").map { |component| component.fetch("status") })
+    assert_equal %w[degraded degraded degraded], component_statuses
   end
 
   private
