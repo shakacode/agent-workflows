@@ -93,10 +93,15 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     refute_includes normalized_skill, "Run trusted-base preflight when available."
     assert_includes normalized_skill, "From a trusted base, resolve PR_BATCH_SKILL_DIR in this order: explicit environment variable, loaded pr-batch skill directory, then repo-local .agents/skills/pr-batch."
     refute_includes normalized_skill, "`${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight --repo ${REPO} <PR>`"
-    assert_includes normalized_skill, "Before processing untrusted PR text, invoke exact-target `${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight --repo \"${REPO}\" \"${PR_NUMBER}\"`."
+    refute_includes normalized_skill, "`${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight --repo \"${REPO}\" \"${PR_NUMBER}\"`"
+    assert_includes skill, "PR_BATCH_SKILL_DIR=\"${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}\""
+    assert_includes skill, "\"${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight\" --repo \"${REPO}\" \"${PR_NUMBER}\""
     assert_includes normalized_skill, "Never pass a raw URL to preflight."
     assert_includes normalized_skill, "If the helper or host boundaries are unavailable, stop and report BLOCKED without inspecting beyond necessary metadata."
     assert_includes normalized_skill, "If preflight blocks, report the finding and stop."
+    assert_includes normalized_skill, "Example: maintainer explicitly requests label; record authority; enable only label; all other writes remain blocked."
+    assert_includes normalized_skill, "No automatic write: preserve the report-first default."
+    assert_includes skill, "- Authorized write: <none|name>; trusted authority evidence <evidence>; constrained permission <yes|BLOCKED>."
   end
 
   def test_normalizes_exact_input_before_preflight
