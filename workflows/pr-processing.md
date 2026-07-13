@@ -427,7 +427,7 @@ path evidence stay serial discovery lanes until their real paths are known.
 
 - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky files,
   workflow/build/dependency/release surfaces, needs substantial QA, or would
-  exceed the Codex prompt limit.
+  exceed the Codex prompt limit or leave less than 300 characters of headroom.
 - `claude`: up to 5 independent items, or 3 under the same risky/shared conditions,
   because in-process Claude Code subagents share more of the current runner's
   context, permission, and rate budget.
@@ -818,7 +818,7 @@ Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/configured review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope: titles/deps/exclusions/owners.
 File-touch map:
@@ -947,15 +947,21 @@ use the documented fallback evidence.
 
 ### Goal Mode Completion Contract
 
-Use this canonical dispatch line verbatim in PR-batch goal prompts:
+Use this compact, self-contained `GMCC-v1` line verbatim in PR-batch goal
+prompts.
+`GMCC-v1` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/configured review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
+
+`GMCC-v1` expands to this canonical contract:
+
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
 
 Pressure checks:
 
 - A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
-- With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+- With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
 
 ### Coordination State
 

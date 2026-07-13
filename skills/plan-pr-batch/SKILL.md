@@ -287,16 +287,16 @@ Plan a PR batch
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
      `<word>` from a short coordinator-chosen session word. Record the handle
      before dispatch so workers copy it unchanged.
-  - Add a compact `Lane Card:` line. Workers emit the canonical Lane Card
-    after a successful claim, on blocked/cancelled state, and as the final
-    handoff header. The actor that opens or updates the PR emits the PR-open
-    Lane Card when the PR is opened. It records the active exact model/effort,
-    binding source, and execution-envelope receipt; prompt text or worker
-    self-report alone is not binding evidence. The claim holder and `dashboard_url`
-    degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
-    may use the verified GitHub PR URL from PR-open/current PR state.
+   - Add a compact `Lane Card:` line. Workers emit the canonical Lane Card
+     after a successful claim, on blocked/cancelled state, and as the final
+     handoff header. The actor that opens or updates the PR emits the PR-open
+     Lane Card when the PR is opened. It records the active exact model/effort,
+     binding source, and execution-envelope receipt; prompt text or worker
+     self-report alone is not binding evidence. The claim holder and `dashboard_url`
+     degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
+     may use the verified GitHub PR URL from PR-open/current PR state.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
-     total, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
+     total with at least 300 characters of headroom, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
      For the `claude` or `generic` target, do not prepend the Codex-only
      `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
      Still keep the prompt compact, measured, under 8000 characters, and free of
@@ -315,16 +315,17 @@ Plan a PR batch
      Require `MODEL_ESCALATION_REQUEST` before a worker moves
      to the stronger route. If the host cannot apply a route, stop for
      re-planning rather than silently substituting.
-     When route entries themselves cause the overflow, split along route groups
-     so each generated goal carries only the included lanes' complete routes;
+     When route entries themselves cause the overflow or breach the 300-character
+     headroom floor, split along route groups so each generated goal carries only
+     the included lanes' complete routes;
      preserve omitted lanes and routes in the Batch Plan for later prompts.
    - Before responding, measure only the text inside the goal-prompt fence,
      including the `/goal` line for Codex and excluding the fence lines, and <!-- host-allow: codex-only -->
      print `Goal prompt character count: N characters (target: codex|claude|generic)`
      after the fence.
-   - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. If it still
-     will not fit, split it into smaller goals and output only the first ready goal; list omitted ready items in
-     the Batch Plan for later goal prompts.
+   - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. Also split
+     before overflow when less than 300 characters of headroom remain. Output only
+     the first ready goal; list omitted ready items in the Batch Plan for later goal prompts.
    - For Claude or generic targets, do not split solely because the prompt is
      4000 characters or more. Split only when the prompt is too large for the
      target host, too bulky to review safely, or would hide ownership and
@@ -391,6 +392,7 @@ is the shared prompt body. For the `codex` target, prepend only the `/goal` line
 before this body. For the `claude` or `generic` target, use the body as-is so the
 prompt starts with `Use $pr-batch to complete this batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
+`GMCC-v1` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
@@ -408,7 +410,7 @@ Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done means merged and closed out unless a real blocker prevents it.
+GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged current-head CI/configured review agents; unresolved current-head review threads; failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; `ready-no-merge-authority` only without merge auth; `auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; target closed out; issue closed where applicable.
 Batch QA Lane: <owner/scope | none+rationale>.
 Scope: titles/deps/exclusions/owners.
 File-touch map:
