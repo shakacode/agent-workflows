@@ -89,14 +89,50 @@ def documented_canonical_authority_snippet
   extract_canonical_authority_snippet(skill)
 end
 
-def run_canonical_authority_snippet(url)
+def run_documented_posix_snippet(snippet, environment, output)
   command = <<~SH
-    #{documented_canonical_authority_snippet}
-    printf '%s' "${GH_HOST}"
+    #{snippet}
+    #{output}
   SH
-  stdout, stderr, status = Open3.capture3({ "CANONICAL_URL" => url }, "sh", "-c", command)
+  stdout, stderr, status = Open3.capture3(environment, "sh", "-c", command)
 
   [status.success?, status.success? ? stdout : stderr]
+end
+
+def run_canonical_authority_snippet(url)
+  run_documented_posix_snippet(
+    documented_canonical_authority_snippet,
+    { "CANONICAL_URL" => url },
+    %(printf '%s' "${GH_HOST}")
+  )
+end
+
+def extract_url_input_parser_snippet(source)
+  start = source.index("# URL input parser:")
+
+  raise "URL input parser snippet missing" unless start
+
+  finish = source.index("\n```", start)
+
+  raise "URL input parser snippet missing" unless finish
+
+  source[start...finish]
+end
+
+def documented_url_input_parser_snippet
+  skill = File.read(SKILL_PATH, encoding: "UTF-8")
+
+  extract_url_input_parser_snippet(skill)
+end
+
+def run_documented_url_input_parser(url, pr_number)
+  success, output = run_documented_posix_snippet(
+    documented_url_input_parser_snippet,
+    { "CANONICAL_URL" => url, "PR_NUMBER" => pr_number },
+    %(printf '%s|%s|%s' "${OWNER}" "${REPO_NAME}" "${REPO}")
+  )
+
+  [success, success ? output.split("|", 3) : output]
 end
 
 def normalize_status_check_rollup(entries)
@@ -227,6 +263,48 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     end
   end
 
+  def test_executes_the_documented_url_input_parser
+    assert_equal [true, %w[octo-org hello-world octo-org/hello-world]],
+                 run_documented_url_input_parser("https://github.com/octo-org/hello-world/pull/42", "42")
+    assert_equal [true, %w[Enterprise-Org repo_name Enterprise-Org/repo_name]],
+                 run_documented_url_input_parser("https://github.company.example:8443/Enterprise-Org/repo_name/pull/9", "9")
+
+    [
+      ["ftp://github.com/octo-org/hello-world/pull/42", "42"],
+      ["github.com/octo-org/hello-world/pull/42", "42"],
+      ["https://github.com/octo-org/hello-world/pull/43", "42"],
+      ["https://github.com/octo-org/hello-world/pull/not-a-number", "42"],
+      ["https://github.com/octo-org/hello-world/pull/42", "not-a-number"],
+      ["https://github.com/octo-org/hello-world/42", "42"],
+      ["https://github.com/octo-org/pull/42", "42"],
+      ["https://github.com/octo-org/hello-world/pull/42/extra", "42"],
+      ["https://github.com/octo-org/hello-world/issues/42", "42"],
+      ["https://github.com/octo%2Dorg/hello-world/pull/42", "42"],
+      ["https://github.com/octo-org//pull/42", "42"],
+      ["https://github.com/octo-org/hello-world/pull/42?query", "42"],
+      ["https://github.com/octo-org/hello-world/pull/42#fragment", "42"],
+      ["https://github.com/octo$org/hello-world/pull/42", "42"],
+      ["https://github.com/octo-org/hello;world/pull/42", "42"],
+      ["https://github.com/octo\norg/hello-world/pull/42", "42"],
+      ["https://github.com/octo-org/hello\nworld/pull/42", "42"],
+      ["https://github.com//hello-world/pull/42", "42"],
+      ["https://github.com/octo-org//pull/42", "42"]
+    ].each do |url, pr_number|
+      success, output = run_documented_url_input_parser(url, pr_number)
+
+      refute success, "expected #{url.inspect} to be BLOCKED, got #{output.inspect}"
+      assert_match(/BLOCKED: canonical authority absent or invalid/, output)
+    end
+  end
+
+  def test_url_input_parser_extraction_rejects_a_missing_start_marker
+    error = assert_raises(RuntimeError) do
+      extract_url_input_parser_snippet("missing URL input parser marker")
+    end
+
+    assert_equal "URL input parser snippet missing", error.message
+  end
+
   def test_gathers_only_report_metadata_after_successful_preflight
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     normalized_skill = skill.gsub(/\s+/, " ")
@@ -258,10 +336,10 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_uses_no_standalone_jq_subprocess_for_status_check_replay
     source = File.read(__FILE__, encoding: "UTF-8")
     capture3 = %w[Open3 capture3].join(".")
-    canonical_replay = "#{capture3}({ \"CANONICAL_URL\" => url }, \"sh\", \"-c\", command)"
+    posix_shell_replay = "#{capture3}(environment, \"sh\", \"-c\", command)"
 
     assert_equal 1, source.scan(Regexp.new(Regexp.escape(capture3))).length
-    assert_includes source, canonical_replay
+    assert_includes source, posix_shell_replay
   end
 
   def test_replays_documented_status_check_normalization_for_both_union_shapes
