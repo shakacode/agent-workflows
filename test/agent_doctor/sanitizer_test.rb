@@ -99,6 +99,14 @@ class AgentDoctorSanitizerTest < Minitest::Test
     refute_includes output, opaque_secret
   end
 
+  def test_redacts_long_hex_path_tokens
+    hex_secret = "0123456789abcdef0123456789abcdef"
+    output = AgentDoctor::Sanitizer.new.string("https://example.test/callback/#{hex_secret}")
+
+    assert_equal "https://example.test/callback/%5BREDACTED%5D", output
+    refute_includes output, hex_secret
+  end
+
   def test_strips_terminal_controls_and_encodes_newlines
     output = AgentDoctor::Sanitizer.new.string("bad\n\e[31mtext")
 

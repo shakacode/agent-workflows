@@ -118,7 +118,9 @@ class AgentDoctorStackCLIIntegrationTest < Minitest::Test
 
   def test_human_and_json_output_scrub_webhook_paths_and_preserve_informative_paths
     webhook_secret = "T01234567/B01234567/slack-webhook-secret-value"
+    hex_secret = "0123456789abcdef0123456789abcdef"
     endpoint = "https://hooks.slack.com/services/#{webhook_secret} " \
+               "https://example.test/callback/#{hex_secret} " \
                "https://example.test/api/v1/projects/agent-workflows/releases/2026-07-13"
 
     outputs = [doctor("--json", environment: { "DOCTOR_ENDPOINT_FIXTURE" => endpoint }).first,
@@ -126,8 +128,10 @@ class AgentDoctorStackCLIIntegrationTest < Minitest::Test
 
     outputs.each do |output|
       assert_includes output, "https://hooks.slack.com/services/%5BREDACTED%5D"
+      assert_includes output, "https://example.test/callback/%5BREDACTED%5D"
       assert_includes output, "https://example.test/api/v1/projects/agent-workflows/releases/2026-07-13"
       refute_includes output, webhook_secret
+      refute_includes output, hex_secret
     end
   end
 

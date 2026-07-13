@@ -8,6 +8,7 @@ module AgentDoctor
     URI_PATTERN = %r{(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\s<>"']+}
     SENSITIVE_QUERY_KEY_PATTERN = /\A(?:(?:api|access|private)[_-]?key|(?:access|auth|id|refresh)[_-]?token|client[_-]?secret|password|passwd|token|secret|credentials?|key|auth|jwt|session|signature)\z|(?:\A|[_-])(?:token|secret|password|passwd|key|credential|auth|jwt|session|signature)(?:[_-]|\z)/i
     REDACTED_PATH_SEGMENT = "%5BREDACTED%5D"
+    LONG_HEX_PATH_SEGMENT_PATTERN = /\A[0-9a-f]{32,}\z/i
     UUID_PATH_SEGMENT_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/i
 
     def initialize(environment = ENV)
@@ -119,7 +120,8 @@ module AgentDoctor
     def high_entropy_path_segment?(segment)
       decoded = decode_path_segment(segment)
       return false if decoded.bytesize < 24
-      return false if decoded.match?(UUID_PATH_SEGMENT_PATTERN) || decoded.match?(/\A[0-9a-f]{32,64}\z/i)
+      return true if decoded.match?(LONG_HEX_PATH_SEGMENT_PATTERN)
+      return false if decoded.match?(UUID_PATH_SEGMENT_PATTERN)
 
       character_classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].count { |pattern| decoded.match?(pattern) }
       character_classes >= 3 && decoded.each_char.uniq.length >= 12
