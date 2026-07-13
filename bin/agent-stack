@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: agent-stack sync [options]
+Usage: agent-stack <sync|doctor> [options]
 
 Keeps the ShakaCode agent stack in a hacker-friendly local layout.
 This is ShakaCode stack tooling, not the generic workflow-pack installer.
@@ -31,6 +31,11 @@ Options:
   --no-install                   clone/update/link only; skip tool installs
   -h, --help                     show help
 
+Doctor-only options:
+  --dashboard-url URL            loopback dashboard URL (default: http://127.0.0.1:${PORT:-4319})
+  --deep                         run component deep checks
+  --json                         emit the versioned aggregate JSON document
+
 Environment path overrides:
   AGENT_STACK_SOURCE_ROOT
   AGENT_STACK_COMPAT_ROOT
@@ -43,10 +48,725 @@ Environment URL overrides:
 USAGE
 }
 
+run_doctor() {
+  local ruby_bin="${RUBY_BIN:-ruby}"
+  if ! command -v "$ruby_bin" >/dev/null 2>&1; then
+    echo "agent-stack doctor requires Ruby" >&2
+    return 2
+  fi
+
+  "$ruby_bin" - "$@" <<'RUBY'
+require "json"
+require "net/http"
+require "optparse"
+require "time"
+require "timeout"
+require "uri"
+
+MAX_STDOUT = 1024 * 1024
+MAX_STDERR = 64 * 1024
+DEFAULT_TIMEOUT = 10.0
+REPOS = %w[agent-workflows agent-coordination agent-coordination-dashboard].freeze
+SEVERITY = { "healthy" => 0, "skipped" => 0, "degraded" => 1, "failed" => 2 }.freeze
+CHECK_LABELS = {
+  "agent-workflows.source" => "Source",
+  "agent-workflows.compatibility" => "Compatibility link",
+  "workflows.installation" => "Install",
+  "workflows.seam" => "Workflow seam",
+  "agent-coordination.source" => "Source",
+  "agent-coordination.compatibility" => "Compatibility link",
+  "coordination.cli" => "CLI",
+  "coordination.backend" => "Backend",
+  "coordination.resources" => "Resource checks",
+  "agent-coordination-dashboard.source" => "Source",
+  "agent-coordination-dashboard.compatibility" => "Compatibility link",
+  "dashboard.package" => "Package",
+  "dashboard.health" => "Service",
+  "dashboard.resources" => "Resource checks"
+}.freeze
+DASHBOARD_RESOURCES = %w[claims heartbeats batches events].freeze
+DASHBOARD_RESOURCE_STATUSES = %w[ok empty auth_error unreachable].freeze
+
+class UsageError < StandardError; end
+
+def usage
+  <<~TEXT
+    Usage: agent-stack doctor [options]
+
+      --source-root DIR              source checkout root (default: ~/src)
+      --compat-root DIR              compatibility symlink root (default: ~/codex/agent-repos)
+      --host codex|claude|auto       workflow install host (default: codex)
+      --target DIR                   workflow install target
+      --agent-coord-install-dir DIR  agent-coord install dir (default: ~/.local/bin)
+      --dashboard-url URL            loopback dashboard URL (default: http://127.0.0.1:${PORT:-4319})
+      --deep                         run component deep checks
+      --json                         emit JSON only
+  TEXT
+end
+
+def secret_values
+  @secret_values ||= ENV.each_with_object([]) do |(key, value), values|
+    next unless key.match?(/(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)/i)
+    next if value.to_s.bytesize < 4
+
+    values << value
+  end.sort_by { |value| -value.bytesize }
+end
+
+def sanitize_url(value)
+  uri = URI.parse(value)
+  return value unless uri.scheme && uri.host
+
+  uri.user = nil if uri.respond_to?(:user=)
+  uri.password = nil if uri.respond_to?(:password=)
+  if uri.query
+    pairs = URI.decode_www_form(uri.query).map do |key, item|
+      [key, key.match?(/(?:token|secret|password|key|credential)/i) ? "[REDACTED]" : item]
+    end
+    uri.query = URI.encode_www_form(pairs)
+  end
+  uri.to_s
+rescue URI::InvalidURIError, ArgumentError
+  value
+end
+
+def sanitize_string(value)
+  text = value.to_s.dup
+  text.force_encoding(Encoding::UTF_8)
+  text = text.scrub("?")
+  text = text.gsub(/\e\[[0-?]*[ -\/]*[@-~]/, "")
+  text = text.gsub(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\r\n]/) do |char|
+    "\\x#{char.ord.to_s(16).upcase.rjust(2, "0")}"
+  end
+  text = sanitize_url(text)
+  secret_values.each { |secret| text = text.gsub(secret, "[REDACTED]") }
+  text
+end
+
+def sanitize(value)
+  case value
+  when Hash
+    value.each_with_object({}) { |(key, item), result| result[sanitize_string(key)] = sanitize(item) }
+  when Array
+    value.map { |item| sanitize(item) }
+  when String
+    sanitize_string(value)
+  else
+    value
+  end
+end
+
+def terminate_group(pid)
+  Process.kill("TERM", -pid)
+rescue Errno::ESRCH
+  nil
+ensure
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
+  loop do
+    begin
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      break if waited
+    rescue Errno::ECHILD
+      break
+    end
+    break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    sleep 0.02
+  end
+  begin
+    Process.kill("KILL", -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+  begin
+    Process.wait(pid)
+  rescue Errno::ECHILD
+    nil
+  end
+end
+
+def capture(command, timeout: DEFAULT_TIMEOUT)
+  stdout_reader, stdout_writer = IO.pipe
+  stderr_reader, stderr_writer = IO.pipe
+  pid = Process.spawn(*command, out: stdout_writer, err: stderr_writer, pgroup: true)
+  stdout_writer.close
+  stderr_writer.close
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  status = nil
+  failure = nil
+  stdout = +""
+  stderr = +""
+  streams = {
+    stdout_reader => [stdout, MAX_STDOUT],
+    stderr_reader => [stderr, MAX_STDERR]
+  }
+
+  loop do
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    if remaining <= 0
+      failure = "diagnostic timed out"
+      terminate_group(pid)
+      break
+    end
+
+    readable = IO.select(streams.keys, nil, nil, [remaining, 0.05].min)&.first || []
+    readable.each do |io|
+      buffer, limit = streams.fetch(io)
+      begin
+        chunk = io.read_nonblock(16 * 1024)
+        available = limit - buffer.bytesize
+        buffer << chunk.byteslice(0, available) if available.positive?
+        next unless chunk.bytesize > available
+
+        failure = "output exceeded diagnostic size limit"
+        terminate_group(pid)
+        break
+      rescue IO::WaitReadable
+        next
+      rescue EOFError
+        streams.delete(io)
+        io.close
+      end
+    end
+    break if failure
+
+    unless status
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      status = waited[1] if waited
+    end
+    break if status && streams.empty?
+  end
+
+  {
+    exit: status&.exitstatus,
+    stdout: stdout,
+    stderr: stderr,
+    failure: failure
+  }
+rescue SystemCallError => e
+  { exit: nil, stdout: "", stderr: "", failure: "unable to start diagnostic: #{e.class}" }
+ensure
+  stdout_writer&.close unless stdout_writer&.closed?
+  stderr_writer&.close unless stderr_writer&.closed?
+  stdout_reader&.close unless stdout_reader&.closed?
+  stderr_reader&.close unless stderr_reader&.closed?
+end
+
+def parse_json_result(command, timeout: DEFAULT_TIMEOUT, allowed_exits: [0])
+  result = capture(command, timeout: timeout)
+  return [nil, result[:failure], result[:exit]] if result[:failure]
+
+  begin
+    payload = JSON.parse(result[:stdout])
+  rescue JSON::ParserError
+    return [nil, "diagnostic returned malformed JSON", result[:exit]]
+  end
+  return [nil, "diagnostic returned an unsupported JSON shape", result[:exit]] unless payload.is_a?(Hash)
+
+  error = allowed_exits.include?(result[:exit]) ? nil : "diagnostic exited #{result[:exit] || "without a status"}"
+  [payload, error, result[:exit]]
+end
+
+def check(id, status, summary, details = {}, guidance = nil)
+  result = { "id" => id, "status" => status, "summary" => summary }
+  result["details"] = details unless details.empty?
+  if guidance.nil? && %w[degraded failed].include?(status)
+    guidance = "Review this check, upgrade the affected component if needed, and rerun doctor."
+  end
+  result["guidance"] = guidance if guidance
+  result
+end
+
+def component(id, checks)
+  status = checks.map { |item| item.fetch("status") }.max_by { |value| SEVERITY.fetch(value, 2) }
+  status = "healthy" if status == "skipped"
+  {
+    "id" => id,
+    "status" => status,
+    "summary" => "#{checks.count { |item| item["status"] == "healthy" }} healthy, " \
+                 "#{checks.count { |item| item["status"] == "degraded" }} degraded, " \
+                 "#{checks.count { |item| item["status"] == "failed" }} failed",
+    "checks" => checks
+  }
+end
+
+def repo_url(name)
+  env_key = "AGENT_STACK_#{name.tr("-", "_").upcase}_URL"
+  ENV[env_key] || "https://github.com/shakacode/#{name}.git"
+end
+
+def origin_allowed?(name, origin)
+  configured = repo_url(name)
+  return origin == configured if ENV.key?("AGENT_STACK_#{name.tr("-", "_").upcase}_URL")
+
+  normalized = origin.sub(/\.git\z/, "")
+  ["https://github.com/shakacode/#{name}", "git@github.com:shakacode/#{name}"].include?(normalized)
+end
+
+def git_value(path, *args)
+  result = capture(["git", "-C", path, *args], timeout: 3)
+  return [nil, result[:failure]] if result[:failure]
+  return [nil, "git exited #{result[:exit]}"] unless result[:exit].to_i.zero?
+
+  [result[:stdout].strip, nil]
+end
+
+def checkout_check(name, path)
+  return check("#{name}.source", "failed", "source checkout missing", { "path" => path }, "Run `agent-stack sync` to create the checkout.") unless File.directory?(path)
+
+  revision, revision_error = git_value(path, "rev-parse", "--short", "HEAD")
+  branch, branch_error = git_value(path, "branch", "--show-current")
+  origin, origin_error = git_value(path, "remote", "get-url", "origin")
+  dirty, dirty_error = git_value(path, "status", "--porcelain")
+  if revision_error || branch_error || origin_error || dirty_error
+    return check("#{name}.source", "failed", "source checkout is not a readable Git worktree", { "path" => path }, "Repair or replace the checkout, then rerun doctor.")
+  end
+  unless origin_allowed?(name, origin)
+    return check("#{name}.source", "failed", "origin does not match the configured repository", { "path" => path, "origin" => origin }, "Correct the origin or the matching AGENT_STACK_*_URL override.")
+  end
+
+  status = branch == "main" && dirty.empty? ? "healthy" : "degraded"
+  summary = status == "healthy" ? "source checkout ready" : "source checkout differs from sync-ready main"
+  guidance = status == "degraded" ? "Commit or stash local changes and return the checkout to `main` before syncing." : nil
+  check("#{name}.source", status, summary, { "path" => path, "branch" => branch.empty? ? "detached" : branch, "revision" => revision, "dirty" => !dirty.empty? }, guidance)
+end
+
+def compatibility_check(name, compat_root, source_path)
+  path = File.join(compat_root, name)
+  unless File.symlink?(path)
+    return check("#{name}.compatibility", "degraded", "compatibility link missing", { "path" => path }, "Run `agent-stack sync` to restore compatibility links.")
+  end
+  actual = File.realpath(path) rescue nil
+  expected = File.realpath(source_path) rescue source_path
+  return check("#{name}.compatibility", "healthy", "compatibility link ready", { "path" => path }) if actual == expected
+
+  check("#{name}.compatibility", "degraded", "compatibility link targets another checkout", { "path" => path, "target" => actual }, "Run `agent-stack sync --replace-compat` after reviewing the existing path.")
+end
+
+def validate_dashboard_url(value)
+  uri = URI.parse(value)
+  allowed_hosts = ["localhost", "127.0.0.1", "::1"]
+  raise UsageError, "--dashboard-url must use loopback HTTP without credentials" unless uri.scheme == "http" && allowed_hosts.include?(uri.hostname) && uri.userinfo.nil? && uri.fragment.nil?
+  uri.path = "" if uri.path == "/"
+  raise UsageError, "--dashboard-url must not include a query or endpoint path" unless uri.query.nil? && uri.path.to_s.empty?
+  uri
+rescue URI::InvalidURIError
+  raise UsageError, "--dashboard-url must be a valid loopback HTTP URL"
+end
+
+def resolve_host_and_target(host, target)
+  codex_home = File.expand_path(ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex")))
+  claude_home = File.expand_path(ENV.fetch("CLAUDE_HOME", File.join(Dir.home, ".claude")))
+  if target
+    expanded = File.expand_path(target)
+    return [host, expanded] unless host == "auto"
+
+    codex_marker = expanded == codex_home || File.file?(File.join(expanded, "config.toml"))
+    claude_marker = expanded == claude_home || File.file?(File.join(expanded, "settings.json")) ||
+                    File.file?(File.join(expanded, "plugins", "installed_plugins.json"))
+    raise UsageError, "explicit target has both Codex and Claude markers; pass --host" if codex_marker && claude_marker
+
+    return [claude_marker ? "claude" : "codex", expanded]
+  end
+  return [host, host == "claude" ? claude_home : codex_home] unless host == "auto"
+
+  candidates = []
+  candidates << ["codex", codex_home] if ENV.key?("CODEX_HOME") || File.directory?(codex_home)
+  candidates << ["claude", claude_home] if ENV.key?("CLAUDE_HOME") || File.directory?(claude_home)
+  return ["codex", codex_home] if candidates.empty?
+  return candidates.first if candidates.one?
+
+  raise UsageError, "auto host detection found both Codex and Claude homes; pass --host"
+end
+
+def http_json(base_uri, endpoint, timeout: DEFAULT_TIMEOUT)
+  uri = base_uri.dup
+  uri.path = endpoint
+  response = nil
+  Timeout.timeout(timeout) do
+    Net::HTTP.start(uri.hostname, uri.port, open_timeout: timeout, read_timeout: timeout, write_timeout: timeout) do |http|
+      request = Net::HTTP::Get.new(uri.request_uri)
+      response = http.request(request) do |incoming|
+        length = 0
+        body = +""
+        incoming.read_body do |chunk|
+          length += chunk.bytesize
+          raise IOError, "response exceeded diagnostic size limit" if length > MAX_STDOUT
+          body << chunk
+        end
+        incoming.instance_variable_set(:@body, body)
+      end
+    end
+  end
+  return [nil, "dashboard redirected the diagnostic request"] if response.is_a?(Net::HTTPRedirection)
+  return [nil, "dashboard returned HTTP #{response.code}"] unless response.is_a?(Net::HTTPSuccess)
+
+  payload = JSON.parse(response.body)
+  return [nil, "dashboard returned an unsupported JSON shape"] unless payload.is_a?(Hash)
+  [payload, nil]
+rescue JSON::ParserError
+  [nil, "dashboard returned malformed JSON"]
+rescue IOError => e
+  [nil, e.message]
+rescue SystemCallError, SocketError, Timeout::Error, Net::OpenTimeout, Net::ReadTimeout
+  [nil, "dashboard is not reachable"]
+end
+
+def valid_coordination_payload?(payload)
+  return false unless payload["status"] == "ok"
+  return false unless payload["backend"].is_a?(String) && !payload["backend"].empty?
+  return false unless payload["version"].is_a?(String) && !payload["version"].empty?
+  return false unless payload["degraded"].nil? || (payload["degraded"].is_a?(Array) && payload["degraded"].all? { |item| item.is_a?(String) })
+
+  resources = payload["resource_checks"]
+  resources.nil? || (resources.is_a?(Hash) && resources.all? { |name, status| name.is_a?(String) && status.is_a?(String) })
+end
+
+def normalize_dashboard_resources(value)
+  return nil unless value.is_a?(Array) && !value.empty?
+
+  resources = value.map do |item|
+    return nil unless item.is_a?(Hash)
+    return nil unless DASHBOARD_RESOURCES.include?(item["resource"])
+    return nil unless %w[api fs].include?(item["mode"])
+    return nil unless DASHBOARD_RESOURCE_STATUSES.include?(item["status"])
+    return nil unless item["checkedAt"].is_a?(String)
+    return nil unless item["httpStatus"].nil? || item["httpStatus"].is_a?(Integer)
+
+    item.slice("resource", "mode", "status", "httpStatus", "checkedAt").compact
+  end
+  return nil unless resources.map { |item| item["resource"] }.sort == DASHBOARD_RESOURCES.sort
+
+  resources
+end
+
+options = {
+  source_root: ENV.fetch("AGENT_STACK_SOURCE_ROOT", File.join(Dir.home, "src")),
+  compat_root: ENV.fetch("AGENT_STACK_COMPAT_ROOT", File.join(Dir.home, "codex", "agent-repos")),
+  host: "codex",
+  target: nil,
+  install_dir: File.join(Dir.home, ".local", "bin"),
+  dashboard_url: "http://127.0.0.1:#{ENV.fetch("PORT", "4319")}",
+  deep: false,
+  json: false
+}
+
+parser = OptionParser.new do |opts|
+  opts.on("--source-root DIR") { |value| options[:source_root] = value }
+  opts.on("--compat-root DIR") { |value| options[:compat_root] = value }
+  opts.on("--host HOST") { |value| options[:host] = value }
+  opts.on("--target DIR") { |value| options[:target] = value }
+  opts.on("--agent-coord-install-dir DIR") { |value| options[:install_dir] = value }
+  opts.on("--dashboard-url URL") { |value| options[:dashboard_url] = value }
+  opts.on("--deep") { options[:deep] = true }
+  opts.on("--json") { options[:json] = true }
+  opts.on("-h", "--help") { puts usage; exit 0 }
+end
+
+begin
+  parser.parse!(ARGV)
+  raise UsageError, "unexpected arguments" unless ARGV.empty?
+  raise UsageError, "--host must be codex, claude, or auto" unless %w[codex claude auto].include?(options[:host])
+  dashboard_uri = validate_dashboard_url(options[:dashboard_url])
+  host, target = resolve_host_and_target(options[:host], options[:target])
+rescue OptionParser::ParseError, UsageError => e
+  warn "agent-stack doctor: #{sanitize_string(e.message)}"
+  warn usage
+  exit 64
+end
+
+source_root = File.expand_path(options[:source_root])
+compat_root = File.expand_path(options[:compat_root])
+install_dir = File.expand_path(options[:install_dir])
+
+sources = REPOS.to_h { |name| [name, File.join(source_root, name)] }
+
+workflow_checks = [
+  checkout_check("agent-workflows", sources.fetch("agent-workflows")),
+  compatibility_check("agent-workflows", compat_root, sources.fetch("agent-workflows"))
+]
+workflow_status = File.join(target, "bin", "agent-workflows-status")
+if File.executable?(workflow_status)
+  payload, error, child_exit = parse_json_result(
+    [workflow_status, "--host", host, "--target", target, "--source", sources.fetch("agent-workflows"), "--json"],
+    allowed_exits: [0, 1]
+  )
+  valid_pair = (payload && payload["status"] == "UP_TO_DATE" && child_exit == 0) ||
+               (payload && payload["status"] == "UPGRADE_AVAILABLE" && child_exit == 1)
+  if error.nil? && valid_pair
+    status = payload["status"] == "UP_TO_DATE" ? "healthy" : "degraded"
+    workflow_checks << check("workflows.installation", status, payload["status"] == "UP_TO_DATE" ? "workflow installation matches source" : "workflow upgrade available", {
+      "installed_version" => payload["installed_version"], "available_version" => payload["available_version"], "delivery_mode" => payload["delivery_mode"], "host" => host
+    }.compact, payload["guidance"])
+  else
+    workflow_checks << check("workflows.installation", "failed", error || "workflow status payload is incomplete", {}, "Reinstall workflows with `agent-stack sync`.")
+  end
+else
+  workflow_checks << check("workflows.installation", "failed", "workflow status command missing", { "path" => workflow_status }, "Run `agent-stack sync` to install workflow helpers.")
+end
+
+if options[:deep]
+  seam = File.join(target, "bin", "agent-workflow-seam-doctor")
+  if File.executable?(seam)
+    payload, error, = parse_json_result([seam, "--root", sources.fetch("agent-workflows"), "--shared", sources.fetch("agent-workflows"), "--json"])
+    if error.nil? && payload && payload["status"] == "PASS" && payload["issues"].is_a?(Array) && payload["issues"].empty?
+      workflow_checks << check("workflows.seam", "healthy", "workflow seam contract passes")
+    else
+      workflow_checks << check("workflows.seam", "failed", error || "workflow seam contract reports issues", { "issues" => Array(payload && payload["issues"]) }, "Run the seam doctor directly for full guidance.")
+    end
+  else
+    workflow_checks << check("workflows.seam", "failed", "workflow seam doctor missing", { "path" => seam }, "Run `agent-stack sync` to install workflow helpers.")
+  end
+else
+  workflow_checks << check("workflows.seam", "skipped", "deep workflow checks not run", {}, "Rerun with `--deep`.")
+end
+
+coordination_checks = [
+  checkout_check("agent-coordination", sources.fetch("agent-coordination")),
+  compatibility_check("agent-coordination", compat_root, sources.fetch("agent-coordination"))
+]
+coord = File.join(install_dir, "agent-coord")
+coord_version = nil
+if File.executable?(coord)
+  coord_version, version_error, = parse_json_result([coord, "version", "--json"])
+  if version_error.nil? && coord_version && coord_version["version"].is_a?(String) && !coord_version["version"].empty?
+    coordination_checks << check("coordination.cli", "healthy", "agent-coord command ready", { "path" => coord, "version" => coord_version["version"] })
+  else
+    coordination_checks << check("coordination.cli", "failed", version_error || "agent-coord version payload is incomplete", { "path" => coord }, "Reinstall agent-coord with `agent-stack sync`.")
+    coord_version = nil
+  end
+else
+  coordination_checks << check("coordination.cli", "failed", "agent-coord command missing", { "path" => coord }, "Run `agent-stack sync` to install agent-coord.")
+end
+
+backend_args = nil
+backend_details = {}
+explicit_state_root = ENV["AGENT_COORD_STATE_ROOT"].to_s.strip
+if explicit_state_root != "" && File.directory?(File.expand_path(explicit_state_root))
+  backend_args = ["--state-root", File.expand_path(explicit_state_root)]
+  backend_details["backend"] = "local"
+  backend_details["state_root"] = File.expand_path(explicit_state_root)
+elsif ENV["AGENT_COORD_API_URL"].to_s.strip != ""
+  backend_args = ["--api-url", ENV["AGENT_COORD_API_URL"].strip]
+  backend_details["backend"] = "http"
+  backend_details["url"] = ENV["AGENT_COORD_API_URL"].strip
+elsif ENV["AGENT_COORD_BACKEND"].to_s.strip != ""
+  backend_args = ["--backend", ENV["AGENT_COORD_BACKEND"].strip]
+  backend_details["backend"] = "github"
+else
+  explicit_root = [ENV["AGENT_COORD_STATUS_STATE_ROOT"]].find { |value| value.to_s.strip != "" }
+  default_root = File.join(ENV["XDG_STATE_HOME"].to_s.empty? ? File.join(Dir.home, ".local", "state") : ENV["XDG_STATE_HOME"], "agent-coordination")
+  state_root = explicit_root || (File.directory?(default_root) ? default_root : nil)
+  if state_root && File.directory?(File.expand_path(state_root))
+    backend_args = ["--state-root", File.expand_path(state_root)]
+    backend_details["backend"] = "local"
+    backend_details["state_root"] = File.expand_path(state_root)
+  end
+end
+
+coord_payload = nil
+if coord_version && backend_args
+  doctor_command = [coord, "doctor", "--json", *backend_args]
+  doctor_command << "--deep" if options[:deep]
+  coord_payload, coord_error, = parse_json_result(doctor_command)
+  if coord_error.nil? && coord_payload && valid_coordination_payload?(coord_payload)
+    degraded = Array(coord_payload["degraded"])
+    resource_values = Hash(coord_payload["resource_checks"] || {}).values
+    backend_status = degraded.empty? && resource_values.all? { |value| value == "ok" } ? "healthy" : "degraded"
+    backend_evidence = backend_details.merge("backend" => coord_payload["backend"], "version" => coord_payload["version"])
+    backend_evidence["limitations"] = degraded unless degraded.empty?
+    guidance = backend_status == "degraded" ? "Review unsupported or filtered backend capabilities; configure broader access if those resources are required." : nil
+    coordination_checks << check("coordination.backend", backend_status, backend_status == "healthy" ? "coordination backend readable" : "coordination backend has limited evidence", backend_evidence, guidance)
+  else
+    coordination_checks << check("coordination.backend", "failed", coord_error || "coordination doctor payload is incomplete", backend_details, "Run `agent-coord doctor` directly after checking backend credentials and configuration.")
+    coord_payload = nil
+  end
+elsif coord_version
+  coordination_checks << check("coordination.backend", "failed", "no explicit or existing coordination backend found", {}, "Configure an HTTP or GitHub backend, or create the local state through `agent-stack sync`.")
+else
+  coordination_checks << check("coordination.backend", "failed", "coordination backend evidence unavailable because the CLI preflight failed", {}, "Resolve the coordination CLI failure, then rerun doctor.")
+end
+
+if options[:deep]
+  if coord_payload
+    resources = Hash(coord_payload["resource_checks"] || {})
+    status = resources.empty? ? "degraded" : resources.values.all? { |value| value == "ok" } ? "healthy" : "degraded"
+    evidence = { "resources" => resources }
+    limitations = Array(coord_payload["degraded"])
+    evidence["limitations"] = limitations unless limitations.empty?
+    guidance = status == "degraded" ? "Review unsupported, filtered, or unavailable resources in the backend configuration." : nil
+    coordination_checks << check("coordination.resources", status, status == "healthy" ? "coordination resources readable" : "coordination resources have limited coverage", evidence, guidance)
+  else
+    coordination_checks << check("coordination.resources", "failed", "deep coordination evidence unavailable", {}, "Resolve the coordination backend failure and rerun with `--deep`.")
+  end
+else
+  coordination_checks << check("coordination.resources", "skipped", "deep coordination checks not run", {}, "Rerun with `--deep`.")
+end
+
+dashboard_checks = [
+  checkout_check("agent-coordination-dashboard", sources.fetch("agent-coordination-dashboard")),
+  compatibility_check("agent-coordination-dashboard", compat_root, sources.fetch("agent-coordination-dashboard"))
+]
+package_path = File.join(sources.fetch("agent-coordination-dashboard"), "package.json")
+begin
+  package = JSON.parse(File.read(package_path, MAX_STDOUT + 1))
+  raise JSON::ParserError unless package.is_a?(Hash) && package["version"]
+  dashboard_checks << check("dashboard.package", "healthy", "dashboard package contract ready", { "version" => package["version"] })
+rescue Errno::ENOENT, JSON::ParserError
+  dashboard_checks << check("dashboard.package", "failed", "dashboard package contract missing or malformed", { "path" => package_path }, "Repair the dashboard checkout, then rerun doctor.")
+end
+
+health, health_error = http_json(dashboard_uri, "/api/health")
+if health && health["ok"] == true
+  dashboard_checks << check("dashboard.health", "healthy", "dashboard service is running", { "url" => dashboard_uri.to_s })
+elsif health_error == "dashboard is not reachable"
+  dashboard_checks << check("dashboard.health", "degraded", "dashboard service is not running", { "url" => dashboard_uri.to_s }, "Start it from the dashboard checkout with `npm run dev`.")
+else
+  dashboard_checks << check("dashboard.health", "failed", health_error || "dashboard health payload is incomplete", { "url" => dashboard_uri.to_s }, "Inspect the dashboard process and rerun doctor.")
+end
+
+if options[:deep]
+  doctor_payload, doctor_error = http_json(dashboard_uri, "/api/doctor")
+  resources = doctor_payload && normalize_dashboard_resources(doctor_payload["perResource"])
+  if resources
+    statuses = resources.map { |item| item["status"] }
+    status = statuses.all? { |value| %w[ok empty].include?(value) } ? "healthy" : "degraded"
+    guidance = status == "degraded" ? "Inspect dashboard backend access, then rerun with `--deep`." : nil
+    dashboard_checks << check("dashboard.resources", status, status == "healthy" ? "dashboard coordination reads healthy" : "dashboard coordination reads degraded", {
+      "token_env_var" => doctor_payload["tokenEnvVar"].is_a?(String) ? doctor_payload["tokenEnvVar"] : nil,
+      "resources" => resources
+    }, guidance)
+  else
+    dashboard_checks << check("dashboard.resources", "degraded", doctor_error || "dashboard doctor payload is incomplete", {}, "Start or repair the dashboard, then rerun with `--deep`.")
+  end
+else
+  dashboard_checks << check("dashboard.resources", "skipped", "deep dashboard checks not run", {}, "Rerun with `--deep`.")
+end
+
+components = [
+  component("agent-workflows", workflow_checks),
+  component("agent-coordination", coordination_checks),
+  component("agent-coordination-dashboard", dashboard_checks)
+]
+overall = components.map { |item| item.fetch("status") }.max_by { |value| SEVERITY.fetch(value) }
+payload = sanitize({
+  "schema_version" => 1,
+  "status" => overall,
+  "deep" => options[:deep],
+  "checked_at" => Time.now.utc.iso8601,
+  "components" => components
+})
+
+def display_status(value)
+  case value.to_s
+  when "ok" then "HEALTHY"
+  when "empty" then "EMPTY"
+  when "unsupported" then "UNSUPPORTED"
+  when "skipped" then "SKIPPED"
+  when "filtered" then "FILTERED"
+  when "forbidden" then "FORBIDDEN"
+  when "unknown", "" then "UNKNOWN"
+  else value.to_s.upcase
+  end
+end
+
+def resource_evidence(value)
+  records = case value
+  when Hash
+    value.map { |name, status| [name, status] }
+  when Array
+    value.each_with_object([]) do |item, result|
+      next unless item.is_a?(Hash)
+
+      result << [item["resource"] || item["id"] || "unknown", item["status"]]
+    end
+  else
+    []
+  end
+  records.map { |name, status| "#{name}=#{display_status(status)}" }.join(", ")
+end
+
+def present_detail?(value)
+  return false if value.nil?
+  return false if value.respond_to?(:empty?) && value.empty?
+
+  true
+end
+
+def human_detail_lines(entry)
+  details = entry.fetch("details", {})
+  case entry["id"]
+  when /\.source\z/
+    revision = [details["branch"], details["revision"]].select { |value| present_detail?(value) }.join(" @ ")
+    revision += details["dirty"] ? " (dirty)" : " (clean)" unless revision.empty?
+    [["Checkout", details["path"]], ["Revision", revision]]
+  when /\.compatibility\z/
+    [["Alias", details["path"]], ["Target", details["target"]]]
+  when "workflows.installation"
+    versions = details["installed_version"].to_s
+    if present_detail?(details["available_version"]) && details["available_version"] != details["installed_version"]
+      versions += " (available: #{details["available_version"]})"
+    end
+    delivery = [details["host"], details["delivery_mode"]].select { |value| present_detail?(value) }.join(" / ")
+    [["Version", versions], ["Delivery", delivery]]
+  when "coordination.cli"
+    [["Version", details["version"]], ["Command", details["path"]]]
+  when "coordination.backend"
+    location = details["url"] || details["state_root"]
+    [["Backend", [details["backend"], location].select { |value| present_detail?(value) }.join(" / ")],
+     ["Version", details["version"]], ["Evidence", Array(details["limitations"]).join("; ")]]
+  when "coordination.resources", "dashboard.resources"
+    [["Evidence", resource_evidence(details["resources"])]]
+  when "dashboard.package"
+    [["Version", details["version"]], ["Manifest", details["path"]]]
+  when "dashboard.health"
+    [["URL", details["url"]]]
+  else
+    details.map do |key, value|
+      rendered = value.is_a?(String) ? value : JSON.generate(value)
+      [key.split("_").map(&:capitalize).join(" "), rendered]
+    end
+  end.select { |_label, value| present_detail?(value) }
+end
+
+def render_human(payload)
+  counts = payload["components"].group_by { |item| item["status"] }.transform_values(&:length)
+  puts "Agent Stack Doctor: #{payload["status"].upcase}"
+  puts "3 components: #{counts.fetch("healthy", 0)} healthy, #{counts.fetch("degraded", 0)} degraded, #{counts.fetch("failed", 0)} failed"
+  payload["components"].each do |item|
+    puts
+    puts "[#{item["status"].upcase}] #{item["id"]}"
+    ordered = item["checks"].sort_by { |entry| entry["status"] == "healthy" ? 1 : 0 }
+    ordered.each do |entry|
+      label = CHECK_LABELS.fetch(entry["id"], entry["id"])
+      puts "  [#{entry["status"].upcase}] #{label}: #{entry["summary"]}"
+      human_detail_lines(entry).each { |detail_label, value| puts "    #{detail_label.ljust(10)} #{value}" }
+      if entry["status"] != "healthy" && entry["guidance"]
+        puts "    #{"Next".ljust(10)} #{entry["guidance"]}"
+      end
+    end
+  end
+end
+
+if options[:json]
+  puts JSON.pretty_generate(payload)
+else
+  render_human(payload)
+end
+
+exit({ "healthy" => 0, "degraded" => 1, "failed" => 2 }.fetch(payload["status"]))
+RUBY
+}
+
 command="${1:-}"
 if [[ "$command" = "-h" || "$command" = "--help" ]]; then
   usage
   exit 0
+fi
+
+if [[ "$command" = "doctor" ]]; then
+  shift
+  run_doctor "$@"
+  exit $?
 fi
 
 if [[ "$command" != "sync" ]]; then

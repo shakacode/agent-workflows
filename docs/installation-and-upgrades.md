@@ -256,6 +256,90 @@ dashboard process. Existing agent tasks also do not need to restart merely
 because the stack was synced; follow [Active Batches](#active-batches) when a
 task genuinely needs newly installed workflow instructions.
 
+### Full Stack Doctor
+
+Use `agent-stack doctor` as the master health check for the complete local
+ShakaCode stack. It checks the source checkout and compatibility link for each
+of the three repositories, the installed workflow pack, the installed
+`agent-coord` command and its configured backend, and the optional dashboard
+process:
+
+```bash
+agent-stack doctor
+agent-stack doctor --deep
+```
+
+The default run is bounded and inexpensive. `--deep` additionally runs the
+workflow seam check, reports coordination resource checks, and reads the local
+dashboard's `/api/doctor` evidence. In default mode those three checks remain
+visible as neutral `skipped` records, so automation can rely on the same check
+identifiers in both modes.
+
+The human report is intended for interactive diagnosis: it starts with the
+overall verdict and component counts, then shows exactly one section for each
+repository with unhealthy checks first and a `Next` action for every degraded
+or failed check. Use JSON for automation:
+
+```bash
+agent-stack doctor --json
+agent-stack doctor --deep --json
+```
+
+`--json` writes only the aggregate JSON document to standard output. Schema
+version `1` includes `schema_version`, the aggregate `status`, the `deep` mode
+flag, `checked_at`, and the fixed `components` array. Each component contains
+an `id`, normalized `status`, summary, and checks; each check has a stable `id`,
+status, summary, and, when applicable, sanitized details and guidance. The
+stable check IDs are:
+
+- `agent-workflows.source`, `agent-workflows.compatibility`,
+  `workflows.installation`, and `workflows.seam`
+- `agent-coordination.source`, `agent-coordination.compatibility`,
+  `coordination.cli`, `coordination.backend`, and `coordination.resources`
+- `agent-coordination-dashboard.source`,
+  `agent-coordination-dashboard.compatibility`, `dashboard.package`,
+  `dashboard.health`, and `dashboard.resources`
+
+Aggregate and component statuses use these meanings:
+
+| Status | Exit | Meaning |
+| --- | ---: | --- |
+| `healthy` | 0 | All required evidence is known-good and no advisory check is degraded. |
+| `degraded` | 1 | The stack is usable, but optional evidence is unavailable or an advisory limitation needs attention. A stopped dashboard is the common example because the dashboard is an optional runtime. |
+| `failed` | 2 | Required evidence is missing, unusable, unknown, timed out, or malformed. |
+
+Invalid options or an unsafe dashboard URL are usage errors and exit `64`.
+Check records also use neutral `skipped` for deep-only work omitted by the
+default mode. Child resource evidence may preserve more specific values such
+as `unknown`, `unsupported`, `filtered`, or `forbidden`; the master verdict
+conservatively normalizes those limitations rather than rounding them up to
+healthy.
+
+Location selectors let the doctor inspect a non-default installation without
+creating any missing directory:
+
+| Selector | Default |
+| --- | --- |
+| `--source-root DIR` | `~/src` |
+| `--compat-root DIR` | `~/codex/agent-repos` |
+| `--host codex\|claude\|auto` | `codex` |
+| `--target DIR` | The selected host's normal home (`$CODEX_HOME`, `$CLAUDE_HOME`, or its standard fallback) |
+| `--agent-coord-install-dir DIR` | `~/.local/bin` |
+| `--dashboard-url URL` | `http://127.0.0.1:${PORT:-4319}` |
+
+For safety, `--dashboard-url` accepts only plain HTTP loopback URLs using
+`localhost`, `127.0.0.1`, or `[::1]`, without credentials, a query, an endpoint
+path, or redirects. The entire doctor is observational: it does not fetch,
+sync, install, start the dashboard, create backend state, or repair anything.
+Run `agent-stack sync` or the report's specific `Next` action separately after
+reviewing the evidence.
+
+The component diagnostics remain useful primitives when you need their native,
+component-specific detail. For example, run `agent-workflows-status`,
+`agent-workflow-seam-doctor`, or `agent-coord doctor` directly after the master
+report points at that component. Their output and exit contracts are not
+replaced by the aggregate doctor.
+
 The installer writes:
 
 - `<target>/skills/*` in `flat` delivery mode only
@@ -284,6 +368,10 @@ status and upgrade helpers use that metadata so they can run from either the
 source clone or the installed host.
 
 ## Status Checks
+
+For the full three-repository contributor stack, start with
+`agent-stack doctor`. The status helper below is the narrower primitive for the
+installed `agent-workflows` pack only.
 
 Check the installed pack against the source clone recorded at install time:
 
