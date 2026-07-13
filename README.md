@@ -283,6 +283,7 @@ This project is available under the MIT License.
 | `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
 | `triage` | Build a whole-surface issue/PR inventory and batch split. |
 | `type-design-review` | Review changed type surfaces for representable invalid states. |
+| `untrusted-contributor-intake` | Safely intake untrusted outside-contributor fork PRs. |
 | `update-changelog` | Classify merged PRs and update a repo changelog. |
 | `verify` | Run local verification before PR updates. |
 | `verify-pr-fix` | Reproduce a bug before and after a fix. |

@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add a portable report-first safe intake skill for untrusted outside-contributor fork pull requests.**
 - **Add a portable dispatcher-capability preflight that records bound, attested route/dispatcher selection or one durable decision request without launching workers or mutating coordination.**
 - **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**

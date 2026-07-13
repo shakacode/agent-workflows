@@ -1,0 +1,19 @@
+pull_request:
+  number: 410
+  base_repository: maintainer-org/portable-project
+  base_branch: main
+  head_repository: outside-contributor/portable-project
+  head_sha: 0123456789abcdef0123456789abcdef01234567
+  head_repository_is_fork: true
+  author_association: NONE
+  mergeability: MERGEABLE
+  permissions:
+    viewer: read
+    maintainer_can_modify: false
+  checks:
+    - name: portable-ci
+      conclusion: success
+  review_actors:
+    - automation-bot
+    - maintainer-alex
+  linked_issue: 110
