@@ -96,10 +96,13 @@ agent-stack doctor
 agent-stack doctor --deep
 ```
 
-The default check is quick; `--deep` adds component resource and workflow-seam
-evidence. A stopped dashboard is reported as degraded, not failed, because the
-dashboard is an optional runtime. The doctor reports what to do next but never
-syncs, installs, starts, or repairs anything. See
+The master owns checkout and compatibility-link discovery, bounded component
+execution, contract validation, sanitization, aggregation, and rendering. Each
+component repository owns its operational checks behind the shared stack
+contract, so there is no fixed master list of internal check IDs. A stopped
+dashboard is reported as degraded, not failed, because the dashboard is an
+optional runtime. The doctor reports what to do next but never syncs, installs,
+starts, or repairs anything. See
 [Full Stack Doctor](docs/installation-and-upgrades.md#full-stack-doctor) for
 selectors, JSON output, status meanings, and exit codes.
 
@@ -150,8 +153,9 @@ The selected delivery mode is durable install state. Repeated installs,
 explicit `--delivery-mode` changes it.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-status`, `agent-workflows-trust-audit`, and
-`upgrade-agent-workflows` available as normal commands.
+`agent-workflows-doctor`, `agent-workflows-status`,
+`agent-workflows-trust-audit`, and `upgrade-agent-workflows` available as normal
+commands.
 
 See [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 host selection, status states, upgrades, rollback behavior, and Codex/Claude

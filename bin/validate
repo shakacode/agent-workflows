@@ -79,6 +79,8 @@ ruby bin/validate-review-findings
 echo "== installer/status/upgrade tests =="
 bash bin/install-agent-workflows-test.bash
 bash bin/agent-stack-test.bash
+bash bin/agent-workflows-doctor-test.bash
+bash bin/agent-stack-doctor-test.bash
 
 echo "== fixture seam validation =="
 bin/agent-workflow-seam-doctor --root test/fixtures/consumer-repo --shared .

@@ -169,6 +169,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
+  assert_file "$target/bin/agent-workflows-doctor"
   assert_file "$target/bin/agent-workflows-trust-audit"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   assert_file "$target/bin/upgrade-agent-workflows"
@@ -218,6 +219,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/docs/coordination-backend.md"
     assert_file "$target/bin/agent-workflow-seam-doctor"
     assert_file "$target/bin/agent-workflows-status"
+    assert_file "$target/bin/agent-workflows-doctor"
     assert_file "$target/bin/agent-workflows-delivery-state"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
@@ -951,6 +953,7 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/docs/agent-workflows-model-routing.md"
   assert_file "$tmp/.claude/docs/solutions/README.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
+  assert_file "$tmp/.claude/bin/agent-workflows-doctor"
   assert_file "$tmp/.claude/bin/agent-workflows-trust-audit"
   [[ ! -e "$tmp/.claude/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   [[ ! -e "$tmp/.claude/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest must not be installed into Claude home metadata"

@@ -1,0 +1,207 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+STATUSES = { "healthy" => 0, "degraded" => 1, "failed" => 2 }.freeze
+SEVERITY = { "healthy" => 0, "skipped" => 0, "degraded" => 1, "failed" => 2 }.freeze
+MAX_STDOUT = 1024 * 1024
+MAX_STDERR = 64 * 1024
+TIMEOUT = 4.0
+
+def check(id, status, summary, details: {}, guidance: nil)
+  {
+    "id" => id,
+    "status" => status,
+    "summary" => summary,
+    "details" => details,
+    "guidance" => guidance
+  }
+end
+
+def terminate_group(pid)
+  begin
+    Process.kill("TERM", -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
+  loop do
+    break if Process.waitpid2(pid, Process::WNOHANG)
+    break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+    sleep 0.02
+  rescue Errno::ECHILD
+    break
+  end
+  begin
+    Process.kill("KILL", -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+  begin
+    Process.wait(pid)
+  rescue Errno::ECHILD
+    nil
+  end
+end
+
+def capture(command)
+  readers = [IO.pipe, IO.pipe]
+  stdout_reader, stdout_writer = readers[0]
+  stderr_reader, stderr_writer = readers[1]
+  pid = Process.spawn(*command, out: stdout_writer, err: stderr_writer, pgroup: true)
+  stdout_writer.close
+  stderr_writer.close
+  stdout = +""
+  stderr = +""
+  streams = { stdout_reader => [stdout, MAX_STDOUT], stderr_reader => [stderr, MAX_STDERR] }
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + TIMEOUT
+  child_status = nil
+  failure = nil
+
+  until child_status && streams.empty?
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    if remaining <= 0
+      failure = "diagnostic timed out"
+      terminate_group(pid)
+      break
+    end
+    Array(IO.select(streams.keys, nil, nil, [remaining, 0.05].min)&.first).each do |io|
+      buffer, limit = streams.fetch(io)
+      chunk = io.read_nonblock(16 * 1024)
+      available = limit - buffer.bytesize
+      buffer << chunk.byteslice(0, available) if available.positive?
+      if chunk.bytesize > available
+        failure = "output exceeded diagnostic size limit"
+        terminate_group(pid)
+        break
+      end
+    rescue IO::WaitReadable
+      next
+    rescue EOFError
+      streams.delete(io)
+      io.close
+    end
+    break if failure
+
+    child_status ||= Process.waitpid2(pid, Process::WNOHANG)&.last
+  end
+
+  { stdout: stdout, stderr: stderr, exit: child_status&.exitstatus, failure: failure }
+rescue SystemCallError => e
+  { stdout: "", stderr: "", exit: nil, failure: "unable to start diagnostic: #{e.class}" }
+ensure
+  readers&.flatten&.each { |io| io.close unless io.closed? }
+end
+
+def installation_check(command, host)
+  result = capture(command)
+  return check("workflows.installation", "failed", result[:failure], guidance: "Reinstall workflows with `agent-stack sync`.") if result[:failure]
+
+  payload = JSON.parse(result[:stdout])
+  raise JSON::ParserError, "invalid status payload" unless payload.is_a?(Hash)
+
+  pair = [payload["status"], result[:exit]]
+  status = { ["UP_TO_DATE", 0] => "healthy", ["UPGRADE_AVAILABLE", 1] => "degraded" }[pair]
+  raise JSON::ParserError, "status/exit mismatch" unless status
+  raise JSON::ParserError, "invalid status payload" unless payload["installed_version"].is_a?(String) &&
+                                                           payload["available_version"].is_a?(String) && payload["delivery_mode"].is_a?(String) &&
+                                                           (payload["guidance"].nil? || payload["guidance"].is_a?(String))
+
+  check(
+    "workflows.installation",
+    status,
+    status == "healthy" ? "workflow installation matches source" : "workflow upgrade available",
+    details: {
+      "installed_version" => payload["installed_version"],
+      "available_version" => payload["available_version"],
+      "delivery_mode" => payload["delivery_mode"],
+      "host" => host
+    },
+    guidance: payload["guidance"]
+  )
+rescue JSON::ParserError
+  check(
+    "workflows.installation",
+    "failed",
+    "workflow status returned malformed JSON or a mismatched status",
+    guidance: "Reinstall workflows with `agent-stack sync`."
+  )
+end
+
+def seam_check(command)
+  result = capture(command)
+  return check("workflows.seam", "failed", result[:failure], guidance: "Run the seam doctor directly for full guidance.") if result[:failure]
+
+  payload = JSON.parse(result[:stdout])
+  valid = result[:exit]&.zero? && payload.is_a?(Hash) && payload["status"] == "PASS" &&
+          payload["issues"].is_a?(Array) && payload["issues"].empty?
+  raise JSON::ParserError, "invalid seam payload" unless valid
+
+  check("workflows.seam", "healthy", "workflow seam contract passes")
+rescue JSON::ParserError
+  check(
+    "workflows.seam",
+    "failed",
+    "workflow seam doctor returned malformed JSON or reported issues",
+    guidance: "Run the seam doctor directly for full guidance."
+  )
+end
+
+options = { host: "codex", target: nil, source: nil, deep: false, stack_json: false }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: agent-workflows-doctor --stack-json [options]"
+  opts.on("--stack-json") { options[:stack_json] = true }
+  opts.on("--host HOST") { |value| options[:host] = value }
+  opts.on("--target DIR") { |value| options[:target] = value }
+  opts.on("--source DIR") { |value| options[:source] = value }
+  opts.on("--deep") { options[:deep] = true }
+end
+
+begin
+  parser.parse!(ARGV)
+  raise OptionParser::InvalidOption, "--stack-json is required" unless options[:stack_json]
+  raise OptionParser::InvalidOption, "--target is required" unless options[:target]
+  raise OptionParser::InvalidOption, "--source is required" unless options[:source]
+  raise OptionParser::InvalidOption, "--host must be codex, claude, or auto" unless %w[codex claude auto].include?(options[:host])
+  raise OptionParser::InvalidOption, "unexpected arguments" unless ARGV.empty?
+rescue OptionParser::ParseError => e
+  warn "agent-workflows-doctor: #{e.message}"
+  warn parser
+  exit 64
+end
+
+target = File.expand_path(options[:target])
+source = File.expand_path(options[:source])
+status_command = File.join(target, "bin", "agent-workflows-status")
+checks = [
+  installation_check(
+    [status_command, "--host", options[:host], "--target", target, "--source", source, "--json"],
+    options[:host]
+  ),
+  if options[:deep]
+    seam = File.join(target, "bin", "agent-workflow-seam-doctor")
+    seam_check([seam, "--root", source, "--shared", source, "--json"])
+  else
+    check(
+      "workflows.seam",
+      "skipped",
+      "deep workflow checks not run",
+      guidance: "Rerun with `--deep`."
+    )
+  end
+]
+
+component_status = checks.map { |item| item.fetch("status") }.max_by { |status| SEVERITY.fetch(status) }
+component_status = "healthy" if component_status == "skipped"
+
+payload = {
+  "schema_version" => 1,
+  "component" => "agent-workflows",
+  "status" => component_status,
+  "checks" => checks
+}
+puts JSON.generate(payload)
+exit STATUSES.fetch(payload["status"])

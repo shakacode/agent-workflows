@@ -259,21 +259,36 @@ task genuinely needs newly installed workflow instructions.
 ### Full Stack Doctor
 
 Use `agent-stack doctor` as the master health check for the complete local
-ShakaCode stack. It checks the source checkout and compatibility link for each
-of the three repositories, the installed workflow pack, the installed
-`agent-coord` command and its configured backend, and the optional dashboard
-process:
+ShakaCode stack:
 
 ```bash
 agent-stack doctor
 agent-stack doctor --deep
 ```
 
-The default run is bounded and inexpensive. `--deep` additionally runs the
-workflow seam check, reports coordination resource checks, and reads the local
-dashboard's `/api/doctor` evidence. In default mode those three checks remain
-visible as neutral `skipped` records, so automation can rely on the same check
-identifiers in both modes.
+The master inspects only generic source-checkout and compatibility-link state.
+It then invokes one bounded, read-only doctor owned by each component
+repository. The workflow component owns install and seam checks, coordination
+owns its CLI/backend/resource checks, and the dashboard owns package, service,
+and runtime checks. `--deep` is forwarded to all three delegates; the component
+contracts decide which extra checks appear or become `skipped`. There is no
+fixed 14-check master contract and component check IDs may evolve with their
+own schema-compatible releases.
+
+The required component interfaces are:
+
+```text
+<target>/bin/agent-workflows-doctor --stack-json [--deep] --host HOST --target DIR --source DIR
+<agent-coord-install-dir>/agent-coord doctor --stack-json [--deep] <backend-selector>
+node <dashboard-source>/bin/agent-coordination-dashboard.js doctor --stack-json [--deep] --url URL
+```
+
+`install-agent-workflows` installs `agent-workflows-doctor` in every delivery
+mode. `agent-stack sync` installs both `agent-stack` and its focused
+`agent-stack-doctor` Ruby helper. The coordination and dashboard commands must
+come from component versions that implement the interfaces above; until then,
+the master reports a generic `<component>.doctor` wrapper check instead of
+inventing that component's internal checks.
 
 The human report is intended for interactive diagnosis: it starts with the
 overall verdict and component counts, then shows exactly one section for each
@@ -286,19 +301,21 @@ agent-stack doctor --deep --json
 ```
 
 `--json` writes only the aggregate JSON document to standard output. Schema
-version `1` includes `schema_version`, the aggregate `status`, the `deep` mode
-flag, `checked_at`, and the fixed `components` array. Each component contains
-an `id`, normalized `status`, summary, and checks; each check has a stable `id`,
-status, summary, and, when applicable, sanitized details and guidance. The
-stable check IDs are:
+version `1` includes `schema_version`, aggregate `status`, `deep`, `checked_at`,
+and `components`. Every component entry uses the uniform component contract:
 
-- `agent-workflows.source`, `agent-workflows.compatibility`,
-  `workflows.installation`, and `workflows.seam`
-- `agent-coordination.source`, `agent-coordination.compatibility`,
-  `coordination.cli`, `coordination.backend`, and `coordination.resources`
-- `agent-coordination-dashboard.source`,
-  `agent-coordination-dashboard.compatibility`, `dashboard.package`,
-  `dashboard.health`, and `dashboard.resources`
+```json
+{"schema_version":1,"component":"<id>","status":"healthy|degraded|failed","checks":[]}
+```
+
+Every check always has string `id`, `status` in
+`healthy|degraded|failed|skipped`, string `summary`, object `details`, and
+`guidance` as a string or `null`. Unknown additive delegate fields are ignored.
+Malformed contracts, component/status/exit mismatches, missing delegates, and
+delegate exit `64` become generic wrapper checks. Delegates exit `0` for
+healthy, `1` for degraded, `2` for failed, and `64` for usage or inability to
+run; the master independently verifies that status/exit parity before merging
+generic checks and deriving the aggregate verdict.
 
 Aggregate and component statuses use these meanings:
 
@@ -308,12 +325,11 @@ Aggregate and component statuses use these meanings:
 | `degraded` | 1 | The stack is usable, but optional evidence is unavailable or an advisory limitation needs attention. A stopped dashboard is the common example because the dashboard is an optional runtime. |
 | `failed` | 2 | Required evidence is missing, unusable, unknown, timed out, or malformed. |
 
-Invalid options or an unsafe dashboard URL are usage errors and exit `64`.
-Check records also use neutral `skipped` for deep-only work omitted by the
-default mode. Child resource evidence may preserve more specific values such
-as `unknown`, `unsupported`, `filtered`, or `forbidden`; the master verdict
-conservatively normalizes those limitations rather than rounding them up to
-healthy.
+Invalid options, missing Ruby, or a missing master `agent-stack-doctor` helper
+are usage/unable-to-run errors and exit `64`. A component delegate that cannot
+run does not abort the aggregate: its wrapper check records the failure or, for
+the optional dashboard, degradation. Check records use neutral `skipped` for
+component work omitted by the default mode.
 
 Location selectors let the doctor inspect a non-default installation without
 creating any missing directory:
@@ -322,6 +338,7 @@ creating any missing directory:
 | --- | --- |
 | `--source-root DIR` | `~/src` |
 | `--compat-root DIR` | `~/codex/agent-repos` |
+| `--runtime-root DIR` | `${AGENT_STACK_RUNTIME_ROOT:-~/.agent-workflows}` |
 | `--host codex\|claude\|auto` | `codex` |
 | `--target DIR` | The selected host's normal home (`$CODEX_HOME`, `$CLAUDE_HOME`, or its standard fallback) |
 | `--agent-coord-install-dir DIR` | `~/.local/bin` |
@@ -334,11 +351,21 @@ sync, install, start the dashboard, create backend state, or repair anything.
 Run `agent-stack sync` or the report's specific `Next` action separately after
 reviewing the evidence.
 
+Coordination backend selection is read-only and deterministic. Explicit
+`AGENT_COORD_STATE_ROOT` (even when the path is missing),
+`AGENT_COORD_API_URL`, `AGENT_COORD_BACKEND`, and
+`AGENT_COORD_STATUS_STATE_ROOT` take precedence. The master then uses an
+existing `<runtime-root>/state`, followed by an existing XDG/default
+coordination state root. It never creates a selected root. In particular, a
+missing explicit `AGENT_COORD_STATE_ROOT` remains authoritative and is passed
+to the component doctor so coordination can return its own failed contract.
+
 The component diagnostics remain useful primitives when you need their native,
-component-specific detail. For example, run `agent-workflows-status`,
-`agent-workflow-seam-doctor`, or `agent-coord doctor` directly after the master
-report points at that component. Their output and exit contracts are not
-replaced by the aggregate doctor.
+component-specific detail. Run `agent-workflows-doctor --stack-json`,
+`agent-coord doctor --stack-json`, or the dashboard CLI directly after the
+master report points at that component. `agent-workflows-status` and
+`agent-workflow-seam-doctor` remain lower-level workflow helpers used by the
+workflow-owned doctor.
 
 The installer writes:
 
@@ -351,6 +378,7 @@ The installer writes:
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflows-delivery-state`
+- `<target>/bin/agent-workflows-doctor`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`

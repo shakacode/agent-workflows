@@ -10,7 +10,7 @@ All notable changes to this portable workflow pack are documented here.
 
 - **Add an agent-workflow consumer seam with portable configuration and command wrappers.** [PR 140](https://github.com/shakacode/agent-workflows/pull/140) by [justin808](https://github.com/justin808).
 - **Add a portable report-first safe intake skill for untrusted outside-contributor fork pull requests.**
-- **Add `agent-stack doctor` as one read-only, human-friendly or JSON master health check for the `agent-workflows`, `agent-coordination`, and optional dashboard runtime, with shallow/deep modes, actionable verdicts, and stable exit semantics.**
+- **Add `agent-stack doctor` as a read-only master aggregator for uniform component-owned diagnostics, with generic checkout/link discovery, bounded delegates, contract validation, secret-safe human/JSON rendering, and stable `0/1/2/64` exits.**
 - **Add a portable dispatcher-capability preflight that records bound, attested route/dispatcher selection or one durable decision request without launching workers or mutating coordination.**
 - **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
