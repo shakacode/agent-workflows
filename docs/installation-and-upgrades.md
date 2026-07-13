@@ -283,6 +283,13 @@ The required component interfaces are:
 node <dashboard-source>/bin/agent-coordination-dashboard.js doctor --stack-json [--deep] --url URL
 ```
 
+Component doctors are trusted local executables. The master bounds their
+output and runtime and terminates the delegate process group on timeout, but it
+does not guarantee termination of descendants that deliberately escape that
+group with `setsid` or a double fork. Install and run only reviewed component
+versions; the master report itself remains time-bounded when an escaped
+descendant closes or retains the delegated output streams.
+
 `install-agent-workflows` installs `agent-workflows-doctor` and its focused
 Ruby modules in every delivery mode. `agent-stack sync` installs `agent-stack`,
 its focused shell modules, `agent-stack-doctor`, and the shared doctor modules.

@@ -75,6 +75,22 @@ class AgentDoctorSanitizerTest < Minitest::Test
     refute_includes output, "%ZZ"
   end
 
+  def test_redacts_sensitive_and_high_entropy_url_paths_without_hiding_normal_paths
+    slack_secret = "T01234567/B01234567/slack-webhook-secret-value"
+    opaque_secret = "aB3dE5fG7hJ9kLmNpQrStUvWxYz_2468"
+    output = AgentDoctor::Sanitizer.new.string(
+      "https://hooks.slack.com/services/#{slack_secret} " \
+      "https://example.test/callback/#{opaque_secret} " \
+      "https://example.test/api/v1/projects/agent-workflows/releases/2026-07-13"
+    )
+
+    assert_includes output, "https://hooks.slack.com/services/%5BREDACTED%5D"
+    assert_includes output, "https://example.test/callback/%5BREDACTED%5D"
+    assert_includes output, "https://example.test/api/v1/projects/agent-workflows/releases/2026-07-13"
+    refute_includes output, slack_secret
+    refute_includes output, opaque_secret
+  end
+
   def test_strips_terminal_controls_and_encodes_newlines
     output = AgentDoctor::Sanitizer.new.string("bad\n\e[31mtext")
 

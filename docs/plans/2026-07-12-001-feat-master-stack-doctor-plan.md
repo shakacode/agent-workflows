@@ -97,7 +97,7 @@ A missing explicit `AGENT_COORD_STATE_ROOT` is authoritative. The coordination d
 ### Safety and output
 
 - The command validates the loopback-only dashboard URL before inspecting or invoking components.
-- Delegate stdout is capped at 1 MiB, stderr at 64 KiB, and execution at 10 seconds; timeout cleanup terminates the entire process group.
+- Delegate stdout is capped at 1 MiB, stderr at 64 KiB, and execution at 10 seconds; timeout cleanup terminates the delegate's process group. Component doctors are trusted local executables, and cleanup does not claim to terminate descendants that deliberately escape that group with `setsid` or a double fork.
 - Child stderr and raw malformed output never escape the normalized aggregate.
 - URL userinfo, sensitive query values, malformed percent-encoded queries, environment secrets, ANSI escapes, and control characters are sanitized before either renderer.
 - JSON mode writes only the aggregate document to stdout.
@@ -132,9 +132,15 @@ The outer aggregate contains `schema_version`, `status`, `deep`, `checked_at`, a
 
 ## Implementation Units
 
+The focused-module claim applies only to the new doctor and stack-sync modules
+and their responsibility-specific suites. `bin/install-agent-workflows` and
+`bin/install-agent-workflows-test.bash` are pre-existing compatibility surfaces
+outside that claim; this work only wires the new doctor runtime into them and
+retains their installer regression coverage.
+
 ### U1. Workflow-owned component doctor
 
-- **Files:** `bin/agent-workflows-doctor`, its focused public-command tests, installer and installer tests.
+- **Files:** `bin/agent-workflows-doctor`, its focused public-command tests, and integration wiring in the existing installer and installer tests.
 - **Behavior:** Adapt `agent-workflows-status` and the optional deep seam helper into the uniform contract; bound child execution; return component status parity.
 - **Acceptance:** Healthy install exits `0`; upgrade available exits `1`; invalid/missing/mismatched helpers exit `2` with valid JSON; shallow seam is `skipped`; deep seam is executed read-only.
 
@@ -180,7 +186,7 @@ The outer aggregate contains `schema_version`, `status`, `deep`, `checked_at`, a
 ## Definition of Done
 
 - `agent-stack` and `agent-stack-doctor` are thin entrypoints over focused, installable modules.
-- The master and sync implementations contain no catch-all monolith, and their small test drivers load focused suites.
+- The new master-doctor and stack-sync implementations contain no catch-all monolith, and their small test drivers load focused suites.
 - Component-owned checks are never duplicated or guessed by the master.
 - Uniform contracts, status/exit parity, redaction, bounds, cleanup, read-only behavior, and human/JSON parity are protected by focused tests.
 - Installer, root docs, installation docs, changelog, and this plan match the shipped architecture.

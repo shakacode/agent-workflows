@@ -13,6 +13,7 @@ module AgentDoctor
     def digest(root)
       root = File.expand_path(root)
       result = Digest::SHA256.new
+      entries = []
       Find.find(root) do |path|
         relative = path == root ? "." : path.delete_prefix("#{root}/")
         if IGNORED_ROOT_ENTRIES.include?(relative)
@@ -27,9 +28,11 @@ module AgentDoctor
                 when "directory" then ""
                 else raise ArgumentError, "unsupported doctor install entry: #{relative}"
                 end
-        append(result, relative, stat.ftype, (stat.mode & 0o7777).to_s(8), value)
+        entries << [relative, stat.ftype, (stat.mode & 0o7777).to_s(8), value]
         Find.prune if stat.symlink?
       end
+      entries.sort_by!(&:first)
+      entries.each { |entry| append(result, *entry) }
       result.hexdigest
     end
 

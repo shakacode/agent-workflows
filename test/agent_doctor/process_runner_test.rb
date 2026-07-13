@@ -77,6 +77,35 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
     end
   end
 
+  def test_timeout_stays_bounded_when_descendant_escapes_with_setsid
+    Dir.mktmpdir do |directory|
+      pid_file = File.join(directory, "setsid-descendant")
+      script = <<~'RUBY'
+        fork do
+          Process.setsid
+          Signal.trap("TERM", "IGNORE")
+          File.write(ARGV.fetch(0), Process.pid)
+          sleep 60
+        end
+        sleep 0.01 until File.exist?(ARGV.fetch(0))
+        sleep 60
+      RUBY
+      escaped_pid = nil
+
+      begin
+        started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        result = runner(timeout: 0.2).capture([RbConfig.ruby, "-e", script, pid_file])
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+        escaped_pid = Integer(File.read(pid_file))
+
+        assert_equal "diagnostic timed out", result[:failure]
+        assert_operator elapsed, :<, 2.0, "setsid descendant made diagnostic timeout unbounded"
+      ensure
+        Process.kill("KILL", escaped_pid) if escaped_pid && process_running?(escaped_pid)
+      end
+    end
+  end
+
   def test_process_liveness_check_does_not_depend_on_ps_access
     Dir.mktmpdir do |directory|
       ps = File.join(directory, "ps")

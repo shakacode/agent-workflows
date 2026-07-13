@@ -83,12 +83,13 @@ module AgentDoctor
     end
 
     def dashboard_contract(paths, sources, source_check)
-      if source_check.fetch("status") == "failed"
+      source = sources.fetch("agent-coordination-dashboard")
+      script = File.join(source, "bin", "agent-coordination-dashboard.js")
+      if source_check.fetch("status") == "failed" || source_delegate_blocked?(source_check, script, source)
         return source_trust_failure("agent-coordination-dashboard", status: "degraded")
       end
 
       node = @environment.fetch("NODE_BIN", "node")
-      script = File.join(sources.fetch("agent-coordination-dashboard"), "bin", "agent-coordination-dashboard.js")
       command = [node, script, "doctor", "--stack-json"]
       command << "--deep" if @options[:deep]
       command += ["--url", paths[:dashboard_uri].to_s]
@@ -103,12 +104,19 @@ module AgentDoctor
     end
 
     def append_source_checks(contract, checker, compat_root, source, source_check)
-      generic = [source_check, checker.compatibility(contract.fetch("component"), compat_root, source)]
-      Contract.component(contract.fetch("component"), generic + contract.fetch("checks"))
+      component = contract.fetch("component")
+      generic = [component_source_check(component, source_check), checker.compatibility(component, compat_root, source)]
+      Contract.component(component, generic + contract.fetch("checks"))
+    end
+
+    def component_source_check(component, source_check)
+      return source_check unless component == "agent-coordination-dashboard" && source_check.fetch("status") == "failed"
+
+      source_check.merge("status" => "degraded")
     end
 
     def source_delegate_blocked?(source_check, executable, source)
-      source_check.fetch("status") == "failed" && source_resident?(executable, source)
+      source_check.fetch("status") != "healthy" && source_resident?(executable, source)
     end
 
     def source_resident?(executable, source)
@@ -120,7 +128,7 @@ module AgentDoctor
     end
 
     def source_trust_failure(component, status: "failed")
-      Contract.unavailable(component, "source checkout failed validation; component doctor was not executed",
+      Contract.unavailable(component, "source checkout is not trusted for delegate execution; component doctor was not executed",
                            status: status, guidance: "Repair or replace the source checkout, then rerun doctor.")
     end
   end

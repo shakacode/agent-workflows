@@ -116,6 +116,21 @@ class AgentDoctorStackCLIIntegrationTest < Minitest::Test
     end
   end
 
+  def test_human_and_json_output_scrub_webhook_paths_and_preserve_informative_paths
+    webhook_secret = "T01234567/B01234567/slack-webhook-secret-value"
+    endpoint = "https://hooks.slack.com/services/#{webhook_secret} " \
+               "https://example.test/api/v1/projects/agent-workflows/releases/2026-07-13"
+
+    outputs = [doctor("--json", environment: { "DOCTOR_ENDPOINT_FIXTURE" => endpoint }).first,
+               doctor(environment: { "DOCTOR_ENDPOINT_FIXTURE" => endpoint }).first]
+
+    outputs.each do |output|
+      assert_includes output, "https://hooks.slack.com/services/%5BREDACTED%5D"
+      assert_includes output, "https://example.test/api/v1/projects/agent-workflows/releases/2026-07-13"
+      refute_includes output, webhook_secret
+    end
+  end
+
   def test_explicit_missing_state_root_is_forwarded_without_creation
     missing = path("missing-state")
     args = path("coord-args")

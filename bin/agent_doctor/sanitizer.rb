@@ -7,6 +7,8 @@ module AgentDoctor
     SECRET_ENV_NAME_PATTERN = /(?:\A|_)(?:TOKEN|SECRET|PASSWORD|COOKIE|CREDENTIALS?|AUTH)(?:_|\z)|(?:\A|_)(?:API|PRIVATE|ACCESS)_KEY(?:_|\z)/i
     URI_PATTERN = %r{(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\s<>"']+}
     SENSITIVE_QUERY_KEY_PATTERN = /\A(?:(?:api|access|private)[_-]?key|(?:access|auth|id|refresh)[_-]?token|client[_-]?secret|password|passwd|token|secret|credentials?|key|auth|jwt|session|signature)\z|(?:\A|[_-])(?:token|secret|password|passwd|key|credential|auth|jwt|session|signature)(?:[_-]|\z)/i
+    REDACTED_PATH_SEGMENT = "%5BREDACTED%5D"
+    UUID_PATH_SEGMENT_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/i
 
     def initialize(environment = ENV)
       secrets = environment.each_with_object([]) do |(key, value), values|
@@ -67,6 +69,7 @@ module AgentDoctor
 
       uri.user = nil
       uri.password = nil
+      uri.path = sanitized_path(uri)
       uri.query = sanitized_query(uri.query) if uri.query
       uri.fragment = sanitized_fragment(uri.fragment) if uri.fragment
       restore_redaction_marker(uri.to_s, had_userinfo)
@@ -92,6 +95,24 @@ module AgentDoctor
 
     def sanitized_query(query)
       sanitized_parameters(query)
+    end
+
+    def sanitized_path(uri)
+      path = uri.path.to_s
+      return "/services/#{REDACTED_PATH_SEGMENT}" if uri.host.casecmp?("hooks.slack.com") && path.start_with?("/services/")
+
+      path.split("/", -1).map { |segment| high_entropy_path_segment?(segment) ? REDACTED_PATH_SEGMENT : segment }.join("/")
+    end
+
+    def high_entropy_path_segment?(segment)
+      decoded = URI.decode_uri_component(segment)
+      return false if decoded.bytesize < 24
+      return false if decoded.match?(UUID_PATH_SEGMENT_PATTERN) || decoded.match?(/\A[0-9a-f]{32,64}\z/i)
+
+      character_classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].count { |pattern| decoded.match?(pattern) }
+      character_classes >= 3 && decoded.each_char.uniq.length >= 12
+    rescue ArgumentError
+      false
     end
 
     def sanitized_fragment(fragment)

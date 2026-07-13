@@ -31,14 +31,17 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     payload = AgentDoctor::Orchestrator.new(options, runner: AgentDoctor::ProcessRunner.new,
                                                      sanitizer: AgentDoctor::Sanitizer.new,
                                                      environment: @environment).call
-    checks = payload.fetch("components").last.fetch("checks")
+    dashboard = payload.fetch("components").last
+    checks = dashboard.fetch("checks")
     ids = checks.map { |check| check.fetch("id") }
     statuses = checks.map { |check| check.fetch("status") }
 
     refute_path_exists @sentinel
+    assert_equal "degraded", dashboard.fetch("status")
+    assert_equal "degraded", payload.fetch("status")
     assert_equal %w[agent-coordination-dashboard.source agent-coordination-dashboard.compatibility
                     agent-coordination-dashboard.doctor], ids
-    assert_equal %w[failed healthy degraded], statuses
+    assert_equal %w[degraded healthy degraded], statuses
   end
 
   def test_failed_sources_block_source_resident_installed_delegates
@@ -60,6 +63,73 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     orchestrator.call
 
     sentinels.each { |sentinel| refute_path_exists sentinel }
+  end
+
+  def test_degraded_dirty_sources_block_all_source_resident_delegates
+    dashboard = path("src/agent-coordination-dashboard")
+    FileUtils.rm_rf(dashboard)
+    create_checkout("agent-coordination-dashboard")
+    delegates = [
+      ["agent-workflows", path("target/bin/agent-workflows-doctor"), "workflows.installation"],
+      ["agent-coordination", path("install/agent-coord"), "coordination.backend"],
+      ["agent-coordination-dashboard", nil, "dashboard.health"]
+    ]
+    sentinels = delegates.map do |component, installed, check_id|
+      sentinel = path("#{component}-dirty-executed")
+      basename = component == "agent-coordination-dashboard" ? "agent-coordination-dashboard.js" : File.basename(installed)
+      source_helper = path("src", component, "bin", basename)
+      FileUtils.mkdir_p(File.dirname(source_helper))
+      write_delegate(source_helper, component, check_id, sentinel: sentinel)
+      system("git", "-C", path("src", component), "add", "bin/#{basename}", exception: true)
+      system("git", "-C", path("src", component), "commit", "--quiet", "-m", "delegate fixture", exception: true)
+      File.open(source_helper, "a") { |file| file.puts "# tracked dirty change" }
+      if installed
+        FileUtils.rm_f(installed)
+        File.symlink(source_helper, installed)
+      end
+      sentinel
+    end
+
+    payload = orchestrator.call
+
+    sentinels.each { |sentinel| refute_path_exists sentinel }
+    assert_equal %w[failed failed degraded],
+                 (payload.fetch("components").map { |component| component.fetch("status") })
+  end
+
+  def test_off_main_source_blocks_source_resident_delegate
+    sentinel = path("off-main-workflow-executed")
+    source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(source_helper))
+    write_delegate(source_helper, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    system("git", "-C", path("src/agent-workflows"), "add", "bin/agent-workflows-doctor", exception: true)
+    system("git", "-C", path("src/agent-workflows"), "commit", "--quiet", "-m", "delegate fixture", exception: true)
+    system("git", "-C", path("src/agent-workflows"), "switch", "--quiet", "-c", "topic", exception: true)
+    FileUtils.rm_f(path("target/bin/agent-workflows-doctor"))
+    File.symlink(source_helper, path("target/bin/agent-workflows-doctor"))
+
+    orchestrator.call
+
+    refute_path_exists sentinel
+  end
+
+  def test_degraded_sources_still_allow_external_installed_delegates
+    delegates = [
+      ["agent-workflows", path("target/bin/agent-workflows-doctor"), "workflows.installation"],
+      ["agent-coordination", path("install/agent-coord"), "coordination.backend"]
+    ]
+    sentinels = delegates.map do |component, installed, check_id|
+      sentinel = path("#{component}-installed-executed")
+      write_delegate(installed, component, check_id, sentinel: sentinel)
+      File.open(path("src", component, "README.md"), "a") { |file| file.puts "tracked dirty change" }
+      sentinel
+    end
+
+    payload = orchestrator.call
+
+    sentinels.each { |sentinel| assert_path_exists sentinel }
+    assert_equal %w[degraded degraded degraded],
+                 (payload.fetch("components").map { |component| component.fetch("status") })
   end
 
   private

@@ -42,4 +42,24 @@ class AgentDoctorInstallOwnershipTest < Minitest::Test
 
     assert AgentDoctor::InstallOwnership.compare(@source, @destination)
   end
+
+  def test_digest_is_independent_of_equivalent_tree_creation_order
+    first = File.join(@temporary, "first")
+    second = File.join(@temporary, "second")
+    entries = { "alpha.txt" => "alpha\n", "middle.txt" => "middle\n", "zeta.txt" => "zeta\n" }
+    FileUtils.mkdir_p([first, second])
+    entries.each { |name, value| File.write(File.join(first, name), value) }
+    entries.reverse_each { |name, value| File.write(File.join(second, name), value) }
+    creation_orders = { first => entries.keys, second => entries.keys.reverse }
+    original_find = Find.method(:find)
+    Find.singleton_class.define_method(:find) do |root, &block|
+      block.call(root)
+      creation_orders.fetch(root).each { |name| block.call(File.join(root, name)) }
+    end
+    begin
+      assert_equal AgentDoctor::InstallOwnership.digest(first), AgentDoctor::InstallOwnership.digest(second)
+    ensure
+      Find.singleton_class.define_method(:find, original_find)
+    end
+  end
 end
