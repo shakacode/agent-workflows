@@ -76,6 +76,20 @@ case "${CANONICAL_HOST}" in
   ""|.*|*.|*..*|*[!a-z0-9.-]*)
     printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1 ;;
 esac
+CANONICAL_REMAINDER="${CANONICAL_HOST}"
+while [ -n "${CANONICAL_REMAINDER}" ]; do
+  CANONICAL_LABEL="${CANONICAL_REMAINDER%%.*}"
+  case "${CANONICAL_LABEL}" in
+    ""|-*|*-) printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1 ;;
+  esac
+  if [ "${#CANONICAL_LABEL}" -gt 63 ]; then
+    printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1
+  fi
+  case "${CANONICAL_REMAINDER}" in
+    *.*) CANONICAL_REMAINDER="${CANONICAL_REMAINDER#*.}" ;;
+    *) CANONICAL_REMAINDER="" ;;
+  esac
+done
 case "${CANONICAL_SCHEME}:${CANONICAL_PORT}" in
   https:443|http:80) CANONICAL_PORT="" ;;
 esac

@@ -201,6 +201,9 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
                  run_canonical_authority_snippet("https://GitHub.Company.Example:80/owner/repo/pull/42")
     assert_equal [true, "127.0.0.1:8443"],
                  run_canonical_authority_snippet("https://127.0.0.1:8443/owner/repo/pull/42")
+    label_at_limit = "a" * 63
+    assert_equal [true, "#{label_at_limit}.example"],
+                 run_canonical_authority_snippet("https://#{label_at_limit}.example/owner/repo/pull/42")
 
     [
       "https:///owner/repo/pull/42",
@@ -212,7 +215,10 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
       "https://github.company.example#fragment",
       "https://github company.example/owner/repo/pull/42",
       "https://github.company.example\n/owner/repo/pull/42",
-      "https://[2001:db8::1]/owner/repo/pull/42"
+      "https://[2001:db8::1]/owner/repo/pull/42",
+      "https://-github.example/owner/repo/pull/42",
+      "https://github-.example/owner/repo/pull/42",
+      "https://#{'a' * 64}.example/owner/repo/pull/42"
     ].each do |url|
       success, output = run_canonical_authority_snippet(url)
 
