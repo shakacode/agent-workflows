@@ -128,6 +128,7 @@ end
 
 def sanitize_url(candidate)
   scrubbed = candidate.gsub(%r{\A(https?://)[^/@\s]+@}i, '\\1[REDACTED]@')
+  scrubbed = scrubbed.sub(%r{\A(https?://)[^/?#\s]*%40}i, '\\1[REDACTED]@')
   uri = URI.parse(scrubbed)
   return scrubbed unless uri.is_a?(URI::HTTP) && uri.host
 

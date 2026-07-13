@@ -86,17 +86,18 @@ payload = {
 payload["checks"][0]["details"] = [] if mode == "invalid_check"
 payload["future"] = {"secret" => "discard-me"} if mode == "additive"
 payload["checks"][0]["future"] = "discard-me" if mode == "additive"
-if mode == "hostile"
+if ["hostile", "hostile_url"].include?(mode)
   url = ENV.fetch("AGENT_COORD_API_URL")
+  suffix = mode == "hostile" ? "\n\e[31mtext" : ""
   payload["status"] = "degraded"
   payload["checks"][0] = {
-    "id" => "$check_id", "status" => "degraded", "summary" => "unsafe #{url}\n\e[31mtext",
+    "id" => "$check_id", "status" => "degraded", "summary" => "unsafe #{url}#{suffix}",
     "details" => {"url" => url}, "guidance" => "Inspect #{url}"
   }
 end
 puts JSON.generate(payload)
 exit 1 if mode == "mismatch"
-exit 1 if mode == "hostile"
+exit 1 if ["hostile", "hostile_url"].include?(mode)
 RUBY
   chmod +x "$path"
 }
@@ -362,6 +363,60 @@ test_redacts_malformed_percent_encoded_urls_in_json_and_human_output() {
   done
 }
 
+test_redacts_encoded_url_userinfo_in_json_and_human_output() {
+  local tmp rendering output status url
+  tmp="$(make_tmp_dir)"
+  setup_fixture "$tmp"
+  url='http://user%3Acredential-material%40localhost:4319/path'
+
+  for rendering in json human; do
+    set +e
+    if [[ "$rendering" = json ]]; then
+      output="$(DOCTOR_BACKEND_MODE=api DOCTOR_COORD_FIXTURE=hostile_url AGENT_COORD_API_URL="$url" \
+        SENTINEL_API_TOKEN=sentinel-secret-value doctor_command "$tmp" --json 2>&1)"
+    else
+      output="$(DOCTOR_BACKEND_MODE=api DOCTOR_COORD_FIXTURE=hostile_url AGENT_COORD_API_URL="$url" \
+        SENTINEL_API_TOKEN=sentinel-secret-value doctor_command "$tmp" 2>&1)"
+    fi
+    status=$?
+    set -e
+    [[ "$status" -eq 1 ]] || fail "hostile contract should degrade, got $status: $output"
+    [[ "$output" != *"credential-material"* && "$output" != *"user%3A"* ]] || \
+      fail "encoded URL credential leaked in $rendering output"
+    [[ "$output" == *"localhost:4319/path"* ]] || fail "safe URL structure was lost from $rendering output"
+    [[ "$output" == *"[REDACTED]"* ]] || fail "redaction marker missing from $rendering output"
+    if [[ "$rendering" = json ]]; then ruby -rjson -e 'JSON.parse(STDIN.read)' <<< "$output"; fi
+  done
+}
+
+test_redacts_encoded_url_userinfo_with_malformed_query_in_json_and_human_output() {
+  local tmp rendering output status url
+  tmp="$(make_tmp_dir)"
+  setup_fixture "$tmp"
+  url='http://user%3acredential-material%40localhost:4319/path?token=%73entinel-secret-value%ZZ&next=visible'
+
+  for rendering in json human; do
+    set +e
+    if [[ "$rendering" = json ]]; then
+      output="$(DOCTOR_BACKEND_MODE=api DOCTOR_COORD_FIXTURE=hostile_url AGENT_COORD_API_URL="$url" \
+        SENTINEL_API_TOKEN=sentinel-secret-value doctor_command "$tmp" --json 2>&1)"
+    else
+      output="$(DOCTOR_BACKEND_MODE=api DOCTOR_COORD_FIXTURE=hostile_url AGENT_COORD_API_URL="$url" \
+        SENTINEL_API_TOKEN=sentinel-secret-value doctor_command "$tmp" 2>&1)"
+    fi
+    status=$?
+    set -e
+    [[ "$status" -eq 1 ]] || fail "hostile contract should degrade, got $status: $output"
+    [[ "$output" != *"credential-material"* && "$output" != *"user%3a"* ]] || \
+      fail "encoded URL credential leaked through malformed $rendering output"
+    [[ "$output" != *"sentinel-secret-value"* && "$output" != *"%73entinel"* && "$output" != *"%ZZ"* ]] || \
+      fail "malformed token-bearing query leaked in $rendering output"
+    [[ "$output" == *"localhost:4319/path"* ]] || fail "safe URL structure was lost from $rendering output"
+    [[ "$output" == *"[REDACTED]"* ]] || fail "redaction marker missing from $rendering output"
+    if [[ "$rendering" = json ]]; then ruby -rjson -e 'JSON.parse(STDIN.read)' <<< "$output"; fi
+  done
+}
+
 test_human_output_is_problems_first_with_json_status_and_guidance_parity() {
   local tmp text json text_status json_status guidance status
   tmp="$(make_tmp_dir)"
@@ -515,6 +570,8 @@ run_test test_uses_generic_wrapper_checks_when_delegates_are_unavailable
 run_test test_backend_discovery_prefers_runtime_state_and_preserves_missing_explicit_root
 run_test test_distinguishes_dangling_links_from_links_to_another_checkout
 run_test test_redacts_malformed_percent_encoded_urls_in_json_and_human_output
+run_test test_redacts_encoded_url_userinfo_in_json_and_human_output
+run_test test_redacts_encoded_url_userinfo_with_malformed_query_in_json_and_human_output
 run_test test_human_output_is_problems_first_with_json_status_and_guidance_parity
 run_test test_bounds_delegate_output_and_cleans_timed_out_process_groups
 run_test test_missing_roots_are_read_only_and_master_prerequisites_exit_64
