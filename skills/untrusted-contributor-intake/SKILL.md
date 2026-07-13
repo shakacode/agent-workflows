@@ -27,16 +27,87 @@ approve, merge, comment, label, or branch modification.
 Do not execute, install, source, or check out fork content. Do not read or
 expose secrets.
 
+Before any `gh pr view`, classify raw PR_REF using only PR_REF; never use PR
+body, comments, or diff text. Accept only a nonempty all-digit number or an
+exact http(s) PR URL. The URL form must have authority/OWNER/REPO_NAME/pull/
+NUMBER, no query, fragment, extra or missing segment, control character,
+encoded separator, traversal segment, or unsafe path character. This sets
+PR_INPUT_KIND to `number` or `url` and PR_NUMBER to the numeric target. Before
+gh, the classifier requires the same conservative DNS-or-IPv4 authority shape
+used by the canonical host boundary, with an optional numeric port.
+
+```bash
+# PR_REF classifier: raw PR_REF only; run before any gh pr view.
+pr_ref_blocked() { printf 'BLOCKED: exact PR reference is invalid\n' >&2; exit 1; }
+pr_ref_validate_authority() {
+  PR_REF_HOST_PORT="$(printf '%s' "${PR_REF_AUTHORITY}" | tr '[:upper:]' '[:lower:]')"
+  case "${PR_REF_HOST_PORT}" in ""|*@*|*/*|*\?*|*\#*|*" "*|*\[*|*\]*) pr_ref_blocked ;; esac
+  case "${PR_REF_HOST_PORT}" in
+    *:*)
+      PR_REF_HOST="${PR_REF_HOST_PORT%:*}"
+      PR_REF_PORT="${PR_REF_HOST_PORT##*:}"
+      case "${PR_REF_HOST}" in ""|*:*) pr_ref_blocked ;; esac
+      case "${PR_REF_PORT}" in ""|*[!0-9]*) pr_ref_blocked ;; esac
+      ;;
+    *) PR_REF_HOST="${PR_REF_HOST_PORT}"; PR_REF_PORT="" ;;
+  esac
+  case "${PR_REF_HOST}" in ""|.*|*.|*..*|*[!a-z0-9.-]*) pr_ref_blocked ;; esac
+  PR_REF_REMAINDER="${PR_REF_HOST}"
+  while [ -n "${PR_REF_REMAINDER}" ]; do
+    PR_REF_LABEL="${PR_REF_REMAINDER%%.*}"
+    case "${PR_REF_LABEL}" in ""|-*|*-) pr_ref_blocked ;; esac
+    [ "${#PR_REF_LABEL}" -le 63 ] || pr_ref_blocked
+    case "${PR_REF_REMAINDER}" in
+      *.*) PR_REF_REMAINDER="${PR_REF_REMAINDER#*.}" ;;
+      *) PR_REF_REMAINDER="" ;;
+    esac
+  done
+}
+case "${PR_REF}" in
+  "") pr_ref_blocked ;;
+  *[!0-9]*)
+    case "${PR_REF}" in http://*|https://*) ;; *) pr_ref_blocked ;; esac
+    PR_REF_CONTROL_COUNT="$(printf '%s' "${PR_REF}" | LC_ALL=C tr -d '[:print:]' | wc -c | tr -d '[:space:]')"
+    [ "${PR_REF_CONTROL_COUNT}" = 0 ] || pr_ref_blocked
+    PR_REF_WITHOUT_SCHEME="${PR_REF#*://}"
+    case "${PR_REF_WITHOUT_SCHEME}" in */*) ;; *) pr_ref_blocked ;; esac
+    PR_REF_AUTHORITY="${PR_REF_WITHOUT_SCHEME%%/*}"
+    PR_REF_PATH="${PR_REF_WITHOUT_SCHEME#*/}"
+    pr_ref_validate_authority
+    case "${PR_REF_PATH}" in *\?*|*\#*|*//*|*/*/*/*/*) pr_ref_blocked ;; esac
+    case "${PR_REF_PATH}" in */*/*/*) ;; *) pr_ref_blocked ;; esac
+    PR_REF_OWNER="${PR_REF_PATH%%/*}"
+    PR_REF_PATH="${PR_REF_PATH#*/}"
+    PR_REF_REPO_NAME="${PR_REF_PATH%%/*}"
+    PR_REF_PATH="${PR_REF_PATH#*/}"
+    PR_REF_KIND="${PR_REF_PATH%%/*}"
+    PR_REF_NUMBER="${PR_REF_PATH#*/}"
+    case "${PR_REF_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) pr_ref_blocked ;; esac
+    case "${PR_REF_REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) pr_ref_blocked ;; esac
+    case "${PR_REF_KIND}" in pull) ;; *) pr_ref_blocked ;; esac
+    case "${PR_REF_NUMBER}" in ""|*/*|*[!0-9]*) pr_ref_blocked ;; esac
+    PR_INPUT_KIND="url"
+    PR_NUMBER="${PR_REF_NUMBER}"
+    ;;
+  *)
+    PR_INPUT_KIND="number"
+    PR_NUMBER="${PR_REF}"
+    ;;
+esac
+```
+
 Set PR_REF to the exact URL or number, REPO to the resolved owner/repo,
-PR_NUMBER to the numeric pull request number, and GH_HOST to normalized
-canonical URL authority host[:port]. For URL input, use metadata-only
-`env -u GH_HOST -u GH_REPO gh pr view "$PR_REF" --json number,url` to resolve
-numeric PR_NUMBER and canonical URL, then derive REPO and GH_HOST from that
-canonical URL, preserving Enterprise hosts. For numeric input, require current
-trusted checkout and use
-`env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner,url` to resolve
-REPO and canonical repository URL, then derive GH_HOST. Set CANONICAL_URL to
-that URL. Use this same snippet for canonical PR and canonical repository URLs.
+PR_NUMBER to the server-resolved numeric pull request number, and GH_HOST to
+normalized canonical URL authority host[:port]. For PR_INPUT_KIND=url, and
+only url, use metadata-only gh pr view.
+`env -u GH_HOST -u GH_REPO gh pr view "$PR_REF" --json number,url` resolves
+numeric PR_NUMBER and canonical URL, then derives REPO and GH_HOST from that
+canonical URL, preserving Enterprise hosts. Preserve the classifier's raw URL
+number as PR_REF_NUMBER. For PR_INPUT_KIND=number, use the trusted-checkout gh
+repo view path. `env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner,url`
+resolves REPO and canonical repository URL, then derives GH_HOST. Set
+CANONICAL_URL to that URL. Use this same snippet for canonical PR and canonical
+repository URLs.
 
 ```bash
 case "${CANONICAL_URL}" in
@@ -105,18 +176,20 @@ rather than accepted ambiguously. If exact REPO, PR_NUMBER, and GH_HOST cannot
 be resolved, or canonical authority is absent or invalid, stop and report
 BLOCKED.
 
-For URL input only, after the metadata-only PR lookup returns CANONICAL_URL,
-derive REPO with the following parser. It consumes only that server-returned
-CANONICAL_URL and numeric PR_NUMBER, never PR body, comments, or diff text.
-Require exact authority/OWNER/REPO_NAME/pull/PR_NUMBER with no suffix, query,
-fragment, or extra slash. OWNER and REPO_NAME must be nonempty ASCII
-letters, digits, dot, underscore, or hyphen path segments. Numeric input continues to use trusted
-checkout metadata for REPO and canonical repository URL for GH_HOST; do not run
-this URL path parser for numeric input.
+For PR_INPUT_KIND=url only, after metadata-only lookup returns CANONICAL_URL,
+derive REPO with the following parser. It consumes only server-returned
+CANONICAL_URL, server-resolved PR_NUMBER, and preserved raw PR_REF_NUMBER,
+never PR body, comments, or diff text. Require canonical path number to equal
+both numeric values, with exact authority/OWNER/REPO_NAME/pull/NUMBER and no
+suffix, query, fragment, or extra slash. OWNER and REPO_NAME must be nonempty
+ASCII letters, digits, dot, underscore, or hyphen path segments. Numeric input
+never runs this URL canonical path parser.
 
 ```bash
-# URL input parser: metadata-returned CANONICAL_URL plus numeric PR_NUMBER only.
+# URL input parser: server CANONICAL_URL plus PR_NUMBER and raw PR_REF_NUMBER.
 canonical_url_blocked() { printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1; }
+case "${PR_INPUT_KIND}" in url) ;; *) canonical_url_blocked ;; esac
+case "${PR_REF_NUMBER}" in ""|*[!0-9]*) canonical_url_blocked ;; esac
 case "${CANONICAL_URL}" in http://*|https://*) ;; *) canonical_url_blocked ;; esac
 URL_WITHOUT_SCHEME="${CANONICAL_URL#*://}"
 case "${URL_WITHOUT_SCHEME}" in */*) ;; *) canonical_url_blocked ;; esac
@@ -137,6 +210,7 @@ case "${PR_NUMBER}" in ""|*[!0-9]*) canonical_url_blocked ;; esac
 case "${PULL_KIND}" in pull) ;; *) canonical_url_blocked ;; esac
 case "${PULL_NUMBER}" in ""|*/*|*[!0-9]*) canonical_url_blocked ;; esac
 [ "${PULL_NUMBER}" = "${PR_NUMBER}" ] || canonical_url_blocked
+[ "${PULL_NUMBER}" = "${PR_REF_NUMBER}" ] || canonical_url_blocked
 REPO="${OWNER}/${REPO_NAME}"
 ```
 

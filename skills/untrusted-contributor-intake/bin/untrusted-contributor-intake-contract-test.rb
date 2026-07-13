@@ -107,6 +107,34 @@ def run_canonical_authority_snippet(url)
   )
 end
 
+def extract_pr_ref_classifier_snippet(source)
+  start = source.index("# PR_REF classifier:")
+
+  raise "PR_REF classifier snippet missing" unless start
+
+  finish = source.index("\n```", start)
+
+  raise "PR_REF classifier snippet missing" unless finish
+
+  source[start...finish]
+end
+
+def documented_pr_ref_classifier_snippet
+  skill = File.read(SKILL_PATH, encoding: "UTF-8")
+
+  extract_pr_ref_classifier_snippet(skill)
+end
+
+def run_documented_pr_ref_classifier(pr_ref)
+  success, output = run_documented_posix_snippet(
+    documented_pr_ref_classifier_snippet,
+    { "PR_REF" => pr_ref },
+    %(printf '%s|%s' "${PR_INPUT_KIND}" "${PR_NUMBER}")
+  )
+
+  [success, success ? output.split("|", 2) : output]
+end
+
 def extract_url_input_parser_snippet(source)
   start = source.index("# URL input parser:")
 
@@ -125,10 +153,15 @@ def documented_url_input_parser_snippet
   extract_url_input_parser_snippet(skill)
 end
 
-def run_documented_url_input_parser(url, pr_number)
+def run_documented_url_input_parser(url, pr_number, pr_ref_number)
   success, output = run_documented_posix_snippet(
     documented_url_input_parser_snippet,
-    { "CANONICAL_URL" => url, "PR_NUMBER" => pr_number },
+    {
+      "CANONICAL_URL" => url,
+      "PR_INPUT_KIND" => "url",
+      "PR_NUMBER" => pr_number,
+      "PR_REF_NUMBER" => pr_ref_number
+    },
     %(printf '%s|%s|%s' "${OWNER}" "${REPO_NAME}" "${REPO}")
   )
 
@@ -168,6 +201,89 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes normalized_skill, "Accept an exact PR URL or PR number; do not execute or parse fork content to derive it."
   end
 
+  def test_executes_the_documented_pr_ref_classifier_before_gh
+    assert_equal [true, %w[number 42]], run_documented_pr_ref_classifier("42")
+    assert_equal [true, %w[url 42]],
+                 run_documented_pr_ref_classifier("https://github.com/octo-org/hello-world/pull/42")
+    assert_equal [true, %w[url 42]],
+                 run_documented_pr_ref_classifier("https://github.company.example:8443/octo-org/hello-world/pull/42")
+    assert_equal [true, %w[url 42]],
+                 run_documented_pr_ref_classifier("http://github.com/octo-org/hello-world/pull/42")
+
+    [
+      "main",
+      "feature/name",
+      "owner/repo#branch",
+      "refs/heads/main",
+      "",
+      "42main",
+      "ftp://github.com/octo-org/hello-world/pull/42",
+      "https:///octo-org/hello-world/pull/42",
+      "https://github.example:abc/octo-org/hello-world/pull/42",
+      "https://github.example:/octo-org/hello-world/pull/42",
+      "https://github.example:8443:9443/octo-org/hello-world/pull/42",
+      "https://[2001:db8::1]/octo-org/hello-world/pull/42",
+      "https://github example/octo-org/hello-world/pull/42",
+      "https://github\\example/octo-org/hello-world/pull/42",
+      "https://github%2Eexample/octo-org/hello-world/pull/42",
+      "https://-github.example/octo-org/hello-world/pull/42",
+      "https://github-.example/octo-org/hello-world/pull/42",
+      "https://github..example/octo-org/hello-world/pull/42",
+      "https://#{'a' * 64}.example/octo-org/hello-world/pull/42",
+      "https://github.com/octo-org/hello-world/issues/42",
+      "https://github.com/octo-org/hello-world/pull",
+      "https://github.com/octo-org/hello-world/pull/42/extra",
+      "https://github.com/octo-org/hello-world/pull/42?query",
+      "https://github.com/octo-org/hello-world/pull/42#fragment",
+      "https://github.com/octo-org/hello-world/pull/42/",
+      "https://github.com/octo%2Dorg/hello-world/pull/42",
+      "https://github.com/octo%2Forg/hello-world/pull/42",
+      "https://github.com/octo%5Corg/hello-world/pull/42",
+      "https://github.com/../hello-world/pull/42",
+      "https://github.com/octo-org/../pull/42",
+      "https://user@github.com/octo-org/hello-world/pull/42",
+      "https://github.com/octo$org/hello-world/pull/42",
+      "https://github.com/octo\norg/hello-world/pull/42"
+    ].each do |pr_ref|
+      success, output = run_documented_pr_ref_classifier(pr_ref)
+
+      refute success, "expected #{pr_ref.inspect} to be BLOCKED, got #{output.inspect}"
+      assert_match(/BLOCKED: exact PR reference is invalid/, output)
+    end
+  end
+
+  def test_pr_ref_classifier_precedes_the_first_pr_view_command
+    skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    classifier = skill.index("# PR_REF classifier:")
+    first_pr_view = skill.index("env -u GH_HOST -u GH_REPO gh pr view")
+
+    refute_nil classifier
+    refute_nil first_pr_view
+    assert_operator classifier, :<, first_pr_view
+  end
+
+  def test_pr_ref_classifier_extraction_rejects_a_missing_start_marker
+    error = assert_raises(RuntimeError) do
+      extract_pr_ref_classifier_snippet("missing PR_REF classifier marker")
+    end
+
+    assert_equal "PR_REF classifier snippet missing", error.message
+  end
+
+  def test_documents_explicit_post_classifier_kind_branches
+    skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    normalized_skill = skill.gsub(/\s+/, " ")
+    classifier = normalized_skill.index("# PR_REF classifier:")
+    url_branch = normalized_skill.index("For PR_INPUT_KIND=url, and only url, use metadata-only gh pr view.")
+    number_branch = normalized_skill.index("For PR_INPUT_KIND=number, use the trusted-checkout gh repo view path.")
+
+    refute_nil classifier
+    refute_nil url_branch
+    refute_nil number_branch
+    assert_operator classifier, :<, url_branch
+    assert_operator classifier, :<, number_branch
+  end
+
   def test_declares_host_enforced_boundaries_and_fail_closed_preflight
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     normalized_skill = skill.gsub(/\s+/, " ")
@@ -199,11 +315,11 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     normalized_skill = skill.gsub(/\s+/, " ")
 
-    assert_includes normalized_skill, "Set PR_REF to the exact URL or number, REPO to the resolved owner/repo, PR_NUMBER to the numeric pull request number, and GH_HOST to normalized canonical URL authority host[:port]."
+    assert_includes normalized_skill, "Set PR_REF to the exact URL or number, REPO to the resolved owner/repo, PR_NUMBER to the server-resolved numeric pull request number, and GH_HOST to normalized canonical URL authority host[:port]."
     refute_includes normalized_skill, "`gh pr view \"$PR_REF\" --json number,url`"
-    assert_includes normalized_skill, "For URL input, use metadata-only `env -u GH_HOST -u GH_REPO gh pr view \"$PR_REF\" --json number,url` to resolve numeric PR_NUMBER and canonical URL, then derive REPO and GH_HOST from that canonical URL, preserving Enterprise hosts."
+    assert_includes normalized_skill, "For PR_INPUT_KIND=url, and only url, use metadata-only gh pr view. `env -u GH_HOST -u GH_REPO gh pr view \"$PR_REF\" --json number,url` resolves numeric PR_NUMBER and canonical URL, then derives REPO and GH_HOST from that canonical URL, preserving Enterprise hosts."
     refute_includes normalized_skill, "`gh repo view --json nameWithOwner,url`"
-    assert_includes normalized_skill, "For numeric input, require current trusted checkout and use `env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner,url` to resolve REPO and canonical repository URL, then derive GH_HOST."
+    assert_includes normalized_skill, "For PR_INPUT_KIND=number, use the trusted-checkout gh repo view path. `env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner,url` resolves REPO and canonical repository URL, then derives GH_HOST."
     refute_includes normalized_skill, "GH_HOST strips userinfo and path, preserves non-default port, and omits only default port."
     assert_includes skill, "case \"${CANONICAL_URL}\" in"
     assert_includes skill, "http://*|https://*)"
@@ -265,11 +381,19 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
 
   def test_executes_the_documented_url_input_parser
     assert_equal [true, %w[octo-org hello-world octo-org/hello-world]],
-                 run_documented_url_input_parser("https://github.com/octo-org/hello-world/pull/42", "42")
+                 run_documented_url_input_parser("https://github.com/octo-org/hello-world/pull/42", "42", "42")
     assert_equal [true, %w[Enterprise-Org repo_name Enterprise-Org/repo_name]],
-                 run_documented_url_input_parser("https://github.company.example:8443/Enterprise-Org/repo_name/pull/9", "9")
+                 run_documented_url_input_parser("https://github.company.example:8443/Enterprise-Org/repo_name/pull/9", "9", "9")
     assert_equal [true, [".github", "repo.name", ".github/repo.name"]],
-                 run_documented_url_input_parser("https://github.com/.github/repo.name/pull/42", "42")
+                 run_documented_url_input_parser("https://github.com/.github/repo.name/pull/42", "42", "42")
+
+    success, output = run_documented_url_input_parser(
+      "https://github.com/octo-org/hello-world/pull/42",
+      "42",
+      "43"
+    )
+    refute success, "expected raw/server PR number mismatch to be BLOCKED, got #{output.inspect}"
+    assert_match(/BLOCKED: canonical authority absent or invalid/, output)
 
     [
       ["ftp://github.com/octo-org/hello-world/pull/42", "42"],
@@ -296,7 +420,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
       ["https://github.com/octo-org/./pull/42", "42"],
       ["https://github.com/octo-org/../pull/42", "42"]
     ].each do |url, pr_number|
-      success, output = run_documented_url_input_parser(url, pr_number)
+      success, output = run_documented_url_input_parser(url, pr_number, pr_number)
 
       refute success, "expected #{url.inspect} to be BLOCKED, got #{output.inspect}"
       assert_match(/BLOCKED: canonical authority absent or invalid/, output)
