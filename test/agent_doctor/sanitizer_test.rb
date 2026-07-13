@@ -91,6 +91,14 @@ class AgentDoctorSanitizerTest < Minitest::Test
     refute_includes output, opaque_secret
   end
 
+  def test_redacts_high_entropy_path_when_percent_encoding_is_malformed
+    opaque_secret = "aB3dE5fG7hJ9kLmNpQrStUvWxYz%zz2468"
+    output = AgentDoctor::Sanitizer.new.string("https://example.test/callback/#{opaque_secret}")
+
+    assert_equal "https://example.test/callback/%5BREDACTED%5D", output
+    refute_includes output, opaque_secret
+  end
+
   def test_strips_terminal_controls_and_encodes_newlines
     output = AgentDoctor::Sanitizer.new.string("bad\n\e[31mtext")
 

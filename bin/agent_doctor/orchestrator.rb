@@ -120,11 +120,27 @@ module AgentDoctor
     end
 
     def source_resident?(executable, source)
-      resolved_executable = File.realpath(executable)
       resolved_source = File.realpath(source)
-      resolved_executable.start_with?("#{resolved_source}/")
+      candidate = File.expand_path(executable)
+      visited = {}
+
+      loop do
+        return true if within_source?(candidate, resolved_source)
+
+        resolved_parent = File.realpath(File.dirname(candidate))
+        return true if within_source?(resolved_parent, resolved_source)
+        return within_source?(File.realpath(candidate), resolved_source) unless File.symlink?(candidate)
+        return false if visited[candidate]
+
+        visited[candidate] = true
+        candidate = File.expand_path(File.readlink(candidate), resolved_parent)
+      end
     rescue SystemCallError
       false
+    end
+
+    def within_source?(path, source)
+      path == source || path.start_with?("#{source}/")
     end
 
     def source_trust_failure(component, status: "failed")

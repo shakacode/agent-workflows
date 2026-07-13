@@ -74,7 +74,8 @@ module AgentDoctor
       uri.fragment = sanitized_fragment(uri.fragment) if uri.fragment
       restore_redaction_marker(uri.to_s, had_userinfo)
     rescue URI::InvalidURIError, ArgumentError
-      fallback = scrubbed.sub(/\?.*(?=#|\z)/, "?[REDACTED]").sub(/#.*\z/, "#[REDACTED]")
+      fallback = sanitize_fallback_path(scrubbed)
+      fallback = fallback.sub(/\?.*(?=#|\z)/, "?[REDACTED]").sub(/#.*\z/, "#[REDACTED]")
       restore_redaction_marker(fallback, had_userinfo)
     end
 
@@ -98,21 +99,36 @@ module AgentDoctor
     end
 
     def sanitized_path(uri)
-      path = uri.path.to_s
-      return "/services/#{REDACTED_PATH_SEGMENT}" if uri.host.casecmp?("hooks.slack.com") && path.start_with?("/services/")
+      sanitize_path(uri.path.to_s, slack: uri.host.casecmp?("hooks.slack.com"))
+    end
+
+    def sanitize_fallback_path(url)
+      match = url.match(%r{\A([A-Za-z][A-Za-z0-9+.-]*://)([^/?#\s]*)([^?#]*)(.*)\z})
+      return url unless match
+
+      slack = match[2].match?(/\Ahooks\.slack\.com(?::\d+)?\z/i)
+      "#{match[1]}#{match[2]}#{sanitize_path(match[3], slack: slack)}#{match[4]}"
+    end
+
+    def sanitize_path(path, slack:)
+      return "/services/#{REDACTED_PATH_SEGMENT}" if slack && path.start_with?("/services/")
 
       path.split("/", -1).map { |segment| high_entropy_path_segment?(segment) ? REDACTED_PATH_SEGMENT : segment }.join("/")
     end
 
     def high_entropy_path_segment?(segment)
-      decoded = URI.decode_uri_component(segment)
+      decoded = decode_path_segment(segment)
       return false if decoded.bytesize < 24
       return false if decoded.match?(UUID_PATH_SEGMENT_PATTERN) || decoded.match?(/\A[0-9a-f]{32,64}\z/i)
 
       character_classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].count { |pattern| decoded.match?(pattern) }
       character_classes >= 3 && decoded.each_char.uniq.length >= 12
+    end
+
+    def decode_path_segment(segment)
+      URI.decode_uri_component(segment).scrub("?")
     rescue ArgumentError
-      false
+      segment
     end
 
     def sanitized_fragment(fragment)

@@ -113,6 +113,22 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     refute_path_exists sentinel
   end
 
+  def test_degraded_source_blocks_delegate_symlink_that_escapes_checkout
+    sentinel = path("escaped-workflow-executed")
+    external_delegate = path("external-agent-workflows-doctor")
+    source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
+    installed = path("target/bin/agent-workflows-doctor")
+    write_delegate(external_delegate, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    FileUtils.mkdir_p(File.dirname(source_helper))
+    File.symlink(external_delegate, source_helper)
+    FileUtils.rm_f(installed)
+    File.symlink(source_helper, installed)
+
+    orchestrator.call
+
+    refute_path_exists sentinel
+  end
+
   def test_degraded_sources_still_allow_external_installed_delegates
     delegates = [
       ["agent-workflows", path("target/bin/agent-workflows-doctor"), "workflows.installation"],
