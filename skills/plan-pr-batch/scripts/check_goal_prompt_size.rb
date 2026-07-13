@@ -141,6 +141,14 @@ PRESSURE_SCENARIOS = [
   "A pasted handoff with no exact PR/issue refs stops and asks for targets instead of broadening to all open PRs.",
   "A normal resume prompt routes to bounded status recovery, not cancellation/relaunch."
 ].freeze
+PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
+PARENT_AUDIT_HANDOFF_SOURCE_PIN = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. Its marker has separate well-formed, archive-ready, and blocker-union outputs; only `complete`/`clean`/`none` with fully evidenced terminal records is archive-ready, and every OUTSTANDING ref or non-ready record remains in the normalized blocker union. The parent only reconciles this handoff; it never reruns or owns the audit."
+PARENT_AUDIT_MARKER_GRAMMAR_SOURCE_PIN = "The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records."
+PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIO = "Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the marker grammar above; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`"
+PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIOS = [
+  "Prompt-only single-batch: after all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat, it archives without waiting for workers; closeout owner: the batch coordinator; an unhanded-off question or planner-owned `UNKNOWN` blocks archive, while a durably handed-off coordinator-owned worker state, including worker `UNKNOWN`, does not; final status: use exactly `Conversation status: Ready for archiving.` when prompt-only is clean; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.",
+  PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIO
+].freeze
 
 ALLOWED_PRESSURE_SCENARIO_REFS = %w[
   #101
@@ -363,6 +371,11 @@ restart_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/a
 pressure_scenario_text = extract_section(
   workflow_text,
   "Pressure scenarios this prompt must satisfy:",
+  /^###\s+/
+)
+planning_chat_lifecycle_text = extract_section(
+  workflow_text,
+  "### Planning-Chat Lifecycle",
   /^###\s+/
 )
 continuation_section = extract_section(
@@ -610,6 +623,29 @@ end
 
 require_phrases(workflow_text, CANONICAL_CONTINUATION_SNIPPET_PHRASES, "canonical workflow continuation snippet")
 require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure scenarios")
+
+if enforce_restart_docs_drift
+  require_phrases(
+    planning_chat_lifecycle_text,
+    [PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN, PARENT_AUDIT_HANDOFF_SOURCE_PIN,
+     PARENT_AUDIT_MARKER_GRAMMAR_SOURCE_PIN],
+    "source checkout parent release-or-archive reconciliation pin"
+  )
+end
+
+require_phrases(
+  planning_chat_lifecycle_text,
+  PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIOS,
+  "canonical parent release-or-archive pressure scenarios"
+)
+
+if enforce_restart_docs_drift
+  require_phrases(
+    planning_chat_lifecycle_text,
+    PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIOS,
+    "source checkout parent release-or-archive pressure scenarios"
+  )
+end
 
 unless continuation_prompt.start_with?("#{CONTINUATION_BATCH_TITLE_LINE}\n")
   abort_with_failure("canonical workflow continuation prompt must start with the batch title line")

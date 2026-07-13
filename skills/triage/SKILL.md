@@ -204,6 +204,8 @@ selected backend does not support it.
 
 ## Output
 
+Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): generated prompts may be handed off by a prompt-only chat; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
+
 Return:
 
 - Scope, repository list, and data sources checked.
@@ -219,11 +221,25 @@ Return:
   Claude/generic 5/3 and under 8 000 measured characters. Each prompt carries
   its selected batch size target, aggregate wave cap, thread handle, and Lane
   Card. Report idle slots or remaining backlog/next wave separately.
+- One durable planning-chat lifecycle record covering every generated group:
+  While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
+  Planning-chat role selector: default to `prompt-only`. While the chat remains a planning chat, select `parent-orchestrator` only when the planner explicitly retains one or more cross-batch dependency, release, or shared-follow-up responsibilities.
+  Prompt-only is eligible only after durable handoff to a distinct batch coordinator. After same-chat self-launch, transition to the batch-coordinator lifecycle only when no cross-batch, dependency, release, or shared-follow-up responsibility is retained.
+  While the chat remains a planning chat, Retained responsibilities: list each exact retained responsibility. While the chat remains a planning chat, Archive/closeout owner: prompt-only chat archives; parent-orchestrator archives after reconciliation. After same-chat self-launch with no retained responsibility, record: Lifecycle transition: transitioned-to-batch-coordinator. Planning-chat role: not applicable after self-launch. Archive/closeout owner: batch coordinator. Retained responsibilities: none (no cross-batch, dependency, release, or shared-follow-up responsibility is retained). This is a transition out of planning, not a third planning role; neither `prompt-only` nor `parent-orchestrator` is selectable after the transition. For same-chat launch with retained cross-batch, dependency, release, or shared-follow-up duties, select and record `parent-orchestrator` immediately because retained duties determine the mandatory planning role; list each exact retained responsibility, do not use `prompt-only`, and do not record `Retained responsibilities: none`. Before durable handoff/launch of a distinct batch coordinator succeeds, this is a BLOCKED parent-orchestrator: it stays read-only, starts no workers, records the exact distinct-coordinator handoff blocker/follow-up, and uses final `Conversation status: Follow-ups remain — <each exact action or blocker>.` Once durable handoff/launch of a distinct batch coordinator succeeds, workers may start under that coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only. Prompt-only
+  conversation-status/archive expectation: use exactly `Conversation status:
+  Ready for archiving.` only when all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat; no unhanded-off question or planner-owned `UNKNOWN` remains; a durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
+  Parent-orchestrator conversation-status/archive expectation: clean only when
+  parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then use exactly
+  `Conversation status: Ready for archiving.` Otherwise use exactly
+  `Conversation status: Follow-ups remain — <each exact action or blocker>.` and
+  list each exact action or blocker. Keep this lifecycle metadata outside
+  generated goal prompts.
 - Per-inbox queue summary when backend queue state is available: next-up items,
   in-flight items, blocked/lost-heartbeat items, and `UNKNOWN` state. If the
   installed backend does not support queue state, omit this section and note that
   queue state is unavailable.
 - Residual risks and maintainer decisions needed.
+- Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
 
 ## Common Mistakes
 
