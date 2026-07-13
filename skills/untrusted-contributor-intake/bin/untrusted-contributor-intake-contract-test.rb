@@ -71,14 +71,22 @@ def authority_evidence_mutations(evidence)
   }
 end
 
+def extract_canonical_authority_snippet(source)
+  start = source.index('case "${CANONICAL_URL}" in')
+
+  raise "canonical authority snippet missing" unless start
+
+  finish = source.index("\n```", start)
+
+  raise "canonical authority snippet missing" unless finish
+
+  source[start...finish]
+end
+
 def documented_canonical_authority_snippet
   skill = File.read(SKILL_PATH, encoding: "UTF-8")
-  start = skill.index('case "${CANONICAL_URL}" in')
-  finish = skill.index("\n```", start)
 
-  raise "canonical authority snippet missing" unless start && finish
-
-  skill[start...finish]
+  extract_canonical_authority_snippet(skill)
 end
 
 def run_canonical_authority_snippet(url)
@@ -103,6 +111,19 @@ def normalize_status_check_rollup(entries)
 end
 
 class UntrustedContributorIntakeContractTest < Minitest::Test
+  def test_canonical_authority_extraction_rejects_missing_markers
+    [
+      "missing canonical-authority start marker",
+      'case "${CANONICAL_URL}" in'
+    ].each do |source|
+      error = assert_raises(RuntimeError) do
+        extract_canonical_authority_snippet(source)
+      end
+
+      assert_equal "canonical authority snippet missing", error.message
+    end
+  end
+
   def test_accepts_an_exact_pr_url_or_pr_number_without_parsing_untrusted_content
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     normalized_skill = skill.gsub(/\s+/, " ")
