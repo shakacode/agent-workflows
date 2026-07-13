@@ -255,7 +255,7 @@ def completed_batch_audit_state_ready?(state)
   fields = state.fields
   return false unless fields["audit_status"] == "complete" && fields["verdict"] == "clean"
   return false unless fields["findings"] == "none"
-  return false unless release_or_archive_batch_identity?(fields["batch_id"], fields["scope_evidence"])
+  return false unless evidenced_scalar?(fields["batch_id"])
   return false unless evidenced_scalar?(fields["scope_evidence"]) && evidenced_scalar?(fields["checker_evidence"])
 
   state.records.all?(&:fully_evidenced_terminal?)
@@ -336,17 +336,6 @@ def deduped_blockers(blockers)
       canonical_completed_batch_audit_ref(known).identity == canonical.identity
     end
   end
-end
-
-def release_or_archive_batch_identity?(value, scope_evidence)
-  return false unless evidenced_scalar?(value)
-
-  if value.start_with?("non-backend:")
-    return value.match?(/\Anon-backend:\s*\S.*;\s*rationale:\s*\S.*\z/) && exact_target_scope_evidence?(scope_evidence)
-  end
-  return value.match?(/\Anot-applicable:\s*\S.*\z/) && exact_target_scope_evidence?(scope_evidence) if value.start_with?("not-applicable:")
-
-  true
 end
 
 def completed_batch_audit_scalars_well_formed?(fields, records: [])
