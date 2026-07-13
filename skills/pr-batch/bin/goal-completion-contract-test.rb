@@ -17,12 +17,13 @@ TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
 CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
-COMPACT_CONTRACT_LINE = "GMCC-v1: `waiting-on-checks-or-review`; pending/missing/untriaged " \
+COMPACT_CONTRACT_LINE = "GMCC-v2: waiting-on-checks-or-review; pending/missing/untriaged " \
                         "current-head CI/configured review agents; unresolved current-head review threads; " \
-                        "failures/UNKNOWN => NOT COMPLETE; poll/fix then bounded-watch resume handoff; " \
-                        "`ready-no-merge-authority` only without merge auth; " \
-                        "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present; " \
-                        "target closed out; issue closed where applicable."
+                        "fail/UNKNOWN=>NOT COMPLETE; poll/fix; bounded-watch resume handoff; " \
+                        "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume; " \
+                        "stop unblocked/done; ready-no-merge-authority iff no auth; " \
+                        "auto_merge_when_gates_pass=>no real blocker: merge+close any PR; " \
+                        "close target+any issue."
 CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, unless a real blocker prevents it, " \
                                  "done means the PR is merged and closed out when present, the target is " \
                                  "closed out, and the issue is closed where applicable."
@@ -32,22 +33,33 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
                           "CI or configured review agents, unresolved current-head review threads, failures, " \
                           "or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE " \
-                          "with resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean " \
+                          "with resume instructions. When the overall Goal is genuinely blocked by a condition " \
+                          "that can clear without user input, treat the host's recurring automation/wakeup " \
+                          "capability as available only if it can re-enter this same thread on schedule and be inspected, " \
+                          "updated, and stopped; create or update one active 15-minute " \
+                          "current-thread monitor before the blocked handoff; do not create a duplicate. On each " \
+                          "wake, refresh live blocker evidence and resume work if a blocker clears. Stop the monitor " \
+                          "when the goal is unblocked or before completing it. `blocked-user-input` does not start " \
+                          "a monitor; preserve its exact question and manual resume instructions. If recurring " \
+                          "current-thread wake-ups " \
+                          "are unavailable, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
+                          "pending hosted checks, and clean " \
                           "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
                           "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
-  "`waiting-on-checks-or-review`",
+  "waiting-on-checks-or-review",
   "pending/missing/untriaged current-head CI/configured review agents",
   "unresolved current-head review threads",
-  "failures/UNKNOWN => NOT COMPLETE",
-  "poll/fix then bounded-watch resume handoff",
-  "`ready-no-merge-authority` only without merge auth",
-  "`auto_merge_when_gates_pass` => unless real blocker:",
-  "PR merged+closed out when present",
-  "target closed out",
-  "issue closed where applicable"
+  "fail/UNKNOWN=>NOT COMPLETE",
+  "poll/fix; bounded-watch resume handoff",
+  "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume",
+  "stop unblocked/done",
+  "ready-no-merge-authority iff no auth",
+  "auto_merge_when_gates_pass=>no real blocker:",
+  "merge+close any PR",
+  "close target+any issue"
 ].freeze
-GMCC_ALIGNMENT_SENTENCE = "`GMCC-v1` is a version key that pins drift, not an external-only pointer; " \
+GMCC_ALIGNMENT_SENTENCE = "`GMCC-v2` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
 CANONICAL_CLOSEOUT_PROMPT_LINE = "Final handoff: canonical closeout;"
@@ -108,7 +120,7 @@ def contract_line(text)
 end
 
 def compact_contract_line(text)
-  text.lines.grep(/^\s*GMCC-v1:/).first&.strip
+  text.lines.grep(/^\s*GMCC-v2:/).first&.strip
 end
 
 def assert_text_includes(text, phrase, label)
@@ -188,6 +200,55 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_blocked_goal_defaults_to_a_deduped_fifteen_minute_current_thread_monitor
+    assert_text_includes @workflow_contract_section, "15-minute", "canonical completion contract"
+    assert_text_includes @workflow_contract_section, "current-thread monitor", "canonical completion contract"
+    assert_text_includes @workflow_contract_section, "do not create a duplicate", "canonical completion contract"
+    assert_text_includes @workflow_contract_section, "Stop the monitor", "canonical completion contract"
+    assert_text_includes @workflow_contract_section, "manual resume instructions", "canonical completion contract"
+    assert_text_includes @workflow_contract_section, "`blocked-user-input` does not start a monitor",
+                         "canonical completion contract"
+
+    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
+      line = compact_contract_line(text)
+      assert_text_includes line, "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume",
+                           "compact completion contract"
+      refute_includes line, "`blocked`=>", "compact completion contract"
+      refute_includes line, "non-user block=>", "compact completion contract"
+      assert_text_includes line, "else exact manual resume", "compact completion contract"
+      assert_text_includes line, "stop unblocked/done", "compact completion contract"
+    end
+
+    assert_text_includes @workflow_contract_section, "recurring automation/wakeup capability",
+                         "canonical completion contract"
+    assert_text_includes @workflow_contract_section,
+                         "re-enter this same thread on schedule and be inspected, updated, and stopped",
+                         "canonical completion contract"
+  end
+
+  def test_continuation_prompt_preserves_blocked_goal_monitor_semantics
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_text_includes continuation, "overall goal is genuinely blocked", "continuation prompt"
+    assert_text_includes continuation, "can clear without user input", "continuation prompt"
+    assert_text_includes continuation, "recurring automation/wakeup capability", "continuation prompt"
+    assert_text_includes continuation,
+                         "re-enter this same thread on schedule and be inspected, updated, and stopped",
+                         "continuation prompt"
+    assert_text_includes continuation, "reuse or create one 15-minute current-thread monitor", "continuation prompt"
+    assert_text_includes continuation, "do not create a duplicate", "continuation prompt"
+    assert_text_includes continuation, "On each wake", "continuation prompt"
+    assert_text_includes continuation, "Stop the monitor", "continuation prompt"
+    assert_text_includes continuation, "manual resume instructions", "continuation prompt"
+    assert_text_includes continuation, "`blocked-user-input` does not start a monitor", "continuation prompt"
+    assert_text_includes continuation, CANONICAL_AUTO_MERGE_EXPANSION, "continuation prompt"
+    refute_includes continuation, LEGACY_AUTO_MERGE_EXPANSION, "continuation prompt"
+  end
+
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces
     surfaces = {
       "workflows/pr-processing.md" => @workflow,
@@ -198,7 +259,7 @@ class GoalCompletionContractTest < Minitest::Test
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
     expected_counts = surfaces.transform_values { 1 }
     assert_equal expected_counts, actual_counts,
-                 "all generation surfaces must carry the exact GMCC-v1 alignment sentence once"
+                 "all generation surfaces must carry the exact GMCC-v2 alignment sentence once"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       refute_includes prompt, GMCC_ALIGNMENT_SENTENCE,
@@ -210,7 +271,7 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line, "unresolved current-head review threads", "compact completion contract"
-      assert_operator line.index("unresolved current-head review threads"), :<, line.index("=> NOT COMPLETE")
+      assert_operator line.index("unresolved current-head review threads"), :<, line.index("=>NOT COMPLETE")
     end
   end
 
@@ -248,13 +309,12 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present",
+                           "auto_merge_when_gates_pass=>no real blocker: merge+close any PR",
                            "compact completion contract"
-      assert_text_includes line, "target closed out", "compact completion contract"
-      assert_text_includes line, "issue closed where applicable", "compact completion contract"
-      refute_includes line, "merged+issue closed",
+      assert_text_includes line, "close target+any issue", "compact completion contract"
+      refute_includes line, "merge+close PR+issue",
                       "PR-only and ad-hoc closeout must not require an issue that does not exist"
-      refute_match(/issue closed where applicable unless real blocker/, line,
+      refute_match(/applicable issue absent blocker/, line,
                    "the real-blocker exception must scope the entire auto-merge closeout clause")
     end
   end
@@ -386,7 +446,7 @@ class GoalCompletionContractTest < Minitest::Test
     }
 
     contracts.each do |label, line|
-      refute_nil line, "#{label} is missing the GMCC-v1 line"
+      refute_nil line, "#{label} is missing the GMCC-v2 line"
       assert_equal COMPACT_CONTRACT_LINE, line, "#{label} drifted"
     end
   end
@@ -417,7 +477,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "pending/missing/untriaged current-head CI", label
-      assert_text_includes text, "failures/UNKNOWN => NOT COMPLETE", label
+      assert_text_includes text, "fail/UNKNOWN=>NOT COMPLETE", label
     end
   end
 
@@ -481,7 +541,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert_text_includes text, "`ready-no-merge-authority` only without merge auth", label
+      assert_text_includes text, "ready-no-merge-authority iff no auth", label
     end
   end
 
@@ -495,10 +555,9 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text,
-                           "`auto_merge_when_gates_pass` => unless real blocker: PR merged+closed out when present",
+                           "auto_merge_when_gates_pass=>no real blocker: merge+close any PR",
                            label
-      assert_text_includes text, "target closed out", label
-      assert_text_includes text, "issue closed where applicable", label
+      assert_text_includes text, "close target+any issue", label
     end
   end
 
