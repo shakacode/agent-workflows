@@ -28,7 +28,11 @@ cleanup() {
   done < "$tmp_registry"
   while IFS= read -r item; do
     [[ "$item" = process:* ]] && continue
-    rm -rf "$item"
+    if [[ -d "$item" ]]; then
+      rm -r -- "$item"
+    else
+      rm -f -- "$item"
+    fi
   done < "$tmp_registry"
   rm -f "$tmp_registry"
 }
@@ -82,8 +86,34 @@ assert_line_before() {
 
 doctor_json_value() {
   local document="$1"
-  local expression="$2"
-  "$RUBY_BIN" -rjson -e 'document, expression = ARGV; payload = JSON.parse(document); puts eval(expression)' "$document" "$expression"
+  local query="$2"
+  "$RUBY_BIN" -rjson -e '
+    document, query = ARGV
+    payload = JSON.parse(document)
+    checks = payload.fetch("components").flat_map { |component| component.fetch("checks") }
+    coordination = payload.fetch("components").find { |component| component.fetch("id") == "agent-coordination" }
+    dashboard = payload.fetch("components").last
+    workflow = payload.fetch("components").first
+    value = case query
+            when "status" then payload.fetch("status")
+            when "schema_version" then payload.fetch("schema_version")
+            when "component_ids" then payload.fetch("components").map { |component| component.fetch("id") }.join(",")
+            when "check_ids" then checks.map { |check| check.fetch("id") }.join(",")
+            when "skipped_count" then checks.count { |check| check.fetch("status") == "skipped" }
+            when "component_count" then payload.fetch("components").length
+            when "stable_check_keys" then payload.fetch("components").all? { |component| component.fetch("checks").all? { |check| check.key?("id") && check.key?("status") && check.key?("summary") } }
+            when "coordination_status" then coordination.fetch("status")
+            when "coordination_backend_status" then coordination.fetch("checks").find { |check| check.fetch("id") == "coordination.backend" }.fetch("status")
+            when "coordination_resources_status" then coordination.fetch("checks").find { |check| check.fetch("id") == "coordination.resources" }.fetch("status")
+            when "workflow_installation_status" then workflow.fetch("checks").find { |check| check.fetch("id") == "workflows.installation" }.fetch("status")
+            when "workflow_installation_guidance" then workflow.fetch("checks").find { |check| check.fetch("id") == "workflows.installation" }.fetch("guidance")
+            when "workflow_host" then workflow.fetch("checks").find { |check| check.fetch("id") == "workflows.installation" }.fetch("details").fetch("host")
+            when "dashboard_health_status" then dashboard.fetch("checks").find { |check| check.fetch("id") == "dashboard.health" }.fetch("status")
+            when "dashboard_resources_status" then dashboard.fetch("checks").find { |check| check.fetch("id") == "dashboard.resources" }.fetch("status")
+            else abort "unknown doctor JSON query: #{query}"
+            end
+    puts value
+  ' "$document" "$query"
 }
 
 create_doctor_checkout() {
@@ -962,10 +992,10 @@ test_doctor_reports_fixed_model_without_creating_missing_paths() {
   set -e
 
   [[ "$status" -eq 2 ]] || fail "expected failed doctor exit 2, got $status: $output"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("status")')" = "failed" ]] || fail "expected failed aggregate"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").map { |component| component.fetch("id") }.join(",")')" = "agent-workflows,agent-coordination,agent-coordination-dashboard" ]] || fail "expected fixed components"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").flat_map { |component| component.fetch("checks") }.map { |check| check.fetch("id") }.join(",")')" = "agent-workflows.source,agent-workflows.compatibility,workflows.installation,workflows.seam,agent-coordination.source,agent-coordination.compatibility,coordination.cli,coordination.backend,coordination.resources,agent-coordination-dashboard.source,agent-coordination-dashboard.compatibility,dashboard.package,dashboard.health,dashboard.resources" ]] || fail "expected all 14 stable checks"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").flat_map { |component| component.fetch("checks") }.count { |check| check.fetch("status") == "skipped" }')" -eq 3 ]] || fail "expected three neutral deep-only skipped checks"
+  [[ "$(doctor_json_value "$output" status)" = "failed" ]] || fail "expected failed aggregate"
+  [[ "$(doctor_json_value "$output" component_ids)" = "agent-workflows,agent-coordination,agent-coordination-dashboard" ]] || fail "expected fixed components"
+  [[ "$(doctor_json_value "$output" check_ids)" = "agent-workflows.source,agent-workflows.compatibility,workflows.installation,workflows.seam,agent-coordination.source,agent-coordination.compatibility,coordination.cli,coordination.backend,coordination.resources,agent-coordination-dashboard.source,agent-coordination-dashboard.compatibility,dashboard.package,dashboard.health,dashboard.resources" ]] || fail "expected all 14 stable checks"
+  [[ "$(doctor_json_value "$output" skipped_count)" -eq 3 ]] || fail "expected three neutral deep-only skipped checks"
   [[ ! -e "$source_root" && ! -e "$compat_root" && ! -e "$target" && ! -e "$install_dir" && ! -e "$state_root" && ! -e "$tmp/xdg" ]] || fail "doctor created a missing selector or implicit state path"
 }
 
@@ -982,9 +1012,9 @@ test_doctor_normalizes_exit_zero_coordination_degradation() {
   set -e
 
   [[ "$status" -eq 1 ]] || fail "expected degraded doctor exit 1, got $status: $output"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("status")')" = "degraded" ]] || fail "expected degraded aggregate"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").find { |component| component.fetch("id") == "agent-coordination" }.fetch("status")')" = "degraded" ]] || fail "expected degraded coordination component"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").find { |component| component.fetch("id") == "agent-coordination" }.fetch("checks").find { |check| check.fetch("id") == "coordination.resources" }.fetch("status")')" = "degraded" ]] || fail "expected degraded resource check"
+  [[ "$(doctor_json_value "$output" status)" = "degraded" ]] || fail "expected degraded aggregate"
+  [[ "$(doctor_json_value "$output" coordination_status)" = "degraded" ]] || fail "expected degraded coordination component"
+  [[ "$(doctor_json_value "$output" coordination_resources_status)" = "degraded" ]] || fail "expected degraded resource check"
   assert_contains "$(<"$args_file")" "--state-root"
   assert_contains "$(<"$args_file")" "$tmp/state"
 }
@@ -1001,8 +1031,8 @@ test_doctor_keeps_malformed_child_output_in_valid_failed_aggregate() {
   set -e
 
   [[ "$status" -eq 2 ]] || fail "expected malformed child to fail, got $status: $output"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("status")')" = "failed" ]] || fail "expected valid failed aggregate"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").first.fetch("checks").find { |check| check.fetch("id") == "workflows.installation" }.fetch("status")')" = "failed" ]] || fail "expected workflow installation failure"
+  [[ "$(doctor_json_value "$output" status)" = "failed" ]] || fail "expected valid failed aggregate"
+  [[ "$(doctor_json_value "$output" workflow_installation_status)" = "failed" ]] || fail "expected workflow installation failure"
   assert_not_contains "$output" "not json"
 }
 
@@ -1017,7 +1047,7 @@ test_doctor_rejects_mismatched_child_exits_and_coordination_shapes() {
   status=$?
   set -e
   [[ "$status" -eq 2 ]] || fail "unexpected workflow exit should fail, got $status: $output"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").first.fetch("checks").find { |check| check.fetch("id") == "workflows.installation" }.fetch("status")')" = "failed" ]] || fail "workflow exit mismatch was accepted"
+  [[ "$(doctor_json_value "$output" workflow_installation_status)" = "failed" ]] || fail "workflow exit mismatch was accepted"
 
   for fixture in nonzero_healthy wrong_type; do
     set +e
@@ -1025,8 +1055,8 @@ test_doctor_rejects_mismatched_child_exits_and_coordination_shapes() {
     status=$?
     set -e
     [[ "$status" -eq 2 ]] || fail "$fixture coordination payload should fail, got $status: $output"
-    doctor_json_value "$output" 'payload.fetch("schema_version")' >/dev/null
-    [[ "$(doctor_json_value "$output" 'payload.fetch("components").find { |component| component.fetch("id") == "agent-coordination" }.fetch("checks").find { |check| check.fetch("id") == "coordination.backend" }.fetch("status")')" = "failed" ]] || fail "$fixture coordination backend was accepted"
+    doctor_json_value "$output" schema_version >/dev/null
+    [[ "$(doctor_json_value "$output" coordination_backend_status)" = "failed" ]] || fail "$fixture coordination backend was accepted"
   done
 }
 
@@ -1086,7 +1116,7 @@ test_doctor_renderer_has_informative_hierarchy_and_json_parity() {
   set -e
   [[ "$status" -eq 0 ]] || fail "healthy deep text fixture exited $status: $text"
   text_status="$(printf '%s\n' "$text" | sed -n '1s/^Agent Stack Doctor: //p' | tr '[:upper:]' '[:lower:]')"
-  json_status="$(doctor_json_value "$json" 'payload.fetch("status")')"
+  json_status="$(doctor_json_value "$json" status)"
 
   [[ "$text_status" = "$json_status" ]] || fail "text/JSON overall status mismatch"
   assert_contains "$text" "Agent Stack Doctor: HEALTHY"
@@ -1098,8 +1128,8 @@ test_doctor_renderer_has_informative_hierarchy_and_json_parity() {
   assert_contains "$text" "CLI"
   assert_contains "$text" "Backend"
   assert_contains "$text" "Service"
-  [[ "$(doctor_json_value "$json" 'payload.fetch("components").length')" -eq 3 ]] || fail "expected exactly three JSON components"
-  [[ "$(doctor_json_value "$json" 'payload.fetch("components").all? { |component| component.fetch("checks").all? { |check| check.key?("id") && check.key?("status") && check.key?("summary") } }')" = "true" ]] || fail "expected stable normalized JSON check keys"
+  [[ "$(doctor_json_value "$json" component_count)" -eq 3 ]] || fail "expected exactly three JSON components"
+  [[ "$(doctor_json_value "$json" stable_check_keys)" = "true" ]] || fail "expected stable normalized JSON check keys"
 
   rm "$tmp/target/bin/agent-workflows-status"
   set +e
@@ -1109,7 +1139,7 @@ test_doctor_renderer_has_informative_hierarchy_and_json_parity() {
   set -e
   [[ "$status" -eq 2 ]] || fail "failed text fixture exited $status: $failed_text"
   assert_contains "$failed_text" "Agent Stack Doctor: FAILED"
-  [[ "$(doctor_json_value "$failed_json" 'payload.fetch("status")')" = "failed" ]] || fail "failed text/JSON status mismatch"
+  [[ "$(doctor_json_value "$failed_json" status)" = "failed" ]] || fail "failed text/JSON status mismatch"
 }
 
 test_doctor_renderer_orders_problems_first_with_matching_guidance() {
@@ -1128,8 +1158,8 @@ test_doctor_renderer_orders_problems_first_with_matching_guidance() {
   assert_contains "$text" "Agent Stack Doctor: DEGRADED"
   assert_line_before "$text" "[DEGRADED] Install" "[HEALTHY] Compatibility link"
   assert_contains "$text" "Next"
-  [[ "$(doctor_json_value "$json" 'payload.fetch("status")')" = "degraded" ]] || fail "expected degraded JSON parity"
-  expected_guidance="$(doctor_json_value "$json" 'payload.fetch("components").first.fetch("checks").find { |check| check.fetch("id") == "workflows.installation" }.fetch("guidance")')"
+  [[ "$(doctor_json_value "$json" status)" = "degraded" ]] || fail "expected degraded JSON parity"
+  expected_guidance="$(doctor_json_value "$json" workflow_installation_guidance)"
   assert_contains "$text" "Next       $expected_guidance"
 }
 
@@ -1143,7 +1173,7 @@ test_doctor_default_renderer_preserves_fixed_skips_and_textual_cues() {
   json="$(doctor_fixture_command "$tmp" "$dashboard_url" --json)"
   assert_contains "$text" "[SKIPPED]"
   assert_contains "$text" 'Rerun with `--deep`.'
-  skip_count="$(doctor_json_value "$json" 'payload.fetch("components").flat_map { |component| component.fetch("checks") }.count { |check| check.fetch("status") == "skipped" }')"
+  skip_count="$(doctor_json_value "$json" skipped_count)"
   cue_count="$(printf '%s\n' "$text" | grep -c '^  \[SKIPPED\]')"
   [[ "$skip_count" -eq 3 && "$cue_count" -eq 3 ]] || fail "expected three stable skip records/cues"
   [[ "$text" != *$'\033'* ]] || fail "NO_COLOR/non-TTY output contained ANSI"
@@ -1163,10 +1193,10 @@ test_doctor_json_contains_child_streams_and_accepts_additive_fields() {
   set -e
   [[ "$status" -eq 0 ]] || fail "additive/noisy child fixture should remain healthy"
   output="$(<"$stdout_file")"
-  doctor_json_value "$output" 'payload.fetch("schema_version")' >/dev/null
+  doctor_json_value "$output" schema_version >/dev/null
   assert_not_contains "$output" "child-stderr-must-not-escape"
   assert_not_contains "$(<"$stderr_file")" "child-stderr-must-not-escape"
-  [[ "$(doctor_json_value "$output" 'payload.fetch("components").length')" -eq 3 ]] || fail "additive child fields changed aggregate shape"
+  [[ "$(doctor_json_value "$output" component_count)" -eq 3 ]] || fail "additive child fields changed aggregate shape"
 }
 
 test_doctor_bounds_output_and_cleans_timed_out_process_groups() {
@@ -1226,7 +1256,7 @@ test_doctor_redacts_and_sanitizes_all_rendered_external_strings() {
     [[ "$output" != *$'\033'* && "$output" != *$'\r'* ]] || fail "rendered output retained ANSI/control characters"
     assert_contains "$output" "[REDACTED]"
     assert_contains "$output" "\\x0A"
-    if [[ "$rendering" = json ]]; then doctor_json_value "$output" 'payload.fetch("status")' >/dev/null; fi
+    if [[ "$rendering" = json ]]; then doctor_json_value "$output" status >/dev/null; fi
   done
 }
 
@@ -1240,8 +1270,8 @@ test_doctor_deep_dashboard_failure_keeps_health_and_confidence_separate() {
   status=$?
   set -e
   [[ "$status" -eq 1 ]] || fail "forbidden dashboard doctor should degrade, got $status"
-  [[ "$(doctor_json_value "$json" 'payload.fetch("components").last.fetch("checks").find { |check| check.fetch("id") == "dashboard.health" }.fetch("status")')" = "healthy" ]] || fail "dashboard health evidence was lost"
-  [[ "$(doctor_json_value "$json" 'payload.fetch("components").last.fetch("checks").find { |check| check.fetch("id") == "dashboard.resources" }.fetch("status")')" = "degraded" ]] || fail "dashboard diagnostic confidence was not degraded"
+  [[ "$(doctor_json_value "$json" dashboard_health_status)" = "healthy" ]] || fail "dashboard health evidence was lost"
+  [[ "$(doctor_json_value "$json" dashboard_resources_status)" = "degraded" ]] || fail "dashboard diagnostic confidence was not degraded"
 }
 
 test_doctor_normalizes_dashboard_boundaries_and_total_deadline() {
@@ -1255,7 +1285,7 @@ test_doctor_normalizes_dashboard_boundaries_and_total_deadline() {
   status=$?
   set -e
   [[ "$status" -eq 1 ]] || fail "auto host fixture should only degrade for the stopped dashboard, got $status"
-  [[ "$(doctor_json_value "$json" 'payload.fetch("components").first.fetch("checks").find { |check| check.fetch("id") == "workflows.installation" }.fetch("details").fetch("host")')" = "claude" ]] || fail "doctor auto host resolution drifted from workflow status semantics"
+  [[ "$(doctor_json_value "$json" workflow_host)" = "claude" ]] || fail "doctor auto host resolution drifted from workflow status semantics"
   rm -f "$tmp/target/settings.json"
 
   set +e
@@ -1263,7 +1293,7 @@ test_doctor_normalizes_dashboard_boundaries_and_total_deadline() {
   status=$?
   set -e
   [[ "$status" -eq 1 ]] || fail "stopped optional dashboard should degrade, got $status: $json"
-  [[ "$(doctor_json_value "$json" 'payload.fetch("components").last.fetch("checks").find { |check| check.fetch("id") == "dashboard.health" }.fetch("status")')" = "degraded" ]] || fail "stopped dashboard did not degrade health"
+  [[ "$(doctor_json_value "$json" dashboard_health_status)" = "degraded" ]] || fail "stopped dashboard did not degrade health"
 
   for mode in empty-doctor malformed-doctor redirect hostile-doctor; do
     dashboard_url="$(start_doctor_http_fixture "$tmp" "$mode")"
@@ -1271,11 +1301,11 @@ test_doctor_normalizes_dashboard_boundaries_and_total_deadline() {
     json="$(doctor_fixture_command "$tmp" "$dashboard_url" --deep --json)"
     status=$?
     set -e
-    doctor_json_value "$json" 'payload.fetch("schema_version")' >/dev/null
+    doctor_json_value "$json" schema_version >/dev/null
     case "$mode" in
       empty-doctor|malformed-doctor)
         [[ "$status" -eq 1 ]] || fail "$mode should preserve health and degrade deep evidence, got $status"
-        [[ "$(doctor_json_value "$json" 'payload.fetch("components").last.fetch("checks").find { |check| check.fetch("id") == "dashboard.resources" }.fetch("status")')" = "degraded" ]] || fail "$mode was rounded up"
+        [[ "$(doctor_json_value "$json" dashboard_resources_status)" = "degraded" ]] || fail "$mode was rounded up"
         ;;
       redirect)
         [[ "$status" -eq 2 ]] || fail "redirected dashboard probes should fail, got $status"
@@ -1293,7 +1323,7 @@ test_doctor_normalizes_dashboard_boundaries_and_total_deadline() {
   status=$?
   set -e
   [[ "$status" -eq 2 ]] || fail "IPv6 loopback URL should be accepted then report component failures, got $status: $ipv6_output"
-  doctor_json_value "$ipv6_output" 'payload.fetch("schema_version")' >/dev/null
+  doctor_json_value "$ipv6_output" schema_version >/dev/null
 
   slow_tmp="$(make_tmp_dir)"
   setup_doctor_fixture "$slow_tmp"
