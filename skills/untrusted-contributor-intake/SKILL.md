@@ -131,8 +131,8 @@ REPO_NAME="${CANONICAL_PR_PATH%%/*}"
 CANONICAL_PR_PATH="${CANONICAL_PR_PATH#*/}"
 PULL_KIND="${CANONICAL_PR_PATH%%/*}"
 PULL_NUMBER="${CANONICAL_PR_PATH#*/}"
-case "${OWNER}" in ""|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) canonical_url_blocked ;; esac
-case "${REPO_NAME}" in ""|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) canonical_url_blocked ;; esac
+case "${OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) canonical_url_blocked ;; esac
+case "${REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) canonical_url_blocked ;; esac
 case "${PR_NUMBER}" in ""|*[!0-9]*) canonical_url_blocked ;; esac
 case "${PULL_KIND}" in pull) ;; *) canonical_url_blocked ;; esac
 case "${PULL_NUMBER}" in ""|*/*|*[!0-9]*) canonical_url_blocked ;; esac

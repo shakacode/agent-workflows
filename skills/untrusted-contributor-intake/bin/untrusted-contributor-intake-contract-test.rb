@@ -268,6 +268,8 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
                  run_documented_url_input_parser("https://github.com/octo-org/hello-world/pull/42", "42")
     assert_equal [true, %w[Enterprise-Org repo_name Enterprise-Org/repo_name]],
                  run_documented_url_input_parser("https://github.company.example:8443/Enterprise-Org/repo_name/pull/9", "9")
+    assert_equal [true, [".github", "repo.name", ".github/repo.name"]],
+                 run_documented_url_input_parser("https://github.com/.github/repo.name/pull/42", "42")
 
     [
       ["ftp://github.com/octo-org/hello-world/pull/42", "42"],
@@ -288,7 +290,11 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
       ["https://github.com/octo\norg/hello-world/pull/42", "42"],
       ["https://github.com/octo-org/hello\nworld/pull/42", "42"],
       ["https://github.com//hello-world/pull/42", "42"],
-      ["https://github.com/octo-org//pull/42", "42"]
+      ["https://github.com/octo-org//pull/42", "42"],
+      ["https://github.com/./hello-world/pull/42", "42"],
+      ["https://github.com/../hello-world/pull/42", "42"],
+      ["https://github.com/octo-org/./pull/42", "42"],
+      ["https://github.com/octo-org/../pull/42", "42"]
     ].each do |url, pr_number|
       success, output = run_documented_url_input_parser(url, pr_number)
 
