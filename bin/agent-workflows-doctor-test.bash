@@ -31,6 +31,27 @@ write_status_fixture() {
   cat > "$path" <<'RUBY'
 #!/usr/bin/env ruby
 require "json"
+def option_value(name)
+  ARGV.fetch(ARGV.index(name) + 1)
+end
+def status_payload(status, installed_version:, available_version:, guidance: nil)
+  {
+    "status" => status,
+    "host" => option_value("--host"),
+    "target" => option_value("--target"),
+    "source" => option_value("--source"),
+    "installed_version" => installed_version,
+    "installed_revision" => installed_version && "installed-revision",
+    "available_version" => available_version,
+    "available_revision" => available_version && "available-revision",
+    "checked_remote" => false,
+    "reason" => nil,
+    "guidance" => guidance,
+    "delivery_mode" => "flat",
+    "native" => nil,
+    "flat" => nil
+  }
+end
 if ENV["WORKFLOW_STATUS_FIXTURE"] == "malformed"
   puts "not json"
   exit 0
@@ -40,22 +61,15 @@ if ENV["WORKFLOW_STATUS_FIXTURE"] == "wrong_shape"
   exit 0
 end
 if ENV["WORKFLOW_STATUS_FIXTURE"] == "nonzero_healthy"
-  puts JSON.generate("status" => "UP_TO_DATE", "installed_version" => "1.0.0",
-    "available_version" => "1.0.0", "delivery_mode" => "flat", "guidance" => nil)
+  puts JSON.generate(status_payload("UP_TO_DATE", installed_version: "1.0.0", available_version: "1.0.0"))
   exit 1
 end
 if ENV["WORKFLOW_STATUS_FIXTURE"] == "stale"
-  puts JSON.generate(
-    "status" => "UPGRADE_AVAILABLE",
-    "installed_version" => "1.0.0",
-    "available_version" => "1.1.0",
-    "delivery_mode" => "flat",
-    "guidance" => "Run the installer."
-  )
+  puts JSON.generate(status_payload("UPGRADE_AVAILABLE", installed_version: "1.0.0", available_version: "1.1.0",
+                                    guidance: "Run the installer."))
   exit 1
 end
-puts JSON.generate("status" => "UP_TO_DATE", "installed_version" => "1.0.0",
-  "available_version" => "1.0.0", "delivery_mode" => "flat", "guidance" => nil)
+puts JSON.generate(status_payload("UP_TO_DATE", installed_version: "1.0.0", available_version: "1.0.0"))
 RUBY
   chmod +x "$path"
 }

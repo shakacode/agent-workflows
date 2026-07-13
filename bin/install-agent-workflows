@@ -22,6 +22,7 @@ Installed paths:
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
+  <target>/bin/agent_doctor/*
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
   <target>/.agent-workflows-install.json
@@ -34,6 +35,8 @@ target=""
 mode="copy"
 delivery_mode=""
 metadata_name=".agent-workflows-install.json"
+doctor_managed_marker=".agent-workflows-managed"
+doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
 delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
@@ -146,7 +149,7 @@ metadata_value() {
 installed_metadata_value() {
   local key="$1"
   local metadata_path="$target/$metadata_name"
-  [[ -f "$metadata_path" ]] || return 1
+  [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
 
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
@@ -283,6 +286,78 @@ copy_children_preserving_unrelated() {
     rm -rf "$destination"
     rsync -a "$source_path" "$target_dir/"
   done
+}
+
+workflow_doctor_copy_matches_source() {
+  ruby "$doctor_ownership_helper" compare "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+}
+
+workflow_doctor_symlink_matches_recorded_source() {
+  local destination="$target/bin/agent_doctor"
+  local link_target recorded_mode recorded_source
+  link_target="$(readlink "$destination" 2>/dev/null)" || return 1
+  recorded_mode="$(installed_metadata_value mode 2>/dev/null || true)"
+  recorded_source="$(installed_metadata_value source 2>/dev/null || true)"
+  [[ "$recorded_mode" = symlink && -n "$recorded_source" &&
+     "$link_target" = "$recorded_source/bin/agent_doctor" ]]
+}
+
+prepare_workflow_doctor_copy_destination() {
+  local destination="$target/bin/agent_doctor"
+  local marker="$destination/$doctor_managed_marker"
+  local stack_marker="$destination/.agent-stack-managed"
+  local resolved_source resolved_destination
+
+  if [[ -L "$destination" ]]; then
+    resolved_source="$(cd "$repo_root/bin/agent_doctor" 2>/dev/null && pwd -P)" || return 1
+    resolved_destination="$(cd "$destination" 2>/dev/null && pwd -P)" || true
+    if workflow_doctor_symlink_matches_recorded_source; then
+      :
+    elif [[ -z "$resolved_destination" || "$resolved_source" != "$resolved_destination" ]]; then
+      echo "Refusing unmanaged workflow doctor symlink: $destination" >&2
+      exit 1
+    fi
+    rm -f "$destination"
+  fi
+  if [[ -e "$destination" && ! -d "$destination" ]]; then
+    echo "Refusing workflow doctor non-directory path: $destination" >&2
+    exit 1
+  fi
+  mkdir -p "$destination"
+  [[ -z "$(find "$destination" -mindepth 1 -maxdepth 1 -print -quit)" ]] && return
+  if [[ -L "$marker" || -e "$marker" && ! -f "$marker" ]]; then
+    echo "Refusing invalid workflow doctor ownership marker: $marker" >&2
+    exit 1
+  fi
+  if [[ -L "$stack_marker" || -e "$stack_marker" && ! -f "$stack_marker" ]]; then
+    echo "Refusing invalid stack doctor ownership marker: $stack_marker" >&2
+    exit 1
+  fi
+  if [[ -f "$marker" ]]; then
+    if ruby "$doctor_ownership_helper" verify "$destination" "$marker"; then return; fi
+    echo "Refusing invalid workflow doctor ownership marker: $marker" >&2
+    exit 1
+  fi
+  if [[ -f "$stack_marker" ]]; then
+    if grep -qxF "agent-stack-module-v1:agent_doctor" "$stack_marker"; then return; fi
+    echo "Refusing invalid stack doctor ownership marker: $stack_marker" >&2
+    exit 1
+  fi
+  if [[ ! -e "$marker" ]] && workflow_doctor_copy_matches_source; then return; fi
+
+  echo "Refusing unmanaged workflow doctor directory: $destination" >&2
+  exit 1
+}
+
+write_workflow_doctor_managed_marker() {
+  local destination="$target/bin/agent_doctor"
+  local marker="$destination/$doctor_managed_marker"
+  local marker_value temporary_marker
+  marker_value="$(ruby "$doctor_ownership_helper" marker "$destination")"
+  temporary_marker="$(mktemp "$destination/$doctor_managed_marker.XXXXXX")"
+  printf '%s\n' "$marker_value" > "$temporary_marker"
+  chmod 0644 "$temporary_marker"
+  mv -f "$temporary_marker" "$marker"
 }
 
 remove_legacy_managed_model_routing_path() {
@@ -545,6 +620,8 @@ fi
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
+  ensure_real_directory "$target/bin"
+  prepare_workflow_doctor_copy_destination
   copy_pack_license
   if [[ "$delivery_mode" = "flat" ]]; then
     ensure_real_directory "$target/skills"
@@ -552,9 +629,12 @@ if [[ "$mode" = "copy" ]]; then
   fi
   ensure_real_directory "$target/workflows"
   ensure_real_directory "$target/docs"
-  ensure_real_directory "$target/bin"
   copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
   copy_pack_docs "$target/docs"
+  rsync -a --delete --exclude="/$doctor_managed_marker" --exclude='/.agent-stack-managed' \
+    "$repo_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
+  ruby -e 'File.chmod(File.stat(ARGV.fetch(0)).mode & 0o7777, ARGV.fetch(1))' "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+  write_workflow_doctor_managed_marker
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -L "$destination" ]]; then
@@ -588,6 +668,11 @@ else
   rm -f "$target/workflows"
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
+  if [[ -e "$target/bin/agent_doctor" && ! -L "$target/bin/agent_doctor" ]]; then
+    echo "Refusing to replace non-symlink path: $target/bin/agent_doctor" >&2
+    exit 1
+  fi
+  ln -sfn "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -e "$destination" && ! -L "$destination" ]]; then

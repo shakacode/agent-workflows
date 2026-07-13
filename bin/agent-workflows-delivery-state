@@ -7,6 +7,7 @@ require "find"
 require "open3"
 require "optparse"
 require "tmpdir"
+require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
   module_function
@@ -62,7 +63,8 @@ module AgentWorkflowsDeliveryState
 
   def codex_plugin_cli_state(target)
     executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
-    timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", "5"))
+    default_timeout = AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT.to_s
+    timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
     return { "state" => "unknown", "reason" => "invalid Codex plugin state timeout" } unless timeout_seconds.positive?
 
     output = error = status = nil

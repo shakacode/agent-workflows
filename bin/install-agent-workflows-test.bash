@@ -170,6 +170,14 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
+  assert_file "$target/bin/agent_doctor/process_runner.rb"
+  assert_file "$target/bin/agent_doctor/timeout_budget.rb"
+  assert_file "$target/bin/agent_doctor/workflows_cli.rb"
+  grep -Eq '^agent-workflows-doctor-v1:[0-9a-f]{64}$' "$target/bin/agent_doctor/.agent-workflows-managed" || \
+    fail "Codex copy install did not mark its doctor directory"
+  ruby "$ROOT/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" || \
+    fail "Codex copy install wrote an invalid doctor ownership marker"
   assert_file "$target/bin/agent-workflows-trust-audit"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   assert_file "$target/bin/upgrade-agent-workflows"
@@ -179,6 +187,75 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+}
+
+test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
+  local tmp target output status configuration_before sentinel_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target/bin/agent_doctor"
+  printf 'user-owned configuration\n' > "$target/bin/agent_doctor/configuration.rb"
+  printf 'unrelated sentinel\n' > "$target/bin/agent_doctor/sentinel"
+  configuration_before="$(shasum "$target/bin/agent_doctor/configuration.rb")"
+  sentinel_before="$(shasum "$target/bin/agent_doctor/sentinel")"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "copy mode accepted an unmanaged agent_doctor directory"
+  assert_contains "$output" "Refusing unmanaged workflow doctor directory"
+  [[ "$configuration_before" = "$(shasum "$target/bin/agent_doctor/configuration.rb")" ]] || \
+    fail "copy mode changed a colliding unmanaged doctor file"
+  [[ "$sentinel_before" = "$(shasum "$target/bin/agent_doctor/sentinel")" ]] || \
+    fail "copy mode changed an unrelated unmanaged doctor file"
+  [[ ! -e "$target/bin/agent_doctor/.agent-workflows-managed" ]] || \
+    fail "copy mode marked an unmanaged doctor directory"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "failed copy mode committed metadata"
+}
+
+test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target/bin"
+  rsync -a "$ROOT/bin/agent_doctor" "$target/bin/"
+  [[ ! -e "$target/bin/agent_doctor/.agent-workflows-managed" ]] || \
+    fail "legacy doctor fixture unexpectedly had an ownership marker"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  grep -Eq '^agent-workflows-doctor-v1:[0-9a-f]{64}$' "$target/bin/agent_doctor/.agent-workflows-managed" || \
+    fail "copy mode did not adopt an exact legacy doctor copy"
+  cmp -s "$ROOT/bin/agent_doctor/configuration.rb" "$target/bin/agent_doctor/configuration.rb" || \
+    fail "adopted doctor copy differs from its source"
+}
+
+test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/old-source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  printf 'obsolete managed module\n' > "$source/bin/agent_doctor/obsolete.rb"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion >"$tmp/old-install.out"
+  assert_file "$target/bin/agent_doctor/obsolete.rb"
+  ruby "$source/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" || \
+    fail "old doctor installation was not signed"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion >"$tmp/upgrade.out"
+
+  [[ ! -e "$target/bin/agent_doctor/obsolete.rb" ]] || fail "doctor upgrade retained a stale managed module"
+  ruby "$ROOT/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" || \
+    fail "upgraded doctor installation has an invalid ownership marker"
 }
 
 test_native_plugin_plus_default_flat_install_fails_before_mutation() {
@@ -220,6 +297,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/bin/agent-workflow-seam-doctor"
     assert_file "$target/bin/agent-workflows-status"
     assert_file "$target/bin/agent-workflows-doctor"
+    assert_file "$target/bin/agent_doctor/process_runner.rb"
     assert_file "$target/bin/agent-workflows-delivery-state"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
@@ -1023,6 +1101,7 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
+  assert_symlink "$target/bin/agent_doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not symlink stack-specific helper"
   assert_file "$target/.agent-workflows-install.json"
@@ -1065,6 +1144,137 @@ test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   [[ ! -L "$target/docs/coordination-backend.md" ]] || fail "copy mode should replace pack doc symlink with a real copy"
   assert_file "$target/docs/solutions/README.md"
   [[ ! -L "$target/docs/solutions/README.md" ]] || fail "copy mode should replace pack doc symlink with a real copy"
+}
+
+test_copy_mode_migrates_dangling_recorded_doctor_symlink_from_deleted_source() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/prior-source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    >"$tmp/symlink-install.out"
+  [[ "$(readlink "$target/bin/agent_doctor")" = "$source/bin/agent_doctor" ]] ||
+    fail "prior symlink install did not record its source doctor"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["mode"] == "symlink" && metadata["source"] == File.expand_path(ARGV.fetch(1))
+  ' "$target/.agent-workflows-install.json" "$source"
+
+  rm -rf "$source"
+  [[ -L "$target/bin/agent_doctor" && ! -e "$target/bin/agent_doctor" ]] ||
+    fail "expected prior installer-owned doctor link to be dangling"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    >"$tmp/copy-install.out"
+
+  [[ -d "$target/bin/agent_doctor" && ! -L "$target/bin/agent_doctor" ]] ||
+    fail "copy migration did not replace the dangling owned doctor link"
+  assert_file "$target/bin/agent_doctor/process_runner.rb"
+  ruby "$ROOT/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" ||
+    fail "copy migration did not establish current doctor ownership"
+}
+
+test_copy_mode_migrates_recorded_doctor_symlink_from_live_prior_source() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/prior-source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    >"$tmp/symlink-install.out"
+  [[ "$(readlink "$target/bin/agent_doctor")" = "$source/bin/agent_doctor" ]] ||
+    fail "prior symlink install did not record its source doctor"
+  [[ -d "$source/bin/agent_doctor" && -d "$target/bin/agent_doctor" ]] ||
+    fail "expected the prior installer-owned doctor link to remain live"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    >"$tmp/copy-install.out"
+
+  [[ -d "$target/bin/agent_doctor" && ! -L "$target/bin/agent_doctor" ]] ||
+    fail "copy migration did not replace the live recorded doctor link"
+  assert_file "$source/bin/agent_doctor/process_runner.rb"
+  assert_file "$target/bin/agent_doctor/process_runner.rb"
+  ruby "$ROOT/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" ||
+    fail "copy migration did not establish current doctor ownership"
+}
+
+test_copy_mode_refuses_unproven_live_doctor_symlinks_without_mutation() {
+  local variant tmp target recorded_source other_source link_target output status metadata_before external_metadata
+  local external_metadata_before
+  for variant in missing_metadata malformed_metadata unrelated wrong_mode wrong_target symlinked_metadata; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    recorded_source="$tmp/prior-source"
+    other_source="$tmp/unrelated-source"
+    mkdir -p "$target/bin" "$recorded_source/bin/agent_doctor" "$other_source/bin/agent_doctor"
+    printf 'preserve\n' > "$recorded_source/bin/agent_doctor/sentinel"
+    printf 'unrelated\n' > "$other_source/bin/agent_doctor/sentinel"
+    link_target="$recorded_source/bin/agent_doctor"
+    case "$variant" in
+      missing_metadata)
+        metadata_before=absent
+        ;;
+      malformed_metadata)
+        printf '{malformed\n' > "$target/.agent-workflows-install.json"
+        metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+        ;;
+      unrelated)
+        link_target="$other_source/bin/agent_doctor"
+        metadata_before=absent
+        ;;
+      wrong_mode)
+        ruby -rjson -e 'File.write(ARGV[0], JSON.generate({"mode" => "copy", "source" => ARGV[1]}) + "\n")' \
+          "$target/.agent-workflows-install.json" "$recorded_source"
+        metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+        ;;
+      wrong_target)
+        link_target="$other_source/bin/agent_doctor"
+        ruby -rjson -e 'File.write(ARGV[0], JSON.generate({"mode" => "symlink", "source" => ARGV[1]}) + "\n")' \
+          "$target/.agent-workflows-install.json" "$recorded_source"
+        metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+        ;;
+      symlinked_metadata)
+        external_metadata="$tmp/external-metadata.json"
+        ruby -rjson -e 'File.write(ARGV[0], JSON.generate({"mode" => "symlink", "source" => ARGV[1]}) + "\n")' \
+          "$external_metadata" "$recorded_source"
+        ln -s "$external_metadata" "$target/.agent-workflows-install.json"
+        metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+        external_metadata_before="$(shasum "$external_metadata")"
+        ;;
+    esac
+    ln -s "$link_target" "$target/bin/agent_doctor"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$variant live doctor link unexpectedly installed"
+    [[ "$(readlink "$target/bin/agent_doctor")" = "$link_target" ]] ||
+      fail "$variant live doctor link changed"
+    [[ -L "$target/bin/agent_doctor" && -e "$target/bin/agent_doctor" ]] ||
+      fail "$variant live doctor link was replaced"
+    if [[ "$metadata_before" = absent ]]; then
+      [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "$variant install created metadata"
+    else
+      [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] ||
+        fail "$variant install changed metadata"
+    fi
+    if [[ "$variant" = symlinked_metadata ]]; then
+      [[ -L "$target/.agent-workflows-install.json" &&
+         "$(readlink "$target/.agent-workflows-install.json")" = "$external_metadata" ]] ||
+        fail "$variant install replaced metadata symlink"
+      [[ "$external_metadata_before" = "$(shasum "$external_metadata")" ]] ||
+        fail "$variant install changed external metadata"
+    fi
+  done
 }
 
 test_status_reports_not_installed_and_check_failed_explicitly() {
@@ -1315,6 +1525,9 @@ main() {
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
+    test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
+    test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
+    test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
     test_install_preserves_exact_content_generic_collision_without_source_evidence
     test_install_removes_legacy_managed_model_routing_path
@@ -1328,6 +1541,9 @@ main() {
     test_symlink_mode_links_skills_workflows_and_helpers
     test_symlink_mode_replaces_docs_directory_symlink
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
+    test_copy_mode_migrates_dangling_recorded_doctor_symlink_from_deleted_source
+    test_copy_mode_migrates_recorded_doctor_symlink_from_live_prior_source
+    test_copy_mode_refuses_unproven_live_doctor_symlinks_without_mutation
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
@@ -1342,8 +1558,10 @@ main() {
 
   local test_name
   for test_name in "${tests[@]}"; do
-    "$test_name"
-    echo "PASS $test_name"
+    if [[ -z "${INSTALL_AGENT_WORKFLOWS_TEST_FILTER:-}" || "$test_name" = *"$INSTALL_AGENT_WORKFLOWS_TEST_FILTER"* ]]; then
+      "$test_name"
+      echo "PASS $test_name"
+    fi
   done
 }
 

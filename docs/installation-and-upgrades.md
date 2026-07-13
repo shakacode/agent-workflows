@@ -279,13 +279,14 @@ The required component interfaces are:
 
 ```text
 <target>/bin/agent-workflows-doctor --stack-json [--deep] --host HOST --target DIR --source DIR
-<agent-coord-install-dir>/agent-coord doctor --stack-json [--deep] <backend-selector>
+<agent-coord-install-dir>/agent-coord doctor --stack-json [--deep] --state-root ~/.agent-workflows/state
 node <dashboard-source>/bin/agent-coordination-dashboard.js doctor --stack-json [--deep] --url URL
 ```
 
-`install-agent-workflows` installs `agent-workflows-doctor` in every delivery
-mode. `agent-stack sync` installs both `agent-stack` and its focused
-`agent-stack-doctor` Ruby helper. The coordination and dashboard commands must
+`install-agent-workflows` installs `agent-workflows-doctor` and its focused
+Ruby modules in every delivery mode. `agent-stack sync` installs `agent-stack`,
+its focused shell modules, `agent-stack-doctor`, and the shared doctor modules.
+The coordination and dashboard commands must
 come from component versions that implement the interfaces above; until then,
 the master reports a generic `<component>.doctor` wrapper check instead of
 inventing that component's internal checks.
@@ -346,10 +347,11 @@ creating any missing directory:
 
 For safety, `--dashboard-url` accepts only plain HTTP loopback URLs using
 `localhost`, `127.0.0.1`, or `[::1]`, without credentials, a query, an endpoint
-path, or redirects. The entire doctor is observational: it does not fetch,
-sync, install, start the dashboard, create backend state, or repair anything.
-Run `agent-stack sync` or the report's specific `Next` action separately after
-reviewing the evidence.
+path, or redirects. The doctor performs only component-owned, validated,
+bounded loopback HTTP probes; it does not fetch external resources or mutate
+state. It does not sync, install, start the dashboard, create backend state, or
+repair anything. Run `agent-stack sync` or the report's specific `Next` action
+separately after reviewing the evidence.
 
 Coordination backend selection is read-only and deterministic. Explicit
 `AGENT_COORD_STATE_ROOT` (even when the path is missing),
@@ -361,9 +363,18 @@ missing explicit `AGENT_COORD_STATE_ROOT` remains authoritative and is passed
 to the component doctor so coordination can return its own failed contract.
 
 The component diagnostics remain useful primitives when you need their native,
-component-specific detail. Run `agent-workflows-doctor --stack-json`,
-`agent-coord doctor --stack-json`, or the dashboard CLI directly after the
-master report points at that component. `agent-workflows-status` and
+component-specific detail. Start with `agent-stack doctor`; when its report
+points at workflows, run the workflow component with every required selector:
+
+```bash
+"$HOME/.codex/bin/agent-workflows-doctor" --stack-json \
+  --host codex --target "$HOME/.codex" \
+  --source "$HOME/src/agent-workflows"
+```
+
+Run `agent-coord doctor --stack-json --state-root ~/.agent-workflows/state` or
+the dashboard CLI directly when the master report points at those components.
+`agent-workflows-status` and
 `agent-workflow-seam-doctor` remain lower-level workflow helpers used by the
 workflow-owned doctor.
 
@@ -377,6 +388,7 @@ The installer writes:
 - `<target>/docs/agent-workflows-model-routing.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
 - `<target>/bin/agent-workflows-status`

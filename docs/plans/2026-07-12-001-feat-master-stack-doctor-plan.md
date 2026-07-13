@@ -36,7 +36,8 @@ The master never probes workflow installation, coordination resources, dashboard
 
 ### Component contract v1
 
-Every component emits exactly the required v1 fields:
+Every component emits all required v1 fields; additive fields may also be
+present and are forward-compatible:
 
 ```json
 {"schema_version":1,"component":"<id>","status":"healthy|degraded|failed","checks":[]}
@@ -67,7 +68,7 @@ When a delegate is missing, times out, exceeds bounds, exits `64`, emits malform
 2. Coordination component, released by `agent-coordination`:
 
    ```text
-   <agent-coord-install-dir>/agent-coord doctor --stack-json [--deep] <backend-selector>
+   <agent-coord-install-dir>/agent-coord doctor --stack-json [--deep] --state-root ~/.agent-workflows/state
    ```
 
    It owns CLI, backend, and resource diagnostics.
@@ -102,7 +103,8 @@ A missing explicit `AGENT_COORD_STATE_ROOT` is authoritative. The coordination d
 - JSON mode writes only the aggregate document to stdout.
 - Human mode starts with the overall verdict and component counts, orders problems before healthy context, and prints the same guidance stored in JSON.
 - Overall exit is `0`, `1`, or `2`; invalid options or missing master Ruby/helper prerequisites exit `64`.
-- The doctor never fetches, syncs, installs, starts, repairs, or creates a selected root.
+- The doctor performs only component-owned, validated, bounded loopback HTTP probes; it does not fetch external resources or mutate state.
+- It does not sync, install, start, repair, or create a selected root.
 
 ---
 
@@ -138,14 +140,14 @@ The outer aggregate contains `schema_version`, `status`, `deep`, `checked_at`, a
 
 ### U2. Focused master aggregator
 
-- **Files:** `bin/agent-stack-doctor`, thin dispatch in `bin/agent-stack`, sync installation of both commands.
+- **Files:** thin `bin/agent-stack-doctor` and `bin/agent-stack` entrypoints, focused Ruby/shell modules, and sync installation of the complete runtime.
 - **Behavior:** Add generic source/link checks, resolve the coordination selector, invoke the exact three interfaces, validate contracts, sanitize, aggregate, and render.
 - **Acceptance:** Healthy/degraded/failed parity, additive/malformed child output, unavailable wrappers, runtime-root precedence, missing explicit root forwarding, dangling-link distinction, malformed URL redaction, bounded output, process cleanup, optional stopped dashboard, and non-mutation all pass through the public command.
 
 ### U3. Split tests and install surfaces
 
-- **Files:** `bin/agent-stack-test.bash`, `bin/agent-stack-doctor-test.bash`, `bin/agent-workflows-doctor-test.bash`, `bin/install-agent-workflows-test.bash`, `bin/validate`.
-- **Behavior:** Keep sync coverage separate from focused workflow-component and master-aggregator coverage. Install the master helper through stack sync and workflow doctor through every generic installer delivery mode.
+- **Files:** small test drivers in `bin/`, focused suites under `test/agent_stack` and `test/agent_doctor`, installer tests, and `bin/validate`.
+- **Behavior:** Keep sync coverage separate from focused workflow-component and master-aggregator coverage. Install entrypoints and their focused modules through stack sync and every generic installer delivery mode.
 
 ### U4. User and integration documentation
 
@@ -160,8 +162,8 @@ The outer aggregate contains `schema_version`, `status`, `deep`, `checked_at`, a
 |---|---|---|
 | Workflow component | `bash bin/agent-workflows-doctor-test.bash` | Contract, status, seam, malformed, and missing-helper cases pass. |
 | Master aggregator | `bash bin/agent-stack-doctor-test.bash` | Contract validation, selectors, safety, rendering, timeout, cleanup, and non-mutation cases pass. |
-| Sync regression | `bash bin/agent-stack-test.bash` | Existing sync behavior remains green and installs the focused master helper. |
-| Installer regression | `bash bin/install-agent-workflows-test.bash` | Copy, symlink, companion, upgrade, and rollback surfaces include the workflow doctor. |
+| Sync regression | `bash bin/agent-stack-test.bash` | Existing sync behavior remains green and installs both thin entrypoints with their focused runtime modules. |
+| Installer regression | `bash bin/install-agent-workflows-test.bash` | Copy, symlink, companion, upgrade, and rollback surfaces include the workflow doctor and shared modules. |
 | Static diff | `git diff --check` | No whitespace errors. |
 | Human/JSON smoke | public commands with component fixtures or compatible sibling worktrees | Shallow/deep text and JSON agree and JSON stdout is parseable. |
 | Repository validation | `bin/validate` with the repository Ruby toolchain | Full helper, docs, metadata, installer, and style validation passes. |
@@ -177,8 +179,8 @@ The outer aggregate contains `schema_version`, `status`, `deep`, `checked_at`, a
 
 ## Definition of Done
 
-- `agent-stack` contains no embedded doctor monolith and remains focused on dispatch and sync.
-- The focused master implementation is substantially smaller than the former embedded body, and sync tests are separate from doctor tests.
+- `agent-stack` and `agent-stack-doctor` are thin entrypoints over focused, installable modules.
+- The master and sync implementations contain no catch-all monolith, and their small test drivers load focused suites.
 - Component-owned checks are never duplicated or guessed by the master.
 - Uniform contracts, status/exit parity, redaction, bounds, cleanup, read-only behavior, and human/JSON parity are protected by focused tests.
 - Installer, root docs, installation docs, changelog, and this plan match the shipped architecture.
