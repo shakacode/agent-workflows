@@ -480,12 +480,23 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   opinion or isolate a family-specific failure, but it is not the default
   implementation route and still needs an exact supported pair.
 
-For an operator-required conservative GPT-5.6 batch, the exact floor is Sol/high
-for the initiating coordinator and independent checker, Sol at the highest
-supported effort for high-risk or exceptionally ambiguous coordinator/checker
-work, Terra/medium for bounded implementation, and Terra/high only for difficult
-execution inside an already-approved envelope. Terra and Luna may not initiate
-or coordinate that batch, and Luna is not a worker route in this profile.
+For a verified Codex GPT-5.6 host, use this recommended exact profile:
+
+- Multi-lane coordinator: Sol/xhigh
+- Simple, positively classified worker: Terra/high
+- Unknown or uncertain worker: Sol/high
+- High-risk or escalated work: Sol/xhigh
+- Independent adversarial QA: Sol/xhigh
+- Routine deterministic QA: Sol/high
+
+Terra/high requires an affirmative simple-task classification: explicit
+acceptance criteria, a known bounded file surface, a strong deterministic
+verification oracle, no unresolved design decision, no security,
+authorization, concurrency, persistence, lifecycle, routing, or public-contract
+change, and easy failure detection and rollback. Any missing or disputed
+criterion routes to Sol/high. Terra and Luna may not initiate or coordinate the
+batch, and Luna is not a worker route in this profile. Shared workflow text
+remains portable for other providers and model generations.
 
 Classify the route from what is difficult (diagnosis/strategy versus execution),
 blast radius, verification strength, acceptance-criteria clarity, and previous
@@ -1350,12 +1361,12 @@ model/effort routes:` fields from the Plan To Goal template. Do not clear the
 goal; its objective, targets, `merge_authority`, QA decision, and completion
 contract remain authoritative.
 
-For a conservative GPT-5.6 recovery explicitly requested by an operator, bind
-the coordinator and checker to Sol/high minimum (highest supported for high-risk
-or exceptionally ambiguous work), and initial workers to Terra/medium or
-Terra/high only inside a Sol-approved execution envelope. Shared workflow text
-stays portable: exact names always come from the operator or verified runtime
-roster.
+For a conservative GPT-5.6 recovery explicitly requested by an operator, use
+the recommended profile: multi-lane coordinator and independent adversarial QA
+on Sol/xhigh; positively classified simple workers on Terra/high; unknown or
+uncertain workers and routine deterministic QA on Sol/high; and high-risk or
+escalated work on Sol/xhigh. Shared workflow text stays portable: exact names
+always come from the operator or verified runtime roster.
 
 Use this prompt after filling the route placeholders:
 

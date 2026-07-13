@@ -19,6 +19,15 @@ Audit merged PRs since the last release candidate
 
 Use `.agents/workflows/post-merge-audit.md` for reusable copy-paste prompts, including independent Codex/Claude audits, comparison, default issue creation, and Claude PR review handoff prompts.
 
+For a verified Codex GPT-5.6 batch, preserve the originating route profile:
+
+- Multi-lane coordinator: Sol/xhigh
+- Simple, positively classified worker: Terra/high
+- Unknown or uncertain worker: Sol/high
+- High-risk or escalated work: Sol/xhigh
+- Independent adversarial QA: Sol/xhigh
+- Routine deterministic QA: Sol/high
+
 ## Scope Gate
 
 Start by resolving the exact audit range and, when auditing a named agent
@@ -27,9 +36,9 @@ batch/run, the exact worked-issue scope.
 For a completed-batch audit, also resolve launch assurance before deep audit:
 the checker must be a fresh instance independent from every maker, with exact
 model/effort and binding evidence satisfying the batch's operator policy. Under
-the conservative GPT-5.6 profile this means Sol/high minimum, or Sol at the
-highest supported effort for high-risk or exceptionally ambiguous work. Terra
-may collect mechanical evidence but does not issue the qualifying verdict. If
+the conservative GPT-5.6 profile the qualifying audit is independent
+adversarial QA on Sol/xhigh; Sol/high is limited to routine deterministic QA.
+Terra may collect mechanical evidence but does not issue the qualifying verdict. If
 checker route or independence is below policy or `UNKNOWN`, the audit cannot be
 clean; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
 qualifying-checker reservation needed.

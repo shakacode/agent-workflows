@@ -2,6 +2,15 @@
 
 Use these prompts with `.agents/skills/post-merge-audit/SKILL.md` when auditing merged agent batch work, comparing Codex and Claude findings, or turning audit findings into GitHub issues.
 
+For a verified Codex GPT-5.6 batch, preserve this route profile:
+
+- Multi-lane coordinator: Sol/xhigh
+- Simple, positively classified worker: Terra/high
+- Unknown or uncertain worker: Sol/high
+- High-risk or escalated work: Sol/xhigh
+- Independent adversarial QA: Sol/xhigh
+- Routine deterministic QA: Sol/high
+
 ## Coordination Rules
 
 These prompts intentionally repeat the worked-issue scope state machine from
@@ -31,8 +40,8 @@ self-contained. Keep state-machine changes mirrored across this workflow,
 - For completed-batch audit, verify launch assurance before deep audit. The
   qualifying checker is a fresh instance independent from every maker and its
   exact model/effort plus binding source must satisfy operator policy. Under the
-  conservative GPT-5.6 profile use Sol/high minimum, or the highest supported
-  Sol effort for high-risk or exceptionally ambiguous work. Terra may collect
+  conservative GPT-5.6 profile, qualifying independent adversarial QA uses
+  Sol/xhigh; Sol/high is limited to routine deterministic QA. Terra may collect
   mechanical evidence but does not issue the qualifying verdict. Below-policy,
   non-independent, or `UNKNOWN` checker state makes the audit non-clean and must
   be reported as `checker_route_compliance: UNKNOWN|failed`.
@@ -148,8 +157,8 @@ checker independence, and `checker_route_compliance`. Host session metadata,
 effective instance-bound runtime state, or explicit operator-selected launch
 configuration qualify as binding evidence; mutable default configuration,
 installed rosters, dispatch-resolved classes, prompt text, and model self-report
-do not. Under the conservative GPT-5.6 profile use Sol/high minimum, or the
-highest supported Sol effort for high-risk or exceptionally ambiguous work.
+do not. Under the conservative GPT-5.6 profile, qualifying independent
+adversarial QA uses Sol/xhigh; Sol/high is limited to routine deterministic QA.
 Terra may collect mechanical evidence but must not issue the qualifying audit
 verdict. If checker identity, exact model/effort, binding source, or
 independence is unavailable, below policy, or `UNKNOWN`, do not return a clean

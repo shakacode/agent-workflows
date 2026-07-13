@@ -17,6 +17,18 @@ pause procedure, see
 for cancellation, see
 [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch).
 
+For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
+
+- Multi-lane coordinator: Sol/xhigh
+- Simple, positively classified worker: Terra/high
+- Unknown or uncertain worker: Sol/high
+- High-risk or escalated work: Sol/xhigh
+- Independent adversarial QA: Sol/xhigh
+- Routine deterministic QA: Sol/high
+
+Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
+`strongest` classes until dispatch binds an exact supported pair.
+
 ## Skill Roles
 
 | Skill                | Use when                                                                                                    | Output                                                                                |
