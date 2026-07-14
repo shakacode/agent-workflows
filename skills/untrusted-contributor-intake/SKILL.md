@@ -96,6 +96,56 @@ case "${PR_REF}" in
 esac
 ```
 
+Immediately after classification, resolve only the metadata required by the
+chosen kind. Capture one delimiter record without eval or standalone jq. URL
+resolution preserves PR_REF_NUMBER for the later server-canonical comparison;
+number resolution preserves its classified PR_NUMBER. Malformed command output
+or metadata stops as BLOCKED.
+
+```bash
+# Metadata resolution: run after classification and before canonical parsers.
+metadata_blocked() { printf 'BLOCKED: metadata resolution is invalid\n' >&2; exit 1; }
+metadata_split_record() {
+  [ -n "${METADATA_RECORD}" ] || metadata_blocked
+  METADATA_CONTROL_COUNT="$(printf '%s' "${METADATA_RECORD}" | LC_ALL=C tr -d '[:print:]' | wc -c | tr -d '[:space:]')"
+  [ "${METADATA_CONTROL_COUNT}" = 0 ] || metadata_blocked
+  case "${METADATA_RECORD}" in *\|*\|*) metadata_blocked ;; *\|*) ;; *) metadata_blocked ;; esac
+  METADATA_LEFT="${METADATA_RECORD%%|*}"
+  METADATA_RIGHT="${METADATA_RECORD#*|}"
+  [ -n "${METADATA_LEFT}" ] && [ -n "${METADATA_RIGHT}" ] || metadata_blocked
+}
+case "${PR_INPUT_KIND}" in
+  url)
+    case "${PR_REF_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
+    METADATA_RECORD="$(env -u GH_HOST -u GH_REPO gh pr view "$PR_REF" --json number,url --jq '"\(.number)|\(.url)"')"
+    METADATA_STATUS=$?
+    [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
+    metadata_split_record
+    PR_NUMBER="${METADATA_LEFT}"
+    CANONICAL_URL="${METADATA_RIGHT}"
+    case "${PR_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
+    case "${CANONICAL_URL}" in http://*|https://*) ;; *) metadata_blocked ;; esac
+    ;;
+  number)
+    case "${PR_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
+    METADATA_RECORD="$(env -u GH_HOST -u GH_REPO gh repo view --json nameWithOwner,url --jq '"\(.nameWithOwner)|\(.url)"')"
+    METADATA_STATUS=$?
+    [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
+    metadata_split_record
+    REPO="${METADATA_LEFT}"
+    CANONICAL_URL="${METADATA_RIGHT}"
+    case "${REPO}" in */*) ;; *) metadata_blocked ;; esac
+    REPO_OWNER="${REPO%%/*}"
+    REPO_NAME="${REPO#*/}"
+    case "${REPO_NAME}" in */*) metadata_blocked ;; esac
+    case "${REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
+    case "${REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
+    case "${CANONICAL_URL}" in http://*|https://*) ;; *) metadata_blocked ;; esac
+    ;;
+  *) metadata_blocked ;;
+esac
+```
+
 Set PR_REF to the exact URL or number, REPO to the resolved owner/repo,
 PR_NUMBER to the server-resolved numeric pull request number, and GH_HOST to
 normalized canonical URL authority host[:port]. For PR_INPUT_KIND=url, and

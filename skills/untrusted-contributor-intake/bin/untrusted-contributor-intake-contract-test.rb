@@ -3,6 +3,7 @@
 
 require "minitest/autorun"
 require "open3"
+require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -72,9 +73,11 @@ def authority_evidence_mutations(evidence)
 end
 
 def extract_canonical_authority_snippet(source)
-  start = source.index('case "${CANONICAL_URL}" in')
+  start = source.index("\n```bash\ncase \"${CANONICAL_URL}\" in")
 
   raise "canonical authority snippet missing" unless start
+
+  start += "\n```bash\n".length
 
   finish = source.index("\n```", start)
 
@@ -133,6 +136,58 @@ def run_documented_pr_ref_classifier(pr_ref)
   )
 
   [success, success ? output.split("|", 2) : output]
+end
+
+def extract_metadata_resolution_snippet(source)
+  start = source.index("# Metadata resolution:")
+
+  raise "metadata resolution snippet missing" unless start
+
+  finish = source.index("\n```", start)
+
+  raise "metadata resolution snippet missing" unless finish
+
+  source[start...finish]
+end
+
+def documented_metadata_resolution_snippet
+  extract_metadata_resolution_snippet(File.read(SKILL_PATH, encoding: "UTF-8"))
+end
+
+def run_documented_metadata_resolution(input_kind:, pr_ref:, pr_number:, gh_output:, pr_ref_number: "", gh_status: 0)
+  Dir.mktmpdir("untrusted-contributor-intake") do |directory|
+    gh_path = File.join(directory, "gh")
+    log_path = File.join(directory, "gh.log")
+    File.write(
+      gh_path,
+      <<~SH,
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "${GH_LOG}"
+        printf '%s' "${GH_STUB_OUTPUT}"
+        exit "${GH_STUB_STATUS}"
+      SH
+      encoding: "UTF-8"
+    )
+    File.chmod(0o755, gh_path)
+    environment = {
+      "GH_LOG" => log_path,
+      "GH_STUB_OUTPUT" => gh_output,
+      "GH_STUB_STATUS" => gh_status.to_s,
+      "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+      "PR_INPUT_KIND" => input_kind,
+      "PR_NUMBER" => pr_number,
+      "PR_REF" => pr_ref,
+      "PR_REF_NUMBER" => pr_ref_number
+    }
+    success, output = run_documented_posix_snippet(
+      documented_metadata_resolution_snippet,
+      environment,
+      %(printf '%s|%s|%s|%s' "${PR_NUMBER}" "${REPO:-}" "${CANONICAL_URL}" "${PR_REF_NUMBER:-}")
+    )
+    calls = File.exist?(log_path) ? File.readlines(log_path, chomp: true) : []
+
+    [success, success ? output.split("|", 4) : output, calls]
+  end
 end
 
 def extract_url_input_parser_snippet(source)
@@ -268,6 +323,75 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     end
 
     assert_equal "PR_REF classifier snippet missing", error.message
+  end
+
+  def test_executes_documented_metadata_resolution_by_input_kind
+    success, values, calls = run_documented_metadata_resolution(
+      input_kind: "url",
+      pr_ref: "https://github.com/octo-org/hello-world/pull/42",
+      pr_number: "42",
+      pr_ref_number: "42",
+      gh_output: "42|https://github.com/octo-org/hello-world/pull/42"
+    )
+    assert success, values
+    assert_equal ["42", "", "https://github.com/octo-org/hello-world/pull/42", "42"], values
+    assert_equal 1, calls.length
+    assert_includes calls.first, "pr view"
+    refute_includes calls.first, "repo view"
+
+    success, values, calls = run_documented_metadata_resolution(
+      input_kind: "number",
+      pr_ref: "42",
+      pr_number: "42",
+      gh_output: "octo-org/hello-world|https://github.com/octo-org/hello-world"
+    )
+    assert success, values
+    assert_equal ["42", "octo-org/hello-world", "https://github.com/octo-org/hello-world", ""], values
+    assert_equal 1, calls.length
+    assert_includes calls.first, "repo view"
+    refute_includes calls.first, "pr view"
+  end
+
+  def test_metadata_resolution_blocks_malformed_command_records
+    [
+      { input_kind: "url", gh_output: "", gh_status: 1 },
+      { input_kind: "url", gh_output: "" },
+      { input_kind: "url", gh_output: "42" },
+      { input_kind: "url", gh_output: "42|https://github.com/o/r/pull/42|extra" },
+      { input_kind: "url", gh_output: "42|https://github.com/o/r/pull/42\n43|https://github.com/o/r/pull/43" },
+      { input_kind: "url", gh_output: "not-a-number|https://github.com/o/r/pull/42" },
+      { input_kind: "url", gh_output: "42|ftp://github.com/o/r/pull/42" },
+      { input_kind: "number", gh_output: "octo-org//hello-world|https://github.com/o/r" },
+      { input_kind: "number", gh_output: "octo-org/hello-world|ftp://github.com/o/r" }
+    ].each do |scenario|
+      success, output, = run_documented_metadata_resolution(
+        input_kind: scenario.fetch(:input_kind),
+        pr_ref: "https://github.com/octo-org/hello-world/pull/42",
+        pr_number: "42",
+        pr_ref_number: "42",
+        gh_output: scenario.fetch(:gh_output),
+        gh_status: scenario.fetch(:gh_status, 0)
+      )
+
+      refute success, "expected #{scenario.inspect} to be BLOCKED, got #{output.inspect}"
+      assert_match(/BLOCKED: metadata resolution is invalid/, output)
+    end
+  end
+
+  def test_documents_one_ordered_metadata_command_per_input_kind
+    skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    classifier = skill.index("# PR_REF classifier:")
+    resolver = skill.index("# Metadata resolution:")
+    canonical_parser = skill.index("# URL input parser:")
+
+    refute_nil classifier
+    refute_nil resolver
+    refute_nil canonical_parser
+    assert_operator classifier, :<, resolver
+    assert_operator resolver, :<, canonical_parser
+    resolver_source = extract_metadata_resolution_snippet(skill)
+    assert_equal 1, resolver_source.scan('gh pr view "$PR_REF" --json number,url').length
+    assert_equal 1, resolver_source.scan("gh repo view --json nameWithOwner,url").length
   end
 
   def test_documents_explicit_post_classifier_kind_branches
