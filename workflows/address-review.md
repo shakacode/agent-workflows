@@ -650,7 +650,10 @@ before mutating GitHub or the branch.
    - Mention whether the run used the default cutoff or the explicit `check all reviews` override.
    - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
    - Use exact timestamps in the summary when referring to the scan window.
-   - Post it with: `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`
+   - When replacement carryover is inactive, post it directly with:
+     `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`
+     When replacement carryover is active, do not run that direct post; delegate
+     both checkpoint posts to the Step 10 template below.
    - In replacement carryover, build `source_summary_body_file` through
      `references/templates.md` with the replacement link and every original-item
      outcome. Use its separate `SOURCE_CUTOFF_SAFE` guard.

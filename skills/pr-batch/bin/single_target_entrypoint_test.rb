@@ -295,6 +295,12 @@ source_post_ownership = "The Step 10 template constructs and posts the primary c
 assert(address_review_templates.include?(source_post_ownership), "address-review templates must own both checkpoint posts")
 assert(address_review_actions.include?(source_post_ownership), "address-review actions must delegate both checkpoint posts to the template")
 assert(address_review_workflow.include?(source_post_ownership), "address-review workflow mirror must delegate both checkpoint posts to the template")
+legacy_unconditional_primary_post = '- Post it with: `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`'
+assert(!address_review_workflow.include?(legacy_unconditional_primary_post), "address-review workflow must not post the primary checkpoint before template delegation")
+scoped_primary_post = "When replacement carryover is inactive, post it directly with:"
+assert(address_review_workflow.include?(scoped_primary_post), "address-review workflow must preserve direct primary posting outside replacement carryover")
+template_primary_ownership = "When replacement carryover is active, do not run that direct post; delegate\n     both checkpoint posts to the Step 10 template below."
+assert(address_review_workflow.include?(template_primary_ownership), "address-review workflow must give the template sole checkpoint-post ownership during carryover")
 source_state_format = "Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`."
 assert(address_review.include?(source_state_format), "address-review must define deterministic source restart state")
 assert(address_review_actions.include?(source_state_format), "address-review actions must preserve deterministic source restart state")
