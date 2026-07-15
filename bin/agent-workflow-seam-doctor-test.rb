@@ -993,7 +993,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")))
       assert_equal [], trust.fetch("trusted_users")
       assert_equal [], trust.fetch("trusted_bots")
-      assert_equal [], trust.fetch("trusted_metadata_bots")
+      assert_equal ["github-actions"], trust.fetch("trusted_metadata_bots")
       assert_equal [], trust.fetch("trusted_teams")
     end
   end
@@ -4003,7 +4003,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_equal "develop", policy.fetch("base_branch")
       assert_equal "keep quoted", policy.fetch("custom_policy")
       assert_equal [], trust.fetch("trusted_bots")
-      assert_equal [], trust.fetch("trusted_metadata_bots")
+      assert_equal ["github-actions"], trust.fetch("trusted_metadata_bots")
       assert_equal [], trust.fetch("trusted_teams")
     end
   end
@@ -4193,7 +4193,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert status.success?, out
       trust = YAML.safe_load(File.read(trust_path))
       assert_equal "deploy", trust.fetch("trusted_bots")
-      assert_equal [], trust.fetch("trusted_metadata_bots")
+      assert_equal ["github-actions"], trust.fetch("trusted_metadata_bots")
     end
   end
 

@@ -86,10 +86,11 @@ notes.
    only repo-specific maintainers, teams, or automation that this repository
    has deliberately approved. The preflight resolution order is `--trust-config`, repo-local
    `.agents/trusted-github-actors.yml`, `$AGENT_WORKFLOWS_TRUST_CONFIG`,
-   `~/.agents/trusted-github-actors.yml`, then the packaged empty fallback.
-   Keep the packaged fallback empty. Put repo-specific maintainers in the
-   consumer repo's local trust file unless maintainers verify and choose a
-   narrower team slug.
+   `~/.agents/trusted-github-actors.yml`, then the packaged fail-closed fallback.
+   That fallback trusts `github-actions[bot]` only as metadata; its comment text
+   is never actionable. Put repo-specific maintainers and actionable automation
+   in the consumer repo's local trust file unless maintainers verify and choose
+   a narrower team slug.
 
 6. **Review the AGENTS pointer.** `AGENTS.md` stays canonical for human policy,
    and the initializer adds or repairs only this workflow configuration section:

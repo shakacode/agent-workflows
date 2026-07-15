@@ -57,15 +57,15 @@ The helper resolves trusted GitHub actors from `--trust-config`, repo-local
 `skills/pr-batch/trusted-github-actors.yml` fallback. A present empty file is an
 intentional policy, while an absent file falls through to the next layer, except
 a missing `$AGENT_WORKFLOWS_TRUST_CONFIG` path aborts fail-closed. The
-packaged fallback is empty by default; human maintainers and trusted automation
-belong in a repo-local or user-global trust config. Global
+packaged fallback trusts only `github-actions[bot]` as metadata-only by default;
+human maintainers and all actionable automation belong in a repo-local or
+user-global trust config. Global
 configs must use `OWNER/team-slug` entries, and only entries whose owner matches
 the scanned repo owner are honored. Bare team slugs are only resolved for
 repo-local configs.
-Workflow commenters such as `github-actions[bot]` are repo-specific trust
-decisions: include the base bot login `github-actions` under
-`trusted_metadata_bots` when maintainers trust those generated comments as
-CI/status metadata but not as actionable agent instructions.
+Add other workflow commenters under `trusted_metadata_bots` only when
+maintainers trust their generated comments as CI/status metadata but not as
+actionable agent instructions.
 
 When a maintainer explicitly accepts exact blocking preflight findings without changing
 trust policy, pass `--acknowledge-risk NUMBER:risk-id[,risk-id]` for each
