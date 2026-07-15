@@ -16,6 +16,10 @@ derive it.
 
 Default: metadata and diff reads only.
 
+Compliance boundary, not sandbox: this skill is safe only when the invoking
+host/tooling enforces its documented read-only, no-execution, no-secrets, and
+no-write boundaries.
+
 Initial GitHub API/CLI interaction is metadata and diff reads only. Default:
 no repository writes. Non-overridable in this intake skill: fork checkout,
 execution, scripts, dependency installation, action invocation, and secret
@@ -29,7 +33,7 @@ expose secrets.
 
 Before any `gh pr view`, classify raw PR_REF using only PR_REF; never use PR
 body, comments, or diff text. Accept only a nonempty all-digit number or an
-exact http(s) PR URL. The URL form must have authority/OWNER/REPO_NAME/pull/
+exact HTTPS PR URL. The URL form must have authority/OWNER/REPO_NAME/pull/
 NUMBER, no query, fragment, extra or missing segment, control character,
 encoded separator, traversal segment, or unsafe path character. This sets
 PR_INPUT_KIND to `number` or `url` and PR_NUMBER to the numeric target. Before
@@ -37,28 +41,32 @@ gh, the classifier requires the same conservative DNS-or-IPv4 authority shape
 used by the canonical host boundary, with an optional numeric port.
 
 Before classification, the invoking trusted host or tooling must pre-set
-TRUSTED_GH_HOST and TRUSTED_GH_SCHEME; there is no fallback. It must source
-that normalized `host[:non-default-port]` authority and scheme from a trusted
-local policy seam or trusted-base checkout remote metadata. Do not derive them
-from ambient GH_HOST or GH_REPO, PR or ref data, GitHub responses, or fork
-environment. TRUSTED_GH_SCHEME must be exactly http or https; do not infer it.
-Strip :443 only for trusted https and :80 only for trusted http; preserve every
-other port. If either is unavailable, report BLOCKED. A URL input authority
-must equal TRUSTED_GH_HOST before any network call; numeric input uses that
-trusted host with the trusted checkout.
+TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; there is no fallback.
+It must source that normalized `host[:non-default-port]` authority, scheme, and
+validated `owner/repo` target from a trusted local policy seam or trusted-base
+checkout remote metadata. Do not derive them from ambient GH_HOST or GH_REPO,
+PR or ref data, GitHub responses, or fork environment. TRUSTED_GH_SCHEME must
+be exactly https; do not infer it. Strip :443 only for trusted https; preserve
+every other port. If any value is
+unavailable, report BLOCKED. A URL input authority and target repository must
+equal the trusted values before any network call; numeric input uses that
+trusted host and repository explicitly.
 
-Automatic trusted-origin derivation accepts only HTTP(S) remote URLs. SSH or
-scp-style remotes require a complete explicit TRUSTED_GH_HOST and
-TRUSTED_GH_SCHEME override; otherwise report BLOCKED.
+Automatic trusted-origin derivation accepts only HTTPS remote URLs. HTTP, SSH, or
+scp-style remotes require a complete explicit TRUSTED_GH_HOST,
+TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO override; otherwise report BLOCKED.
+Automatic origin derivation is allowed only from a trusted canonical-upstream
+base checkout. From any other checkout, require complete explicit
+TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO values or report BLOCKED.
 
 ```bash
 # Trusted origin producer: trusted local checkout metadata only; run before PR_REF.
-trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid; set complete TRUSTED_GH_HOST and TRUSTED_GH_SCHEME for SSH/scp origin\n' >&2; exit 1; }
-if [ -n "${TRUSTED_GH_HOST:-}" ] || [ -n "${TRUSTED_GH_SCHEME:-}" ]; then
-  [ -n "${TRUSTED_GH_HOST:-}" ] && [ -n "${TRUSTED_GH_SCHEME:-}" ] || trusted_origin_blocked
+trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid; complete HTTPS TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO are required for HTTP, SSH, or scp origin\n' >&2; exit 1; }
+if [ -n "${TRUSTED_GH_HOST:-}" ] || [ -n "${TRUSTED_GH_SCHEME:-}" ] || [ -n "${TRUSTED_GH_REPO:-}" ]; then
+  [ -n "${TRUSTED_GH_HOST:-}" ] && [ -n "${TRUSTED_GH_SCHEME:-}" ] && [ -n "${TRUSTED_GH_REPO:-}" ] || trusted_origin_blocked
 else
   TRUSTED_ORIGIN_URL="$(git remote get-url origin 2>/dev/null)" || trusted_origin_blocked
-  case "${TRUSTED_ORIGIN_URL}" in http://*|https://*) ;; *) trusted_origin_blocked ;; esac
+  case "${TRUSTED_ORIGIN_URL}" in https://*) ;; *) trusted_origin_blocked ;; esac
   TRUSTED_GH_SCHEME="${TRUSTED_ORIGIN_URL%%://*}"
   TRUSTED_ORIGIN_REMAINDER="${TRUSTED_ORIGIN_URL#*://}"
   case "${TRUSTED_ORIGIN_REMAINDER}" in */*) ;; *) trusted_origin_blocked ;; esac
@@ -71,7 +79,9 @@ else
   TRUSTED_ORIGIN_REPO="${TRUSTED_ORIGIN_REPO%.git}"
   case "${TRUSTED_ORIGIN_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
   case "${TRUSTED_ORIGIN_REPO}" in ""|.|..|*/*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
+  TRUSTED_GH_REPO="${TRUSTED_ORIGIN_OWNER}/${TRUSTED_ORIGIN_REPO}"
 fi
+[ "${TRUSTED_GH_SCHEME}" = "https" ] || trusted_origin_blocked
 TRUSTED_ORIGIN_HOST_PORT="$(printf '%s' "${TRUSTED_GH_HOST}" | tr '[:upper:]' '[:lower:]')"
 case "${TRUSTED_ORIGIN_HOST_PORT}" in
   *:*)
@@ -83,10 +93,17 @@ case "${TRUSTED_ORIGIN_HOST_PORT}" in
   *) TRUSTED_ORIGIN_HOST="${TRUSTED_ORIGIN_HOST_PORT}"; TRUSTED_ORIGIN_PORT="" ;;
 esac
 case "${TRUSTED_GH_SCHEME}:${TRUSTED_ORIGIN_PORT}" in
-  https:443|http:80) TRUSTED_ORIGIN_PORT="" ;;
+  https:443) TRUSTED_ORIGIN_PORT="" ;;
 esac
 TRUSTED_GH_HOST="${TRUSTED_ORIGIN_HOST}"
 if [ -n "${TRUSTED_ORIGIN_PORT}" ]; then TRUSTED_GH_HOST="${TRUSTED_GH_HOST}:${TRUSTED_ORIGIN_PORT}"; fi
+case "${TRUSTED_GH_REPO}" in */*) ;; *) trusted_origin_blocked ;; esac
+TRUSTED_REPO_OWNER="${TRUSTED_GH_REPO%%/*}"
+TRUSTED_REPO_NAME="${TRUSTED_GH_REPO#*/}"
+case "${TRUSTED_REPO_NAME}" in */*) trusted_origin_blocked ;; esac
+case "${TRUSTED_REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
+case "${TRUSTED_REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
+TRUSTED_GH_REPO="${TRUSTED_REPO_OWNER}/${TRUSTED_REPO_NAME}"
 ```
 
 ```bash
@@ -119,7 +136,7 @@ pr_ref_validate_authority() {
 case "${PR_REF}" in
   "") pr_ref_blocked ;;
   *[!0-9]*)
-    case "${PR_REF}" in http://*|https://*) ;; *) pr_ref_blocked ;; esac
+    case "${PR_REF}" in https://*) ;; *) pr_ref_blocked ;; esac
     PR_REF_CONTROL_COUNT="$(printf '%s' "${PR_REF}" | LC_ALL=C tr -d '[:print:]' | wc -c | tr -d '[:space:]')"
     [ "${PR_REF_CONTROL_COUNT}" = 0 ] || pr_ref_blocked
     PR_REF_SCHEME="${PR_REF%%://*}"
@@ -130,7 +147,7 @@ case "${PR_REF}" in
     PR_REF_PATH="${PR_REF_WITHOUT_SCHEME#*/}"
     pr_ref_validate_authority
     case "${PR_REF_SCHEME}:${PR_REF_PORT}" in
-      https:443|http:80) PR_REF_PORT="" ;;
+      https:443) PR_REF_PORT="" ;;
     esac
     PR_REF_GH_HOST="${PR_REF_HOST}"
     if [ -n "${PR_REF_PORT}" ]; then PR_REF_GH_HOST="${PR_REF_GH_HOST}:${PR_REF_PORT}"; fi
@@ -167,7 +184,7 @@ or metadata stops as BLOCKED.
 metadata_blocked() { printf 'BLOCKED: metadata resolution is invalid\n' >&2; exit 1; }
 metadata_require_trusted_host() {
   [ -n "${TRUSTED_GH_HOST:-}" ] || metadata_blocked
-  case "${TRUSTED_GH_SCHEME:-}" in http|https) ;; *) metadata_blocked ;; esac
+  case "${TRUSTED_GH_SCHEME:-}" in https) ;; *) metadata_blocked ;; esac
   TRUSTED_HOST_PORT="$(printf '%s' "${TRUSTED_GH_HOST}" | tr '[:upper:]' '[:lower:]')"
   case "${TRUSTED_HOST_PORT}" in ""|*@*|*/*|*\?*|*\#*|*" "*|*\[*|*\]*) metadata_blocked ;; esac
   case "${TRUSTED_HOST_PORT}" in
@@ -191,7 +208,7 @@ metadata_require_trusted_host() {
     esac
   done
   case "${TRUSTED_GH_SCHEME}:${TRUSTED_PORT}" in
-    https:443|http:80) TRUSTED_PORT="" ;;
+    https:443) TRUSTED_PORT="" ;;
   esac
   TRUSTED_GH_HOST="${TRUSTED_HOST}"
   if [ -n "${TRUSTED_PORT}" ]; then TRUSTED_GH_HOST="${TRUSTED_GH_HOST}:${TRUSTED_PORT}"; fi
@@ -211,6 +228,7 @@ case "${PR_INPUT_KIND}" in
     case "${PR_REF_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
     [ "${PR_REF_GH_HOST:-}" = "${TRUSTED_GH_HOST}" ] || metadata_blocked
     REPO="${PR_REF_OWNER}/${PR_REF_REPO_NAME}"
+    [ "${REPO}" = "${TRUSTED_GH_REPO}" ] || metadata_blocked
     METADATA_RECORD="$(env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_REF_NUMBER}" --repo "${REPO}" --json number,url --jq '"\(.number)|\(.url)"')"
     METADATA_STATUS=$?
     [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
@@ -218,15 +236,16 @@ case "${PR_INPUT_KIND}" in
     PR_NUMBER="${METADATA_LEFT}"
     CANONICAL_URL="${METADATA_RIGHT}"
     case "${PR_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
-    case "${CANONICAL_URL}" in http://*|https://*) ;; *) metadata_blocked ;; esac
+    case "${CANONICAL_URL}" in https://*) ;; *) metadata_blocked ;; esac
     ;;
   number)
     case "${PR_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
-    METADATA_RECORD="$(env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh repo view --json nameWithOwner,url --jq '"\(.nameWithOwner)|\(.url)"')"
+    REPO="${TRUSTED_GH_REPO}"
+    METADATA_RECORD="$(env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${TRUSTED_GH_REPO}" --json number,url --jq '"\(.number)|\(.url)"')"
     METADATA_STATUS=$?
     [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
     metadata_split_record
-    REPO="${METADATA_LEFT}"
+    [ "${METADATA_LEFT}" = "${PR_NUMBER}" ] || metadata_blocked
     CANONICAL_URL="${METADATA_RIGHT}"
     case "${REPO}" in */*) ;; *) metadata_blocked ;; esac
     REPO_OWNER="${REPO%%/*}"
@@ -234,7 +253,7 @@ case "${PR_INPUT_KIND}" in
     case "${REPO_NAME}" in */*) metadata_blocked ;; esac
     case "${REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
     case "${REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
-    case "${CANONICAL_URL}" in http://*|https://*) ;; *) metadata_blocked ;; esac
+    case "${CANONICAL_URL}" in https://*) ;; *) metadata_blocked ;; esac
     ;;
   *) metadata_blocked ;;
 esac
@@ -243,22 +262,23 @@ esac
 Set PR_REF to the exact URL or number, REPO to the resolved owner/repo,
 PR_NUMBER to the server-resolved numeric pull request number, and GH_HOST to
 normalized canonical URL authority host[:port]. For PR_INPUT_KIND=url, and
-only url, require the classifier authority to equal TRUSTED_GH_HOST, then use
-metadata-only gh pr view by validated numeric PR_REF_NUMBER and REPO.
+only url, require the classifier authority and target repository to equal the
+trusted values, then use metadata-only gh pr view by validated numeric
+PR_REF_NUMBER and REPO.
 `env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_REF_NUMBER}" --repo "${REPO}" --json number,url`
 resolves server PR_NUMBER and canonical URL without discarding an Enterprise
 port. Preserve the classifier's raw URL number as PR_REF_NUMBER. For
-PR_INPUT_KIND=number, use the trusted-checkout gh repo view path pinned to
-TRUSTED_GH_HOST.
-`env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh repo view --json nameWithOwner,url`
-resolves REPO and canonical repository URL, then derives GH_HOST. Set
-CANONICAL_URL to that URL. Use this same snippet for canonical PR and canonical
-repository URLs.
+PR_INPUT_KIND=number, keep REPO pinned to TRUSTED_GH_REPO and use metadata-only
+gh pr view by the classified PR_NUMBER.
+`env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${TRUSTED_GH_REPO}" --json number,url`
+resolves the canonical URL and must return the same numeric PR_NUMBER. Set
+CANONICAL_URL to that URL. Use this same snippet for canonical PR and repository
+URLs.
 
 ```bash
 case "${CANONICAL_URL}" in
-  http://*|https://*) ;;
-  *) printf 'BLOCKED: canonical URL must be http(s)\n' >&2; exit 1 ;;
+  https://*) ;;
+  *) printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1 ;;
 esac
 CANONICAL_SCHEME="${CANONICAL_URL%%://*}"
 CANONICAL_AUTHORITY="${CANONICAL_URL#*://}"
@@ -307,7 +327,7 @@ while [ -n "${CANONICAL_REMAINDER}" ]; do
   esac
 done
 case "${CANONICAL_SCHEME}:${CANONICAL_PORT}" in
-  https:443|http:80) CANONICAL_PORT="" ;;
+  https:443) CANONICAL_PORT="" ;;
 esac
 GH_HOST="${CANONICAL_HOST}"
 if [ -n "${CANONICAL_PORT}" ]; then GH_HOST="${GH_HOST}:${CANONICAL_PORT}"; fi
@@ -318,8 +338,8 @@ fi
 
 If authority is absent or invalid, report BLOCKED and stop. Example:
 https://github.company.example:8443/owner/repo/pull/42 -> GH_HOST
-github.company.example:8443. Default-port behavior: omit :443 for https and
-:80 for http. Bracketed IPv6 is deliberately unsupported here and BLOCKED
+github.company.example:8443. Default-port behavior: omit :443 for HTTPS.
+Bracketed IPv6 is deliberately unsupported here and BLOCKED
 rather than accepted ambiguously. If exact REPO, PR_NUMBER, and GH_HOST cannot
 be resolved, or canonical authority is absent or invalid, stop and report
 BLOCKED. If canonical GH_HOST differs from TRUSTED_GH_HOST, report BLOCKED
@@ -339,7 +359,7 @@ never runs this URL canonical path parser.
 canonical_url_blocked() { printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1; }
 case "${PR_INPUT_KIND}" in url) ;; *) canonical_url_blocked ;; esac
 case "${PR_REF_NUMBER}" in ""|*[!0-9]*) canonical_url_blocked ;; esac
-case "${CANONICAL_URL}" in http://*|https://*) ;; *) canonical_url_blocked ;; esac
+case "${CANONICAL_URL}" in https://*) ;; *) canonical_url_blocked ;; esac
 URL_WITHOUT_SCHEME="${CANONICAL_URL#*://}"
 case "${URL_WITHOUT_SCHEME}" in */*) ;; *) canonical_url_blocked ;; esac
 CANONICAL_AUTHORITY="${URL_WITHOUT_SCHEME%%/*}"
@@ -376,6 +396,8 @@ permission to the single named safe write, report BLOCKED or leave this skill
 for a separately authorized trusted workflow. The trusted-origin producer is
 the metadata-only local preflight; it reads only trusted checkout origin
 metadata. If it blocks, report BLOCKED without inspecting untrusted PR text.
+Do not reuse pr-security-preflight: it fetches PR, issue, comment, and review
+text, which violates this skill's metadata-only intake boundary.
 Never allow ambient default-host fallback. Example: maintainer
 explicitly requests label; record authority; enable only label; all other writes
 remain blocked. No automatic write: preserve the report-first default.
