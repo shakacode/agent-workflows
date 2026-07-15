@@ -138,6 +138,38 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_reports_regular_source_intermediate_component_without_backtrace
+    with_fixture do |fixture|
+      relative_path = "skills/example/SKILL.md"
+      component = File.join(fixture.fetch(:source_root), "skills")
+      FileUtils.rm_rf(component)
+      File.binwrite(component, "not a directory\n")
+
+      out, err, status = run_checker(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "source path has a non-directory intermediate component: #{relative_path} (skills)"
+    end
+  end
+
+  def test_reports_regular_consumer_intermediate_component_without_backtrace
+    with_fixture do |fixture|
+      relative_path = ".agents/skills/example/SKILL.md"
+      component = File.join(fixture.fetch(:consumer_root), ".agents/skills")
+      FileUtils.rm_rf(component)
+      File.binwrite(component, "not a directory\n")
+
+      out, err, status = run_checker(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "consumer path has a non-directory intermediate component: #{relative_path} (.agents/skills)"
+    end
+  end
+
   def test_accepts_symlink_aliases_for_cli_roots
     with_fixture do |fixture|
       parent = File.dirname(fixture.fetch(:source_root))
@@ -288,6 +320,103 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_rejects_staged_source_content_that_does_not_match_pinned_revision
+    with_fixture do |fixture|
+      source_path = "workflows/example.md"
+      write_file(fixture.fetch(:source_root), source_path, "staged source content\n")
+      git(fixture.fetch(:source_root), "add", "--", source_path)
+      write_file(fixture.fetch(:source_root), source_path, "shared workflow\n")
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_ignores_replacement_commit_when_reading_pinned_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      revision = fixture.fetch(:revision)
+      write_file(source_root, "skills/example/SKILL.md", "replacement skill\n")
+      replacement = commit_source_change(source_root, "replacement commit")
+      git(source_root, "replace", revision, replacement)
+      git(source_root, "--no-replace-objects", "reset", "--hard", revision)
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_ignores_replacement_blob_when_reading_pinned_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      revision = fixture.fetch(:revision)
+      original_blob = git_output(source_root, "rev-parse", "#{revision}:skills/example/SKILL.md")
+      replacement_blob = git_output(source_root, "hash-object", "-w", "--stdin", stdin_data: "replacement skill\n")
+      git(source_root, "replace", original_blob, replacement_blob)
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_treats_core_autocrlf_checkout_transformation_as_clean_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      relative_path = "skills/example/SKILL.md"
+      source_path = File.join(source_root, relative_path)
+      git(source_root, "config", "core.autocrlf", "true")
+      FileUtils.rm_f(source_path)
+      git(source_root, "restore", "--source", fixture.fetch(:revision), "--worktree", "--", relative_path)
+      transformed_contents = File.binread(source_path)
+      assert_equal "shared skill\r\n", transformed_contents
+
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", transformed_contents)
+      update_manifest(fixture) { |manifest| manifest.fetch("files").select! { |entry| entry["source"] == relative_path } }
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_treats_clean_smudge_filter_checkout_transformation_as_clean_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      relative_path = "skills/example/SKILL.md"
+      source_path = File.join(source_root, relative_path)
+      git(source_root, "config", "filter.fixture.clean", "sed 's/worktree/shared/g'")
+      git(source_root, "config", "filter.fixture.smudge", "sed 's/shared/worktree/g'")
+      write_file(source_root, ".gitattributes", "#{relative_path} filter=fixture\n")
+      revision = commit_source_change(source_root, "configure fixture filter")
+      FileUtils.rm_f(source_path)
+      git(source_root, "restore", "--source", revision, "--worktree", "--", relative_path)
+      transformed_contents = File.binread(source_path)
+      assert_equal "worktree skill\n", transformed_contents
+
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", transformed_contents)
+      update_manifest(fixture) do |manifest|
+        manifest["source_revision"] = revision
+        manifest.fetch("files").select! { |entry| entry["source"] == relative_path }
+      end
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
     end
   end
 
@@ -549,6 +678,12 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
   def git(root, *)
     _out, err, status = Open3.capture3("git", "-C", root, *)
     assert status.success?, err
+  end
+
+  def git_output(root, *, stdin_data: nil)
+    out, err, status = Open3.capture3("git", "-C", root, *, stdin_data:)
+    assert status.success?, err
+    out.strip
   end
 
   def run_checker(fixture, *)

@@ -136,7 +136,7 @@ module AgentWorkflowDrift
   end
 
   def verify_source_revision(source_root, expected_revision)
-    stdout, stderr, status = Open3.capture3("git", "-C", source_root, "rev-parse", "--verify", "HEAD^{commit}")
+    stdout, stderr, status = git_capture(source_root, "rev-parse", "--verify", "HEAD^{commit}")
     raise ManifestError, "source root is not a Git checkout: #{stderr.strip}" unless status.success?
 
     actual_revision = stdout.strip.downcase
@@ -151,8 +151,8 @@ module AgentWorkflowDrift
     consumer_path = resolve_file(consumer_root, entry.fetch("consumer"), "consumer")
     source_contents = File.binread(source_path)
     consumer_contents = File.binread(consumer_path)
-    pinned_source_contents, pinned_source_mode = read_pinned_source(source_root, revision, entry.fetch("source"))
-    source_changed_from_revision = source_contents != pinned_source_contents
+    pinned_source_mode = read_pinned_source_mode(source_root, revision, entry.fetch("source"))
+    source_changed_from_revision = source_changed_from_revision?(source_root, revision, entry.fetch("source"))
     source_mode = filesystem_git_mode(source_root, entry.fetch("source"), "source")
     consumer_mode = filesystem_git_mode(consumer_root, entry.fetch("consumer"), "consumer")
 
@@ -191,11 +191,9 @@ module AgentWorkflowDrift
     unexpected << [label, e.message]
   end
 
-  def read_pinned_source(source_root, revision, relative_path)
+  def read_pinned_source_mode(source_root, revision, relative_path)
     literal_pathspec = ":(top,literal)#{relative_path}"
-    stdout, _stderr, status = Open3.capture3(
-      "git", "-C", source_root, "ls-tree", "-z", revision, "--", literal_pathspec
-    )
+    stdout, _stderr, status = git_capture(source_root, "ls-tree", "-z", revision, "--", literal_pathspec)
     raise ManifestError, "source file is not tracked at pinned revision: #{relative_path}" unless status.success? && !stdout.empty?
 
     records = stdout.split("\0", -1)
@@ -208,10 +206,31 @@ module AgentWorkflowDrift
     mode = match[1]
     raise ManifestError, "unsupported pinned source mode #{mode}: #{relative_path}" unless SUPPORTED_GIT_MODES.include?(mode)
 
-    contents, _stderr, status = Open3.capture3("git", "-C", source_root, "cat-file", "blob", match[3])
-    raise ManifestError, "source contents are unreadable at pinned revision: #{relative_path}" unless status.success?
+    mode
+  end
 
-    [contents.b, mode]
+  def source_changed_from_revision?(source_root, revision, relative_path)
+    literal_pathspec = ":(top,literal)#{relative_path}"
+    comparisons = [
+      ["index", %w[diff --quiet --no-ext-diff --no-textconv --cached]],
+      ["worktree", %w[diff --quiet --no-ext-diff --no-textconv]]
+    ]
+
+    comparisons.each do |label, arguments|
+      _stdout, stderr, status = git_capture(source_root, *arguments, revision, "--", literal_pathspec)
+      next if status.success?
+      return true if status.exitstatus == 1
+
+      detail = stderr.strip
+      detail = "Git diff exited #{status.exitstatus}" if detail.empty?
+      raise ManifestError, "source #{label} comparison failed for #{relative_path}: #{detail}"
+    end
+
+    false
+  end
+
+  def git_capture(source_root, *)
+    Open3.capture3("git", "--no-replace-objects", "-C", source_root, *)
   end
 
   def filesystem_git_mode(root, relative_path, side)
@@ -231,7 +250,7 @@ module AgentWorkflowDrift
   end
 
   def resolve_file(root, relative_path, side)
-    reject_symlinked_intermediate_components(root, relative_path, side)
+    validate_intermediate_components(root, relative_path, side)
     candidate = File.join(root, relative_path)
     raise ManifestError, "#{side} file is missing: #{relative_path}" unless File.exist?(candidate) || File.symlink?(candidate)
 
@@ -247,18 +266,25 @@ module AgentWorkflowDrift
     raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
   end
 
-  def reject_symlinked_intermediate_components(root, relative_path, side)
+  def validate_intermediate_components(root, relative_path, side)
     current = root
     parts = relative_path.split("/")
 
     parts[0...-1].each_with_index do |part, index|
       current = File.join(current, part)
-      next unless File.lstat(current).symlink?
-
       component = parts[0..index].join("/")
+      stat = File.lstat(current)
+      if stat.symlink?
+        raise ManifestError,
+              "#{side} path has a symlinked intermediate component: #{relative_path} (#{component})"
+      end
+      next if stat.directory?
+
       raise ManifestError,
-            "#{side} path has a symlinked intermediate component: #{relative_path} (#{component})"
+            "#{side} path has a non-directory intermediate component: #{relative_path} (#{component})"
     end
+  rescue Errno::ENOTDIR
+    raise ManifestError, "#{side} path has a non-directory intermediate component: #{relative_path}"
   rescue Errno::ENOENT, Errno::EACCES => e
     raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
   end

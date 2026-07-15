@@ -213,8 +213,14 @@ three locations explicitly:
 ```
 
 The source root must be a Git checkout whose `HEAD` is the manifest's full
-40-hex `source_revision`. Each mapped source file must also match its blob at
-that revision, so a dirty checkout cannot silently redefine the baseline.
+40-hex `source_revision`. Each mapped source file must also be Git-clean against
+that exact revision, including staged and unstaged changes. The comparison uses
+Git's configured clean conversion, so clean checkout transformations such as
+`core.autocrlf` and clean/smudge filters are accepted. Replacement objects,
+external diff drivers, and text conversion are disabled for pinned comparisons.
+This cleanliness check does not rewrite the consumer contract: `identical`
+still compares current filesystem bytes, and overlay SHA-256 values still hash
+the current source and consumer bytes directly.
 
 Manifest version 1 has two mapping modes:
 
