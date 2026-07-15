@@ -24,6 +24,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Add `pr-security-preflight --strict-trust` so exact-target batches can report actor-trust findings by default while still supporting fail-closed launches.**
 - **Add replayable closeout evidence helpers for QA Evidence, priority finding dispositions, selected-check post-merge timing, and explicitly requested hosted-CI readiness gates.**
 - **Document the trust/preflight operating model, including global vs repo-local trust, audit flow, acknowledgement policy, and security tradeoffs.**
+- **Document the team-scale problems Agent Workflows solves, led by distributing shared skills across Codex, Claude Code, and many repositories with repo-owned seams and backend-neutral coordination.** [PR 178](https://github.com/shakacode/agent-workflows/pull/178) by [justin808](https://github.com/justin808).
 - **Document bounded inline Claude Code review as a fallback when hosted Claude review checks are stale or fail for capacity/quota reasons, and tighten the human-merge Review Completion Gate so stale older-head checks require a current-head review, maintainer waiver, or qualifying fallback before merge.**
 - **Add a portable model-routing playbook covering coordinator/worker separation, staged escalation, replacement handoffs, verification depth, human gates, and routing metrics.**
 
