@@ -297,8 +297,13 @@ Execution flow when terminal access is available:
              startswith("<!-- address-review-summary -->") or
              startswith("<!-- address-review-status -->") or
              startswith("<!-- codex-claim v1");
+           def generated_source_reply($comment):
+             (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+             ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
+           def identity_key:
+             split("\t") as $fields | $fields[1:4] | join("\t");
            def row_key:
              split("\t") as $fields | $fields[1:5] | join("\t");
            def inline_latest_activity($thread_id):
@@ -308,8 +313,9 @@ Execution flow when terminal access is available:
            def source_candidate_keys($checkpoint_created_at):
              ([
                $inventory.issue_comments[]? |
+               . as $comment |
                select((.created_at // "") <= $checkpoint_created_at) |
-               select(((.body // "") | marker_body) | not) |
+               select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
                item_key("issue-comment"; .id; "-")
              ] + [
                $inventory.review_summaries[]? |
@@ -335,7 +341,7 @@ Execution flow when terminal access is available:
                  all($rows[]; valid_row) and
                  (($body | startswith("<!-- address-review-status -->")) or
                   (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
-                (($rows | map(split("\t") | .[1:5] | join("\t")) | unique | length) == ($rows | length)) and
+                (($rows | map(identity_key) | unique | length) == ($rows | length)) and
                  (($rows | map(row_key) | sort) == (source_candidate_keys($checkpoint_created_at) | sort))));
            [.issue_comments[] |
              select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
@@ -371,7 +377,7 @@ Execution flow when terminal access is available:
      `source_pr=${SOURCE_PR_NUMBER}`, and preserve comment/thread IDs before
      filtering or triage. An unavailable or incomplete inventory is `UNKNOWN`
      and blocks readiness.
-     It emits one JSON document: `review_cutoff_at` (see step 3); `review_summaries` (`{id, type: "review_summary", body, state, user, created_at, html_url}`, non-empty bodies only); `inline_comments` (`{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`, with `thread_id`/`is_resolved` already joined by `node_id` — no separate GraphQL query needed); `issue_comments` (`{id, node_id, type: "issue", body, user, created_at, html_url}`, including summary/status markers for filtering); and `review_threads` (`{thread_id, is_resolved, comments: [{node_id, id}]}`).
+     It emits one JSON document: `review_cutoff_at` (see step 3); `review_summaries` (`{id, type: "review_summary", body, state, user, created_at, html_url}`, non-empty bodies only); `inline_comments` (`{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`, with `thread_id`/`is_resolved` already joined by `node_id` — no separate GraphQL query needed); `issue_comments` (`{id, node_id, type: "issue", body, user, created_at, html_url}`, including summary/status/source-reply markers for filtering); and `review_threads` (`{thread_id, is_resolved, comments: [{node_id, id}]}`).
    - Treat actionable review summary bodies as additional general comments. Like specific review bodies, they cannot use the `/replies` endpoint and must be answered as general PR comments (see step 8).
    - When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
      - The fetcher returns the full datasets so you keep older context for unresolved threads.
@@ -526,6 +532,7 @@ before mutating GitHub or the branch.
 
 5. Filter comments:
    - Never triage prior workflow summary/status/claim comments. Skip any issue comment whose body starts with `<!-- address-review-summary -->`, `<!-- address-review-status -->`, or `<!-- codex-claim v1` on its very first line; only the summary marker is a cutoff checkpoint.
+   - On a source PR, also skip `<!-- address-review-source-reply -->` comments only when their author matches `SOURCE_REVIEW_ACTOR`; a different author using that marker remains a source candidate.
    - Skip resolved threads.
    - Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern.
    - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp.
@@ -691,9 +698,14 @@ before mutating GitHub or the branch.
      item's preserved source PR (default `${PRIMARY_PR_NUMBER}` without
      replacement carryover), and keep its own `REVIEW_COMMENT_ID` and
      `THREAD_ID`. Never use `ITEM_SOURCE_PR` for code, commit, or push work.
-     - Issue comments: `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="<response>"`
+     Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
+     issue comment or review summary must start with the authenticated
+     `<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
+     reply from source triage and snapshot completeness; another actor cannot use
+     the marker to suppress a source candidate.
+     - Issue comments: set `RESPONSE_BODY="<response>"`; when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"`; then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
      - Review comment replies: use the selected item's review comment id, not the parsed input `COMMENT_ID`: `gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_COMMENT_ID}/replies -X POST -f body="<response>"`
-     - Review summary body replies: `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="<response>"`
+     - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:
      `gh api graphql -f query='mutation($threadId:ID!) { resolveReviewThread(input:{threadId:$threadId}) { thread { id isResolved } } }' -f threadId="<THREAD_ID>"`
    - Do not resolve anything still in progress or uncertain.
