@@ -49,6 +49,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Keep trusted PR-batch review closeout autonomous for evidence-backed fix, defer, and decline recommendations under every merge-authority mode, prompting maintainers only when the review outcome explicitly requires their help.**
 - **Reject stale priority replay evidence so only final-head closeout evidence qualifies.** [PR 118](https://github.com/shakacode/agent-workflows/pull/118) by [justin808](https://github.com/justin808).
 - **Reject nested solution Markdown, including hidden nested paths, with guidance that separates the flat Agent Workflows lesson schema from consumer-repository Compound Engineering destinations.**
 - **Hardened seam-init argument forwarding across nested shells, env split strings, exec prefixes, and npm options, preserving caller arguments or failing closed for unsafe command shapes.** [PR 119](https://github.com/shakacode/agent-workflows/pull/119) by [justin808](https://github.com/justin808).
