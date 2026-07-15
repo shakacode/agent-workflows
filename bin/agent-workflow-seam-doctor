@@ -1452,6 +1452,7 @@ module AgentWorkflowSeamDoctor
 
   def prepare_init_trust(root, existing)
     defaults = TRUST_KEYS.to_h { |key| [key, []] }
+    defaults["trusted_metadata_bots"] = ["github-actions"]
     prepare_init_mapping(File.join(root, TRUST_CONFIG), existing, defaults, "trust config")
   end
 

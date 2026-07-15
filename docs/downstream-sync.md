@@ -73,9 +73,10 @@ Use `n/a` for unavailable policy. Add repo-specific keys such as
 Repo-local trust lives in `.agents/trusted-github-actors.yml` and follows the
 same resolution order as `pr-security-preflight`: `--trust-config`, repo-local
 config, `$AGENT_WORKFLOWS_TRUST_CONFIG`, `~/.agents/trusted-github-actors.yml`,
-then the packaged empty fallback. Use `trusted_users` for repo maintainers,
+then the packaged fail-closed fallback (`github-actions[bot]` metadata-only; no
+humans or actionable bots). Use `trusted_users` for repo maintainers,
 `trusted_bots` for bots whose bodies are trusted input, `trusted_metadata_bots`
-for CI/status comment authors, and repo-owner team slugs in `trusted_teams`.
+for other CI/status comment authors, and repo-owner team slugs in `trusted_teams`.
 
 `AGENTS.md` contains only the pointer:
 
