@@ -234,6 +234,42 @@ source_mutation_contract = "Apply code and push only on the primary replacement 
 assert(address_review.include?(source_mutation_contract), "address-review must keep replacement mutations on the primary PR")
 assert(address_review_actions.include?(source_mutation_contract), "address-review actions must route source replies without pushing the source")
 assert(address_review_workflow.include?(source_mutation_contract), "address-review workflow mirror must route source replies without pushing the source")
+dual_target_ownership = "Replacement carryover must acquire and preserve ownership for both"
+assert(address_review.include?(dual_target_ownership), "address-review must own both carryover mutation targets")
+assert(address_review_workflow.include?(dual_target_ownership), "address-review workflow mirror must own both carryover mutation targets")
+dual_target_failure = "a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on\nboth."
+assert(address_review.include?(dual_target_failure), "address-review must fail closed when either carryover target is unavailable")
+assert(address_review_workflow.include?(dual_target_failure), "address-review workflow mirror must fail closed when either carryover target is unavailable")
+claim_targets = 'CLAIM_TARGETS="${PRIMARY_PR_NUMBER}"'
+source_claim_target = 'CLAIM_TARGETS="${CLAIM_TARGETS} ${SOURCE_PR_NUMBER}"'
+claim_target_loop = "for CLAIM_TARGET in ${CLAIM_TARGETS}; do"
+claim_target_status = '--timeout 20 status --repo "${REPO}" --target "${CLAIM_TARGET}" --json'
+claim_target_binding = 'set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${CLAIM_TARGET}"'
+primary_branch_binding = 'if [ "${CLAIM_TARGET}" = "${PRIMARY_PR_NUMBER}" ] && [ -n "${BRANCH_NAME:-}" ]; then'
+[address_review, address_review_workflow].each do |text|
+  assert(text.include?(claim_targets), "address-review carryover claims must start with the primary target")
+  assert(text.include?(source_claim_target), "address-review carryover claims must add the source target")
+  assert(text.scan(claim_target_loop).length >= 2, "address-review must status and claim every carryover target")
+  assert(text.include?(claim_target_status), "address-review must status every carryover target")
+  assert(text.include?(claim_target_binding), "address-review must claim every carryover target")
+  assert(text.include?(primary_branch_binding), "address-review must bind the branch only to the primary claim")
+  assert(text.include?('exit "${claim_status}"'), "address-review must stop immediately when either target claim fails")
+end
+legacy_single_target_status = '--timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json'
+legacy_single_target_claim = 'set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"'
+assert(!address_review.include?(legacy_single_target_status), "address-review must not status only the primary target")
+assert(!address_review_workflow.include?(legacy_single_target_status), "address-review workflow must not status only the primary target")
+assert(!address_review.include?(legacy_single_target_claim), "address-review must not claim only the primary target")
+assert(!address_review_workflow.include?(legacy_single_target_claim), "address-review workflow must not claim only the primary target")
+public_dual_target_claim = "run that conflict inspection independently on both\n  `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER`"
+assert(address_review.include?(public_dual_target_claim), "address-review public fallback must inspect both carryover targets")
+assert(address_review_workflow.include?(public_dual_target_claim), "address-review workflow public fallback must inspect both carryover targets")
+public_claim_per_target = "post or refresh one separate\n  claim comment on each PR before any non-claim mutation"
+assert(address_review.include?(public_claim_per_target), "address-review public fallback must claim both carryover targets")
+assert(address_review_workflow.include?(public_claim_per_target), "address-review workflow public fallback must claim both carryover targets")
+all_claim_cleanup = "At a stable stop, update every acquired private heartbeat or advisory claim"
+assert(address_review.include?(all_claim_cleanup), "address-review must clean up every carryover claim")
+assert(address_review_workflow.include?(all_claim_cleanup), "address-review workflow must clean up every carryover claim")
 dual_pr_readiness = "Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate."
 assert(batch.include?(dual_pr_readiness), "pr-batch must require dual-PR replacement readiness evidence")
 assert(workflow.include?(dual_pr_readiness), "canonical processing must require dual-PR replacement readiness evidence")

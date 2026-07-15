@@ -488,7 +488,13 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 ## Mutual Exclusion Gate
 
-Before Step 5, establish the applicable ownership gate for the target PR.
+Before Step 5, establish the applicable ownership gate for every PR that may be
+mutated. Without replacement carryover this is only `PRIMARY_PR_NUMBER`; with
+replacement carryover it is both `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER`.
+Replacement carryover must acquire and preserve ownership for both
+`PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER` before any branch or non-claim GitHub mutation;
+a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on
+both.
 Read-only fetches in Steps 3-4 may run before this gate. Follow the repo's
 `coordination_backend` seam and the vocabulary in
 `docs/coordination-backend.md`: use the selected private backend when available,
@@ -529,19 +535,34 @@ against the fresh data before mutating GitHub or the branch.
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   coord_read_degraded=0
+  CLAIM_TARGETS="${PRIMARY_PR_NUMBER}"
+  if [ -n "${SOURCE_PR_NUMBER}" ]; then
+    CLAIM_TARGETS="${CLAIM_TARGETS} ${SOURCE_PR_NUMBER}"
+  fi
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json || coord_read_degraded=1
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json || coord_read_degraded=1
+  for CLAIM_TARGET in ${CLAIM_TARGETS}; do
+    "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${CLAIM_TARGET}" --json || coord_read_degraded=1
+  done
   if [ "${coord_read_degraded}" -ne 0 ] && [ "${ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED:-}" != "1" ]; then
     echo "Refusing to claim: coordination doctor/status is degraded; set ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1 only after confirming an exact independent assignment with no dependency refs." >&2
     exit 1
   fi
-  set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"
-  [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
-  [ -n "${BRANCH_NAME:-}" ] && set -- "$@" --branch "${BRANCH_NAME}"
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json
+  for CLAIM_TARGET in ${CLAIM_TARGETS}; do
+    set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${CLAIM_TARGET}"
+    [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
+    if [ "${CLAIM_TARGET}" = "${PRIMARY_PR_NUMBER}" ] && [ -n "${BRANCH_NAME:-}" ]; then
+      set -- "$@" --branch "${BRANCH_NAME}"
+    fi
+    if "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json; then
+      :
+    else
+      claim_status=$?
+      exit "${claim_status}"
+    fi
+  done
   ```
 
-- A refused private claim is a hard stop. If the claim returns
+- A refused private claim for either mutation target is a hard stop. If the claim returns
   `CLAIM_REFUSED` / exit code 3, report the holder, heartbeat liveness, and
   target PR; do not continue with triage, branch changes, pushes, replies,
   resolutions, summaries, or public fallback.
@@ -554,7 +575,7 @@ against the fresh data before mutating GitHub or the branch.
   transitions, and record the degraded read evidence in the handoff. If the
   claim times out, stop with `private_state: UNKNOWN (claim outcome)` and
   reconcile backend state before fallback or mutation.
-- After any successful private claim, refresh the heartbeat at phase
+- After any successful private claim, refresh every acquired target's heartbeat at phase
   transitions: triage complete, action selected, before and after long-running
   local fix or validation blocks, before push/reply/resolve/summary work,
   blocked/resumed states, and final stable stop. Do not let a live address-review
@@ -571,7 +592,11 @@ against the fresh data before mutating GitHub or the branch.
   stop GitHub-mutating actions and report the conflicting comment URL;
   local-only action `a` may still proceed, but it must report that
   publishing/reply actions remain blocked by the active advisory claim.
-  Otherwise post a PR issue comment using this marker shape only when a
+  In replacement carryover, run that conflict inspection independently on both
+  `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER`, then post or refresh one separate
+  claim comment on each PR before any non-claim mutation; a conflict or failed claim
+  update on either PR blocks mutations on both. Otherwise post a PR issue
+  comment using this marker shape only when a
   GitHub-mutating action is selected:
 
   ```markdown
@@ -589,11 +614,11 @@ against the fresh data before mutating GitHub or the branch.
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if
   continuing beyond that window.
-- At a stable stop, update the private heartbeat or advisory claim state before
-  reporting. For private coordination, send a terminal heartbeat and release the
-  claim on normal completion; preserve it for blocked or handoff states when the
-  repo workflow requires preservation. For public fallback, edit the claim
-  comment to a terminal status with an expired `expires_at`; a final
+- At a stable stop, update every acquired private heartbeat or advisory claim
+  state before reporting. For private coordination, send terminal heartbeats and
+  release the claims on normal completion; preserve them for blocked or handoff
+  states when the repo workflow requires preservation. For public fallback,
+  edit the claim comments to a terminal status with an expired `expires_at`; a final
   address-review summary/status comment may link the terminal claim, but it must
   not be the only cleanup step.
 
