@@ -268,11 +268,13 @@ Execution flow when terminal access is available:
      `source-review-data.json` for that PR, then bind source checkpoint state
      and cutoff only after authenticated schema validation:
      ```bash
-     SOURCE_REVIEW_CUTOFF_AT=""
-     SOURCE_STATE_CHECKPOINT_BODY=""
-     SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
-     if [ -n "${SOURCE_REVIEW_ACTOR}" ]; then
-       if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+     if [ -n "${SOURCE_PR_NUMBER}" ]; then
+       "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" > source-review-data.json
+       SOURCE_REVIEW_CUTOFF_AT=""
+       SOURCE_STATE_CHECKPOINT_BODY=""
+       SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+       if [ -n "${SOURCE_REVIEW_ACTOR}" ]; then
+         if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
          def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
          def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
          def valid_row:
@@ -298,14 +300,15 @@ Execution flow when terminal access is available:
            select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
            select((.body // "") | valid_body)] |
          sort_by(.created_at) | reverse
-       ' source-review-data.json)"; then
-         SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-         SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+         ' source-review-data.json)"; then
+           SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
+           SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+         else
+           echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
+         fi
        else
-         echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
+         echo "Warning: could not resolve the expected review actor for source checkpoints; leaving source cutoff empty and readiness UNKNOWN." >&2
        fi
-     else
-       echo "Warning: could not resolve the expected review actor for source checkpoints; leaving source cutoff empty and readiness UNKNOWN." >&2
      fi
      ```
      On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.

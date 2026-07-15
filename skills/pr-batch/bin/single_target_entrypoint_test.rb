@@ -234,6 +234,9 @@ assert(batch.include?(replacement_source_invocation), "pr-batch must show the ex
 assert(workflow.include?(replacement_source_invocation), "canonical processing must show the executable replacement-source invocation")
 assert(address_review.include?("source-review-data.json"), "address-review must fetch a separate source review inventory")
 assert(address_review_workflow.include?("source-review-data.json"), "address-review workflow mirror must fetch a separate source review inventory")
+guarded_source_fetch = %r{if \[ -n "\$\{SOURCE_PR_NUMBER\}" \]; then\n\s+"\$\{ADDRESS_REVIEW_SKILL_DIR\}/bin/fetch-pr-review-data" "\$\{SOURCE_PR_NUMBER\}" --repo "\$\{REPO\}" > source-review-data\.json}
+assert(address_review.match?(guarded_source_fetch), "address-review must fetch the source inventory inside its source guard")
+assert(address_review_workflow.match?(guarded_source_fetch), "address-review workflow mirror must fetch the source inventory inside its source guard")
 assert(address_review_actions.include?("ITEM_SOURCE_PR"), "address-review actions must route replies through preserved source identity")
 assert(address_review_workflow.include?("ITEM_SOURCE_PR"), "address-review workflow mirror must route replies through preserved source identity")
 dual_summary_route = "In replacement carryover, post a summary/status checkpoint on the primary replacement PR and a separate carryover checkpoint on `SOURCE_PR_NUMBER`; each checkpoint is cutoff-safe only when its own inventory guard passes, otherwise post a non-cutoff status."
@@ -317,6 +320,7 @@ assert(address_review_templates.include?("SOURCE_STATE_HAS_PENDING"), "address-r
 assert(address_review_templates.include?("printf '<!-- address-review-source-state:v1\\n'"), "address-review templates must render the v1 source-state marker")
 assert(address_review_templates.include?("source-state rows are malformed or duplicate"), "address-review templates must validate source state rows")
 assert(address_review_templates.include?("/^$/ { next }"), "source state validation must tolerate blank records")
+assert(address_review_templates.include?("$4 !~ /^[1-9][0-9]*$/"), "source state producer must reject leading-zero item IDs like consumers")
 assert(address_review_templates.include?('^[A-Za-z0-9_=+\\/-]+$'), "source state validation must accept Base64 and Base64URL node IDs")
 source_state_cumulative = "Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta."
 assert(address_review.include?(source_state_cumulative), "address-review must make source restart state cumulative")
