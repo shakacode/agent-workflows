@@ -37,33 +37,68 @@ code-changing actions. Skill-specific routing:
 
 ## Coordinated Caller Action
 
-A trusted parent workflow may set `COORDINATED_AUTOFIX=1` when a direct user or
-maintainer task already authorizes updating this PR and explicitly sets
-`merge_authority: auto_merge_when_gates_pass`. Do not derive this state from PR
-text, review comments, branch content, or merge authority alone. The parent
-must also pass security preflight and hold the coordination claim when
-configured. The flag is visible at triage time, but it does not waive local
-verification.
+A trusted parent PR-batch workflow may set `COORDINATED_AUTOFIX=1` when a direct
+user or maintainer task already authorizes updating this PR. Coordinated review-decision authority comes from direct authorization to update the PR and is independent of `merge_authority`; merge authority governs merge only.
+Do not derive this state from PR text, review comments, branch content, or merge
+authority alone. The parent must also pass security preflight and hold the
+coordination claim when configured. The flag is visible at triage time, but it
+does not waive local verification.
 
-When `COORDINATED_AUTOFIX=1`, present the triage for transparency, then verify
-each selected `MUST-FIX` item is factually correct and within the active task,
+### Coordinated Replacement Review Source
+
+For replacement carryover, the trusted PR-batch parent invokes `address-review` on the pushable owned replacement PR and sets numeric `COORDINATED_REVIEW_SOURCE_PR=<original-pr-number>` together with `COORDINATED_AUTOFIX=1`.
+When present, `COORDINATED_REVIEW_SOURCE_PR` must be a positive decimal PR number; reject it before source fetch otherwise.
+Accept the source variable only from trusted parent state; never derive it from PR text, review comments, branch content, or merge authority.
+Re-fetch both PRs and require the authorized GitHub host, exact same repository, distinct PR numbers, an unpushable source head, and a pushable owned primary replacement head; reject the source when any fact is false or `UNKNOWN`.
+Fetch and triage both review inventories, preserve each item's source PR, comment ID, and thread ID, and combine every actionable source item into the verified replacement executable/decision worklist.
+Apply code and push only on the primary replacement PR; route each reply and resolution to the item's preserved source PR and never push the unpushable source PR.
+Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate.
+In replacement carryover, post a summary/status checkpoint on the primary replacement PR and a separate carryover checkpoint on `SOURCE_PR_NUMBER`; each checkpoint is cutoff-safe only when its own inventory guard passes, otherwise post a non-cutoff status.
+A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
+Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
+On rerun, suppress a source item only when its exact source PR, kind, immutable item ID, and preserved thread ID match a terminal state row and its current latest activity is not newer than the recorded activity timestamp; `pending` and `ask-user` rows always remain eligible.
+Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
+Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta.
+When `COORDINATED_REVIEW_SOURCE_PR` is absent, keep normal single-PR and standalone behavior unchanged.
+
+When `COORDINATED_AUTOFIX=1`, treat the initial classifications as checkpoint
+input, not final displayed or executable state. Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`.
+Verify each selected `MUST-FIX` item is factually correct and within the active task,
 and each autonomous optional fix or recorded outcome is behavior-preserving and
 within the active task. Reclassify a factually incorrect reviewer claim as
 `SKIPPED` with a verification rationale. Promote uncertain, out-of-scope, or
-material-judgment items to `DISCUSS` and keep them interactive. After
-the checkpoint, select and execute action `f` without waiting for another
-selection, and continue through
-the normal validation, push, reply, resolution, and summary gates. Keep
-`DISCUSS` items interactive when they would materially change behavior, scope,
-security, or release policy. For locally verified duplicate or factually
-incorrect `SKIPPED` review threads, post a concise rationale and resolve the
-thread without prompting. Do not auto-resolve other substantive skipped
-threads. For skipped review-summary bodies that contain a reviewer claim, post
-the concise rationale as a general PR comment. For pure status posts,
-acknowledgments, boilerplate summaries, and other non-actionable items without a
-thread, record a short rationale and explicit no-action outcome in the
-cutoff-safe summary. Re-present any other skipped item for an explicit decision
-before signaling merge-readiness.
+material-judgment items to `DISCUSS` rather than guessing a fix.
+
+For every coordinated `DISCUSS` outcome, record one evidence-backed recommendation: `fix now`, `defer`, `decline`, or `ask user`.
+A coordinated `SKIPPED` item gets an evidence-backed `decline`/no-action outcome by default.
+If inspection shows a `SKIPPED` item merits a fix, defer, or maintainer choice, reclassify it to `MUST-FIX`, `DISCUSS`, or `OPTIONAL` as appropriate before assigning or executing a recommendation.
+If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items.
+Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`
+because no safe choice can be made without maintainer help. A recommendation
+must remain inside the active task and existing security, behavior, scope, and
+release-policy boundaries; the coordinated flag does not authorize expansion.
+Treat `fix now` as selected work through the normal fix path. For `defer` or
+`decline`, post the evidence-backed rationale in the original thread when one
+exists, resolve it only when the conversation is complete, and include the
+outcome in the cutoff-safe summary. A non-blocking `defer` defaults to durable PR summary or decision-log evidence unless existing repository policy selects a tracker.
+If repository policy requires tracking and provides an already-resolved tracker destination and contract, record the defer there without prompting.
+Use only that existing destination and contract. If tracking is required but the destination or contract is missing or ambiguous, change the recommendation to `ask user`.
+Coordinated mode must not create a new follow-up issue. It also must not expand
+tracking merely because coordinated autofix is active.
+Under coordinated `f`, a `defer` is complete for thread resolution only after its evidence-backed rationale and required durable PR summary, decision log, or existing-policy tracker record are posted and the conversation is complete.
+Coordinated defer ordering: post the original-thread rationale first; then, before resolving, post a durable non-cutoff PR decision/status record (or established durable decision-log form) for the default route, or record the defer in the already-resolved existing-policy tracker; only then resolve a complete conversation, and post the normal cutoff-safe final summary afterward.
+
+After the checkpoint and any rebuild, display the verified triage, then select and execute action `f` without waiting for another
+selection. Continue through
+the normal validation, push, reply, resolution, and summary gates. Normal
+interactive runs keep `DISCUSS` and substantive
+`SKIPPED` decisions interactive; the recommendation routing above replaces
+those prompts only for this trusted coordinated invocation. For skipped
+review-summary bodies, post any rationale as a general PR comment. For pure
+status posts, acknowledgments, boilerplate summaries, and other non-actionable
+items without a thread, record the `decline` rationale and explicit no-action
+outcome in the cutoff-safe summary.
 List every autonomously resolved thread, its URL, and its verification rationale
 in the cutoff-safe summary. Before merge, require a clean current-head review
 signal independent of this coordinated address-review run.
@@ -120,6 +155,11 @@ Then extract the PR number and optional review/comment ID from the remaining inp
 - Otherwise, detect both repository and URL from the current checkout, derive
   and export `GH_HOST` from that URL, then use the checkout repository.
 - Set `PR_NUMBER` to the number parsed in Step 1.
+- Bind `PRIMARY_PR_NUMBER` to that parsed target. Read
+  `SOURCE_PR_NUMBER` only from trusted parent state
+  `COORDINATED_REVIEW_SOURCE_PR`; when present, require coordinated autofix,
+  validate it as a distinct positive decimal PR number, and fail before any
+  source fetch otherwise.
 - Set `COMMENT_ID` when Step 1 parsed a specific issue or review comment ID.
 - Set `REVIEW_ID` when Step 1 parsed a specific pull request review ID.
 - Set `SPECIFIC_TARGET` to `1` when Step 1 parsed a specific review/comment URL, otherwise `0`.
@@ -153,12 +193,42 @@ fi
 GH_HOST="$(printf '%s' "${GH_HOST}" | tr '[:upper:]' '[:lower:]')"
 export GH_HOST
 PR_NUMBER=<the PR number parsed in Step 1>
+PRIMARY_PR_NUMBER="${PR_NUMBER}"
+SOURCE_PR_NUMBER="${COORDINATED_REVIEW_SOURCE_PR:-}"
+if [ -n "${SOURCE_PR_NUMBER}" ]; then
+  if [ "${COORDINATED_AUTOFIX:-}" != "1" ]; then
+    echo "COORDINATED_REVIEW_SOURCE_PR requires trusted coordinated autofix" >&2
+    exit 1
+  fi
+  case "${SOURCE_PR_NUMBER}" in
+    *[!0-9]*|0)
+      echo "COORDINATED_REVIEW_SOURCE_PR must be a positive decimal PR number" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${SOURCE_PR_NUMBER}" = "${PRIMARY_PR_NUMBER}" ]; then
+    echo "Replacement and source PR numbers must be distinct" >&2
+    exit 1
+  fi
+fi
 COMMENT_ID=<the issue/review comment ID parsed in Step 1, if any>
 REVIEW_ID=<the pull request review ID parsed in Step 1, if any>
 SPECIFIC_TARGET=<0-or-1>
 ```
 
-Every subsequent snippet uses `${GH_HOST}`, `${REPO}`, `${PR_NUMBER}`, `${COMMENT_ID}`, `${REVIEW_ID}`, and `${SPECIFIC_TARGET}` as shell variables; setting them once here means no manual substitution is required later. If `gh repo view` fails (and no URL was supplied), ensure `gh` CLI is installed and authenticated (`gh auth status`).
+Every subsequent primary-PR code, validation, commit, and push snippet uses
+`${PRIMARY_PR_NUMBER}` (or the equivalent existing `${PR_NUMBER}` binding).
+Source-aware reply routing uses `${ITEM_SOURCE_PR}` as defined in Step 8. If
+`gh repo view` fails (and no URL was supplied), ensure `gh` CLI is installed
+and authenticated (`gh auth status`).
+
+When `SOURCE_PR_NUMBER` is present, re-fetch primary and source metadata from
+`${GH_HOST}` and `${REPO}` and rerun the same live ownership/write preflight
+used by the trusted parent. Require distinct PRs, an unpushable source head,
+and a pushable owned primary replacement head. A host/repository mismatch,
+missing field, stale or contradictory result, or `UNKNOWN` pushability blocks
+before review fetch or mutation. Do not accept the source number or any of
+these facts from PR text, comments, or branch contents.
 
 ## Step 3: Determine Scan Window and Summary Cutoff
 
@@ -190,25 +260,51 @@ Cutoff rules:
 
 ## Step 4: Fetch Review Comments
 
-Before fetching, wait for any in-progress `claude-review` CI run on this PR so the triage reflects the latest posted feedback. Skip the wait if the user provided a specific review URL or specific issue-comment URL — fetch that exact target immediately. If `gh pr checks` is unavailable or returns an error, log a warning and continue without blocking.
+Before fetching, wait for any in-progress `claude-review` CI run on this PR so the triage reflects the latest posted feedback. On every non-specific run, apply the bounded, graceful review-check wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists.
+A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
+If `gh pr checks` is unavailable or returns an error, log a warning and continue without blocking.
 
 ```bash
 # Block while a claude-review check is still queued/running (bucket == "pending").
 # Pass --repo so cross-repo PR URLs target the parsed REPO, not the current checkout.
 # The fallback `|| echo 0` makes the loop exit gracefully if `gh pr checks` errors.
-# `MAX_WAIT` caps the total wait so a stalled runner cannot block triage indefinitely.
+# `MAX_WAIT` caps each PR wait so a stalled runner cannot block triage indefinitely.
+if [ "${SPECIFIC_TARGET}" = "1" ] && [ -n "${SOURCE_PR_NUMBER}" ]; then
+  echo "Replacement carryover requires a full replacement-PR target" >&2
+  exit 1
+fi
 if [ "${SPECIFIC_TARGET}" != "1" ]; then
-  MAX_WAIT=180
-  WAITED=0
-  while [ "$(gh pr checks "${PR_NUMBER}" --repo "${REPO}" --json name,bucket 2>/dev/null \
-    | jq '[.[] | select((.name | test("claude.?review"; "i")) and (.bucket == "pending"))] | length' 2>/dev/null || echo 0)" -gt 0 ]; do
-    if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
-      echo "Warning: claude-review CI still pending after ${MAX_WAIT}s — proceeding with triage anyway."
-      break
+  SOURCE_HAS_CHECKPOINT=0
+  if [ -n "${SOURCE_PR_NUMBER}" ]; then
+    if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
+      SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq '[.[][] | select(((.body // "") | startswith("<!-- address-review-summary -->")) or ((.body // "") | startswith("<!-- address-review-status -->")))] | length' 2>/dev/null || echo 0)"
+      case "${SOURCE_CHECKPOINT_COUNT}" in
+        ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
+      esac
+      if [ "${SOURCE_CHECKPOINT_COUNT}" -gt 0 ]; then
+        SOURCE_HAS_CHECKPOINT=1
+      fi
+    else
+      echo "Warning: could not probe source checkpoints for PR #${SOURCE_PR_NUMBER}; treating it as first harvest for the review wait." >&2
     fi
-    echo "Waiting for in-progress claude-review CI to finish before triaging... (${WAITED}s elapsed)"
-    sleep 15
-    WAITED=$((WAITED + 15))
+  fi
+  REVIEW_WAIT_PRS="${PRIMARY_PR_NUMBER}"
+  if [ -n "${SOURCE_PR_NUMBER}" ] && [ "${SOURCE_HAS_CHECKPOINT}" != "1" ]; then
+    REVIEW_WAIT_PRS="${REVIEW_WAIT_PRS} ${SOURCE_PR_NUMBER}"
+  fi
+  for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do
+    MAX_WAIT=180
+    WAITED=0
+    while [ "$(gh pr checks "${REVIEW_WAIT_PR}" --repo "${REPO}" --json name,bucket 2>/dev/null \
+      | jq '[.[] | select((.name | test("claude.?review"; "i")) and (.bucket == "pending"))] | length' 2>/dev/null || echo 0)" -gt 0 ]; do
+      if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+        echo "Warning: claude-review CI for PR #${REVIEW_WAIT_PR} still pending after ${MAX_WAIT}s — proceeding with currently available review data."
+        break
+      fi
+      echo "Waiting for in-progress claude-review CI on PR #${REVIEW_WAIT_PR}... (${WAITED}s elapsed)"
+      sleep 15
+      WAITED=$((WAITED + 15))
+    done
   done
 fi
 ```
@@ -237,7 +333,34 @@ Include the review body as a general comment when it contains actionable feedbac
 # Resolve ADDRESS_REVIEW_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
 "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json
+if [ -n "${SOURCE_PR_NUMBER}" ]; then
+  "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" > source-review-data.json
+  SOURCE_REVIEW_CUTOFF_AT=$(jq -r '.review_cutoff_at' source-review-data.json)
+fi
 ```
+
+On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
+Only a source issue comment whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+Unless the caller explicitly requested `check all reviews`, apply the source
+cutoff with the same timestamp rules as the primary inventory: include source
+issue comments and review summaries created after the cutoff, and include an
+inline source thread only when it has activity after the cutoff. Keep the full
+older source dataset for context and for source-inventory closeout/readiness
+checks; do not re-triage or reply to an older item solely because it remains in
+that dataset. From the latest source issue comment whose first line is either
+the summary or status marker, parse exactly one complete v1 source-state block.
+For inline items, use the newest activity timestamp across the preserved thread;
+for issue comments and review summaries, use that immutable item's timestamp.
+Apply the exact-identity/activity filter above after the global cutoff. An empty
+cutoff means there is no valid global source closeout; use the complete restart
+snapshot to avoid replaying unchanged terminal items while keeping pending and
+newer activity eligible.
+
+Tag every normalized item from `review-data.json` with
+`source_pr=${PRIMARY_PR_NUMBER}` and every item from
+`source-review-data.json` with `source_pr=${SOURCE_PR_NUMBER}` before filtering
+or triage. Preserve each item's comment and thread IDs. If either fetch or
+normalization is unavailable or incomplete, stop with readiness `UNKNOWN`.
 
 This single read-only call replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query. It emits one normalized JSON document:
 
@@ -277,7 +400,7 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 - Do not skip bot-generated comments by default. Many actionable review comments in this repository come from bots.
 - Deduplicate repeated bot comments and skip bot status posts, summaries, and acknowledgments that do not require a code or documentation change
 - Reserve default `MUST-FIX` classification for correctness bugs, regressions, security issues, missing tests, and clear inconsistencies with adjacent code
-- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
+- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically. Only a trusted `COORDINATED_AUTOFIX=1` invocation that passed security and coordination gates and verified the item as in-scope and safe at the checkpoint may execute an evidence-backed `DISCUSS` recommendation of `fix now`; bot priority or severity alone never qualifies. Anything outside the active task or behavior, security, scope, or release-policy boundaries, or still requiring material judgment, must be `ask user`, `defer`, or `decline` as appropriate, never auto-fixed.
 - Classify as `OPTIONAL` by default: style nits, speculative suggestions, changelog wording, comment requests, test-shape preferences, and "could consider" feedback. Low-risk behavior-preserving optional nits may be handled or logged after an action is selected; broader optional work becomes active when the user explicitly asks for polish work, chooses `a`, `f+o`, or specific optional selections via `o` after triage, or initiates with `autopilot`
 - Focus on actionable feedback, not acknowledgments or thank-you messages
 
@@ -412,7 +535,7 @@ Triage rules:
 
 - Deduplicate overlapping comments before classifying them. Keep one representative item for the underlying issue.
 - Verify factual claims locally before classifying a comment as `MUST-FIX`.
-- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
+- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically. Only a trusted `COORDINATED_AUTOFIX=1` invocation that passed security and coordination gates and verified the item as in-scope and safe at the checkpoint may execute an evidence-backed `DISCUSS` recommendation of `fix now`; bot priority or severity alone never qualifies. Anything outside the active task or behavior, security, scope, or release-policy boundaries, or still requiring material judgment, must be `ask user`, `defer`, or `decline` as appropriate, never auto-fixed.
 - If a claim appears wrong, classify it as `SKIPPED` and note briefly why.
 - When a reviewer identifies an unexplained sibling-lock version split, platform-precompiled/source-build transition, or new build-time dependency, treat the lockfile dependency drift item as `MUST-FIX`.
   - Verify the lockfile diff and require either alignment or an explicit rationale in PR evidence before classifying the item as resolved.
@@ -421,7 +544,10 @@ Triage rules:
 
 ## Step 6: Create Todo List
 
-Create a task list with TodoWrite containing **only the `MUST-FIX` items**:
+For a normal interactive run, create a task list with TodoWrite containing
+**only the `MUST-FIX` items**. For a coordinated run, postpone TodoWrite and
+executable-work construction until the verification checkpoint and any required
+rebuild are complete:
 
 - One task per must-fix comment or deduplicated issue
 - Subject: `"{file}:{line} - {comment_summary} (@{username})"`
@@ -430,9 +556,14 @@ Create a task list with TodoWrite containing **only the `MUST-FIX` items**:
 - Recommendation: Include a concrete fix sketch — specific file/line, code snippet, or approach — after reading the current code around the cited location. If the reviewer's claim needs inspection before a safe fix can be proposed, make the Recommendation the verification step, not a guessed patch.
 - All tasks should start with status: `"pending"`
 
-## Step 7: Present Triage and Quick-Action Menu
+Before action `f`, add every coordinated actionable outcome recommended as `fix now` to the executable work list; normal interactive TodoWrite remains `MUST-FIX`-only.
+Keep each coordinated work item pending until executed and preserve its original
+tier, reviewer/thread link, evidence, and concrete next step so action `f`
+cannot silently omit it.
 
-Present the triage to the user. Do not automatically start addressing items
+## Step 7: Present Triage and Conditional Quick-Action Menu
+
+Present the final verified triage to the user. Do not automatically start addressing items
 unless `AUTOPILOT` or trusted parent state `COORDINATED_AUTOFIX=1` is set:
 
 - Use a single sequential numbering across all categories (1, 2, 3, ...) so every item has a unique number the user can reference. Do not restart numbering at 1 for each category.
@@ -441,7 +572,14 @@ unless `AUTOPILOT` or trusted parent state `COORDINATED_AUTOFIX=1` is set:
 - `OPTIONAL ({count})`: list applicable polish items, with a short reason
 - `SKIPPED ({count})`: list skipped comments with a short reason, including duplicates and factually incorrect suggestions
 
-After the triage list, present a **quick-action menu**:
+When `COORDINATED_AUTOFIX=1`, show the evidence-backed `fix now`, `defer`,
+`decline`, or `ask user` recommendation beside each `DISCUSS` item and the
+`decline`/no-action outcome beside each remaining `SKIPPED` item.
+
+When `COORDINATED_AUTOFIX=1`, present triage for transparency but do not display the quick-action menu; immediately execute coordinated action `f` after the verification checkpoint.
+For normal interactive runs, present the quick-action menu after the triage list.
+
+The normal interactive quick-action menu is:
 
 ```text
 Quick actions:
@@ -475,10 +613,8 @@ PR review context, but must exclude weak "could consider" suggestions.
 
 `autopilot` is an initiation mode, not a post-triage menu choice. When the host exposes `/address-review` as an available slash command, initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
 
-When `COORDINATED_AUTOFIX=1`, run the coordinated verification checkpoint after
-presenting triage, then skip the quick-action menu and execute action `f`
-without waiting for another selection. This is a parent-workflow preselection,
-not another spelling of `autopilot`.
+The coordinated action is a parent-workflow preselection, not another spelling
+of `autopilot`.
 
 Do not post the PR summary checkpoint during this triage-only phase. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
@@ -610,11 +746,11 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
   boilerplate skipped items without an actionable thread are the exception;
   record their explicit no-action outcomes in the cutoff-safe summary instead
 - For actions other than `a` and inspect-only bare `o`, post a new marked PR summary comment after completing an action only when Step 10's cutoff guard is satisfied; otherwise post a non-cutoff status comment and require `check all reviews` on the next run
-- After triage, offer rationale replies for selected `SKIPPED`/declined items;
-  `f` requires explicit confirmation before skipped-item replies/resolution
-  except for the locally verified duplicate or factually incorrect threads
-  handled by `COORDINATED_AUTOFIX=1`, while `f+i` and `m` include skipped-item
-  handling in the chosen action flow
+- After triage, offer rationale replies for selected `SKIPPED`/declined items.
+  Normal interactive `f` requires explicit confirmation before skipped-item
+  replies/resolution. Trusted coordinated `f` executes each item's recorded
+  recommendation and prompts only for `ask user`; `f+i` and `m` keep their
+  normal interactive skipped-item handling.
 - Use the Git push confirmation rule in `references/actions.md` before running
   `git push`
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate

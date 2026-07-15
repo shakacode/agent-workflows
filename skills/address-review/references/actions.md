@@ -18,7 +18,61 @@ The first items below are the **pre-reply subflow**, ending at the
 commit/push-before-reply gate. The later items are the post-push
 reply/resolve steps.
 
-1. Address all `MUST-FIX` items (make code changes, run checks). If there are no `MUST-FIX` items, continue to autonomous optional handling.
+When coordinated replacement carryover is active, use the source-aware worklist
+prepared by the verified checkpoint. Fetch and triage both review inventories, preserve each item's source PR, comment ID, and thread ID, and combine every actionable source item into the verified replacement executable/decision worklist.
+Apply code and push only on the primary replacement PR; route each reply and resolution to the item's preserved source PR and never push the unpushable source PR.
+In replacement carryover, post a summary/status checkpoint on the primary replacement PR and a separate carryover checkpoint on `SOURCE_PR_NUMBER`; each checkpoint is cutoff-safe only when its own inventory guard passes, otherwise post a non-cutoff status.
+A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
+Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
+On rerun, suppress a source item only when its exact source PR, kind, immutable item ID, and preserved thread ID match a terminal state row and its current latest activity is not newer than the recorded activity timestamp; `pending` and `ask-user` rows always remain eligible.
+Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
+Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta.
+On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
+Only a source issue comment whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+For each reply or resolution, bind `ITEM_SOURCE_PR` to the worklist item's
+preserved source PR; when replacement carryover is inactive, default it to
+`${PRIMARY_PR_NUMBER}`. Keep `REVIEW_COMMENT_ID` and `THREAD_ID` from that same
+item. Never use `ITEM_SOURCE_PR` for checkout, code edits, commits, or pushes.
+Build the source checkpoint file with `references/templates.md`. Put
+`<!-- address-review-summary -->` on its first line only when that source
+cutoff guard passes; otherwise use `<!-- address-review-status -->`.
+Populate its cumulative state rows from the verified source-aware worklist,
+including terminal and pending outcomes, after comparing each item's current
+latest activity with any valid carried row.
+The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs.
+Do not post either checkpoint again from action `f`.
+
+With trusted parent state `COORDINATED_AUTOFIX=1`, apply these tier rules before
+executing an outcome. Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`.
+For every coordinated `DISCUSS` outcome, record one evidence-backed recommendation: `fix now`, `defer`, `decline`, or `ask user`.
+A coordinated `SKIPPED` item gets an evidence-backed `decline`/no-action outcome by default.
+If inspection shows a `SKIPPED` item merits a fix, defer, or maintainer choice, reclassify it to `MUST-FIX`, `DISCUSS`, or `OPTIONAL` as appropriate before assigning or executing a recommendation.
+If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items.
+Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`
+because no safe choice can be made without maintainer help. Route `fix now`
+through the same validation, commit/push, reply, and resolution gates as other
+selected fixes. Before action `f`, add every coordinated actionable outcome recommended as `fix now` to the executable work list; normal interactive TodoWrite remains `MUST-FIX`-only.
+For `defer` or `decline`, post the rationale in the original
+thread when one exists, resolve only when the conversation is complete, and
+record the outcome in the cutoff-safe summary. A non-blocking `defer` defaults
+to durable PR summary or decision-log evidence unless existing repository policy
+selects a tracker. If repository policy requires tracking and provides an already-resolved tracker destination and contract, record the defer there without prompting.
+Use only that existing destination and contract. If tracking is required but the destination or contract is missing or ambiguous, change the recommendation to `ask user`.
+Coordinated mode must not create a new follow-up issue.
+A `decline` recommendation commonly covers locally verified duplicate or factually incorrect review threads, but it still requires item-specific evidence.
+This paragraph replaces only the `DISCUSS`/`SKIPPED` prompts below for
+that trusted invocation. It does not change normal interactive behavior or
+expand task, security, behavior, scope, release-policy, or merge authority.
+Merge authority governs the later merge action only, not these already-authorized
+review fixes, replies, or resolutions.
+This deterministic route applies only to coordinated `f`; standalone `f+i` and `m` keep their interactive tracking choice.
+
+1. Address all `MUST-FIX` items (make code changes, run checks). In coordinated
+   mode, also address every actionable item whose recorded recommendation is
+   `fix now` during this same pre-reply change phase. A remaining `SKIPPED` item
+   cannot enter this path without reclassification. If none of those items
+   require a fix, continue to autonomous optional handling.
 2. Autonomously handle `OPTIONAL` nits that are behavior-preserving, low-risk,
    in scope, and before the final-candidate debounce point. Apply them inline
    when the fix is straightforward; otherwise record them as deferred or
@@ -51,11 +105,19 @@ reply/resolve steps.
    recorded outcome. For autonomously deferred/declined optional nits, include
    `[auto-deferred]` on its own line plus a one-line rationale; see the
    thread-resolution rules below.
-7. Resolve the corresponding review threads when the issue is handled or explicitly declined.
-8. If `SKIPPED` items exist, ask for explicit confirmation before posting rationale replies and resolving those threads (for example: "Reply/resolve 3 skipped items? y/n"). When trusted parent state `COORDINATED_AUTOFIX=1` is set, do not prompt for locally verified duplicate or factually incorrect review threads: post a concise rationale and resolve them. List every autonomously resolved thread, its URL, and its verification rationale in the cutoff-safe summary, and require a clean current-head review signal independent of this coordinated run before merge. For a skipped review-summary body that contains a reviewer claim, post the concise rationale as a general PR comment because review summaries have no reply endpoint. For pure status posts, acknowledgments, boilerplate summaries, and other non-actionable items without a thread, record a short rationale and explicit no-action outcome in the cutoff-safe summary; that recorded outcome satisfies the cutoff guard without manufacturing a direct reply. Re-present every remaining `SKIPPED` item for explicit confirmation, and do not signal merge-ready or advance the cutoff until each has an explicit outcome.
-9. Do **not** auto-resolve `DISCUSS` items in `f`; after must-fix work, re-present discuss items and prompt the user to choose `d` (discuss), `f+i` (prepare a deferred-work bundle), or `r all discuss + resolve`.
+   Reply to each coordinated `fix now` work item after the pushed fix and resolve its thread when complete.
+7. Resolve the corresponding review threads when the issue is handled or
+   explicitly declined. Under coordinated `f`, a `defer` is complete for thread resolution only after its evidence-backed rationale and required durable PR summary, decision log, or existing-policy tracker record are posted and the conversation is complete.
+   Coordinated defer ordering: post the original-thread rationale first; then, before resolving, post a durable non-cutoff PR decision/status record (or established durable decision-log form) for the default route, or record the defer in the already-resolved existing-policy tracker; only then resolve a complete conversation, and post the normal cutoff-safe final summary afterward.
+   Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above.
+8. If `SKIPPED` items exist in a normal interactive run, ask for explicit confirmation before posting rationale replies and resolving those threads (for example: "Reply/resolve 3 skipped items? y/n"). In coordinated mode, execute each item's recorded recommendation under the coordinated paragraph above. List every autonomously resolved thread, its URL, and its verification rationale in the cutoff-safe summary, and require a clean current-head review signal independent of this coordinated run before merge. For a skipped review-summary body that contains a reviewer claim, post the concise rationale as a general PR comment because review summaries have no reply endpoint. For pure status posts, acknowledgments, boilerplate summaries, and other non-actionable items without a thread, record a short rationale and explicit no-action outcome in the cutoff-safe summary; that recorded outcome satisfies the cutoff guard without manufacturing a direct reply. Do not signal merge-ready or advance the cutoff until every skipped item has an explicit outcome.
+9. In a normal interactive run, do **not** auto-resolve `DISCUSS` items in `f`; after must-fix work, re-present discuss items and prompt the user to choose `d` (discuss), `f+i` (prepare a deferred-work bundle), or `r all discuss + resolve`. During the remaining-decision phase, coordinated `fix now` items are already fixed, replied to, and resolved; process only `defer` or `decline`, stop on `ask user`, and never execute `fix now` again.
 10. Tell the user the PR is merge-ready only after `DISCUSS` items are resolved or explicitly deferred.
-11. If any `DISCUSS` items remain, explicitly prompt with the next action (for example: "DISCUSS items remain - use `d` to review, `f+i` to prepare a deferred-work bundle, or `r all discuss + resolve` to decline and close.").
+11. In a normal interactive run, if any `DISCUSS` items remain, explicitly
+    prompt with the next action (for example: "DISCUSS items remain - use `d`
+    to review, `f+i` to prepare a deferred-work bundle, or
+    `r all discuss + resolve` to decline and close."). In coordinated mode,
+    prompt only for the remaining `ask user` recommendations.
 
 ### Action `f+i` — Fix, deferred-work bundle, and merge-ready
 
@@ -201,13 +263,15 @@ After parallel fixes complete, verify no conflicts exist between the changes by 
 **For issue comments (general PR comments):**
 
 ```bash
-gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -f body="<response>"
+ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
+gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="<response>"
 ```
 
 **For PR review comments (file-specific, replying to a thread):**
 
 ```bash
-gh api repos/${REPO}/pulls/${PR_NUMBER}/comments/${REVIEW_COMMENT_ID}/replies -X POST -f body="<response>"
+ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
+gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_COMMENT_ID}/replies -X POST -f body="<response>"
 ```
 
 Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; do not use the parsed input `COMMENT_ID` except for the specific-comment fetch path. Use the `/replies` endpoint for all existing review comments, including standalone top-level comments.
@@ -217,7 +281,8 @@ Use the selected item's review comment `id` as `REVIEW_COMMENT_ID`; do not use t
 Review summary bodies do not have a `comment_id` and cannot be replied to via the `/replies` endpoint. Instead, post a general PR comment referencing the review:
 
 ```bash
-gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -f body="<response>"
+ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
+gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="<response>"
 ```
 
 The response should briefly explain:
@@ -230,7 +295,9 @@ After posting the reply, resolve the review thread when all of the following are
 
 - The comment belongs to a review thread and you have the thread ID
 - The concern was actually addressed in code, tests, or documentation; explicitly
-  declined with a clear explanation approved by the user; or autonomously
+  declined with a clear explanation approved by the user; autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with
+  the rationale recorded; coordinated `defer` completed through the ordered
+  durable-evidence path above; or autonomously
   deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the
   Maintainer Attention Contract with the rationale recorded in the reply or
   summary. Autonomous deferred/declined optional replies must use the

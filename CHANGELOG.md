@@ -47,6 +47,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Keep trusted PR-batch review closeout autonomous for evidence-backed fix, defer, and decline recommendations under every merge-authority mode, prompting maintainers only when the review outcome explicitly requires their help.**
 - **Hardened seam-init argument forwarding across nested shells, env split strings, exec prefixes, and npm options, preserving caller arguments or failing closed for unsafe command shapes.** [PR 119](https://github.com/shakacode/agent-workflows/pull/119) by [justin808](https://github.com/justin808).
 - **Fail closed on native-plus-flat Agent Workflows collisions and preserve modified, ambiguous, mismatched, or unowned skill paths during migration and rollback.**
 - **Require replayable final-head QA evidence before readiness or merge so commits made after QA invalidate stale closeout evidence.**

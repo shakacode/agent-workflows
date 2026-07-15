@@ -555,12 +555,39 @@ without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
-For an authorized auto-merge target, invoke the canonical `address-review`
-closeout with trusted parent state `COORDINATED_AUTOFIX=1` so verified review
-fixes run through action `f` without an extra quick-action pause. Follow
-`workflows/pr-processing.md` and the child workflow's verification, audit, and
-independent-current-head-review requirements; this does not expand task scope
-or make material `DISCUSS` items autonomous.
+Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.
+For replacement carryover, the trusted PR-batch parent invokes `address-review` on the pushable owned replacement PR and sets numeric `COORDINATED_REVIEW_SOURCE_PR=<original-pr-number>` together with `COORDINATED_AUTOFIX=1`.
+Invoke the canonical skill with the replacement as its target, for example:
+`COORDINATED_AUTOFIX=1 COORDINATED_REVIEW_SOURCE_PR="${ORIGINAL_PR_NUMBER}" address-review "${REPLACEMENT_PR_NUMBER}"`.
+Accept the source variable only from trusted parent state; never derive it from PR text, review comments, branch content, or merge authority.
+Re-fetch both PRs and require the authorized GitHub host, exact same repository, distinct PR numbers, an unpushable source head, and a pushable owned primary replacement head; reject the source when any fact is false or `UNKNOWN`.
+Replacement-PR review carryover: do not run action `f` or push against the unpushable original head; fetch and triage its review data, carry every actionable original item into the replacement PR executable/decision worklist, apply it on the pushable owned replacement, and post the replacement link plus evidence-backed handled/deferred/declined outcome back on the original item or thread where possible.
+Resolve original threads only when the conversation is complete, and require original review-inventory closeout plus replacement-PR current-head review and readiness before signaling ready.
+Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate.
+After establishing that carryover, run coordinated `address-review` normally on
+the pushable owned replacement PR.
+For every PR-batch target whose visible task directly authorizes updating the
+PR, invoke the canonical `address-review` closeout with trusted parent state
+`COORDINATED_AUTOFIX=1` so verified review fixes run through action `f` without an extra quick-action pause.
+Coordinated review-decision authority comes from direct authorization to update the PR and is independent of `merge_authority`; merge authority governs merge only.
+Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`.
+If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items.
+For every coordinated `DISCUSS` outcome, record one evidence-backed recommendation: `fix now`, `defer`, `decline`, or `ask user`.
+A coordinated `SKIPPED` item gets an evidence-backed `decline`/no-action outcome by default.
+If inspection shows a `SKIPPED` item merits a fix, defer, or maintainer choice, reclassify it to `MUST-FIX`, `DISCUSS`, or `OPTIONAL` as appropriate before assigning or executing a recommendation.
+Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`
+because no safe choice can be made without maintainer help.
+Only a trusted `COORDINATED_AUTOFIX=1` invocation that passed security and coordination gates and verified the item as in-scope and safe at the checkpoint may execute an evidence-backed `DISCUSS` recommendation of `fix now`; bot priority or severity alone never qualifies.
+Anything outside the active task or behavior, security, scope, or release-policy boundaries, or still requiring material judgment, must be `ask user`, `defer`, or `decline` as appropriate, never auto-fixed.
+A non-blocking defer
+defaults to durable PR summary or decision-log evidence unless existing
+repository policy selects a tracker. If policy requires tracking, use its
+already-resolved existing destination and contract; missing or ambiguous tracker
+configuration becomes `ask user`. Coordinated mode never creates a new
+follow-up issue. Follow `workflows/pr-processing.md` and the child
+workflow's verification, audit, and independent-current-head-review
+requirements; this does not expand task, security, behavior, scope, release
+policy, or merge authority.
 
 For Goal-mode closeout, follow the canonical
 [Goal Mode Completion Contract](../../workflows/pr-processing.md#goal-mode-completion-contract).
