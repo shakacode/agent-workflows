@@ -10,6 +10,20 @@ ROOT = File.expand_path("../../..", __dir__)
 SKILL_PATH = File.join(ROOT, "skills/untrusted-contributor-intake/SKILL.md")
 FORK_METADATA_FIXTURE = File.join(ROOT, "test/fixtures/untrusted-contributor-intake/fork-metadata.yml")
 REVIEW_EVIDENCE_FIXTURE = File.join(ROOT, "test/fixtures/untrusted-contributor-intake/review-evidence.yml")
+INTAKE_SUBPROCESS_ENV_KEYS = %w[
+  TRUSTED_GH_HOST TRUSTED_GH_SCHEME TRUSTED_GH_REPO
+  TRUSTED_ORIGIN_URL TRUSTED_ORIGIN_REMAINDER TRUSTED_ORIGIN_PATH
+  TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT
+  TRUSTED_ORIGIN_OWNER TRUSTED_ORIGIN_REPO TRUSTED_REPO_OWNER TRUSTED_REPO_NAME
+  TRUSTED_HOST_PORT TRUSTED_HOST TRUSTED_PORT TRUSTED_REMAINDER TRUSTED_LABEL
+  PR_REF PR_INPUT_KIND PR_NUMBER PR_REF_NUMBER PR_REF_SCHEME PR_REF_WITHOUT_SCHEME
+  PR_REF_AUTHORITY PR_REF_PATH PR_REF_HOST_PORT PR_REF_HOST PR_REF_PORT PR_REF_GH_HOST
+  PR_REF_OWNER PR_REF_REPO_NAME PR_REF_KIND REPO REPO_OWNER REPO_NAME
+  CANONICAL_URL CANONICAL_SCHEME CANONICAL_AUTHORITY CANONICAL_HOST CANONICAL_PORT
+  CANONICAL_CONTROL_COUNT CANONICAL_REMAINDER CANONICAL_LABEL CANONICAL_PR_PATH
+  OWNER PULL_KIND PULL_NUMBER GH_HOST METADATA_RECORD METADATA_STATUS METADATA_LEFT
+  METADATA_RIGHT METADATA_CONTROL_COUNT ACTOR_TYPE ACTOR_LOGIN
+].freeze
 
 def load_yaml_fixture(path)
   YAML.safe_load(
@@ -98,9 +112,21 @@ def run_documented_posix_snippet(snippet, environment, output)
     #{snippet}
     #{output}
   SH
-  stdout, stderr, status = Open3.capture3(environment, "sh", "-c", command)
+  subprocess_environment = INTAKE_SUBPROCESS_ENV_KEYS.to_h { |key| [key, nil] }.merge(environment)
+  stdout, stderr, status = Open3.capture3(subprocess_environment, "sh", "-c", command)
 
   [status.success?, status.success? ? stdout : stderr]
+end
+
+def with_environment(values)
+  original_values = values.keys.to_h { |key| [key, ENV[key]] }
+  values.each { |key, value| ENV[key] = value }
+
+  yield
+ensure
+  original_values.each do |key, value|
+    value.nil? ? ENV.delete(key) : ENV[key] = value
+  end
 end
 
 def run_canonical_authority_snippet(url, trusted_host: nil)
@@ -523,6 +549,51 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     success, output = run_documented_pr_ref_classifier("http://github.com/octo-org/hello-world/pull/42", trusted_scheme: "https")
     refute success
     assert_match(/BLOCKED: exact PR reference is invalid/, output)
+  end
+
+  def test_scrubs_hostile_ambient_intake_values_from_test_subprocesses
+    hostile_environment = {
+      "TRUSTED_GH_HOST" => "ambient.example:8443",
+      "TRUSTED_GH_SCHEME" => "https",
+      "TRUSTED_GH_REPO" => "ambient-org/ambient-repo",
+      "TRUSTED_ORIGIN_URL" => "https://ambient.example/ambient-org/ambient-repo.git",
+      "TRUSTED_ORIGIN_HOST" => "ambient.example",
+      "TRUSTED_REPO_OWNER" => "ambient-org",
+      "TRUSTED_REPO_NAME" => "ambient-repo",
+      "PR_REF" => "999",
+      "PR_NUMBER" => "999",
+      "REPO" => "ambient-org/ambient-repo",
+      "CANONICAL_URL" => "https://ambient.example/ambient-org/ambient-repo/pull/999",
+      "GH_HOST" => "ambient.example"
+    }
+
+    with_environment(hostile_environment) do
+      assert_equal [true, "https|ghe.example:8443|octo-org/hello-world"],
+                   run_documented_trusted_origin_producer(
+                     "https://ghe.example:8443/octo-org/hello-world.git"
+                   )
+
+      success, output = run_documented_trusted_origin_producer(
+        "http://ghe.example/octo-org/hello-world.git"
+      )
+      refute success
+      assert_match(/BLOCKED: trusted origin is invalid/, output)
+    end
+  end
+
+  def test_requires_trusted_metadata_validation_before_using_producer_output
+    skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    producer = skill.index("# Trusted origin producer:")
+    validator = skill.index("metadata_require_trusted_host\ncase \"${PR_INPUT_KIND}\"")
+    first_network_call = skill.index('env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view')
+
+    assert_includes skill, "# Provisional only: metadata_require_trusted_host must succeed before these values are used or any network call."
+    refute_includes skill, '[ "${PR_REF_SCHEME}" = "${TRUSTED_GH_SCHEME:-}" ] || pr_ref_blocked'
+    refute_nil producer
+    refute_nil validator
+    refute_nil first_network_call
+    assert_operator producer, :<, validator
+    assert_operator validator, :<, first_network_call
   end
 
   def test_pr_ref_classifier_precedes_the_first_pr_view_command
@@ -1070,7 +1141,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_uses_no_standalone_jq_subprocess_for_status_check_replay
     source = File.read(__FILE__, encoding: "UTF-8")
     capture3 = %w[Open3 capture3].join(".")
-    posix_shell_replay = "#{capture3}(environment, \"sh\", \"-c\", command)"
+    posix_shell_replay = "#{capture3}(subprocess_environment, \"sh\", \"-c\", command)"
 
     assert_equal 1, source.scan(Regexp.new(Regexp.escape(capture3))).length
     assert_includes source, posix_shell_replay

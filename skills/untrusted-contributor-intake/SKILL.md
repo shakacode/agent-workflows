@@ -110,6 +110,7 @@ case "${TRUSTED_REPO_NAME}" in */*) trusted_origin_blocked ;; esac
 case "${TRUSTED_REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
 case "${TRUSTED_REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
 TRUSTED_GH_REPO="${TRUSTED_REPO_OWNER}/${TRUSTED_REPO_NAME}"
+# Provisional only: metadata_require_trusted_host must succeed before these values are used or any network call.
 ```
 
 ```bash
@@ -148,7 +149,6 @@ case "${PR_REF}" in
     PR_REF_CONTROL_COUNT="$(printf '%s' "${PR_REF}" | LC_ALL=C tr -d '[:print:]' | wc -c | tr -d '[:space:]')"
     [ "${PR_REF_CONTROL_COUNT}" = 0 ] || pr_ref_blocked
     PR_REF_SCHEME="${PR_REF%%://*}"
-    [ "${PR_REF_SCHEME}" = "${TRUSTED_GH_SCHEME:-}" ] || pr_ref_blocked
     PR_REF_WITHOUT_SCHEME="${PR_REF#*://}"
     case "${PR_REF_WITHOUT_SCHEME}" in */*) ;; *) pr_ref_blocked ;; esac
     PR_REF_AUTHORITY="${PR_REF_WITHOUT_SCHEME%%/*}"
