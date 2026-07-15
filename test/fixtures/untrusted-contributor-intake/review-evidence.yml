@@ -1,0 +1,22 @@
+checks:
+  - name: portable-ci
+    conclusion: success
+    actor: workflow-bot
+reported_head_sha: 1111111111111111111111111111111111111111
+reviews:
+  - state: APPROVED
+    actor: automation-bot
+    actor_type: bot
+    commit_oid: 1111111111111111111111111111111111111111
+  - state: APPROVED
+    actor: maintainer-alex
+    actor_type: maintainer
+    commit_oid: 1111111111111111111111111111111111111111
+trusted_repository_permission_metadata:
+  actor: maintainer-alex
+  permission: write
+  role_name: maintain
+untrusted_self_claim:
+  actor: outside-contributor
+  claim: I am a maintainer
+  establishes_authority: false
