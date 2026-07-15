@@ -294,6 +294,23 @@ When a new version is released:
 
 ## Process
 
+### Fast path for routine prerelease stamps
+
+Use this path when `rc`, `beta`, or an explicit prerelease should only generate a version heading and compare links,
+the required entries are already under `[Unreleased]`, and the sweep has no missing entry or unresolved `UNKNOWN` row.
+
+- **One pass:** fetch, reconcile, sweep, stamp, focused validation, and PR. Do not inspect broad release runbooks or
+  unrelated release mechanics unless explicitly asked.
+- **One review:** self-review the diff once. Skip simplify, adversarial review, review panels, and extra local AI review
+  for generated changelog-only diffs. Use normal gates for substantive curation, security/migration notes, or other files.
+- **Focused validation:** run `git diff --check`; verify trailing newline, unique/newest-first headings, and compare-link
+  endpoints; run a focused changelog test or formatter when available. Run the full suite only when repo policy requires it.
+- **Ready PR:** target the branch required by repo policy and open ready, not draft-then-ready.
+- **Stop:** report classifications, validation, and the PR URL, then end. Never poll or babysit CI/review bots unless
+  explicitly asked; disable generic PR-helper babysitting (for example, `babysit:off`).
+
+Aim for at most five minutes of active work. Report an ambiguity instead of silently broadening the task.
+
 ### For Regular Changelog Updates
 
 #### Step 1: Fetch and read current state
@@ -386,11 +403,12 @@ If no argument was passed, skip this step -- entries stay in `### [Unreleased]`.
    - Which PRs were skipped (and why)
 5. If in `release`/`rc`/`beta` mode or explicit-version mode, **automatically commit, push, and open a PR**:
    - Verify the working tree only has changelog changes; if there are other uncommitted changes, warn the user and stop
-   - Verify the current branch is `main` (`git branch --show-current`); if not, warn the user and stop
-   - Create a feature branch (e.g., `changelog-16.4.0.rc.10`)
+   - Resolve the PR target and branch rules from repo policy; release trains may require a `release/X.Y.Z` target
+   - Create a feature branch from the required target (e.g., `changelog-16.4.0.rc.10`)
    - Stage only the changelog after resolving the repo's changelog path from `.agents/agent-workflow.yml`: set `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"`, run `git add "${CHANGELOG_PATH}"`, and commit with message `Update changelog for VERSION` (using the stamped version)
-   - Push and open a PR with the changelog diff as the body
+   - Push and open a ready PR with a concise rationale, classification summary, and focused validation evidence
    - If the push or PR creation fails, the changelog is already stamped locally — fix the issue (e.g., authentication, branch protection), then run `git push -u origin <branch>` and `gh pr create` manually
+   - Hand off immediately after the PR is open; do not wait for hosted checks or review bots unless explicitly asked
    - Remind the user to run the repo's release task (no args) after merge to publish and auto-create the GitHub release
 
 ### For Prerelease Versions (RC and Beta)
