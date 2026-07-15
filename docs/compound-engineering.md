@@ -93,8 +93,10 @@ inspect every proposed file.
 Run the first pilot in a consumer repository with a named destination and
 schema. Do not run it unattended in this source pack: Agent Workflows uses flat
 `docs/solutions/*.md` files with its own frontmatter, while CE uses categorized
-paths and a different schema. Nested CE output can bypass the source pack's
-current flat-only validator.
+paths and a different schema. The source pack validator rejects hidden and
+nested solution Markdown; it does not accept CE's schema, translate CE output,
+or provide a wrapper that redirects CE output into the Agent Workflows library.
+Keep CE learning at the explicitly named consumer-repository destination.
 
 ## CE's Specialist Agents
 

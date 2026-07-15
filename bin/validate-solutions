@@ -46,7 +46,9 @@ module ValidateSolutions
     end
     failures.concat(nested_solution_paths(root).map do |path|
       relative = path.delete_prefix("#{root}/")
-      "#{relative}: nested solution docs are not allowed"
+      "#{relative}: nested solution docs are not allowed; " \
+        "Agent Workflows lessons must be flat docs/solutions/*.md files; " \
+        "write categorized CE learning to a named destination in the consumer repository"
     end)
     return failures + ["#{SOLUTIONS_DIR}: no solution docs found"] if paths.empty?
 
