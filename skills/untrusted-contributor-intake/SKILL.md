@@ -43,8 +43,7 @@ used by the canonical host boundary, with an optional numeric port.
 Before classification, the invoking trusted host or tooling must pre-set
 TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; there is no fallback.
 It must source that normalized `host[:non-default-port]` authority, scheme, and
-validated `owner/repo` target from a trusted local policy seam or trusted-base
-checkout remote metadata. Do not derive them from ambient GH_HOST or GH_REPO,
+validated `owner/repo` target from a trusted local policy seam. Do not derive them from ambient GH_HOST or GH_REPO,
 PR or ref data, GitHub responses, or fork environment. TRUSTED_GH_SCHEME must
 be exactly https; do not infer it. Strip :443 only for trusted https; preserve
 every other port. If any value is
