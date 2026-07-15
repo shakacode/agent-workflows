@@ -480,6 +480,8 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
 
     assert_includes skill, "argument-hint: '[exact PR URL or PR number]'"
     assert_includes normalized_skill, "Accept an exact PR URL or PR number; do not execute or parse fork content to derive it."
+    assert_includes normalized_skill, "Run every shell snippet below in one continuous shell script or persistent shell session; later snippets read variables set by earlier snippets."
+    assert_includes normalized_skill, "If your tool starts a fresh shell for each command, concatenate the snippets in order before running them."
   end
 
   def test_executes_the_documented_pr_ref_classifier_before_gh
@@ -1222,6 +1224,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes skill, "number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify"
     refute_includes skill, "--json number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,closingIssuesReferences"
     refute_includes skill, "maintainerCanModify,statusCheckRollup,closingIssuesReferences"
+    assert_includes skill, "GRAPHQL_METADATA_RECORD=\"$(env -u GH_REPO GH_HOST=\"${GH_HOST}\" gh api graphql"
     assert_includes skill, "env -u GH_REPO GH_HOST=\"${GH_HOST}\" gh api graphql -f owner=\"${REPO_OWNER}\""
     assert_includes skill, "closingIssuesReferences(first:20) { totalCount pageInfo { hasNextPage } nodes { number repository { nameWithOwner } } }"
     assert_includes skill, "headRefOid"
@@ -1235,6 +1238,11 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes skill, "review_evidence_complete: (($pr.reviews.pageInfo.hasNextPage == false) and ($pr.reviews.totalCount == ($pr.reviews.nodes | length)))"
     assert_includes skill, "review_evidence_current: ((($pr.headRefOid | type) == \"string\") and ([$pr.reviews.nodes[]? | select(.state == \"APPROVED\") | (((.commit.oid | type) == \"string\") and (.commit.oid == $pr.headRefOid))] | all))"
     assert_includes skill, "reviews: [$pr.reviews.nodes[]? | {actor: .author.login, actor_type: .author.__typename, state, commit_oid: .commit.oid}]"
+    assert_includes skill, 'as $metadata | "\($metadata.reported_head_sha)|\($metadata|tojson)"'
+    assert_includes skill, "case \"${GRAPHQL_METADATA_RECORD}\" in *\\|*)"
+    assert_includes skill, 'REPORTED_HEAD_SHA="${GRAPHQL_METADATA_RECORD%%|*}"'
+    assert_includes skill, 'GRAPHQL_METADATA_JSON="${GRAPHQL_METADATA_RECORD#*|}"'
+    assert_includes skill, %(printf '%s\\n' "${GRAPHQL_METADATA_JSON}")
     refute_includes skill, "reviews(first:100) { nodes { author { login } body"
     metadata_gathering = skill.index("## Metadata Gathering")
     graph_query = skill.index("gh api graphql", metadata_gathering)
