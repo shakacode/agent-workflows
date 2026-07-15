@@ -217,17 +217,17 @@ replay the install metadata when the option is omitted.
 `agent-stack sync` updates the source checkouts and installed tools. It does not
 restart the coordination dashboard or active agent runners.
 
-The installed `agent-dashboard` launcher must support the current-shell
-environment handoff described below before this sequence can recover rotated or
-removed API credentials. Upgrade that launcher first if it still relies on a
-long-lived background session's environment; restarting an older launcher can
-reuse the same stale credentials.
+The installed `agent-dashboard` launcher comes from the dashboard repo's setup.
+Install or upgrade that launcher before this recovery sequence, and confirm it
+supports the current-shell environment handoff described below. Restarting an
+older launcher that still relies on a long-lived background session's environment
+can reuse the same stale credentials.
 
 Use this sequence after a sync:
 
 ```bash
 agent-stack sync
-agent-coord doctor --deep
+agent-coord doctor --json
 agent-dashboard restart
 agent-dashboard status
 ```
@@ -236,7 +236,7 @@ Run the doctor and dashboard restart from the same terminal. If the coordination
 credentials were just provisioned or rotated, first open a new terminal so the
 current `AGENT_COORD_API_URL` and `AGENT_COORD_API_TOKEN` are loaded from the
 machine's shell configuration. Do not restart the dashboard until
-`agent-coord doctor --deep` succeeds. When a wrapper syncs multiple machines,
+`agent-coord doctor --json` succeeds. When a wrapper syncs multiple machines,
 repeat the doctor, restart, and status checks on each machine; a remote source
 sync does not refresh that machine's existing dashboard process.
 
@@ -248,7 +248,7 @@ older token. Tokens must not appear in process arguments or pane commands. The
 launcher must also pass empty values when the invoking shell has unset the HTTP
 backend so stale tmux values cannot select it again.
 
-If the dashboard reports `401` while `agent-coord doctor --deep` succeeds in the
+If the dashboard reports `401` while `agent-coord doctor --json` succeeds in the
 same terminal, restart only the dashboard. Restarting Codex does not refresh the
 dashboard process. Existing agent tasks also do not need to restart merely
 because the stack was synced; follow [Active Batches](#active-batches) when a
