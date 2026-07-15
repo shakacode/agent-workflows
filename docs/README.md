@@ -13,6 +13,7 @@ These are the most common entry points.
 
 | Goal | Read |
 | --- | --- |
+| Understand the team-scale problems this stack solves | [Problems Agent Workflows Solves](problems-solved.md) |
 | Install or upgrade the shared pack | [Installation And Upgrades](installation-and-upgrades.md) |
 | Adopt the pack in another repo | [Agent Workflow Adoption Guide](adoption.md) |
 | Understand the agent workflow contract model | [Seam Design](seam-design.md) |
