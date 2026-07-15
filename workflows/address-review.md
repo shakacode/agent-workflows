@@ -342,7 +342,7 @@ Execution flow when terminal access is available:
                  (($body | startswith("<!-- address-review-status -->")) or
                   (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
                 (($rows | map(identity_key) | unique | length) == ($rows | length)) and
-                 (($rows | map(row_key) | sort) == (source_candidate_keys($checkpoint_created_at) | sort))));
+                 ((source_candidate_keys($checkpoint_created_at) - ($rows | map(row_key) | unique)) | length) == 0));
            [.issue_comments[] |
              select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
              . as $checkpoint |

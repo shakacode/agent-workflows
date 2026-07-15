@@ -476,6 +476,15 @@ valid_generated_summary_body = <<~BODY.chomp
   item\t160\treview-summary\t105\t-\t2026-07-15T00:05:00Z\thandled
   -->
 BODY
+valid_cumulative_history_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t106\tPRRT_resolved\t2026-07-15T00:00:00Z\thandled
+  item\t160\tinline-comment\t107\tPRRT_later\t2026-07-15T00:00:15Z\thandled
+  item\t160\tissue-comment\t109\t-\t2026-07-15T00:01:00Z\tsafe-to-skip
+  -->
+BODY
 incomplete_summary_body = <<~BODY.chomp
   <!-- address-review-summary -->
   ## Incomplete replacement carryover
@@ -556,6 +565,45 @@ stdout, stderr, status = Open3.capture3(
 assert(status.success?, "source checkpoint jq validator must execute with incomplete fixture: #{stderr}")
 valid_checkpoints = JSON.parse(stdout)
 assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == incomplete_summary_body }, "source checkpoint validator must reject syntactically valid but incomplete source snapshots")
+
+cumulative_history_fixture = {
+  "inline_comments" => [
+    {
+      "id" => 106,
+      "thread_id" => "PRRT_resolved",
+      "in_reply_to_id" => nil,
+      "is_resolved" => true,
+      "created_at" => "2026-07-15T00:00:00Z"
+    },
+    {
+      "id" => 107,
+      "thread_id" => "PRRT_later",
+      "in_reply_to_id" => nil,
+      "is_resolved" => false,
+      "created_at" => "2026-07-15T00:00:15Z"
+    },
+    {
+      "id" => 108,
+      "thread_id" => "PRRT_later",
+      "in_reply_to_id" => 107,
+      "is_resolved" => false,
+      "created_at" => "2026-07-15T00:03:00Z"
+    }
+  ],
+  "review_summaries" => [],
+  "issue_comments" => [
+    { "id" => 109, "user" => "reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => "Please retain this current source item." },
+    { "id" => 210, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => valid_cumulative_history_summary_body }
+  ]
+}
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  stdin_data: JSON.generate(cumulative_history_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with cumulative historical rows: #{stderr}")
+valid_checkpoints = JSON.parse(stdout)
+assert(valid_checkpoints.length == 1, "source checkpoint validator must retain valid cumulative rows for resolved and later-updated threads")
+assert(valid_checkpoints[0]["body"] == valid_cumulative_history_summary_body, "source checkpoint validator must accept complete current state plus valid cumulative history")
 
 wait_checkpoint_comments = checkpoint_fixture.fetch("issue_comments").reject do |comment|
   [incomplete_summary_body, invalid_missing_forged_marker_body].include?(comment["body"])
