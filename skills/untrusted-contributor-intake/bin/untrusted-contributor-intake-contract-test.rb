@@ -135,7 +135,14 @@ def run_documented_posix_snippet(snippet, environment, output, scrub: true, comb
   subprocess_environment = scrub ? INTAKE_SUBPROCESS_ENV_KEYS.to_h { |key| [key, nil] }.merge(environment) : environment
   stdout, stderr, status = Open3.capture3(subprocess_environment, "sh", "-c", command)
 
-  [status.success?, status.success? || combined_output ? stdout + stderr : stderr]
+  output = if combined_output
+             stdout + stderr
+           elsif status.success?
+             stdout
+           else
+             stderr
+           end
+  [status.success?, output]
 end
 
 def with_environment(values)
@@ -1779,6 +1786,23 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
 
     assert_equal 1, source.scan(Regexp.new(Regexp.escape(capture3))).length
     assert_includes source, posix_shell_replay
+  end
+
+  def test_successful_posix_snippets_return_stdout_only_unless_combined_output_is_requested
+    success, output = run_documented_posix_snippet("", {}, %(printf 'stdout'; printf 'stderr' >&2))
+
+    assert success
+    assert_equal "stdout", output
+
+    success, output = run_documented_posix_snippet(
+      "",
+      {},
+      %(printf 'stdout'; printf 'stderr' >&2),
+      combined_output: true
+    )
+
+    assert success
+    assert_equal "stdoutstderr", output
   end
 
   def test_replays_documented_status_check_normalization_for_both_union_shapes
