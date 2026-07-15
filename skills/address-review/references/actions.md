@@ -263,9 +263,19 @@ After parallel fixes complete, verify no conflicts exist between the changes by 
 
 **For issue comments (general PR comments):**
 
+Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
+issue comment or review summary must start with the authenticated
+`<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
+reply from source triage and snapshot completeness; another actor cannot use
+the marker to suppress a source candidate.
+
 ```bash
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
-gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="<response>"
+RESPONSE_BODY="<response>"
+if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
+  RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"
+fi
+gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"
 ```
 
 **For PR review comments (file-specific, replying to a thread):**
@@ -283,7 +293,11 @@ Review summary bodies do not have a `comment_id` and cannot be replied to via th
 
 ```bash
 ITEM_SOURCE_PR="${ITEM_SOURCE_PR:-${PRIMARY_PR_NUMBER}}"
-gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="<response>"
+RESPONSE_BODY="<response>"
+if [ -n "${SOURCE_PR_NUMBER:-}" ] && [ "${ITEM_SOURCE_PR}" = "${SOURCE_PR_NUMBER}" ]; then
+  RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"
+fi
+gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"
 ```
 
 The response should briefly explain:

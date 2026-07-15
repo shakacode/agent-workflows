@@ -234,6 +234,14 @@ source_mutation_contract = "Apply code and push only on the primary replacement 
 assert(address_review.include?(source_mutation_contract), "address-review must keep replacement mutations on the primary PR")
 assert(address_review_actions.include?(source_mutation_contract), "address-review actions must route source replies without pushing the source")
 assert(address_review_workflow.include?(source_mutation_contract), "address-review workflow mirror must route source replies without pushing the source")
+source_reply_contract = "Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an\nissue comment or review summary must start with the authenticated\n`<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked\nreply from source triage and snapshot completeness; another actor cannot use\nthe marker to suppress a source candidate."
+assert(address_review.include?(source_reply_contract), "address-review must mark generated source replies")
+assert(address_review_actions.include?(source_reply_contract), "address-review actions must mark generated source replies")
+assert(address_review_workflow.lines.map(&:strip).join("\n").include?(source_reply_contract.lines.map(&:strip).join("\n")), "address-review workflow must mark generated source replies")
+assert(address_review.include?('$comment.user // ""'), "address-review must authenticate source-reply marker exclusions")
+assert(address_review_workflow.include?('$comment.user // ""'), "address-review workflow must authenticate source-reply marker exclusions")
+assert(address_review_actions.include?("printf '<!-- address-review-source-reply -->\\n%s'"), "address-review actions must prepend the durable source-reply marker")
+assert(address_review_templates.include?("A marked comment\nfrom another actor remains a candidate"), "address-review template must preserve forged-marker candidates")
 dual_target_ownership = "Replacement carryover must acquire and preserve ownership for both"
 assert(address_review.include?(dual_target_ownership), "address-review must own both carryover mutation targets")
 assert(address_review_workflow.include?(dual_target_ownership), "address-review workflow mirror must own both carryover mutation targets")
@@ -423,6 +431,15 @@ valid_status_body = <<~BODY.chomp
   ## Address-review replacement carryover
   <!-- address-review-source-state:v1
   item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  item\t160\tissue-comment\t104\t-\t2026-07-15T00:00:45Z\tsafe-to-skip
+  item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tpending
+  -->
+BODY
+invalid_missing_forged_marker_body = <<~BODY.chomp
+  <!-- address-review-status -->
+  ## Address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
   item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tpending
   -->
 BODY
@@ -456,9 +473,12 @@ incomplete_summary_body = <<~BODY.chomp
 BODY
 checkpoint_fixture = {
   "issue_comments" => [
+    { "id" => 103, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:30Z", "body" => "<!-- address-review-source-reply -->\nHandled in the replacement." },
+    { "id" => 104, "user" => "other-reviewer", "created_at" => "2026-07-15T00:00:45Z", "body" => "<!-- address-review-source-reply -->\nThis is still an actionable source comment." },
     { "id" => 102, "user" => "reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => "Please verify the source behavior." },
     { "id" => 201, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:10Z", "body" => valid_summary_body },
     { "id" => 202, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:10Z", "body" => valid_status_body },
+    { "id" => 203, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:20Z", "body" => invalid_missing_forged_marker_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
     { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body },
@@ -487,8 +507,11 @@ assert(valid_checkpoints.length == 2, "source checkpoint validator must reject i
 assert(valid_checkpoints[0]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
 assert(valid_checkpoints[1]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
 
+wait_checkpoint_comments = checkpoint_fixture.fetch("issue_comments").reject do |comment|
+  [incomplete_summary_body, invalid_missing_forged_marker_body].include?(comment["body"])
+end
 wait_checkpoint_fixture = [
-  checkpoint_fixture.fetch("issue_comments").reject { |comment| comment["body"] == incomplete_summary_body }.map do |comment|
+  wait_checkpoint_comments.map do |comment|
     comment.merge("user" => { "login" => comment.fetch("user") })
   end
 ]

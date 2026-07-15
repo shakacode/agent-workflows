@@ -175,6 +175,10 @@ Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-
 Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
 Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
 Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta.
+An authenticated same-actor `<!-- address-review-source-reply -->` comment is
+workflow-generated rationale rather than a source candidate, so exclude it
+from `SOURCE_STATE_ROWS` and `SOURCE_STATE_EXPECTED_COUNT`. A marked comment
+from another actor remains a candidate and must still have a state row.
 Set `SOURCE_STATE_ROWS` from that cumulative verified snapshot and
 `SOURCE_STATE_EXPECTED_COUNT` to its exact row count. Zero candidates use an
 empty, explicitly set `SOURCE_STATE_ROWS` and count `0`.

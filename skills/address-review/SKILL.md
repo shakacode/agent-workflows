@@ -222,6 +222,12 @@ Source-aware reply routing uses `${ITEM_SOURCE_PR}` as defined in Step 8. If
 `gh repo view` fails (and no URL was supplied), ensure `gh` CLI is installed
 and authenticated (`gh auth status`).
 
+Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
+issue comment or review summary must start with the authenticated
+`<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
+reply from source triage and snapshot completeness; another actor cannot use
+the marker to suppress a source candidate.
+
 When `SOURCE_PR_NUMBER` is present, re-fetch primary and source metadata from
 `${GH_HOST}` and `${REPO}` and rerun the same live ownership/write preflight
 used by the trusted parent. Require distinct PRs, an unpushable source head,
@@ -390,10 +396,13 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         [$source, $kind, ($id | tostring), ($thread // "-")] | join("\t");
       def expected_keys($checkpoint_at):
         ([ $inventory.issue_comments[] |
+           . as $comment |
            select(.created_at <= $checkpoint_at) |
            select(((.body // "") | startswith("<!-- address-review-summary -->") or
                    startswith("<!-- address-review-status -->") or
-                   startswith("<!-- codex-claim v1")) | not) |
+                   startswith("<!-- codex-claim v1") or
+                   (startswith("<!-- address-review-source-reply -->") and
+                    ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase)))) | not) |
            source_key("issue-comment"; .id; "-") ] +
          [ $inventory.inline_comments[] |
            select(.created_at <= $checkpoint_at) |
@@ -462,7 +471,7 @@ This single read-only call replaces the per-endpoint `gh api ... | jq` blocks an
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
 - `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
 - `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`.
-- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim marker comments are included so you can filter them (see Filtering comments below).
+- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 
 When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
@@ -489,6 +498,9 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
   whose body starts with `<!-- address-review-summary -->` or
   `<!-- address-review-status -->` or `<!-- codex-claim v1`; only the summary
   marker is a cutoff checkpoint.
+- On a source PR, also skip `<!-- address-review-source-reply -->` comments
+  only when their author matches `SOURCE_REVIEW_ACTOR`; a different author
+  using that marker remains a source candidate.
 - Skip comments belonging to already-resolved threads (use the `is_resolved` field already joined onto each `inline_comments` entry, or match via `thread_id` against `review_threads`)
 - Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern
 - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp
