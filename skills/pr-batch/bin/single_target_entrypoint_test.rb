@@ -246,6 +246,10 @@ claim_target_loop = "for CLAIM_TARGET in ${CLAIM_TARGETS}; do"
 claim_target_status = '--timeout 20 status --repo "${REPO}" --target "${CLAIM_TARGET}" --json'
 claim_target_binding = 'set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${CLAIM_TARGET}"'
 primary_branch_binding = 'if [ "${CLAIM_TARGET}" = "${PRIMARY_PR_NUMBER}" ] && [ -n "${BRANCH_NAME:-}" ]; then'
+acquired_claim_targets = 'ACQUIRED_CLAIM_TARGETS=""'
+record_acquired_claim = 'ACQUIRED_CLAIM_TARGETS="${ACQUIRED_CLAIM_TARGETS} ${CLAIM_TARGET}"'
+rollback_claim_loop = "for ACQUIRED_CLAIM_TARGET in \${ACQUIRED_CLAIM_TARGETS}; do"
+rollback_claim_release = '--timeout 20 release "$@" --terminal abandoned --json'
 [address_review, address_review_workflow].each do |text|
   assert(text.include?(claim_targets), "address-review carryover claims must start with the primary target")
   assert(text.include?(source_claim_target), "address-review carryover claims must add the source target")
@@ -253,7 +257,11 @@ primary_branch_binding = 'if [ "${CLAIM_TARGET}" = "${PRIMARY_PR_NUMBER}" ] && [
   assert(text.include?(claim_target_status), "address-review must status every carryover target")
   assert(text.include?(claim_target_binding), "address-review must claim every carryover target")
   assert(text.include?(primary_branch_binding), "address-review must bind the branch only to the primary claim")
-  assert(text.include?('exit "${claim_status}"'), "address-review must stop immediately when either target claim fails")
+  assert(text.include?(acquired_claim_targets), "address-review must track carryover claims acquired by this loop")
+  assert(text.include?(record_acquired_claim), "address-review must record each successful carryover claim")
+  assert(text.include?(rollback_claim_loop), "address-review must roll back every earlier claim when a later claim fails")
+  assert(text.include?(rollback_claim_release), "address-review must terminal-release each rolled-back claim")
+  assert(text.include?('exit "${claim_status}"'), "address-review must preserve the original claim failure status after rollback")
 end
 legacy_single_target_status = '--timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json'
 legacy_single_target_claim = 'set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"'
@@ -318,8 +326,10 @@ assert(address_review.include?(source_review_wait), "address-review must limit t
 assert(address_review_workflow.include?(source_review_wait), "address-review workflow mirror must limit the source review wait to first harvest")
 assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must probe prior source checkpoint state before the wait")
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
-assert(address_review.scan("def valid_body:").length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")
-assert(address_review_workflow.scan("def valid_body:").length >= 2, "address-review workflow mirror must schema-validate both source wait and cutoff checkpoints")
+assert(address_review.scan("def valid_body:").length >= 1, "address-review must schema-validate source wait checkpoints")
+assert(address_review.scan("def valid_checkpoint:").length >= 1, "address-review must inventory-validate source cutoff checkpoints")
+assert(address_review_workflow.scan("def valid_body:").length >= 1, "address-review workflow mirror must schema-validate source wait checkpoints")
+assert(address_review_workflow.scan("def valid_checkpoint:").length >= 1, "address-review workflow mirror must inventory-validate source cutoff checkpoints")
 summary_terminal_guard = '(($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))'
 assert(address_review.scan(summary_terminal_guard).length >= 2, "address-review summaries must require terminal-only source rows")
 assert(address_review_workflow.scan(summary_terminal_guard).length >= 2, "address-review workflow summaries must require terminal-only source rows")
@@ -412,6 +422,7 @@ valid_status_body = <<~BODY.chomp
   <!-- address-review-status -->
   ## Address-review replacement carryover
   <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
   item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tpending
   -->
 BODY
@@ -436,16 +447,35 @@ invalid_duplicate_body = <<~BODY.chomp
   item\t160\tinline-comment\t103\tPRRT_two\t2026-07-15T00:03:00Z\thandled
   -->
 BODY
+incomplete_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Incomplete address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  -->
+BODY
 checkpoint_fixture = {
   "issue_comments" => [
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:00Z", "body" => valid_summary_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => valid_status_body },
+    { "id" => 102, "user" => "reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => "Please verify the source behavior." },
+    { "id" => 201, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:10Z", "body" => valid_summary_body },
+    { "id" => 202, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:10Z", "body" => valid_status_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
     { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:05:00Z", "body" => invalid_pending_summary_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body }
-  ]
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:00Z", "body" => incomplete_summary_body }
+  ],
+  "inline_comments" => [
+    {
+      "id" => 101,
+      "thread_id" => "PRRT_kwD==/+",
+      "in_reply_to_id" => nil,
+      "is_resolved" => false,
+      "created_at" => "2026-07-15T00:00:00Z"
+    }
+  ],
+  "review_summaries" => []
 }
 stdout, stderr, status = Open3.capture3(
   "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
@@ -453,12 +483,12 @@ stdout, stderr, status = Open3.capture3(
 )
 assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
 valid_checkpoints = JSON.parse(stdout)
-assert(valid_checkpoints.length == 2, "source checkpoint validator must reject invalid state and non-terminal summaries")
+assert(valid_checkpoints.length == 2, "source checkpoint validator must reject incomplete inventory, invalid state, and non-terminal summaries")
 assert(valid_checkpoints[0]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
 assert(valid_checkpoints[1]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
 
 wait_checkpoint_fixture = [
-  checkpoint_fixture.fetch("issue_comments").map do |comment|
+  checkpoint_fixture.fetch("issue_comments").reject { |comment| comment["body"] == incomplete_summary_body }.map do |comment|
     comment.merge("user" => { "login" => comment.fetch("user") })
   end
 ]
@@ -467,6 +497,6 @@ stdout, stderr, status = Open3.capture3(
   stdin_data: JSON.generate(wait_checkpoint_fixture)
 )
 assert(status.success?, "source wait checkpoint jq validator must execute: #{stderr}")
-assert(Integer(stdout, 10) == 2, "source wait checkpoint validator must accept pending status but reject non-terminal summaries")
+assert(Integer(stdout, 10) == 2, "source wait checkpoint validator must accept pending status but reject non-terminal summaries: #{stdout} #{stderr}")
 
 puts "PASS pr-batch single-target entry point contract"

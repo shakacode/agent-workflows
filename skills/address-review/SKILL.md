@@ -385,8 +385,26 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($fields[4] == "-" or ($fields[4] | test("^[A-Za-z0-9_=+/-]+$"))) and
         ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
         ($fields[6] | valid_outcome);
-      def valid_body:
-        . as $body |
+      . as $inventory |
+      def source_key($kind; $id; $thread):
+        [$source, $kind, ($id | tostring), ($thread // "-")] | join("\t");
+      def expected_keys($checkpoint_at):
+        ([ $inventory.issue_comments[] |
+           select(.created_at <= $checkpoint_at) |
+           select(((.body // "") | startswith("<!-- address-review-summary -->") or
+                   startswith("<!-- address-review-status -->") or
+                   startswith("<!-- codex-claim v1")) | not) |
+           source_key("issue-comment"; .id; "-") ] +
+         [ $inventory.inline_comments[] |
+           select(.created_at <= $checkpoint_at) |
+           select(.in_reply_to_id == null and .is_resolved != true) |
+           source_key("inline-comment"; .id; .thread_id) ] +
+         [ $inventory.review_summaries[] |
+           select(.created_at <= $checkpoint_at) |
+           source_key("review-summary"; .id; "-") ]) | unique;
+      def valid_checkpoint:
+        . as $checkpoint |
+        ($checkpoint.body // "") as $body |
         (($body | startswith("<!-- address-review-summary -->")) or
          ($body | startswith("<!-- address-review-status -->"))) and
         ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
@@ -396,10 +414,12 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
             all($rows[]; valid_row) and
             (($body | startswith("<!-- address-review-status -->")) or
              (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
-            (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
-      [.issue_comments[] |
+            (($rows | map(split("\t") | .[1:5] | join("\t")) | unique) as $row_keys |
+              ($row_keys | length) == ($rows | length) and
+              ((expected_keys($checkpoint.created_at) - $row_keys) | length) == 0)));
+      [$inventory.issue_comments[] |
         select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
-        select((.body // "") | valid_body)] |
+        select(valid_checkpoint)] |
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
       SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
@@ -547,6 +567,7 @@ against the fresh data before mutating GitHub or the branch.
     echo "Refusing to claim: coordination doctor/status is degraded; set ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1 only after confirming an exact independent assignment with no dependency refs." >&2
     exit 1
   fi
+  ACQUIRED_CLAIM_TARGETS=""
   for CLAIM_TARGET in ${CLAIM_TARGETS}; do
     set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${CLAIM_TARGET}"
     [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
@@ -554,14 +575,25 @@ against the fresh data before mutating GitHub or the branch.
       set -- "$@" --branch "${BRANCH_NAME}"
     fi
     if "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json; then
-      :
+      ACQUIRED_CLAIM_TARGETS="${ACQUIRED_CLAIM_TARGETS} ${CLAIM_TARGET}"
     else
       claim_status=$?
+      for ACQUIRED_CLAIM_TARGET in ${ACQUIRED_CLAIM_TARGETS}; do
+        set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${ACQUIRED_CLAIM_TARGET}"
+        [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
+        if ! "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 release "$@" --terminal abandoned --json; then
+          echo "Warning: could not confirm rollback of claim for PR #${ACQUIRED_CLAIM_TARGET}; coordination state is UNKNOWN." >&2
+        fi
+      done
       exit "${claim_status}"
     fi
   done
   ```
 
+- If a later private claim fails, terminal-release every target acquired by that
+  claim loop before returning the original failure status. A rollback that
+  cannot be confirmed leaves that target's coordination state `UNKNOWN`; report
+  it explicitly and do not mutate either PR.
 - A refused private claim for either mutation target is a hard stop. If the claim returns
   `CLAIM_REFUSED` / exit code 3, report the holder, heartbeat liveness, and
   target PR; do not continue with triage, branch changes, pushes, replies,
