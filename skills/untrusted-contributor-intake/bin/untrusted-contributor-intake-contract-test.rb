@@ -400,14 +400,15 @@ def documented_url_input_parser_snippet
   extract_url_input_parser_snippet(skill)
 end
 
-def run_documented_url_input_parser(url, pr_number, pr_ref_number)
+def run_documented_url_input_parser(url, pr_number, pr_ref_number, trusted_repo: "octo-org/hello-world")
   success, output = run_documented_posix_snippet(
     documented_url_input_parser_snippet,
     {
       "CANONICAL_URL" => url,
       "PR_INPUT_KIND" => "url",
       "PR_NUMBER" => pr_number,
-      "PR_REF_NUMBER" => pr_ref_number
+      "PR_REF_NUMBER" => pr_ref_number,
+      "TRUSTED_GH_REPO" => trusted_repo
     },
     %(printf '%s|%s|%s' "${OWNER}" "${REPO_NAME}" "${REPO}")
   )
@@ -1052,9 +1053,19 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_equal [true, %w[octo-org hello-world octo-org/hello-world]],
                  run_documented_url_input_parser("https://github.com/octo-org/hello-world/pull/42", "42", "42")
     assert_equal [true, %w[Enterprise-Org repo_name Enterprise-Org/repo_name]],
-                 run_documented_url_input_parser("https://github.company.example:8443/Enterprise-Org/repo_name/pull/9", "9", "9")
+                 run_documented_url_input_parser(
+                   "https://github.company.example:8443/Enterprise-Org/repo_name/pull/9",
+                   "9",
+                   "9",
+                   trusted_repo: "Enterprise-Org/repo_name"
+                 )
     assert_equal [true, [".github", "repo.name", ".github/repo.name"]],
-                 run_documented_url_input_parser("https://github.com/.github/repo.name/pull/42", "42", "42")
+                 run_documented_url_input_parser(
+                   "https://github.com/.github/repo.name/pull/42",
+                   "42",
+                   "42",
+                   trusted_repo: ".github/repo.name"
+                 )
 
     success, output = run_documented_url_input_parser(
       "https://github.com/octo-org/hello-world/pull/42",
@@ -1092,6 +1103,31 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
       success, output = run_documented_url_input_parser(url, pr_number, pr_number)
 
       refute success, "expected #{url.inspect} to be BLOCKED, got #{output.inspect}"
+      assert_match(/BLOCKED: canonical authority absent or invalid/, output)
+    end
+  end
+
+  def test_keeps_canonical_url_repository_pinned_to_the_trusted_repository
+    parser = documented_url_input_parser_snippet
+
+    assert_includes parser, '[ "${OWNER}/${REPO_NAME}" = "${TRUSTED_GH_REPO}" ] || canonical_url_blocked'
+    assert_operator parser.index('[ "${OWNER}/${REPO_NAME}" = "${TRUSTED_GH_REPO}" ] || canonical_url_blocked'), :<,
+                    parser.index('REPO="${OWNER}/${REPO_NAME}"')
+
+    assert_equal [true, %w[octo-org hello-world octo-org/hello-world]],
+                 run_documented_url_input_parser(
+                   "https://github.com/octo-org/hello-world/pull/42",
+                   "42",
+                   "42"
+                 )
+
+    [
+      ["https://github.com/renamed-org/renamed-repo/pull/42", "octo-org/hello-world"],
+      ["https://github.com/octo-org/hello-world/pull/42", "octo-org/hello/world"]
+    ].each do |url, trusted_repo|
+      success, output = run_documented_url_input_parser(url, "42", "42", trusted_repo: trusted_repo)
+
+      refute success, "expected #{url.inspect} with #{trusted_repo.inspect} to be BLOCKED, got #{output.inspect}"
       assert_match(/BLOCKED: canonical authority absent or invalid/, output)
     end
   end

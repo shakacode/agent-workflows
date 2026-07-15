@@ -392,6 +392,7 @@ case "${PULL_KIND}" in pull) ;; *) canonical_url_blocked ;; esac
 case "${PULL_NUMBER}" in ""|*/*|*[!0-9]*) canonical_url_blocked ;; esac
 [ "${PULL_NUMBER}" = "${PR_NUMBER}" ] || canonical_url_blocked
 [ "${PULL_NUMBER}" = "${PR_REF_NUMBER}" ] || canonical_url_blocked
+[ "${OWNER}/${REPO_NAME}" = "${TRUSTED_GH_REPO}" ] || canonical_url_blocked
 REPO="${OWNER}/${REPO_NAME}"
 ```
 
