@@ -50,6 +50,8 @@ module AgentWorkflowDrift
     data
   rescue Psych::Exception => e
     raise ManifestError, "invalid YAML: #{e.message}"
+  rescue SystemCallError => e
+    raise ManifestError, "manifest is unreadable: #{path} (#{e.class.name})"
   end
 
   def validate_manifest(manifest)
@@ -151,8 +153,10 @@ module AgentWorkflowDrift
     consumer_path = resolve_file(consumer_root, entry.fetch("consumer"), "consumer")
     source_contents = File.binread(source_path)
     consumer_contents = File.binread(consumer_path)
-    pinned_source_mode = read_pinned_source_mode(source_root, revision, entry.fetch("source"))
-    source_changed_from_revision = source_changed_from_revision?(source_root, revision, entry.fetch("source"))
+    pinned_source_mode, pinned_source_oid = read_pinned_source_entry(source_root, revision, entry.fetch("source"))
+    source_changed_from_revision = source_changed_from_revision?(
+      source_root, entry.fetch("source"), source_contents, pinned_source_mode, pinned_source_oid
+    )
     source_mode = filesystem_git_mode(source_root, entry.fetch("source"), "source")
     consumer_mode = filesystem_git_mode(consumer_root, entry.fetch("consumer"), "consumer")
 
@@ -191,7 +195,7 @@ module AgentWorkflowDrift
     unexpected << [label, e.message]
   end
 
-  def read_pinned_source_mode(source_root, revision, relative_path)
+  def read_pinned_source_entry(source_root, revision, relative_path)
     literal_pathspec = ":(top,literal)#{relative_path}"
     stdout, _stderr, status = git_capture(source_root, "ls-tree", "-z", revision, "--", literal_pathspec)
     raise ManifestError, "source file is not tracked at pinned revision: #{relative_path}" unless status.success? && !stdout.empty?
@@ -203,34 +207,52 @@ module AgentWorkflowDrift
       raise ManifestError, "source metadata is unreadable at pinned revision: #{relative_path}"
     end
 
-    mode = match[1]
+    mode, type, oid = match.captures.first(3)
     raise ManifestError, "unsupported pinned source mode #{mode}: #{relative_path}" unless SUPPORTED_GIT_MODES.include?(mode)
+    raise ManifestError, "unsupported pinned source object type #{type}: #{relative_path}" unless type == "blob"
 
-    mode
+    [mode, oid]
   end
 
-  def source_changed_from_revision?(source_root, revision, relative_path)
+  def source_changed_from_revision?(source_root, relative_path, source_contents, pinned_mode, pinned_oid)
+    index_entry = read_source_index_entry(source_root, relative_path)
+    return true unless index_entry == [pinned_mode, pinned_oid]
+
+    worktree_oid = hash_source_worktree_file(source_root, relative_path, source_contents)
+    worktree_oid != pinned_oid
+  end
+
+  def read_source_index_entry(source_root, relative_path)
     literal_pathspec = ":(top,literal)#{relative_path}"
-    comparisons = [
-      ["index", %w[diff --quiet --no-ext-diff --no-textconv --cached]],
-      ["worktree", %w[diff --quiet --no-ext-diff --no-textconv]]
-    ]
+    stdout, stderr, status = git_capture(source_root, "ls-files", "--stage", "-z", "--", literal_pathspec)
+    raise ManifestError, "source index is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+    return nil if stdout.empty?
 
-    comparisons.each do |label, arguments|
-      _stdout, stderr, status = git_capture(source_root, *arguments, revision, "--", literal_pathspec)
-      next if status.success?
-      return true if status.exitstatus == 1
+    records = stdout.split("\0", -1)
+    records.pop if records.last == ""
+    match = records.one? && records.first.match(/\A([0-9]{6}) ([0-9a-f]+) ([0-3])\t(.*)\z/m)
+    return nil unless match && match[3] == "0" && match[4] == relative_path
 
-      detail = stderr.strip
-      detail = "Git diff exited #{status.exitstatus}" if detail.empty?
-      raise ManifestError, "source #{label} comparison failed for #{relative_path}: #{detail}"
-    end
-
-    false
+    [match[1], match[2]]
   end
 
-  def git_capture(source_root, *)
-    Open3.capture3("git", "--no-replace-objects", "-C", source_root, *)
+  def hash_source_worktree_file(source_root, relative_path, contents)
+    stdout, stderr, status = git_capture(
+      source_root, "hash-object", "--path=#{relative_path}", "--stdin", stdin_data: contents
+    )
+    raise ManifestError, "source worktree is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+
+    oid = stdout.strip
+    raise ManifestError, "source worktree hash is unreadable for #{relative_path}" unless oid.match?(/\A[0-9a-f]+\z/)
+
+    oid
+  end
+
+  def git_capture(source_root, *arguments, stdin_data: nil)
+    command = ["git", "--no-replace-objects", "-C", source_root, *arguments]
+    return Open3.capture3(*command) if stdin_data.nil?
+
+    Open3.capture3(*command, stdin_data:)
   end
 
   def filesystem_git_mode(root, relative_path, side)

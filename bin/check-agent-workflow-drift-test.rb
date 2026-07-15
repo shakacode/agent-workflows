@@ -21,6 +21,36 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     assert_includes err, "--manifest, --source-root, --consumer-root"
   end
 
+  def test_reports_manifest_directory_without_backtrace
+    with_fixture do |fixture|
+      manifest_path = fixture.fetch(:manifest_path)
+      FileUtils.rm_f(manifest_path)
+      FileUtils.mkdir(manifest_path)
+
+      out, err, status = run_checker(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "manifest is unreadable: #{manifest_path} (Errno::EISDIR)"
+    end
+  end
+
+  def test_reports_manifest_symlink_cycle_without_backtrace
+    with_fixture do |fixture|
+      manifest_path = fixture.fetch(:manifest_path)
+      FileUtils.rm_f(manifest_path)
+      File.symlink(File.basename(manifest_path), manifest_path)
+
+      out, err, status = run_checker(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "manifest is unreadable: #{manifest_path} (Errno::ELOOP)"
+    end
+  end
+
   def test_reports_clean_identical_file_and_expected_overlay
     with_fixture do |fixture|
       out, err, status = run_checker(fixture)
@@ -329,6 +359,36 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       write_file(fixture.fetch(:source_root), source_path, "staged source content\n")
       git(fixture.fetch(:source_root), "add", "--", source_path)
       write_file(fixture.fetch(:source_root), source_path, "shared workflow\n")
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_rejects_assume_unchanged_source_content_that_does_not_match_pinned_revision
+    with_fixture do |fixture|
+      source_path = "skills/example/SKILL.md"
+      consumer_path = ".agents/skills/example/SKILL.md"
+      git(fixture.fetch(:source_root), "update-index", "--assume-unchanged", "--", source_path)
+      write_file(fixture.fetch(:source_root), source_path, "hidden source drift\n")
+      write_file(fixture.fetch(:consumer_root), consumer_path, "hidden source drift\n")
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_rejects_skip_worktree_source_content_that_does_not_match_pinned_revision
+    with_fixture do |fixture|
+      source_path = "skills/example/SKILL.md"
+      consumer_path = ".agents/skills/example/SKILL.md"
+      git(fixture.fetch(:source_root), "update-index", "--skip-worktree", "--", source_path)
+      write_file(fixture.fetch(:source_root), source_path, "hidden source drift\n")
+      write_file(fixture.fetch(:consumer_root), consumer_path, "hidden source drift\n")
 
       out, _err, status = run_checker(fixture)
 
