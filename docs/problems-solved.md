@@ -145,7 +145,8 @@ control plane.
 2. Install one delivery route on each Codex and Claude Code host that needs the
    pack.
 3. Initialize and review each consumer repo's workflow seam.
-4. Validate a canary repo, then use maintainer sync for one focused PR per
+4. Validate a canary repo, then use ShakaCode's maintainer sync—or your
+   organization's equivalent registry/fanout process—for one focused PR per
    additional repo.
 5. Add coordination when concurrency, multiple machines, or multiple operators
    create an ownership and recovery problem.
