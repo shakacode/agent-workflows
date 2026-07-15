@@ -14,3 +14,7 @@ hosted_ci_trigger: "n/a"
 ci_change_detector: "n/a"
 secret_redaction_patterns: "conservative default; consumer repos may define repo-specific CI parity redaction patterns"
 default_simplify_model: "n/a"
+untrusted_contributor_intake:
+  trusted_github_host: "github.com"
+  trusted_github_scheme: "https"
+  trusted_github_repo: "shakacode/agent-workflows"

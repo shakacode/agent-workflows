@@ -40,11 +40,20 @@ PR_INPUT_KIND to `number` or `url` and PR_NUMBER to the numeric target. Before
 gh, the classifier requires the same conservative DNS-or-IPv4 authority shape
 used by the canonical host boundary, with an optional numeric port.
 
-Before classification, the invoking trusted host or tooling must pre-set
-TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; there is no fallback.
-It must source that normalized `host[:non-default-port]` authority, scheme, and
-validated `owner/repo` target from a trusted local policy seam or trusted-base
-checkout remote metadata. Do not derive them from ambient GH_HOST or GH_REPO,
+Before classification, read untrusted_contributor_intake.trusted_github_host,
+untrusted_contributor_intake.trusted_github_scheme, and
+untrusted_contributor_intake.trusted_github_repo only from trusted-base
+`.agents/agent-workflow.yml` before any untrusted PR content. Supply them as
+the distinct fresh inputs UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST,
+UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME, and
+UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO: each name is its consumer
+seam key mechanically uppercased with dots replaced by underscores. At the
+start of the producer, snapshot these inputs and clear mutable TRUSTED_GH_*
+output and derived state. Require all three snapshots atomically, then map
+them to TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; missing or
+invalid keys are BLOCKED with no default or checkout-derived fallback. It must
+source that normalized `host[:non-default-port]` authority, scheme, and
+validated `owner/repo` target from that trusted local policy seam. Do not derive them from ambient GH_HOST or GH_REPO,
 PR or ref data, GitHub responses, or fork environment. TRUSTED_GH_SCHEME must
 be exactly https; do not infer it. Strip :443 only for trusted https; preserve
 every other port. If any value is
@@ -52,15 +61,10 @@ unavailable, report BLOCKED. A URL input authority and target repository must
 equal the trusted values before any network call; numeric input uses that
 trusted host and repository explicitly.
 
-Automatic trusted-origin derivation accepts only HTTPS remote URLs. HTTP, SSH, or
-scp-style remotes require a complete explicit TRUSTED_GH_HOST,
-TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO override; otherwise report BLOCKED.
-Automatic origin derivation is allowed only when trusted host/tooling first sets
-TRUSTED_ORIGIN_DERIVATION_ALLOWED=1 after establishing trusted
-canonical-upstream base checkout hygiene. From any other checkout, require
-complete explicit TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO values
-or report BLOCKED. Prefer complete explicit TRUSTED_GH_HOST, TRUSTED_GH_SCHEME,
-and TRUSTED_GH_REPO values.
+Complete explicit TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO values
+are required; do not derive them from a checkout remote. A fork or repointed
+origin cannot establish trust. If a trusted host or tooling cannot provide all
+three values, report BLOCKED before PR classification or any network call.
 
 Run every shell snippet below in one continuous shell script or persistent shell
 session; later snippets read variables set by earlier snippets. If your tool
@@ -68,28 +72,19 @@ starts a fresh shell for each command, concatenate the snippets in order before
 running them.
 
 ```bash
-# Trusted origin producer: trusted local checkout metadata only; run before PR_REF.
-trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid; complete HTTPS TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO are required for HTTP, SSH, or scp origin\n' >&2; exit 1; }
-if [ -n "${TRUSTED_GH_HOST:-}" ] || [ -n "${TRUSTED_GH_SCHEME:-}" ] || [ -n "${TRUSTED_GH_REPO:-}" ]; then
-  [ -n "${TRUSTED_GH_HOST:-}" ] && [ -n "${TRUSTED_GH_SCHEME:-}" ] && [ -n "${TRUSTED_GH_REPO:-}" ] || trusted_origin_blocked
-else
-  [ "${TRUSTED_ORIGIN_DERIVATION_ALLOWED:-}" = "1" ] || trusted_origin_blocked
-  TRUSTED_ORIGIN_URL="$(git remote get-url origin 2>/dev/null)" || trusted_origin_blocked
-  case "${TRUSTED_ORIGIN_URL}" in https://*) ;; *) trusted_origin_blocked ;; esac
-  TRUSTED_GH_SCHEME="${TRUSTED_ORIGIN_URL%%://*}"
-  TRUSTED_ORIGIN_REMAINDER="${TRUSTED_ORIGIN_URL#*://}"
-  case "${TRUSTED_ORIGIN_REMAINDER}" in */*) ;; *) trusted_origin_blocked ;; esac
-  TRUSTED_GH_HOST="${TRUSTED_ORIGIN_REMAINDER%%/*}"
-  TRUSTED_ORIGIN_PATH="${TRUSTED_ORIGIN_REMAINDER#*/}"
-  case "${TRUSTED_GH_HOST}" in ""|*@*|*/*|*\?*|*\#*|*" "*|*\[*|*\]*) trusted_origin_blocked ;; esac
-  case "${TRUSTED_ORIGIN_PATH}" in */*) ;; *) trusted_origin_blocked ;; esac
-  TRUSTED_ORIGIN_OWNER="${TRUSTED_ORIGIN_PATH%%/*}"
-  TRUSTED_ORIGIN_REPO="${TRUSTED_ORIGIN_PATH#*/}"
-  TRUSTED_ORIGIN_REPO="${TRUSTED_ORIGIN_REPO%.git}"
-  case "${TRUSTED_ORIGIN_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
-  case "${TRUSTED_ORIGIN_REPO}" in ""|.|..|*/*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
-  TRUSTED_GH_REPO="${TRUSTED_ORIGIN_OWNER}/${TRUSTED_ORIGIN_REPO}"
-fi
+# Trusted origin producer: snapshot complete explicit policy inputs only; run before PR_REF.
+trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid; complete explicit HTTPS TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO are required\n' >&2; exit 1; }
+unset TRUSTED_GH_HOST TRUSTED_GH_SCHEME TRUSTED_GH_REPO
+unset TRUSTED_ORIGIN_URL TRUSTED_ORIGIN_REMAINDER TRUSTED_ORIGIN_PATH TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT TRUSTED_ORIGIN_LABEL TRUSTED_ORIGIN_OWNER TRUSTED_ORIGIN_REPO TRUSTED_REPO_OWNER TRUSTED_REPO_NAME
+unset TRUSTED_HOST_PORT TRUSTED_HOST TRUSTED_PORT TRUSTED_REMAINDER TRUSTED_LABEL
+TRUSTED_POLICY_HOST="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST:-}"
+TRUSTED_POLICY_SCHEME="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME:-}"
+TRUSTED_POLICY_REPO="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO:-}"
+unset UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO
+[ -n "${TRUSTED_POLICY_HOST}" ] && [ -n "${TRUSTED_POLICY_SCHEME}" ] && [ -n "${TRUSTED_POLICY_REPO}" ] || trusted_origin_blocked
+TRUSTED_GH_HOST="${TRUSTED_POLICY_HOST}"
+TRUSTED_GH_SCHEME="${TRUSTED_POLICY_SCHEME}"
+TRUSTED_GH_REPO="${TRUSTED_POLICY_REPO}"
 [ "${TRUSTED_GH_SCHEME}" = "https" ] || trusted_origin_blocked
 TRUSTED_ORIGIN_HOST_PORT="$(printf '%s' "${TRUSTED_GH_HOST}" | tr '[:upper:]' '[:lower:]')"
 case "${TRUSTED_ORIGIN_HOST_PORT}" in
@@ -103,6 +98,17 @@ case "${TRUSTED_ORIGIN_HOST_PORT}" in
     ;;
   *) TRUSTED_ORIGIN_HOST="${TRUSTED_ORIGIN_HOST_PORT}"; TRUSTED_ORIGIN_PORT="" ;;
 esac
+case "${TRUSTED_ORIGIN_HOST}" in ""|.*|*.|*..*|*[!abcdefghijklmnopqrstuvwxyz0123456789.-]*) trusted_origin_blocked ;; esac
+TRUSTED_ORIGIN_REMAINDER="${TRUSTED_ORIGIN_HOST}"
+while [ -n "${TRUSTED_ORIGIN_REMAINDER}" ]; do
+  TRUSTED_ORIGIN_LABEL="${TRUSTED_ORIGIN_REMAINDER%%.*}"
+  case "${TRUSTED_ORIGIN_LABEL}" in ""|-*|*-) trusted_origin_blocked ;; esac
+  [ "${#TRUSTED_ORIGIN_LABEL}" -le 63 ] || trusted_origin_blocked
+  case "${TRUSTED_ORIGIN_REMAINDER}" in
+    *.*) TRUSTED_ORIGIN_REMAINDER="${TRUSTED_ORIGIN_REMAINDER#*.}" ;;
+    *) TRUSTED_ORIGIN_REMAINDER="" ;;
+  esac
+done
 case "${TRUSTED_GH_SCHEME}:${TRUSTED_ORIGIN_PORT}" in
   https:443) TRUSTED_ORIGIN_PORT="" ;;
 esac
@@ -424,9 +430,9 @@ exactly that action for that operation; all other writes remain blocked. Fork
 checkout, execution, scripts, dependency installation, action invocation, and
 secret read or exposure remain non-overridable. If host cannot constrain
 permission to the single named safe write, report BLOCKED or leave this skill
-for a separately authorized trusted workflow. The trusted-origin producer is
-the metadata-only local preflight; it reads only trusted checkout origin
-metadata. If it blocks, report BLOCKED without inspecting untrusted PR text.
+for a separately authorized trusted workflow. The trusted-origin producer
+validates complete explicit trusted values before any untrusted PR text. If it
+blocks, report BLOCKED without inspecting untrusted PR text.
 Do not reuse pr-security-preflight: it fetches PR, issue, comment, and review
 text, which violates this skill's metadata-only intake boundary.
 Never allow ambient default-host fallback. Example: maintainer

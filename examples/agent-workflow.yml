@@ -12,3 +12,11 @@ merge_ledger: "n/a"
 ci_parity_environment: "n/a"
 hosted_ci_trigger: "n/a"
 ci_change_detector: "n/a"
+
+# Optional: enable the untrusted-contributor-intake skill with an explicit
+# trusted-base authority. Replace OWNER/REPO before uncommenting; the seam
+# doctor validates the complete mapping and the skill fails closed if omitted.
+# untrusted_contributor_intake:
+#   trusted_github_host: "github.com"
+#   trusted_github_scheme: "https"
+#   trusted_github_repo: "OWNER/REPO"

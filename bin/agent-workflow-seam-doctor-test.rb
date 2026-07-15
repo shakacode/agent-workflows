@@ -286,6 +286,43 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_incomplete_untrusted_contributor_intake_policy_fails
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      policy = POLICY.merge(
+        "untrusted_contributor_intake" => { "trusted_github_host" => "github.com" }
+      )
+      write_policy(root, policy)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "missing policy key: untrusted_contributor_intake.trusted_github_scheme"
+      assert_includes out, "missing policy key: untrusted_contributor_intake.trusted_github_repo"
+    end
+  end
+
+  def test_complete_untrusted_contributor_intake_policy_passes
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      policy = POLICY.merge(
+        "untrusted_contributor_intake" => {
+          "trusted_github_host" => "github.com",
+          "trusted_github_scheme" => "https",
+          "trusted_github_repo" => "octo-org/hello-world"
+        }
+      )
+      write_policy(root, policy)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
   def test_unresolved_policy_value_fails
     with_repo do |root|
       write_valid_binstub_contract(root)
