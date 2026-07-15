@@ -18,9 +18,10 @@ INTAKE_SUBPROCESS_ENV_KEYS = %w[
   TRUSTED_HOST_PORT TRUSTED_HOST TRUSTED_PORT TRUSTED_REMAINDER TRUSTED_LABEL
   PR_REF PR_INPUT_KIND PR_NUMBER PR_REF_NUMBER PR_REF_SCHEME PR_REF_WITHOUT_SCHEME
   PR_REF_AUTHORITY PR_REF_PATH PR_REF_HOST_PORT PR_REF_HOST PR_REF_PORT PR_REF_GH_HOST
-  PR_REF_OWNER PR_REF_REPO_NAME PR_REF_KIND REPO REPO_OWNER REPO_NAME
+  PR_REF_OWNER PR_REF_REPO_NAME PR_REF_REPO PR_REF_KIND REPO REPO_OWNER REPO_NAME
   CANONICAL_URL CANONICAL_SCHEME CANONICAL_AUTHORITY CANONICAL_HOST CANONICAL_PORT
   CANONICAL_CONTROL_COUNT CANONICAL_REMAINDER CANONICAL_LABEL CANONICAL_PR_PATH
+  CANONICAL_REPO CANONICAL_TRUSTED_REPO
   OWNER PULL_KIND PULL_NUMBER GH_HOST METADATA_RECORD METADATA_STATUS METADATA_LEFT
   METADATA_RIGHT METADATA_CONTROL_COUNT ACTOR_TYPE ACTOR_LOGIN
 ].freeze
@@ -346,7 +347,7 @@ def run_documented_metadata_resolution(
   end
 end
 
-def run_documented_initial_metadata_resolution(pr_ref:, trusted_host:, gh_output:, trusted_scheme: "https", trusted_repo: "octo-org/hello-world", gh_status: 0)
+def run_documented_initial_metadata_resolution(pr_ref:, trusted_host:, gh_output:, trusted_scheme: "https", trusted_repo: "octo-org/hello-world", gh_status: 0, canonical_parser: false)
   Dir.mktmpdir("untrusted-contributor-intake") do |directory|
     gh_path = File.join(directory, "gh")
     log_path = File.join(directory, "gh.log")
@@ -371,8 +372,10 @@ def run_documented_initial_metadata_resolution(pr_ref:, trusted_host:, gh_output
       "TRUSTED_GH_SCHEME" => trusted_scheme,
       "TRUSTED_GH_REPO" => trusted_repo
     }
+    snippets = [documented_pr_ref_classifier_snippet, documented_metadata_resolution_snippet]
+    snippets << documented_url_input_parser_snippet if canonical_parser
     success, output = run_documented_posix_snippet(
-      [documented_pr_ref_classifier_snippet, documented_metadata_resolution_snippet].join("\n"),
+      snippets.join("\n"),
       environment,
       %(printf '%s|%s|%s|%s' "${PR_INPUT_KIND}" "${PR_NUMBER}" "${REPO:-}" "${CANONICAL_URL:-}")
     )
@@ -383,7 +386,7 @@ def run_documented_initial_metadata_resolution(pr_ref:, trusted_host:, gh_output
 end
 
 def extract_url_input_parser_snippet(source)
-  start = source.index("# URL input parser:")
+  start = source.index("# Canonical PR URL parser:")
 
   raise "URL input parser snippet missing" unless start
 
@@ -400,12 +403,12 @@ def documented_url_input_parser_snippet
   extract_url_input_parser_snippet(skill)
 end
 
-def run_documented_url_input_parser(url, pr_number, pr_ref_number, trusted_repo: "octo-org/hello-world")
+def run_documented_url_input_parser(url, pr_number, pr_ref_number, trusted_repo: "octo-org/hello-world", input_kind: "url")
   success, output = run_documented_posix_snippet(
     documented_url_input_parser_snippet,
     {
       "CANONICAL_URL" => url,
-      "PR_INPUT_KIND" => "url",
+      "PR_INPUT_KIND" => input_kind,
       "PR_NUMBER" => pr_number,
       "PR_REF_NUMBER" => pr_ref_number,
       "TRUSTED_GH_REPO" => trusted_repo
@@ -529,6 +532,8 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
                  run_documented_trusted_origin_producer("https://GHE.EXAMPLE:443/octo-org/hello-world.git")
     assert_equal [true, "https|ghe.example:8443|octo-org/hello-world"],
                  run_documented_trusted_origin_producer("https://GHE.EXAMPLE:8443/octo-org/hello-world.git")
+    assert_equal [true, "https|ghe.example:8443|octo-org/hello-world"],
+                 run_documented_trusted_origin_producer("https://GHE.EXAMPLE:8443/Octo-Org/Hello-World.git")
     assert_equal [true, "https|policy.example:9443|octo-org/hello-world"],
                  run_documented_trusted_origin_producer("ssh://ignored/not-used", trusted_host: "policy.example:9443", trusted_scheme: "https", trusted_repo: "octo-org/hello-world")
 
@@ -585,7 +590,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_requires_trusted_metadata_validation_before_using_producer_output
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     producer = skill.index("# Trusted origin producer:")
-    validator = skill.index("metadata_require_trusted_host\ncase \"${PR_INPUT_KIND}\"")
+    validator = skill.index("metadata_require_trusted_host\nmetadata_require_trusted_repo\ncase \"${PR_INPUT_KIND}\"")
     first_network_call = skill.index('env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view')
 
     assert_includes skill, "# Provisional only: metadata_require_trusted_host must succeed before these values are used or any network call."
@@ -720,6 +725,52 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     refute_includes calls.first, "repo view"
   end
 
+  def test_normalizes_repository_identity_and_validates_canonical_pr_urls_for_both_input_kinds
+    success, values, calls = run_documented_initial_metadata_resolution(
+      pr_ref: "https://ghe.example:8443/Octo-Org/Hello-World/pull/42",
+      trusted_host: "ghe.example:8443",
+      trusted_repo: "octo-org/hello-world",
+      gh_output: "42|https://ghe.example:8443/Octo-Org/Hello-World/pull/42",
+      canonical_parser: true
+    )
+    assert success, values
+    assert_equal ["url", "42", "octo-org/hello-world", "https://ghe.example:8443/Octo-Org/Hello-World/pull/42"], values
+    assert_equal 1, calls.length
+
+    success, values, calls = run_documented_initial_metadata_resolution(
+      pr_ref: "42",
+      trusted_host: "ghe.example:8443",
+      trusted_repo: "Octo-Org/Hello-World",
+      gh_output: "42|https://ghe.example:8443/Octo-Org/Hello-World/pull/42",
+      canonical_parser: true
+    )
+    assert success, values
+    assert_equal ["number", "42", "octo-org/hello-world", "https://ghe.example:8443/Octo-Org/Hello-World/pull/42"], values
+    assert_equal 1, calls.length
+
+    success, output, calls = run_documented_initial_metadata_resolution(
+      pr_ref: "42",
+      trusted_host: "ghe.example:8443",
+      trusted_repo: "octo-org/hello-world",
+      gh_output: "42|https://ghe.example:8443/renamed-org/renamed-repo/pull/42",
+      canonical_parser: true
+    )
+    refute success
+    assert_match(/BLOCKED: canonical authority absent or invalid/, output)
+    assert_equal 1, calls.length
+
+    success, output, calls = run_documented_initial_metadata_resolution(
+      pr_ref: "https://ghe.example:8443/other-org/other-repo/pull/42",
+      trusted_host: "ghe.example:8443",
+      trusted_repo: "octo-org/hello-world",
+      gh_output: "42|https://ghe.example:8443/other-org/other-repo/pull/42",
+      canonical_parser: true
+    )
+    refute success
+    assert_match(/BLOCKED: metadata resolution is invalid/, output)
+    assert_empty calls
+  end
+
   def test_validates_complete_explicit_repository_before_metadata_network_calls
     %w[
       octo-org
@@ -844,7 +895,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
     classifier = skill.index("# PR_REF classifier:")
     resolver = skill.index("# Metadata resolution:")
-    canonical_parser = skill.index("# URL input parser:")
+    canonical_parser = skill.index("# Canonical PR URL parser:")
 
     refute_nil classifier
     refute_nil resolver
@@ -1052,7 +1103,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_executes_the_documented_url_input_parser
     assert_equal [true, %w[octo-org hello-world octo-org/hello-world]],
                  run_documented_url_input_parser("https://github.com/octo-org/hello-world/pull/42", "42", "42")
-    assert_equal [true, %w[Enterprise-Org repo_name Enterprise-Org/repo_name]],
+    assert_equal [true, %w[Enterprise-Org repo_name enterprise-org/repo_name]],
                  run_documented_url_input_parser(
                    "https://github.company.example:8443/Enterprise-Org/repo_name/pull/9",
                    "9",
@@ -1110,9 +1161,10 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_keeps_canonical_url_repository_pinned_to_the_trusted_repository
     parser = documented_url_input_parser_snippet
 
-    assert_includes parser, '[ "${OWNER}/${REPO_NAME}" = "${TRUSTED_GH_REPO}" ] || canonical_url_blocked'
-    assert_operator parser.index('[ "${OWNER}/${REPO_NAME}" = "${TRUSTED_GH_REPO}" ] || canonical_url_blocked'), :<,
-                    parser.index('REPO="${OWNER}/${REPO_NAME}"')
+    assert_includes parser, 'CANONICAL_REPO="$(printf \'%s\' "${OWNER}/${REPO_NAME}" | tr \'[:upper:]\' \'[:lower:]\')"'
+    assert_includes parser, '[ "${CANONICAL_REPO}" = "${CANONICAL_TRUSTED_REPO}" ] || canonical_url_blocked'
+    assert_operator parser.index('[ "${CANONICAL_REPO}" = "${CANONICAL_TRUSTED_REPO}" ] || canonical_url_blocked'), :<,
+                    parser.index('REPO="${CANONICAL_TRUSTED_REPO}"')
 
     assert_equal [true, %w[octo-org hello-world octo-org/hello-world]],
                  run_documented_url_input_parser(

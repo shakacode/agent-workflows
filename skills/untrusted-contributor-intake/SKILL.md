@@ -109,7 +109,7 @@ TRUSTED_REPO_NAME="${TRUSTED_GH_REPO#*/}"
 case "${TRUSTED_REPO_NAME}" in */*) trusted_origin_blocked ;; esac
 case "${TRUSTED_REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
 case "${TRUSTED_REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
-TRUSTED_GH_REPO="${TRUSTED_REPO_OWNER}/${TRUSTED_REPO_NAME}"
+TRUSTED_GH_REPO="$(printf '%s' "${TRUSTED_REPO_OWNER}/${TRUSTED_REPO_NAME}" | tr '[:upper:]' '[:lower:]')"
 # Provisional only: metadata_require_trusted_host must succeed before these values are used or any network call.
 ```
 
@@ -223,6 +223,15 @@ metadata_require_trusted_host() {
   TRUSTED_GH_HOST="${TRUSTED_HOST}"
   if [ -n "${TRUSTED_PORT}" ]; then TRUSTED_GH_HOST="${TRUSTED_GH_HOST}:${TRUSTED_PORT}"; fi
 }
+metadata_require_trusted_repo() {
+  case "${TRUSTED_GH_REPO:-}" in */*) ;; *) metadata_blocked ;; esac
+  TRUSTED_REPO_OWNER="${TRUSTED_GH_REPO%%/*}"
+  TRUSTED_REPO_NAME="${TRUSTED_GH_REPO#*/}"
+  case "${TRUSTED_REPO_NAME}" in */*) metadata_blocked ;; esac
+  case "${TRUSTED_REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
+  case "${TRUSTED_REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
+  TRUSTED_GH_REPO="$(printf '%s' "${TRUSTED_REPO_OWNER}/${TRUSTED_REPO_NAME}" | tr '[:upper:]' '[:lower:]')"
+}
 metadata_split_record() {
   [ -n "${METADATA_RECORD}" ] || metadata_blocked
   METADATA_CONTROL_COUNT="$(printf '%s' "${METADATA_RECORD}" | LC_ALL=C tr -d '[:print:]' | wc -c | tr -d '[:space:]')"
@@ -233,12 +242,14 @@ metadata_split_record() {
   [ -n "${METADATA_LEFT}" ] && [ -n "${METADATA_RIGHT}" ] || metadata_blocked
 }
 metadata_require_trusted_host
+metadata_require_trusted_repo
 case "${PR_INPUT_KIND}" in
   url)
     case "${PR_REF_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
     [ "${PR_REF_GH_HOST:-}" = "${TRUSTED_GH_HOST}" ] || metadata_blocked
-    REPO="${PR_REF_OWNER}/${PR_REF_REPO_NAME}"
-    [ "${REPO}" = "${TRUSTED_GH_REPO}" ] || metadata_blocked
+    PR_REF_REPO="$(printf '%s' "${PR_REF_OWNER}/${PR_REF_REPO_NAME}" | tr '[:upper:]' '[:lower:]')"
+    [ "${PR_REF_REPO}" = "${TRUSTED_GH_REPO}" ] || metadata_blocked
+    REPO="${TRUSTED_GH_REPO}"
     METADATA_RECORD="$(env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_REF_NUMBER}" --repo "${REPO}" --json number,url --jq '"\(.number)|\(.url)"')"
     METADATA_STATUS=$?
     [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
@@ -251,12 +262,6 @@ case "${PR_INPUT_KIND}" in
   number)
     case "${PR_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
     REPO="${TRUSTED_GH_REPO}"
-    case "${REPO}" in */*) ;; *) metadata_blocked ;; esac
-    REPO_OWNER="${REPO%%/*}"
-    REPO_NAME="${REPO#*/}"
-    case "${REPO_NAME}" in */*) metadata_blocked ;; esac
-    case "${REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
-    case "${REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
     METADATA_RECORD="$(env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${TRUSTED_GH_REPO}" --json number,url --jq '"\(.number)|\(.url)"')"
     METADATA_STATUS=$?
     [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
@@ -357,20 +362,21 @@ be resolved, or canonical authority is absent or invalid, stop and report
 BLOCKED. If canonical GH_HOST differs from TRUSTED_GH_HOST, report BLOCKED
 before preflight.
 
-For PR_INPUT_KIND=url only, after metadata-only lookup returns CANONICAL_URL,
-derive REPO with the following parser. It consumes only server-returned
-CANONICAL_URL, server-resolved PR_NUMBER, and preserved raw PR_REF_NUMBER,
-never PR body, comments, or diff text. Require canonical path number to equal
-both numeric values, with exact authority/OWNER/REPO_NAME/pull/NUMBER and no
-suffix, query, fragment, or extra slash. OWNER and REPO_NAME must be nonempty
-ASCII letters, digits, dot, underscore, or hyphen path segments. Numeric input
-never runs this URL canonical path parser.
+For both PR_INPUT_KIND=url and number, after metadata-only lookup returns
+CANONICAL_URL, validate its PR path with the following parser. It consumes only
+server-returned CANONICAL_URL and server-resolved PR_NUMBER; URL input also
+uses preserved raw PR_REF_NUMBER, never PR body, comments, or diff text.
+Require canonical path number to equal PR_NUMBER (and PR_REF_NUMBER for URL
+input), with exact authority/OWNER/REPO_NAME/pull/NUMBER and no suffix, query,
+fragment, or extra slash. OWNER and REPO_NAME must be nonempty ASCII letters,
+digits, dot, underscore, or hyphen path segments and must match the trusted
+repository case-insensitively. Keep REPO pinned to the normalized trusted
+repository.
 
 ```bash
-# URL input parser: server CANONICAL_URL plus PR_NUMBER and raw PR_REF_NUMBER.
+# Canonical PR URL parser: server CANONICAL_URL plus PR_NUMBER and raw PR_REF_NUMBER for URL input.
 canonical_url_blocked() { printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1; }
-case "${PR_INPUT_KIND}" in url) ;; *) canonical_url_blocked ;; esac
-case "${PR_REF_NUMBER}" in ""|*[!0-9]*) canonical_url_blocked ;; esac
+case "${PR_INPUT_KIND}" in url|number) ;; *) canonical_url_blocked ;; esac
 case "${CANONICAL_URL}" in https://*) ;; *) canonical_url_blocked ;; esac
 URL_WITHOUT_SCHEME="${CANONICAL_URL#*://}"
 case "${URL_WITHOUT_SCHEME}" in */*) ;; *) canonical_url_blocked ;; esac
@@ -391,9 +397,16 @@ case "${PR_NUMBER}" in ""|*[!0-9]*) canonical_url_blocked ;; esac
 case "${PULL_KIND}" in pull) ;; *) canonical_url_blocked ;; esac
 case "${PULL_NUMBER}" in ""|*/*|*[!0-9]*) canonical_url_blocked ;; esac
 [ "${PULL_NUMBER}" = "${PR_NUMBER}" ] || canonical_url_blocked
-[ "${PULL_NUMBER}" = "${PR_REF_NUMBER}" ] || canonical_url_blocked
-[ "${OWNER}/${REPO_NAME}" = "${TRUSTED_GH_REPO}" ] || canonical_url_blocked
-REPO="${OWNER}/${REPO_NAME}"
+case "${PR_INPUT_KIND}" in
+  url)
+    case "${PR_REF_NUMBER}" in ""|*[!0-9]*) canonical_url_blocked ;; esac
+    [ "${PULL_NUMBER}" = "${PR_REF_NUMBER}" ] || canonical_url_blocked
+    ;;
+esac
+CANONICAL_REPO="$(printf '%s' "${OWNER}/${REPO_NAME}" | tr '[:upper:]' '[:lower:]')"
+CANONICAL_TRUSTED_REPO="$(printf '%s' "${TRUSTED_GH_REPO:-}" | tr '[:upper:]' '[:lower:]')"
+[ "${CANONICAL_REPO}" = "${CANONICAL_TRUSTED_REPO}" ] || canonical_url_blocked
+REPO="${CANONICAL_TRUSTED_REPO}"
 ```
 
 ## Host Boundary
