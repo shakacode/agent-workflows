@@ -19,9 +19,9 @@ Ask the user to choose one outcome:
 
 Only create a GitHub issue after the user chooses "create one bundled follow-up issue".
 
-Resolve the user's tracking-outcome choice before starting the shell block below. **Run Steps 9 and 10 in a single shell call after that choice is known.** They share state — `${TRACKING_OUTCOME}` and `${FOLLOW_UP_URL}` set in Step 9 are consumed by Step 10's summary template, `${issue_body_file}` and `${summary_body_file}` share an EXIT trap, and the `_cleanup_addr_review` function is defined once. Agents that execute each Bash tool call in a fresh subshell (the default in Claude Code and similar harnesses) will lose those variables between calls and trigger Step 9's cleanup trap before Step 10 runs. Combine both steps into one heredoc/chained invocation, or capture Step 9's tracking output from stdout and pass it explicitly into Step 10's invocation.
+Resolve the user's tracking-outcome choice before starting the shell block below. **Run Steps 9 and 10 in a single shell call after that choice is known.** They share state — `${TRACKING_OUTCOME}` and `${FOLLOW_UP_URL}` set in Step 9 are consumed by Step 10's summary template, `${issue_body_file}`, `${summary_body_file}`, and the optional `${source_summary_body_file}` share an EXIT trap, and the `_cleanup_addr_review` function is defined once. Agents that execute each Bash tool call in a fresh subshell (the default in Claude Code and similar harnesses) will lose those variables between calls and trigger Step 9's cleanup trap before Step 10 runs. Combine both steps into one heredoc/chained invocation, or capture Step 9's tracking output from stdout and pass it explicitly into Step 10's invocation.
 
-The cleanup trap below is a named `_cleanup_addr_review` function rather than an inline `trap '...' EXIT` so Step 10's standalone path can redefine the same function without divergence. Installing the trap up front (rather than letting Step 10 replace it) closes the race window where an early exit between Step 9 and Step 10 would skip cleanup of the second temp file.
+The cleanup trap below is a named `_cleanup_addr_review` function rather than an inline `trap '...' EXIT` so Step 10's standalone path can redefine the same function without divergence. Installing the trap up front (rather than letting Step 10 replace it) closes the race window where an early exit between Step 9 and Step 10 would skip cleanup of summary temp files.
 
 ```bash
 # Template inputs: replace each <...> placeholder before running this snippet.
@@ -77,10 +77,11 @@ if [ -z "${MUST_FIX_SECTION}${DISCUSS_SECTION}${OPTIONAL_SECTION}${SKIPPED_SECTI
   echo "No deferred items found; skip deferred tracking."
 else
   issue_body_file="$(mktemp)"
-  # Cleanup covers both temp files; Step 10 redefines _cleanup_addr_review for its standalone path.
+  # Cleanup covers issue and primary/source summary temp files; Step 10 redefines it for the standalone path.
   _cleanup_addr_review() {
     [ -n "${issue_body_file:-}" ]   && rm -f "${issue_body_file}"
     [ -n "${summary_body_file:-}" ] && rm -f "${summary_body_file}"
+    [ -n "${source_summary_body_file:-}" ] && rm -f "${source_summary_body_file}"
   }
   trap _cleanup_addr_review EXIT
   # Build the issue body with printf only — avoids bash-only ANSI-C quoting
@@ -167,6 +168,21 @@ cutoff guard below is not satisfied, a non-cutoff status comment.
 
 For `a`, do not post a GitHub PR summary comment automatically; return the local summary to the user with the staged-file list and detailed `DISCUSS` recommendations.
 
+For replacement carryover, build a distinct source checkpoint in addition to
+the normal primary checkpoint. A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
+Use `SOURCE_CUTOFF_SAFE`, not the primary `CUTOFF_SAFE`, for that decision.
+Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
+Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
+Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta.
+An authenticated same-actor `<!-- address-review-source-reply -->` comment is
+workflow-generated rationale rather than a source candidate, so exclude it
+from `SOURCE_STATE_ROWS` and `SOURCE_STATE_EXPECTED_COUNT`. A marked comment
+from another actor remains a candidate and must still have a state row.
+Set `SOURCE_STATE_ROWS` from that cumulative verified snapshot and
+`SOURCE_STATE_EXPECTED_COUNT` to its exact row count. Zero candidates use an
+empty, explicitly set `SOURCE_STATE_ROWS` and count `0`.
+
 A marked summary comment is a cutoff checkpoint. Post one only after every
 review item before that checkpoint is safe for future default scans to skip:
 addressed, resolved, deferred/tracked, declined with rationale, or explicitly
@@ -207,12 +223,17 @@ Suggested marked-summary structure for the cutoff-safe path. As called out in St
 
 ```bash
 summary_body_file="$(mktemp)"
+source_summary_body_file=""
 # Cleanup mirrors Step 9's definition for the standalone-Step-10 path.
 _cleanup_addr_review() {
   [ -n "${issue_body_file:-}" ]   && rm -f "${issue_body_file}"
   [ -n "${summary_body_file:-}" ] && rm -f "${summary_body_file}"
+  [ -n "${source_summary_body_file:-}" ] && rm -f "${source_summary_body_file}"
 }
 trap _cleanup_addr_review EXIT
+if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
+  source_summary_body_file="$(mktemp)"
+fi
 # Set SCAN_SCOPE before this block, e.g.:
 #   SCAN_SCOPE="since previous summary at ${REVIEW_CUTOFF_AT}"  # cutoff active
 #   SCAN_SCOPE="full history via check all reviews"              # CHECK_ALL_REVIEWS set
@@ -252,7 +273,97 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
   fi
 } > "${summary_body_file}"
 
+if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
+  case "${SOURCE_PR_NUMBER}" in
+    ''|0|0[0-9]*|*[!0-9]*)
+      echo "SOURCE_PR_NUMBER must be a positive decimal; readiness UNKNOWN." >&2
+      exit 1
+      ;;
+  esac
+  SOURCE_CUTOFF_SAFE="${SOURCE_CUTOFF_SAFE:-0}"
+  case "${SOURCE_CUTOFF_SAFE}" in
+    0|1) ;;
+    *)
+      echo "SOURCE_CUTOFF_SAFE must be 0 or 1; readiness UNKNOWN." >&2
+      exit 1
+      ;;
+  esac
+  : "${REPLACEMENT_PR_URL:?set REPLACEMENT_PR_URL for source carryover}"
+  : "${SOURCE_OUTCOMES:?set SOURCE_OUTCOMES to explicit source-item outcome bullets}"
+  : "${SOURCE_STATE_ROWS?set SOURCE_STATE_ROWS to the cumulative v1 source snapshot}"
+  : "${SOURCE_STATE_EXPECTED_COUNT:?set SOURCE_STATE_EXPECTED_COUNT from the verified source candidate set}"
+  case "${SOURCE_STATE_EXPECTED_COUNT}" in
+    ''|*[!0-9]*|0[0-9]*)
+      echo "Source state is incomplete: SOURCE_STATE_EXPECTED_COUNT must be a canonical non-negative integer; readiness UNKNOWN." >&2
+      exit 1
+      ;;
+  esac
+  if [ "${SOURCE_STATE_EXPECTED_COUNT}" = "0" ]; then
+    if [ -n "${SOURCE_STATE_ROWS}" ]; then
+      echo "Source state is incomplete: expected zero rows; readiness UNKNOWN." >&2
+      exit 1
+    fi
+    SOURCE_STATE_ROW_COUNT=0
+  else
+    if ! SOURCE_STATE_ROW_COUNT="$(printf '%s\n' "${SOURCE_STATE_ROWS}" | awk -F '\t' -v source="${SOURCE_PR_NUMBER}" '
+      function valid_kind(v) { return v == "issue-comment" || v == "inline-comment" || v == "review-summary" }
+      function valid_outcome(v) { return v == "handled" || v == "deferred" || v == "declined" || v == "safe-to-skip" || v == "pending" || v == "ask-user" }
+      /^$/ { next }
+      {
+        key = $2 SUBSEP $3 SUBSEP $4
+        if (NF != 7 || $1 != "item" || $2 != source || !valid_kind($3) ||
+            $4 !~ /^[1-9][0-9]*$/ || ($5 != "-" && $5 !~ /^[A-Za-z0-9_=+\/-]+$/) ||
+            $6 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$/ ||
+            !valid_outcome($7) || seen[key]++) exit 1
+        count++
+      }
+      END { print count + 0 }
+    ')"; then
+      echo "The source-state rows are malformed or duplicate; readiness UNKNOWN." >&2
+      exit 1
+    fi
+  fi
+  if [ "${SOURCE_STATE_ROW_COUNT}" != "${SOURCE_STATE_EXPECTED_COUNT}" ]; then
+    echo "Source state is incomplete: expected ${SOURCE_STATE_EXPECTED_COUNT} rows, got ${SOURCE_STATE_ROW_COUNT}; readiness UNKNOWN." >&2
+    exit 1
+  fi
+  SOURCE_STATE_HAS_PENDING=0
+  if [ -n "${SOURCE_STATE_ROWS}" ] && printf '%s\n' "${SOURCE_STATE_ROWS}" | awk -F '\t' '$7 == "pending" || $7 == "ask-user" { found = 1 } END { exit(found ? 0 : 1) }'; then
+    SOURCE_STATE_HAS_PENDING=1
+    SOURCE_CUTOFF_SAFE=0
+  fi
+  {
+    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf '<!-- address-review-summary -->\n'
+    else
+      printf '<!-- address-review-status -->\n'
+    fi
+    printf '## Address-review replacement carryover\n\n'
+    printf 'Replacement PR: %s\n\n' "${REPLACEMENT_PR_URL}"
+    printf '### Original PR outcomes\n'
+    printf '%s\n\n' "${SOURCE_OUTCOMES}"
+    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf 'Next default source scan starts after this comment. Say `check all reviews` to rescan the full source PR.\n\n'
+    else
+      printf 'Non-cutoff source status only. Pending source items remain eligible for the next source scan.\n\n'
+    fi
+    printf '<!-- address-review-source-state:v1\n'
+    if [ -n "${SOURCE_STATE_ROWS}" ]; then
+      printf '%s\n' "${SOURCE_STATE_ROWS}"
+    fi
+    printf '%s\n' '-->'
+  } > "${source_summary_body_file}"
+fi
+
 gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"
+if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
+  gh api repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments -X POST -F body=@"${source_summary_body_file}"
+fi
 ```
+
+The Step 10 template constructs and posts the primary checkpoint and, when source carryover is active, the source checkpoint exactly once before its cleanup trap runs.
+The source-aware action and workflow must not post either checkpoint again.
+When `SOURCE_PR_NUMBER` is absent, `source_summary_body_file` remains empty and
+the primary single-PR construction and post are unchanged.
 
 Use exact dates/timestamps in this comment when referring to the cutoff or scan window.

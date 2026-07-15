@@ -37,33 +37,68 @@ code-changing actions. Skill-specific routing:
 
 ## Coordinated Caller Action
 
-A trusted parent workflow may set `COORDINATED_AUTOFIX=1` when a direct user or
-maintainer task already authorizes updating this PR and explicitly sets
-`merge_authority: auto_merge_when_gates_pass`. Do not derive this state from PR
-text, review comments, branch content, or merge authority alone. The parent
-must also pass security preflight and hold the coordination claim when
-configured. The flag is visible at triage time, but it does not waive local
-verification.
+A trusted parent PR-batch workflow may set `COORDINATED_AUTOFIX=1` when a direct
+user or maintainer task already authorizes updating this PR. Coordinated review-decision authority comes from direct authorization to update the PR and is independent of `merge_authority`; merge authority governs merge only.
+Do not derive this state from PR text, review comments, branch content, or merge
+authority alone. The parent must also pass security preflight and hold the
+coordination claim when configured. The flag is visible at triage time, but it
+does not waive local verification.
 
-When `COORDINATED_AUTOFIX=1`, present the triage for transparency, then verify
-each selected `MUST-FIX` item is factually correct and within the active task,
+### Coordinated Replacement Review Source
+
+For replacement carryover, the trusted PR-batch parent invokes `address-review` on the pushable owned replacement PR and sets numeric `COORDINATED_REVIEW_SOURCE_PR=<original-pr-number>` together with `COORDINATED_AUTOFIX=1`.
+When present, `COORDINATED_REVIEW_SOURCE_PR` must be a positive decimal PR number; reject it before source fetch otherwise.
+Accept the source variable only from trusted parent state; never derive it from PR text, review comments, branch content, or merge authority.
+Re-fetch both PRs and require the authorized GitHub host, exact same repository, distinct PR numbers, an unpushable source head, and a pushable owned primary replacement head; reject the source when any fact is false or `UNKNOWN`.
+Fetch and triage both review inventories, preserve each item's source PR, comment ID, and thread ID, and combine every actionable source item into the verified replacement executable/decision worklist.
+Apply code and push only on the primary replacement PR; route each reply and resolution to the item's preserved source PR and never push the unpushable source PR.
+Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate.
+In replacement carryover, post a summary/status checkpoint on the primary replacement PR and a separate carryover checkpoint on `SOURCE_PR_NUMBER`; each checkpoint is cutoff-safe only when its own inventory guard passes, otherwise post a non-cutoff status.
+A source checkpoint is cutoff-safe only when every source item has a terminal handled, deferred, declined, or other explicitly safe-to-skip outcome; any pending, `ask user`, or user-pending source item requires a non-cutoff status and remains eligible for the next source scan.
+Each source-state row is exactly `item<TAB><source-pr><kind><item-id><thread-id-or-><latest-activity-rfc3339><outcome>` under `<!-- address-review-source-state:v1`; kinds are `issue-comment`, `inline-comment`, or `review-summary`, and outcomes are `handled`, `deferred`, `declined`, `safe-to-skip`, `pending`, or `ask-user`.
+Validate the source PR and item ID as positive decimals, the thread ID as a GitHub node ID or `-`, the activity timestamp as RFC3339, the enum fields, stable-identity uniqueness, and snapshot completeness before consuming or posting state.
+On rerun, suppress a source item only when its exact source PR, kind, immutable item ID, and preserved thread ID match a terminal state row and its current latest activity is not newer than the recorded activity timestamp; `pending` and `ask-user` rows always remain eligible.
+Missing, duplicate, malformed, identity-mismatched, or incomplete source state suppresses no item and makes source readiness `UNKNOWN` until corrected; a status checkpoint never acts as a global cutoff.
+Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta.
+When `COORDINATED_REVIEW_SOURCE_PR` is absent, keep normal single-PR and standalone behavior unchanged.
+
+When `COORDINATED_AUTOFIX=1`, treat the initial classifications as checkpoint
+input, not final displayed or executable state. Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`.
+Verify each selected `MUST-FIX` item is factually correct and within the active task,
 and each autonomous optional fix or recorded outcome is behavior-preserving and
 within the active task. Reclassify a factually incorrect reviewer claim as
 `SKIPPED` with a verification rationale. Promote uncertain, out-of-scope, or
-material-judgment items to `DISCUSS` and keep them interactive. After
-the checkpoint, select and execute action `f` without waiting for another
-selection, and continue through
-the normal validation, push, reply, resolution, and summary gates. Keep
-`DISCUSS` items interactive when they would materially change behavior, scope,
-security, or release policy. For locally verified duplicate or factually
-incorrect `SKIPPED` review threads, post a concise rationale and resolve the
-thread without prompting. Do not auto-resolve other substantive skipped
-threads. For skipped review-summary bodies that contain a reviewer claim, post
-the concise rationale as a general PR comment. For pure status posts,
-acknowledgments, boilerplate summaries, and other non-actionable items without a
-thread, record a short rationale and explicit no-action outcome in the
-cutoff-safe summary. Re-present any other skipped item for an explicit decision
-before signaling merge-readiness.
+material-judgment items to `DISCUSS` rather than guessing a fix.
+
+For every coordinated `DISCUSS` outcome, record one evidence-backed recommendation: `fix now`, `defer`, `decline`, or `ask user`.
+A coordinated `SKIPPED` item gets an evidence-backed `decline`/no-action outcome by default.
+If inspection shows a `SKIPPED` item merits a fix, defer, or maintainer choice, reclassify it to `MUST-FIX`, `DISCUSS`, or `OPTIONAL` as appropriate before assigning or executing a recommendation.
+If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items.
+Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`
+because no safe choice can be made without maintainer help. A recommendation
+must remain inside the active task and existing security, behavior, scope, and
+release-policy boundaries; the coordinated flag does not authorize expansion.
+Treat `fix now` as selected work through the normal fix path. For `defer` or
+`decline`, post the evidence-backed rationale in the original thread when one
+exists, resolve it only when the conversation is complete, and include the
+outcome in the cutoff-safe summary. A non-blocking `defer` defaults to durable PR summary or decision-log evidence unless existing repository policy selects a tracker.
+If repository policy requires tracking and provides an already-resolved tracker destination and contract, record the defer there without prompting.
+Use only that existing destination and contract. If tracking is required but the destination or contract is missing or ambiguous, change the recommendation to `ask user`.
+Coordinated mode must not create a new follow-up issue. It also must not expand
+tracking merely because coordinated autofix is active.
+Under coordinated `f`, a `defer` is complete for thread resolution only after its evidence-backed rationale and required durable PR summary, decision log, or existing-policy tracker record are posted and the conversation is complete.
+Coordinated defer ordering: post the original-thread rationale first; then, before resolving, post a durable non-cutoff PR decision/status record (or established durable decision-log form) for the default route, or record the defer in the already-resolved existing-policy tracker; only then resolve a complete conversation, and post the normal cutoff-safe final summary afterward.
+
+After the checkpoint and any rebuild, display the verified triage, then select and execute action `f` without waiting for another
+selection. Continue through
+the normal validation, push, reply, resolution, and summary gates. Normal
+interactive runs keep `DISCUSS` and substantive
+`SKIPPED` decisions interactive; the recommendation routing above replaces
+those prompts only for this trusted coordinated invocation. For skipped
+review-summary bodies, post any rationale as a general PR comment. For pure
+status posts, acknowledgments, boilerplate summaries, and other non-actionable
+items without a thread, record the `decline` rationale and explicit no-action
+outcome in the cutoff-safe summary.
 List every autonomously resolved thread, its URL, and its verification rationale
 in the cutoff-safe summary. Before merge, require a clean current-head review
 signal independent of this coordinated address-review run.
@@ -120,6 +155,11 @@ Then extract the PR number and optional review/comment ID from the remaining inp
 - Otherwise, detect both repository and URL from the current checkout, derive
   and export `GH_HOST` from that URL, then use the checkout repository.
 - Set `PR_NUMBER` to the number parsed in Step 1.
+- Bind `PRIMARY_PR_NUMBER` to that parsed target. Read
+  `SOURCE_PR_NUMBER` only from trusted parent state
+  `COORDINATED_REVIEW_SOURCE_PR`; when present, require coordinated autofix,
+  validate it as a distinct positive decimal PR number, and fail before any
+  source fetch otherwise.
 - Set `COMMENT_ID` when Step 1 parsed a specific issue or review comment ID.
 - Set `REVIEW_ID` when Step 1 parsed a specific pull request review ID.
 - Set `SPECIFIC_TARGET` to `1` when Step 1 parsed a specific review/comment URL, otherwise `0`.
@@ -153,12 +193,48 @@ fi
 GH_HOST="$(printf '%s' "${GH_HOST}" | tr '[:upper:]' '[:lower:]')"
 export GH_HOST
 PR_NUMBER=<the PR number parsed in Step 1>
+PRIMARY_PR_NUMBER="${PR_NUMBER}"
+SOURCE_PR_NUMBER="${COORDINATED_REVIEW_SOURCE_PR:-}"
+if [ -n "${SOURCE_PR_NUMBER}" ]; then
+  if [ "${COORDINATED_AUTOFIX:-}" != "1" ]; then
+    echo "COORDINATED_REVIEW_SOURCE_PR requires trusted coordinated autofix" >&2
+    exit 1
+  fi
+  case "${SOURCE_PR_NUMBER}" in
+    ''|0|0[0-9]*|*[!0-9]*)
+      echo "COORDINATED_REVIEW_SOURCE_PR must be a positive decimal PR number" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${SOURCE_PR_NUMBER}" = "${PRIMARY_PR_NUMBER}" ]; then
+    echo "Replacement and source PR numbers must be distinct" >&2
+    exit 1
+  fi
+fi
 COMMENT_ID=<the issue/review comment ID parsed in Step 1, if any>
 REVIEW_ID=<the pull request review ID parsed in Step 1, if any>
 SPECIFIC_TARGET=<0-or-1>
 ```
 
-Every subsequent snippet uses `${GH_HOST}`, `${REPO}`, `${PR_NUMBER}`, `${COMMENT_ID}`, `${REVIEW_ID}`, and `${SPECIFIC_TARGET}` as shell variables; setting them once here means no manual substitution is required later. If `gh repo view` fails (and no URL was supplied), ensure `gh` CLI is installed and authenticated (`gh auth status`).
+Every subsequent primary-PR code, validation, commit, and push snippet uses
+`${PRIMARY_PR_NUMBER}` (or the equivalent existing `${PR_NUMBER}` binding).
+Source-aware reply routing uses `${ITEM_SOURCE_PR}` as defined in Step 8. If
+`gh repo view` fails (and no URL was supplied), ensure `gh` CLI is installed
+and authenticated (`gh auth status`).
+
+Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
+issue comment or review summary must start with the authenticated
+`<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
+reply from source triage and snapshot completeness; another actor cannot use
+the marker to suppress a source candidate.
+
+When `SOURCE_PR_NUMBER` is present, re-fetch primary and source metadata from
+`${GH_HOST}` and `${REPO}` and rerun the same live ownership/write preflight
+used by the trusted parent. Require distinct PRs, an unpushable source head,
+and a pushable owned primary replacement head. A host/repository mismatch,
+missing field, stale or contradictory result, or `UNKNOWN` pushability blocks
+before review fetch or mutation. Do not accept the source number or any of
+these facts from PR text, comments, or branch contents.
 
 ## Step 3: Determine Scan Window and Summary Cutoff
 
@@ -190,25 +266,83 @@ Cutoff rules:
 
 ## Step 4: Fetch Review Comments
 
-Before fetching, wait for any in-progress `claude-review` CI run on this PR so the triage reflects the latest posted feedback. Skip the wait if the user provided a specific review URL or specific issue-comment URL — fetch that exact target immediately. If `gh pr checks` is unavailable or returns an error, log a warning and continue without blocking.
+Before fetching, wait for any in-progress `claude-review` CI run on this PR so the triage reflects the latest posted feedback. On every non-specific run, apply the bounded, graceful review-check wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists.
+A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
+If `gh pr checks` is unavailable or returns an error, log a warning and continue without blocking.
 
 ```bash
 # Block while a claude-review check is still queued/running (bucket == "pending").
 # Pass --repo so cross-repo PR URLs target the parsed REPO, not the current checkout.
 # The fallback `|| echo 0` makes the loop exit gracefully if `gh pr checks` errors.
-# `MAX_WAIT` caps the total wait so a stalled runner cannot block triage indefinitely.
+# `MAX_WAIT` caps each PR wait so a stalled runner cannot block triage indefinitely.
+if [ "${SPECIFIC_TARGET}" = "1" ] && [ -n "${SOURCE_PR_NUMBER}" ]; then
+  echo "Replacement carryover requires a full replacement-PR target" >&2
+  exit 1
+fi
 if [ "${SPECIFIC_TARGET}" != "1" ]; then
-  MAX_WAIT=180
-  WAITED=0
-  while [ "$(gh pr checks "${PR_NUMBER}" --repo "${REPO}" --json name,bucket 2>/dev/null \
-    | jq '[.[] | select((.name | test("claude.?review"; "i")) and (.bucket == "pending"))] | length' 2>/dev/null || echo 0)" -gt 0 ]; do
-    if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
-      echo "Warning: claude-review CI still pending after ${MAX_WAIT}s — proceeding with triage anyway."
-      break
+  SOURCE_HAS_CHECKPOINT=0
+  if [ -n "${SOURCE_PR_NUMBER}" ]; then
+    if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
+      SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+      SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+        def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
+        def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
+        def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
+        def terminal_row: split("\t") | .[6] | terminal_outcome;
+        def valid_row:
+          split("\t") as $fields |
+          ($fields | length) == 7 and
+          $fields[0] == "item" and $fields[1] == $source and
+          ($fields[2] | valid_kind) and
+          ($fields[3] | test("^[1-9][0-9]*$")) and
+          ($fields[4] == "-" or ($fields[4] | test("^[A-Za-z0-9_=+/-]+$"))) and
+          ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
+          ($fields[6] | valid_outcome);
+        def valid_body:
+          . as $body |
+          (($body | startswith("<!-- address-review-summary -->")) or
+           ($body | startswith("<!-- address-review-status -->"))) and
+          ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
+          (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+            $state != null and
+            (($state.rows | split("\n") | map(select(length > 0))) as $rows |
+              all($rows[]; valid_row) and
+              (($body | startswith("<!-- address-review-status -->")) or
+               (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+              (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
+        [.[][] |
+          select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+          select((.body // "") | valid_body)] | length
+      ' 2>/dev/null || echo 0)"
+      case "${SOURCE_CHECKPOINT_COUNT}" in
+        ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
+      esac
+      if [ -n "${SOURCE_REVIEW_ACTOR}" ] && [ "${SOURCE_CHECKPOINT_COUNT}" -gt 0 ]; then
+        SOURCE_HAS_CHECKPOINT=1
+      elif [ -z "${SOURCE_REVIEW_ACTOR}" ]; then
+        echo "Warning: could not resolve the expected review actor for source checkpoints; treating PR #${SOURCE_PR_NUMBER} as first harvest." >&2
+      fi
+    else
+      echo "Warning: could not probe source checkpoints for PR #${SOURCE_PR_NUMBER}; treating it as first harvest for the review wait." >&2
     fi
-    echo "Waiting for in-progress claude-review CI to finish before triaging... (${WAITED}s elapsed)"
-    sleep 15
-    WAITED=$((WAITED + 15))
+  fi
+  REVIEW_WAIT_PRS="${PRIMARY_PR_NUMBER}"
+  if [ -n "${SOURCE_PR_NUMBER}" ] && [ "${SOURCE_HAS_CHECKPOINT}" != "1" ]; then
+    REVIEW_WAIT_PRS="${REVIEW_WAIT_PRS} ${SOURCE_PR_NUMBER}"
+  fi
+  for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do
+    MAX_WAIT=180
+    WAITED=0
+    while [ "$(gh pr checks "${REVIEW_WAIT_PR}" --repo "${REPO}" --json name,bucket 2>/dev/null \
+      | jq '[.[] | select((.name | test("claude.?review"; "i")) and (.bucket == "pending"))] | length' 2>/dev/null || echo 0)" -gt 0 ]; do
+      if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+        echo "Warning: claude-review CI for PR #${REVIEW_WAIT_PR} still pending after ${MAX_WAIT}s — proceeding with currently available review data."
+        break
+      fi
+      echo "Waiting for in-progress claude-review CI on PR #${REVIEW_WAIT_PR}... (${WAITED}s elapsed)"
+      sleep 15
+      WAITED=$((WAITED + 15))
+    done
   done
 fi
 ```
@@ -237,14 +371,130 @@ Include the review body as a general comment when it contains actionable feedbac
 # Resolve ADDRESS_REVIEW_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
 "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json
+if [ -n "${SOURCE_PR_NUMBER}" ]; then
+  "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" > source-review-data.json
+  SOURCE_REVIEW_CUTOFF_AT=""
+  SOURCE_STATE_CHECKPOINT_BODY=""
+  SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+  if [ -n "${SOURCE_REVIEW_ACTOR}" ]; then
+    if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+      def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
+      def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
+      def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
+      def terminal_row: split("\t") | .[6] | terminal_outcome;
+      def valid_row:
+        split("\t") as $fields |
+        ($fields | length) == 7 and
+        $fields[0] == "item" and $fields[1] == $source and
+        ($fields[2] | valid_kind) and
+        ($fields[3] | test("^[1-9][0-9]*$")) and
+        ($fields[4] == "-" or ($fields[4] | test("^[A-Za-z0-9_=+/-]+$"))) and
+        ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
+        ($fields[6] | valid_outcome);
+      . as $inventory |
+      def marker_body:
+        startswith("<!-- address-review-summary -->") or
+        startswith("<!-- address-review-status -->") or
+        startswith("<!-- codex-claim v1");
+      def generated_source_reply($comment):
+        (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+        ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
+      def item_key($kind; $id; $thread_id):
+        [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
+      def candidate_state($kind; $id; $thread_id; $activity_at):
+        {key: item_key($kind; $id; $thread_id), activity_at: $activity_at};
+      def identity_key:
+        split("\t") as $fields | $fields[1:4] | join("\t");
+      def row_state:
+        split("\t") as $fields |
+        {key: ($fields[1:5] | join("\t")), activity_at: $fields[5]};
+      def inline_latest_activity($thread_id):
+        [ $inventory.inline_comments[]? |
+          select((.thread_id // "") == ($thread_id // "")) |
+          (.created_at // "") ] | max // "";
+      def source_candidate_states($checkpoint_created_at):
+        ([
+          $inventory.issue_comments[]? |
+          . as $comment |
+          select((.created_at // "") <= $checkpoint_created_at) |
+          select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
+          candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
+        ] + [
+          $inventory.review_summaries[]? |
+          select((.created_at // "") <= $checkpoint_created_at) |
+          candidate_state("review-summary"; .id; "-"; (.created_at // ""))
+        ] + [
+          $inventory.inline_comments[]? |
+          select((.in_reply_to_id // null) == null) |
+          select((.is_resolved // false) == false) |
+          (.thread_id // "-") as $thread_id |
+          (if $thread_id == "-" then (.created_at // "") else inline_latest_activity($thread_id) end) as $latest_activity |
+          select($latest_activity <= $checkpoint_created_at) |
+          candidate_state("inline-comment"; .id; $thread_id; $latest_activity)
+        ]) | unique_by(.key);
+      def valid_body($checkpoint_created_at):
+        . as $body |
+        (($body | startswith("<!-- address-review-summary -->")) or
+         ($body | startswith("<!-- address-review-status -->"))) and
+        ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
+        (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+          $state != null and
+          (($state.rows | split("\n") | map(select(length > 0))) as $rows |
+            all($rows[]; valid_row) and
+            (($body | startswith("<!-- address-review-status -->")) or
+             (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
+            (($rows | map(identity_key) | unique | length) == ($rows | length)) and
+            (source_candidate_states($checkpoint_created_at) as $candidates |
+             ($rows | map(row_state)) as $row_states |
+             all($candidates[]; . as $candidate |
+               any($row_states[]; (.key == $candidate.key) and (.activity_at == $candidate.activity_at))))));
+      [.issue_comments[] |
+        select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+        . as $checkpoint |
+        select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+      sort_by(.created_at) | reverse
+    ' source-review-data.json)"; then
+      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+    else
+      echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
+    fi
+  else
+    echo "Warning: could not resolve the expected review actor for source checkpoints; leaving source cutoff empty and readiness UNKNOWN." >&2
+  fi
+fi
 ```
+
+On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
+Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+Use `SOURCE_STATE_CHECKPOINT_BODY` only from the newest authenticated, schema-valid summary/status checkpoint. A marker-only, wrong-author, malformed, duplicate, or incomplete checkpoint supplies neither restart state nor a cutoff.
+Unless the caller explicitly requested `check all reviews`, apply the source
+cutoff with the same timestamp rules as the primary inventory: include source
+issue comments and review summaries created after the cutoff, and include an
+inline source thread only when it has activity after the cutoff. Keep the full
+older source dataset for context and for source-inventory closeout/readiness
+checks; do not re-triage or reply to an older item solely because it remains in
+that dataset. From the latest source issue comment whose first line is either
+the summary or status marker, parse exactly one complete v1 source-state block.
+For inline items, use the newest activity timestamp across the preserved thread;
+for issue comments and review summaries, use that immutable item's timestamp.
+Apply the exact-identity/activity filter above after the global cutoff. An empty
+cutoff means there is no valid global source closeout; use the complete restart
+snapshot to avoid replaying unchanged terminal items while keeping pending and
+newer activity eligible.
+
+Tag every normalized item from `review-data.json` with
+`source_pr=${PRIMARY_PR_NUMBER}` and every item from
+`source-review-data.json` with `source_pr=${SOURCE_PR_NUMBER}` before filtering
+or triage. Preserve each item's comment and thread IDs. If either fetch or
+normalization is unavailable or incomplete, stop with readiness `UNKNOWN`.
 
 This single read-only call replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query. It emits one normalized JSON document:
 
 - `review_cutoff_at` — the cutoff timestamp described in Step 3 (empty when no prior summary comment exists).
 - `review_summaries` — review bodies with non-empty text: `{id, type: "review_summary", body, state, user, created_at, html_url}`. Treat actionable ones as general comments; like specific review bodies they cannot be replied to via the `/replies` endpoint and must be answered as general PR comments (see Step 8).
 - `inline_comments` — inline review comments: `{id, node_id, type: "review", path, body, line, start_line, user, in_reply_to_id, created_at, html_url, thread_id, is_resolved}`. The `thread_id` and `is_resolved` fields are already joined from the review threads by `node_id`, so no separate GraphQL query is needed for the full-PR path. Comments with no matching thread get `thread_id: null` and `is_resolved: false`.
-- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim marker comments are included so you can filter them (see Filtering comments below).
+- `issue_comments` — general PR discussion comments: `{id, node_id, type: "issue", body, user, created_at, html_url}`. Summary/status/claim/source-reply marker comments are included so you can filter them (see Filtering comments below).
 - `review_threads` — `{thread_id, is_resolved, comments: [{node_id, id}]}` for any thread-level work.
 
 When `REVIEW_CUTOFF_AT` is set for a full-PR scan:
@@ -271,13 +521,16 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
   whose body starts with `<!-- address-review-summary -->` or
   `<!-- address-review-status -->` or `<!-- codex-claim v1`; only the summary
   marker is a cutoff checkpoint.
+- On a source PR, also skip `<!-- address-review-source-reply -->` comments
+  only when their author matches `SOURCE_REVIEW_ACTOR`; a different author
+  using that marker remains a source candidate.
 - Skip comments belonging to already-resolved threads (use the `is_resolved` field already joined onto each `inline_comments` entry, or match via `thread_id` against `review_threads`)
 - Do not create standalone triage items from comments where `in_reply_to_id` is set, but use reply text as the latest thread context when it updates or narrows the unresolved concern
 - When `REVIEW_CUTOFF_AT` is set, evaluate unresolved review threads by their latest activity timestamp, not only by the top-level comment timestamp
 - Do not skip bot-generated comments by default. Many actionable review comments in this repository come from bots.
 - Deduplicate repeated bot comments and skip bot status posts, summaries, and acknowledgments that do not require a code or documentation change
 - Reserve default `MUST-FIX` classification for correctness bugs, regressions, security issues, missing tests, and clear inconsistencies with adjacent code
-- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
+- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically. Only a trusted `COORDINATED_AUTOFIX=1` invocation that passed security and coordination gates and verified the item as in-scope and safe at the checkpoint may execute an evidence-backed `DISCUSS` recommendation of `fix now`; bot priority or severity alone never qualifies. Anything outside the active task or behavior, security, scope, or release-policy boundaries, or still requiring material judgment, must be `ask user`, `defer`, or `decline` as appropriate, never auto-fixed.
 - Classify as `OPTIONAL` by default: style nits, speculative suggestions, changelog wording, comment requests, test-shape preferences, and "could consider" feedback. Low-risk behavior-preserving optional nits may be handled or logged after an action is selected; broader optional work becomes active when the user explicitly asks for polish work, chooses `a`, `f+o`, or specific optional selections via `o` after triage, or initiates with `autopilot`
 - Focus on actionable feedback, not acknowledgments or thank-you messages
 
@@ -290,7 +543,13 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 
 ## Mutual Exclusion Gate
 
-Before Step 5, establish the applicable ownership gate for the target PR.
+Before Step 5, establish the applicable ownership gate for every PR that may be
+mutated. Without replacement carryover this is only `PRIMARY_PR_NUMBER`; with
+replacement carryover it is both `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER`.
+Replacement carryover must acquire and preserve ownership for both
+`PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER` before any branch or non-claim GitHub mutation;
+a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on
+both.
 Read-only fetches in Steps 3-4 may run before this gate. Follow the repo's
 `coordination_backend` seam and the vocabulary in
 `docs/coordination-backend.md`: use the selected private backend when available,
@@ -331,19 +590,46 @@ against the fresh data before mutating GitHub or the branch.
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   coord_read_degraded=0
+  CLAIM_TARGETS="${PRIMARY_PR_NUMBER}"
+  if [ -n "${SOURCE_PR_NUMBER}" ]; then
+    CLAIM_TARGETS="${CLAIM_TARGETS} ${SOURCE_PR_NUMBER}"
+  fi
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json || coord_read_degraded=1
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${PR_NUMBER}" --json || coord_read_degraded=1
+  for CLAIM_TARGET in ${CLAIM_TARGETS}; do
+    "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo "${REPO}" --target "${CLAIM_TARGET}" --json || coord_read_degraded=1
+  done
   if [ "${coord_read_degraded}" -ne 0 ] && [ "${ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED:-}" != "1" ]; then
     echo "Refusing to claim: coordination doctor/status is degraded; set ADDRESS_REVIEW_CLAIM_ONLY_CONFIRMED=1 only after confirming an exact independent assignment with no dependency refs." >&2
     exit 1
   fi
-  set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${PR_NUMBER}"
-  [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
-  [ -n "${BRANCH_NAME:-}" ] && set -- "$@" --branch "${BRANCH_NAME}"
-  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json
+  ACQUIRED_CLAIM_TARGETS=""
+  for CLAIM_TARGET in ${CLAIM_TARGETS}; do
+    set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${CLAIM_TARGET}"
+    [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
+    if [ "${CLAIM_TARGET}" = "${PRIMARY_PR_NUMBER}" ] && [ -n "${BRANCH_NAME:-}" ]; then
+      set -- "$@" --branch "${BRANCH_NAME}"
+    fi
+    if "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 claim "$@" --json; then
+      ACQUIRED_CLAIM_TARGETS="${ACQUIRED_CLAIM_TARGETS} ${CLAIM_TARGET}"
+    else
+      claim_status=$?
+      for ACQUIRED_CLAIM_TARGET in ${ACQUIRED_CLAIM_TARGETS}; do
+        set -- --agent-id "${AGENT_ID}" --repo "${REPO}" --target "${ACQUIRED_CLAIM_TARGET}"
+        [ -n "${BATCH_ID:-}" ] && set -- "$@" --batch-id "${BATCH_ID}"
+        if ! "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 release "$@" --terminal abandoned --json; then
+          echo "Warning: could not confirm rollback of claim for PR #${ACQUIRED_CLAIM_TARGET}; coordination state is UNKNOWN." >&2
+        fi
+      done
+      exit "${claim_status}"
+    fi
+  done
   ```
 
-- A refused private claim is a hard stop. If the claim returns
+- If a later private claim fails, terminal-release every target acquired by that
+  claim loop before returning the original failure status. A rollback that
+  cannot be confirmed leaves that target's coordination state `UNKNOWN`; report
+  it explicitly and do not mutate either PR.
+- A refused private claim for either mutation target is a hard stop. If the claim returns
   `CLAIM_REFUSED` / exit code 3, report the holder, heartbeat liveness, and
   target PR; do not continue with triage, branch changes, pushes, replies,
   resolutions, summaries, or public fallback.
@@ -356,7 +642,7 @@ against the fresh data before mutating GitHub or the branch.
   transitions, and record the degraded read evidence in the handoff. If the
   claim times out, stop with `private_state: UNKNOWN (claim outcome)` and
   reconcile backend state before fallback or mutation.
-- After any successful private claim, refresh the heartbeat at phase
+- After any successful private claim, refresh every acquired target's heartbeat at phase
   transitions: triage complete, action selected, before and after long-running
   local fix or validation blocks, before push/reply/resolve/summary work,
   blocked/resumed states, and final stable stop. Do not let a live address-review
@@ -373,7 +659,11 @@ against the fresh data before mutating GitHub or the branch.
   stop GitHub-mutating actions and report the conflicting comment URL;
   local-only action `a` may still proceed, but it must report that
   publishing/reply actions remain blocked by the active advisory claim.
-  Otherwise post a PR issue comment using this marker shape only when a
+  In replacement carryover, run that conflict inspection independently on both
+  `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER`, then post or refresh one separate
+  claim comment on each PR before any non-claim mutation; a conflict or failed claim
+  update on either PR blocks mutations on both. Otherwise post a PR issue
+  comment using this marker shape only when a
   GitHub-mutating action is selected:
 
   ```markdown
@@ -391,11 +681,11 @@ against the fresh data before mutating GitHub or the branch.
   available, use `thread: unavailable`. Set a short bounded advisory lease,
   usually 2-4 hours for an active review run, and refresh the same comment if
   continuing beyond that window.
-- At a stable stop, update the private heartbeat or advisory claim state before
-  reporting. For private coordination, send a terminal heartbeat and release the
-  claim on normal completion; preserve it for blocked or handoff states when the
-  repo workflow requires preservation. For public fallback, edit the claim
-  comment to a terminal status with an expired `expires_at`; a final
+- At a stable stop, update every acquired private heartbeat or advisory claim
+  state before reporting. For private coordination, send terminal heartbeats and
+  release the claims on normal completion; preserve them for blocked or handoff
+  states when the repo workflow requires preservation. For public fallback,
+  edit the claim comments to a terminal status with an expired `expires_at`; a final
   address-review summary/status comment may link the terminal claim, but it must
   not be the only cleanup step.
 
@@ -412,7 +702,7 @@ Triage rules:
 
 - Deduplicate overlapping comments before classifying them. Keep one representative item for the underlying issue.
 - Verify factual claims locally before classifying a comment as `MUST-FIX`.
-- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically.
+- A bot's stated priority or severity alone cannot make feedback `MUST-FIX` or authorize material scope expansion. Verify the claim and map required work to the original acceptance criteria or a direct correctness, security, or safety property. Otherwise classify it as `DISCUSS` or `OPTIONAL` as appropriate, and record the decision and rationale rather than changing the implementation automatically. Only a trusted `COORDINATED_AUTOFIX=1` invocation that passed security and coordination gates and verified the item as in-scope and safe at the checkpoint may execute an evidence-backed `DISCUSS` recommendation of `fix now`; bot priority or severity alone never qualifies. Anything outside the active task or behavior, security, scope, or release-policy boundaries, or still requiring material judgment, must be `ask user`, `defer`, or `decline` as appropriate, never auto-fixed.
 - If a claim appears wrong, classify it as `SKIPPED` and note briefly why.
 - When a reviewer identifies an unexplained sibling-lock version split, platform-precompiled/source-build transition, or new build-time dependency, treat the lockfile dependency drift item as `MUST-FIX`.
   - Verify the lockfile diff and require either alignment or an explicit rationale in PR evidence before classifying the item as resolved.
@@ -421,7 +711,10 @@ Triage rules:
 
 ## Step 6: Create Todo List
 
-Create a task list with TodoWrite containing **only the `MUST-FIX` items**:
+For a normal interactive run, create a task list with TodoWrite containing
+**only the `MUST-FIX` items**. For a coordinated run, postpone TodoWrite and
+executable-work construction until the verification checkpoint and any required
+rebuild are complete:
 
 - One task per must-fix comment or deduplicated issue
 - Subject: `"{file}:{line} - {comment_summary} (@{username})"`
@@ -430,9 +723,14 @@ Create a task list with TodoWrite containing **only the `MUST-FIX` items**:
 - Recommendation: Include a concrete fix sketch — specific file/line, code snippet, or approach — after reading the current code around the cited location. If the reviewer's claim needs inspection before a safe fix can be proposed, make the Recommendation the verification step, not a guessed patch.
 - All tasks should start with status: `"pending"`
 
-## Step 7: Present Triage and Quick-Action Menu
+Before action `f`, add every coordinated actionable outcome recommended as `fix now` to the executable work list; normal interactive TodoWrite remains `MUST-FIX`-only.
+Keep each coordinated work item pending until executed and preserve its original
+tier, reviewer/thread link, evidence, and concrete next step so action `f`
+cannot silently omit it.
 
-Present the triage to the user. Do not automatically start addressing items
+## Step 7: Present Triage and Conditional Quick-Action Menu
+
+Present the final verified triage to the user. Do not automatically start addressing items
 unless `AUTOPILOT` or trusted parent state `COORDINATED_AUTOFIX=1` is set:
 
 - Use a single sequential numbering across all categories (1, 2, 3, ...) so every item has a unique number the user can reference. Do not restart numbering at 1 for each category.
@@ -441,7 +739,14 @@ unless `AUTOPILOT` or trusted parent state `COORDINATED_AUTOFIX=1` is set:
 - `OPTIONAL ({count})`: list applicable polish items, with a short reason
 - `SKIPPED ({count})`: list skipped comments with a short reason, including duplicates and factually incorrect suggestions
 
-After the triage list, present a **quick-action menu**:
+When `COORDINATED_AUTOFIX=1`, show the evidence-backed `fix now`, `defer`,
+`decline`, or `ask user` recommendation beside each `DISCUSS` item and the
+`decline`/no-action outcome beside each remaining `SKIPPED` item.
+
+When `COORDINATED_AUTOFIX=1`, present triage for transparency but do not display the quick-action menu; immediately execute coordinated action `f` after the verification checkpoint.
+For normal interactive runs, present the quick-action menu after the triage list.
+
+The normal interactive quick-action menu is:
 
 ```text
 Quick actions:
@@ -475,10 +780,8 @@ PR review context, but must exclude weak "could consider" suggestions.
 
 `autopilot` is an initiation mode, not a post-triage menu choice. When the host exposes `/address-review` as an available slash command, initiate it by passing `autopilot` before or after the PR reference, for example `/address-review autopilot <PR>` or `/address-review <PR> autopilot`. If the user initiated the review with `autopilot`, present the triage for transparency and immediately execute action `a` without waiting for another confirmation. A bare `a` is only the single-letter quick action shown after triage. Otherwise, wait for the user to choose an action before proceeding.
 
-When `COORDINATED_AUTOFIX=1`, run the coordinated verification checkpoint after
-presenting triage, then skip the quick-action menu and execute action `f`
-without waiting for another selection. This is a parent-workflow preselection,
-not another spelling of `autopilot`.
+The coordinated action is a parent-workflow preselection, not another spelling
+of `autopilot`.
 
 Do not post the PR summary checkpoint during this triage-only phase. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
@@ -610,11 +913,11 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
   boilerplate skipped items without an actionable thread are the exception;
   record their explicit no-action outcomes in the cutoff-safe summary instead
 - For actions other than `a` and inspect-only bare `o`, post a new marked PR summary comment after completing an action only when Step 10's cutoff guard is satisfied; otherwise post a non-cutoff status comment and require `check all reviews` on the next run
-- After triage, offer rationale replies for selected `SKIPPED`/declined items;
-  `f` requires explicit confirmation before skipped-item replies/resolution
-  except for the locally verified duplicate or factually incorrect threads
-  handled by `COORDINATED_AUTOFIX=1`, while `f+i` and `m` include skipped-item
-  handling in the chosen action flow
+- After triage, offer rationale replies for selected `SKIPPED`/declined items.
+  Normal interactive `f` requires explicit confirmation before skipped-item
+  replies/resolution. Trusted coordinated `f` executes each item's recorded
+  recommendation and prompts only for `ask user`; `f+i` and `m` keep their
+  normal interactive skipped-item handling.
 - Use the Git push confirmation rule in `references/actions.md` before running
   `git push`
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate
