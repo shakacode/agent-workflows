@@ -209,7 +209,7 @@ def run_documented_metadata_resolution(
   end
 end
 
-def run_documented_initial_metadata_resolution(pr_ref:, trusted_host:, trusted_scheme: "https", gh_output:, gh_status: 0)
+def run_documented_initial_metadata_resolution(pr_ref:, trusted_host:, gh_output:, trusted_scheme: "https", gh_status: 0)
   Dir.mktmpdir("untrusted-contributor-intake") do |directory|
     gh_path = File.join(directory, "gh")
     log_path = File.join(directory, "gh.log")
