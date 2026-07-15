@@ -40,9 +40,19 @@ PR_INPUT_KIND to `number` or `url` and PR_NUMBER to the numeric target. Before
 gh, the classifier requires the same conservative DNS-or-IPv4 authority shape
 used by the canonical host boundary, with an optional numeric port.
 
-Before classification, the invoking trusted host or tooling must pre-set
-TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; there is no fallback.
-Read untrusted_contributor_intake.trusted_github_host, untrusted_contributor_intake.trusted_github_scheme, and untrusted_contributor_intake.trusted_github_repo only from trusted-base AGENTS.md before any untrusted PR content. Map them to TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO respectively; missing or invalid keys are BLOCKED with no default or checkout-derived fallback. It must source that normalized `host[:non-default-port]` authority, scheme, and
+Before classification, read untrusted_contributor_intake.trusted_github_host,
+untrusted_contributor_intake.trusted_github_scheme, and
+untrusted_contributor_intake.trusted_github_repo only from trusted-base
+AGENTS.md before any untrusted PR content. Supply them as the distinct fresh
+inputs UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST,
+UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME, and
+UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO: each name is its consumer
+seam key mechanically uppercased with dots replaced by underscores. At the
+start of the producer, snapshot these inputs and clear mutable TRUSTED_GH_*
+output and derived state. Require all three snapshots atomically, then map
+them to TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; missing or
+invalid keys are BLOCKED with no default or checkout-derived fallback. It must
+source that normalized `host[:non-default-port]` authority, scheme, and
 validated `owner/repo` target from that trusted local policy seam. Do not derive them from ambient GH_HOST or GH_REPO,
 PR or ref data, GitHub responses, or fork environment. TRUSTED_GH_SCHEME must
 be exactly https; do not infer it. Strip :443 only for trusted https; preserve
@@ -62,9 +72,18 @@ starts a fresh shell for each command, concatenate the snippets in order before
 running them.
 
 ```bash
-# Trusted origin producer: complete explicit trusted values only; run before PR_REF.
+# Trusted origin producer: snapshot complete explicit policy inputs only; run before PR_REF.
 trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid; complete explicit HTTPS TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO are required\n' >&2; exit 1; }
-[ -n "${TRUSTED_GH_HOST:-}" ] && [ -n "${TRUSTED_GH_SCHEME:-}" ] && [ -n "${TRUSTED_GH_REPO:-}" ] || trusted_origin_blocked
+TRUSTED_POLICY_HOST="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST:-}"
+TRUSTED_POLICY_SCHEME="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME:-}"
+TRUSTED_POLICY_REPO="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO:-}"
+unset TRUSTED_GH_HOST TRUSTED_GH_SCHEME TRUSTED_GH_REPO
+unset TRUSTED_ORIGIN_URL TRUSTED_ORIGIN_REMAINDER TRUSTED_ORIGIN_PATH TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT TRUSTED_ORIGIN_OWNER TRUSTED_ORIGIN_REPO TRUSTED_REPO_OWNER TRUSTED_REPO_NAME
+unset TRUSTED_HOST_PORT TRUSTED_HOST TRUSTED_PORT TRUSTED_REMAINDER TRUSTED_LABEL
+[ -n "${TRUSTED_POLICY_HOST}" ] && [ -n "${TRUSTED_POLICY_SCHEME}" ] && [ -n "${TRUSTED_POLICY_REPO}" ] || trusted_origin_blocked
+TRUSTED_GH_HOST="${TRUSTED_POLICY_HOST}"
+TRUSTED_GH_SCHEME="${TRUSTED_POLICY_SCHEME}"
+TRUSTED_GH_REPO="${TRUSTED_POLICY_REPO}"
 [ "${TRUSTED_GH_SCHEME}" = "https" ] || trusted_origin_blocked
 TRUSTED_ORIGIN_HOST_PORT="$(printf '%s' "${TRUSTED_GH_HOST}" | tr '[:upper:]' '[:lower:]')"
 case "${TRUSTED_ORIGIN_HOST_PORT}" in

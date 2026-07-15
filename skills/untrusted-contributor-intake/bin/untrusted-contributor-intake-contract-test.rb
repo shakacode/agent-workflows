@@ -12,6 +12,9 @@ FORK_METADATA_FIXTURE = File.join(ROOT, "test/fixtures/untrusted-contributor-int
 REVIEW_EVIDENCE_FIXTURE = File.join(ROOT, "test/fixtures/untrusted-contributor-intake/review-evidence.yml")
 INTAKE_SUBPROCESS_ENV_KEYS = %w[
   TRUSTED_GH_HOST TRUSTED_GH_SCHEME TRUSTED_GH_REPO
+  UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST
+  UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME
+  UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO
   TRUSTED_ORIGIN_URL TRUSTED_ORIGIN_REMAINDER TRUSTED_ORIGIN_PATH
   TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT
   TRUSTED_ORIGIN_OWNER TRUSTED_ORIGIN_REPO TRUSTED_REPO_OWNER TRUSTED_REPO_NAME
@@ -124,12 +127,12 @@ def documented_canonical_authority_snippet
   extract_canonical_authority_snippet(skill)
 end
 
-def run_documented_posix_snippet(snippet, environment, output)
+def run_documented_posix_snippet(snippet, environment, output, scrub: true)
   command = <<~SH
     #{snippet}
     #{output}
   SH
-  subprocess_environment = INTAKE_SUBPROCESS_ENV_KEYS.to_h { |key| [key, nil] }.merge(environment)
+  subprocess_environment = scrub ? INTAKE_SUBPROCESS_ENV_KEYS.to_h { |key| [key, nil] }.merge(environment) : environment
   stdout, stderr, status = Open3.capture3(subprocess_environment, "sh", "-c", command)
 
   [status.success?, status.success? ? stdout : stderr]
@@ -195,14 +198,51 @@ def run_documented_trusted_origin_producer(origin_url, trusted_host: nil, truste
     File.write(git_path, "#!/bin/sh\nprintf '%s' \"${ORIGIN_URL}\"\n", encoding: "UTF-8")
     File.chmod(0o755, git_path)
     environment = { "ORIGIN_URL" => origin_url, "PATH" => "#{directory}:#{ENV.fetch('PATH')}" }
-    environment["TRUSTED_GH_HOST"] = trusted_host if trusted_host
-    environment["TRUSTED_GH_SCHEME"] = trusted_scheme if trusted_scheme
-    environment["TRUSTED_GH_REPO"] = trusted_repo if trusted_repo
+    environment["UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST"] = trusted_host if trusted_host
+    environment["UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME"] = trusted_scheme if trusted_scheme
+    environment["UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO"] = trusted_repo if trusted_repo
     run_documented_posix_snippet(
       documented_trusted_origin_producer_snippet,
       environment,
       %(printf '%s|%s|%s' "${TRUSTED_GH_SCHEME}" "${TRUSTED_GH_HOST}" "${TRUSTED_GH_REPO}")
     )
+  end
+end
+
+def run_documented_persistent_trusted_origin_intake(fresh_policy:, inherited_state:, pr_ref:, gh_output:)
+  Dir.mktmpdir("untrusted-contributor-intake") do |directory|
+    gh_path = File.join(directory, "gh")
+    log_path = File.join(directory, "gh.log")
+    File.write(
+      gh_path,
+      <<~SH,
+        #!/bin/sh
+        printf 'GH_HOST=%s %s\\n' "${GH_HOST:-}" "$*" >> "${GH_LOG}"
+        printf '%s' "${GH_STUB_OUTPUT}"
+      SH
+      encoding: "UTF-8"
+    )
+    File.chmod(0o755, gh_path)
+    environment = INTAKE_SUBPROCESS_ENV_KEYS.to_h { |key| [key, nil] }.merge(
+      "GH_LOG" => log_path,
+      "GH_STUB_OUTPUT" => gh_output,
+      "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+      "PR_REF" => pr_ref
+    ).merge(inherited_state).merge(fresh_policy)
+    snippets = [
+      documented_trusted_origin_producer_snippet,
+      documented_pr_ref_classifier_snippet,
+      documented_metadata_resolution_snippet
+    ]
+    success, output = run_documented_posix_snippet(
+      snippets.join("\n"),
+      environment,
+      %(printf '%s|%s|%s|%s' "${TRUSTED_GH_SCHEME}" "${TRUSTED_GH_HOST}" "${TRUSTED_GH_REPO}" "${REPO}"),
+      scrub: false
+    )
+    calls = File.exist?(log_path) ? File.readlines(log_path, chomp: true) : []
+
+    [success, success ? output.split("|", 4) : output, calls]
   end
 end
 
@@ -546,7 +586,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_requires_complete_explicit_trusted_origin_values_and_url_scheme_parity
     normalized_skill = File.read(SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
 
-    assert_includes normalized_skill, "Read untrusted_contributor_intake.trusted_github_host, untrusted_contributor_intake.trusted_github_scheme, and untrusted_contributor_intake.trusted_github_repo only from trusted-base AGENTS.md before any untrusted PR content."
+    assert_includes normalized_skill, "Supply them as the distinct fresh inputs UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST, UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME, and UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO: each name is its consumer seam key mechanically uppercased with dots replaced by underscores."
     assert_includes normalized_skill, "Complete explicit TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO values are required; do not derive them from a checkout remote."
     refute_includes normalized_skill, "trusted-base checkout remote metadata"
     refute_includes documented_trusted_origin_producer_snippet, "git remote get-url origin"
@@ -613,6 +653,72 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
       refute success
       assert_match(/BLOCKED: trusted origin is invalid/, output)
     end
+  end
+
+  def test_requires_fresh_atomic_trusted_policy_inputs_in_a_persistent_shell
+    stale_output_state = {
+      "TRUSTED_GH_HOST" => "stale.example:8443",
+      "TRUSTED_GH_SCHEME" => "https",
+      "TRUSTED_GH_REPO" => "stale-org/stale-repo",
+      "TRUSTED_ORIGIN_HOST_PORT" => "stale.example:8443",
+      "TRUSTED_ORIGIN_HOST" => "stale.example",
+      "TRUSTED_ORIGIN_PORT" => "8443",
+      "TRUSTED_REPO_OWNER" => "stale-org",
+      "TRUSTED_REPO_NAME" => "stale-repo"
+    }
+    gh_output = "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+
+    success, output, calls = run_documented_persistent_trusted_origin_intake(
+      fresh_policy: {},
+      inherited_state: stale_output_state,
+      pr_ref: "42",
+      gh_output: gh_output
+    )
+    refute success, "stale mutable output state must not authorize intake"
+    assert_match(/BLOCKED: trusted origin is invalid/, output)
+    assert_empty calls
+
+    success, output, calls = run_documented_persistent_trusted_origin_intake(
+      fresh_policy: {
+        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "ghe.example:8443"
+      },
+      inherited_state: stale_output_state,
+      pr_ref: "42",
+      gh_output: gh_output
+    )
+    refute success, "partial fresh policy input must not combine with stale mutable output state"
+    assert_match(/BLOCKED: trusted origin is invalid/, output)
+    assert_empty calls
+
+    success, values, calls = run_documented_persistent_trusted_origin_intake(
+      fresh_policy: {
+        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "GHE.EXAMPLE:443",
+        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME" => "https",
+        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO" => "Octo-Org/Hello-World"
+      },
+      inherited_state: stale_output_state,
+      pr_ref: "42",
+      gh_output: "42|https://ghe.example/octo-org/hello-world/pull/42"
+    )
+    assert success, values
+    assert_equal ["https", "ghe.example", "octo-org/hello-world", "octo-org/hello-world"], values
+    assert_equal 1, calls.length
+    assert_includes calls.first, "GH_HOST=ghe.example"
+
+    success, values, calls = run_documented_persistent_trusted_origin_intake(
+      fresh_policy: {
+        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "GHE.EXAMPLE:8443",
+        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME" => "https",
+        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO" => "Octo-Org/Hello-World"
+      },
+      inherited_state: stale_output_state,
+      pr_ref: "42",
+      gh_output: gh_output
+    )
+    assert success, values
+    assert_equal ["https", "ghe.example:8443", "octo-org/hello-world", "octo-org/hello-world"], values
+    assert_equal 1, calls.length
+    assert_includes calls.first, "GH_HOST=ghe.example:8443"
   end
 
   def test_requires_trusted_metadata_validation_before_using_producer_output
@@ -854,7 +960,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_normalizes_trusted_default_ports_using_the_pre_set_trusted_scheme
     normalized_skill = File.read(SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
 
-    assert_includes normalized_skill, "the invoking trusted host or tooling must pre-set TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; there is no fallback."
+    assert_includes normalized_skill, "At the start of the producer, snapshot these inputs and clear mutable TRUSTED_GH_* output and derived state. Require all three snapshots atomically, then map them to TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; missing or invalid keys are BLOCKED with no default or checkout-derived fallback."
     assert_includes normalized_skill, "TRUSTED_GH_SCHEME must be exactly https; do not infer it. Strip :443 only for trusted https; preserve every other port."
 
     success, values, calls = run_documented_initial_metadata_resolution(
@@ -895,7 +1001,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_requires_an_invoker_pre_set_trusted_host_without_fallback
     normalized_skill = File.read(SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
 
-    assert_includes normalized_skill, "the invoking trusted host or tooling must pre-set TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO; there is no fallback."
+    assert_includes normalized_skill, "Supply them as the distinct fresh inputs UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST, UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME, and UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO"
     assert_includes normalized_skill, "Do not derive them from ambient GH_HOST or GH_REPO, PR or ref data, GitHub responses, or fork environment."
   end
 
@@ -1433,7 +1539,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_uses_the_trusted_origin_producer_as_the_only_local_preflight
     skill = File.read(SKILL_PATH, encoding: "UTF-8")
 
-    assert_includes skill, "# Trusted origin producer: complete explicit trusted values only; run before PR_REF."
+    assert_includes skill, "# Trusted origin producer: snapshot complete explicit policy inputs only; run before PR_REF."
     refute_includes skill, "git remote get-url origin"
     refute_includes skill, "PR_BATCH_SKILL_DIR"
   end
