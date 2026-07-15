@@ -22,6 +22,13 @@ class CodexPluginManifestCheckTest < Minitest::Test
     assert_equal %w[scw scw], names
   end
 
+  def test_current_claude_manifest_uses_stable_display_name
+    root = File.expand_path("..", __dir__)
+    manifest = JSON.parse(File.read(File.join(root, ".claude-plugin/plugin.json"), encoding: "UTF-8"))
+
+    assert_equal "ShakaCode Agent Workflows", manifest["displayName"]
+  end
+
   def test_current_codex_marketplace_publishes_scw_from_repository_url
     root = File.expand_path("..", __dir__)
     catalog = JSON.parse(File.read(File.join(root, ".agents/plugins/marketplace.json"), encoding: "UTF-8"))
@@ -214,6 +221,17 @@ class CodexPluginManifestCheckTest < Minitest::Test
     end
   end
 
+  def test_claude_manifest_display_name_must_be_stable
+    with_source_pack do |root|
+      write_claude_manifest(root, "displayName" => "SCW")
+
+      out, status = run_check(root)
+
+      refute status.success?, out
+      assert_includes out, 'Claude displayName must be "ShakaCode Agent Workflows"'
+    end
+  end
+
   def test_description_must_match_readme_summary
     with_source_pack do |root|
       write_manifest(root, "description" => "Different description.")
@@ -393,7 +411,9 @@ class CodexPluginManifestCheckTest < Minitest::Test
   end
 
   def write_claude_manifest(root, overrides = {})
-    manifest = base_manifest.reject { |key, _value| key == "interface" }.merge("license" => "MIT").merge(overrides)
+    manifest = base_manifest.reject { |key, _value| key == "interface" }
+                            .merge("displayName" => "ShakaCode Agent Workflows", "license" => "MIT")
+                            .merge(overrides)
     File.write(File.join(root, ".claude-plugin/plugin.json"), "#{JSON.pretty_generate(manifest)}\n")
   end
 

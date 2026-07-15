@@ -59,7 +59,9 @@ This repository ships native plugin metadata for Codex at
 paths expose the source pack's existing semantic `./skills/` tree through the
 plugin identifier `scw`; the skill directories and frontmatter names remain
 unprefixed. Claude Code therefore exposes `skills/verify/SKILL.md` as
-`/scw:verify`.
+`/scw:verify`. Claude's plugin manifest publishes `ShakaCode Agent Workflows`
+as the UI display name without changing the `scw` install or namespace
+identifier.
 
 Install the Claude Code plugin from the repository marketplace:
 
