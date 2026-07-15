@@ -108,6 +108,56 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_rejects_intermediate_consumer_directory_symlink
+    with_fixture do |fixture|
+      consumer_root = fixture.fetch(:consumer_root)
+      component = File.join(consumer_root, ".agents/skills")
+      target = File.join(consumer_root, "consumer-skills")
+      FileUtils.mv(component, target)
+      File.symlink(target, component)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "consumer path has a symlinked intermediate component: .agents/skills/example/SKILL.md (.agents/skills)"
+    end
+  end
+
+  def test_rejects_intermediate_source_directory_symlink
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      component = File.join(source_root, "skills")
+      target = File.join(source_root, "source-skills")
+      FileUtils.mv(component, target)
+      File.symlink(target, component)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "source path has a symlinked intermediate component: skills/example/SKILL.md (skills)"
+    end
+  end
+
+  def test_accepts_symlink_aliases_for_cli_roots
+    with_fixture do |fixture|
+      parent = File.dirname(fixture.fetch(:source_root))
+      source_alias = File.join(parent, "source-alias")
+      consumer_alias = File.join(parent, "consumer-alias")
+      File.symlink(fixture.fetch(:source_root), source_alias)
+      File.symlink(fixture.fetch(:consumer_root), consumer_alias)
+
+      out, err, status = run_checker(
+        fixture,
+        "--source-root", source_alias,
+        "--consumer-root", consumer_alias
+      )
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "EXPECTED OVERLAYS (1)"
+    end
+  end
+
   def test_rejects_unsupported_pinned_source_file_kind
     with_fixture do |fixture|
       source_root = fixture.fetch(:source_root)
@@ -393,6 +443,37 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "manifest has unknown keys: unexpected"
+    end
+  end
+
+  def test_accepts_colon_leading_source_paths_as_literal_git_paths
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      consumer_root = fixture.fetch(:consumer_root)
+      literal_paths = [":foo", ":(glob)foo"]
+
+      literal_paths.each do |path|
+        write_file(source_root, path, "#{path} contents\n")
+        write_file(consumer_root, path, "#{path} contents\n")
+      end
+      revision = commit_source_change(source_root, "add colon-leading paths")
+      update_manifest(fixture) do |manifest|
+        manifest["source_revision"] = revision
+        literal_paths.each do |path|
+          manifest.fetch("files") << {
+            "source" => path,
+            "consumer" => path,
+            "mode" => "identical"
+          }
+        end
+      end
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (3)"
+      literal_paths.each { |path| assert_includes out, "#{path} -> #{path}" }
+      assert_includes out, "UNEXPECTED DRIFT (0)"
     end
   end
 

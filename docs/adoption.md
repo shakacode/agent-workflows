@@ -224,6 +224,13 @@ Manifest version 1 has two mapping modes:
   and the SHA-256 of both files, plus the reviewed `consumer_mode`; a later
   content or mode change on either side is unexpected drift.
 
+Version 1 validates only the mappings declared in `files`. A clean result does
+not prove that the manifest covers every vendored source or consumer file. Each
+consumer adopting the checker must pair it with an automated, consumer-owned
+completeness test that compares the repository's intended vendored inventory
+with the manifest mappings. Inventory policy stays consumer-local; version 1
+does not define generic scope or exclusion rules.
+
 Mode checks deliberately normalize regular files to Git's portable `100644`
 (not executable) or `100755` (executable) modes instead of comparing exact
 POSIX permissions. The pinned source tree mode is authoritative for the source.
