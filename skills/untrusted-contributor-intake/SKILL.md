@@ -47,9 +47,13 @@ other port. If either is unavailable, report BLOCKED. A URL input authority
 must equal TRUSTED_GH_HOST before any network call; numeric input uses that
 trusted host with the trusted checkout.
 
+Automatic trusted-origin derivation accepts only HTTP(S) remote URLs. SSH or
+scp-style remotes require a complete explicit TRUSTED_GH_HOST and
+TRUSTED_GH_SCHEME override; otherwise report BLOCKED.
+
 ```bash
 # Trusted origin producer: trusted local checkout metadata only; run before PR_REF.
-trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid\n' >&2; exit 1; }
+trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid; set complete TRUSTED_GH_HOST and TRUSTED_GH_SCHEME for SSH/scp origin\n' >&2; exit 1; }
 if [ -n "${TRUSTED_GH_HOST:-}" ] || [ -n "${TRUSTED_GH_SCHEME:-}" ]; then
   [ -n "${TRUSTED_GH_HOST:-}" ] && [ -n "${TRUSTED_GH_SCHEME:-}" ] || trusted_origin_blocked
 else
@@ -388,10 +392,10 @@ decision authorize an authority-dependent disposition.
 After successful preflight, gather report metadata only.
 
 ```bash
-GH_HOST="${GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${REPO}" --json number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,statusCheckRollup,closingIssuesReferences --jq '{number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,statusCheckRollup: [.statusCheckRollup[]? | {name: (.name // .context), state: ((.conclusion | select(. != null and . != "")) // .status // .state)}],closingIssuesReferences}'
+GH_HOST="${GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${REPO}" --json number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,closingIssuesReferences --jq '{number,url,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,author,mergeable,maintainerCanModify,closingIssuesReferences}'
 REPO_OWNER="${REPO%%/*}"
 REPO_NAME="${REPO#*/}"
-GH_HOST="${GH_HOST}" gh api graphql -f owner="${REPO_OWNER}" -f name="${REPO_NAME}" -F pr="${PR_NUMBER}" -f query='query($owner:String!, $name:String!, $pr:Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { authorAssociation baseRef { repository { nameWithOwner isFork } } headRef { repository { nameWithOwner isFork } } reviews(first:100) { totalCount pageInfo { hasNextPage } nodes { author { __typename login } state } } } } }' --jq '{author_association: .data.repository.pullRequest.authorAssociation,base_repository: .data.repository.pullRequest.baseRef.repository.nameWithOwner,base_fork: .data.repository.pullRequest.baseRef.repository.isFork,head_repository: .data.repository.pullRequest.headRef.repository.nameWithOwner,head_fork: .data.repository.pullRequest.headRef.repository.isFork,review_evidence_complete: ((.data.repository.pullRequest.reviews.pageInfo.hasNextPage | not) and (.data.repository.pullRequest.reviews.totalCount == (.data.repository.pullRequest.reviews.nodes | length))), reviews: [.data.repository.pullRequest.reviews.nodes[]? | {actor: .author.login, actor_type: .author.__typename, state}]}'
+GH_HOST="${GH_HOST}" gh api graphql -f owner="${REPO_OWNER}" -f name="${REPO_NAME}" -F pr="${PR_NUMBER}" -f query='query($owner:String!, $name:String!, $pr:Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { authorAssociation baseRef { repository { nameWithOwner isFork } } headRef { repository { nameWithOwner isFork } } commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { totalCount pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } } reviews(first:100) { totalCount pageInfo { hasNextPage } nodes { author { __typename login } state } } } } }' --jq '((.data.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup.contexts? // {totalCount: 0, pageInfo: {hasNextPage: false}, nodes: []}) as $check_contexts | {author_association: .data.repository.pullRequest.authorAssociation,base_repository: .data.repository.pullRequest.baseRef.repository.nameWithOwner,base_fork: .data.repository.pullRequest.baseRef.repository.isFork,head_repository: .data.repository.pullRequest.headRef.repository.nameWithOwner,head_fork: .data.repository.pullRequest.headRef.repository.isFork,check_evidence_complete: (($check_contexts.pageInfo.hasNextPage | not) and ($check_contexts.totalCount == ($check_contexts.nodes | length))),checks: [$check_contexts.nodes[]? | {name: (.name // .context), state: ((.conclusion | select(. != null and . != "")) // .status // .state)}],review_evidence_complete: ((.data.repository.pullRequest.reviews.pageInfo.hasNextPage | not) and (.data.repository.pullRequest.reviews.totalCount == (.data.repository.pullRequest.reviews.nodes | length))),reviews: [.data.repository.pullRequest.reviews.nodes[]? | {actor: .author.login, actor_type: .author.__typename, state}]})'
 GH_HOST="${GH_HOST}" gh api "repos/${REPO}" --jq '{viewer_permissions: .permissions}'
 ```
 
@@ -401,6 +405,10 @@ If review evidence is incomplete, record review evidence incomplete; it cannot
 establish authority. Only trusted local policy independent of review evidence
 may establish authority; otherwise record not established. Do not silently
 treat the first 100 reviews as complete.
+
+If check evidence is incomplete, record check evidence incomplete and Gate
+state UNKNOWN; fail closed and never treat a partial check list as complete or
+passing.
 
 The repository permissions GET projects only authenticated viewer permissions;
 it cannot establish a review or comment actor's authority. For each material
@@ -461,12 +469,12 @@ Fork intake report
 - Fork metadata: <base repository>; <head repository>; fork <yes|no>; author association <value>.
 - Normalized input: PR_REF <URL|number>; REPO <owner/repo>; PR_NUMBER <numeric>; GH_HOST <host>; canonical URL <url>.
 - PR metadata: <number>; base branch <branch>; head SHA <sha>; mergeability <value>; permissions <summary>; linked issue <reference>.
-- Checks/review actors: <check summary>; <actor list>; review evidence <complete|incomplete|UNKNOWN>.
+- Checks/review actors: <check summary>; check evidence <complete|incomplete|UNKNOWN>; <actor list>; review evidence <complete|incomplete|UNKNOWN>.
 - Trust boundaries: <trusted sources>; <untrusted sources>.
 - Scope: <concise diff summary or UNKNOWN>.
 - Authority: <trusted local policy|trusted repository permission metadata|not established; review evidence incomplete>.
 - Validation evidence: <metadata/diff evidence or UNKNOWN>.
-- Gate state: <open|blocked|maintainer decision needed|follow-up ready>.
+- Gate state: <open|blocked|UNKNOWN|maintainer decision needed|follow-up ready>.
 - Disposition: <decline|request narrowly scoped revision|accept as follow-up|adopt independently>.
 - Follow-up: <none|maintainer-owned recreation|exceptional cherry-pick>; attribution <preserved|UNKNOWN>.
 - Authorized write: <none|name>; trusted authority evidence <evidence>; constrained permission <yes|BLOCKED>.
