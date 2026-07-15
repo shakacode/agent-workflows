@@ -16,7 +16,7 @@ INTAKE_SUBPROCESS_ENV_KEYS = %w[
   UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME
   UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO
   TRUSTED_ORIGIN_URL TRUSTED_ORIGIN_REMAINDER TRUSTED_ORIGIN_PATH
-  TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT
+  TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT TRUSTED_ORIGIN_LABEL
   TRUSTED_ORIGIN_OWNER TRUSTED_ORIGIN_REPO TRUSTED_REPO_OWNER TRUSTED_REPO_NAME
   TRUSTED_HOST_PORT TRUSTED_HOST TRUSTED_PORT TRUSTED_REMAINDER TRUSTED_LABEL
   PR_REF PR_INPUT_KIND PR_NUMBER PR_REF_NUMBER PR_REF_SCHEME PR_REF_WITHOUT_SCHEME
@@ -259,6 +259,48 @@ def run_documented_persistent_trusted_origin_intake(
     field_count = final_canonical_validation ? 6 : 4
 
     [success, success ? output.split("|", field_count) : output, calls]
+  end
+end
+
+def run_documented_two_sequential_trusted_origin_intakes(first_policy:, pr_ref:, gh_output:)
+  Dir.mktmpdir("untrusted-contributor-intake") do |directory|
+    gh_path = File.join(directory, "gh")
+    log_path = File.join(directory, "gh.log")
+    File.write(
+      gh_path,
+      <<~SH,
+        #!/bin/sh
+        printf 'GH_HOST=%s %s\\n' "${GH_HOST:-}" "$*" >> "${GH_LOG}"
+        printf '%s' "${GH_STUB_OUTPUT}"
+      SH
+      encoding: "UTF-8"
+    )
+    File.chmod(0o755, gh_path)
+    environment = INTAKE_SUBPROCESS_ENV_KEYS.to_h { |key| [key, nil] }.merge(
+      "GH_LOG" => log_path,
+      "GH_STUB_OUTPUT" => gh_output,
+      "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+      "PR_REF" => pr_ref
+    ).merge(first_policy)
+    first_intake = [
+      documented_trusted_origin_producer_snippet,
+      documented_pr_ref_classifier_snippet,
+      documented_metadata_resolution_snippet
+    ].join("\n")
+    second_producer = documented_trusted_origin_producer_snippet
+    success, output = run_documented_posix_snippet(
+      <<~SH,
+        #{first_intake}
+        PR_REF=43
+        #{second_producer}
+      SH
+      environment,
+      %(printf '%s' "${TRUSTED_GH_HOST}"),
+      scrub: false
+    )
+    calls = File.exist?(log_path) ? File.readlines(log_path, chomp: true) : []
+
+    [success, output, calls]
   end
 end
 
@@ -602,6 +644,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_requires_complete_explicit_trusted_origin_values_and_url_scheme_parity
     normalized_skill = File.read(SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
 
+    assert_includes normalized_skill, "untrusted_contributor_intake.trusted_github_repo only from trusted-base `.agents/agent-workflow.yml` before any untrusted PR content."
     assert_includes normalized_skill, "Supply them as the distinct fresh inputs UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST, UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME, and UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO: each name is its consumer seam key mechanically uppercased with dots replaced by underscores."
     assert_includes normalized_skill, "Complete explicit TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO values are required; do not derive them from a checkout remote."
     refute_includes normalized_skill, "trusted-base checkout remote metadata"
@@ -811,6 +854,43 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
       assert_match(scenario.fetch(:error), output)
       assert_equal 1, calls.length
     end
+  end
+
+  def test_clears_source_policy_inputs_after_each_atomic_snapshot
+    policy = {
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "ghe.example:8443",
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME" => "https",
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO" => "octo-org/hello-world"
+    }
+
+    success, output, calls = run_documented_two_sequential_trusted_origin_intakes(
+      first_policy: policy,
+      pr_ref: "42",
+      gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+    )
+
+    refute success, "the second producer must not reuse source policy from the first invocation"
+    assert_match(/BLOCKED: trusted origin is invalid/, output)
+    assert_equal 1, calls.length
+  end
+
+  def test_blocks_a_malformed_trusted_host_before_pr_ref_classification_or_network
+    policy = {
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "ghe..example",
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME" => "https",
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO" => "octo-org/hello-world"
+    }
+
+    success, output, calls = run_documented_persistent_trusted_origin_intake(
+      fresh_policy: policy,
+      inherited_state: {},
+      pr_ref: "not-an-exact-pr-reference",
+      gh_output: "42|https://ghe.example/octo-org/hello-world/pull/42"
+    )
+
+    refute success
+    assert_match(/BLOCKED: trusted origin is invalid/, output)
+    assert_empty calls
   end
 
   def test_requires_trusted_metadata_validation_before_using_producer_output

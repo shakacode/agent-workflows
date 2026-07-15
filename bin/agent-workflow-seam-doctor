@@ -124,6 +124,12 @@ module AgentWorkflowSeamDoctor
     hosted_ci_trigger
     ci_change_detector
   ].freeze
+  UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY = "untrusted_contributor_intake"
+  UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS = %w[
+    trusted_github_host
+    trusted_github_scheme
+    trusted_github_repo
+  ].freeze
   SEAM_PLACEHOLDER = %r{
     <[^>\n]*
     (?:
@@ -1662,9 +1668,34 @@ module AgentWorkflowSeamDoctor
       issues << "unresolved policy value for key: #{key}"
     end
 
+    issues.concat(untrusted_contributor_intake_policy_issues(config))
+
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def untrusted_contributor_intake_policy_issues(config)
+    return [] unless config.key?(UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY)
+
+    intake_policy = config[UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY]
+    unless intake_policy.is_a?(Hash)
+      return ["invalid policy value for key: #{UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY}"]
+    end
+
+    issues = UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS.filter_map do |key|
+      qualified_key = "#{UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY}.#{key}"
+      if !intake_policy.key?(key)
+        "missing policy key: #{qualified_key}"
+      elsif !intake_policy[key].is_a?(String) || intake_policy[key].strip.empty? ||
+            unresolved_policy_value?(intake_policy[key]) || intake_policy[key].strip == "n/a"
+        "invalid policy value for key: #{qualified_key}"
+      end
+    end
+    scheme_key = "#{UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY}.trusted_github_scheme"
+    scheme = intake_policy["trusted_github_scheme"]
+    issues << "invalid policy value for key: #{scheme_key}" if scheme && scheme != "https"
+    issues.uniq
   end
 
   def load_policy_config(path)

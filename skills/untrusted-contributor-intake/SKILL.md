@@ -43,8 +43,8 @@ used by the canonical host boundary, with an optional numeric port.
 Before classification, read untrusted_contributor_intake.trusted_github_host,
 untrusted_contributor_intake.trusted_github_scheme, and
 untrusted_contributor_intake.trusted_github_repo only from trusted-base
-AGENTS.md before any untrusted PR content. Supply them as the distinct fresh
-inputs UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST,
+`.agents/agent-workflow.yml` before any untrusted PR content. Supply them as
+the distinct fresh inputs UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST,
 UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME, and
 UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO: each name is its consumer
 seam key mechanically uppercased with dots replaced by underscores. At the
@@ -75,11 +75,12 @@ running them.
 # Trusted origin producer: snapshot complete explicit policy inputs only; run before PR_REF.
 trusted_origin_blocked() { printf 'BLOCKED: trusted origin is invalid; complete explicit HTTPS TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO are required\n' >&2; exit 1; }
 unset TRUSTED_GH_HOST TRUSTED_GH_SCHEME TRUSTED_GH_REPO
-unset TRUSTED_ORIGIN_URL TRUSTED_ORIGIN_REMAINDER TRUSTED_ORIGIN_PATH TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT TRUSTED_ORIGIN_OWNER TRUSTED_ORIGIN_REPO TRUSTED_REPO_OWNER TRUSTED_REPO_NAME
+unset TRUSTED_ORIGIN_URL TRUSTED_ORIGIN_REMAINDER TRUSTED_ORIGIN_PATH TRUSTED_ORIGIN_HOST_PORT TRUSTED_ORIGIN_HOST TRUSTED_ORIGIN_PORT TRUSTED_ORIGIN_LABEL TRUSTED_ORIGIN_OWNER TRUSTED_ORIGIN_REPO TRUSTED_REPO_OWNER TRUSTED_REPO_NAME
 unset TRUSTED_HOST_PORT TRUSTED_HOST TRUSTED_PORT TRUSTED_REMAINDER TRUSTED_LABEL
 TRUSTED_POLICY_HOST="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST:-}"
 TRUSTED_POLICY_SCHEME="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME:-}"
 TRUSTED_POLICY_REPO="${UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO:-}"
+unset UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO
 [ -n "${TRUSTED_POLICY_HOST}" ] && [ -n "${TRUSTED_POLICY_SCHEME}" ] && [ -n "${TRUSTED_POLICY_REPO}" ] || trusted_origin_blocked
 TRUSTED_GH_HOST="${TRUSTED_POLICY_HOST}"
 TRUSTED_GH_SCHEME="${TRUSTED_POLICY_SCHEME}"
@@ -97,6 +98,17 @@ case "${TRUSTED_ORIGIN_HOST_PORT}" in
     ;;
   *) TRUSTED_ORIGIN_HOST="${TRUSTED_ORIGIN_HOST_PORT}"; TRUSTED_ORIGIN_PORT="" ;;
 esac
+case "${TRUSTED_ORIGIN_HOST}" in ""|.*|*.|*..*|*[!abcdefghijklmnopqrstuvwxyz0123456789.-]*) trusted_origin_blocked ;; esac
+TRUSTED_ORIGIN_REMAINDER="${TRUSTED_ORIGIN_HOST}"
+while [ -n "${TRUSTED_ORIGIN_REMAINDER}" ]; do
+  TRUSTED_ORIGIN_LABEL="${TRUSTED_ORIGIN_REMAINDER%%.*}"
+  case "${TRUSTED_ORIGIN_LABEL}" in ""|-*|*-) trusted_origin_blocked ;; esac
+  [ "${#TRUSTED_ORIGIN_LABEL}" -le 63 ] || trusted_origin_blocked
+  case "${TRUSTED_ORIGIN_REMAINDER}" in
+    *.*) TRUSTED_ORIGIN_REMAINDER="${TRUSTED_ORIGIN_REMAINDER#*.}" ;;
+    *) TRUSTED_ORIGIN_REMAINDER="" ;;
+  esac
+done
 case "${TRUSTED_GH_SCHEME}:${TRUSTED_ORIGIN_PORT}" in
   https:443) TRUSTED_ORIGIN_PORT="" ;;
 esac

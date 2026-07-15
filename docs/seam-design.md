@@ -100,6 +100,17 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+Repos that use `untrusted-contributor-intake` add one explicit trusted-base
+authority mapping. The seam doctor requires all three values when the mapping
+is present, and the skill fails closed when the mapping is absent or invalid:
+
+```yaml
+untrusted_contributor_intake:
+  trusted_github_host: "github.com"
+  trusted_github_scheme: "https"
+  trusted_github_repo: "OWNER/REPO"
+```
+
 ## AGENTS Pointer
 
 Each consumer `AGENTS.md` owns a section named
