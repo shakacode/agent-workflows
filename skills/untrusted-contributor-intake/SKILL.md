@@ -465,6 +465,7 @@ case "${GRAPHQL_METADATA_RECORD}" in *\|*) ;; *) metadata_gathering_failed ;; es
 REPORTED_HEAD_SHA="${GRAPHQL_METADATA_RECORD%%|*}"
 GRAPHQL_METADATA_JSON="${GRAPHQL_METADATA_RECORD#*|}"
 case "${REPORTED_HEAD_SHA}" in ""|*[!0123456789abcdefABCDEF]*) metadata_gathering_failed ;; esac
+[ -n "${GRAPHQL_METADATA_JSON}" ] || metadata_gathering_failed
 [ "${INITIAL_METADATA_HEAD_SHA}" = "${REPORTED_HEAD_SHA}" ] || metadata_gathering_failed
 printf '%s\n' "${INITIAL_METADATA_JSON}"
 printf '%s\n' "${GRAPHQL_METADATA_JSON}"
