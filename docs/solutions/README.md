@@ -26,10 +26,18 @@ repo-specific session state into `docs/solutions/`.
 
 ## Adding Or Refreshing A Lesson
 
-Create one Markdown file under `docs/solutions/` with YAML frontmatter followed
-by a concise body. Prefer refining an existing lesson when new evidence changes
-the same reusable fix. Add a new lesson when the symptom, root cause, or
-resolution is meaningfully different.
+Create one Markdown file directly under `docs/solutions/` with YAML frontmatter
+followed by a concise body. Lesson Markdown is flat-only:
+`docs/solutions/<lesson>.md` is valid, while subdirectories, nested Markdown,
+and hidden Markdown are rejected by `bin/validate-solutions`. Prefer refining
+an existing lesson when new evidence changes the same reusable fix. Add a new
+lesson when the symptom, root cause, or resolution is meaningfully different.
+
+This flat Agent Workflows schema is separate from categorized Compound
+Engineering (CE) learning. Write CE learning only to an explicitly named
+destination and schema in the consumer repository. This source-pack library
+does not accept a second schema, translate CE output, or provide a wrapper that
+redirects CE output into `docs/solutions/`.
 
 Required frontmatter fields for lesson files:
 
