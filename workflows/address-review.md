@@ -344,6 +344,7 @@ Execution flow when terminal access is available:
              ] + [
                $inventory.inline_comments[]? |
                select((.in_reply_to_id // null) == null) |
+               select((.is_resolved // false) == false) |
                (.thread_id // "-") as $thread_id |
                (if $thread_id == "-" then (.created_at // "") else inline_latest_activity($thread_id) end) as $latest_activity |
                select($latest_activity <= $checkpoint_created_at) |
