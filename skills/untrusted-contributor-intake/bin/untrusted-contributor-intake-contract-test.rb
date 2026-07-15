@@ -158,7 +158,16 @@ def documented_metadata_resolution_snippet
   extract_metadata_resolution_snippet(File.read(SKILL_PATH, encoding: "UTF-8"))
 end
 
-def run_documented_metadata_resolution(input_kind:, pr_ref:, pr_number:, gh_output:, pr_ref_number: "", gh_status: 0)
+def run_documented_metadata_resolution(
+  input_kind:,
+  pr_ref:,
+  pr_number:,
+  gh_output:,
+  pr_ref_number: "",
+  gh_status: 0,
+  trusted_host: "github.com",
+  pr_ref_validator: 'pr_ref_validate_authority() { PR_REF_HOST="${PR_REF_AUTHORITY%%:*}"; PR_REF_PORT=""; }'
+)
   Dir.mktmpdir("untrusted-contributor-intake") do |directory|
     gh_path = File.join(directory, "gh")
     log_path = File.join(directory, "gh.log")
@@ -185,10 +194,10 @@ def run_documented_metadata_resolution(input_kind:, pr_ref:, pr_number:, gh_outp
       "PR_REF_GH_HOST" => "github.com",
       "PR_REF_OWNER" => "octo-org",
       "PR_REF_REPO_NAME" => "hello-world",
-      "TRUSTED_GH_HOST" => "github.com"
+      "TRUSTED_GH_HOST" => trusted_host
     }
     success, output = run_documented_posix_snippet(
-      "pr_ref_validate_authority() { PR_REF_HOST=\"${PR_REF_AUTHORITY%%:*}\"; PR_REF_PORT=\"\"; }\n#{documented_metadata_resolution_snippet}",
+      "#{pr_ref_validator}\n#{documented_metadata_resolution_snippet}",
       environment,
       %(printf '%s|%s|%s|%s' "${PR_NUMBER}" "${REPO:-}" "${CANONICAL_URL}" "${PR_REF_NUMBER:-}")
     )
@@ -465,6 +474,33 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes calls.first, "GH_HOST=ghe.example:8443"
     assert_includes calls.first, "repo view --json nameWithOwner,url"
     refute_includes calls.first, "pr view"
+  end
+
+  def test_requires_an_invoker_pre_set_trusted_host_without_fallback
+    normalized_skill = File.read(SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
+
+    assert_includes normalized_skill, "the invoking trusted host or tooling must pre-set TRUSTED_GH_HOST; there is no fallback."
+    assert_includes normalized_skill, "Do not derive TRUSTED_GH_HOST from ambient GH_HOST or GH_REPO, PR or ref data, GitHub responses, or fork environment."
+  end
+
+  def test_metadata_trusted_host_validation_isolated_from_pr_ref_state
+    success, values, calls = run_documented_metadata_resolution(
+      input_kind: "number",
+      pr_ref: "42",
+      pr_number: "42",
+      gh_output: "octo-org/hello-world|https://ghe.example:8443/octo-org/hello-world",
+      trusted_host: "GHE.EXAMPLE:8443",
+      pr_ref_validator: "pr_ref_validate_authority() { exit 99; }"
+    )
+
+    assert success, values
+    assert_equal ["42", "octo-org/hello-world", "https://ghe.example:8443/octo-org/hello-world", ""], values
+    assert_equal 1, calls.length
+    assert_includes calls.first, "GH_HOST=ghe.example:8443"
+
+    resolver = extract_metadata_resolution_snippet(File.read(SKILL_PATH, encoding: "UTF-8"))
+    refute_match(/\bPR_REF_(?:AUTHORITY|HOST|PORT)\b/, resolver)
+    refute_includes resolver, "pr_ref_validate_authority"
   end
 
   def test_documents_one_ordered_metadata_command_per_input_kind

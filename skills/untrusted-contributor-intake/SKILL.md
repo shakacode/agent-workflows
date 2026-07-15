@@ -36,12 +36,14 @@ PR_INPUT_KIND to `number` or `url` and PR_NUMBER to the numeric target. Before
 gh, the classifier requires the same conservative DNS-or-IPv4 authority shape
 used by the canonical host boundary, with an optional numeric port.
 
-Before classification, trusted host/tooling must set TRUSTED_GH_HOST from a
-trusted local policy seam or trusted-base checkout remote metadata. It is a
-normalized `host[:non-default-port]` authority, never a value derived from the
-PR URL. If it is unavailable, report BLOCKED. A URL input authority must equal
-TRUSTED_GH_HOST before any network call; numeric input uses that trusted host
-with the trusted checkout.
+Before classification, the invoking trusted host or tooling must pre-set
+TRUSTED_GH_HOST; there is no fallback. It must source that normalized
+`host[:non-default-port]` authority from a trusted local policy seam or
+trusted-base checkout remote metadata. Do not derive TRUSTED_GH_HOST from
+ambient GH_HOST or GH_REPO, PR or ref data, GitHub responses, or fork
+environment. If it is unavailable, report BLOCKED. A URL input authority must
+equal TRUSTED_GH_HOST before any network call; numeric input uses that trusted
+host with the trusted checkout.
 
 ```bash
 # PR_REF classifier: raw PR_REF only; run before any gh pr view.
@@ -120,10 +122,30 @@ or metadata stops as BLOCKED.
 metadata_blocked() { printf 'BLOCKED: metadata resolution is invalid\n' >&2; exit 1; }
 metadata_require_trusted_host() {
   [ -n "${TRUSTED_GH_HOST:-}" ] || metadata_blocked
-  PR_REF_AUTHORITY="${TRUSTED_GH_HOST}"
-  pr_ref_validate_authority
-  TRUSTED_GH_HOST="${PR_REF_HOST}"
-  if [ -n "${PR_REF_PORT}" ]; then TRUSTED_GH_HOST="${TRUSTED_GH_HOST}:${PR_REF_PORT}"; fi
+  TRUSTED_HOST_PORT="$(printf '%s' "${TRUSTED_GH_HOST}" | tr '[:upper:]' '[:lower:]')"
+  case "${TRUSTED_HOST_PORT}" in ""|*@*|*/*|*\?*|*\#*|*" "*|*\[*|*\]*) metadata_blocked ;; esac
+  case "${TRUSTED_HOST_PORT}" in
+    *:*)
+      TRUSTED_HOST="${TRUSTED_HOST_PORT%:*}"
+      TRUSTED_PORT="${TRUSTED_HOST_PORT##*:}"
+      case "${TRUSTED_HOST}" in ""|*:*) metadata_blocked ;; esac
+      case "${TRUSTED_PORT}" in ""|*[!0-9]*) metadata_blocked ;; esac
+      ;;
+    *) TRUSTED_HOST="${TRUSTED_HOST_PORT}"; TRUSTED_PORT="" ;;
+  esac
+  case "${TRUSTED_HOST}" in ""|.*|*.|*..*|*[!a-z0-9.-]*) metadata_blocked ;; esac
+  TRUSTED_REMAINDER="${TRUSTED_HOST}"
+  while [ -n "${TRUSTED_REMAINDER}" ]; do
+    TRUSTED_LABEL="${TRUSTED_REMAINDER%%.*}"
+    case "${TRUSTED_LABEL}" in ""|-*|*-) metadata_blocked ;; esac
+    [ "${#TRUSTED_LABEL}" -le 63 ] || metadata_blocked
+    case "${TRUSTED_REMAINDER}" in
+      *.*) TRUSTED_REMAINDER="${TRUSTED_REMAINDER#*.}" ;;
+      *) TRUSTED_REMAINDER="" ;;
+    esac
+  done
+  TRUSTED_GH_HOST="${TRUSTED_HOST}"
+  if [ -n "${TRUSTED_PORT}" ]; then TRUSTED_GH_HOST="${TRUSTED_GH_HOST}:${TRUSTED_PORT}"; fi
 }
 metadata_split_record() {
   [ -n "${METADATA_RECORD}" ] || metadata_blocked
