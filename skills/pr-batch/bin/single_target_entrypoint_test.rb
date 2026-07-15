@@ -28,6 +28,21 @@ def extract_source_checkpoint_filter(text)
   filter_tail[0...terminator.begin(0)]
 end
 
+def extract_source_wait_checkpoint_filter(text)
+  marker = %q{SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq}
+  marker_offset = text.index(marker)
+  abort("FAIL: source wait checkpoint jq filter start missing") unless marker_offset
+
+  filter_offset = text.index("'\n", marker_offset)
+  abort("FAIL: source wait checkpoint jq filter body missing") unless filter_offset
+
+  filter_tail = text[(filter_offset + 2)..]
+  terminator = filter_tail.match(%r{\n\s+' 2>/dev/null \|\| echo 0\)"})
+  abort("FAIL: source wait checkpoint jq filter terminator missing") unless terminator
+
+  filter_tail[0...terminator.begin(0)]
+end
+
 batch = read_repo_file("skills/pr-batch/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 workflow = read_repo_file("workflows/pr-processing.md")
@@ -269,6 +284,9 @@ assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must pr
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
 assert(address_review.scan("def valid_body:").length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")
 assert(address_review_workflow.scan("def valid_body:").length >= 2, "address-review workflow mirror must schema-validate both source wait and cutoff checkpoints")
+summary_terminal_guard = '(($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))'
+assert(address_review.scan(summary_terminal_guard).length >= 2, "address-review summaries must require terminal-only source rows")
+assert(address_review_workflow.scan(summary_terminal_guard).length >= 2, "address-review workflow summaries must require terminal-only source rows")
 assert(address_review.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "source wait must authenticate the checkpoint author")
 assert(address_review_workflow.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "workflow source wait must authenticate the checkpoint author")
 assert(address_review.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review must implement the dual-PR review wait")
@@ -340,6 +358,12 @@ assert(
   skill_checkpoint_filter.lines.map(&:strip) == workflow_checkpoint_filter.lines.map(&:strip),
   "address-review source checkpoint validators must stay mirrored"
 )
+skill_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review)
+workflow_wait_checkpoint_filter = extract_source_wait_checkpoint_filter(address_review_workflow)
+assert(
+  skill_wait_checkpoint_filter.lines.map(&:strip) == workflow_wait_checkpoint_filter.lines.map(&:strip),
+  "address-review source wait checkpoint validators must stay mirrored"
+)
 
 valid_summary_body = <<~BODY.chomp
   <!-- address-review-summary -->
@@ -355,6 +379,20 @@ valid_status_body = <<~BODY.chomp
   item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tpending
   -->
 BODY
+invalid_pending_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tissue-comment\t104\t-\t2026-07-15T00:04:00Z\tpending
+  -->
+BODY
+invalid_ask_user_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\treview-summary\t105\t-\t2026-07-15T00:05:00Z\task-user
+  -->
+BODY
 invalid_duplicate_body = <<~BODY.chomp
   <!-- address-review-summary -->
   <!-- address-review-source-state:v1
@@ -368,7 +406,9 @@ checkpoint_fixture = {
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => valid_status_body },
     { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
     { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body }
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:05:00Z", "body" => invalid_pending_summary_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body }
   ]
 }
 stdout, stderr, status = Open3.capture3(
@@ -377,8 +417,20 @@ stdout, stderr, status = Open3.capture3(
 )
 assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
 valid_checkpoints = JSON.parse(stdout)
-assert(valid_checkpoints.length == 2, "source checkpoint validator must reject marker-only, wrong-author, and duplicate state")
+assert(valid_checkpoints.length == 2, "source checkpoint validator must reject invalid state and non-terminal summaries")
 assert(valid_checkpoints[0]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
 assert(valid_checkpoints[1]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
+
+wait_checkpoint_fixture = [
+  checkpoint_fixture.fetch("issue_comments").map do |comment|
+    comment.merge("user" => { "login" => comment.fetch("user") })
+  end
+]
+stdout, stderr, status = Open3.capture3(
+  "jq", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_wait_checkpoint_filter,
+  stdin_data: JSON.generate(wait_checkpoint_fixture)
+)
+assert(status.success?, "source wait checkpoint jq validator must execute: #{stderr}")
+assert(Integer(stdout, 10) == 2, "source wait checkpoint validator must accept pending status but reject non-terminal summaries")
 
 puts "PASS pr-batch single-target entry point contract"

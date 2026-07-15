@@ -202,6 +202,8 @@ Execution flow when terminal access is available:
            SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
              def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
              def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
+             def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
+             def terminal_row: split("\t") | .[6] | terminal_outcome;
              def valid_row:
                split("\t") as $fields |
                ($fields | length) == 7 and
@@ -220,6 +222,8 @@ Execution flow when terminal access is available:
                  $state != null and
                  (($state.rows | split("\n") | map(select(length > 0))) as $rows |
                    all($rows[]; valid_row) and
+                   (($body | startswith("<!-- address-review-status -->")) or
+                    (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
                    (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
              [.[][] |
                select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
@@ -277,6 +281,8 @@ Execution flow when terminal access is available:
          if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
          def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
          def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
+         def terminal_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip";
+         def terminal_row: split("\t") | .[6] | terminal_outcome;
          def valid_row:
            split("\t") as $fields |
            ($fields | length) == 7 and
@@ -295,6 +301,8 @@ Execution flow when terminal access is available:
              $state != null and
              (($state.rows | split("\n") | map(select(length > 0))) as $rows |
                all($rows[]; valid_row) and
+               (($body | startswith("<!-- address-review-status -->")) or
+                (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
                (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
          [.issue_comments[] |
            select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
