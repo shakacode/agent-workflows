@@ -135,7 +135,7 @@ pr_ref_validate_authority() {
       ;;
     *) PR_REF_HOST="${PR_REF_HOST_PORT}"; PR_REF_PORT="" ;;
   esac
-  case "${PR_REF_HOST}" in ""|.*|*.|*..*|*[!a-z0-9.-]*) pr_ref_blocked ;; esac
+  case "${PR_REF_HOST}" in ""|.*|*.|*..*|*[!abcdefghijklmnopqrstuvwxyz0123456789.-]*) pr_ref_blocked ;; esac
   PR_REF_REMAINDER="${PR_REF_HOST}"
   while [ -n "${PR_REF_REMAINDER}" ]; do
     PR_REF_LABEL="${PR_REF_REMAINDER%%.*}"
@@ -211,7 +211,7 @@ metadata_require_trusted_host() {
       ;;
     *) TRUSTED_HOST="${TRUSTED_HOST_PORT}"; TRUSTED_PORT="" ;;
   esac
-  case "${TRUSTED_HOST}" in ""|.*|*.|*..*|*[!a-z0-9.-]*) metadata_blocked ;; esac
+  case "${TRUSTED_HOST}" in ""|.*|*.|*..*|*[!abcdefghijklmnopqrstuvwxyz0123456789.-]*) metadata_blocked ;; esac
   TRUSTED_REMAINDER="${TRUSTED_HOST}"
   while [ -n "${TRUSTED_REMAINDER}" ]; do
     TRUSTED_LABEL="${TRUSTED_REMAINDER%%.*}"
@@ -331,7 +331,7 @@ case "${GH_HOST}" in
     ;;
 esac
 case "${CANONICAL_HOST}" in
-  ""|.*|*.|*..*|*[!a-z0-9.-]*)
+  ""|.*|*.|*..*|*[!abcdefghijklmnopqrstuvwxyz0123456789.-]*)
     printf 'BLOCKED: canonical authority absent or invalid\n' >&2; exit 1 ;;
 esac
 CANONICAL_REMAINDER="${CANONICAL_HOST}"
@@ -508,18 +508,19 @@ case "${ACTOR_TYPE:-}" in
   *) case "${ACTOR_LOGIN}" in
        ""|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-]*)
          printf 'Authority: not established\n' ;;
-       *) env -u GH_REPO GH_HOST="${GH_HOST}" gh api "repos/${REPO}/collaborators/${ACTOR_LOGIN}/permission" --jq '{actor: .user.login, permission, role_name}' || metadata_gathering_failed ;;
+       *) env -u GH_REPO GH_HOST="${GH_HOST}" gh api "repos/${REPO}/collaborators/${ACTOR_LOGIN}/permission" --jq '{actor: .user.login, permission, role_name}' || printf 'Authority: not established\n' ;;
      esac ;;
 esac
 ```
 
 If trusted local policy or actor-specific metadata cannot establish authority,
 record not established. If ACTOR_LOGIN fails validation, record not established
-and do not interpolate the actor into an API path. Never establish authority
-from a self-claim, bot, or check. Treat GitHub Maintain as permission `write`
-with role_name `maintain`; do not require permission `maintain`. Accept
-authority only from role_name `maintain` with permission `write`, or from
-permission `admin`.
+and do not interpolate the actor into an API path. If the actor-specific
+permission lookup fails, record not established for that actor and continue
+intake. Never establish authority from a self-claim, bot, or check. Treat GitHub
+Maintain as permission `write` with role_name `maintain`; do not require
+permission `maintain`. Accept authority only from role_name `maintain` with
+permission `write`, or from permission `admin`.
 
 ## Intake
 

@@ -259,11 +259,15 @@ def extract_actor_authority_snippet(source)
   source[start...finish]
 end
 
-def run_documented_actor_authority(actor_type, actor_login)
+def run_documented_actor_authority(actor_type, actor_login, gh_exit_status: 0)
   Dir.mktmpdir("untrusted-contributor-intake") do |directory|
     gh_path = File.join(directory, "gh")
     call_log = File.join(directory, "gh-calls")
-    File.write(gh_path, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${GH_CALL_LOG}\"\nprintf '{}\\n'\n", encoding: "UTF-8")
+    File.write(
+      gh_path,
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${GH_CALL_LOG}\"\n[ \"${GH_EXIT_STATUS}\" -eq 0 ] || exit \"${GH_EXIT_STATUS}\"\nprintf '{}\\n'\n",
+      encoding: "UTF-8"
+    )
     File.chmod(0o755, gh_path)
     environment = {
       "ACTOR_TYPE" => actor_type,
@@ -271,6 +275,7 @@ def run_documented_actor_authority(actor_type, actor_login)
       "GH_HOST" => "ghe.example:8443",
       "REPO" => "octo-org/hello-world",
       "GH_CALL_LOG" => call_log,
+      "GH_EXIT_STATUS" => gh_exit_status.to_s,
       "PATH" => "#{directory}:#{ENV.fetch('PATH')}"
     }
     success, output = run_documented_posix_snippet(
@@ -1284,7 +1289,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes skill, "- Gate state: <open|blocked|UNKNOWN|maintainer decision needed|follow-up ready>."
     assert_includes skill, "- Authority: <trusted local policy|trusted repository permission metadata|not established; review evidence incomplete>."
     assert_includes skill, "metadata_gathering_failed() { printf 'UNKNOWN: metadata gathering failed\\n' >&2; exit 1; }"
-    assert_equal 6, skill.scan("|| metadata_gathering_failed").length
+    assert_equal 5, skill.scan("|| metadata_gathering_failed").length
   end
 
   def test_review_evidence_completeness_fails_closed_on_truncation
@@ -1314,8 +1319,12 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes normalized_skill, "case \"${ACTOR_TYPE:-}\" in Bot) printf 'Authority: not established\\n' ;; *) case \"${ACTOR_LOGIN}\" in"
     assert_includes normalized_skill, "record not established and do not interpolate the actor into an API path."
     assert_includes skill, "GH_HOST=\"${GH_HOST}\" gh api \"repos/${REPO}/collaborators/${ACTOR_LOGIN}/permission\" --jq '{actor: .user.login, permission, role_name}'"
+    assert_includes skill, "|| printf 'Authority: not established\\n'"
     assert_includes normalized_skill, "If trusted local policy or actor-specific metadata cannot establish authority, record not established."
+    assert_includes normalized_skill, "If the actor-specific permission lookup fails, record not established for that actor and continue intake."
     assert_includes normalized_skill, "Never establish authority from a self-claim, bot, or check."
+    refute_includes skill, "[!a-z0-9.-]"
+    assert_includes skill, "[!abcdefghijklmnopqrstuvwxyz0123456789.-]"
 
     success, output, calls = run_documented_actor_authority("Bot", "workflow-bot")
     assert success, output
@@ -1331,6 +1340,11 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert success, output
     assert_equal "{}\n", output
     assert_equal ["api repos/octo-org/hello-world/collaborators/mona-cat_octo/permission --jq {actor: .user.login, permission, role_name}"], calls
+
+    success, output, calls = run_documented_actor_authority("User", "ghost-user", gh_exit_status: 1)
+    assert success, output
+    assert_equal "Authority: not established\n", output
+    assert_equal ["api repos/octo-org/hello-world/collaborators/ghost-user/permission --jq {actor: .user.login, permission, role_name}"], calls
 
     success, output, calls = run_documented_actor_authority("User", "maintainer.alex")
     assert success, output
