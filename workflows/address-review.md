@@ -165,6 +165,26 @@ Execution flow when terminal access is available:
      ownership/write preflight and require an unpushable source head plus a
      pushable owned primary replacement head. Any mismatch, missing fact, or
      `UNKNOWN` blocks before source review fetch or mutation.
+     Use the exact fail-closed guard from the canonical skill before any source
+     fetch:
+     ```bash
+     if [ -n "${SOURCE_PR_NUMBER}" ]; then
+       if [ "${COORDINATED_AUTOFIX:-}" != "1" ]; then
+         echo "COORDINATED_REVIEW_SOURCE_PR requires trusted coordinated autofix" >&2
+         exit 1
+       fi
+       case "${SOURCE_PR_NUMBER}" in
+         ''|0|0[0-9]*|*[!0-9]*)
+           echo "COORDINATED_REVIEW_SOURCE_PR must be a positive decimal PR number" >&2
+           exit 1
+           ;;
+       esac
+       if [ "${SOURCE_PR_NUMBER}" = "${PRIMARY_PR_NUMBER}" ]; then
+         echo "Replacement and source PR numbers must be distinct" >&2
+         exit 1
+       fi
+     fi
+     ```
    - Set `SPECIFIC_TARGET=1` when the input targets a specific review URL or issue-comment URL; otherwise set `SPECIFIC_TARGET=0`.
    - If `gh` is unavailable or unauthenticated, stop and tell me to fix that first.
 
@@ -324,7 +344,6 @@ Execution flow when terminal access is available:
              ] + [
                $inventory.inline_comments[]? |
                select((.in_reply_to_id // null) == null) |
-               select((.is_resolved // false) == false) |
                (.thread_id // "-") as $thread_id |
                (if $thread_id == "-" then (.created_at // "") else inline_latest_activity($thread_id) end) as $latest_activity |
                select($latest_activity <= $checkpoint_created_at) |

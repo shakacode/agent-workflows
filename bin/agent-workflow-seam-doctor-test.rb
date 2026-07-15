@@ -986,7 +986,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "PASS agent workflow seam is complete"
-      assert_includes File.read(File.join(root, "AGENTS.md")), AgentWorkflowSeamDoctor::POINTER_SECTION
+      assert_includes File.read(File.join(root, "AGENTS.md"), encoding: "UTF-8"), AgentWorkflowSeamDoctor::POINTER_SECTION
       assert File.executable?(File.join(root, ".agents/bin/validate"))
       assert File.executable?(File.join(root, ".agents/bin/test"))
       assert_equal "main", YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml"))).fetch("base_branch")
@@ -3119,7 +3119,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       )
 
       assert status.success?, out
-      agents = File.read(File.join(root, "AGENTS.md"))
+      agents = File.read(File.join(root, "AGENTS.md"), encoding: "UTF-8")
       assert agents.start_with?(example)
       assert_includes agents, "Example content that must remain fenced.\n```"
       assert_equal 2, agents.scan("## Agent Workflow Configuration").length

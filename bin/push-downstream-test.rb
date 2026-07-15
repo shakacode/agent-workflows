@@ -382,7 +382,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       assert_includes validate, '"$root/.agents/bin/lint"'
       assert_includes File.read(File.join(root, ".agents/bin/README.md")), "| `lint` | Lint / format | `bundle exec rubocop \"$@\"` |"
       assert_equal CONTRACT.fetch(:policy), YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
-      assert_includes File.read(File.join(root, "AGENTS.md")), AgentWorkflowSeamDoctor::POINTER_SECTION
+      assert_includes File.read(File.join(root, "AGENTS.md"), encoding: "UTF-8"), AgentWorkflowSeamDoctor::POINTER_SECTION
       assert_equal PushDownstream::THIN_CLAUDE, File.read(File.join(root, "CLAUDE.md"))
       refute File.exist?(File.join(root, ".agents/trusted-github-actors.yml"))
 
