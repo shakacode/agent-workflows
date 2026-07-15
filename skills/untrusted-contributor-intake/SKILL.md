@@ -516,7 +516,10 @@ esac
 If trusted local policy or actor-specific metadata cannot establish authority,
 record not established. If ACTOR_LOGIN fails validation, record not established
 and do not interpolate the actor into an API path. Never establish authority
-from a self-claim, bot, or check.
+from a self-claim, bot, or check. Treat GitHub Maintain as permission `write`
+with role_name `maintain`; do not require permission `maintain`. Accept
+authority only from role_name `maintain` with permission `write`, or from
+permission `admin`.
 
 ## Intake
 
