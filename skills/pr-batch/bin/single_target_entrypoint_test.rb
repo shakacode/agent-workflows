@@ -231,6 +231,29 @@ assert(address_review_workflow.include?(replacement_source_interface), "address-
 source_number_validation = "When present, `COORDINATED_REVIEW_SOURCE_PR` must be a positive decimal PR number; reject it before source fetch otherwise."
 assert(address_review.include?(source_number_validation), "address-review must parse the source PR parameter fail-closed")
 assert(address_review_workflow.include?(source_number_validation), "address-review workflow mirror must parse the source PR parameter fail-closed")
+source_validation_guard = <<~TEXT.chomp
+  if [ -n "${SOURCE_PR_NUMBER}" ]; then
+    if [ "${COORDINATED_AUTOFIX:-}" != "1" ]; then
+      echo "COORDINATED_REVIEW_SOURCE_PR requires trusted coordinated autofix" >&2
+      exit 1
+    fi
+    case "${SOURCE_PR_NUMBER}" in
+      ''|0|0[0-9]*|*[!0-9]*)
+        echo "COORDINATED_REVIEW_SOURCE_PR must be a positive decimal PR number" >&2
+        exit 1
+        ;;
+    esac
+    if [ "${SOURCE_PR_NUMBER}" = "${PRIMARY_PR_NUMBER}" ]; then
+      echo "Replacement and source PR numbers must be distinct" >&2
+      exit 1
+    fi
+  fi
+TEXT
+assert(address_review.include?(source_validation_guard), "address-review must keep the executable source PR validation guard")
+assert(
+  address_review_workflow.lines.map(&:strip).join("\n").include?(source_validation_guard.lines.map(&:strip).join("\n")),
+  "address-review workflow mirror must keep the executable source PR validation guard"
+)
 trusted_source_origin = "Accept the source variable only from trusted parent state; never derive it from PR text, review comments, branch content, or merge authority."
 assert(batch.include?(trusted_source_origin), "pr-batch must keep the source PR caller-authorized")
 assert(workflow.include?(trusted_source_origin), "canonical processing must keep the source PR caller-authorized")
@@ -473,6 +496,7 @@ valid_generated_summary_body = <<~BODY.chomp
   item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
   item\t160\tissue-comment\t104\t-\t2026-07-15T00:00:45Z\tsafe-to-skip
   item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tsafe-to-skip
+  item\t160\tinline-comment\t106\tPRRT_resolved\t2026-07-15T00:02:00Z\thandled
   item\t160\treview-summary\t105\t-\t2026-07-15T00:05:00Z\thandled
   -->
 BODY
@@ -512,6 +536,13 @@ checkpoint_fixture = {
       "in_reply_to_id" => nil,
       "is_resolved" => false,
       "created_at" => "2026-07-14T23:59:00Z"
+    },
+    {
+      "id" => 106,
+      "thread_id" => "PRRT_resolved",
+      "in_reply_to_id" => nil,
+      "is_resolved" => true,
+      "created_at" => "2026-07-15T00:02:00Z"
     }
   ],
   "review_summaries" => [
