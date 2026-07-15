@@ -46,7 +46,10 @@ so resolve them before the installed home.
 
 Native plugins add a host namespace without changing the portable skill name:
 Codex uses the plugin-qualified `scw:<skill>` surface and Claude Code uses
-`/scw:<skill>`. The Host Installer Path defaults to flat and unqualified skills;
+`/scw:<skill>`. Claude's plugin manifest publishes `ShakaCode Agent Workflows`
+as the human-readable `displayName`; `scw` remains the stable install, lookup,
+and namespace identifier. The Host Installer Path defaults to flat and
+unqualified skills;
 its `plugin-companion` delivery mode installs only workflows, docs, helpers, and
 metadata. Use exactly one auto-invocable skill delivery route per host/profile.
 Native-plus-flat collisions and uncertain migration ownership must fail closed.

@@ -12,6 +12,7 @@ module CodexPluginManifestCheck
   CLAUDE_MANIFEST_RELATIVE_PATH = ".claude-plugin/plugin.json"
   CLAUDE_MARKETPLACE_RELATIVE_PATH = ".claude-plugin/marketplace.json"
   EXPECTED_NAME = "scw"
+  EXPECTED_CLAUDE_DISPLAY_NAME = "ShakaCode Agent Workflows"
   EXPECTED_MARKETPLACE_NAME = "agent-workflows"
   EXPECTED_REPOSITORY = "https://github.com/shakacode/agent-workflows"
   EXPECTED_CODEX_PLUGIN_SOURCE = {
@@ -92,9 +93,12 @@ module CodexPluginManifestCheck
       validate_codex_marketplace(codex_marketplace, errors)
       validate_no_consumer_policy(codex_marketplace, errors)
     end
-    validate_manifest_metadata(root, claude_manifest, errors) if claude_manifest
-    validate_skills_path(root, claude_manifest, errors) if claude_manifest
-    validate_no_consumer_policy(claude_manifest, errors) if claude_manifest
+    if claude_manifest
+      validate_manifest_metadata(root, claude_manifest, errors)
+      validate_claude_display_name(claude_manifest, errors)
+      validate_skills_path(root, claude_manifest, errors)
+      validate_no_consumer_policy(claude_manifest, errors)
+    end
     if marketplace
       validate_marketplace(marketplace, errors)
       validate_no_consumer_policy(marketplace, errors)
@@ -159,6 +163,12 @@ module CodexPluginManifestCheck
     plugin = plugins.first
     errors << "marketplace plugin name must be #{EXPECTED_NAME.inspect}" unless plugin["name"] == EXPECTED_NAME
     errors << 'marketplace plugin source must be "./"' unless plugin["source"] == "./"
+  end
+
+  def validate_claude_display_name(manifest, errors)
+    return if manifest["displayName"] == EXPECTED_CLAUDE_DISPLAY_NAME
+
+    errors << "Claude displayName must be #{EXPECTED_CLAUDE_DISPLAY_NAME.inspect}"
   end
 
   def load_manifest(root, errors, relative_path = MANIFEST_RELATIVE_PATH)

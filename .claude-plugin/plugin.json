@@ -1,5 +1,6 @@
 {
   "name": "scw",
+  "displayName": "ShakaCode Agent Workflows",
   "version": "0.1.0",
   "description": "Portable Codex and Claude workflow pack for ShakaCode repositories.",
   "author": {

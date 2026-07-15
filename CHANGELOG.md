@@ -29,6 +29,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Publish the stable `ShakaCode Agent Workflows` display name in Claude Code's plugin manifest while retaining `scw` as the install and namespace identifier.**
 - **Adopt the recommended Codex GPT-5.6 routing profile: Sol/xhigh multi-lane coordination, adversarial QA, and high-risk escalation; Terra/high only for positively classified simple workers; and Sol/high for uncertainty and routine deterministic QA.**
 - **Default autonomously clearable blocked Goal-mode batches to one deduplicated 15-minute current-thread monitor when supported, with manual-resume fallback and no polling for user-input blockers.**
 - **Clarify the portable planning-chat lifecycle: batch coordinators own completed-batch audits, prompt-only chats may archive after durable worker handoff, and parents reconcile only durable audit handoffs before release or archive.**
