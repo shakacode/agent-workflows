@@ -509,6 +509,20 @@ valid_cumulative_history_summary_body = <<~BODY.chomp
   item\t160\tissue-comment\t109\t-\t2026-07-15T00:01:00Z\tsafe-to-skip
   -->
 BODY
+stale_activity_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Stale address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t110\tPRRT_stale\t2026-07-15T00:01:00Z\thandled
+  -->
+BODY
+future_activity_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Future address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t110\tPRRT_stale\t2099-01-01T00:00:00Z\thandled
+  -->
+BODY
 incomplete_summary_body = <<~BODY.chomp
   <!-- address-review-summary -->
   ## Incomplete replacement carryover
@@ -544,7 +558,7 @@ checkpoint_fixture = {
       "thread_id" => "PRRT_kwD==/+",
       "in_reply_to_id" => nil,
       "is_resolved" => false,
-      "created_at" => "2026-07-14T23:59:00Z"
+      "created_at" => "2026-07-15T00:00:00Z"
     },
     {
       "id" => 106,
@@ -635,6 +649,49 @@ assert(status.success?, "source checkpoint jq validator must execute with cumula
 valid_checkpoints = JSON.parse(stdout)
 assert(valid_checkpoints.length == 1, "source checkpoint validator must retain valid cumulative rows for resolved and later-updated threads")
 assert(valid_checkpoints[0]["body"] == valid_cumulative_history_summary_body, "source checkpoint validator must accept complete current state plus valid cumulative history")
+
+stale_activity_fixture = {
+  "inline_comments" => [
+    {
+      "id" => 110,
+      "thread_id" => "PRRT_stale",
+      "in_reply_to_id" => nil,
+      "is_resolved" => false,
+      "created_at" => "2026-07-15T00:00:00Z"
+    },
+    {
+      "id" => 111,
+      "thread_id" => "PRRT_stale",
+      "in_reply_to_id" => 110,
+      "is_resolved" => false,
+      "created_at" => "2026-07-15T00:02:00Z"
+    }
+  ],
+  "review_summaries" => [],
+  "issue_comments" => [
+    { "id" => 211, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => stale_activity_summary_body }
+  ]
+}
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  stdin_data: JSON.generate(stale_activity_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with stale pre-checkpoint activity: #{stderr}")
+valid_checkpoints = JSON.parse(stdout)
+assert(valid_checkpoints.empty?, "source checkpoint validator must reject a row timestamp older than pre-checkpoint thread activity")
+
+future_activity_fixture = stale_activity_fixture.merge(
+  "issue_comments" => [
+    { "id" => 212, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => future_activity_summary_body }
+  ]
+)
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  stdin_data: JSON.generate(future_activity_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with future activity state: #{stderr}")
+valid_checkpoints = JSON.parse(stdout)
+assert(valid_checkpoints.empty?, "source checkpoint validator must reject a row timestamp newer than current thread activity")
 
 wait_checkpoint_comments = checkpoint_fixture.fetch("issue_comments").reject do |comment|
   [incomplete_summary_body, invalid_missing_forged_marker_body].include?(comment["body"])

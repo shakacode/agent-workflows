@@ -322,25 +322,28 @@ Execution flow when terminal access is available:
              ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
            def item_key($kind; $id; $thread_id):
              [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
+           def candidate_state($kind; $id; $thread_id; $activity_at):
+             {key: item_key($kind; $id; $thread_id), activity_at: $activity_at};
            def identity_key:
              split("\t") as $fields | $fields[1:4] | join("\t");
-           def row_key:
-             split("\t") as $fields | $fields[1:5] | join("\t");
+           def row_state:
+             split("\t") as $fields |
+             {key: ($fields[1:5] | join("\t")), activity_at: $fields[5]};
            def inline_latest_activity($thread_id):
              [ $inventory.inline_comments[]? |
                select((.thread_id // "") == ($thread_id // "")) |
                (.created_at // "") ] | max // "";
-           def source_candidate_keys($checkpoint_created_at):
+           def source_candidate_states($checkpoint_created_at):
              ([
                $inventory.issue_comments[]? |
                . as $comment |
                select((.created_at // "") <= $checkpoint_created_at) |
                select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
-               item_key("issue-comment"; .id; "-")
+               candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
              ] + [
                $inventory.review_summaries[]? |
                select((.created_at // "") <= $checkpoint_created_at) |
-               item_key("review-summary"; .id; "-")
+               candidate_state("review-summary"; .id; "-"; (.created_at // ""))
              ] + [
                $inventory.inline_comments[]? |
                select((.in_reply_to_id // null) == null) |
@@ -348,8 +351,8 @@ Execution flow when terminal access is available:
                (.thread_id // "-") as $thread_id |
                (if $thread_id == "-" then (.created_at // "") else inline_latest_activity($thread_id) end) as $latest_activity |
                select($latest_activity <= $checkpoint_created_at) |
-               item_key("inline-comment"; .id; $thread_id)
-             ]) | unique;
+               candidate_state("inline-comment"; .id; $thread_id; $latest_activity)
+             ]) | unique_by(.key);
            def valid_body($checkpoint_created_at):
              . as $body |
              (($body | startswith("<!-- address-review-summary -->")) or
@@ -362,7 +365,10 @@ Execution flow when terminal access is available:
                  (($body | startswith("<!-- address-review-status -->")) or
                   (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
                 (($rows | map(identity_key) | unique | length) == ($rows | length)) and
-                 ((source_candidate_keys($checkpoint_created_at) - ($rows | map(row_key) | unique)) | length) == 0));
+                 (source_candidate_states($checkpoint_created_at) as $candidates |
+                  ($rows | map(row_state)) as $row_states |
+                  all($candidates[]; . as $candidate |
+                    any($row_states[]; (.key == $candidate.key) and (.activity_at == $candidate.activity_at))))));
            [.issue_comments[] |
              select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
              . as $checkpoint |
