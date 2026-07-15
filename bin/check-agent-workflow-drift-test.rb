@@ -493,6 +493,54 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_ignores_inherited_global_git_config_file_when_checking_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      write_file(source_root, ".gitattributes", "skills/example/SKILL.md filter=injected\n")
+      revision = commit_source_change(source_root, "configure injected filter attribute")
+      update_manifest(fixture) { |manifest| manifest["source_revision"] = revision }
+      global_config = File.join(File.dirname(source_root), "injected-global-gitconfig")
+      File.write(global_config, <<~CONFIG)
+        [filter "injected"]
+          clean = sed 's/hidden source drift/shared skill/g'
+      CONFIG
+      write_file(source_root, "skills/example/SKILL.md", "hidden source drift\n")
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", "hidden source drift\n")
+
+      out, _err, status = run_checker(fixture, env: { "GIT_CONFIG_GLOBAL" => global_config })
+
+      refute status.success?
+      assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_ignores_inherited_git_attribute_source_when_checking_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      write_file(source_root, ".gitattributes", "skills/example/SKILL.md filter=injected\n")
+      attribute_revision = commit_source_change(source_root, "add injected attributes")
+      git(source_root, "reset", "--hard", fixture.fetch(:revision))
+      git(source_root, "config", "filter.injected.clean", "sed 's/hidden source drift/shared skill/g'")
+      write_file(source_root, "skills/example/SKILL.md", "hidden source drift\n")
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", "hidden source drift\n")
+
+      out, _err, status = run_checker(fixture, env: { "GIT_ATTR_SOURCE" => attribute_revision })
+
+      refute status.success?
+      assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_ignores_inherited_literal_pathspec_mode_when_checking_source
+    with_fixture do |fixture|
+      out, err, status = run_checker(fixture, env: { "GIT_LITERAL_PATHSPECS" => "1" })
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
   def test_ignores_replacement_commit_when_reading_pinned_source
     with_fixture do |fixture|
       source_root = fixture.fetch(:source_root)
@@ -569,6 +617,30 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       end
 
       out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_preserves_default_global_git_config_when_hashing_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      relative_path = "skills/example/SKILL.md"
+      write_file(source_root, ".gitattributes", "#{relative_path} filter=fixture\n")
+      revision = commit_source_change(source_root, "configure globally defined filter")
+      update_manifest(fixture) { |manifest| manifest["source_revision"] = revision }
+      home = File.join(File.dirname(source_root), "home")
+      FileUtils.mkdir_p(home)
+      File.write(File.join(home, ".gitconfig"), <<~CONFIG)
+        [filter "fixture"]
+          clean = sed 's/worktree/shared/g'
+      CONFIG
+      write_file(source_root, relative_path, "worktree skill\n")
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", "worktree skill\n")
+
+      out, err, status = run_checker(fixture, env: { "HOME" => home })
 
       assert status.success?, "#{out}#{err}"
       assert_includes out, "CLEAN IDENTICAL (1)"
