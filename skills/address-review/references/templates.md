@@ -271,7 +271,7 @@ CUTOFF_SAFE="${CUTOFF_SAFE:-0}"
 
 if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   case "${SOURCE_PR_NUMBER}" in
-    *[!0-9]*|0)
+    ''|0|0[0-9]*|*[!0-9]*)
       echo "SOURCE_PR_NUMBER must be a positive decimal; readiness UNKNOWN." >&2
       exit 1
       ;;
@@ -289,8 +289,8 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   : "${SOURCE_STATE_ROWS?set SOURCE_STATE_ROWS to the cumulative v1 source snapshot}"
   : "${SOURCE_STATE_EXPECTED_COUNT:?set SOURCE_STATE_EXPECTED_COUNT from the verified source candidate set}"
   case "${SOURCE_STATE_EXPECTED_COUNT}" in
-    *[!0-9]*)
-      echo "Source state is incomplete: SOURCE_STATE_EXPECTED_COUNT must be a non-negative integer; readiness UNKNOWN." >&2
+    ''|*[!0-9]*|0[0-9]*)
+      echo "Source state is incomplete: SOURCE_STATE_EXPECTED_COUNT must be a canonical non-negative integer; readiness UNKNOWN." >&2
       exit 1
       ;;
   esac
@@ -338,16 +338,16 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     printf 'Replacement PR: %s\n\n' "${REPLACEMENT_PR_URL}"
     printf '### Original PR outcomes\n'
     printf '%s\n\n' "${SOURCE_OUTCOMES}"
+    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
+      printf 'Next default source scan starts after this comment. Say `check all reviews` to rescan the full source PR.\n\n'
+    else
+      printf 'Non-cutoff source status only. Pending source items remain eligible for the next source scan.\n\n'
+    fi
     printf '<!-- address-review-source-state:v1\n'
     if [ -n "${SOURCE_STATE_ROWS}" ]; then
       printf '%s\n' "${SOURCE_STATE_ROWS}"
     fi
-    printf '%s\n\n' '-->'
-    if [ "${SOURCE_CUTOFF_SAFE}" = "1" ]; then
-      printf 'Next default source scan starts after this comment. Say `check all reviews` to rescan the full source PR.\n'
-    else
-      printf 'Non-cutoff source status only. Pending source items remain eligible for the next source scan.\n'
-    fi
+    printf '%s\n' '-->'
   } > "${source_summary_body_file}"
 fi
 

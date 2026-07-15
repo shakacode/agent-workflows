@@ -201,7 +201,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
     exit 1
   fi
   case "${SOURCE_PR_NUMBER}" in
-    *[!0-9]*|0)
+    ''|0|0[0-9]*|*[!0-9]*)
       echo "COORDINATED_REVIEW_SOURCE_PR must be a positive decimal PR number" >&2
       exit 1
       ;;
@@ -386,25 +386,39 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
         ($fields[6] | valid_outcome);
       . as $inventory |
-      def source_key($kind; $id; $thread):
-        [$source, $kind, ($id | tostring), ($thread // "-")] | join("\t");
-      def expected_keys($checkpoint_at):
-        ([ $inventory.issue_comments[] |
-           select(.created_at <= $checkpoint_at) |
-           select(((.body // "") | startswith("<!-- address-review-summary -->") or
-                   startswith("<!-- address-review-status -->") or
-                   startswith("<!-- codex-claim v1")) | not) |
-           source_key("issue-comment"; .id; "-") ] +
-         [ $inventory.inline_comments[] |
-           select(.created_at <= $checkpoint_at) |
-           select(.in_reply_to_id == null and .is_resolved != true) |
-           source_key("inline-comment"; .id; .thread_id) ] +
-         [ $inventory.review_summaries[] |
-           select(.created_at <= $checkpoint_at) |
-           source_key("review-summary"; .id; "-") ]) | unique;
-      def valid_checkpoint:
-        . as $checkpoint |
-        ($checkpoint.body // "") as $body |
+      def marker_body:
+        startswith("<!-- address-review-summary -->") or
+        startswith("<!-- address-review-status -->") or
+        startswith("<!-- codex-claim v1");
+      def item_key($kind; $id; $thread_id):
+        [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
+      def row_key:
+        split("\t") as $fields | $fields[1:5] | join("\t");
+      def inline_latest_activity($thread_id):
+        [ $inventory.inline_comments[]? |
+          select((.thread_id // "") == ($thread_id // "")) |
+          (.created_at // "") ] | max // "";
+      def source_candidate_keys($checkpoint_created_at):
+        ([
+          $inventory.issue_comments[]? |
+          select((.created_at // "") <= $checkpoint_created_at) |
+          select(((.body // "") | marker_body) | not) |
+          item_key("issue-comment"; .id; "-")
+        ] + [
+          $inventory.review_summaries[]? |
+          select((.created_at // "") <= $checkpoint_created_at) |
+          item_key("review-summary"; .id; "-")
+        ] + [
+          $inventory.inline_comments[]? |
+          select((.in_reply_to_id // null) == null) |
+          select((.is_resolved // false) == false) |
+          (.thread_id // "-") as $thread_id |
+          (if $thread_id == "-" then (.created_at // "") else inline_latest_activity($thread_id) end) as $latest_activity |
+          select($latest_activity <= $checkpoint_created_at) |
+          item_key("inline-comment"; .id; $thread_id)
+        ]) | unique;
+      def valid_body($checkpoint_created_at):
+        . as $body |
         (($body | startswith("<!-- address-review-summary -->")) or
          ($body | startswith("<!-- address-review-status -->"))) and
         ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
@@ -414,12 +428,12 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
             all($rows[]; valid_row) and
             (($body | startswith("<!-- address-review-status -->")) or
              (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
-            (($rows | map(split("\t") | .[1:5] | join("\t")) | unique) as $row_keys |
-              ($row_keys | length) == ($rows | length) and
-              ((expected_keys($checkpoint.created_at) - $row_keys) | length) == 0)));
-      [$inventory.issue_comments[] |
+            (($rows | map(split("\t") | .[1:5] | join("\t")) | unique | length) == ($rows | length)) and
+            (($rows | map(row_key) | sort) == (source_candidate_keys($checkpoint_created_at) | sort))));
+      [.issue_comments[] |
         select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
-        select(valid_checkpoint)] |
+        . as $checkpoint |
+        select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
       SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"

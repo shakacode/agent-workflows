@@ -43,6 +43,21 @@ def extract_source_wait_checkpoint_filter(text)
   filter_tail[0...terminator.begin(0)]
 end
 
+def extract_source_template_awk(text)
+  marker = %q{SOURCE_STATE_ROW_COUNT="$(printf '%s\n' "${SOURCE_STATE_ROWS}" | awk -F '\t' -v source="${SOURCE_PR_NUMBER}" '}
+  marker_offset = text.index(marker)
+  abort("FAIL: source template awk validator start missing") unless marker_offset
+
+  filter_offset = text.index("'\n", marker_offset)
+  abort("FAIL: source template awk validator body missing") unless filter_offset
+
+  filter_tail = text[(filter_offset + 2)..]
+  terminator = filter_tail.match(/\n\s+'\)"; then/)
+  abort("FAIL: source template awk validator terminator missing") unless terminator
+
+  filter_tail[0...terminator.begin(0)]
+end
+
 batch = read_repo_file("skills/pr-batch/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 workflow = read_repo_file("workflows/pr-processing.md")
@@ -288,6 +303,8 @@ assert(address_review.include?(standalone_source_absence), "address-review must 
 assert(address_review_workflow.include?(standalone_source_absence), "address-review workflow mirror must preserve normal single-PR behavior")
 assert(address_review.include?("PRIMARY_PR_NUMBER=\"${PR_NUMBER}\""), "address-review must bind the primary replacement PR explicitly")
 assert(address_review.include?("SOURCE_PR_NUMBER=\"${COORDINATED_REVIEW_SOURCE_PR:-}\""), "address-review must parse the coordinated source PR variable")
+assert(address_review.include?("''|0|0[0-9]*|*[!0-9]*)"), "address-review must reject leading-zero coordinated source PR numbers")
+assert(address_review_workflow.include?("leading-zero forms"), "address-review workflow mirror must reject leading-zero coordinated source PR numbers")
 replacement_source_invocation = 'COORDINATED_AUTOFIX=1 COORDINATED_REVIEW_SOURCE_PR="${ORIGINAL_PR_NUMBER}" address-review "${REPLACEMENT_PR_NUMBER}"'
 assert(batch.include?(replacement_source_invocation), "pr-batch must show the executable replacement-source invocation")
 assert(workflow.include?(replacement_source_invocation), "canonical processing must show the executable replacement-source invocation")
@@ -326,10 +343,8 @@ assert(address_review.include?(source_review_wait), "address-review must limit t
 assert(address_review_workflow.include?(source_review_wait), "address-review workflow mirror must limit the source review wait to first harvest")
 assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must probe prior source checkpoint state before the wait")
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
-assert(address_review.scan("def valid_body:").length >= 1, "address-review must schema-validate source wait checkpoints")
-assert(address_review.scan("def valid_checkpoint:").length >= 1, "address-review must inventory-validate source cutoff checkpoints")
-assert(address_review_workflow.scan("def valid_body:").length >= 1, "address-review workflow mirror must schema-validate source wait checkpoints")
-assert(address_review_workflow.scan("def valid_checkpoint:").length >= 1, "address-review workflow mirror must inventory-validate source cutoff checkpoints")
+assert(address_review.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")
+assert(address_review_workflow.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review workflow mirror must schema-validate both source wait and cutoff checkpoints")
 summary_terminal_guard = '(($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))'
 assert(address_review.scan(summary_terminal_guard).length >= 2, "address-review summaries must require terminal-only source rows")
 assert(address_review_workflow.scan(summary_terminal_guard).length >= 2, "address-review workflow summaries must require terminal-only source rows")
@@ -426,6 +441,30 @@ valid_status_body = <<~BODY.chomp
   item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tpending
   -->
 BODY
+valid_generated_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Address-review replacement carryover
+
+  Replacement PR: https://github.com/shakacode/agent-workflows/pull/260
+
+  ### Original PR outcomes
+  - Source feedback handled.
+
+  Next default source scan starts after this comment. Say `check all reviews` to rescan the full source PR.
+
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tsafe-to-skip
+  item\t160\treview-summary\t105\t-\t2026-07-15T00:05:00Z\thandled
+  -->
+BODY
+incomplete_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Incomplete replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  -->
+BODY
 invalid_pending_summary_body = <<~BODY.chomp
   <!-- address-review-summary -->
   ## Address-review replacement carryover
@@ -455,27 +494,29 @@ incomplete_summary_body = <<~BODY.chomp
   -->
 BODY
 checkpoint_fixture = {
-  "issue_comments" => [
-    { "id" => 102, "user" => "reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => "Please verify the source behavior." },
-    { "id" => 201, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:10Z", "body" => valid_summary_body },
-    { "id" => 202, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:10Z", "body" => valid_status_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
-    { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:05:00Z", "body" => invalid_pending_summary_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body },
-    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:00Z", "body" => incomplete_summary_body }
-  ],
   "inline_comments" => [
     {
       "id" => 101,
       "thread_id" => "PRRT_kwD==/+",
       "in_reply_to_id" => nil,
       "is_resolved" => false,
-      "created_at" => "2026-07-15T00:00:00Z"
+      "created_at" => "2026-07-14T23:59:00Z"
     }
   ],
-  "review_summaries" => []
+  "review_summaries" => [
+    { "id" => 105, "created_at" => "2026-07-15T00:05:00Z" }
+  ],
+  "issue_comments" => [
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:00Z", "body" => valid_summary_body },
+    { "id" => 102, "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:30Z", "body" => "source issue comment" },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => valid_status_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
+    { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:05:00Z", "body" => invalid_pending_summary_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:06:00Z", "body" => invalid_ask_user_summary_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:07:00Z", "body" => valid_generated_summary_body }
+  ]
 }
 stdout, stderr, status = Open3.capture3(
   "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
@@ -483,9 +524,23 @@ stdout, stderr, status = Open3.capture3(
 )
 assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
 valid_checkpoints = JSON.parse(stdout)
-assert(valid_checkpoints.length == 2, "source checkpoint validator must reject incomplete inventory, invalid state, and non-terminal summaries")
-assert(valid_checkpoints[0]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
-assert(valid_checkpoints[1]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
+assert(valid_checkpoints.length == 3, "source checkpoint validator must reject invalid state and non-terminal summaries")
+assert(valid_checkpoints[0]["body"] == valid_generated_summary_body, "source checkpoint validator must accept template-generated checkpoints with a trailing state block")
+assert(valid_checkpoints[1]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
+assert(valid_checkpoints[2]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
+
+incomplete_fixture = checkpoint_fixture.merge(
+  "issue_comments" => checkpoint_fixture.fetch("issue_comments") + [
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:30Z", "body" => incomplete_summary_body }
+  ]
+)
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  stdin_data: JSON.generate(incomplete_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute with incomplete fixture: #{stderr}")
+valid_checkpoints = JSON.parse(stdout)
+assert(valid_checkpoints.none? { |checkpoint| checkpoint["body"] == incomplete_summary_body }, "source checkpoint validator must reject syntactically valid but incomplete source snapshots")
 
 wait_checkpoint_fixture = [
   checkpoint_fixture.fetch("issue_comments").reject { |comment| comment["body"] == incomplete_summary_body }.map do |comment|
@@ -497,6 +552,23 @@ stdout, stderr, status = Open3.capture3(
   stdin_data: JSON.generate(wait_checkpoint_fixture)
 )
 assert(status.success?, "source wait checkpoint jq validator must execute: #{stderr}")
-assert(Integer(stdout, 10) == 2, "source wait checkpoint validator must accept pending status but reject non-terminal summaries: #{stdout} #{stderr}")
+assert(Integer(stdout, 10) == 3, "source wait checkpoint validator must accept pending status and generated summaries but reject non-terminal summaries")
+
+source_template_awk = extract_source_template_awk(address_review_templates)
+valid_source_rows = <<~ROWS
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tpending
+
+ROWS
+stdout, stderr, status = Open3.capture3("awk", "-F", "\t", "-v", "source=160", source_template_awk, stdin_data: valid_source_rows)
+assert(status.success?, "source template awk validator must accept valid rows: #{stderr}")
+assert(stdout.strip == "2", "source template awk validator must count valid rows")
+
+leading_zero_item_rows = "item\t160\tinline-comment\t007\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled\n"
+_stdout, _stderr, status = Open3.capture3("awk", "-F", "\t", "-v", "source=160", source_template_awk, stdin_data: leading_zero_item_rows)
+assert(!status.success?, "source template awk validator must reject leading-zero item IDs")
+
+assert(address_review_templates.include?("''|0|0[0-9]*|*[!0-9]*)"), "address-review templates must reject leading-zero source PR numbers")
+assert(address_review_templates.include?("''|*[!0-9]*|0[0-9]*)"), "address-review templates must reject leading-zero expected counts")
 
 puts "PASS pr-batch single-target entry point contract"
