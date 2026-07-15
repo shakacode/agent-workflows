@@ -277,12 +277,40 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
   SOURCE_HAS_CHECKPOINT=0
   if [ -n "${SOURCE_PR_NUMBER}" ]; then
     if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
-      SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq '[.[][] | select(((.body // "") | startswith("<!-- address-review-summary -->")) or ((.body // "") | startswith("<!-- address-review-status -->")))] | length' 2>/dev/null || echo 0)"
+      SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+      SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+        def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
+        def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
+        def valid_row:
+          split("\t") as $fields |
+          ($fields | length) == 7 and
+          $fields[0] == "item" and $fields[1] == $source and
+          ($fields[2] | valid_kind) and
+          ($fields[3] | test("^[1-9][0-9]*$")) and
+          ($fields[4] == "-" or ($fields[4] | test("^[A-Za-z0-9_=+/-]+$"))) and
+          ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
+          ($fields[6] | valid_outcome);
+        def valid_body:
+          . as $body |
+          (($body | startswith("<!-- address-review-summary -->")) or
+           ($body | startswith("<!-- address-review-status -->"))) and
+          ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
+          (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+            $state != null and
+            (($state.rows | split("\n") | map(select(length > 0))) as $rows |
+              all($rows[]; valid_row) and
+              (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
+        [.[][] |
+          select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+          select((.body // "") | valid_body)] | length
+      ' 2>/dev/null || echo 0)"
       case "${SOURCE_CHECKPOINT_COUNT}" in
         ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
       esac
-      if [ "${SOURCE_CHECKPOINT_COUNT}" -gt 0 ]; then
+      if [ -n "${SOURCE_REVIEW_ACTOR}" ] && [ "${SOURCE_CHECKPOINT_COUNT}" -gt 0 ]; then
         SOURCE_HAS_CHECKPOINT=1
+      elif [ -z "${SOURCE_REVIEW_ACTOR}" ]; then
+        echo "Warning: could not resolve the expected review actor for source checkpoints; treating PR #${SOURCE_PR_NUMBER} as first harvest." >&2
       fi
     else
       echo "Warning: could not probe source checkpoints for PR #${SOURCE_PR_NUMBER}; treating it as first harvest for the review wait." >&2
@@ -335,12 +363,51 @@ ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-rev
 "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json
 if [ -n "${SOURCE_PR_NUMBER}" ]; then
   "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" > source-review-data.json
-  SOURCE_REVIEW_CUTOFF_AT=$(jq -r '.review_cutoff_at' source-review-data.json)
+  SOURCE_REVIEW_CUTOFF_AT=""
+  SOURCE_STATE_CHECKPOINT_BODY=""
+  SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
+  if [ -n "${SOURCE_REVIEW_ACTOR}" ]; then
+    if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
+      def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
+      def valid_outcome: . == "handled" or . == "deferred" or . == "declined" or . == "safe-to-skip" or . == "pending" or . == "ask-user";
+      def valid_row:
+        split("\t") as $fields |
+        ($fields | length) == 7 and
+        $fields[0] == "item" and $fields[1] == $source and
+        ($fields[2] | valid_kind) and
+        ($fields[3] | test("^[1-9][0-9]*$")) and
+        ($fields[4] == "-" or ($fields[4] | test("^[A-Za-z0-9_=+/-]+$"))) and
+        ($fields[5] | test("^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$")) and
+        ($fields[6] | valid_outcome);
+      def valid_body:
+        . as $body |
+        (($body | startswith("<!-- address-review-summary -->")) or
+         ($body | startswith("<!-- address-review-status -->"))) and
+        ([ $body | scan("(?m)^<!-- address-review-source-state:v1$") ] | length) == 1 and
+        (($body | capture("(?m)^<!-- address-review-source-state:v1\\n(?<rows>(?:item\\t[^\\r\\n]*\\n)*)-->$")?) as $state |
+          $state != null and
+          (($state.rows | split("\n") | map(select(length > 0))) as $rows |
+            all($rows[]; valid_row) and
+            (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
+      [.issue_comments[] |
+        select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+        select((.body // "") | valid_body)] |
+      sort_by(.created_at) | reverse
+    ' source-review-data.json)"; then
+      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+    else
+      echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
+    fi
+  else
+    echo "Warning: could not resolve the expected review actor for source checkpoints; leaving source cutoff empty and readiness UNKNOWN." >&2
+  fi
 fi
 ```
 
 On source-aware reruns, keep the complete source inventory for context and readiness, apply `SOURCE_REVIEW_CUTOFF_AT` from the latest valid source summary as the only global cutoff, then consume the latest summary/status checkpoint's per-item state for remaining candidates.
-Only a source issue comment whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it.
+Use `SOURCE_STATE_CHECKPOINT_BODY` only from the newest authenticated, schema-valid summary/status checkpoint. A marker-only, wrong-author, malformed, duplicate, or incomplete checkpoint supplies neither restart state nor a cutoff.
 Unless the caller explicitly requested `check all reviews`, apply the source
 cutoff with the same timestamp rules as the primary inventory: include source
 issue comments and review summaries created after the cutoff, and include an

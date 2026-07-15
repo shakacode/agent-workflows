@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "json"
+require "open3"
+
 ROOT = File.expand_path("../../..", __dir__)
 
 def read_repo_file(path)
@@ -8,6 +11,21 @@ end
 
 def assert(condition, message)
   abort("FAIL: #{message}") unless condition
+end
+
+def extract_source_checkpoint_filter(text)
+  marker = 'if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor'
+  marker_offset = text.index(marker)
+  abort("FAIL: source checkpoint jq filter start missing") unless marker_offset
+
+  filter_offset = text.index("'\n", marker_offset)
+  abort("FAIL: source checkpoint jq filter body missing") unless filter_offset
+
+  filter_tail = text[(filter_offset + 2)..]
+  terminator = filter_tail.match(/\n\s+' source-review-data\.json\)/)
+  abort("FAIL: source checkpoint jq filter terminator missing") unless terminator
+
+  filter_tail[0...terminator.begin(0)]
 end
 
 batch = read_repo_file("skills/pr-batch/SKILL.md")
@@ -230,18 +248,26 @@ source_cutoff_contract = "On source-aware reruns, keep the complete source inven
 assert(address_review.include?(source_cutoff_contract), "address-review must apply the source summary cutoff on replacement reruns")
 assert(address_review_actions.include?(source_cutoff_contract), "address-review actions must preserve source cutoff semantics")
 assert(address_review_workflow.include?(source_cutoff_contract), "address-review workflow mirror must apply the source summary cutoff")
-source_cutoff_binding = "SOURCE_REVIEW_CUTOFF_AT=$(jq -r '.review_cutoff_at' source-review-data.json)"
-assert(address_review.include?(source_cutoff_binding), "address-review must bind the source helper's cutoff")
-assert(address_review_workflow.include?(source_cutoff_binding), "address-review workflow mirror must bind the source helper's cutoff")
-source_status_exclusion = "Only a source issue comment whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it."
+source_cutoff_binding = 'SOURCE_REVIEW_CUTOFF_AT="$(printf \'%s\' "${SOURCE_VALID_CHECKPOINTS}" | jq -r'
+assert(address_review.include?(source_cutoff_binding), "address-review must bind source cutoff from validated checkpoints")
+assert(address_review_workflow.include?(source_cutoff_binding), "address-review workflow mirror must bind source cutoff from validated checkpoints")
+source_status_exclusion = "Only a source issue comment authored by `SOURCE_REVIEW_ACTOR`, with a complete valid `address-review-source-state:v1` block, whose body starts with `<!-- address-review-summary -->` on its first line may advance this cutoff; `<!-- address-review-status -->` never advances it."
 assert(address_review.include?(source_status_exclusion), "address-review must reject source status markers as cutoffs")
 assert(address_review_actions.include?(source_status_exclusion), "address-review actions must reject source status markers as cutoffs")
 assert(address_review_workflow.include?(source_status_exclusion), "address-review workflow mirror must reject source status markers as cutoffs")
+authenticated_source_state = "Use `SOURCE_STATE_CHECKPOINT_BODY` only from the newest authenticated, schema-valid summary/status checkpoint. A marker-only, wrong-author, malformed, duplicate, or incomplete checkpoint supplies neither restart state nor a cutoff."
+assert(address_review.include?(authenticated_source_state), "address-review must consume only authenticated valid source state")
+assert(address_review_actions.include?(authenticated_source_state), "address-review actions must consume only authenticated valid source state")
+assert(address_review_workflow.include?(authenticated_source_state), "address-review workflow mirror must consume only authenticated valid source state")
 source_review_wait = "On every non-specific run, apply the bounded, graceful review-check wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists."
 assert(address_review.include?(source_review_wait), "address-review must limit the source review wait to first harvest")
 assert(address_review_workflow.include?(source_review_wait), "address-review workflow mirror must limit the source review wait to first harvest")
 assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must probe prior source checkpoint state before the wait")
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
+assert(address_review.scan("def valid_body:").length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")
+assert(address_review_workflow.scan("def valid_body:").length >= 2, "address-review workflow mirror must schema-validate both source wait and cutoff checkpoints")
+assert(address_review.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "source wait must authenticate the checkpoint author")
+assert(address_review_workflow.include?('select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase))'), "workflow source wait must authenticate the checkpoint author")
 assert(address_review.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review must implement the dual-PR review wait")
 assert(address_review_workflow.include?("for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do"), "address-review workflow mirror must implement the dual-PR review wait")
 specific_source_rejection = "A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover."
@@ -290,10 +316,59 @@ assert(address_review_templates.include?("SOURCE_STATE_EXPECTED_COUNT"), "addres
 assert(address_review_templates.include?("SOURCE_STATE_HAS_PENDING"), "address-review templates must derive the source cutoff guard from pending state")
 assert(address_review_templates.include?("printf '<!-- address-review-source-state:v1\\n'"), "address-review templates must render the v1 source-state marker")
 assert(address_review_templates.include?("source-state rows are malformed or duplicate"), "address-review templates must validate source state rows")
+assert(address_review_templates.include?("/^$/ { next }"), "source state validation must tolerate blank records")
+assert(address_review_templates.include?('^[A-Za-z0-9_=+\\/-]+$'), "source state validation must accept Base64 and Base64URL node IDs")
 source_state_cumulative = "Every new source checkpoint carries forward unchanged valid rows and records every source candidate since `SOURCE_REVIEW_CUTOFF_AT`, including pending rows, so the latest checkpoint is a complete restart snapshot rather than a delta."
 assert(address_review.include?(source_state_cumulative), "address-review must make source restart state cumulative")
 assert(address_review_actions.include?(source_state_cumulative), "address-review actions must make source restart state cumulative")
 assert(address_review_workflow.include?(source_state_cumulative), "address-review workflow mirror must make source restart state cumulative")
 assert(address_review_templates.include?(source_state_cumulative), "address-review templates must render cumulative source restart state")
+
+skill_checkpoint_filter = extract_source_checkpoint_filter(address_review)
+workflow_checkpoint_filter = extract_source_checkpoint_filter(address_review_workflow)
+assert(
+  skill_checkpoint_filter.lines.map(&:strip) == workflow_checkpoint_filter.lines.map(&:strip),
+  "address-review source checkpoint validators must stay mirrored"
+)
+
+valid_summary_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  ## Address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t101\tPRRT_kwD==/+\t2026-07-15T00:00:00Z\thandled
+  -->
+BODY
+valid_status_body = <<~BODY.chomp
+  <!-- address-review-status -->
+  ## Address-review replacement carryover
+  <!-- address-review-source-state:v1
+  item\t160\tissue-comment\t102\t-\t2026-07-15T00:01:00Z\tpending
+  -->
+BODY
+invalid_duplicate_body = <<~BODY.chomp
+  <!-- address-review-summary -->
+  <!-- address-review-source-state:v1
+  item\t160\tinline-comment\t103\tPRRT_one\t2026-07-15T00:02:00Z\thandled
+  item\t160\tinline-comment\t103\tPRRT_two\t2026-07-15T00:03:00Z\thandled
+  -->
+BODY
+checkpoint_fixture = {
+  "issue_comments" => [
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:00:00Z", "body" => valid_summary_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:01:00Z", "body" => valid_status_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:02:00Z", "body" => "<!-- address-review-summary -->" },
+    { "user" => "other-reviewer", "created_at" => "2026-07-15T00:03:00Z", "body" => valid_summary_body },
+    { "user" => "trusted-reviewer", "created_at" => "2026-07-15T00:04:00Z", "body" => invalid_duplicate_body }
+  ]
+}
+stdout, stderr, status = Open3.capture3(
+  "jq", "-c", "--arg", "actor", "TRUSTED-REVIEWER", "--arg", "source", "160", skill_checkpoint_filter,
+  stdin_data: JSON.generate(checkpoint_fixture)
+)
+assert(status.success?, "source checkpoint jq validator must execute: #{stderr}")
+valid_checkpoints = JSON.parse(stdout)
+assert(valid_checkpoints.length == 2, "source checkpoint validator must reject marker-only, wrong-author, and duplicate state")
+assert(valid_checkpoints[0]["body"] == valid_status_body, "source checkpoint validator must return newest valid checkpoint first")
+assert(valid_checkpoints[1]["body"] == valid_summary_body, "source checkpoint validator must accept padded Base64 node IDs")
 
 puts "PASS pr-batch single-target entry point contract"

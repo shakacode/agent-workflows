@@ -304,10 +304,11 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
     if ! SOURCE_STATE_ROW_COUNT="$(printf '%s\n' "${SOURCE_STATE_ROWS}" | awk -F '\t' -v source="${SOURCE_PR_NUMBER}" '
       function valid_kind(v) { return v == "issue-comment" || v == "inline-comment" || v == "review-summary" }
       function valid_outcome(v) { return v == "handled" || v == "deferred" || v == "declined" || v == "safe-to-skip" || v == "pending" || v == "ask-user" }
+      /^$/ { next }
       {
         key = $2 SUBSEP $3 SUBSEP $4
         if (NF != 7 || $1 != "item" || $2 != source || !valid_kind($3) ||
-            $4 !~ /^[0-9]+$/ || $4 == "0" || ($5 != "-" && $5 !~ /^[A-Za-z0-9_]+$/) ||
+            $4 !~ /^[0-9]+$/ || $4 == "0" || ($5 != "-" && $5 !~ /^[A-Za-z0-9_=+\/-]+$/) ||
             $6 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\.[0-9]+)?(Z|[+-][0-9][0-9]:[0-9][0-9])$/ ||
             !valid_outcome($7) || seen[key]++) exit 1
         count++
