@@ -48,6 +48,83 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_detects_consumer_executable_mode_drift_for_identical_file
+    with_fixture do |fixture|
+      consumer_path = File.join(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md")
+      File.chmod(0o755, consumer_path)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "consumer mode differs from pinned source (expected 100644, found 100755)"
+    end
+  end
+
+  def test_detects_current_source_mode_drift_from_pinned_revision
+    with_fixture do |fixture|
+      source_path = File.join(fixture.fetch(:source_root), "skills/example/SKILL.md")
+      File.chmod(0o755, source_path)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "source mode differs from pinned source (expected 100644, found 100755)"
+    end
+  end
+
+  def test_accepts_identical_file_when_pinned_source_is_executable
+    with_fixture do |fixture|
+      source_path = File.join(fixture.fetch(:source_root), "skills/example/SKILL.md")
+      consumer_path = File.join(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md")
+      File.chmod(0o755, source_path)
+      File.chmod(0o755, consumer_path)
+      revision = commit_source_change(fixture.fetch(:source_root), "make fixture executable")
+      update_manifest(fixture) { |manifest| manifest["source_revision"] = revision }
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_rejects_consumer_symlink_file_kind_even_when_bytes_match
+    with_fixture do |fixture|
+      relative_path = ".agents/skills/example/SKILL.md"
+      consumer_path = File.join(fixture.fetch(:consumer_root), relative_path)
+      target_path = File.join(fixture.fetch(:consumer_root), "shared-skill-target.md")
+      File.binwrite(target_path, "shared skill\n")
+      FileUtils.rm_f(consumer_path)
+      File.symlink(target_path, consumer_path)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "consumer has unsupported file kind (Git mode 120000): #{relative_path}"
+    end
+  end
+
+  def test_rejects_unsupported_pinned_source_file_kind
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      mapped_path = File.join(source_root, "skills/example/SKILL.md")
+      write_file(source_root, "skills/shared-target.md", "shared skill\n")
+      FileUtils.rm_f(mapped_path)
+      File.symlink("../shared-target.md", mapped_path)
+      revision = commit_source_change(source_root, "make fixture a symlink")
+      update_manifest(fixture) { |manifest| manifest["source_revision"] = revision }
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "unsupported pinned source mode 120000: skills/example/SKILL.md"
+    end
+  end
+
   def test_detects_changed_source_side_of_overlay
     with_fixture do |fixture|
       write_file(fixture.fetch(:source_root), "workflows/example.md", "source overlay drift\n")
@@ -71,6 +148,47 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       assert_includes out, "UNEXPECTED DRIFT (1)"
       assert_includes out, "consumer hash changed"
       refute_includes out, "source hash changed"
+    end
+  end
+
+  def test_detects_consumer_executable_mode_drift_for_overlay
+    with_fixture do |fixture|
+      update_manifest(fixture) { |manifest| manifest.fetch("files").last["consumer_mode"] = "100644" }
+      consumer_path = File.join(fixture.fetch(:consumer_root), ".agents/workflows/example.md")
+      File.chmod(0o755, consumer_path)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "consumer mode differs from reviewed overlay (expected 100644, found 100755)"
+    end
+  end
+
+  def test_detects_current_source_mode_drift_for_overlay
+    with_fixture do |fixture|
+      source_path = File.join(fixture.fetch(:source_root), "workflows/example.md")
+      File.chmod(0o755, source_path)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "source mode differs from pinned source (expected 100644, found 100755)"
+    end
+  end
+
+  def test_accepts_reviewed_executable_consumer_overlay
+    with_fixture do |fixture|
+      update_manifest(fixture) { |manifest| manifest.fetch("files").last["consumer_mode"] = "100755" }
+      consumer_path = File.join(fixture.fetch(:consumer_root), ".agents/workflows/example.md")
+      File.chmod(0o755, consumer_path)
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "EXPECTED OVERLAYS (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
     end
   end
 
@@ -188,6 +306,36 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_reports_consumer_symlink_cycle_without_backtrace
+    with_fixture do |fixture|
+      relative_path = ".agents/skills/example/SKILL.md"
+      consumer_path = File.join(fixture.fetch(:consumer_root), relative_path)
+      FileUtils.rm_f(consumer_path)
+      File.symlink("SKILL.md", consumer_path)
+
+      out, err, status = run_checker(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "consumer path has a symlink cycle: #{relative_path}"
+      assert_empty err
+    end
+  end
+
+  def test_reports_root_symlink_cycle_without_backtrace
+    with_fixture do |fixture|
+      cycle_root = File.join(File.dirname(fixture.fetch(:consumer_root)), "consumer-cycle")
+      File.symlink("consumer-cycle", cycle_root)
+
+      out, err, status = run_checker(fixture, "--consumer-root", cycle_root)
+
+      assert_equal 1, status.exitstatus
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "consumer root has a symlink cycle: #{cycle_root}"
+      assert_empty err
+    end
+  end
+
   def test_rejects_missing_mapped_file
     with_fixture do |fixture|
       FileUtils.rm_f(File.join(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md"))
@@ -216,6 +364,15 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "consumer_sha256 must be a 64-hex SHA-256"
+    end
+
+    with_fixture do |fixture|
+      update_manifest(fixture) { |manifest| manifest.fetch("files").last["consumer_mode"] = "0755" }
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "consumer_mode must be 100644 or 100755"
     end
   end
 
@@ -267,6 +424,7 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
             "consumer" => ".agents/workflows/example.md",
             "mode" => "overlay",
             "reason" => "consumer keeps repository-specific commands",
+            "consumer_mode" => "100644",
             "source_sha256" => Digest::SHA256.file(File.join(source_root, "workflows/example.md")).hexdigest,
             "consumer_sha256" => Digest::SHA256.file(File.join(consumer_root, ".agents/workflows/example.md")).hexdigest
           }
@@ -288,6 +446,14 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     git(source_root, "init", "--quiet", "--initial-branch=main")
     git(source_root, "add", ".")
     git(source_root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "fixture")
+    out, status = Open3.capture2("git", "-C", source_root, "rev-parse", "HEAD")
+    assert status.success?, out
+    out.strip
+  end
+
+  def commit_source_change(source_root, message)
+    git(source_root, "add", ".")
+    git(source_root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", message)
     out, status = Open3.capture2("git", "-C", source_root, "rev-parse", "HEAD")
     assert status.success?, out
     out.strip

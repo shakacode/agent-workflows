@@ -218,10 +218,19 @@ that revision, so a dirty checkout cannot silently redefine the baseline.
 
 Manifest version 1 has two mapping modes:
 
-- `identical` requires byte-identical source and consumer files.
+- `identical` requires byte-identical source and consumer files, and requires
+  both filesystem modes to match the pinned source's Git mode.
 - `overlay` records a reviewed local difference. It requires a nonempty reason
-  and the SHA-256 of both files; a later change to either file is unexpected
-  drift.
+  and the SHA-256 of both files, plus the reviewed `consumer_mode`; a later
+  content or mode change on either side is unexpected drift.
+
+Mode checks deliberately normalize regular files to Git's portable `100644`
+(not executable) or `100755` (executable) modes instead of comparing exact
+POSIX permissions. The pinned source tree mode is authoritative for the source.
+The consumer need not be a Git checkout: the checker derives its normalized
+mode from whether any filesystem execute bit is set. Symlinks, submodules, and
+other file kinds are unsupported and fail closed rather than being followed as
+equivalent regular files.
 
 ```yaml
 version: 1
@@ -234,6 +243,7 @@ files:
     consumer: .agents/workflows/example.md
     mode: overlay
     reason: "Consumer keeps repository-specific policy in this reviewed overlay."
+    consumer_mode: "100644"
     source_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     consumer_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 ```
@@ -243,7 +253,8 @@ and consumer files. Paths use forward slashes and must be relative,
 non-traversing, and unique on both sides. The checker reports deterministic
 `CLEAN IDENTICAL`, `EXPECTED OVERLAYS`, and `UNEXPECTED DRIFT` buckets. It exits
 nonzero for unexpected changes, missing or escaping files, a stale source
-revision, invalid hashes, duplicate mappings, or malformed schema.
+revision, mode or file-kind drift, invalid hashes, duplicate mappings, or
+malformed schema.
 
 ## Validation Checklist
 

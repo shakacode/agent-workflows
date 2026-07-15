@@ -13,9 +13,10 @@ module AgentWorkflowDrift
   ManifestError = Class.new(StandardError)
   ROOT_KEYS = %w[files source_revision version].freeze
   IDENTICAL_KEYS = %w[consumer mode source].freeze
-  OVERLAY_KEYS = %w[consumer consumer_sha256 mode reason source source_sha256].freeze
+  OVERLAY_KEYS = %w[consumer consumer_mode consumer_sha256 mode reason source source_sha256].freeze
   SHA256_PATTERN = /\A[0-9a-f]{64}\z/i
   REVISION_PATTERN = /\A[0-9a-f]{40}\z/i
+  SUPPORTED_GIT_MODES = %w[100644 100755].freeze
 
   def run(manifest_path:, source_root:, consumer_root:, output: $stdout)
     clean = []
@@ -91,6 +92,9 @@ module AgentWorkflowDrift
 
     reason = entry["reason"]
     raise ManifestError, "files[#{index}].reason must be nonempty" unless reason.is_a?(String) && !reason.strip.empty?
+    unless SUPPORTED_GIT_MODES.include?(entry["consumer_mode"])
+      raise ManifestError, "files[#{index}].consumer_mode must be 100644 or 100755"
+    end
 
     %w[source_sha256 consumer_sha256].each do |key|
       value = entry[key]
@@ -125,6 +129,8 @@ module AgentWorkflowDrift
     raise ManifestError, "#{label} is not a directory: #{path}" unless File.directory?(root)
 
     root
+  rescue Errno::ELOOP
+    raise ManifestError, "#{label} has a symlink cycle: #{path}"
   rescue Errno::ENOENT, Errno::EACCES => e
     raise ManifestError, "#{label} is unavailable: #{e.message}"
   end
@@ -146,11 +152,16 @@ module AgentWorkflowDrift
     source_contents = File.binread(source_path)
     consumer_contents = File.binread(consumer_path)
     pinned_source_contents = read_pinned_source(source_root, revision, entry.fetch("source"))
+    pinned_source_mode = read_pinned_source_mode(source_root, revision, entry.fetch("source"))
     source_changed_from_revision = source_contents != pinned_source_contents
+    source_mode = filesystem_git_mode(source_root, entry.fetch("source"), "source")
+    consumer_mode = filesystem_git_mode(consumer_root, entry.fetch("consumer"), "consumer")
 
     if entry.fetch("mode") == "identical"
       changes = []
       changes << "source file does not match pinned revision" if source_changed_from_revision
+      changes << mode_difference("source", pinned_source_mode, source_mode) if source_mode != pinned_source_mode
+      changes << mode_difference("consumer", pinned_source_mode, consumer_mode) if consumer_mode != pinned_source_mode
       changes << "identical files differ" unless source_contents == consumer_contents
       if changes.empty?
         clean << [label, nil]
@@ -164,6 +175,11 @@ module AgentWorkflowDrift
     consumer_hash = Digest::SHA256.file(consumer_path).hexdigest
     changes = []
     changes << "source file does not match pinned revision" if source_changed_from_revision
+    changes << mode_difference("source", pinned_source_mode, source_mode) if source_mode != pinned_source_mode
+    expected_consumer_mode = entry.fetch("consumer_mode")
+    if consumer_mode != expected_consumer_mode
+      changes << "consumer mode differs from reviewed overlay (expected #{expected_consumer_mode}, found #{consumer_mode})"
+    end
     changes << "source hash changed (#{source_hash})" unless source_hash == entry.fetch("source_sha256").downcase
     changes << "consumer hash changed (#{consumer_hash})" unless consumer_hash == entry.fetch("consumer_sha256").downcase
 
@@ -183,6 +199,35 @@ module AgentWorkflowDrift
     stdout.b
   end
 
+  def read_pinned_source_mode(source_root, revision, relative_path)
+    stdout, _stderr, status = Open3.capture3("git", "-C", source_root, "ls-tree", "-z", revision, "--", relative_path)
+    raise ManifestError, "source file is not tracked at pinned revision: #{relative_path}" unless status.success? && !stdout.empty?
+
+    match = stdout.match(/\A([0-9]{6}) [^ ]+ [0-9a-f]+\t/)
+    raise ManifestError, "source mode is unreadable at pinned revision: #{relative_path}" unless match
+
+    mode = match[1]
+    raise ManifestError, "unsupported pinned source mode #{mode}: #{relative_path}" unless SUPPORTED_GIT_MODES.include?(mode)
+
+    mode
+  end
+
+  def filesystem_git_mode(root, relative_path, side)
+    stat = File.lstat(File.join(root, relative_path))
+    if stat.symlink?
+      raise ManifestError, "#{side} has unsupported file kind (Git mode 120000): #{relative_path}"
+    end
+    raise ManifestError, "#{side} has unsupported file kind: #{relative_path}" unless stat.file?
+
+    stat.mode.anybits?(0o111) ? "100755" : "100644"
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
+  end
+
+  def mode_difference(side, expected, actual)
+    "#{side} mode differs from pinned source (expected #{expected}, found #{actual})"
+  end
+
   def resolve_file(root, relative_path, side)
     candidate = File.join(root, relative_path)
     raise ManifestError, "#{side} file is missing: #{relative_path}" unless File.exist?(candidate) || File.symlink?(candidate)
@@ -193,6 +238,8 @@ module AgentWorkflowDrift
     end
 
     resolved
+  rescue Errno::ELOOP
+    raise ManifestError, "#{side} path has a symlink cycle: #{relative_path}"
   rescue Errno::ENOENT, Errno::EACCES => e
     raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
   end
