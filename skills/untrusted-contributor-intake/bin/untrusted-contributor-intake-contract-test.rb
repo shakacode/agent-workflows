@@ -209,7 +209,13 @@ def run_documented_trusted_origin_producer(origin_url, trusted_host: nil, truste
   end
 end
 
-def run_documented_persistent_trusted_origin_intake(fresh_policy:, inherited_state:, pr_ref:, gh_output:)
+def run_documented_persistent_trusted_origin_intake(
+  fresh_policy:,
+  inherited_state:,
+  pr_ref:,
+  gh_output:,
+  final_canonical_validation: false
+)
   Dir.mktmpdir("untrusted-contributor-intake") do |directory|
     gh_path = File.join(directory, "gh")
     log_path = File.join(directory, "gh.log")
@@ -234,15 +240,25 @@ def run_documented_persistent_trusted_origin_intake(fresh_policy:, inherited_sta
       documented_pr_ref_classifier_snippet,
       documented_metadata_resolution_snippet
     ]
+    if final_canonical_validation
+      snippets << documented_canonical_authority_snippet
+      snippets << documented_url_input_parser_snippet
+    end
+    output = if final_canonical_validation
+               %(printf '%s|%s|%s|%s|%s|%s' "${TRUSTED_GH_SCHEME}" "${TRUSTED_GH_HOST}" "${TRUSTED_GH_REPO}" "${GH_HOST}" "${REPO}" "${CANONICAL_URL}")
+             else
+               %(printf '%s|%s|%s|%s' "${TRUSTED_GH_SCHEME}" "${TRUSTED_GH_HOST}" "${TRUSTED_GH_REPO}" "${REPO}")
+             end
     success, output = run_documented_posix_snippet(
       snippets.join("\n"),
       environment,
-      %(printf '%s|%s|%s|%s' "${TRUSTED_GH_SCHEME}" "${TRUSTED_GH_HOST}" "${TRUSTED_GH_REPO}" "${REPO}"),
+      output,
       scrub: false
     )
     calls = File.exist?(log_path) ? File.readlines(log_path, chomp: true) : []
+    field_count = final_canonical_validation ? 6 : 4
 
-    [success, success ? output.split("|", 4) : output, calls]
+    [success, success ? output.split("|", field_count) : output, calls]
   end
 end
 
@@ -666,59 +682,112 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
       "TRUSTED_REPO_OWNER" => "stale-org",
       "TRUSTED_REPO_NAME" => "stale-repo"
     }
-    gh_output = "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+    policy = {
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "ghe.example:8443",
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME" => "https",
+      "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO" => "octo-org/hello-world"
+    }
+    inherited_trusted_state = {
+      "TRUSTED_GH_HOST" => "stale.example:8443",
+      "TRUSTED_GH_SCHEME" => "https",
+      "TRUSTED_GH_REPO" => "stale-org/stale-repo"
+    }
 
     success, output, calls = run_documented_persistent_trusted_origin_intake(
       fresh_policy: {},
       inherited_state: stale_output_state,
       pr_ref: "42",
-      gh_output: gh_output
+      gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
     )
-    refute success, "stale mutable output state must not authorize intake"
+    refute success, "full inherited mutable output state must not authorize intake"
     assert_match(/BLOCKED: trusted origin is invalid/, output)
     assert_empty calls
 
-    success, output, calls = run_documented_persistent_trusted_origin_intake(
-      fresh_policy: {
-        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "ghe.example:8443"
-      },
-      inherited_state: stale_output_state,
-      pr_ref: "42",
-      gh_output: gh_output
-    )
-    refute success, "partial fresh policy input must not combine with stale mutable output state"
-    assert_match(/BLOCKED: trusted origin is invalid/, output)
-    assert_empty calls
+    [*inherited_trusted_state.keys.combination(1), *inherited_trusted_state.keys.combination(2)].each do |keys|
+      success, output, calls = run_documented_persistent_trusted_origin_intake(
+        fresh_policy: {},
+        inherited_state: inherited_trusted_state.slice(*keys),
+        pr_ref: "42",
+        gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+      )
 
-    success, values, calls = run_documented_persistent_trusted_origin_intake(
-      fresh_policy: {
-        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "GHE.EXAMPLE:443",
-        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME" => "https",
-        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO" => "Octo-Org/Hello-World"
-      },
-      inherited_state: stale_output_state,
-      pr_ref: "42",
-      gh_output: "42|https://ghe.example/octo-org/hello-world/pull/42"
-    )
-    assert success, values
-    assert_equal ["https", "ghe.example", "octo-org/hello-world", "octo-org/hello-world"], values
-    assert_equal 1, calls.length
-    assert_includes calls.first, "GH_HOST=ghe.example"
+      refute success, "inherited #{keys.join(', ')} must not authorize intake"
+      assert_match(/BLOCKED: trusted origin is invalid/, output)
+      assert_empty calls
+    end
 
-    success, values, calls = run_documented_persistent_trusted_origin_intake(
-      fresh_policy: {
-        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => "GHE.EXAMPLE:8443",
-        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME" => "https",
-        "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO" => "Octo-Org/Hello-World"
+    [
+      {},
+      policy.slice("UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST"),
+      policy.slice("UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME"),
+      policy.slice("UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO"),
+      policy.slice("UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST", "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME"),
+      policy.slice("UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST", "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO"),
+      policy.slice("UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME", "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO")
+    ].each do |fresh_policy|
+      success, output, calls = run_documented_persistent_trusted_origin_intake(
+        fresh_policy: fresh_policy,
+        inherited_state: stale_output_state,
+        pr_ref: "42",
+        gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+      )
+
+      refute success, "incomplete fresh policy #{fresh_policy.keys.join(', ')} must BLOCK"
+      assert_match(/BLOCKED: trusted origin is invalid/, output)
+      assert_empty calls
+    end
+
+    [
+      {
+        trusted_host: "GHE.EXAMPLE:443",
+        pr_ref: "https://ghe.example/Octo-Org/Hello-World/pull/42",
+        canonical_url: "https://ghe.example/Octo-Org/Hello-World/pull/42",
+        expected_host: "ghe.example"
       },
-      inherited_state: stale_output_state,
-      pr_ref: "42",
-      gh_output: gh_output
-    )
-    assert success, values
-    assert_equal ["https", "ghe.example:8443", "octo-org/hello-world", "octo-org/hello-world"], values
-    assert_equal 1, calls.length
-    assert_includes calls.first, "GH_HOST=ghe.example:8443"
+      {
+        trusted_host: "GHE.EXAMPLE:8443",
+        pr_ref: "https://ghe.example:8443/Octo-Org/Hello-World/pull/42",
+        canonical_url: "https://ghe.example:8443/Octo-Org/Hello-World/pull/42",
+        expected_host: "ghe.example:8443"
+      }
+    ].each do |scenario|
+      fresh_policy = policy.merge("UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST" => scenario.fetch(:trusted_host))
+      success, values, calls = run_documented_persistent_trusted_origin_intake(
+        fresh_policy: fresh_policy,
+        inherited_state: stale_output_state,
+        pr_ref: scenario.fetch(:pr_ref),
+        gh_output: "42|#{scenario.fetch(:canonical_url)}",
+        final_canonical_validation: true
+      )
+
+      assert success, values
+      assert_equal ["https", scenario.fetch(:expected_host), "octo-org/hello-world", scenario.fetch(:expected_host), "octo-org/hello-world", scenario.fetch(:canonical_url)], values
+      assert_equal 1, calls.length
+      assert_includes calls.first, "GH_HOST=#{scenario.fetch(:expected_host)}"
+    end
+
+    [
+      {
+        canonical_url: "https://other.example/octo-org/hello-world/pull/42",
+        error: /BLOCKED: canonical authority is not trusted/
+      },
+      {
+        canonical_url: "https://ghe.example:8443/other-org/other-repo/pull/42",
+        error: /BLOCKED: canonical authority absent or invalid/
+      }
+    ].each do |scenario|
+      success, output, calls = run_documented_persistent_trusted_origin_intake(
+        fresh_policy: policy,
+        inherited_state: stale_output_state,
+        pr_ref: "https://ghe.example:8443/octo-org/hello-world/pull/42",
+        gh_output: "42|#{scenario.fetch(:canonical_url)}",
+        final_canonical_validation: true
+      )
+
+      refute success
+      assert_match(scenario.fetch(:error), output)
+      assert_equal 1, calls.length
+    end
   end
 
   def test_requires_trusted_metadata_validation_before_using_producer_output
