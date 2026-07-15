@@ -933,7 +933,7 @@ class AgentWorkflowSeamDoctorEncodingTest < Minitest::Test
     with_repo do |root|
       write_valid_binstub_contract(root)
       agents_path = File.join(root, "AGENTS.md")
-      body = File.read(agents_path)
+      body = File.read(agents_path, encoding: "UTF-8")
       # A real AGENTS.md carries non-ASCII bytes (em dashes, arrows). Reading it
       # under a non-UTF-8 locale must not crash the config parser.
       body.sub!("# AGENTS.md\n", "# AGENTS.md\n\nReact on Rails → SSR overview.\n")
