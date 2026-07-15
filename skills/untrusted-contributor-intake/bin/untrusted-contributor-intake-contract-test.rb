@@ -569,7 +569,14 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     refute success
     assert_match(/BLOCKED: trusted origin is invalid/, output)
 
-    ["git@ghe.example:octo-org/hello-world.git", "http://ghe.example/octo-org/hello-world.git", "https://user@ghe.example/octo-org/hello-world.git", "https://ghe.example/octo/org/hello-world"].each do |origin_url|
+    [
+      "git@ghe.example:octo-org/hello-world.git",
+      "http://ghe.example/octo-org/hello-world.git",
+      "https://user@ghe.example/octo-org/hello-world.git",
+      "https://[2001:db8::1]/octo-org/hello-world.git",
+      "https://ghe.example]/octo-org/hello-world.git",
+      "https://ghe.example/octo/org/hello-world"
+    ].each do |origin_url|
       success, output = run_documented_trusted_origin_producer(origin_url)
       refute success, "expected #{origin_url.inspect} to be BLOCKED, got #{output.inspect}"
       assert_match(/BLOCKED: trusted origin is invalid/, output)

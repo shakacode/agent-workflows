@@ -81,7 +81,7 @@ else
   case "${TRUSTED_ORIGIN_REMAINDER}" in */*) ;; *) trusted_origin_blocked ;; esac
   TRUSTED_GH_HOST="${TRUSTED_ORIGIN_REMAINDER%%/*}"
   TRUSTED_ORIGIN_PATH="${TRUSTED_ORIGIN_REMAINDER#*/}"
-  case "${TRUSTED_GH_HOST}" in ""|*@*|*/*|*\?*|*\#*|*" "*) trusted_origin_blocked ;; esac
+  case "${TRUSTED_GH_HOST}" in ""|*@*|*/*|*\?*|*\#*|*" "*|*\[*|*\]*) trusted_origin_blocked ;; esac
   case "${TRUSTED_ORIGIN_PATH}" in */*) ;; *) trusted_origin_blocked ;; esac
   TRUSTED_ORIGIN_OWNER="${TRUSTED_ORIGIN_PATH%%/*}"
   TRUSTED_ORIGIN_REPO="${TRUSTED_ORIGIN_PATH#*/}"
