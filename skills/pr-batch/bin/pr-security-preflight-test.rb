@@ -1408,6 +1408,30 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_repo_local_config_inherits_packaged_metadata_only_bots
+    with_fake_gh("metadata-bot-comment") do |env, _trust_config_path, _log_path, dir|
+      consumer_root = File.join(dir, "consumer")
+      repo_config = File.join(consumer_root, ".agents", "trusted-github-actors.yml")
+      FileUtils.mkdir_p(consumer_root)
+      init_git_remote(consumer_root, "owner/repo")
+      write_trust_config(repo_config, users: ["justin808"], metadata_bots: [])
+
+      out, status = run_script(
+        env.merge("AGENT_WORKFLOWS_TRUST_CONFIG" => nil, "HOME" => File.join(dir, "home")),
+        "--repo",
+        "owner/repo",
+        "123",
+        chdir: consumer_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "Untrusted comment/review queue: none"
+      assert_includes out, "Metadata-only comment/review queue:"
+      assert_includes out, "github-actions[bot] issue comment"
+    end
+  end
+
   def test_warning_terms_in_trusted_issue_text_do_not_block
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
