@@ -1,0 +1,238 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "open3"
+require "optparse"
+require "pathname"
+require "yaml"
+
+module AgentWorkflowDrift
+  module_function
+
+  ManifestError = Class.new(StandardError)
+  ROOT_KEYS = %w[files source_revision version].freeze
+  IDENTICAL_KEYS = %w[consumer mode source].freeze
+  OVERLAY_KEYS = %w[consumer consumer_sha256 mode reason source source_sha256].freeze
+  SHA256_PATTERN = /\A[0-9a-f]{64}\z/i
+  REVISION_PATTERN = /\A[0-9a-f]{40}\z/i
+
+  def run(manifest_path:, source_root:, consumer_root:, output: $stdout)
+    clean = []
+    overlays = []
+    unexpected = []
+
+    begin
+      manifest = load_manifest(manifest_path)
+      revision = validate_manifest(manifest)
+      source_root = validate_root(source_root, "source root")
+      consumer_root = validate_root(consumer_root, "consumer root")
+      verify_source_revision(source_root, revision)
+
+      manifest.fetch("files").sort_by { |entry| [entry.fetch("source"), entry.fetch("consumer")] }.each do |entry|
+        inspect_entry(entry, revision, source_root, consumer_root, clean, overlays, unexpected)
+      end
+    rescue ManifestError, Errno::ENOENT, Errno::EACCES => e
+      unexpected << ["manifest", e.message]
+    end
+
+    render_bucket(output, "CLEAN IDENTICAL", clean)
+    render_bucket(output, "EXPECTED OVERLAYS", overlays)
+    render_bucket(output, "UNEXPECTED DRIFT", unexpected)
+    unexpected.empty? ? 0 : 1
+  end
+
+  def load_manifest(path)
+    data = YAML.safe_load(File.binread(path), permitted_classes: [], permitted_symbols: [], aliases: false)
+    raise ManifestError, "manifest must be a YAML mapping" unless data.is_a?(Hash)
+
+    data
+  rescue Psych::Exception => e
+    raise ManifestError, "invalid YAML: #{e.message}"
+  end
+
+  def validate_manifest(manifest)
+    validate_keys(manifest, ROOT_KEYS, "manifest")
+    raise ManifestError, "manifest version must be 1" unless manifest["version"] == 1
+
+    revision = manifest["source_revision"]
+    unless revision.is_a?(String) && revision.match?(REVISION_PATTERN)
+      raise ManifestError, "source_revision must be a full 40-hex commit"
+    end
+
+    files = manifest["files"]
+    raise ManifestError, "files must be a nonempty sequence" unless files.is_a?(Array) && !files.empty?
+
+    files.each_with_index { |entry, index| validate_entry(entry, index) }
+    reject_duplicate_paths(files, "source")
+    reject_duplicate_paths(files, "consumer")
+    revision.downcase
+  end
+
+  def reject_duplicate_paths(files, key)
+    duplicate = files.group_by { |entry| entry.fetch(key) }
+                     .select { |_path, entries| entries.length > 1 }
+                     .keys
+                     .min
+    raise ManifestError, "duplicate #{key} path: #{duplicate}" if duplicate
+  end
+
+  def validate_entry(entry, index)
+    raise ManifestError, "files[#{index}] must be a mapping" unless entry.is_a?(Hash)
+
+    mode = entry["mode"]
+    allowed_keys = mode == "overlay" ? OVERLAY_KEYS : IDENTICAL_KEYS
+    validate_keys(entry, allowed_keys, "files[#{index}]")
+    raise ManifestError, "files[#{index}].mode must be identical or overlay" unless %w[identical overlay].include?(mode)
+
+    validate_relative_path(entry["source"], "files[#{index}].source")
+    validate_relative_path(entry["consumer"], "files[#{index}].consumer")
+    return if mode == "identical"
+
+    reason = entry["reason"]
+    raise ManifestError, "files[#{index}].reason must be nonempty" unless reason.is_a?(String) && !reason.strip.empty?
+
+    %w[source_sha256 consumer_sha256].each do |key|
+      value = entry[key]
+      unless value.is_a?(String) && value.match?(SHA256_PATTERN)
+        raise ManifestError, "files[#{index}].#{key} must be a 64-hex SHA-256"
+      end
+    end
+  end
+
+  def validate_keys(mapping, expected, label)
+    keys = mapping.keys
+    raise ManifestError, "#{label} keys must be strings" unless keys.all? { |key| key.is_a?(String) }
+
+    missing = expected - keys
+    extra = keys - expected
+    raise ManifestError, "#{label} missing keys: #{missing.sort.join(', ')}" unless missing.empty?
+    raise ManifestError, "#{label} has unknown keys: #{extra.sort.join(', ')}" unless extra.empty?
+  end
+
+  def validate_relative_path(path, label)
+    unless path.is_a?(String) && !path.empty? && !path.include?("\0") && !path.include?("\\")
+      raise ManifestError, "#{label} must be a nonempty relative path using forward slashes"
+    end
+
+    pathname = Pathname.new(path)
+    unsafe = pathname.absolute? || path.match?(%r{\A[A-Za-z]:/}) || pathname.cleanpath.to_s != path || path.split("/").any? { |part| %w[. ..].include?(part) }
+    raise ManifestError, "#{label} must not be absolute, traversing, or non-canonical" if unsafe
+  end
+
+  def validate_root(path, label)
+    root = File.realpath(path)
+    raise ManifestError, "#{label} is not a directory: #{path}" unless File.directory?(root)
+
+    root
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise ManifestError, "#{label} is unavailable: #{e.message}"
+  end
+
+  def verify_source_revision(source_root, expected_revision)
+    stdout, stderr, status = Open3.capture3("git", "-C", source_root, "rev-parse", "--verify", "HEAD^{commit}")
+    raise ManifestError, "source root is not a Git checkout: #{stderr.strip}" unless status.success?
+
+    actual_revision = stdout.strip.downcase
+    return if actual_revision == expected_revision
+
+    raise ManifestError, "source revision mismatch: expected #{expected_revision}, found #{actual_revision}"
+  end
+
+  def inspect_entry(entry, revision, source_root, consumer_root, clean, overlays, unexpected)
+    label = "#{entry.fetch('source')} -> #{entry.fetch('consumer')}"
+    source_path = resolve_file(source_root, entry.fetch("source"), "source")
+    consumer_path = resolve_file(consumer_root, entry.fetch("consumer"), "consumer")
+    source_contents = File.binread(source_path)
+    consumer_contents = File.binread(consumer_path)
+    pinned_source_contents = read_pinned_source(source_root, revision, entry.fetch("source"))
+    source_changed_from_revision = source_contents != pinned_source_contents
+
+    if entry.fetch("mode") == "identical"
+      changes = []
+      changes << "source file does not match pinned revision" if source_changed_from_revision
+      changes << "identical files differ" unless source_contents == consumer_contents
+      if changes.empty?
+        clean << [label, nil]
+      else
+        unexpected << [label, changes.join("; ")]
+      end
+      return
+    end
+
+    source_hash = Digest::SHA256.file(source_path).hexdigest
+    consumer_hash = Digest::SHA256.file(consumer_path).hexdigest
+    changes = []
+    changes << "source file does not match pinned revision" if source_changed_from_revision
+    changes << "source hash changed (#{source_hash})" unless source_hash == entry.fetch("source_sha256").downcase
+    changes << "consumer hash changed (#{consumer_hash})" unless consumer_hash == entry.fetch("consumer_sha256").downcase
+
+    if changes.empty?
+      overlays << [label, entry.fetch("reason").strip]
+    else
+      unexpected << [label, changes.join("; ")]
+    end
+  rescue ManifestError => e
+    unexpected << [label, e.message]
+  end
+
+  def read_pinned_source(source_root, revision, relative_path)
+    stdout, _stderr, status = Open3.capture3("git", "-C", source_root, "show", "#{revision}:#{relative_path}")
+    raise ManifestError, "source file is not tracked at pinned revision: #{relative_path}" unless status.success?
+
+    stdout.b
+  end
+
+  def resolve_file(root, relative_path, side)
+    candidate = File.join(root, relative_path)
+    raise ManifestError, "#{side} file is missing: #{relative_path}" unless File.exist?(candidate) || File.symlink?(candidate)
+
+    resolved = File.realpath(candidate)
+    unless resolved.start_with?("#{root}#{File::SEPARATOR}") && File.file?(resolved)
+      raise ManifestError, "#{side} path escapes its root or is not a file: #{relative_path}"
+    end
+
+    resolved
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
+  end
+
+  def render_bucket(output, title, entries)
+    output.puts "#{title} (#{entries.length})"
+    if entries.empty?
+      output.puts "  (none)"
+    else
+      entries.each do |label, detail|
+        output.puts(detail ? "  - #{label}: #{detail}" : "  - #{label}")
+      end
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  options = {}
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: check-agent-workflow-drift --manifest FILE --source-root DIR --consumer-root DIR"
+    opts.on("--manifest FILE", "Version 1 drift manifest") { |value| options[:manifest_path] = File.expand_path(value) }
+    opts.on("--source-root DIR", "Pinned agent-workflows checkout") { |value| options[:source_root] = File.expand_path(value) }
+    opts.on("--consumer-root DIR", "Consumer repository checkout") { |value| options[:consumer_root] = File.expand_path(value) }
+    opts.on("-h", "--help", "Show help") do
+      puts opts
+      exit 0
+    end
+  end
+
+  begin
+    parser.parse!
+    required_options = { manifest_path: "--manifest", source_root: "--source-root", consumer_root: "--consumer-root" }
+    missing = required_options.reject { |key, _flag| options.key?(key) }.values
+    raise OptionParser::MissingArgument, missing.join(", ") unless missing.empty?
+    raise OptionParser::InvalidOption, ARGV.join(" ") unless ARGV.empty?
+  rescue OptionParser::ParseError => e
+    warn e.message
+    warn parser
+    exit 2
+  end
+
+  exit AgentWorkflowDrift.run(**options)
+end

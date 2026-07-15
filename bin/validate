@@ -65,6 +65,9 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== push-downstream unit tests =="
 ruby bin/push-downstream-test.rb
 
+echo "== agent workflow drift unit tests =="
+ruby bin/check-agent-workflow-drift-test.rb
+
 echo "== solution docs =="
 ruby bin/validate-solutions-test.rb
 ruby bin/validate-solutions

@@ -198,6 +198,53 @@ updates reviewed in that repo. If a repo chooses that route:
   `.agents/agent-workflow.yml`
 - run the seam doctor with `--shared` after every sync or update
 
+### Detecting Drift In Pinned Copies
+
+A consumer that reviews and pins shared files can use
+`bin/check-agent-workflow-drift` from this source pack to detect later changes
+on either side. The checker is read-only and makes no network calls. Pass all
+three locations explicitly:
+
+```bash
+/path/to/agent-workflows/bin/check-agent-workflow-drift \
+  --manifest /path/to/consumer/.agents/agent-workflow-drift.yml \
+  --source-root /path/to/pinned/agent-workflows \
+  --consumer-root /path/to/consumer
+```
+
+The source root must be a Git checkout whose `HEAD` is the manifest's full
+40-hex `source_revision`. Each mapped source file must also match its blob at
+that revision, so a dirty checkout cannot silently redefine the baseline.
+
+Manifest version 1 has two mapping modes:
+
+- `identical` requires byte-identical source and consumer files.
+- `overlay` records a reviewed local difference. It requires a nonempty reason
+  and the SHA-256 of both files; a later change to either file is unexpected
+  drift.
+
+```yaml
+version: 1
+source_revision: "0123456789abcdef0123456789abcdef01234567"
+files:
+  - source: skills/example/SKILL.md
+    consumer: .agents/skills/example/SKILL.md
+    mode: identical
+  - source: workflows/example.md
+    consumer: .agents/workflows/example.md
+    mode: overlay
+    reason: "Consumer keeps repository-specific policy in this reviewed overlay."
+    source_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    consumer_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+```
+
+Replace the example revision and hashes with values from the reviewed source
+and consumer files. Paths use forward slashes and must be relative,
+non-traversing, and unique on both sides. The checker reports deterministic
+`CLEAN IDENTICAL`, `EXPECTED OVERLAYS`, and `UNEXPECTED DRIFT` buckets. It exits
+nonzero for unexpected changes, missing or escaping files, a stale source
+revision, invalid hashes, duplicate mappings, or malformed schema.
+
 ## Validation Checklist
 
 - `agent-workflows-status --host <codex|claude>` reports `UP_TO_DATE`, or the
