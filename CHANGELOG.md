@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add an agent-workflow consumer seam with portable configuration and command wrappers.** [PR 140](https://github.com/shakacode/agent-workflows/pull/140) by [justin808](https://github.com/justin808).
 - **Add a portable dispatcher-capability preflight that records bound, attested route/dispatcher selection or one durable decision request without launching workers or mutating coordination.**
 - **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
@@ -48,6 +49,7 @@ All notable changes to this portable workflow pack are documented here.
 #### Fixed
 
 - **Keep trusted PR-batch review closeout autonomous for evidence-backed fix, defer, and decline recommendations under every merge-authority mode, prompting maintainers only when the review outcome explicitly requires their help.**
+- **Reject stale priority replay evidence so only final-head closeout evidence qualifies.** [PR 118](https://github.com/shakacode/agent-workflows/pull/118) by [justin808](https://github.com/justin808).
 - **Hardened seam-init argument forwarding across nested shells, env split strings, exec prefixes, and npm options, preserving caller arguments or failing closed for unsafe command shapes.** [PR 119](https://github.com/shakacode/agent-workflows/pull/119) by [justin808](https://github.com/justin808).
 - **Fail closed on native-plus-flat Agent Workflows collisions and preserve modified, ambiguous, mismatched, or unowned skill paths during migration and rollback.**
 - **Require replayable final-head QA evidence before readiness or merge so commits made after QA invalidate stale closeout evidence.**
