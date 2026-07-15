@@ -80,9 +80,9 @@ class ValidateSolutionsTest < Minitest::Test
       end
 
       expected = [
-        "docs/solutions/.archive/deep/hidden.md: nested solution docs are not allowed",
-        "docs/solutions/coordination/first.md: nested solution docs are not allowed",
-        "docs/solutions/review/deep/second.md: nested solution docs are not allowed"
+        "docs/solutions/.archive/deep/hidden.md: nested solution docs are not allowed; Agent Workflows lessons must be flat docs/solutions/*.md files; write categorized CE learning to a named destination in the consumer repository",
+        "docs/solutions/coordination/first.md: nested solution docs are not allowed; Agent Workflows lessons must be flat docs/solutions/*.md files; write categorized CE learning to a named destination in the consumer repository",
+        "docs/solutions/review/deep/second.md: nested solution docs are not allowed; Agent Workflows lessons must be flat docs/solutions/*.md files; write categorized CE learning to a named destination in the consumer repository"
       ]
       assert_equal expected, ValidateSolutions.validate(root)
     end
