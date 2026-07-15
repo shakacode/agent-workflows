@@ -163,6 +163,41 @@ def run_documented_trusted_origin_producer(origin_url, trusted_host: nil, truste
   end
 end
 
+def extract_actor_authority_snippet(source)
+  start = source.index('case "${ACTOR_TYPE:-}" in')
+  raise "actor authority snippet missing" unless start
+
+  finish = source.index("\n```", start)
+  raise "actor authority snippet missing" unless finish
+
+  source[start...finish]
+end
+
+def run_documented_actor_authority(actor_type, actor_login)
+  Dir.mktmpdir("untrusted-contributor-intake") do |directory|
+    gh_path = File.join(directory, "gh")
+    call_log = File.join(directory, "gh-calls")
+    File.write(gh_path, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"${GH_CALL_LOG}\"\nprintf '{}\\n'\n", encoding: "UTF-8")
+    File.chmod(0o755, gh_path)
+    environment = {
+      "ACTOR_TYPE" => actor_type,
+      "ACTOR_LOGIN" => actor_login,
+      "GH_HOST" => "ghe.example:8443",
+      "REPO" => "octo-org/hello-world",
+      "GH_CALL_LOG" => call_log,
+      "PATH" => "#{directory}:#{ENV.fetch('PATH')}"
+    }
+    success, output = run_documented_posix_snippet(
+      extract_actor_authority_snippet(File.read(SKILL_PATH, encoding: "UTF-8")),
+      environment,
+      ""
+    )
+
+    calls = File.exist?(call_log) ? File.readlines(call_log, chomp: true) : []
+    [success, output, calls]
+  end
+end
+
 def run_documented_pr_ref_classifier(pr_ref, trusted_scheme: nil)
   environment = { "PR_REF" => pr_ref }
   environment["TRUSTED_GH_SCHEME"] = trusted_scheme if trusted_scheme
@@ -404,6 +439,14 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_establishes_trusted_origin_and_requires_url_scheme_parity
     assert_equal [true, "https|ghe.example:8443"],
                  run_documented_trusted_origin_producer("https://ghe.example:8443/octo-org/hello-world.git")
+    assert_equal [true, "https|ghe.example"],
+                 run_documented_trusted_origin_producer("https://GHE.EXAMPLE:443/octo-org/hello-world.git")
+    assert_equal [true, "http|ghe.example"],
+                 run_documented_trusted_origin_producer("http://GHE.EXAMPLE:80/octo-org/hello-world.git")
+    assert_equal [true, "https|ghe.example:8443"],
+                 run_documented_trusted_origin_producer("https://GHE.EXAMPLE:8443/octo-org/hello-world.git")
+    assert_equal [true, "http|ghe.example:443"],
+                 run_documented_trusted_origin_producer("http://GHE.EXAMPLE:443/octo-org/hello-world.git")
     assert_equal [true, "https|policy.example:9443"],
                  run_documented_trusted_origin_producer("ssh://ignored/not-used", trusted_host: "policy.example:9443", trusted_scheme: "https")
 
@@ -844,6 +887,16 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes skill, "GH_HOST=\"${GH_HOST}\" gh api \"repos/${REPO}/collaborators/${ACTOR_LOGIN}/permission\" --jq '{actor: .user.login, permission, role_name}'"
     assert_includes normalized_skill, "If trusted local policy or actor-specific metadata cannot establish authority, record not established."
     assert_includes normalized_skill, "Never establish authority from a self-claim, bot, or check."
+
+    success, output, calls = run_documented_actor_authority("Bot", "workflow-bot")
+    assert success, output
+    assert_equal "Authority: not established\n", output
+    assert_empty calls
+
+    success, output, calls = run_documented_actor_authority("User", "maintainer-alex")
+    assert success, output
+    assert_equal "{}\n", output
+    assert_equal ["api repos/octo-org/hello-world/collaborators/maintainer-alex/permission --jq {actor: .user.login, permission, role_name}"], calls
   end
 
   def test_uses_no_text_reading_pr_security_preflight

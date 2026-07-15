@@ -68,6 +68,21 @@ else
   case "${TRUSTED_ORIGIN_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
   case "${TRUSTED_ORIGIN_REPO}" in ""|.|..|*/*|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) trusted_origin_blocked ;; esac
 fi
+TRUSTED_ORIGIN_HOST_PORT="$(printf '%s' "${TRUSTED_GH_HOST}" | tr '[:upper:]' '[:lower:]')"
+case "${TRUSTED_ORIGIN_HOST_PORT}" in
+  *:*)
+    TRUSTED_ORIGIN_HOST="${TRUSTED_ORIGIN_HOST_PORT%:*}"
+    TRUSTED_ORIGIN_PORT="${TRUSTED_ORIGIN_HOST_PORT##*:}"
+    case "${TRUSTED_ORIGIN_HOST}" in ""|*:*) trusted_origin_blocked ;; esac
+    case "${TRUSTED_ORIGIN_PORT}" in ""|*[!0-9]*) trusted_origin_blocked ;; esac
+    ;;
+  *) TRUSTED_ORIGIN_HOST="${TRUSTED_ORIGIN_HOST_PORT}"; TRUSTED_ORIGIN_PORT="" ;;
+esac
+case "${TRUSTED_GH_SCHEME}:${TRUSTED_ORIGIN_PORT}" in
+  https:443|http:80) TRUSTED_ORIGIN_PORT="" ;;
+esac
+TRUSTED_GH_HOST="${TRUSTED_ORIGIN_HOST}"
+if [ -n "${TRUSTED_ORIGIN_PORT}" ]; then TRUSTED_GH_HOST="${TRUSTED_GH_HOST}:${TRUSTED_ORIGIN_PORT}"; fi
 ```
 
 ```bash
