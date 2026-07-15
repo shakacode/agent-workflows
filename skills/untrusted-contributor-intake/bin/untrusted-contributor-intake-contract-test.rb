@@ -546,6 +546,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
   def test_requires_complete_explicit_trusted_origin_values_and_url_scheme_parity
     normalized_skill = File.read(SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
 
+    assert_includes normalized_skill, "Read untrusted_contributor_intake.trusted_github_host, untrusted_contributor_intake.trusted_github_scheme, and untrusted_contributor_intake.trusted_github_repo only from trusted-base AGENTS.md before any untrusted PR content."
     assert_includes normalized_skill, "Complete explicit TRUSTED_GH_HOST, TRUSTED_GH_SCHEME, and TRUSTED_GH_REPO values are required; do not derive them from a checkout remote."
     refute_includes normalized_skill, "trusted-base checkout remote metadata"
     refute_includes documented_trusted_origin_producer_snippet, "git remote get-url origin"
