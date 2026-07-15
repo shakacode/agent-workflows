@@ -671,6 +671,29 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     end
   end
 
+  def test_clears_mutable_trusted_state_before_snapshotting_fresh_policy
+    lines = documented_trusted_origin_producer_snippet.lines
+    first_snapshot = lines.index { |line| line.match?(/\ATRUSTED_POLICY_(HOST|SCHEME|REPO)=/) }
+    snapshots = lines.each_index.select { |index| lines[index].match?(/\ATRUSTED_POLICY_(HOST|SCHEME|REPO)=/) }
+    trusted_gh_clear = lines.index { |line| line == "unset TRUSTED_GH_HOST TRUSTED_GH_SCHEME TRUSTED_GH_REPO\n" }
+    derived_state_clears = lines.each_index.select do |index|
+      line = lines[index]
+      line.start_with?("unset ") && line.split.any? { |name| name.match?(/\ATRUSTED_(ORIGIN_|REPO_|HOST)/) }
+    end
+    trusted_gh_mappings = lines.each_index.select do |index|
+      lines[index].match?(/\ATRUSTED_GH_(HOST|SCHEME|REPO)="\$\{TRUSTED_POLICY_(HOST|SCHEME|REPO)\}"/)
+    end
+
+    refute_nil first_snapshot
+    assert_equal 3, snapshots.length
+    refute_nil trusted_gh_clear
+    refute_empty derived_state_clears
+    assert_equal 3, trusted_gh_mappings.length
+    assert_operator trusted_gh_clear, :<, first_snapshot
+    derived_state_clears.each { |clear| assert_operator clear, :<, first_snapshot }
+    snapshots.each { |snapshot| assert_operator snapshot, :<, trusted_gh_mappings.min }
+  end
+
   def test_requires_fresh_atomic_trusted_policy_inputs_in_a_persistent_shell
     stale_output_state = {
       "TRUSTED_GH_HOST" => "stale.example:8443",
