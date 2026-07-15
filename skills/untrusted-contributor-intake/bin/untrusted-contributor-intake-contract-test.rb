@@ -719,6 +719,58 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     refute_includes calls.first, "repo view"
   end
 
+  def test_validates_complete_explicit_repository_before_metadata_network_calls
+    %w[
+      octo-org
+      octo-org/
+      /hello-world
+      octo-org/hello/world
+      ../hello-world
+      octo-org/..
+      octo-org/hello;world
+    ].each do |trusted_repo|
+      success, output, calls = run_documented_initial_metadata_resolution(
+        pr_ref: "42",
+        trusted_host: "ghe.example:8443",
+        trusted_repo: trusted_repo,
+        gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+      )
+
+      refute success, "expected #{trusted_repo.inspect} to be BLOCKED, got #{output.inspect}"
+      assert_match(/BLOCKED: metadata resolution is invalid/, output)
+      assert_empty calls
+    end
+
+    success, values, calls = run_documented_initial_metadata_resolution(
+      pr_ref: "42",
+      trusted_host: "ghe.example:8443",
+      trusted_repo: "octo-org/hello-world",
+      gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+    )
+    assert success, values
+    assert_equal 1, calls.length
+
+    success, output, calls = run_documented_initial_metadata_resolution(
+      pr_ref: "https://ghe.example:8443/octo-org/hello-world/pull/42",
+      trusted_host: "ghe.example:8443",
+      trusted_repo: "octo-org/hello-world/extra",
+      gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+    )
+    refute success
+    assert_match(/BLOCKED: metadata resolution is invalid/, output)
+    assert_empty calls
+
+    success, output, calls = run_documented_initial_metadata_resolution(
+      pr_ref: "https://ghe.example:8443/octo$org/hello-world/pull/42",
+      trusted_host: "ghe.example:8443",
+      trusted_repo: "octo-org/hello-world",
+      gh_output: "42|https://ghe.example:8443/octo-org/hello-world/pull/42"
+    )
+    refute success
+    assert_match(/BLOCKED: exact PR reference is invalid/, output)
+    assert_empty calls
+  end
+
   def test_normalizes_trusted_default_ports_using_the_pre_set_trusted_scheme
     normalized_skill = File.read(SKILL_PATH, encoding: "UTF-8").gsub(/\s+/, " ")
 

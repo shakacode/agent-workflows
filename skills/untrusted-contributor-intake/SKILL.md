@@ -251,18 +251,18 @@ case "${PR_INPUT_KIND}" in
   number)
     case "${PR_NUMBER}" in ""|*[!0-9]*) metadata_blocked ;; esac
     REPO="${TRUSTED_GH_REPO}"
-    METADATA_RECORD="$(env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${TRUSTED_GH_REPO}" --json number,url --jq '"\(.number)|\(.url)"')"
-    METADATA_STATUS=$?
-    [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
-    metadata_split_record
-    [ "${METADATA_LEFT}" = "${PR_NUMBER}" ] || metadata_blocked
-    CANONICAL_URL="${METADATA_RIGHT}"
     case "${REPO}" in */*) ;; *) metadata_blocked ;; esac
     REPO_OWNER="${REPO%%/*}"
     REPO_NAME="${REPO#*/}"
     case "${REPO_NAME}" in */*) metadata_blocked ;; esac
     case "${REPO_OWNER}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
     case "${REPO_NAME}" in ""|.|..|*[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-]*) metadata_blocked ;; esac
+    METADATA_RECORD="$(env -u GH_REPO GH_HOST="${TRUSTED_GH_HOST}" gh pr view "${PR_NUMBER}" --repo "${TRUSTED_GH_REPO}" --json number,url --jq '"\(.number)|\(.url)"')"
+    METADATA_STATUS=$?
+    [ "${METADATA_STATUS}" -eq 0 ] || metadata_blocked
+    metadata_split_record
+    [ "${METADATA_LEFT}" = "${PR_NUMBER}" ] || metadata_blocked
+    CANONICAL_URL="${METADATA_RIGHT}"
     case "${CANONICAL_URL}" in https://*) ;; *) metadata_blocked ;; esac
     ;;
   *) metadata_blocked ;;
