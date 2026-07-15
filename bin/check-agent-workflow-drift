@@ -18,6 +18,7 @@ module AgentWorkflowDrift
   SHA256_PATTERN = /\A[0-9a-f]{64}\z/i
   REVISION_PATTERN = /\A[0-9a-f]{40}\z/i
   SUPPORTED_GIT_MODES = %w[100644 100755].freeze
+  FILTER_DRIVER_PATTERN = /\A[A-Za-z0-9_.-]+\z/n
 
   def run(manifest_path:, source_root:, consumer_root:, output: $stdout)
     clean = []
@@ -30,9 +31,12 @@ module AgentWorkflowDrift
       source_root = validate_root(source_root, "source root")
       consumer_root = validate_root(consumer_root, "consumer root")
       verify_source_revision(source_root, revision)
+      verify_no_repository_attribute_overrides(source_root)
+      pinned_attributes = supports_pinned_attributes?(source_root)
+      verify_pinned_attribute_files(source_root, revision, manifest.fetch("files")) if pinned_attributes
 
       manifest.fetch("files").sort_by { |entry| [entry.fetch("source"), entry.fetch("consumer")] }.each do |entry|
-        inspect_entry(entry, revision, source_root, consumer_root, clean, overlays, unexpected)
+        inspect_entry(entry, revision, source_root, consumer_root, pinned_attributes, clean, overlays, unexpected)
       end
     rescue ManifestError, Errno::ENOENT, Errno::EACCES => e
       unexpected << ["manifest", e.message]
@@ -134,11 +138,20 @@ module AgentWorkflowDrift
     root
   rescue Errno::ELOOP
     raise ManifestError, "#{label} has a symlink cycle: #{path}"
-  rescue Errno::ENOENT, Errno::EACCES => e
+  rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR => e
     raise ManifestError, "#{label} is unavailable: #{e.message}"
   end
 
   def verify_source_revision(source_root, expected_revision)
+    top_stdout, top_stderr, top_status = git_capture(source_root, "rev-parse", "--show-toplevel")
+    raise ManifestError, "source root is not a Git checkout: #{top_stderr.strip}" unless top_status.success?
+
+    git_top_level = File.realpath(top_stdout.b.delete_suffix("\n"))
+    unless git_top_level == source_root
+      raise ManifestError,
+            "source root must be the Git repository top level: expected #{git_top_level}, found #{source_root}"
+    end
+
     stdout, stderr, status = git_capture(source_root, "rev-parse", "--verify", "HEAD^{commit}")
     raise ManifestError, "source root is not a Git checkout: #{stderr.strip}" unless status.success?
 
@@ -148,7 +161,22 @@ module AgentWorkflowDrift
     raise ManifestError, "source revision mismatch: expected #{expected_revision}, found #{actual_revision}"
   end
 
-  def inspect_entry(entry, revision, source_root, consumer_root, clean, overlays, unexpected)
+  def verify_no_repository_attribute_overrides(source_root)
+    stdout, stderr, status = git_capture(source_root, "rev-parse", "--git-path", "info/attributes")
+    raise ManifestError, "source attribute override path is unreadable: #{stderr.strip}" unless status.success?
+
+    path = File.expand_path(stdout.b.delete_suffix("\n"), source_root)
+    stat = File.lstat(path)
+    return if stat.file? && stat.zero?
+
+    raise ManifestError, "source repository has unpinned info attributes: #{path}"
+  rescue Errno::ENOENT
+    nil
+  rescue SystemCallError => e
+    raise ManifestError, "source attribute override path is unreadable: #{e.message}"
+  end
+
+  def inspect_entry(entry, revision, source_root, consumer_root, pinned_attributes, clean, overlays, unexpected)
     label = "#{entry.fetch('source')} -> #{entry.fetch('consumer')}"
     source_path = resolve_file(source_root, entry.fetch("source"), "source")
     consumer_path = resolve_file(consumer_root, entry.fetch("consumer"), "consumer")
@@ -156,7 +184,8 @@ module AgentWorkflowDrift
     consumer_contents = File.binread(consumer_path)
     pinned_source_mode, pinned_source_oid = read_pinned_source_entry(source_root, revision, entry.fetch("source"))
     source_changed_from_revision = source_changed_from_revision?(
-      source_root, entry.fetch("source"), source_contents, pinned_source_mode, pinned_source_oid
+      source_root, revision, entry.fetch("source"), source_contents, pinned_source_mode, pinned_source_oid,
+      pinned_attributes
     )
     source_mode = filesystem_git_mode(source_root, entry.fetch("source"), "source")
     consumer_mode = filesystem_git_mode(consumer_root, entry.fetch("consumer"), "consumer")
@@ -215,11 +244,15 @@ module AgentWorkflowDrift
     [mode, oid]
   end
 
-  def source_changed_from_revision?(source_root, relative_path, source_contents, pinned_mode, pinned_oid)
+  def source_changed_from_revision?(
+    source_root, revision, relative_path, source_contents, pinned_mode, pinned_oid, pinned_attributes
+  )
     index_entry = read_source_index_entry(source_root, relative_path)
     return true unless index_entry == [pinned_mode, pinned_oid]
 
-    worktree_oid = hash_source_worktree_file(source_root, relative_path, source_contents)
+    worktree_oid = hash_source_worktree_file(
+      source_root, revision, relative_path, source_contents, pinned_attributes
+    )
     worktree_oid != pinned_oid
   end
 
@@ -237,21 +270,113 @@ module AgentWorkflowDrift
     [match[1], match[2]]
   end
 
-  def hash_source_worktree_file(source_root, relative_path, contents)
+  def supports_pinned_attributes?(source_root)
+    _stdout, _stderr, status = git_capture(
+      source_root, "--attr-source=HEAD", "--version"
+    )
+    status.success?
+  end
+
+  def verify_pinned_attribute_files(source_root, revision, entries)
+    entries.flat_map { |entry| attribute_paths_for(entry.fetch("source")) }.uniq.sort.each do |relative_path|
+      literal_pathspec = ":(top,literal)#{relative_path}"
+      stdout, stderr, status = git_capture(source_root, "ls-tree", "-z", revision, "--", literal_pathspec)
+      unless status.success?
+        raise ManifestError, "pinned source attributes are unreadable for #{relative_path}: #{stderr.strip}"
+      end
+      next if stdout.empty?
+
+      records = stdout.split("\0", -1)
+      records.pop if records.last == ""
+      match = records.one? && records.first.match(/\A([0-9]{6}) ([^ ]+) ([0-9a-f]+)\t(.*)\z/m)
+      unless match && match[4] == relative_path && SUPPORTED_GIT_MODES.include?(match[1]) && match[2] == "blob"
+        raise ManifestError, "pinned source attributes have unsupported metadata: #{relative_path}"
+      end
+
+      _contents, object_stderr, object_status = git_capture(source_root, "cat-file", "blob", match[3])
+      unless object_status.success?
+        raise ManifestError, "pinned source attributes are unavailable for #{relative_path}: #{object_stderr.strip}"
+      end
+    end
+  end
+
+  def attribute_paths_for(relative_path)
+    directory = File.dirname(relative_path)
+    parts = directory == "." ? [] : directory.split("/")
+    [".gitattributes"] + (1..parts.length).map { |length| "#{parts.first(length).join('/')}/.gitattributes" }
+  end
+
+  def hash_source_worktree_file(source_root, revision, relative_path, contents, pinned_attributes)
+    unless pinned_attributes
+      stdout, stderr, status = git_capture(source_root, "hash-object", "--no-filters", "--stdin", stdin_data: contents)
+      raise ManifestError, "source worktree is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+
+      return validated_object_id(stdout, relative_path)
+    end
+
+    filter_driver = pinned_filter_driver(source_root, revision, relative_path)
+    filter_overrides = disabled_filter_config(filter_driver)
     stdout, stderr, status = git_capture(
-      source_root, "hash-object", "--path=#{relative_path}", "--stdin", stdin_data: contents
+      source_root,
+      "--attr-source=#{revision}",
+      *filter_overrides,
+      "hash-object",
+      "--path=#{relative_path}",
+      "--stdin",
+      stdin_data: contents
     )
     raise ManifestError, "source worktree is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
 
+    validated_object_id(stdout, relative_path)
+  end
+
+  def validated_object_id(stdout, relative_path)
     oid = stdout.strip
     raise ManifestError, "source worktree hash is unreadable for #{relative_path}" unless oid.match?(/\A[0-9a-f]+\z/)
 
     oid
   end
 
+  def pinned_filter_driver(source_root, revision, relative_path)
+    stdout, stderr, status = git_capture(
+      source_root, "check-attr", "--source", revision, "-z", "filter", "--", relative_path
+    )
+    raise ManifestError, "source attributes are unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+
+    fields = stdout.b.split("\0".b, -1)
+    fields.pop if fields.last == ""
+    unless fields.length == 3 && fields[0] == relative_path && fields[1] == "filter" && fields[2]
+      raise ManifestError, "source filter attribute is unreadable for #{relative_path}"
+    end
+
+    driver = fields[2]
+    unless driver.match?(FILTER_DRIVER_PATTERN)
+      raise ManifestError, "source filter driver has an unsupported name for #{relative_path}: #{driver.inspect}"
+    end
+
+    driver
+  end
+
+  def disabled_filter_config(driver)
+    [
+      "-c", "filter.#{driver}.clean=",
+      "-c", "filter.#{driver}.process=",
+      "-c", "filter.#{driver}.required=false"
+    ]
+  end
+
   def git_capture(source_root, *arguments, stdin_data: nil)
-    env = PrBatchGitProbeEnv.probe_env
-    command = ["git", "--no-replace-objects", "-C", source_root, *arguments]
+    env = PrBatchGitProbeEnv.probe_env.merge(
+      "GIT_ALLOW_PROTOCOL" => "",
+      "GIT_ATTR_NOSYSTEM" => "1",
+      "GIT_NO_LAZY_FETCH" => "1"
+    )
+    command = [
+      "git", "--no-replace-objects", "-C", source_root,
+      "-c", "core.attributesFile=#{File::NULL}",
+      "-c", "core.fsmonitor=",
+      *arguments
+    ]
     return Open3.capture3(env, *command) if stdin_data.nil?
 
     Open3.capture3(env, *command, stdin_data:)

@@ -920,6 +920,7 @@ class PrSecurityPreflightTest < Minitest::Test
     env = PrBatchGitProbeEnv.probe_env(
       "GIT_ATTR_NOSYSTEM" => "1",
       "GIT_ATTR_SOURCE" => "injected-attributes",
+      "GIT_CEILING_DIRECTORIES" => "/tmp",
       "GIT_CONFIG_GLOBAL" => "/tmp/global-gitconfig",
       "GIT_CONFIG_SYSTEM" => "/tmp/system-gitconfig",
       "GIT_CONFIG_NOSYSTEM" => "1",
@@ -941,6 +942,7 @@ class PrSecurityPreflightTest < Minitest::Test
     %w[
       GIT_ATTR_NOSYSTEM
       GIT_ATTR_SOURCE
+      GIT_CEILING_DIRECTORIES
       GIT_CONFIG_GLOBAL
       GIT_CONFIG_SYSTEM
       GIT_CONFIG_NOSYSTEM
@@ -961,6 +963,16 @@ class PrSecurityPreflightTest < Minitest::Test
     assert_equal "/worktree", env["GIT_CONFIG_VALUE_2"]
     assert_nil env["GIT_CONFIG_KEY_3"]
     assert_nil env["GIT_CONFIG_VALUE_3"]
+  end
+
+  def test_git_probe_env_preserves_caller_network_restrictions
+    env = PrBatchGitProbeEnv.probe_env(
+      "GIT_ALLOW_PROTOCOL" => "https",
+      "GIT_NO_LAZY_FETCH" => "1"
+    )
+
+    refute env.key?("GIT_ALLOW_PROTOCOL")
+    refute env.key?("GIT_NO_LAZY_FETCH")
   end
 
   def test_git_probe_env_preserves_git_config_parameters_safe_directory_entries

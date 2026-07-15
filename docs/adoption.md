@@ -212,16 +212,27 @@ three locations explicitly:
   --consumer-root /path/to/consumer
 ```
 
-The source root must be a Git checkout whose `HEAD` is the manifest's full
-40-hex `source_revision`. Each mapped source file must also be Git-clean against
-that exact revision, including staged and unstaged changes. The checker compares
-the pinned blob and mode with the stage-zero index entry, then hashes the actual
-worktree bytes through Git's configured clean conversion. Clean checkout
-transformations such as `core.autocrlf` and clean/smudge filters are accepted,
-while replacement objects are disabled and external diff or text conversion
-drivers are not invoked. This cleanliness check does not rewrite the consumer
-contract: `identical` still compares current filesystem bytes, and overlay
-SHA-256 values still hash the current source and consumer bytes directly.
+The source root must be the top level of a Git checkout whose `HEAD` is the
+manifest's full 40-hex `source_revision`. Each mapped source file must also be
+Git-clean against that exact revision, including staged and unstaged changes.
+The checker compares the pinned blob and mode with the stage-zero index entry,
+then hashes the actual worktree bytes using the pinned revision's attributes on
+Git 2.41 or newer. Safe built-in checkout transformations such as
+`core.autocrlf` are accepted on those Git versions. Older Git releases use a
+portable byte-strict fallback with all filters disabled; a checkout
+transformation that changes the worktree bytes is therefore reported as source
+drift until the checker runs with Git 2.41 or newer.
+Repository- or user-configured external clean/process filters are disabled and
+never executed; a worktree that only matches after such a filter therefore
+fails closed as source drift. Replacement objects are also disabled, and
+external diff or text conversion drivers are not invoked. System and global
+attribute files are ignored, a nonempty repository `info/attributes` override
+fails closed, and configured filesystem monitors are disabled. Lazy object
+fetching and Git transport protocols are disabled for every probe; a partial
+checkout with a missing pinned attributes object fails closed instead of
+contacting its promisor remote. This cleanliness check does not rewrite the
+consumer contract: `identical` still compares current filesystem bytes, and
+overlay SHA-256 values still hash the current source and consumer bytes directly.
 
 Manifest version 1 has two mapping modes:
 

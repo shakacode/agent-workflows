@@ -8,6 +8,7 @@ require "digest"
 require "fileutils"
 require "minitest/autorun"
 require "open3"
+require "shellwords"
 require "tmpdir"
 require "yaml"
 
@@ -61,6 +62,121 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       assert_empty err, err
       assert_includes out, "UNEXPECTED DRIFT (1)"
       assert_includes out, "manifest is unreadable: #{manifest_path} (Errno::ELOOP)"
+    end
+  end
+
+  def test_reports_source_root_enotdir_without_backtrace
+    with_fixture do |fixture|
+      invalid_root = File.join(fixture.fetch(:source_root), "skills", "example", "SKILL.md", "child")
+
+      out, err, status = run_checker(fixture, source_root: invalid_root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+      assert_includes out, "source root is unavailable"
+    end
+  end
+
+  def test_rejects_nested_source_root_inside_parent_repository
+    with_fixture do |fixture|
+      nested_root = File.join(fixture.fetch(:source_root), "nested")
+      write_file(nested_root, "skills/example/SKILL.md", "shared skill\n")
+      update_manifest(fixture) do |manifest|
+        manifest.fetch("files").select! { |entry| entry["source"] == "skills/example/SKILL.md" }
+      end
+
+      out, err, status = run_checker(fixture, source_root: nested_root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "source root must be the Git repository top level"
+      assert_includes out, fixture.fetch(:source_root)
+    end
+  end
+
+  def test_accepts_source_root_ending_in_whitespace
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      whitespace_root = "#{source_root} "
+      FileUtils.mv(source_root, whitespace_root)
+
+      out, err, status = run_checker(fixture, source_root: whitespace_root)
+
+      assert status.success?, "#{out}#{err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_rejects_nonempty_repository_info_attributes
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      attributes_path = git_output(source_root, "rev-parse", "--git-path", "info/attributes")
+      attributes_path = File.expand_path(attributes_path, source_root)
+      FileUtils.mkdir_p(File.dirname(attributes_path))
+      File.write(attributes_path, "skills/example/SKILL.md text\n")
+
+      out, err, status = run_checker(fixture)
+
+      refute status.success?, "#{out}#{err}"
+      assert_empty err, err
+      assert_includes out, "source repository has unpinned info attributes"
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+    end
+  end
+
+  def test_reports_repository_info_attributes_symlink_cycle_without_backtrace
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      info_path = File.join(source_root, ".git", "info")
+      FileUtils.rm_rf(info_path)
+      File.symlink("info", info_path)
+
+      out, err, status = run_checker(fixture)
+
+      refute status.success?, "#{out}#{err}"
+      assert_empty err, err
+      assert_includes out, "source attribute override path is unreadable"
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+    end
+  end
+
+  def test_does_not_lazy_fetch_missing_pinned_attributes
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      relative_path = "skills/example/SKILL.md"
+      write_file(source_root, ".gitattributes", "#{relative_path} text\n")
+      revision = commit_source_change(source_root, "add pinned attributes")
+      update_manifest(fixture) do |manifest|
+        manifest["source_revision"] = revision
+        manifest.fetch("files").select! { |entry| entry["source"] == relative_path }
+      end
+
+      remote = File.join(File.dirname(source_root), "promisor.git")
+      _out, err, status = Open3.capture3("git", "clone", "--quiet", "--bare", source_root, remote)
+      assert status.success?, err
+      git(source_root, "remote", "add", "origin", remote)
+      git(source_root, "config", "remote.origin.promisor", "true")
+      git(source_root, "config", "remote.origin.partialclonefilter", "blob:none")
+      attributes_oid = git_output(source_root, "rev-parse", "#{revision}:.gitattributes")
+      object_path = File.join(source_root, ".git", "objects", attributes_oid[0, 2], attributes_oid[2..])
+      assert File.file?(object_path), "expected a loose attributes object fixture"
+      FileUtils.rm_f(object_path)
+      _out, _err, missing_status = Open3.capture3(
+        "git", "--no-lazy-fetch", "-C", source_root, "cat-file", "-e", attributes_oid
+      )
+      refute missing_status.success?, "failed to remove the pinned attributes object fixture"
+
+      out, checker_err, result = run_checker(fixture)
+
+      refute result.success?, "#{out}#{checker_err}"
+      assert_empty checker_err, checker_err
+      assert_includes out, "pinned source attributes are unavailable"
+      _out, _err, object_status = Open3.capture3(
+        "git", "--no-lazy-fetch", "-C", source_root, "cat-file", "-e", attributes_oid
+      )
+      refute object_status.success?, "checker fetched missing pinned attributes from the promisor remote"
     end
   end
 
@@ -596,12 +712,16 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
-  def test_treats_clean_smudge_filter_checkout_transformation_as_clean_source
+  def test_does_not_execute_repository_clean_filter
     with_fixture do |fixture|
       source_root = fixture.fetch(:source_root)
       relative_path = "skills/example/SKILL.md"
       source_path = File.join(source_root, relative_path)
-      git(source_root, "config", "filter.fixture.clean", "sed 's/worktree/shared/g'")
+      filter_marker = File.join(source_root, "filter-ran")
+      filter_script = File.join(source_root, "filter-clean")
+      File.write(filter_script, "#!/bin/sh\ntouch #{Shellwords.escape(filter_marker)}\nsed 's/worktree/shared/g'\n")
+      FileUtils.chmod(0o755, filter_script)
+      git(source_root, "config", "filter.fixture.clean", filter_script)
       git(source_root, "config", "filter.fixture.smudge", "sed 's/shared/worktree/g'")
       write_file(source_root, ".gitattributes", "#{relative_path} filter=fixture\n")
       revision = commit_source_change(source_root, "configure fixture filter")
@@ -609,6 +729,12 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       git(source_root, "restore", "--source", revision, "--worktree", "--", relative_path)
       transformed_contents = File.binread(source_path)
       assert_equal "worktree skill\n", transformed_contents
+      FileUtils.rm_f(filter_marker)
+      process_marker = File.join(source_root, "process-filter-ran")
+      process_script = File.join(source_root, "filter-process")
+      File.write(process_script, "#!/bin/sh\ntouch #{Shellwords.escape(process_marker)}\nexit 1\n")
+      FileUtils.chmod(0o755, process_script)
+      git(source_root, "config", "filter.fixture.process", process_script)
 
       write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", transformed_contents)
       update_manifest(fixture) do |manifest|
@@ -618,13 +744,190 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
 
       out, err, status = run_checker(fixture)
 
+      refute status.success?, "#{out}#{err}"
+      refute File.exist?(filter_marker), "clean filter executed despite the read-only checker contract"
+      refute File.exist?(process_marker), "process filter executed despite the read-only checker contract"
+      assert_includes out, "source file does not match pinned revision"
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+    end
+  end
+
+  def test_does_not_execute_ambiguous_or_dotted_filter_drivers
+    %w[unset unspecified foo.bar].each do |driver|
+      with_fixture do |fixture|
+        source_root = fixture.fetch(:source_root)
+        relative_path = "skills/example/SKILL.md"
+        filter_marker = File.join(source_root, "#{driver.tr('.', '-')}-filter-ran")
+        filter_script = File.join(source_root, "filter-clean")
+        File.write(filter_script, "#!/bin/sh\ntouch #{Shellwords.escape(filter_marker)}\ncat\n")
+        FileUtils.chmod(0o755, filter_script)
+        git(source_root, "config", "filter.#{driver}.clean", filter_script)
+        write_file(source_root, ".gitattributes", "#{relative_path} filter=#{driver}\n")
+        revision = commit_source_change(source_root, "configure #{driver} filter")
+        FileUtils.rm_f(filter_marker)
+        update_manifest(fixture) do |manifest|
+          manifest["source_revision"] = revision
+          manifest.fetch("files").select! { |entry| entry["source"] == relative_path }
+        end
+
+        out, err, status = run_checker(fixture)
+
+        assert status.success?, "#{driver}: #{out}#{err}"
+        refute File.exist?(filter_marker), "#{driver} clean filter executed despite the read-only checker contract"
+        assert_includes out, "CLEAN IDENTICAL (1)"
+      end
+    end
+  end
+
+  def test_rejects_non_utf8_filter_driver_without_backtrace
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      relative_path = "skills/example/SKILL.md"
+      File.binwrite(
+        File.join(source_root, ".gitattributes"),
+        "#{relative_path} filter=".b + "\xFF\n".b
+      )
+      revision = commit_source_change(source_root, "configure non-UTF-8 filter")
+      update_manifest(fixture) do |manifest|
+        manifest["source_revision"] = revision
+        manifest.fetch("files").select! { |entry| entry["source"] == relative_path }
+      end
+
+      out, err, status = run_checker(fixture)
+
+      refute status.success?, "#{out}#{err}"
+      assert_empty err, err
+      assert_includes out, "source filter driver has an unsupported name"
+      assert_includes out, '"\\xFF"'
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+    end
+  end
+
+  def test_does_not_execute_configured_fsmonitor
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      marker = File.join(source_root, "fsmonitor-ran")
+      hook = File.join(source_root, "fsmonitor")
+      File.write(hook, "#!/bin/sh\ntouch #{Shellwords.escape(marker)}\nprintf '0\\n'\n")
+      FileUtils.chmod(0o755, hook)
+      git(source_root, "config", "core.fsmonitor", hook)
+
+      out, err, status = run_checker(fixture)
+
       assert status.success?, "#{out}#{err}"
-      assert_includes out, "CLEAN IDENTICAL (1)"
+      refute File.exist?(marker), "core.fsmonitor executed despite the read-only checker contract"
       assert_includes out, "UNEXPECTED DRIFT (0)"
     end
   end
 
-  def test_preserves_default_global_git_config_when_hashing_source
+  def test_git_calls_disable_lazy_fetch_and_use_old_git_safe_fsmonitor_override
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      wrapper_dir = File.join(File.dirname(source_root), "git-probe-wrapper")
+      log_path = File.join(File.dirname(source_root), "git-probe.log")
+      FileUtils.mkdir_p(wrapper_dir)
+      real_git, status = Open3.capture2("sh", "-c", "command -v git")
+      assert status.success?, real_git
+      File.write(File.join(wrapper_dir, "git"), <<~SH)
+        #!/bin/sh
+        {
+          printf 'CALL\\n'
+          printf 'NO_LAZY=%s\\n' "${GIT_NO_LAZY_FETCH-unset}"
+          printf 'ALLOW_PROTOCOL=%s\\n' "${GIT_ALLOW_PROTOCOL-unset}"
+          printf 'ARG=%s\\n' "$@"
+        } >>"$GIT_PROBE_LOG"
+        exec #{Shellwords.escape(real_git.strip)} "$@"
+      SH
+      FileUtils.chmod(0o755, File.join(wrapper_dir, "git"))
+
+      out, err, result = run_checker(
+        fixture,
+        env: {
+          "GIT_PROBE_LOG" => log_path,
+          "PATH" => "#{wrapper_dir}:#{ENV.fetch('PATH')}"
+        }
+      )
+
+      assert result.success?, "#{out}#{err}"
+      calls = File.read(log_path).split("CALL\n").reject(&:empty?)
+      calls.reject! { |call| call.include?("ARG=--local-env-vars\n") }
+      refute_empty calls
+      calls.each do |call|
+        assert_includes call, "NO_LAZY=1\n"
+        assert_includes call, "ALLOW_PROTOCOL=\n"
+        assert_includes call, "ARG=core.fsmonitor=\n"
+        refute_includes call, "ARG=core.fsmonitor=false\n"
+      end
+    end
+  end
+
+  def test_ignores_global_attribute_file_when_hashing_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      relative_path = "skills/example/SKILL.md"
+      home = File.join(File.dirname(source_root), "home")
+      attributes_path = File.join(home, "global-attributes")
+      FileUtils.mkdir_p(home)
+      File.write(attributes_path, "#{relative_path} text\n")
+      File.write(File.join(home, ".gitconfig"), <<~CONFIG)
+        [core]
+          attributesFile = #{attributes_path}
+      CONFIG
+      write_file(source_root, relative_path, "shared skill\r\n")
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", "shared skill\r\n")
+      update_manifest(fixture) do |manifest|
+        manifest.fetch("files").select! { |entry| entry["source"] == relative_path }
+      end
+
+      out, err, status = run_checker(fixture, env: { "HOME" => home })
+
+      refute status.success?, "#{out}#{err}"
+      assert_includes out, "source file does not match pinned revision"
+      assert_includes out, "UNEXPECTED DRIFT (1)"
+    end
+  end
+
+  def test_uses_byte_strict_fallback_without_executing_filters_when_attr_source_is_unavailable
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      relative_path = "skills/example/SKILL.md"
+      filter_marker = File.join(source_root, "fallback-filter-ran")
+      filter_script = File.join(source_root, "filter-clean")
+      File.write(filter_script, "#!/bin/sh\ntouch #{Shellwords.escape(filter_marker)}\ncat\n")
+      FileUtils.chmod(0o755, filter_script)
+      git(source_root, "config", "filter.fixture.clean", filter_script)
+      write_file(source_root, ".gitattributes", "#{relative_path} filter=fixture\n")
+      revision = commit_source_change(source_root, "configure fallback filter")
+      FileUtils.rm_f(filter_marker)
+      update_manifest(fixture) do |manifest|
+        manifest["source_revision"] = revision
+        manifest.fetch("files").select! { |entry| entry["source"] == relative_path }
+      end
+
+      wrapper_dir = File.join(File.dirname(source_root), "git-wrapper")
+      FileUtils.mkdir_p(wrapper_dir)
+      real_git, status = Open3.capture2("sh", "-c", "command -v git")
+      assert status.success?, real_git
+      File.write(File.join(wrapper_dir, "git"), <<~SH)
+        #!/bin/sh
+        for argument in "$@"; do
+          case "$argument" in
+            --attr-source=*) exit 129 ;;
+          esac
+        done
+        exec #{Shellwords.escape(real_git.strip)} "$@"
+      SH
+      FileUtils.chmod(0o755, File.join(wrapper_dir, "git"))
+
+      out, err, result = run_checker(fixture, env: { "PATH" => "#{wrapper_dir}:#{ENV.fetch('PATH')}" })
+
+      assert result.success?, "#{out}#{err}"
+      refute File.exist?(filter_marker), "clean filter executed during the byte-strict compatibility fallback"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+    end
+  end
+
+  def test_does_not_execute_global_clean_filter
     with_fixture do |fixture|
       source_root = fixture.fetch(:source_root)
       relative_path = "skills/example/SKILL.md"
@@ -633,18 +936,22 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       update_manifest(fixture) { |manifest| manifest["source_revision"] = revision }
       home = File.join(File.dirname(source_root), "home")
       FileUtils.mkdir_p(home)
+      filter_marker = File.join(source_root, "global-filter-ran")
+      filter_script = File.join(source_root, "global-filter-clean")
+      File.write(filter_script, "#!/bin/sh\ntouch #{Shellwords.escape(filter_marker)}\nsed 's/worktree/shared/g'\n")
+      FileUtils.chmod(0o755, filter_script)
       File.write(File.join(home, ".gitconfig"), <<~CONFIG)
         [filter "fixture"]
-          clean = sed 's/worktree/shared/g'
+          clean = #{filter_script}
       CONFIG
       write_file(source_root, relative_path, "worktree skill\n")
       write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", "worktree skill\n")
 
       out, err, status = run_checker(fixture, env: { "HOME" => home })
 
-      assert status.success?, "#{out}#{err}"
-      assert_includes out, "CLEAN IDENTICAL (1)"
-      assert_includes out, "UNEXPECTED DRIFT (0)"
+      refute status.success?, "#{out}#{err}"
+      refute File.exist?(filter_marker), "global clean filter executed despite the read-only checker contract"
+      assert_includes out, "source file does not match pinned revision"
     end
   end
 
@@ -914,13 +1221,19 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     out.strip
   end
 
-  def run_checker(fixture, *arguments, env: {})
+  def run_checker(
+    fixture,
+    *arguments,
+    env: {},
+    source_root: fixture.fetch(:source_root),
+    consumer_root: fixture.fetch(:consumer_root)
+  )
     Open3.capture3(
       env,
       "ruby", SCRIPT,
       "--manifest", fixture.fetch(:manifest_path),
-      "--source-root", fixture.fetch(:source_root),
-      "--consumer-root", fixture.fetch(:consumer_root),
+      "--source-root", source_root,
+      "--consumer-root", consumer_root,
       *arguments
     )
   end
