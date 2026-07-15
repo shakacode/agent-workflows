@@ -242,7 +242,7 @@ Mode checks deliberately normalize regular files to Git's portable `100644`
 (not executable) or `100755` (executable) modes instead of comparing exact
 POSIX permissions. The pinned source tree mode is authoritative for the source.
 The consumer need not be a Git checkout: the checker derives its normalized
-mode from whether any filesystem execute bit is set. Symlinks, submodules, and
+mode from whether the filesystem owner-execute bit is set. Symlinks, submodules, and
 other file kinds are unsupported and fail closed rather than being followed as
 equivalent regular files.
 

@@ -6,6 +6,7 @@ require "open3"
 require "optparse"
 require "pathname"
 require "yaml"
+require_relative "../skills/pr-batch/lib/git_probe_env"
 
 module AgentWorkflowDrift
   module_function
@@ -249,10 +250,11 @@ module AgentWorkflowDrift
   end
 
   def git_capture(source_root, *arguments, stdin_data: nil)
+    env = PrBatchGitProbeEnv.probe_env
     command = ["git", "--no-replace-objects", "-C", source_root, *arguments]
-    return Open3.capture3(*command) if stdin_data.nil?
+    return Open3.capture3(env, *command) if stdin_data.nil?
 
-    Open3.capture3(*command, stdin_data:)
+    Open3.capture3(env, *command, stdin_data:)
   end
 
   def filesystem_git_mode(root, relative_path, side)
@@ -262,7 +264,7 @@ module AgentWorkflowDrift
     end
     raise ManifestError, "#{side} has unsupported file kind: #{relative_path}" unless stat.file?
 
-    stat.mode.anybits?(0o111) ? "100755" : "100644"
+    stat.mode.anybits?(0o100) ? "100755" : "100644"
   rescue Errno::ENOENT, Errno::EACCES => e
     raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
   end

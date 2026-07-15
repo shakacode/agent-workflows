@@ -12,6 +12,7 @@ require "tmpdir"
 require "yaml"
 
 SCRIPT = File.expand_path("check-agent-workflow-drift", __dir__)
+load SCRIPT
 
 class CheckAgentWorkflowDriftTest < Minitest::Test
   def test_requires_all_explicit_paths
@@ -19,6 +20,18 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
 
     assert_equal 2, status.exitstatus
     assert_includes err, "--manifest, --source-root, --consumer-root"
+  end
+
+  def test_normalizes_filesystem_modes_using_owner_execute_bit
+    Dir.mktmpdir("agent-workflow-mode") do |root|
+      relative_path = "mode-test"
+      write_file(root, relative_path, "mode test\n")
+
+      { 0o755 => "100755", 0o700 => "100755", 0o644 => "100644", 0o066 => "100644" }.each do |mode, expected|
+        File.chmod(mode, File.join(root, relative_path))
+        assert_equal expected, AgentWorkflowDrift.filesystem_git_mode(root, relative_path, "source"), format("%04o", mode)
+      end
+    end
   end
 
   def test_reports_manifest_directory_without_backtrace
@@ -118,6 +131,24 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       assert status.success?, "#{out}#{err}"
       assert_includes out, "CLEAN IDENTICAL (1)"
       assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_detects_source_and_consumer_without_owner_execute_bit_against_executable_pin
+    with_fixture do |fixture|
+      source_path = File.join(fixture.fetch(:source_root), "skills/example/SKILL.md")
+      consumer_path = File.join(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md")
+      File.chmod(0o755, source_path)
+      revision = commit_source_change(fixture.fetch(:source_root), "make fixture executable")
+      update_manifest(fixture) { |manifest| manifest["source_revision"] = revision }
+      File.chmod(0o655, source_path)
+      File.chmod(0o655, consumer_path)
+
+      out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "source mode differs from pinned source (expected 100755, found 100644)"
+      assert_includes out, "consumer mode differs from pinned source (expected 100755, found 100644)"
     end
   end
 
@@ -391,6 +422,71 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       write_file(fixture.fetch(:consumer_root), consumer_path, "hidden source drift\n")
 
       out, _err, status = run_checker(fixture)
+
+      refute status.success?
+      assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_ignores_inherited_git_dir_and_work_tree_when_checking_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      alternate_root = File.join(File.dirname(source_root), "alternate-source")
+      _out, err, status = Open3.capture3("git", "clone", "--quiet", source_root, alternate_root)
+      assert status.success?, err
+      git(alternate_root, "config", "filter.injected.clean", "sed 's/hidden source drift/shared skill/g'")
+      File.write(
+        File.join(alternate_root, ".git/info/attributes"),
+        "skills/example/SKILL.md filter=injected\n"
+      )
+      write_file(source_root, "skills/example/SKILL.md", "hidden source drift\n")
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", "hidden source drift\n")
+      injected_env = {
+        "GIT_DIR" => File.join(alternate_root, ".git"),
+        "GIT_WORK_TREE" => alternate_root
+      }
+
+      out, _err, result = run_checker(fixture, env: injected_env)
+
+      refute result.success?
+      assert_includes out, "source file does not match pinned revision"
+    end
+  end
+
+  def test_ignores_inherited_git_index_file_when_checking_source
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      injected_index = File.join(File.dirname(source_root), "injected-index")
+      FileUtils.cp(File.join(source_root, ".git/index"), injected_index)
+      replacement_blob = git_output(source_root, "hash-object", "-w", "--stdin", stdin_data: "injected index\n")
+      injected_env = { "GIT_INDEX_FILE" => injected_index }
+      _out, err, status = Open3.capture3(
+        injected_env,
+        "git", "-C", source_root, "update-index", "--cacheinfo",
+        "100644", replacement_blob, "skills/example/SKILL.md"
+      )
+      assert status.success?, err
+
+      out, checker_err, result = run_checker(fixture, env: injected_env)
+
+      assert result.success?, "#{out}#{checker_err}"
+      assert_includes out, "CLEAN IDENTICAL (1)"
+      assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_ignores_inherited_git_config_when_checking_source
+    with_fixture do |fixture|
+      git(fixture.fetch(:source_root), "config", "core.autocrlf", "false")
+      write_file(fixture.fetch(:source_root), "skills/example/SKILL.md", "shared skill\r\n")
+      write_file(fixture.fetch(:consumer_root), ".agents/skills/example/SKILL.md", "shared skill\r\n")
+      injected_env = {
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "core.autocrlf",
+        "GIT_CONFIG_VALUE_0" => "true"
+      }
+
+      out, _err, status = run_checker(fixture, env: injected_env)
 
       refute status.success?
       assert_includes out, "source file does not match pinned revision"
@@ -746,13 +842,14 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     out.strip
   end
 
-  def run_checker(fixture, *)
+  def run_checker(fixture, *arguments, env: {})
     Open3.capture3(
+      env,
       "ruby", SCRIPT,
       "--manifest", fixture.fetch(:manifest_path),
       "--source-root", fixture.fetch(:source_root),
       "--consumer-root", fixture.fetch(:consumer_root),
-      *
+      *arguments
     )
   end
 end
