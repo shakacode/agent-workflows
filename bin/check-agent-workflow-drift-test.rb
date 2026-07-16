@@ -86,6 +86,150 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_rejects_control_characters_in_manifest_paths
+    cases = [
+      lambda do |manifest|
+        manifest.fetch("files").first["source"] = "skills/example/INJECTED\nREPORT"
+      end,
+      lambda do |manifest|
+        manifest.fetch("files").first["consumer"] = ".agents/skills/example/INJECTED\rREPORT"
+      end,
+      lambda do |manifest|
+        manifest.fetch("files").first["source"] = "skills/example/INJECTED\u202eREPORT"
+      end,
+      lambda do |manifest|
+        manifest.fetch("files").first["consumer"] = ".agents/skills/example/INJECTED\u2028REPORT"
+      end
+    ]
+
+    cases.each do |mutate_manifest|
+      with_fixture do |fixture|
+        update_manifest(fixture, &mutate_manifest)
+
+        out, err, status = run_checker(fixture)
+
+        assert_equal 1, status.exitstatus
+        assert_empty err, err
+        assert_includes out, "must not contain unsafe control, format, or separator characters"
+        refute_includes out, "INJECTED"
+        refute_includes out, "\e"
+        refute_includes out, "\u009b"
+      end
+    end
+  end
+
+  def test_escapes_control_characters_in_overlay_reasons
+    cases = [
+      ["reviewed\nsecond line", "reviewed\\nsecond line"],
+      ["reviewed\e[31mred", "reviewed\\u{001B}[31mred"],
+      ["reviewed\u009b31mred", "reviewed\\u{009B}31mred"],
+      ["reviewed\u202ered", "reviewed\\u{202E}red"],
+      ["reviewed\u2028second line", "reviewed\\u{2028}second line"],
+      ["reviewed\u2029second paragraph", "reviewed\\u{2029}second paragraph"]
+    ]
+
+    cases.each do |reason, escaped_reason|
+      with_fixture do |fixture|
+        update_manifest(fixture) { |manifest| manifest.fetch("files").last["reason"] = reason }
+
+        out, err, status = run_checker(fixture)
+
+        assert status.success?, out
+        assert_empty err, err
+        assert_includes out, escaped_reason
+        refute_includes out, reason
+        refute_includes out, "\e"
+        refute_includes out, "\u009b"
+        refute_includes out, "\u202e"
+        refute_includes out, "\u2028"
+        refute_includes out, "\u2029"
+      end
+    end
+  end
+
+  def test_rejects_non_utf8_manifest_strings_without_backtrace
+    cases = [
+      ->(manifest) { manifest.fetch("files").first["source"] = "\xff".b },
+      ->(manifest) { manifest["\xff".b] = "untrusted value" },
+      ->(manifest) { manifest.fetch("files").last["reason"] = "\xff".b }
+    ]
+
+    cases.each do |mutate_manifest|
+      with_fixture do |fixture|
+        update_manifest(fixture, &mutate_manifest)
+
+        out, err, status = run_checker(fixture)
+
+        assert_equal 1, status.exitstatus
+        assert_empty err, err
+        assert out.valid_encoding?, out.inspect
+        assert_includes out, "must be valid UTF-8"
+        refute_includes out.b, "\xff".b
+      end
+    end
+  end
+
+  def test_rejects_distinct_consumer_paths_that_resolve_to_the_same_file
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      consumer_root = fixture.fetch(:consumer_root)
+      duplicate_source = "skills/example-copy/SKILL.md"
+      duplicate_consumer = ".agents/skills/example-copy/SKILL.md"
+      write_file(source_root, duplicate_source, "shared skill\n")
+      original_consumer = File.join(consumer_root, ".agents/skills/example/SKILL.md")
+      duplicate_consumer_path = File.join(consumer_root, duplicate_consumer)
+      FileUtils.mkdir_p(File.dirname(duplicate_consumer_path))
+      File.symlink(original_consumer, duplicate_consumer_path)
+      revision = commit_source_change(source_root, "add duplicate-file fixture")
+      update_manifest(fixture) do |manifest|
+        manifest["source_revision"] = revision
+        manifest.fetch("files") << {
+          "source" => duplicate_source,
+          "consumer" => duplicate_consumer,
+          "mode" => "identical"
+        }
+      end
+
+      out, err, status = run_checker(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "consumer paths reference the same file"
+      assert_includes out, ".agents/skills/example/SKILL.md"
+      assert_includes out, duplicate_consumer
+    end
+  end
+
+  def test_accepts_distinct_source_paths_that_are_hard_linked
+    with_fixture do |fixture|
+      source_root = fixture.fetch(:source_root)
+      consumer_root = fixture.fetch(:consumer_root)
+      duplicate_source = "skills/example-copy/SKILL.md"
+      duplicate_consumer = ".agents/skills/example-copy/SKILL.md"
+      write_file(source_root, duplicate_source, "shared skill\n")
+      write_file(consumer_root, duplicate_consumer, "shared skill\n")
+      revision = commit_source_change(source_root, "add duplicate-file fixture")
+      duplicate_source_path = File.join(source_root, duplicate_source)
+      FileUtils.rm_f(duplicate_source_path)
+      File.link(File.join(source_root, "skills/example/SKILL.md"), duplicate_source_path)
+      update_manifest(fixture) do |manifest|
+        manifest["source_revision"] = revision
+        manifest.fetch("files") << {
+          "source" => duplicate_source,
+          "consumer" => duplicate_consumer,
+          "mode" => "identical"
+        }
+      end
+
+      out, err, status = run_checker(fixture)
+
+      assert status.success?, "#{out}#{err}"
+      assert_empty err, err
+      assert_includes out, "CLEAN IDENTICAL (2)"
+      assert_includes out, "#{duplicate_source} -> #{duplicate_consumer}"
+    end
+  end
+
   def test_reports_manifest_directory_without_backtrace
     with_fixture do |fixture|
       manifest_path = fixture.fetch(:manifest_path)

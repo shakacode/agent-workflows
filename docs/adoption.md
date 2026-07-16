@@ -240,7 +240,10 @@ Manifest version 1 has two mapping modes:
   both filesystem modes to match the pinned source's Git mode.
 - `overlay` records a reviewed local difference. It requires a nonempty reason
   and the SHA-256 of both files, plus the reviewed `consumer_mode`; a later
-  content or mode change on either side is unexpected drift.
+  content or mode change on either side is unexpected drift. Reasons may span
+  multiple lines; the checker escapes control, format, and Unicode separator
+  characters when rendering them so each result remains visually safe on one
+  diagnostic line.
 
 Version 1 validates only the mappings declared in `files`. A clean result does
 not prove that the manifest covers every vendored source or consumer file. Each

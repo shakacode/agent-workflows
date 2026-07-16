@@ -19,12 +19,14 @@ module AgentWorkflowDrift
   REVISION_PATTERN = /\A[0-9a-f]{40}\z/i
   SUPPORTED_GIT_MODES = %w[100644 100755].freeze
   FILTER_DRIVER_PATTERN = /\A[A-Za-z0-9_.-]+\z/n
+  UNSAFE_OUTPUT_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/
   NOFOLLOW_FLAG = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : nil
 
   def run(manifest_path:, source_root:, consumer_root:, output: $stdout)
     clean = []
     overlays = []
     unexpected = []
+    seen_files = { "source" => {}, "consumer" => {} }
 
     begin
       manifest = load_manifest(manifest_path)
@@ -37,7 +39,9 @@ module AgentWorkflowDrift
       verify_pinned_attribute_files(source_root, revision, manifest.fetch("files")) if pinned_attributes
 
       manifest.fetch("files").sort_by { |entry| [entry.fetch("source"), entry.fetch("consumer")] }.each do |entry|
-        inspect_entry(entry, revision, source_root, consumer_root, pinned_attributes, clean, overlays, unexpected)
+        inspect_entry(
+          entry, revision, source_root, consumer_root, pinned_attributes, seen_files, clean, overlays, unexpected
+        )
       end
     rescue ManifestError, Errno::ENOENT, Errno::EACCES => e
       unexpected << ["manifest", e.message]
@@ -100,6 +104,8 @@ module AgentWorkflowDrift
 
     reason = entry["reason"]
     raise ManifestError, "files[#{index}].reason must be nonempty" unless reason.is_a?(String) && !reason.strip.empty?
+
+    validate_manifest_text(reason, "files[#{index}].reason", allow_control_characters: true)
     unless SUPPORTED_GIT_MODES.include?(entry["consumer_mode"])
       raise ManifestError, "files[#{index}].consumer_mode must be 100644 or 100755"
     end
@@ -116,6 +122,8 @@ module AgentWorkflowDrift
     keys = mapping.keys
     raise ManifestError, "#{label} keys must be strings" unless keys.all? { |key| key.is_a?(String) }
 
+    keys.each { |key| validate_manifest_text(key, "#{label} key") }
+
     missing = expected - keys
     extra = keys - expected
     raise ManifestError, "#{label} missing keys: #{missing.sort.join(', ')}" unless missing.empty?
@@ -123,13 +131,37 @@ module AgentWorkflowDrift
   end
 
   def validate_relative_path(path, label)
-    unless path.is_a?(String) && !path.empty? && !path.include?("\0") && !path.include?("\\")
+    unless path.is_a?(String) && !path.empty? && !path.include?("\\")
       raise ManifestError, "#{label} must be a nonempty relative path using forward slashes"
     end
+
+    validate_manifest_text(path, label)
 
     pathname = Pathname.new(path)
     unsafe = pathname.absolute? || path.match?(%r{\A[A-Za-z]:/}) || pathname.cleanpath.to_s != path || path.split("/").any? { |part| %w[. ..].include?(part) }
     raise ManifestError, "#{label} must not be absolute, traversing, or non-canonical" if unsafe
+  end
+
+  def validate_manifest_text(value, label, allow_control_characters: false)
+    unless value.encoding == Encoding::UTF_8 && value.valid_encoding?
+      raise ManifestError, "#{label} must be valid UTF-8"
+    end
+    return if allow_control_characters
+
+    return unless value.match?(UNSAFE_OUTPUT_CHARACTER_PATTERN)
+
+    raise ManifestError, "#{label} must not contain unsafe control, format, or separator characters"
+  end
+
+  def escape_unsafe_output_characters(value)
+    value.gsub(UNSAFE_OUTPUT_CHARACTER_PATTERN) do |character|
+      case character
+      when "\t" then "\\t"
+      when "\n" then "\\n"
+      when "\r" then "\\r"
+      else format("\\u{%04X}", character.ord)
+      end
+    end
   end
 
   def validate_root(path, label)
@@ -177,10 +209,14 @@ module AgentWorkflowDrift
     raise ManifestError, "source attribute override path is unreadable: #{e.message}"
   end
 
-  def inspect_entry(entry, revision, source_root, consumer_root, pinned_attributes, clean, overlays, unexpected)
+  def inspect_entry(
+    entry, revision, source_root, consumer_root, pinned_attributes, seen_files, clean, overlays, unexpected
+  )
     label = "#{entry.fetch('source')} -> #{entry.fetch('consumer')}"
     source_path = resolve_file(source_root, entry.fetch("source"), "source")
     consumer_path = resolve_file(consumer_root, entry.fetch("consumer"), "consumer")
+    register_mapped_file(seen_files.fetch("source"), source_path, entry.fetch("source"), "source")
+    register_mapped_file(seen_files.fetch("consumer"), consumer_path, entry.fetch("consumer"), "consumer")
     source_contents = read_mapped_file(source_path, entry.fetch("source"), "source")
     consumer_contents = read_mapped_file(consumer_path, entry.fetch("consumer"), "consumer")
     pinned_source_mode, pinned_source_oid = read_pinned_source_entry(source_root, revision, entry.fetch("source"))
@@ -218,7 +254,7 @@ module AgentWorkflowDrift
     changes << "consumer hash changed (#{consumer_hash})" unless consumer_hash == entry.fetch("consumer_sha256").downcase
 
     if changes.empty?
-      overlays << [label, entry.fetch("reason").strip]
+      overlays << [label, escape_unsafe_output_characters(entry.fetch("reason").strip)]
     else
       unexpected << [label, changes.join("; ")]
     end
@@ -397,6 +433,15 @@ module AgentWorkflowDrift
 
   def mode_difference(side, expected, actual)
     "#{side} mode differs from pinned source (expected #{expected}, found #{actual})"
+  end
+
+  def register_mapped_file(seen, path, relative_path, side)
+    previous_path = seen[path]
+    if previous_path && previous_path != relative_path
+      raise ManifestError, "#{side} paths reference the same file: #{previous_path}, #{relative_path}"
+    end
+
+    seen[path] = relative_path
   end
 
   def read_mapped_file(path, relative_path, side)
