@@ -11,6 +11,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Add an agent-workflow consumer seam with portable configuration and command wrappers.** [PR 140](https://github.com/shakacode/agent-workflows/pull/140) by [justin808](https://github.com/justin808).
 - **Add a portable report-first safe intake skill for untrusted outside-contributor fork pull requests.**
 - **Add `agent-stack doctor` as a read-only master aggregator for uniform component-owned diagnostics, with generic checkout/link discovery, bounded delegates, contract validation, secret-safe human/JSON rendering, and stable `0/1/2/64` exits.**
+- **Add `bin/check-agent-workflow-drift` as a public, pinned drift check with a portable downstream-adoption contract.** [PR 182](https://github.com/shakacode/agent-workflows/pull/182) by [justin808](https://github.com/justin808).
 - **Add a portable dispatcher-capability preflight that records bound, attested route/dispatcher selection or one durable decision request without launching workers or mutating coordination.**
 - **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
@@ -31,6 +32,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Make the portable update-changelog helper resolve target branches independently from compare branches and select reachable stable or prerelease tags from first-parent history.** [PR 170](https://github.com/shakacode/agent-workflows/pull/170) by [justin808](https://github.com/justin808).
 - **Publish the stable `ShakaCode Agent Workflows` display name in Claude Code's plugin manifest while retaining `scw` as the install and namespace identifier.**
 - **Adopt the recommended Codex GPT-5.6 routing profile: Sol/xhigh multi-lane coordination, adversarial QA, and high-risk escalation; Terra/high only for positively classified simple workers; and Sol/high for uncertainty and routine deterministic QA.**
 - **Default autonomously clearable blocked Goal-mode batches to one deduplicated 15-minute current-thread monitor when supported, with manual-resume fallback and no polling for user-input blockers.**
@@ -53,6 +55,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Reject empty `agent-workflows-doctor` target and source paths as usage errors instead of expanding them to the current directory.**
 - **Keep trusted PR-batch review closeout autonomous for evidence-backed fix, defer, and decline recommendations under every merge-authority mode, prompting maintainers only when the review outcome explicitly requires their help.**
 - **Reject stale priority replay evidence so only final-head closeout evidence qualifies.** [PR 118](https://github.com/shakacode/agent-workflows/pull/118) by [justin808](https://github.com/justin808).
 - **Reject nested solution Markdown, including hidden nested paths, with guidance that separates the flat Agent Workflows lesson schema from consumer-repository Compound Engineering destinations.**

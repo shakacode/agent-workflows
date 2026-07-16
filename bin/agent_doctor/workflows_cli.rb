@@ -50,7 +50,9 @@ module AgentDoctor
     def validate!(options, arguments)
       raise OptionParser::InvalidOption, "--stack-json is required" unless options[:stack_json]
       raise OptionParser::InvalidOption, "--target is required" unless options[:target]
+      raise OptionParser::InvalidArgument, "--target must not be empty" if options[:target].empty?
       raise OptionParser::InvalidOption, "--source is required" unless options[:source]
+      raise OptionParser::InvalidArgument, "--source must not be empty" if options[:source].empty?
       raise OptionParser::InvalidOption, "--host must be codex, claude, or auto" unless %w[codex claude auto].include?(options[:host])
       raise OptionParser::InvalidOption, "unexpected arguments" unless arguments.empty?
     end
