@@ -35,6 +35,57 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_rejects_mapped_file_swap_after_open
+    Dir.mktmpdir("agent-workflow-read-race") do |root|
+      relative_path = "mapped-file"
+      mapped_path = File.join(root, relative_path)
+      outside_path = File.join(root, "outside-file")
+      File.binwrite(mapped_path, "reviewed bytes\n")
+      File.binwrite(outside_path, "outside bytes\n")
+      original_open = File.method(:open)
+      swapped = false
+      racing_open = lambda do |*arguments, &block|
+        original_open.call(*arguments) do |file|
+          unless swapped
+            FileUtils.rm_f(mapped_path)
+            File.symlink(outside_path, mapped_path)
+            swapped = true
+          end
+          block.call(file)
+        end
+      end
+
+      file_singleton = File.singleton_class
+      file_singleton.define_method(:open, racing_open)
+      error = begin
+        assert_raises(AgentWorkflowDrift::ManifestError) do
+          AgentWorkflowDrift.read_mapped_file(mapped_path, relative_path, "consumer")
+        end
+      ensure
+        file_singleton.define_method(:open, original_open)
+      end
+
+      assert_includes error.message, "consumer path changed while being read: #{relative_path}"
+    end
+  end
+
+  def test_reports_unreadable_mapped_file_per_entry_without_backtrace
+    with_fixture do |fixture|
+      relative_path = ".agents/skills/example/SKILL.md"
+      consumer_path = File.join(fixture.fetch(:consumer_root), relative_path)
+      File.chmod(0o000, consumer_path)
+
+      out, err, status = run_checker(fixture)
+
+      assert_equal 1, status.exitstatus
+      assert_empty err, err
+      assert_includes out, "skills/example/SKILL.md -> #{relative_path}"
+      assert_includes out, "consumer file is unavailable: #{relative_path}"
+    ensure
+      File.chmod(0o644, consumer_path) if File.exist?(consumer_path)
+    end
+  end
+
   def test_reports_manifest_directory_without_backtrace
     with_fixture do |fixture|
       manifest_path = fixture.fetch(:manifest_path)

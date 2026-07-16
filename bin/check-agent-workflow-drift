@@ -19,6 +19,7 @@ module AgentWorkflowDrift
   REVISION_PATTERN = /\A[0-9a-f]{40}\z/i
   SUPPORTED_GIT_MODES = %w[100644 100755].freeze
   FILTER_DRIVER_PATTERN = /\A[A-Za-z0-9_.-]+\z/n
+  NOFOLLOW_FLAG = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : nil
 
   def run(manifest_path:, source_root:, consumer_root:, output: $stdout)
     clean = []
@@ -180,8 +181,8 @@ module AgentWorkflowDrift
     label = "#{entry.fetch('source')} -> #{entry.fetch('consumer')}"
     source_path = resolve_file(source_root, entry.fetch("source"), "source")
     consumer_path = resolve_file(consumer_root, entry.fetch("consumer"), "consumer")
-    source_contents = File.binread(source_path)
-    consumer_contents = File.binread(consumer_path)
+    source_contents = read_mapped_file(source_path, entry.fetch("source"), "source")
+    consumer_contents = read_mapped_file(consumer_path, entry.fetch("consumer"), "consumer")
     pinned_source_mode, pinned_source_oid = read_pinned_source_entry(source_root, revision, entry.fetch("source"))
     source_changed_from_revision = source_changed_from_revision?(
       source_root, revision, entry.fetch("source"), source_contents, pinned_source_mode, pinned_source_oid,
@@ -204,8 +205,8 @@ module AgentWorkflowDrift
       return
     end
 
-    source_hash = Digest::SHA256.file(source_path).hexdigest
-    consumer_hash = Digest::SHA256.file(consumer_path).hexdigest
+    source_hash = Digest::SHA256.hexdigest(source_contents)
+    consumer_hash = Digest::SHA256.hexdigest(consumer_contents)
     changes = []
     changes << "source file does not match pinned revision" if source_changed_from_revision
     changes << mode_difference("source", pinned_source_mode, source_mode) if source_mode != pinned_source_mode
@@ -396,6 +397,25 @@ module AgentWorkflowDrift
 
   def mode_difference(side, expected, actual)
     "#{side} mode differs from pinned source (expected #{expected}, found #{actual})"
+  end
+
+  def read_mapped_file(path, relative_path, side)
+    unless NOFOLLOW_FLAG
+      raise ManifestError, "#{side} file cannot be read safely on this platform: #{relative_path}"
+    end
+
+    File.open(path, File::RDONLY | NOFOLLOW_FLAG) do |file|
+      current_path = File.realpath(path)
+      unless current_path == path && File.identical?(file, path)
+        raise ManifestError, "#{side} path changed while being read: #{relative_path}"
+      end
+
+      file.binmode.read
+    end
+  rescue ManifestError
+    raise
+  rescue SystemCallError => e
+    raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
   end
 
   def resolve_file(root, relative_path, side)
