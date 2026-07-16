@@ -279,6 +279,26 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
   end
 
+  def test_reports_overlong_intermediate_components_per_entry_without_backtrace
+    overlong_component = "x" * 256
+
+    %w[source consumer].each do |side|
+      with_fixture do |fixture|
+        relative_path = "#{overlong_component}/SKILL.md"
+        update_manifest(fixture) do |manifest|
+          manifest.fetch("files").first[side] = relative_path
+        end
+
+        out, err, status = run_checker(fixture)
+
+        assert_equal 1, status.exitstatus
+        assert_empty err, err
+        assert_includes out, "UNEXPECTED DRIFT (1)"
+        assert_includes out, "#{side} file is unavailable: #{relative_path}"
+      end
+    end
+  end
+
   def test_rejects_nested_source_root_inside_parent_repository
     with_fixture do |fixture|
       nested_root = File.join(fixture.fetch(:source_root), "nested")
@@ -307,6 +327,24 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       assert status.success?, "#{out}#{err}"
       assert_includes out, "CLEAN IDENTICAL (1)"
       assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_accepts_non_ascii_source_roots_independently_of_locale
+    [{}, { "LANG" => "C", "LC_ALL" => "C", "LC_CTYPE" => "C" }].each do |env|
+      with_fixture do |fixture|
+        source_root = fixture.fetch(:source_root)
+        non_ascii_root = File.join(File.dirname(source_root), "source-例")
+        FileUtils.mv(source_root, non_ascii_root)
+
+        out, err, status = run_checker(fixture, env: env, source_root: non_ascii_root)
+
+        assert status.success?, "#{env.inspect}: #{out}#{err}"
+        assert_empty err, err
+        assert_includes out, "CLEAN IDENTICAL (1)"
+        assert_includes out, "EXPECTED OVERLAYS (1)"
+        assert_includes out, "UNEXPECTED DRIFT (0)"
+      end
     end
   end
 
@@ -1360,6 +1398,34 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       assert_includes out, "CLEAN IDENTICAL (3)"
       literal_paths.each { |path| assert_includes out, "#{path} -> #{path}" }
       assert_includes out, "UNEXPECTED DRIFT (0)"
+    end
+  end
+
+  def test_accepts_non_ascii_source_paths_independently_of_locale
+    [{}, { "LANG" => "C", "LC_ALL" => "C", "LC_CTYPE" => "C" }].each do |env|
+      with_fixture do |fixture|
+        relative_path = "skills/例/SKILL.md"
+        write_file(fixture.fetch(:source_root), relative_path, "shared skill\n")
+        write_file(fixture.fetch(:consumer_root), relative_path, "shared skill\n")
+        revision = commit_source_change(fixture.fetch(:source_root), "add non-ASCII path")
+        update_manifest(fixture) do |manifest|
+          manifest["source_revision"] = revision
+          manifest["files"] = [
+            {
+              "source" => relative_path,
+              "consumer" => relative_path,
+              "mode" => "identical"
+            }
+          ]
+        end
+
+        out, err, status = run_checker(fixture, env: env)
+
+        assert status.success?, "#{env.inspect}: #{out}#{err}"
+        assert_empty err, err
+        assert_includes out, "CLEAN IDENTICAL (1)"
+        assert_includes out, "UNEXPECTED DRIFT (0)"
+      end
     end
   end
 

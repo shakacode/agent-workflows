@@ -180,8 +180,8 @@ module AgentWorkflowDrift
     top_stdout, top_stderr, top_status = git_capture(source_root, "rev-parse", "--show-toplevel")
     raise ManifestError, "source root is not a Git checkout: #{top_stderr.strip}" unless top_status.success?
 
-    git_top_level = File.realpath(top_stdout.b.delete_suffix("\n"))
-    unless git_top_level == source_root
+    git_top_level = File.realpath(top_stdout.b.delete_suffix("\n".b))
+    unless git_top_level == source_root.b
       raise ManifestError,
             "source root must be the Git repository top level: expected #{git_top_level}, found #{source_root}"
     end
@@ -268,10 +268,10 @@ module AgentWorkflowDrift
     stdout, _stderr, status = git_capture(source_root, "ls-tree", "-z", revision, "--", literal_pathspec)
     raise ManifestError, "source file is not tracked at pinned revision: #{relative_path}" unless status.success? && !stdout.empty?
 
-    records = stdout.split("\0", -1)
-    records.pop if records.last == ""
+    records = stdout.b.split("\0".b, -1)
+    records.pop if records.last == "".b
     match = records.one? && records.first.match(/\A([0-9]{6}) ([^ ]+) ([0-9a-f]+)\t(.*)\z/m)
-    unless match && match[4] == relative_path
+    unless match && match[4] == relative_path.b
       raise ManifestError, "source metadata is unreadable at pinned revision: #{relative_path}"
     end
 
@@ -300,10 +300,10 @@ module AgentWorkflowDrift
     raise ManifestError, "source index is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
     return nil if stdout.empty?
 
-    records = stdout.split("\0", -1)
-    records.pop if records.last == ""
+    records = stdout.b.split("\0".b, -1)
+    records.pop if records.last == "".b
     match = records.one? && records.first.match(/\A([0-9]{6}) ([0-9a-f]+) ([0-3])\t(.*)\z/m)
-    return nil unless match && match[3] == "0" && match[4] == relative_path
+    return nil unless match && match[3] == "0" && match[4] == relative_path.b
 
     [match[1], match[2]]
   end
@@ -324,10 +324,10 @@ module AgentWorkflowDrift
       end
       next if stdout.empty?
 
-      records = stdout.split("\0", -1)
-      records.pop if records.last == ""
+      records = stdout.b.split("\0".b, -1)
+      records.pop if records.last == "".b
       match = records.one? && records.first.match(/\A([0-9]{6}) ([^ ]+) ([0-9a-f]+)\t(.*)\z/m)
-      unless match && match[4] == relative_path && SUPPORTED_GIT_MODES.include?(match[1]) && match[2] == "blob"
+      unless match && match[4] == relative_path.b && SUPPORTED_GIT_MODES.include?(match[1]) && match[2] == "blob"
         raise ManifestError, "pinned source attributes have unsupported metadata: #{relative_path}"
       end
 
@@ -382,8 +382,8 @@ module AgentWorkflowDrift
     raise ManifestError, "source attributes are unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
 
     fields = stdout.b.split("\0".b, -1)
-    fields.pop if fields.last == ""
-    unless fields.length == 3 && fields[0] == relative_path && fields[1] == "filter" && fields[2]
+    fields.pop if fields.last == "".b
+    unless fields.length == 3 && fields[0] == relative_path.b && fields[1] == "filter".b && fields[2]
       raise ManifestError, "source filter attribute is unreadable for #{relative_path}"
     end
 
@@ -500,7 +500,7 @@ module AgentWorkflowDrift
     end
   rescue Errno::ENOTDIR
     raise ManifestError, "#{side} path has a non-directory intermediate component: #{relative_path}"
-  rescue Errno::ENOENT, Errno::EACCES => e
+  rescue Errno::ENOENT, Errno::EACCES, Errno::ENAMETOOLONG => e
     raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
   end
 
