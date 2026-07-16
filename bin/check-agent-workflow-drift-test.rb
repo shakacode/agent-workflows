@@ -74,6 +74,12 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       relative_path = ".agents/skills/example/SKILL.md"
       consumer_path = File.join(fixture.fetch(:consumer_root), relative_path)
       File.chmod(0o000, consumer_path)
+      begin
+        File.binread(consumer_path)
+        skip "filesystem permissions do not make mode 000 unreadable"
+      rescue Errno::EACCES
+        nil
+      end
 
       out, err, status = run_checker(fixture)
 
@@ -361,7 +367,7 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       _out, _err, missing_status = Open3.capture3(
         "git", "--no-lazy-fetch", "-C", source_root, "cat-file", "-e", attributes_oid
       )
-      refute missing_status.success?, "failed to remove the pinned attributes object fixture"
+      assert_equal 1, missing_status.exitstatus, "failed to remove the pinned attributes object fixture"
 
       out, checker_err, result = run_checker(fixture)
 
@@ -371,7 +377,7 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       _out, _err, object_status = Open3.capture3(
         "git", "--no-lazy-fetch", "-C", source_root, "cat-file", "-e", attributes_oid
       )
-      refute object_status.success?, "checker fetched missing pinned attributes from the promisor remote"
+      assert_equal 1, object_status.exitstatus, "checker fetched missing pinned attributes from the promisor remote"
     end
   end
 
@@ -1303,6 +1309,27 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       refute status.success?
       assert_includes out, "manifest has unknown keys: unexpected"
     end
+  end
+
+  def test_sanitizes_yaml_parser_error_messages
+    original_safe_load = YAML.method(:safe_load)
+    yaml_singleton = YAML.singleton_class
+    yaml_singleton.define_method(:safe_load) do |*, **|
+      raise Psych::SyntaxError.new("manifest", 1, 1, 0, "bad\e[31m\u202e\nINJECTED", nil)
+    end
+
+    error = begin
+      assert_raises(AgentWorkflowDrift::ManifestError) do
+        AgentWorkflowDrift.load_manifest(__FILE__)
+      end
+    ensure
+      yaml_singleton.define_method(:safe_load, original_safe_load)
+    end
+
+    assert_includes error.message, "invalid YAML"
+    assert_includes error.message, "\\u{001B}[31m\\u{202E}\\nINJECTED"
+    refute_includes error.message, "\e"
+    refute_includes error.message, "\u202e"
   end
 
   def test_accepts_colon_leading_source_paths_as_literal_git_paths

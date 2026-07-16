@@ -59,7 +59,7 @@ module AgentWorkflowDrift
 
     data
   rescue Psych::Exception => e
-    raise ManifestError, "invalid YAML: #{e.message}"
+    raise ManifestError, "invalid YAML: #{escape_unsafe_output_characters(e.message)}"
   rescue SystemCallError => e
     raise ManifestError, "manifest is unreadable: #{path} (#{e.class.name})"
   end
@@ -154,7 +154,8 @@ module AgentWorkflowDrift
   end
 
   def escape_unsafe_output_characters(value)
-    value.gsub(UNSAFE_OUTPUT_CHARACTER_PATTERN) do |character|
+    safe_value = value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+    safe_value.gsub(UNSAFE_OUTPUT_CHARACTER_PATTERN) do |character|
       case character
       when "\t" then "\\t"
       when "\n" then "\\n"
