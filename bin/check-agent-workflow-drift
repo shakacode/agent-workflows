@@ -2,7 +2,6 @@
 # frozen_string_literal: true
 
 require "digest"
-require "open3"
 require "optparse"
 require "pathname"
 require "yaml"
@@ -403,7 +402,9 @@ module AgentWorkflowDrift
     ]
   end
 
-  def git_capture(source_root, *arguments, stdin_data: nil)
+  def git_capture(
+    source_root, *arguments, stdin_data: nil, timeout_seconds: PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS
+  )
     env = PrBatchGitProbeEnv.probe_env.merge(
       "GIT_ALLOW_PROTOCOL" => "",
       "GIT_ATTR_NOSYSTEM" => "1",
@@ -415,9 +416,9 @@ module AgentWorkflowDrift
       "-c", "core.fsmonitor=",
       *arguments
     ]
-    return Open3.capture3(env, *command) if stdin_data.nil?
-
-    Open3.capture3(env, *command, stdin_data:)
+    PrBatchGitProbeEnv.capture3(env, *command, stdin_data:, timeout_seconds:)
+  rescue PrBatchGitProbeEnv::TimeoutError
+    raise ManifestError, "Git probe timed out after #{timeout_seconds} seconds"
   end
 
   def filesystem_git_mode(root, relative_path, side)

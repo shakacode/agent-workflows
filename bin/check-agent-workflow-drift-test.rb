@@ -382,6 +382,9 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
   end
 
   def test_does_not_lazy_fetch_missing_pinned_attributes
+    skip "Git attribute-source support is unavailable" unless git_supports_attribute_source?
+    skip "Git no-lazy-fetch support is unavailable" unless git_supports_no_lazy_fetch?
+
     with_fixture do |fixture|
       source_root = fixture.fetch(:source_root)
       relative_path = "skills/example/SKILL.md"
@@ -930,6 +933,8 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
   end
 
   def test_treats_core_autocrlf_checkout_transformation_as_clean_source
+    skip "Git attribute-source support is unavailable" unless git_supports_attribute_source?
+
     with_fixture do |fixture|
       source_root = fixture.fetch(:source_root)
       relative_path = "skills/example/SKILL.md"
@@ -1019,6 +1024,8 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
   end
 
   def test_rejects_non_utf8_filter_driver_without_backtrace
+    skip "Git attribute-source support is unavailable" unless git_supports_attribute_source?
+
     with_fixture do |fixture|
       source_root = fixture.fetch(:source_root)
       relative_path = "skills/example/SKILL.md"
@@ -1097,6 +1104,37 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
         assert_includes call, "ARG=core.fsmonitor=\n"
         refute_includes call, "ARG=core.fsmonitor=false\n"
       end
+    end
+  end
+
+  def test_git_probes_fail_closed_when_they_time_out
+    with_fixture do |fixture|
+      wrapper_dir = File.join(File.dirname(fixture.fetch(:source_root)), "hanging-git")
+      pid_path = File.join(wrapper_dir, "git.pid")
+      FileUtils.mkdir_p(wrapper_dir)
+      File.write(File.join(wrapper_dir, "git"), <<~SH)
+        #!/bin/sh
+        printf '%s' "$$" >#{Shellwords.escape(pid_path)}
+        sleep 10
+      SH
+      FileUtils.chmod(0o755, File.join(wrapper_dir, "git"))
+      PrBatchGitProbeEnv.local_env_vars
+      original_path = ENV.fetch("PATH")
+      ENV["PATH"] = "#{wrapper_dir}:#{original_path}"
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      error = begin
+        assert_raises(AgentWorkflowDrift::ManifestError) do
+          AgentWorkflowDrift.git_capture(fixture.fetch(:source_root), "status", timeout_seconds: 0.5)
+        end
+      ensure
+        ENV["PATH"] = original_path
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_equal "Git probe timed out after 0.5 seconds", error.message
+      assert_operator elapsed, :<, 2
+      pid = File.read(pid_path).to_i
+      assert_raises(Errno::ESRCH) { Process.kill(0, pid) }
     end
   end
 
@@ -1430,6 +1468,16 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
   end
 
   private
+
+  def git_supports_attribute_source?
+    _out, _err, status = Open3.capture3("git", "--attr-source=HEAD", "--version")
+    status.success?
+  end
+
+  def git_supports_no_lazy_fetch?
+    _out, _err, status = Open3.capture3("git", "--no-lazy-fetch", "--version")
+    status.success?
+  end
 
   def with_fixture
     Dir.mktmpdir("agent-workflow-drift") do |tmp|
