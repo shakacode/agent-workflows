@@ -13,10 +13,16 @@ and a short `AGENTS.md` pointer section named
 
 ## Why This Exists
 
-Agent workflows get more useful as they become consistent across repos, but
-copying a full `.agents/` tree into every checkout creates drift and can carry
-repo-specific policy into the wrong place. This pack keeps reusable process in
-one install and makes each consumer repo expose a small policy seam.
+Engineering teams need one reliable way to distribute agent skills across many
+repositories without copying the workflow pack into every checkout or erasing
+the policy each repository owns. Copied skill trees drift; purely global
+instructions cannot express repo-specific commands, trust, CI, and release
+rules. This pack keeps reusable process in one source and one install per agent
+host, while each consumer repo exposes a small policy seam.
+
+See [Problems Agent Workflows Solves](docs/problems-solved.md) for the complete
+team-scale problem map, including distribution, repository adaptation, safety,
+and concurrent-work coordination.
 
 The default model is:
 
