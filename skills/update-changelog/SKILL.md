@@ -6,7 +6,7 @@ argument-hint: '[classification-sweep BASE_REF..TARGET_REF|release|rc|beta|versi
 
 # Update Changelog
 
-You are helping to add an entry to the repo's changelog. Resolve the changelog path and base branch from `.agents/agent-workflow.yml` (`changelog` and `base_branch`).
+You are helping to add an entry to the repo's changelog. Resolve the changelog path and configured base branch from `.agents/agent-workflow.yml` (`changelog` and `base_branch`), then independently resolve the PR target and compare-link branches for the current mode from repo policy before fetching or editing.
 
 ## Arguments
 
@@ -56,13 +56,15 @@ This skill serves four use cases at different points in the release lifecycle:
 
 ## Auto-Computing the Next Version
 
-When stamping a version header (`release`, `rc`, or `beta`), compute the next version as follows:
+When stamping a version header (`release`, `rc`, or `beta`), compute the next version as follows. Run this subroutine only after Process Step 1 has resolved `PR_TARGET_BRANCH`:
 
-1. **Find the latest stable version tag** using semver sort:
+1. **Find the latest reachable prior stable version tag** on the resolved PR target using semver sort:
 
    ```bash
-   git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1
+   git tag --merged "origin/${PR_TARGET_BRANCH}" -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1
    ```
+
+   Use this reachable tag as the stable bump baseline even when it belongs to the preceding release series. Constrain only existing `rc`/`beta` tags and their next-index selection to the intended target version series. If target reachability or the intended prerelease series is ambiguous, report `UNKNOWN` before editing.
 
 2. **Determine bump type from changelog content**:
    - If changes include `#### Breaking Changes` or `#### ⚠️ Breaking Changes` -> **major** bump
@@ -71,10 +73,9 @@ When stamping a version header (`release`, `rc`, or `beta`), compute the next ve
 
 3. **Compute the version**:
    - For `release`: Apply the bump to the latest stable tag (e.g., `16.4.0` + minor -> `16.5.0`)
-   - For `rc`: Apply the bump, then find the next RC index based **only on git tags** (e.g., if `v16.5.0.rc.0` tag exists -> `16.5.0.rc.1`). **Do NOT use changelog headers** to determine the next index — a version header in the changelog is a draft that may not have been released yet. Only git tags represent shipped versions.
-   - For `beta`: Same as RC but with beta suffix
+   - For `rc` or `beta`: Apply the bump to get the stable target core, set `TARGET_VERSION` to that `X.Y.Z` value, and set `PRERELEASE_KIND` from the invocation mode (`rc` or `beta`). Then use the matching fetched tags to find the next index (e.g., if `v16.5.0.rc.0` exists -> `16.5.0.rc.1`). **Do NOT use changelog headers** to determine the next index — a version header in the changelog is a draft that may not have been released yet. Only git tags represent shipped versions.
 
-4. **Verify**: Check that the computed version is newer than ALL existing tags (stable and prerelease). If not, ask the user what to do.
+4. **Verify**: Check that the computed version is newer than all existing tags in the target release series and does not collide with any repository tag. If not, ask the user what to do.
 
 5. **Show the computed version to the user and ask for confirmation** before stamping the header. If the bump type is ambiguous (e.g., changes could reasonably be classified as patch vs minor, or the changelog headings don't clearly signal the bump level), explain your reasoning for the suggested bump and ask the user to confirm or override before proceeding.
 
@@ -109,17 +110,18 @@ Set `BASE_REF` to the previous release tag or lower bound and `TARGET_REF` to th
 BASE_REF="${BASE_REF:?set BASE_REF, e.g. v17.0.0.rc.1}"
 BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from .agents/agent-workflow.yml base_branch}"
 TARGET_REF="${TARGET_REF:?set TARGET_REF, e.g. v17.0.0.rc.2 or origin/${BASE_BRANCH}}"
+PR_TARGET_BRANCH="${PR_TARGET_BRANCH:-${BASE_BRANCH}}"
 # Resolve UPDATE_CHANGELOG_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy before using this fallback.
 UPDATE_CHANGELOG_SKILL_DIR="${UPDATE_CHANGELOG_SKILL_DIR:-.agents/skills/update-changelog}"
 
 # JSON array of {pr, sha, subject}; pr is an integer, or the string "UNKNOWN".
-"${UPDATE_CHANGELOG_SKILL_DIR}/bin/changelog-merged-prs" "${BASE_REF}..${TARGET_REF}"
+"${UPDATE_CHANGELOG_SKILL_DIR}/bin/changelog-merged-prs" "${BASE_REF}..${TARGET_REF}" --target-branch "${PR_TARGET_BRANCH}"
 
 # Or --text for pr<TAB>sha<TAB>subject rows (UNKNOWN in the pr column):
-"${UPDATE_CHANGELOG_SKILL_DIR}/bin/changelog-merged-prs" "${BASE_REF}..${TARGET_REF}" --text
+"${UPDATE_CHANGELOG_SKILL_DIR}/bin/changelog-merged-prs" "${BASE_REF}..${TARGET_REF}" --target-branch "${PR_TARGET_BRANCH}" --text
 ```
 
-The helper defaults the repo to `gh repo view`; pass `--repo OWNER/REPO` to override. Run `changelog-merged-prs --help` for the full output contract and `--self-check` to validate the parser and a read-only `gh` smoke test. Each row is a merged PR for the range; rows with `"pr": "UNKNOWN"` are commits that could not be mapped to a merged PR on the default branch.
+The helper defaults the repo to `gh repo view`; pass `--repo OWNER/REPO` to override. Pass the resolved PR target with `--target-branch`; omitting it preserves the default-branch fallback. Run `changelog-merged-prs --help` for the full output contract and `--self-check` to validate the parser and a read-only `gh` smoke test. Each row is a merged PR for the range; rows with `"pr": "UNKNOWN"` are commits that could not be mapped to a merged PR on the selected target branch.
 
 If any commit in the range cannot be mapped to a PR, the helper prints an explicit `UNKNOWN` row for that commit. Carry that row into the full table with `Result` set to `UNKNOWN`, investigate it, and do not finish the sweep until the row is resolved to a merged PR classification or explicitly reported as a blocker. Do not silently drop it.
 
@@ -223,7 +225,7 @@ Entries should be organized under these section headings **in the following orde
 
 ### Version Stamping with the Repo's Changelog Task
 
-When this command is invoked with `release`, `rc`, `beta`, or an explicit version (e.g., `16.5.0.rc.10`), **use the repo's changelog version-stamping task** documented by that repo's changelog policy to stamp the version header after adding entries, passing the mode (`release`, `rc`, or `beta`) or an explicit version.
+When this command is invoked with `release`, `rc`, `beta`, or an explicit version (e.g., `16.5.0.rc.10`), **use the repo's changelog version-stamping task** documented by that repo's changelog policy to stamp the version header after adding entries. Prefer an interface that binds the resolved mode or explicit version, exact confirmed version, and `COMPARE_BRANCH` together. A documented one-argument task is also allowed when its target and compare defaults are verified to match `PR_TARGET_BRANCH` and `COMPARE_BRANCH`, and its produced version and output exactly match the confirmed expectations. Otherwise report `UNKNOWN` and stop before stamping.
 
 The version-stamping task handles:
 
@@ -232,7 +234,7 @@ The version-stamping task handles:
 - Updating version diff links at the bottom of the file
 - For `release` mode: collapsing prior `rc`/`beta` sections of the same base version into the new stable section (rc/beta modes leave prior prerelease sections intact so users can see what changed between RCs)
 
-Do NOT manually insert version headers or update diff links -- the version-stamping task does this correctly.
+Do NOT manually insert version headers or update diff links -- require the version-stamping task to honor the confirmed version, mode semantics, and compare endpoint, then verify them in its output.
 
 **When to use which tool:**
 
@@ -273,11 +275,11 @@ After adding an entry to the `### [Unreleased]` section, ensure the version diff
 The format at the bottom should be:
 
 ```markdown
-[unreleased]: https://github.com/<owner>/<repo>/compare/v16.2.0.beta.19...main
+[unreleased]: https://github.com/<owner>/<repo>/compare/v16.2.0.beta.19...<compare-branch>
 [16.2.0.beta.19]: https://github.com/<owner>/<repo>/compare/v16.1.1...v16.2.0.beta.19
 ```
 
-Replace `main` with the `base_branch` value from `.agents/agent-workflow.yml` when the repo uses a different base branch.
+Replace `<compare-branch>` with `COMPARE_BRANCH`, resolved independently from repo changelog policy. Default it to the configured `base_branch`; do not assume it matches the PR target.
 
 When a new version is released:
 
@@ -289,7 +291,7 @@ When a new version is released:
    ### [16.2.0.beta.20] - 2025-12-12
    ```
 
-2. Update the `[unreleased]:` link to compare from the new version to main
+2. Update the `[unreleased]:` link to compare from the new version to `COMPARE_BRANCH`
 3. Add a new version link comparing the previous version to the new version
 
 ## Process
@@ -301,29 +303,34 @@ the required entries are already under `[Unreleased]`, and the sweep has no miss
 
 - **One pass:** fetch, reconcile, sweep, stamp, focused validation, and PR. Do not inspect broad release runbooks or
   unrelated release mechanics unless explicitly asked.
-- **One review:** self-review the diff once. Skip simplify, adversarial review, review panels, and extra local AI review
-  for generated changelog-only diffs. Use normal gates for substantive curation, security/migration notes, or other files.
+- **One review:** self-review the diff once. When repo and target-phase policy permit the changelog-only exemption,
+  skip optional simplify, adversarial review, review panels, and extra local AI review. Run every review gate required
+  by repo or target-phase policy before marking the PR ready, and use normal gates for substantive curation,
+  security/migration notes, or other files.
 - **Focused validation:** run `git diff --check`; verify trailing newline, unique/newest-first headings, and compare-link
   endpoints; run a focused changelog test or formatter when available. Run the full suite only when repo policy requires it.
-- **Ready PR:** target the branch required by repo policy and open ready, not draft-then-ready.
-- **Stop:** report classifications, validation, and the PR URL, then end. Never poll or babysit CI/review bots unless
-  explicitly asked; disable generic PR-helper babysitting (for example, `babysit:off`).
+- **PR state:** target the branch required by repo policy and open ready when policy permits. When required hosted CI or
+  review can run only after PR creation, keep the PR draft until those gates pass, then mark it ready.
+- **Stop:** report classifications, validation, and the PR URL, then end. Do not poll optional CI/review bots or enable
+  generic PR-helper auto-watch behavior; wait only for post-creation gates required by repo or target-phase policy.
 
-Aim for at most five minutes of active work. Report an ambiguity instead of silently broadening the task.
+Keep work to the fetch, reconcile, sweep, stamp, focused-validation, and PR steps above. If more is required, stop and
+report why instead of silently broadening the task.
 
 ### For Regular Changelog Updates
 
 #### Step 1: Fetch and read current state
 
-- Resolve `BASE_BRANCH` from `.agents/agent-workflow.yml` key `base_branch`, then run `git fetch origin "${BASE_BRANCH}"` to ensure you have the latest commits
-- After fetching, use `origin/${BASE_BRANCH}` for all comparisons, not the local base branch
+- Resolve `BASE_BRANCH` from `.agents/agent-workflow.yml` key `base_branch`. Independently resolve `PR_TARGET_BRANCH` from release/branch policy and `COMPARE_BRANCH` from changelog policy; default each to `BASE_BRANCH` only when its own policy has no override.
+- Run `git fetch origin --tags "${PR_TARGET_BRANCH}"` before every scan or edit so both the target and release-tag inventory are current. Before a `release`, `rc`, `beta`, or explicit-version pass edits the changelog, work from a clean feature branch based on `origin/${PR_TARGET_BRANCH}`. If a required non-base target is ambiguous, stop and report `UNKNOWN`.
+- Use `origin/${PR_TARGET_BRANCH}` for reconciliation, sweep, stamping inputs, and the PR base. Use `COMPARE_BRANCH` only for `[unreleased]` compare-link endpoints; do not assume the two branches match.
 - Read the current changelog to understand the existing structure
 
 #### Step 2: Reconcile tags with changelog sections (DO THIS FIRST)
 
 **This step catches missing version sections and is the #1 source of errors when skipped.**
 
-1. Get the latest git tag: `git tag --sort=-v:refname | head -5`
+1. Build the applicable release-tag inventory from all fetched tags, using repo release/changelog policy and the intended version series; do not require every candidate to be an ancestor of the PR target because sibling release branches may be cherry-picked or forward-ported. Use target reachability as supporting evidence, not the sole filter. If policy, version, and changelog evidence cannot prove a non-reachable candidate's relevance, carry it as `UNKNOWN` instead of silently omitting it.
 2. Get the most recent version header in the changelog (the first `### [VERSION] - DATE` after `### [Unreleased]`)
 3. **Compare them.** If the latest git tag (minus the `v` prefix) does NOT appear anywhere in the changelog version headers, there are tagged releases missing from the changelog. **Important**: Don't just compare against the _top_ changelog header — a version header may exist _above_ the latest tag if it was stamped as a draft before tagging. Check whether the tag's version appears in _any_ `### [X.Y.Z]` header. For example:
    - Latest tag: `v16.4.0.rc.4`, and no `### [16.4.0.rc.4]` header exists anywhere in the changelog
@@ -343,18 +350,19 @@ Aim for at most five minutes of active work. Report an ambiguity instead of sile
    e. **Move** matching entries from Unreleased into the new section
    f. **Add** any new entries for PRs in that tag that aren't in the changelog at all
    g. **Update version diff links** at the bottom of the file:
-   - Update `[unreleased]:` to compare from the newest tag to main
+   - Update `[unreleased]:` to compare from the newest tag to `COMPARE_BRANCH`
    - Add a link for each new version section
 
 5. Get the tag date with: `git log -1 --format="%Y-%m-%d" TAG_NAME`
 
 #### Step 3: Add new entries for post-tag commits
 
-1. Resolve `BASE_BRANCH` from `.agents/agent-workflow.yml` key `base_branch`, then run `git log --oneline "LATEST_TAG..origin/${BASE_BRANCH}"` to find commits after the latest tag (LATEST_TAG is the most recent git tag, i.e., the same one identified in Step 2)
-2. Extract PR numbers: `git log --oneline "LATEST_TAG..origin/${BASE_BRANCH}" | grep -oE "#[0-9]+" | sort -u`
-3. If Step 2 found no missing tagged versions, verify no tag is ahead of the base branch: `git log --oneline "origin/${BASE_BRANCH}..LATEST_TAG"` should be empty. If not, entries in "Unreleased" may belong to that tagged version — Step 2 should have caught this, so re-check.
-4. For each PR number, check if it's already in the changelog: `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"; grep "PR ${PR_NUMBER:?set PR_NUMBER}" "${CHANGELOG_PATH}"`
-5. For PRs not yet in the changelog:
+1. Resolve `POST_TAG_BASE` for the applicable tag from Step 2. Use `LATEST_TAG` only when it is an ancestor of `origin/${PR_TARGET_BRANCH}`. For a non-ancestor sibling-branch tag, derive a verified equivalent target commit or range from repo release/changelog policy plus cherry-pick or forward-port evidence; if that mapping is not provable, carry it as `UNKNOWN` and stop before classifying post-tag commits.
+2. Run `git log --oneline "${POST_TAG_BASE}..origin/${PR_TARGET_BRANCH}"` to find commits after the verified target-side baseline.
+3. Extract PR numbers: `git log --oneline "${POST_TAG_BASE}..origin/${PR_TARGET_BRANCH}" | grep -oE "#[0-9]+" | sort -u`
+4. Verify `POST_TAG_BASE` is an ancestor of `origin/${PR_TARGET_BRANCH}` before using the range. A divergent two-dot range is not post-tag history.
+5. For each PR number, check if it's already in the changelog: `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"; grep "PR ${PR_NUMBER:?set PR_NUMBER}" "${CHANGELOG_PATH}"`
+6. For PRs not yet in the changelog:
    - Get PR details: `gh pr view NUMBER --json title,body,author` (add `--repo OWNER/REPO` when not in the repo)
    - **Never ask the user for PR details** - get them from git history or the GitHub API
    - Validate that the change is user-visible (per the criteria above). Skip CI, lint, refactoring, test-only changes.
@@ -366,22 +374,22 @@ If the user passed `release`, `rc`, `beta`, or an explicit version string as an 
 
 **For `release`, `rc`, or `beta` keywords:**
 
-1. Run the repo's changelog version-stamping task with the matching mode (`release`, `rc`, or `beta`) to stamp the version header.
+1. Compute and confirm the target-scoped version using the process above. Prefer passing the mode keyword, exact confirmed version, and `COMPARE_BRANCH` together through the repo task's policy-defined interface. A documented one-argument mode task is compatible only when its target and compare defaults are verified to match the resolved values and its produced version and output exactly match the confirmation. Otherwise report `UNKNOWN` and stop before stamping.
 
 2. The version-stamping task will:
-   - Auto-compute the next version
+   - Stamp the exact confirmed version
    - Insert the header after `### [Unreleased]`
    - Update diff links at the bottom
    - For `release`: collapse prior `rc`/`beta` sections of the same base version into the new stable section
    - For `rc`/`beta`: leave prior prerelease sections intact (each prerelease keeps its own section so users on an earlier RC can see what changed)
 
-3. **Verify** the computed version looks correct. If not, the user can manually adjust.
+3. **Verify** the stamped version and `[unreleased]` compare endpoint exactly match the confirmed version and `COMPARE_BRANCH`. Also verify that `release` coalesced the matching prerelease sections and links, while `rc`/`beta` preserved their prior prerelease sections.
 
 **For an explicit version string** (e.g., `16.5.0.rc.10`):
 
-1. Pass the explicit version directly to the repo's changelog version-stamping task.
+1. Prefer passing the explicit version and `COMPARE_BRANCH` through the task's policy-defined interface. A documented one-argument task is also compatible when its target and compare defaults are verified to match the resolved values.
 
-2. **Verify** the stamped header and diff links match the requested version.
+2. **Verify** the stamped header and diff links match the requested version and compare endpoint. If the task cannot honor either value, report `UNKNOWN` and stop before stamping.
 
 If no argument was passed, skip this step -- entries stay in `### [Unreleased]`.
 
@@ -403,33 +411,34 @@ If no argument was passed, skip this step -- entries stay in `### [Unreleased]`.
    - Which PRs were skipped (and why)
 5. If in `release`/`rc`/`beta` mode or explicit-version mode, **automatically commit, push, and open a PR**:
    - Verify the working tree only has changelog changes; if there are other uncommitted changes, warn the user and stop
-   - Resolve the PR target and branch rules from repo policy; release trains may require a `release/X.Y.Z` target
-   - Create a feature branch from the required target (e.g., `changelog-16.4.0.rc.10`)
+   - Verify the feature branch was created from `origin/${PR_TARGET_BRANCH}` before reconciliation and that the PR targets `PR_TARGET_BRANCH`; do not transplant a completed changelog diff from another branch
    - Stage only the changelog after resolving the repo's changelog path from `.agents/agent-workflow.yml`: set `CHANGELOG_PATH="${CHANGELOG_PATH:?set CHANGELOG_PATH from .agents/agent-workflow.yml changelog}"`, run `git add "${CHANGELOG_PATH}"`, and commit with message `Update changelog for VERSION` (using the stamped version)
-   - Push and open a ready PR with a concise rationale, classification summary, and focused validation evidence
+   - Push and open a PR with a concise rationale, classification summary, and focused validation evidence. Open ready when repo and target-phase policy permit; otherwise keep it draft until required post-creation gates pass, then mark it ready
    - If the push or PR creation fails, the changelog is already stamped locally — fix the issue (e.g., authentication, branch protection), then run `git push -u origin <branch>` and `gh pr create` manually
-   - Hand off immediately after the PR is open; do not wait for hosted checks or review bots unless explicitly asked
+   - Hand off immediately once the PR reaches the readiness state allowed by policy; wait only for post-creation gates required before marking it ready
    - Remind the user to run the repo's release task (no args) after merge to publish and auto-create the GitHub release
 
 ### For Prerelease Versions (RC and Beta)
 
 When the user passes `rc` or `beta` as an argument:
 
-1. **Find the latest tag** (stable or prerelease) using semver sort:
+1. **Derive the intended target series first.** Using the reachable stable baseline and bump type from "Auto-Computing the Next Version," apply the bump to get the stable target core and set `TARGET_VERSION` to that `X.Y.Z` value. Set `PRERELEASE_KIND` from the invocation mode (`rc` or `beta`). If either value is ambiguous, report `UNKNOWN` before listing prerelease tags.
+
+2. **Find the latest applicable prerelease tag** from the full fetched tag inventory, constrained to that target version and kind. Use target reachability as supporting evidence, not the sole filter; if a non-reachable tag's relevance is ambiguous, report `UNKNOWN` before computing the next index:
 
    ```bash
-   git tag -l 'v*' --sort=-v:refname | head -10
+   git tag -l "v${TARGET_VERSION}.${PRERELEASE_KIND}.*" --sort=-v:refname | head -10
    ```
 
-2. **Auto-compute the next prerelease version** using the process in "Auto-Computing the Next Version" above.
+3. **Choose the next prerelease index** from those matching git tags and complete the confirmation process in "Auto-Computing the Next Version" above.
 
-3. **Do NOT collapse prior prereleases.** Each RC/beta is a separately-tagged release that users install — they need to see what changed between, for example, `rc.0` and `rc.1` (especially when diagnosing a regression in a specific RC). Each run of the repo's release task reads only the top-most `### [VERSION]` section, so as long as each RC has its own section, the corresponding GitHub release gets its own focused notes. Instead:
+4. **Do NOT collapse prior prereleases.** Each RC/beta is a separately-tagged release that users install — they need to see what changed between, for example, `rc.0` and `rc.1` (especially when diagnosing a regression in a specific RC). Each run of the repo's release task reads only the top-most `### [VERSION]` section, so as long as each RC has its own section, the corresponding GitHub release gets its own focused notes. Instead:
    - Insert the new prerelease version section immediately after `### [Unreleased]`, **above** any prior prerelease sections (preserves newest-first ordering)
    - Any entries already under `### [Unreleased]` belong to this prerelease — the version-stamping task moves them under the new header automatically when it inserts the version line right after `### [Unreleased]`
    - Leave prior prerelease sections (e.g., `### [16.5.0.rc.0]`) untouched — keep their entries and their compare links at the bottom of the file
    - Add any new user-visible changes from commits since the last prerelease tag to the new section only
    - Add a new compare link at the bottom comparing the previous prerelease tag (or the last stable tag if this is the first RC) to the new prerelease tag
-   - Update the `[unreleased]:` compare link to point from the new prerelease tag to `main`
+   - Update the `[unreleased]:` compare link to point from the new prerelease tag to `COMPARE_BRANCH`
 
 **Resulting structure** after stamping `16.5.0.rc.1` (with `16.5.0.rc.0` already shipped on top of stable `16.4.0`):
 
@@ -452,7 +461,7 @@ When the user passes `rc` or `beta` as an argument:
 
 ...
 
-[unreleased]: https://github.com/<owner>/<repo>/compare/v16.5.0.rc.1...main
+[unreleased]: https://github.com/<owner>/<repo>/compare/v16.5.0.rc.1...<compare-branch>
 [16.5.0.rc.1]: https://github.com/<owner>/<repo>/compare/v16.5.0.rc.0...v16.5.0.rc.1
 [16.5.0.rc.0]: https://github.com/<owner>/<repo>/compare/v16.4.0...v16.5.0.rc.0
 [16.4.0]: https://github.com/<owner>/<repo>/compare/v16.3.0...v16.4.0
@@ -473,8 +482,8 @@ When releasing from prerelease to a stable version (e.g., `v16.5.0.rc.1` -> `v16
 - Combine entries from all prerelease sections and the moved `[Unreleased]` entries, consolidating duplicate category headings (e.g., merge multiple `#### Fixed` sections into one under the preferred order from "Category Organization")
 - Remove the orphaned compare links at the bottom of the file for the coalesced prerelease versions
 - Add the `[16.5.0]` compare link pointing from the **previous stable tag** (e.g., `v16.4.0`) to `v16.5.0` — **not** from the latest RC tag
-- Update the `[unreleased]:` compare link to point from `v16.5.0` to `main`
-- **Before committing**, spot-check the compare-link updates above: orphaned RC compare links removed, the new `[16.5.0]` link anchored at the previous stable tag (e.g., `v16.4.0...v16.5.0`) — not the latest RC tag — and `[unreleased]` pointing from `v16.5.0` to `main`. When the repo's changelog version-stamping task (`release` mode) does the coalesce, this is handled automatically; still verify the result before pushing.
+- Update the `[unreleased]:` compare link to point from `v16.5.0` to `COMPARE_BRANCH`
+- **Before committing**, spot-check the compare-link updates above: orphaned RC compare links removed, the new `[16.5.0]` link anchored at the previous stable tag (e.g., `v16.4.0...v16.5.0`) — not the latest RC tag — and `[unreleased]` pointing from `v16.5.0` to `COMPARE_BRANCH`. When the repo's changelog version-stamping task (`release` mode) does the coalesce, this is handled automatically; still verify the result before pushing.
 
 #### Step 2: Curate the entries — REMOVE these
 
