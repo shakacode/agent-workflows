@@ -4,7 +4,6 @@ require "time"
 require_relative "configuration"
 require_relative "contract"
 require_relative "source_checks"
-
 module AgentDoctor
   class Orchestrator
     COMPONENTS = %w[agent-workflows agent-coordination agent-coordination-dashboard].freeze
@@ -45,9 +44,7 @@ module AgentDoctor
         compat_root: File.expand_path(@options[:compat_root]),
         runtime_root: File.expand_path(@options[:runtime_root]),
         install_dir: File.expand_path(@options[:install_dir]),
-        host: host,
-        target: target,
-        dashboard_uri: Configuration.dashboard_uri(@options[:dashboard_url])
+        host: host, target: target, dashboard_uri: Configuration.dashboard_uri(@options[:dashboard_url])
       }
     end
 
@@ -61,7 +58,9 @@ module AgentDoctor
       command = [File.join(paths[:target], "bin", "agent-workflows-doctor"), "--stack-json", "--host", paths[:host],
                  "--target", paths[:target], "--source", sources.fetch("agent-workflows")]
       command << "--deep" if @options[:deep]
-      if source_delegate_blocked?(source_check, command.first, sources.fetch("agent-workflows"))
+      delegates = [command.first, File.join(paths[:target], "bin", "agent-workflows-status")]
+      delegates << File.join(paths[:target], "bin", "agent-workflow-seam-doctor") if @options[:deep]
+      if delegates.any? { |executable| source_delegate_blocked?(source_check, executable, sources.fetch("agent-workflows")) }
         return source_trust_failure("agent-workflows")
       end
       return Contract.unavailable("agent-workflows", "component doctor executable is missing") unless File.executable?(command.first)

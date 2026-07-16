@@ -3,14 +3,11 @@ agent_stack_doctor_required_modules=(
 )
 
 agent_stack_run_doctor() {
-  local bin_dir="$1" source_root="$2"
+  local bin_dir="$1"
   local ruby_bin doctor_helper doctor_helper_real doctor_module_root doctor_module_name doctor_module
   shift 2
   ruby_bin="${RUBY_BIN:-ruby}"
   doctor_helper="${AGENT_STACK_DOCTOR_BIN:-$bin_dir/agent-stack-doctor}"
-  if [[ ! -f "$doctor_helper" && -f "$source_root/agent-workflows/bin/agent-stack-doctor" ]]; then
-    doctor_helper="$source_root/agent-workflows/bin/agent-stack-doctor"
-  fi
   command -v "$ruby_bin" >/dev/null 2>&1 || { echo "agent-stack doctor requires Ruby" >&2; exit 64; }
   [[ -f "$doctor_helper" && -r "$doctor_helper" ]] || { echo "agent-stack doctor helper missing: $doctor_helper" >&2; exit 64; }
   doctor_helper_real="$("$ruby_bin" -e 'puts File.realpath(ARGV.fetch(0))' "$doctor_helper" 2>/dev/null)" || {

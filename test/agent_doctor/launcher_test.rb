@@ -69,6 +69,43 @@ class AgentDoctorLauncherTest < Minitest::Test
     assert_includes stdout, "Usage: agent-stack doctor"
   end
 
+  def test_missing_adjacent_helper_does_not_execute_source_fallback
+    source_root = File.join(@tmp, "source")
+    source_bin = File.join(source_root, "agent-workflows", "bin")
+    sentinel = File.join(@tmp, "source-doctor-executed")
+    FileUtils.mkdir_p(source_bin)
+    FileUtils.cp_r(File.join(ROOT, "bin/agent_doctor"), source_bin)
+    File.write(File.join(source_bin, "agent-stack-doctor"), <<~RUBY)
+      File.write(#{sentinel.inspect}, "executed")
+      exit 0
+    RUBY
+
+    _stdout, stderr, status = Open3.capture3({ "AGENT_STACK_SOURCE_ROOT" => source_root },
+                                             File.join(@bin, "agent-stack"), "doctor", "--help")
+
+    assert_equal 64, status.exitstatus
+    assert_includes stderr, "agent-stack doctor helper missing"
+    refute_path_exists sentinel
+  end
+
+  def test_doctor_does_not_source_fallback_module_tree
+    source_root = File.join(@tmp, "source")
+    source_modules = File.join(source_root, "agent-workflows", "bin", "agent_stack")
+    sentinel = File.join(@tmp, "source-module-executed")
+    FileUtils.mkdir_p(File.dirname(source_modules))
+    FileUtils.cp_r(File.join(ROOT, "bin/agent_stack"), source_modules)
+    usage = File.join(source_modules, "usage.bash")
+    File.write(usage, ": > #{sentinel.inspect}\n#{File.read(usage)}")
+    FileUtils.rm(File.join(@bin, "agent_stack", "usage.bash"))
+
+    _stdout, stderr, status = Open3.capture3({ "AGENT_STACK_SOURCE_ROOT" => source_root },
+                                             File.join(@bin, "agent-stack"), "doctor", "--help")
+
+    assert_equal 64, status.exitstatus
+    assert_includes stderr, "doctor requires complete modules beside the command"
+    refute_path_exists sentinel
+  end
+
   private
 
   def run_doctor

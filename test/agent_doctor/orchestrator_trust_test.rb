@@ -185,6 +185,38 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     assert_path_exists sentinel
   end
 
+  def test_degraded_source_blocks_source_resident_nested_workflow_delegate
+    sentinel = path("nested-workflow-executed")
+    source_helper = path("src/agent-workflows/bin/agent-workflows-status")
+    installed_status = path("target/bin/agent-workflows-status")
+    installed_doctor = path("target/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(source_helper))
+    write_delegate(source_helper, "agent-workflows", "workflows.installation", sentinel: sentinel)
+    File.symlink(source_helper, installed_status)
+    File.write(installed_doctor, "#!/usr/bin/env ruby\nexec File.expand_path('agent-workflows-status', __dir__)\n")
+    FileUtils.chmod(0o755, installed_doctor)
+
+    orchestrator.call
+
+    refute_path_exists sentinel
+  end
+
+  def test_degraded_source_blocks_source_resident_nested_deep_seam_delegate
+    sentinel = path("nested-workflow-seam-executed")
+    source_helper = path("src/agent-workflows/bin/agent-workflow-seam-doctor")
+    installed_seam = path("target/bin/agent-workflow-seam-doctor")
+    installed_doctor = path("target/bin/agent-workflows-doctor")
+    FileUtils.mkdir_p(File.dirname(source_helper))
+    write_delegate(source_helper, "agent-workflows", "workflows.seam", sentinel: sentinel)
+    File.symlink(source_helper, installed_seam)
+    File.write(installed_doctor, "#!/usr/bin/env ruby\nexec File.expand_path('agent-workflow-seam-doctor', __dir__)\n")
+    FileUtils.chmod(0o755, installed_doctor)
+
+    orchestrator(options.merge(deep: true)).call
+
+    refute_path_exists sentinel
+  end
+
   def test_degraded_source_allows_delegate_hardlinked_only_to_external_path
     sentinel = path("external-hardlinked-workflow-executed")
     external = path("trusted/renamed-helper")
@@ -282,10 +314,11 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
                    "agent-coordination-dashboard", "dashboard.health", sentinel: @sentinel)
   end
 
-  def orchestrator
-    AgentDoctor::Orchestrator.new(options, runner: AgentDoctor::ProcessRunner.new,
-                                           sanitizer: AgentDoctor::Sanitizer.new,
-                                           environment: @environment)
+  def orchestrator(selected_options = options)
+    AgentDoctor::Orchestrator.new(selected_options,
+                                  runner: AgentDoctor::ProcessRunner.new,
+                                  sanitizer: AgentDoctor::Sanitizer.new,
+                                  environment: @environment)
   end
 
   def write_delegate(file, component, check_id, sentinel: nil)

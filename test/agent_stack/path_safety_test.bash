@@ -78,5 +78,12 @@ test_value_options_return_usage_for_missing_or_empty_operands() {
     set -e
     [[ "$status" -eq 64 ]] || fail "$option with an empty operand returned $status instead of 64"
     assert_contains "$output" "$option requires"
+
+    set +e
+    output="$("$ROOT/bin/agent-stack" sync "$option" --no-fetch 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -eq 64 ]] || fail "$option with an option operand returned $status instead of 64"
+    assert_contains "$output" "$option requires"
   done
 }

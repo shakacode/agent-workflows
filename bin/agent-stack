@@ -11,13 +11,16 @@ agent_stack_module_tree_usable() {
 }
 agent_stack_arguments=("$@")
 for ((agent_stack_index = 0; agent_stack_index < ${#agent_stack_arguments[@]}; agent_stack_index++)); do
-  if [[ "${agent_stack_arguments[$agent_stack_index]}" = "--source-root" && -n "${agent_stack_arguments[$((agent_stack_index + 1))]:-}" ]]; then
+  if [[ "${agent_stack_arguments[$agent_stack_index]}" = "--source-root" &&
+        -n "${agent_stack_arguments[$((agent_stack_index + 1))]:-}" &&
+        "${agent_stack_arguments[$((agent_stack_index + 1))]}" != --* ]]; then
     agent_stack_bootstrap_source_root="${agent_stack_arguments[$((agent_stack_index + 1))]}"
     break
   fi
 done
 agent_stack_source_module_dir="$agent_stack_bootstrap_source_root/agent-workflows/bin/agent_stack"
 if ! agent_stack_module_tree_usable "$agent_stack_module_dir"; then
+  [[ "${1:-}" != "doctor" ]] || { echo "agent-stack doctor requires complete modules beside the command" >&2; exit 64; }
   if ! agent_stack_module_tree_usable "$agent_stack_source_module_dir"; then
     echo "agent-stack module trees incomplete beside command and in source checkout: $agent_stack_source_module_dir" >&2
     exit 64
