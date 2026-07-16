@@ -10,6 +10,7 @@ All notable changes to this portable workflow pack are documented here.
 
 - **Add an agent-workflow consumer seam with portable configuration and command wrappers.** [PR 140](https://github.com/shakacode/agent-workflows/pull/140) by [justin808](https://github.com/justin808).
 - **Add a portable report-first safe intake skill for untrusted outside-contributor fork pull requests.**
+- **Add `agent-stack doctor` as a read-only master aggregator for uniform component-owned diagnostics, with generic checkout/link discovery, bounded delegates, contract validation, secret-safe human/JSON rendering, and stable `0/1/2/64` exits.**
 - **Add a portable dispatcher-capability preflight that records bound, attested route/dispatcher selection or one durable decision request without launching workers or mutating coordination.**
 - **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
@@ -35,6 +36,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Default autonomously clearable blocked Goal-mode batches to one deduplicated 15-minute current-thread monitor when supported, with manual-resume fallback and no polling for user-input blockers.**
 - **Clarify the portable planning-chat lifecycle: batch coordinators own completed-batch audits, prompt-only chats may archive after durable worker handoff, and parents reconcile only durable audit handoffs before release or archive.**
 - **Clarify same-chat launch selection, complete triage response ordering, and completed-batch audit handoffs so only outstanding work blocks archival while fully evidenced terminal dispositions remain durable.**
+- **Keep `agent-stack` and `agent-stack-doctor` as thin entrypoints over focused, installable sync and diagnostic modules, with small test drivers loading responsibility-specific suites.**
 - **Harden model-routed batches with fail-closed launch assurance, Sol-controlled conservative GPT-5.6 coordination and checking, bounded Terra execution envelopes, and auditable worker assignment evidence.**
 - **Change the public Codex native-plugin identifier from `agent-workflows` to `scw`; existing native-plugin users must remove the old entry and reinstall `scw`, while the repository, marketplace, helper, installer, status, and upgrade identities remain `agent-workflows`.**
 - **Make `$pr-batch` the sole workflow for one or more targets, with a default single-target worker subagent, staged cost-aware model routing, and explicit merge authority before launch.**

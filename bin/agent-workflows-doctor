@@ -1,0 +1,15 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+module_root = File.join(File.dirname(File.realpath($PROGRAM_NAME)), "agent_doctor")
+required_modules = %w[contract process_runner sanitizer timeout_budget workflows_cli workflows_component]
+missing_module = required_modules.map { |name| File.join(module_root, "#{name}.rb") }
+                                 .find { |path| !File.file?(path) || !File.readable?(path) }
+if missing_module
+  warn "agent-workflows doctor module missing or unreadable: #{missing_module}"
+  exit 64
+end
+
+require_relative "agent_doctor/workflows_cli"
+
+exit AgentDoctor::WorkflowsCLI.new.run(ARGV)

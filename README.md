@@ -88,6 +88,24 @@ For the full ShakaCode agent stack setup (`agent-workflows`,
 `agent-stack` is ShakaCode-specific stack tooling, not part of the generic
 workflow-pack install path for consumer repositories.
 
+After setup, use the master doctor to check all three parts of the local stack
+in one read-only report:
+
+```bash
+agent-stack doctor
+agent-stack doctor --deep
+```
+
+The master owns checkout and compatibility-link discovery, bounded component
+execution, contract validation, sanitization, aggregation, and rendering. Each
+component repository owns its operational checks behind the shared stack
+contract, so there is no fixed master list of internal check IDs. A stopped
+dashboard is reported as degraded, not failed, because the dashboard is an
+optional runtime. The doctor reports what to do next but never syncs, installs,
+starts, or repairs anything. See
+[Full Stack Doctor](docs/installation-and-upgrades.md#full-stack-doctor) for
+selectors, JSON output, status meanings, and exit codes.
+
 ### Host Installer Path
 
 Use the host installer when you need helper binaries on `PATH`, install
@@ -135,8 +153,9 @@ The selected delivery mode is durable install state. Repeated installs,
 explicit `--delivery-mode` changes it.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-status`, `agent-workflows-trust-audit`, and
-`upgrade-agent-workflows` available as normal commands.
+`agent-workflows-doctor`, `agent-workflows-status`,
+`agent-workflows-trust-audit`, and `upgrade-agent-workflows` available as normal
+commands.
 
 See [docs/installation-and-upgrades.md](docs/installation-and-upgrades.md) for
 host selection, status states, upgrades, rollback behavior, and Codex/Claude
