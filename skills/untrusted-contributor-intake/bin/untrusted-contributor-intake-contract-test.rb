@@ -127,7 +127,7 @@ def documented_canonical_authority_snippet
   extract_canonical_authority_snippet(skill)
 end
 
-def run_documented_posix_snippet(snippet, environment, output, scrub: true)
+def run_documented_posix_snippet(snippet, environment, output, scrub: true, combined_output: false)
   command = <<~SH
     #{snippet}
     #{output}
@@ -135,7 +135,14 @@ def run_documented_posix_snippet(snippet, environment, output, scrub: true)
   subprocess_environment = scrub ? INTAKE_SUBPROCESS_ENV_KEYS.to_h { |key| [key, nil] }.merge(environment) : environment
   stdout, stderr, status = Open3.capture3(subprocess_environment, "sh", "-c", command)
 
-  [status.success?, status.success? ? stdout : stderr]
+  output = if combined_output
+             stdout + stderr
+           elsif status.success?
+             stdout
+           else
+             stderr
+           end
+  [status.success?, output]
 end
 
 def with_environment(values)
@@ -410,6 +417,76 @@ end
 
 def documented_metadata_resolution_snippet
   extract_metadata_resolution_snippet(File.read(SKILL_PATH, encoding: "UTF-8"))
+end
+
+def extract_metadata_gathering_snippet(source)
+  start = source.index("metadata_gathering_failed() { printf 'UNKNOWN: metadata gathering failed\\n' >&2; exit 1; }")
+
+  raise "metadata gathering snippet missing" unless start
+
+  finish = source.index("\n```", start)
+
+  raise "metadata gathering snippet missing" unless finish
+
+  source[start...finish]
+end
+
+def documented_metadata_gathering_snippet
+  extract_metadata_gathering_snippet(File.read(SKILL_PATH, encoding: "UTF-8"))
+end
+
+def run_documented_metadata_gathering(
+  initial_metadata_record:,
+  graphql_metadata_record:,
+  viewer_permissions: '{"viewer_permissions":"write"}',
+  diff_summary: "diff --git a/example b/example\n",
+  post_diff_head_sha: nil
+)
+  Dir.mktmpdir("untrusted-contributor-intake") do |directory|
+    gh_path = File.join(directory, "gh")
+    log_path = File.join(directory, "gh.log")
+    File.write(
+      gh_path,
+      <<~SH,
+        #!/bin/sh
+        printf '%s\\n' "$*" >> "${GH_LOG}"
+        case "$1:$2" in
+          pr:view)
+            case "$*" in
+              *"--json headRefOid"*) printf '%s' "${POST_DIFF_HEAD_SHA}" ;;
+              *) printf '%s' "${INITIAL_METADATA_RECORD}" ;;
+            esac
+            ;;
+          api:graphql) printf '%s' "${GRAPHQL_METADATA_RECORD}" ;;
+          api:repos/*) printf '%s' "${VIEWER_PERMISSIONS}" ;;
+          pr:diff) printf '%s' "${DIFF_SUMMARY}" ;;
+          *) printf 'unexpected gh command: %s\\n' "$*" >&2; exit 1 ;;
+        esac
+      SH
+      encoding: "UTF-8"
+    )
+    File.chmod(0o755, gh_path)
+    success, output = run_documented_posix_snippet(
+      documented_metadata_gathering_snippet,
+      {
+        "GH_LOG" => log_path,
+        "INITIAL_METADATA_RECORD" => initial_metadata_record,
+        "GRAPHQL_METADATA_RECORD" => graphql_metadata_record,
+        "VIEWER_PERMISSIONS" => viewer_permissions,
+        "DIFF_SUMMARY" => diff_summary,
+        "POST_DIFF_HEAD_SHA" => post_diff_head_sha || graphql_metadata_record.split("|", 2).first,
+        "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+        "GH_HOST" => "github.com",
+        "PR_NUMBER" => "42",
+        "REPO" => "octo-org/hello-world"
+      },
+      "",
+      combined_output: true
+    )
+    calls = File.exist?(log_path) ? File.readlines(log_path, chomp: true) : []
+
+    [success, output, calls]
+  end
 end
 
 def run_documented_metadata_resolution(
@@ -1531,6 +1608,7 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes skill, "case \"${GRAPHQL_METADATA_RECORD}\" in *\\|*)"
     assert_includes skill, 'REPORTED_HEAD_SHA="${GRAPHQL_METADATA_RECORD%%|*}"'
     assert_includes skill, 'GRAPHQL_METADATA_JSON="${GRAPHQL_METADATA_RECORD#*|}"'
+    assert_includes skill, '[ -n "${GRAPHQL_METADATA_JSON}" ] || metadata_gathering_failed'
     assert_includes skill, %(printf '%s\\n' "${GRAPHQL_METADATA_JSON}")
     refute_includes skill, "reviews(first:100) { nodes { author { login } body"
     metadata_gathering = skill.index("## Metadata Gathering")
@@ -1561,7 +1639,75 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes skill, "- Gate state: <open|blocked|UNKNOWN|maintainer decision needed|follow-up ready>."
     assert_includes skill, "- Authority: <trusted local policy|trusted repository permission metadata|not established; review evidence incomplete>."
     assert_includes skill, "metadata_gathering_failed() { printf 'UNKNOWN: metadata gathering failed\\n' >&2; exit 1; }"
-    assert_equal 5, skill.scan("|| metadata_gathering_failed").length
+    assert_equal 8, skill.scan("|| metadata_gathering_failed").length
+  end
+
+  def test_rejects_a_head_change_between_initial_view_and_graphql_before_reporting_metadata
+    initial_head = "a" * 40
+    graphql_head = "b" * 40
+    initial_metadata = %({"number":42,"headRefOid":"#{initial_head}"})
+    graphql_metadata = %({"reported_head_sha":"#{graphql_head}"})
+
+    success, output, calls = run_documented_metadata_gathering(
+      initial_metadata_record: "#{initial_head}|#{initial_metadata}",
+      graphql_metadata_record: "#{graphql_head}|#{graphql_metadata}"
+    )
+
+    refute success
+    assert_match(/UNKNOWN: metadata gathering failed/, output)
+    refute_includes output, initial_metadata
+    refute_includes output, graphql_metadata
+    assert_equal 2, calls.length
+    assert_includes calls.first, "pr view"
+    assert_includes calls.last, "api graphql"
+
+    skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    assert_includes skill, 'INITIAL_METADATA_HEAD_SHA="${INITIAL_METADATA_RECORD%%|*}"'
+    assert_includes skill, 'case "${INITIAL_METADATA_HEAD_SHA}" in ""|*[!0123456789abcdefABCDEF]*) metadata_gathering_failed ;; esac'
+    assert_includes skill, '[ "${INITIAL_METADATA_HEAD_SHA}" = "${REPORTED_HEAD_SHA}" ] || metadata_gathering_failed'
+  end
+
+  def test_rejects_empty_graphql_metadata_before_printing_either_snapshot
+    head = "a" * 40
+    initial_metadata = %({"number":42,"headRefOid":"#{head}"})
+
+    success, output, calls = run_documented_metadata_gathering(
+      initial_metadata_record: "#{head}|#{initial_metadata}",
+      graphql_metadata_record: "#{head}|"
+    )
+
+    refute success
+    assert_match(/UNKNOWN: metadata gathering failed/, output)
+    refute_includes output, initial_metadata
+    assert_equal 2, calls.length
+    assert_includes calls.first, "pr view"
+    assert_includes calls.last, "api graphql"
+  end
+
+  def test_matching_heads_print_both_snapshots_before_continuing_metadata_flow
+    head = "a" * 40
+    initial_metadata = %({"number":42,"headRefOid":"#{head}"})
+    graphql_metadata = %({"reported_head_sha":"#{head}"})
+    viewer_permissions = %({"viewer_permissions":"write"})
+    diff_summary = "diff --git a/example b/example\n"
+
+    success, output, calls = run_documented_metadata_gathering(
+      initial_metadata_record: "#{head}|#{initial_metadata}",
+      graphql_metadata_record: "#{head}|#{graphql_metadata}",
+      viewer_permissions: viewer_permissions,
+      diff_summary: diff_summary,
+      post_diff_head_sha: head
+    )
+
+    assert success, output
+    assert_equal "#{initial_metadata}\n#{graphql_metadata}\n#{viewer_permissions}#{diff_summary}", output
+    assert_equal 5, calls.length
+    assert_includes calls[0], "pr view"
+    assert_includes calls[1], "api graphql"
+    assert_includes calls[2], "api repos/octo-org/hello-world --jq {viewer_permissions: .permissions}"
+    assert_includes calls[3], "pr diff"
+    assert_includes calls[4], "pr view"
+    assert_includes calls[4], "--json headRefOid"
   end
 
   def test_review_evidence_completeness_fails_closed_on_truncation
@@ -1640,6 +1786,23 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
 
     assert_equal 1, source.scan(Regexp.new(Regexp.escape(capture3))).length
     assert_includes source, posix_shell_replay
+  end
+
+  def test_successful_posix_snippets_return_stdout_only_unless_combined_output_is_requested
+    success, output = run_documented_posix_snippet("", {}, %(printf 'stdout'; printf 'stderr' >&2))
+
+    assert success
+    assert_equal "stdout", output
+
+    success, output = run_documented_posix_snippet(
+      "",
+      {},
+      %(printf 'stdout'; printf 'stderr' >&2),
+      combined_output: true
+    )
+
+    assert success
+    assert_equal "stdoutstderr", output
   end
 
   def test_replays_documented_status_check_normalization_for_both_union_shapes
