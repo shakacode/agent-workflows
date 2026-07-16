@@ -106,6 +106,31 @@ class AgentDoctorLauncherTest < Minitest::Test
     refute_path_exists sentinel
   end
 
+  def test_workflow_doctor_missing_dependency_fails_cleanly
+    %w[workflows_cli.rb contract.rb].each do |missing_module|
+      %i[regular symlink].each do |variant|
+        helper_root = variant == :regular ? @bin : File.join(@tmp, "workflow-helper-source")
+        FileUtils.mkdir_p(helper_root)
+        helper = File.join(helper_root, "agent-workflows-doctor")
+        FileUtils.cp(File.join(ROOT, "bin/agent-workflows-doctor"), helper)
+        FileUtils.cp_r(File.join(ROOT, "bin/agent_doctor"), helper_root)
+        FileUtils.rm(File.join(helper_root, "agent_doctor", missing_module))
+        installed = File.join(@bin, "agent-workflows-doctor")
+        FileUtils.ln_sf(helper, installed) if variant == :symlink
+
+        _stdout, stderr, status = Open3.capture3(installed, "--help")
+
+        message = "#{variant} #{missing_module}"
+        assert_equal 64, status.exitstatus, message
+        assert_includes stderr, "agent-workflows doctor module missing", message
+        assert_includes stderr, missing_module, message
+        refute_includes stderr, "LoadError", message
+        FileUtils.rm_f(installed)
+        FileUtils.rm_rf(File.join(helper_root, "agent_doctor"))
+      end
+    end
+  end
+
   private
 
   def run_doctor

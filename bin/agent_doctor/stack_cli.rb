@@ -20,8 +20,7 @@ module AgentDoctor
       options = defaults
       parser = parser_for(options)
       parser.parse!(arguments)
-      raise Configuration::UsageError, "unexpected arguments" unless arguments.empty?
-      raise Configuration::UsageError, "--host must be codex, claude, or auto" unless %w[codex claude auto].include?(options[:host])
+      validate!(options, arguments)
 
       sanitizer = Sanitizer.new(@environment)
       runner = ProcessRunner.new(timeout: TimeoutBudget.stack_component(@environment))
@@ -65,6 +64,15 @@ module AgentDoctor
 
     def environment_path(name, fallback)
       @environment[name].to_s.empty? ? fallback : @environment[name]
+    end
+
+    def validate!(options, arguments)
+      raise Configuration::UsageError, "unexpected arguments" unless arguments.empty?
+      raise Configuration::UsageError, "--host must be codex, claude, or auto" unless %w[codex claude auto].include?(options[:host])
+
+      empty_path = { source_root: "--source-root", compat_root: "--compat-root", runtime_root: "--runtime-root",
+                     target: "--target", install_dir: "--agent-coord-install-dir" }.find { |key,| options[key] == "" }
+      raise Configuration::UsageError, "#{empty_path[1]} must not be empty" if empty_path
     end
 
     def parser_for(options)

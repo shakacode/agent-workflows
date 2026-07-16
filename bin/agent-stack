@@ -4,7 +4,7 @@ set -euo pipefail
 agent_stack_bin_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 agent_stack_module_dir="$agent_stack_bin_dir/agent_stack"
 agent_stack_bootstrap_source_root="${AGENT_STACK_SOURCE_ROOT:-$HOME/src}"
-agent_stack_required_modules=(usage doctor options paths runtime repositories compatibility installers sync)
+agent_stack_required_modules=(usage doctor options paths runtime repositories compatibility module_install installers sync)
 agent_stack_module_tree_usable() {
   local directory="$1" module
   for module in "${agent_stack_required_modules[@]}"; do [[ -f "$directory/$module.bash" && -r "$directory/$module.bash" ]] || return 1; done

@@ -25,26 +25,6 @@ agent_stack_install_file() {
   fi
 }
 
-agent_stack_install_module_directory() {
-  local module_name="$1"
-  local source_directory="$source_root/agent-workflows/bin/$module_name"
-  local destination="$agent_coord_install_dir/$module_name"
-  local marker temporary_marker
-  if [[ "$module_name" = agent_doctor ]] && agent_stack_colocated_doctor_module; then
-    agent_stack_colocated_doctor_destination_safe || return 1
-  else
-    agent_stack_module_destination_safe "$module_name" || return 1
-  fi
-  if [[ "$source_directory" = "$destination" ]]; then return; fi
-  mkdir -p "$destination"
-  marker="$destination/.agent-stack-managed"
-  rsync -a --delete --exclude='/.agent-stack-managed' "$source_directory/" "$destination/"
-  temporary_marker="$(mktemp "$destination/.agent-stack-managed.XXXXXX")"
-  printf 'agent-stack-module-v1:%s\n' "$module_name" > "$temporary_marker"
-  chmod 0644 "$temporary_marker"
-  mv -f "$temporary_marker" "$marker"
-}
-
 agent_stack_module_destination_safe() {
   local module_name="$1"
   local source_directory="$source_root/agent-workflows/bin/$module_name"

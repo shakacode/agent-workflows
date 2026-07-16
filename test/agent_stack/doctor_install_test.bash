@@ -50,6 +50,35 @@ test_colocated_copy_sync_recovers_recorded_live_doctor_symlink_after_source_relo
     fail "recovered doctor copy is missing workflow ownership"
 }
 
+test_colocated_copy_sync_preserves_workflow_marker_when_workflow_install_fails() {
+  local temporary target work output status
+  temporary="$(make_tmp_dir)"
+  target="$temporary/codex-home"
+  with_current_workflows_origin "$temporary"
+
+  run_sync "$temporary" --target "$target" --agent-coord-install-dir "$target/bin" --mode copy --no-fetch >/dev/null
+  assert_file "$target/bin/agent_doctor/.agent-workflows-managed"
+
+  work="$temporary/work/agent-workflows"
+  printf '#!/usr/bin/env bash\nexit 23\n' > "$work/bin/install-agent-workflows"
+  chmod +x "$work/bin/install-agent-workflows"
+  git -C "$work" add bin/install-agent-workflows
+  git -C "$work" commit --quiet -m "failing workflow installer fixture"
+  git -C "$work" push --quiet "$temporary/origins/agent-workflows.git" main
+
+  set +e
+  output="$(run_sync "$temporary" --target "$target" --agent-coord-install-dir "$target/bin" --mode copy 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 23 ]] || fail "failing workflow installer returned $status instead of 23: $output"
+  assert_file "$target/bin/agent_doctor/.agent-workflows-managed"
+  assert_file "$target/bin/agent_doctor/.agent-stack-managed"
+  ruby "$temporary/src/agent-workflows/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" ||
+    fail "stack doctor update left stale workflow ownership after downstream installer failure"
+}
+
 test_colocated_copy_sync_refuses_unproven_dangling_doctor_symlinks_without_mutation() {
   local variant temporary target recorded_source link_target output status metadata_before
   for variant in unrelated malformed_metadata wrong_mode wrong_target; do

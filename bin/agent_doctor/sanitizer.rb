@@ -10,6 +10,7 @@ module AgentDoctor
     REDACTED_PATH_SEGMENT = "%5BREDACTED%5D"
     LONG_HEX_PATH_SEGMENT_PATTERN = /\A[0-9a-f]{32,}\z/i
     UUID_PATH_SEGMENT_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/i
+    AWS_ACCESS_KEY_ID_PATTERN = /\A(?:AKIA|ASIA)[0-9A-Z]{16}\z/
 
     def initialize(environment = ENV)
       secrets = environment.each_with_object([]) do |(key, value), values|
@@ -120,6 +121,7 @@ module AgentDoctor
     def high_entropy_path_segment?(segment)
       decoded = decode_path_segment(segment)
       return true if @secret_values.any? { |secret| decoded.include?(secret) }
+      return true if decoded.match?(AWS_ACCESS_KEY_ID_PATTERN)
       return false if decoded.bytesize < 24
       return true if decoded.match?(LONG_HEX_PATH_SEGMENT_PATTERN)
       return false if decoded.match?(UUID_PATH_SEGMENT_PATTERN)

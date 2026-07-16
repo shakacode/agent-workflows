@@ -107,6 +107,23 @@ class AgentDoctorSanitizerTest < Minitest::Test
     refute_includes output, hex_secret
   end
 
+  def test_redacts_aws_access_key_ids_in_paths_and_opaque_fragments
+    access_key_id = "AKIA1234567890ABCDEF"
+    output = AgentDoctor::Sanitizer.new.string(
+      "https://example.test/account/#{access_key_id} https://example.test/reset##{access_key_id}"
+    )
+
+    assert_equal "https://example.test/account/%5BREDACTED%5D https://example.test/reset#[REDACTED]", output
+    refute_includes output, access_key_id
+  end
+
+  def test_preserves_ordinary_twenty_character_path_segments
+    ordinary_slug = "abcdefghijklmnop1234"
+    output = AgentDoctor::Sanitizer.new.string("https://example.test/projects/#{ordinary_slug}")
+
+    assert_equal "https://example.test/projects/#{ordinary_slug}", output
+  end
+
   def test_redacts_percent_encoded_known_secret_in_short_path_segment
     sanitizer = AgentDoctor::Sanitizer.new("SERVICE_PASSWORD" => "MyS3cr3t!Pass")
     output = sanitizer.string("https://example.test/report/MyS3cr3t%21Pass/release%20notes")

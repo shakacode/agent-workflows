@@ -92,7 +92,7 @@ test_launcher_uses_only_complete_module_trees() {
 
   [[ "$status" -eq 0 ]] || fail "partial local module tree did not fall back to source: $output"
   assert_contains "$output" "agent-stack sync complete"
-  for module_name in usage doctor options paths runtime repositories compatibility installers sync; do
+  for module_name in usage doctor options paths runtime repositories compatibility module_install installers sync; do
     assert_file "$install_dir/agent_stack/$module_name.bash"
   done
 

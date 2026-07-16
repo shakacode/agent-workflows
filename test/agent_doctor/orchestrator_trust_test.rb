@@ -217,6 +217,24 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     refute_path_exists sentinel
   end
 
+  def test_degraded_source_blocks_source_resident_workflow_modules
+    %i[symlink hardlink].each do |variant|
+      sentinel = path("#{variant}-workflow-module-executed")
+      source_module = path("src/agent-workflows/bin/agent_doctor/workflows_cli.rb")
+      installed_module = path("target/bin/agent_doctor/workflows_cli.rb")
+      FileUtils.mkdir_p([File.dirname(source_module), File.dirname(installed_module)])
+      File.write(source_module, "# source-resident module\n")
+      variant == :symlink ? File.symlink(source_module, installed_module) : File.link(source_module, installed_module)
+      write_delegate(path("target/bin/agent-workflows-doctor"), "agent-workflows", "workflows.installation",
+                     sentinel: sentinel)
+
+      orchestrator.call
+
+      refute_path_exists sentinel, variant
+      FileUtils.rm_f([installed_module, source_module])
+    end
+  end
+
   def test_degraded_source_allows_delegate_hardlinked_only_to_external_path
     sentinel = path("external-hardlinked-workflow-executed")
     external = path("trusted/renamed-helper")

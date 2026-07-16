@@ -7,6 +7,7 @@ require_relative "source_checks"
 module AgentDoctor
   class Orchestrator
     COMPONENTS = %w[agent-workflows agent-coordination agent-coordination-dashboard].freeze
+    WORKFLOW_DOCTOR_MODULES = %w[contract process_runner sanitizer timeout_budget workflows_cli workflows_component].freeze
 
     def initialize(options, runner:, sanitizer:, environment: ENV, now: -> { Time.now.utc })
       @options = options
@@ -60,6 +61,7 @@ module AgentDoctor
       command << "--deep" if @options[:deep]
       delegates = [command.first, File.join(paths[:target], "bin", "agent-workflows-status")]
       delegates << File.join(paths[:target], "bin", "agent-workflow-seam-doctor") if @options[:deep]
+      delegates.concat(WORKFLOW_DOCTOR_MODULES.map { |name| File.join(paths[:target], "bin", "agent_doctor", "#{name}.rb") })
       if delegates.any? { |executable| source_delegate_blocked?(source_check, executable, sources.fetch("agent-workflows")) }
         return source_trust_failure("agent-workflows")
       end
@@ -145,8 +147,7 @@ module AgentDoctor
       rescue Errno::ENOENT, Errno::ENOTDIR
         return false
       end
-      source_stat = File.stat(source)
-      return false if candidate_stat.nlink <= 1 || candidate_stat.dev != source_stat.dev
+      return false if candidate_stat.nlink <= 1 || candidate_stat.dev != File.stat(source).dev
 
       directories = [source]
       entries_scanned = 0
