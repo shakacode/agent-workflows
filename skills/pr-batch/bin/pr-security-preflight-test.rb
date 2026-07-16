@@ -916,11 +916,18 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_git_probe_env_preserves_protected_config_sources_for_safe_directory
+  def test_git_probe_env_clears_explicit_overrides_while_preserving_safe_directory
     env = PrBatchGitProbeEnv.probe_env(
+      "GIT_ATTR_NOSYSTEM" => "1",
+      "GIT_ATTR_SOURCE" => "injected-attributes",
+      "GIT_CEILING_DIRECTORIES" => "/tmp",
       "GIT_CONFIG_GLOBAL" => "/tmp/global-gitconfig",
       "GIT_CONFIG_SYSTEM" => "/tmp/system-gitconfig",
       "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_LITERAL_PATHSPECS" => "1",
+      "GIT_GLOB_PATHSPECS" => "1",
+      "GIT_NOGLOB_PATHSPECS" => "1",
+      "GIT_ICASE_PATHSPECS" => "1",
       "GIT_CONFIG_COUNT" => "4",
       "GIT_CONFIG_KEY_0" => "safe.directory",
       "GIT_CONFIG_VALUE_0" => "*",
@@ -932,9 +939,21 @@ class PrSecurityPreflightTest < Minitest::Test
       "GIT_CONFIG_VALUE_3" => "https://github.com/owner/repo.git"
     )
 
-    refute env.key?("GIT_CONFIG_GLOBAL")
-    refute env.key?("GIT_CONFIG_SYSTEM")
-    refute env.key?("GIT_CONFIG_NOSYSTEM")
+    %w[
+      GIT_ATTR_NOSYSTEM
+      GIT_ATTR_SOURCE
+      GIT_CEILING_DIRECTORIES
+      GIT_CONFIG_GLOBAL
+      GIT_CONFIG_SYSTEM
+      GIT_CONFIG_NOSYSTEM
+      GIT_LITERAL_PATHSPECS
+      GIT_GLOB_PATHSPECS
+      GIT_NOGLOB_PATHSPECS
+      GIT_ICASE_PATHSPECS
+    ].each do |name|
+      assert env.key?(name), "expected #{name} to be explicitly overridden"
+      assert_nil env[name]
+    end
     assert_equal "3", env["GIT_CONFIG_COUNT"]
     assert_equal "safe.directory", env["GIT_CONFIG_KEY_0"]
     assert_equal "*", env["GIT_CONFIG_VALUE_0"]
@@ -944,6 +963,16 @@ class PrSecurityPreflightTest < Minitest::Test
     assert_equal "/worktree", env["GIT_CONFIG_VALUE_2"]
     assert_nil env["GIT_CONFIG_KEY_3"]
     assert_nil env["GIT_CONFIG_VALUE_3"]
+  end
+
+  def test_git_probe_env_preserves_caller_network_restrictions
+    env = PrBatchGitProbeEnv.probe_env(
+      "GIT_ALLOW_PROTOCOL" => "https",
+      "GIT_NO_LAZY_FETCH" => "1"
+    )
+
+    refute env.key?("GIT_ALLOW_PROTOCOL")
+    refute env.key?("GIT_NO_LAZY_FETCH")
   end
 
   def test_git_probe_env_preserves_git_config_parameters_safe_directory_entries

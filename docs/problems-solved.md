@@ -46,12 +46,12 @@ so another organization would supply its own registry and presets rather than
 inherit ShakaCode policy.
 
 Avoiding copies prevents most drift. When a constrained environment must pin a
-local copy, record its Source Pack revision and compare it against that source.
-[Issue #23](https://github.com/shakacode/agent-workflows/issues/23) documents
-what happens without that safeguard: shared workflow files evolved independently
-in the Source Pack and a consumer repo, including security-relevant helpers.
-Durable pinned-copy drift detection remains work to complete, not a capability
-this project claims today.
+local copy, record its Source Pack revision and use the manifest-driven
+`bin/check-agent-workflow-drift` helper to compare both copies against that
+pinned revision. [Issue #23](https://github.com/shakacode/agent-workflows/issues/23)
+documents what happens without that safeguard: shared workflow files evolved
+independently in the Source Pack and a consumer repo, including
+security-relevant helpers.
 
 ## Keep Shared Process Portable Without Flattening Repository Policy
 
@@ -123,6 +123,7 @@ Agent Workflows currently provides:
 - host installers and native `scw` plugin manifests for both hosts;
 - repo-owned seams plus initialization and validation tooling;
 - installed-pack status, upgrade, rollback, and trust-audit helpers;
+- read-only, manifest-driven drift detection for repo-pinned shared copies;
 - ShakaCode's one-PR-per-repo maintainer fanout for seam changes;
 - trust-gated planning, execution, review, verification, and audit workflows;
 - an optional, backend-neutral coordination contract.

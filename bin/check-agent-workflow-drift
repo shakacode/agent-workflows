@@ -1,0 +1,546 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "optparse"
+require "pathname"
+require "yaml"
+require_relative "../skills/pr-batch/lib/git_probe_env"
+
+module AgentWorkflowDrift
+  module_function
+
+  ManifestError = Class.new(StandardError)
+  ROOT_KEYS = %w[files source_revision version].freeze
+  IDENTICAL_KEYS = %w[consumer mode source].freeze
+  OVERLAY_KEYS = %w[consumer consumer_mode consumer_sha256 mode reason source source_sha256].freeze
+  SHA256_PATTERN = /\A[0-9a-f]{64}\z/i
+  REVISION_PATTERN = /\A[0-9a-f]{40}\z/i
+  SUPPORTED_GIT_MODES = %w[100644 100755].freeze
+  FILTER_DRIVER_PATTERN = /\A[A-Za-z0-9_.-]+\z/n
+  UNSAFE_OUTPUT_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/
+  NOFOLLOW_FLAG = File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : nil
+
+  def run(manifest_path:, source_root:, consumer_root:, output: $stdout)
+    clean = []
+    overlays = []
+    unexpected = []
+    seen_files = { "source" => {}, "consumer" => {} }
+
+    begin
+      manifest = load_manifest(manifest_path)
+      revision = validate_manifest(manifest)
+      source_root = validate_root(source_root, "source root")
+      consumer_root = validate_root(consumer_root, "consumer root")
+      verify_source_revision(source_root, revision)
+      verify_no_repository_attribute_overrides(source_root)
+      pinned_attributes = supports_pinned_attributes?(source_root)
+      verify_pinned_attribute_files(source_root, revision, manifest.fetch("files")) if pinned_attributes
+
+      manifest.fetch("files").sort_by { |entry| [entry.fetch("source"), entry.fetch("consumer")] }.each do |entry|
+        inspect_entry(
+          entry, revision, source_root, consumer_root, pinned_attributes, seen_files, clean, overlays, unexpected
+        )
+      end
+    rescue ManifestError, Errno::ENOENT, Errno::EACCES => e
+      unexpected << ["manifest", e.message]
+    end
+
+    render_bucket(output, "CLEAN IDENTICAL", clean)
+    render_bucket(output, "EXPECTED OVERLAYS", overlays)
+    render_bucket(output, "UNEXPECTED DRIFT", unexpected)
+    unexpected.empty? ? 0 : 1
+  end
+
+  def load_manifest(path)
+    data = YAML.safe_load(File.binread(path), permitted_classes: [], permitted_symbols: [], aliases: false)
+    raise ManifestError, "manifest must be a YAML mapping" unless data.is_a?(Hash)
+
+    data
+  rescue Psych::Exception => e
+    raise ManifestError, "invalid YAML: #{escape_unsafe_output_characters(e.message)}"
+  rescue SystemCallError => e
+    raise ManifestError, "manifest is unreadable: #{path} (#{e.class.name})"
+  end
+
+  def validate_manifest(manifest)
+    validate_keys(manifest, ROOT_KEYS, "manifest")
+    raise ManifestError, "manifest version must be 1" unless manifest["version"] == 1
+
+    revision = manifest["source_revision"]
+    unless revision.is_a?(String) && revision.match?(REVISION_PATTERN)
+      raise ManifestError, "source_revision must be a full 40-hex commit"
+    end
+
+    files = manifest["files"]
+    raise ManifestError, "files must be a nonempty sequence" unless files.is_a?(Array) && !files.empty?
+
+    files.each_with_index { |entry, index| validate_entry(entry, index) }
+    reject_duplicate_paths(files, "source")
+    reject_duplicate_paths(files, "consumer")
+    revision.downcase
+  end
+
+  def reject_duplicate_paths(files, key)
+    duplicate = files.group_by { |entry| entry.fetch(key) }
+                     .select { |_path, entries| entries.length > 1 }
+                     .keys
+                     .min
+    raise ManifestError, "duplicate #{key} path: #{duplicate}" if duplicate
+  end
+
+  def validate_entry(entry, index)
+    raise ManifestError, "files[#{index}] must be a mapping" unless entry.is_a?(Hash)
+
+    mode = entry["mode"]
+    allowed_keys = mode == "overlay" ? OVERLAY_KEYS : IDENTICAL_KEYS
+    validate_keys(entry, allowed_keys, "files[#{index}]")
+    raise ManifestError, "files[#{index}].mode must be identical or overlay" unless %w[identical overlay].include?(mode)
+
+    validate_relative_path(entry["source"], "files[#{index}].source")
+    validate_relative_path(entry["consumer"], "files[#{index}].consumer")
+    return if mode == "identical"
+
+    reason = entry["reason"]
+    raise ManifestError, "files[#{index}].reason must be nonempty" unless reason.is_a?(String) && !reason.strip.empty?
+
+    validate_manifest_text(reason, "files[#{index}].reason", allow_control_characters: true)
+    unless SUPPORTED_GIT_MODES.include?(entry["consumer_mode"])
+      raise ManifestError, "files[#{index}].consumer_mode must be 100644 or 100755"
+    end
+
+    %w[source_sha256 consumer_sha256].each do |key|
+      value = entry[key]
+      unless value.is_a?(String) && value.match?(SHA256_PATTERN)
+        raise ManifestError, "files[#{index}].#{key} must be a 64-hex SHA-256"
+      end
+    end
+  end
+
+  def validate_keys(mapping, expected, label)
+    keys = mapping.keys
+    raise ManifestError, "#{label} keys must be strings" unless keys.all? { |key| key.is_a?(String) }
+
+    keys.each { |key| validate_manifest_text(key, "#{label} key") }
+
+    missing = expected - keys
+    extra = keys - expected
+    raise ManifestError, "#{label} missing keys: #{missing.sort.join(', ')}" unless missing.empty?
+    raise ManifestError, "#{label} has unknown keys: #{extra.sort.join(', ')}" unless extra.empty?
+  end
+
+  def validate_relative_path(path, label)
+    unless path.is_a?(String) && !path.empty? && !path.include?("\\")
+      raise ManifestError, "#{label} must be a nonempty relative path using forward slashes"
+    end
+
+    validate_manifest_text(path, label)
+
+    pathname = Pathname.new(path)
+    unsafe = pathname.absolute? || path.match?(%r{\A[A-Za-z]:/}) || pathname.cleanpath.to_s != path || path.split("/").any? { |part| %w[. ..].include?(part) }
+    raise ManifestError, "#{label} must not be absolute, traversing, or non-canonical" if unsafe
+  end
+
+  def validate_manifest_text(value, label, allow_control_characters: false)
+    unless value.encoding == Encoding::UTF_8 && value.valid_encoding?
+      raise ManifestError, "#{label} must be valid UTF-8"
+    end
+    return if allow_control_characters
+
+    return unless value.match?(UNSAFE_OUTPUT_CHARACTER_PATTERN)
+
+    raise ManifestError, "#{label} must not contain unsafe control, format, or separator characters"
+  end
+
+  def escape_unsafe_output_characters(value)
+    safe_value = value.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+    safe_value.gsub(UNSAFE_OUTPUT_CHARACTER_PATTERN) do |character|
+      case character
+      when "\t" then "\\t"
+      when "\n" then "\\n"
+      when "\r" then "\\r"
+      else format("\\u{%04X}", character.ord)
+      end
+    end
+  end
+
+  def validate_root(path, label)
+    root = File.realpath(path)
+    raise ManifestError, "#{label} is not a directory: #{path}" unless File.directory?(root)
+
+    root
+  rescue Errno::ELOOP
+    raise ManifestError, "#{label} has a symlink cycle: #{path}"
+  rescue Errno::ENOENT, Errno::EACCES, Errno::ENOTDIR => e
+    raise ManifestError, "#{label} is unavailable: #{e.message}"
+  end
+
+  def verify_source_revision(source_root, expected_revision)
+    top_stdout, top_stderr, top_status = git_capture(source_root, "rev-parse", "--show-toplevel")
+    raise ManifestError, "source root is not a Git checkout: #{top_stderr.strip}" unless top_status.success?
+
+    git_top_level = File.realpath(top_stdout.b.delete_suffix("\n".b))
+    unless git_top_level == source_root.b
+      raise ManifestError,
+            "source root must be the Git repository top level: expected #{git_top_level}, found #{source_root}"
+    end
+
+    stdout, stderr, status = git_capture(source_root, "rev-parse", "--verify", "HEAD^{commit}")
+    raise ManifestError, "source root is not a Git checkout: #{stderr.strip}" unless status.success?
+
+    actual_revision = stdout.strip.downcase
+    return if actual_revision == expected_revision
+
+    raise ManifestError, "source revision mismatch: expected #{expected_revision}, found #{actual_revision}"
+  end
+
+  def verify_no_repository_attribute_overrides(source_root)
+    stdout, stderr, status = git_capture(source_root, "rev-parse", "--git-path", "info/attributes")
+    raise ManifestError, "source attribute override path is unreadable: #{stderr.strip}" unless status.success?
+
+    path = File.expand_path(stdout.b.delete_suffix("\n"), source_root)
+    stat = File.lstat(path)
+    return if stat.file? && stat.zero?
+
+    raise ManifestError, "source repository has unpinned info attributes: #{path}"
+  rescue Errno::ENOENT
+    nil
+  rescue SystemCallError => e
+    raise ManifestError, "source attribute override path is unreadable: #{e.message}"
+  end
+
+  def inspect_entry(
+    entry, revision, source_root, consumer_root, pinned_attributes, seen_files, clean, overlays, unexpected
+  )
+    label = "#{entry.fetch('source')} -> #{entry.fetch('consumer')}"
+    source_path = resolve_file(source_root, entry.fetch("source"), "source")
+    consumer_path = resolve_file(consumer_root, entry.fetch("consumer"), "consumer")
+    register_mapped_file(seen_files.fetch("source"), source_path, entry.fetch("source"), "source")
+    register_mapped_file(seen_files.fetch("consumer"), consumer_path, entry.fetch("consumer"), "consumer")
+    source_contents = read_mapped_file(source_path, entry.fetch("source"), "source")
+    consumer_contents = read_mapped_file(consumer_path, entry.fetch("consumer"), "consumer")
+    pinned_source_mode, pinned_source_oid = read_pinned_source_entry(source_root, revision, entry.fetch("source"))
+    source_changed_from_revision = source_changed_from_revision?(
+      source_root, revision, entry.fetch("source"), source_contents, pinned_source_mode, pinned_source_oid,
+      pinned_attributes
+    )
+    source_mode = filesystem_git_mode(source_root, entry.fetch("source"), "source")
+    consumer_mode = filesystem_git_mode(consumer_root, entry.fetch("consumer"), "consumer")
+
+    if entry.fetch("mode") == "identical"
+      changes = []
+      changes << "source file does not match pinned revision" if source_changed_from_revision
+      changes << mode_difference("source", pinned_source_mode, source_mode) if source_mode != pinned_source_mode
+      changes << mode_difference("consumer", pinned_source_mode, consumer_mode) if consumer_mode != pinned_source_mode
+      changes << "identical files differ" unless source_contents == consumer_contents
+      if changes.empty?
+        clean << [label, nil]
+      else
+        unexpected << [label, changes.join("; ")]
+      end
+      return
+    end
+
+    source_hash = Digest::SHA256.hexdigest(source_contents)
+    consumer_hash = Digest::SHA256.hexdigest(consumer_contents)
+    changes = []
+    changes << "source file does not match pinned revision" if source_changed_from_revision
+    changes << mode_difference("source", pinned_source_mode, source_mode) if source_mode != pinned_source_mode
+    expected_consumer_mode = entry.fetch("consumer_mode")
+    if consumer_mode != expected_consumer_mode
+      changes << "consumer mode differs from reviewed overlay (expected #{expected_consumer_mode}, found #{consumer_mode})"
+    end
+    changes << "source hash changed (#{source_hash})" unless source_hash == entry.fetch("source_sha256").downcase
+    changes << "consumer hash changed (#{consumer_hash})" unless consumer_hash == entry.fetch("consumer_sha256").downcase
+
+    if changes.empty?
+      overlays << [label, escape_unsafe_output_characters(entry.fetch("reason").strip)]
+    else
+      unexpected << [label, changes.join("; ")]
+    end
+  rescue ManifestError => e
+    unexpected << [label, e.message]
+  end
+
+  def read_pinned_source_entry(source_root, revision, relative_path)
+    literal_pathspec = ":(top,literal)#{relative_path}"
+    stdout, _stderr, status = git_capture(source_root, "ls-tree", "-z", revision, "--", literal_pathspec)
+    raise ManifestError, "source file is not tracked at pinned revision: #{relative_path}" unless status.success? && !stdout.empty?
+
+    records = stdout.b.split("\0".b, -1)
+    records.pop if records.last == "".b
+    match = records.one? && records.first.match(/\A([0-9]{6}) ([^ ]+) ([0-9a-f]+)\t(.*)\z/m)
+    unless match && match[4] == relative_path.b
+      raise ManifestError, "source metadata is unreadable at pinned revision: #{relative_path}"
+    end
+
+    mode, type, oid = match.captures.first(3)
+    raise ManifestError, "unsupported pinned source mode #{mode}: #{relative_path}" unless SUPPORTED_GIT_MODES.include?(mode)
+    raise ManifestError, "unsupported pinned source object type #{type}: #{relative_path}" unless type == "blob"
+
+    [mode, oid]
+  end
+
+  def source_changed_from_revision?(
+    source_root, revision, relative_path, source_contents, pinned_mode, pinned_oid, pinned_attributes
+  )
+    index_entry = read_source_index_entry(source_root, relative_path)
+    return true unless index_entry == [pinned_mode, pinned_oid]
+
+    worktree_oid = hash_source_worktree_file(
+      source_root, revision, relative_path, source_contents, pinned_attributes
+    )
+    worktree_oid != pinned_oid
+  end
+
+  def read_source_index_entry(source_root, relative_path)
+    literal_pathspec = ":(top,literal)#{relative_path}"
+    stdout, stderr, status = git_capture(source_root, "ls-files", "--stage", "-z", "--", literal_pathspec)
+    raise ManifestError, "source index is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+    return nil if stdout.empty?
+
+    records = stdout.b.split("\0".b, -1)
+    records.pop if records.last == "".b
+    match = records.one? && records.first.match(/\A([0-9]{6}) ([0-9a-f]+) ([0-3])\t(.*)\z/m)
+    return nil unless match && match[3] == "0" && match[4] == relative_path.b
+
+    [match[1], match[2]]
+  end
+
+  def supports_pinned_attributes?(source_root)
+    _stdout, _stderr, status = git_capture(
+      source_root, "--attr-source=HEAD", "--version"
+    )
+    status.success?
+  end
+
+  def verify_pinned_attribute_files(source_root, revision, entries)
+    entries.flat_map { |entry| attribute_paths_for(entry.fetch("source")) }.uniq.sort.each do |relative_path|
+      literal_pathspec = ":(top,literal)#{relative_path}"
+      stdout, stderr, status = git_capture(source_root, "ls-tree", "-z", revision, "--", literal_pathspec)
+      unless status.success?
+        raise ManifestError, "pinned source attributes are unreadable for #{relative_path}: #{stderr.strip}"
+      end
+      next if stdout.empty?
+
+      records = stdout.b.split("\0".b, -1)
+      records.pop if records.last == "".b
+      match = records.one? && records.first.match(/\A([0-9]{6}) ([^ ]+) ([0-9a-f]+)\t(.*)\z/m)
+      unless match && match[4] == relative_path.b && SUPPORTED_GIT_MODES.include?(match[1]) && match[2] == "blob"
+        raise ManifestError, "pinned source attributes have unsupported metadata: #{relative_path}"
+      end
+
+      _contents, object_stderr, object_status = git_capture(source_root, "cat-file", "blob", match[3])
+      unless object_status.success?
+        raise ManifestError, "pinned source attributes are unavailable for #{relative_path}: #{object_stderr.strip}"
+      end
+    end
+  end
+
+  def attribute_paths_for(relative_path)
+    directory = File.dirname(relative_path)
+    parts = directory == "." ? [] : directory.split("/")
+    [".gitattributes"] + (1..parts.length).map { |length| "#{parts.first(length).join('/')}/.gitattributes" }
+  end
+
+  def hash_source_worktree_file(source_root, revision, relative_path, contents, pinned_attributes)
+    unless pinned_attributes
+      stdout, stderr, status = git_capture(source_root, "hash-object", "--no-filters", "--stdin", stdin_data: contents)
+      raise ManifestError, "source worktree is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+
+      return validated_object_id(stdout, relative_path)
+    end
+
+    filter_driver = pinned_filter_driver(source_root, revision, relative_path)
+    filter_overrides = disabled_filter_config(filter_driver)
+    stdout, stderr, status = git_capture(
+      source_root,
+      "--attr-source=#{revision}",
+      *filter_overrides,
+      "hash-object",
+      "--path=#{relative_path}",
+      "--stdin",
+      stdin_data: contents
+    )
+    raise ManifestError, "source worktree is unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+
+    validated_object_id(stdout, relative_path)
+  end
+
+  def validated_object_id(stdout, relative_path)
+    oid = stdout.strip
+    raise ManifestError, "source worktree hash is unreadable for #{relative_path}" unless oid.match?(/\A[0-9a-f]+\z/)
+
+    oid
+  end
+
+  def pinned_filter_driver(source_root, revision, relative_path)
+    stdout, stderr, status = git_capture(
+      source_root, "check-attr", "--source", revision, "-z", "filter", "--", relative_path
+    )
+    raise ManifestError, "source attributes are unreadable for #{relative_path}: #{stderr.strip}" unless status.success?
+
+    fields = stdout.b.split("\0".b, -1)
+    fields.pop if fields.last == "".b
+    unless fields.length == 3 && fields[0] == relative_path.b && fields[1] == "filter".b && fields[2]
+      raise ManifestError, "source filter attribute is unreadable for #{relative_path}"
+    end
+
+    driver = fields[2]
+    unless driver.match?(FILTER_DRIVER_PATTERN)
+      raise ManifestError, "source filter driver has an unsupported name for #{relative_path}: #{driver.inspect}"
+    end
+
+    driver
+  end
+
+  def disabled_filter_config(driver)
+    [
+      "-c", "filter.#{driver}.clean=",
+      "-c", "filter.#{driver}.process=",
+      "-c", "filter.#{driver}.required=false"
+    ]
+  end
+
+  def git_capture(
+    source_root, *arguments, stdin_data: nil, timeout_seconds: PrBatchGitProbeEnv::GIT_TIMEOUT_SECONDS
+  )
+    env = PrBatchGitProbeEnv.probe_env.merge(
+      "GIT_ALLOW_PROTOCOL" => "",
+      "GIT_ATTR_NOSYSTEM" => "1",
+      "GIT_NO_LAZY_FETCH" => "1"
+    )
+    command = [
+      "git", "--no-replace-objects", "-C", source_root,
+      "-c", "core.attributesFile=#{File::NULL}",
+      "-c", "core.fsmonitor=",
+      *arguments
+    ]
+    PrBatchGitProbeEnv.capture3(env, *command, stdin_data:, timeout_seconds:)
+  rescue PrBatchGitProbeEnv::TimeoutError
+    raise ManifestError, "Git probe timed out after #{timeout_seconds} seconds"
+  end
+
+  def filesystem_git_mode(root, relative_path, side)
+    stat = File.lstat(File.join(root, relative_path))
+    if stat.symlink?
+      raise ManifestError, "#{side} has unsupported file kind (Git mode 120000): #{relative_path}"
+    end
+    raise ManifestError, "#{side} has unsupported file kind: #{relative_path}" unless stat.file?
+
+    stat.mode.anybits?(0o100) ? "100755" : "100644"
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
+  end
+
+  def mode_difference(side, expected, actual)
+    "#{side} mode differs from pinned source (expected #{expected}, found #{actual})"
+  end
+
+  def register_mapped_file(seen, path, relative_path, side)
+    previous_path = seen[path]
+    if previous_path && previous_path != relative_path
+      raise ManifestError, "#{side} paths reference the same file: #{previous_path}, #{relative_path}"
+    end
+
+    seen[path] = relative_path
+  end
+
+  def read_mapped_file(path, relative_path, side)
+    unless NOFOLLOW_FLAG
+      raise ManifestError, "#{side} file cannot be read safely on this platform: #{relative_path}"
+    end
+
+    File.open(path, File::RDONLY | NOFOLLOW_FLAG) do |file|
+      current_path = File.realpath(path)
+      unless current_path == path && File.identical?(file, path)
+        raise ManifestError, "#{side} path changed while being read: #{relative_path}"
+      end
+
+      file.binmode.read
+    end
+  rescue ManifestError
+    raise
+  rescue SystemCallError => e
+    raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
+  end
+
+  def resolve_file(root, relative_path, side)
+    validate_intermediate_components(root, relative_path, side)
+    candidate = File.join(root, relative_path)
+    raise ManifestError, "#{side} file is missing: #{relative_path}" unless File.exist?(candidate) || File.symlink?(candidate)
+
+    resolved = File.realpath(candidate)
+    unless resolved.start_with?("#{root}#{File::SEPARATOR}") && File.file?(resolved)
+      raise ManifestError, "#{side} path escapes its root or is not a file: #{relative_path}"
+    end
+
+    resolved
+  rescue Errno::ELOOP
+    raise ManifestError, "#{side} path has a symlink cycle: #{relative_path}"
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
+  end
+
+  def validate_intermediate_components(root, relative_path, side)
+    current = root
+    parts = relative_path.split("/")
+
+    parts[0...-1].each_with_index do |part, index|
+      current = File.join(current, part)
+      component = parts[0..index].join("/")
+      stat = File.lstat(current)
+      if stat.symlink?
+        raise ManifestError,
+              "#{side} path has a symlinked intermediate component: #{relative_path} (#{component})"
+      end
+      next if stat.directory?
+
+      raise ManifestError,
+            "#{side} path has a non-directory intermediate component: #{relative_path} (#{component})"
+    end
+  rescue Errno::ENOTDIR
+    raise ManifestError, "#{side} path has a non-directory intermediate component: #{relative_path}"
+  rescue Errno::ENOENT, Errno::EACCES, Errno::ENAMETOOLONG => e
+    raise ManifestError, "#{side} file is unavailable: #{relative_path} (#{e.message})"
+  end
+
+  def render_bucket(output, title, entries)
+    output.puts "#{title} (#{entries.length})"
+    if entries.empty?
+      output.puts "  (none)"
+    else
+      entries.each do |label, detail|
+        output.puts(detail ? "  - #{label}: #{detail}" : "  - #{label}")
+      end
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  options = {}
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: check-agent-workflow-drift --manifest FILE --source-root DIR --consumer-root DIR"
+    opts.on("--manifest FILE", "Version 1 drift manifest") { |value| options[:manifest_path] = File.expand_path(value) }
+    opts.on("--source-root DIR", "Pinned agent-workflows checkout") { |value| options[:source_root] = File.expand_path(value) }
+    opts.on("--consumer-root DIR", "Consumer repository checkout") { |value| options[:consumer_root] = File.expand_path(value) }
+    opts.on("-h", "--help", "Show help") do
+      puts opts
+      exit 0
+    end
+  end
+
+  begin
+    parser.parse!
+    required_options = { manifest_path: "--manifest", source_root: "--source-root", consumer_root: "--consumer-root" }
+    missing = required_options.reject { |key, _flag| options.key?(key) }.values
+    raise OptionParser::MissingArgument, missing.join(", ") unless missing.empty?
+    raise OptionParser::InvalidOption, ARGV.join(" ") unless ARGV.empty?
+  rescue OptionParser::ParseError => e
+    warn e.message
+    warn parser
+    exit 2
+  end
+
+  exit AgentWorkflowDrift.run(**options)
+end

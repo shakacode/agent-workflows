@@ -198,6 +198,92 @@ updates reviewed in that repo. If a repo chooses that route:
   `.agents/agent-workflow.yml`
 - run the seam doctor with `--shared` after every sync or update
 
+### Detecting Drift In Pinned Copies
+
+A consumer that reviews and pins shared files can use
+`bin/check-agent-workflow-drift` from this source pack to detect later changes
+on either side. The checker is read-only and makes no network calls. Pass all
+three locations explicitly:
+
+```bash
+/path/to/agent-workflows/bin/check-agent-workflow-drift \
+  --manifest /path/to/consumer/.agents/agent-workflow-drift.yml \
+  --source-root /path/to/pinned/agent-workflows \
+  --consumer-root /path/to/consumer
+```
+
+The source root must be the top level of a Git checkout whose `HEAD` is the
+manifest's full 40-hex `source_revision`. Each mapped source file must also be
+Git-clean against that exact revision, including staged and unstaged changes.
+The checker compares the pinned blob and mode with the stage-zero index entry,
+then hashes the actual worktree bytes using the pinned revision's attributes on
+Git 2.41 or newer. Safe built-in checkout transformations such as
+`core.autocrlf` are accepted on those Git versions. Older Git releases use a
+portable byte-strict fallback with all filters disabled; a checkout
+transformation that changes the worktree bytes is therefore reported as source
+drift until the checker runs with Git 2.41 or newer.
+Repository- or user-configured external clean/process filters are disabled and
+never executed; a worktree that only matches after such a filter therefore
+fails closed as source drift. Replacement objects are also disabled, and
+external diff or text conversion drivers are not invoked. System and global
+attribute files are ignored, a nonempty repository `info/attributes` override
+fails closed, and configured filesystem monitors are disabled. Lazy object
+fetching and Git transport protocols are disabled for every probe; a partial
+checkout with a missing pinned attributes object fails closed instead of
+contacting its promisor remote. This cleanliness check does not rewrite the
+consumer contract: `identical` still compares current filesystem bytes, and
+overlay SHA-256 values still hash the current source and consumer bytes directly.
+
+Manifest version 1 has two mapping modes:
+
+- `identical` requires byte-identical source and consumer files, and requires
+  both filesystem modes to match the pinned source's Git mode.
+- `overlay` records a reviewed local difference. It requires a nonempty reason
+  and the SHA-256 of both files, plus the reviewed `consumer_mode`; a later
+  content or mode change on either side is unexpected drift. Reasons may span
+  multiple lines; the checker escapes control, format, and Unicode separator
+  characters when rendering them so each result remains visually safe on one
+  diagnostic line.
+
+Version 1 validates only the mappings declared in `files`. A clean result does
+not prove that the manifest covers every vendored source or consumer file. Each
+consumer adopting the checker must pair it with an automated, consumer-owned
+completeness test that compares the repository's intended vendored inventory
+with the manifest mappings. Inventory policy stays consumer-local; version 1
+does not define generic scope or exclusion rules.
+
+Mode checks deliberately normalize regular files to Git's portable `100644`
+(not executable) or `100755` (executable) modes instead of comparing exact
+POSIX permissions. The pinned source tree mode is authoritative for the source.
+The consumer need not be a Git checkout: the checker derives its normalized
+mode from whether the filesystem owner-execute bit is set. Symlinks, submodules, and
+other file kinds are unsupported and fail closed rather than being followed as
+equivalent regular files.
+
+```yaml
+version: 1
+source_revision: "0123456789abcdef0123456789abcdef01234567"
+files:
+  - source: skills/example/SKILL.md
+    consumer: .agents/skills/example/SKILL.md
+    mode: identical
+  - source: workflows/example.md
+    consumer: .agents/workflows/example.md
+    mode: overlay
+    reason: "Consumer keeps repository-specific policy in this reviewed overlay."
+    consumer_mode: "100644"
+    source_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    consumer_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+```
+
+Replace the example revision and hashes with values from the reviewed source
+and consumer files. Paths use forward slashes and must be relative,
+non-traversing, and unique on both sides. The checker reports deterministic
+`CLEAN IDENTICAL`, `EXPECTED OVERLAYS`, and `UNEXPECTED DRIFT` buckets. It exits
+nonzero for unexpected changes, missing or escaping files, a stale source
+revision, mode or file-kind drift, invalid hashes, duplicate mappings, or
+malformed schema.
+
 ## Validation Checklist
 
 - `agent-workflows-status --host <codex|claude>` reports `UP_TO_DATE`, or the
