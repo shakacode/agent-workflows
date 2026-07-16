@@ -43,4 +43,16 @@ class AgentDoctorConfigurationTest < Minitest::Test
     assert_equal ["--backend", "http"],
                  AgentDoctor::Configuration.coordination_selector("/missing", environment: { "AGENT_COORD_BACKEND" => "http" })
   end
+
+  def test_empty_host_home_overrides_use_defaults_and_do_not_count_as_auto_candidates
+    Dir.mktmpdir do |home|
+      environment = { "CODEX_HOME" => "", "CLAUDE_HOME" => "" }
+
+      assert_equal ["codex", File.join(home, ".codex")],
+                   AgentDoctor::Configuration.host_and_target("codex", nil, environment: environment, home: home)
+      FileUtils.mkdir_p(File.join(home, ".claude"))
+      assert_equal ["claude", File.join(home, ".claude")],
+                   AgentDoctor::Configuration.host_and_target("auto", nil, environment: environment, home: home)
+    end
+  end
 end

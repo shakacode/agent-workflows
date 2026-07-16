@@ -56,11 +56,15 @@ module AgentDoctor
     def defaults
       dashboard_port = @environment["PORT"].to_s
       dashboard_port = "4319" if dashboard_port.empty?
-      { source_root: @environment.fetch("AGENT_STACK_SOURCE_ROOT", File.join(@home, "src")),
-        compat_root: @environment.fetch("AGENT_STACK_COMPAT_ROOT", File.join(@home, "codex", "agent-repos")),
-        runtime_root: @environment.fetch("AGENT_STACK_RUNTIME_ROOT", File.join(@home, ".agent-workflows")),
+      { source_root: environment_path("AGENT_STACK_SOURCE_ROOT", File.join(@home, "src")),
+        compat_root: environment_path("AGENT_STACK_COMPAT_ROOT", File.join(@home, "codex", "agent-repos")),
+        runtime_root: environment_path("AGENT_STACK_RUNTIME_ROOT", File.join(@home, ".agent-workflows")),
         host: "codex", target: nil, install_dir: File.join(@home, ".local", "bin"),
         dashboard_url: "http://127.0.0.1:#{dashboard_port}", deep: false, json: false }
+    end
+
+    def environment_path(name, fallback)
+      @environment[name].to_s.empty? ? fallback : @environment[name]
     end
 
     def parser_for(options)

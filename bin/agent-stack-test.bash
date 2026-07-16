@@ -22,6 +22,7 @@ tests=(
   test_colocated_copy_sync_upgrades_a_marked_prior_workflow_doctor
   test_sync_replays_workflow_delivery_mode
   test_running_installed_command_updates_through_temporary_file
+  test_sync_fails_when_required_install_executable_is_missing
   test_sync_refuses_command_directory_destinations_before_any_install_mutation
   test_sync_replaces_non_directory_command_symlinks_without_touching_referents
   test_sync_refuses_symlink_module_destinations_without_touching_targets
@@ -38,6 +39,7 @@ tests=(
   test_path_overlap_and_compatibility_guards
   test_runtime_paths_are_private_and_not_symlinks
   test_no_install_and_help_contracts
+  test_value_options_return_usage_for_missing_or_empty_operands
 )
 
 for test_name in "${tests[@]}"; do

@@ -647,6 +647,16 @@ if [[ "$mode" = "copy" ]]; then
     install -m 0755 "$repo_root/bin/$helper" "$destination"
   done
 else
+  if [[ -L "$target/bin/agent_doctor" ]] &&
+     [[ "$(readlink "$target/bin/agent_doctor")" != "$repo_root/bin/agent_doctor" ]] &&
+     ! workflow_doctor_symlink_matches_recorded_source; then
+    echo "Refusing unmanaged workflow doctor symlink: $target/bin/agent_doctor" >&2
+    exit 1
+  fi
+  if [[ -e "$target/bin/agent_doctor" && ! -L "$target/bin/agent_doctor" ]]; then
+    echo "Refusing to replace non-symlink path: $target/bin/agent_doctor" >&2
+    exit 1
+  fi
   link_pack_license
   mkdir -p "$target/bin"
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
@@ -668,10 +678,6 @@ else
   rm -f "$target/workflows"
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
-  if [[ -e "$target/bin/agent_doctor" && ! -L "$target/bin/agent_doctor" ]]; then
-    echo "Refusing to replace non-symlink path: $target/bin/agent_doctor" >&2
-    exit 1
-  fi
   ln -sfn "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"

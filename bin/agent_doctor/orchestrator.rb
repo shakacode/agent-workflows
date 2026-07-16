@@ -123,7 +123,6 @@ module AgentDoctor
       resolved_source = File.realpath(source)
       candidate = File.expand_path(executable)
       visited = {}
-
       return true if source_contains_inode?(candidate, resolved_source)
 
       loop do
@@ -141,7 +140,7 @@ module AgentDoctor
       false
     end
 
-    def source_contains_inode?(candidate, source)
+    def source_contains_inode?(candidate, source, entry_limit: 50_000)
       candidate_stat = begin
         File.stat(candidate)
       rescue Errno::ENOENT, Errno::ENOTDIR
@@ -151,10 +150,12 @@ module AgentDoctor
       return false if candidate_stat.nlink <= 1 || candidate_stat.dev != source_stat.dev
 
       directories = [source]
+      entries_scanned = 0
       until directories.empty?
         directory = directories.pop
-        entries = Dir.children(directory)
-        entries.each do |entry|
+        Dir.each_child(directory) do |entry|
+          return true if (entries_scanned += 1) > entry_limit
+
           path = File.join(directory, entry)
           entry_stat = File.lstat(path)
           return true if entry_stat.dev == candidate_stat.dev && entry_stat.ino == candidate_stat.ino
@@ -162,7 +163,6 @@ module AgentDoctor
           directories << path if entry_stat.directory? && entry_stat.dev == candidate_stat.dev
         end
       end
-
       false
     rescue SystemCallError
       true

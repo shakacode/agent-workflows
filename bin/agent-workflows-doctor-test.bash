@@ -19,10 +19,10 @@ fail() {
 }
 
 make_tmp_dir() {
-  local path
+  local output_variable="$1" path
   path="$(mktemp -d "${TMPDIR:-/tmp}/agent-workflows-doctor-test.XXXXXX")"
   tmp_dirs+=("$path")
-  printf '%s\n' "$path"
+  printf -v "$output_variable" '%s' "$path"
 }
 
 write_status_fixture() {
@@ -69,6 +69,15 @@ if ENV["WORKFLOW_STATUS_FIXTURE"] == "stale"
                                     guidance: "Run the installer."))
   exit 1
 end
+if ENV["WORKFLOW_STATUS_FIXTURE"] == "stale_without_guidance"
+  puts JSON.generate(status_payload("UPGRADE_AVAILABLE", installed_version: "1.0.0", available_version: "1.1.0"))
+  exit 1
+end
+if ENV["WORKFLOW_STATUS_FIXTURE"] == "secret_guidance"
+  puts JSON.generate(status_payload("UPGRADE_AVAILABLE", installed_version: "1.0.0", available_version: "1.1.0",
+                                    guidance: ENV.fetch("WORKFLOW_SECRET")))
+  exit 1
+end
 puts JSON.generate(status_payload("UP_TO_DATE", installed_version: "1.0.0", available_version: "1.0.0"))
 RUBY
   chmod +x "$path"
@@ -85,9 +94,19 @@ RUBY
   chmod +x "$path"
 }
 
+test_make_tmp_dir_registers_cleanup_in_parent_shell() {
+  local before tmp
+  before="${#tmp_dirs[@]}"
+
+  make_tmp_dir tmp
+
+  [[ -d "$tmp" ]] || fail "make_tmp_dir did not return a directory"
+  [[ "${#tmp_dirs[@]}" -eq $((before + 1)) ]] || fail "make_tmp_dir did not register parent cleanup"
+}
+
 test_emits_healthy_stack_contract_through_public_command() {
   local tmp output status
-  tmp="$(make_tmp_dir)"
+  make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target"
   write_status_fixture "$tmp/target/bin/agent-workflows-status"
 
@@ -113,7 +132,7 @@ test_emits_healthy_stack_contract_through_public_command() {
 
 test_maps_upgrade_available_to_degraded_exit() {
   local tmp output status
-  tmp="$(make_tmp_dir)"
+  make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target"
   write_status_fixture "$tmp/target/bin/agent-workflows-status"
 
@@ -133,9 +152,51 @@ test_maps_upgrade_available_to_degraded_exit() {
   ' <<< "$output"
 }
 
+test_adds_fallback_guidance_for_upgrade_without_remediation() {
+  local tmp output status
+  make_tmp_dir tmp
+  mkdir -p "$tmp/source" "$tmp/target"
+  write_status_fixture "$tmp/target/bin/agent-workflows-status"
+
+  set +e
+  output="$(WORKFLOW_STATUS_FIXTURE=stale_without_guidance "$ROOT/bin/agent-workflows-doctor" --stack-json \
+    --host codex --target "$tmp/target" --source "$tmp/source")"
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || fail "upgrade without guidance returned $status instead of 1"
+
+  ruby -rjson -e '
+    install = JSON.parse(STDIN.read).fetch("checks").find { |item| item["id"] == "workflows.installation" }
+    abort install.inspect unless install["guidance"] == "Upgrade workflows with `agent-stack sync`."
+  ' <<< "$output"
+}
+
+test_sanitizes_component_output_and_parse_errors() {
+  local tmp output status secret
+  make_tmp_dir tmp
+  mkdir -p "$tmp/source" "$tmp/target"
+  write_status_fixture "$tmp/target/bin/agent-workflows-status"
+  secret="workflow-secret-value"
+
+  set +e
+  output="$(SENTINEL_API_TOKEN="$secret" WORKFLOW_SECRET="$secret" WORKFLOW_STATUS_FIXTURE=secret_guidance \
+    "$ROOT/bin/agent-workflows-doctor" --stack-json --host codex --target "$tmp/target" --source "$tmp/source")"
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || fail "secret guidance fixture returned $status instead of 1"
+  [[ "$output" != *"$secret"* && "$output" == *"[REDACTED]"* ]] || fail "component output exposed a secret: $output"
+
+  set +e
+  output="$(SENTINEL_API_TOKEN="$secret" "$ROOT/bin/agent-workflows-doctor" --invalid="$secret" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 64 ]] || fail "invalid option returned $status instead of 64"
+  [[ "$output" != *"$secret"* && "$output" == *"[REDACTED]"* ]] || fail "parse error exposed a secret: $output"
+}
+
 test_wraps_malformed_status_output_in_failed_contract() {
   local tmp output status
-  tmp="$(make_tmp_dir)"
+  make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target"
   write_status_fixture "$tmp/target/bin/agent-workflows-status"
 
@@ -157,7 +218,7 @@ test_wraps_malformed_status_output_in_failed_contract() {
 
 test_deep_mode_runs_workflow_seam_check() {
   local tmp output
-  tmp="$(make_tmp_dir)"
+  make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target"
   write_status_fixture "$tmp/target/bin/agent-workflows-status"
   write_seam_fixture "$tmp/target/bin/agent-workflow-seam-doctor"
@@ -175,7 +236,7 @@ test_deep_mode_runs_workflow_seam_check() {
 
 test_missing_or_mismatched_status_helper_returns_failed_contract() {
   local tmp output status mode
-  tmp="$(make_tmp_dir)"
+  make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target/bin"
 
   set +e
@@ -202,7 +263,7 @@ test_missing_or_mismatched_status_helper_returns_failed_contract() {
 
 test_wraps_non_object_status_payload_in_failed_contract() {
   local tmp output status
-  tmp="$(make_tmp_dir)"
+  make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target"
   write_status_fixture "$tmp/target/bin/agent-workflows-status"
 
@@ -215,8 +276,11 @@ test_wraps_non_object_status_payload_in_failed_contract() {
   ruby -rjson -e 'JSON.parse(STDIN.read)' <<< "$output"
 }
 
+test_make_tmp_dir_registers_cleanup_in_parent_shell
 test_emits_healthy_stack_contract_through_public_command
 test_maps_upgrade_available_to_degraded_exit
+test_adds_fallback_guidance_for_upgrade_without_remediation
+test_sanitizes_component_output_and_parse_errors
 test_wraps_malformed_status_output_in_failed_contract
 test_deep_mode_runs_workflow_seam_check
 test_missing_or_mismatched_status_helper_returns_failed_contract

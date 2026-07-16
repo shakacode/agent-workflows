@@ -2,6 +2,32 @@ agent_stack_test_inventory() {
   find "$1" -mindepth 1 -print | LC_ALL=C sort
 }
 
+test_sync_fails_when_required_install_executable_is_missing() {
+  local kind temporary repo missing output status
+  for kind in stack coordination workflows; do
+    temporary="$(make_tmp_dir)"
+    with_origins "$temporary"
+    case "$kind" in
+      stack) repo=agent-workflows; missing=bin/agent-stack-doctor ;;
+      coordination) repo=agent-coordination; missing=bin/agent-coord ;;
+      workflows) repo=agent-workflows; missing=bin/install-agent-workflows ;;
+    esac
+    git -C "$temporary/work/$repo" rm --quiet "$missing"
+    git -C "$temporary/work/$repo" commit --quiet -m "remove required $kind executable"
+    git -C "$temporary/work/$repo" push --quiet "$temporary/origins/$repo.git" main:main
+
+    set +e
+    output="$(run_sync "$temporary" --target "$temporary/codex-home" \
+      --agent-coord-install-dir "$temporary/local-bin" 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$kind install unexpectedly succeeded without $missing"
+    assert_contains "$output" "Cannot install"
+    [[ "$output" != *"agent-stack sync complete"* ]] || fail "$kind failure reported sync completion"
+  done
+}
+
 test_sync_refuses_command_directory_destinations_before_any_install_mutation() {
   local helper kind temporary install_dir outside target other before_inside before_outside output status
   for helper in agent-stack agent-stack-doctor; do

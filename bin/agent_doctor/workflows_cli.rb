@@ -4,6 +4,7 @@ require "json"
 require "optparse"
 require_relative "contract"
 require_relative "process_runner"
+require_relative "sanitizer"
 require_relative "timeout_budget"
 require_relative "workflows_component"
 
@@ -14,6 +15,7 @@ module AgentDoctor
     end
 
     def run(arguments, output: $stdout, error: $stderr)
+      sanitizer = Sanitizer.new(@environment)
       options = { host: "codex", target: nil, source: nil, deep: false, stack_json: false }
       parser = parser_for(options)
       parser.parse!(arguments)
@@ -23,10 +25,11 @@ module AgentDoctor
         host: options[:host], target: File.expand_path(options[:target]),
         source: File.expand_path(options[:source]), deep: options[:deep]
       )
-      output.puts JSON.generate(payload)
+      output.puts JSON.generate(sanitizer.component(payload))
       Contract::EXIT_FOR_STATUS.fetch(payload["status"])
     rescue OptionParser::ParseError => e
-      error.puts "agent-workflows-doctor: #{e.message}"
+      sanitizer ||= Sanitizer.new(@environment)
+      error.puts "agent-workflows-doctor: #{sanitizer.string(e.message)}"
       error.puts parser
       64
     end

@@ -119,6 +119,7 @@ module AgentDoctor
 
     def high_entropy_path_segment?(segment)
       decoded = decode_path_segment(segment)
+      return true if @secret_values.any? { |secret| decoded.include?(secret) }
       return false if decoded.bytesize < 24
       return true if decoded.match?(LONG_HEX_PATH_SEGMENT_PATTERN)
       return false if decoded.match?(UUID_PATH_SEGMENT_PATTERN)
@@ -134,7 +135,10 @@ module AgentDoctor
     end
 
     def sanitized_fragment(fragment)
-      fragment.include?("=") ? sanitized_parameters(fragment) : string(fragment)
+      return sanitized_parameters(fragment) if fragment.include?("=")
+
+      sanitized = string(fragment)
+      high_entropy_path_segment?(sanitized) ? "[REDACTED]" : sanitized
     end
 
     def sanitized_parameters(parameters)

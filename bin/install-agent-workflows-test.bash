@@ -1146,6 +1146,55 @@ test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
   [[ ! -L "$target/docs/solutions/README.md" ]] || fail "copy mode should replace pack doc symlink with a real copy"
 }
 
+test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation() {
+  local variant tmp target link_target output status
+  for variant in live dangling; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    link_target="$tmp/unmanaged/agent_doctor"
+    mkdir -p "$target/bin"
+    if [[ "$variant" = live ]]; then
+      mkdir -p "$link_target"
+      printf 'preserve\n' > "$link_target/sentinel"
+    fi
+    ln -s "$link_target" "$target/bin/agent_doctor"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "symlink mode accepted an unmanaged $variant doctor link"
+    assert_contains "$output" "Refusing unmanaged workflow doctor symlink"
+    [[ "$(readlink "$target/bin/agent_doctor")" = "$link_target" ]] || fail "$variant doctor link changed"
+    [[ ! -e "$target/LICENSE" && ! -e "$target/workflows" ]] || fail "$variant refusal mutated pack assets"
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "$variant refusal committed metadata"
+    if [[ "$variant" = live ]]; then
+      grep -qxF preserve "$link_target/sentinel" || fail "live doctor referent changed"
+    else
+      [[ ! -e "$link_target" ]] || fail "dangling doctor referent was created"
+    fi
+  done
+}
+
+test_symlink_mode_replaces_recorded_prior_source_doctor_link() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/prior-source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/prior.out"
+  [[ "$(readlink "$target/bin/agent_doctor")" = "$source/bin/agent_doctor" ]] ||
+    fail "prior source did not own the doctor link"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/current.out"
+
+  [[ "$(readlink "$target/bin/agent_doctor")" = "$ROOT/bin/agent_doctor" ]] ||
+    fail "current source did not replace the recorded prior doctor link"
+}
+
 test_copy_mode_migrates_dangling_recorded_doctor_symlink_from_deleted_source() {
   local tmp source target
   tmp="$(mktemp -d)"
@@ -1541,6 +1590,8 @@ main() {
     test_symlink_mode_links_skills_workflows_and_helpers
     test_symlink_mode_replaces_docs_directory_symlink
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
+    test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation
+    test_symlink_mode_replaces_recorded_prior_source_doctor_link
     test_copy_mode_migrates_dangling_recorded_doctor_symlink_from_deleted_source
     test_copy_mode_migrates_recorded_doctor_symlink_from_live_prior_source
     test_copy_mode_refuses_unproven_live_doctor_symlinks_without_mutation

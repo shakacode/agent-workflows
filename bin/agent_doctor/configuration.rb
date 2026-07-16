@@ -23,14 +23,16 @@ module AgentDoctor
     end
 
     def host_and_target(host, target, environment: ENV, home: Dir.home)
-      codex_home = File.expand_path(environment.fetch("CODEX_HOME", File.join(home, ".codex")))
-      claude_home = File.expand_path(environment.fetch("CLAUDE_HOME", File.join(home, ".claude")))
+      codex_override = environment["CODEX_HOME"].to_s
+      claude_override = environment["CLAUDE_HOME"].to_s
+      codex_home = File.expand_path(codex_override.empty? ? File.join(home, ".codex") : codex_override)
+      claude_home = File.expand_path(claude_override.empty? ? File.join(home, ".claude") : claude_override)
       return explicit_target(host, target, codex_home, claude_home) if target
       return [host, host == "claude" ? claude_home : codex_home] unless host == "auto"
 
       candidates = []
-      candidates << ["codex", codex_home] if environment.key?("CODEX_HOME") || File.directory?(codex_home)
-      candidates << ["claude", claude_home] if environment.key?("CLAUDE_HOME") || File.directory?(claude_home)
+      candidates << ["codex", codex_home] unless codex_override.empty? && !File.directory?(codex_home)
+      candidates << ["claude", claude_home] unless claude_override.empty? && !File.directory?(claude_home)
       return ["codex", codex_home] if candidates.empty?
       return candidates.first if candidates.one?
 

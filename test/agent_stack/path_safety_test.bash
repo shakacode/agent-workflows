@@ -61,3 +61,22 @@ test_no_install_and_help_contracts() {
   assert_contains "$output" "AGENT_STACK_RUNTIME_ROOT"
   assert_contains "$output" "not restored automatically"
 }
+
+test_value_options_return_usage_for_missing_or_empty_operands() {
+  local option output status
+  for option in --source-root --compat-root --runtime-root --host --target --mode --delivery-mode --agent-coord-install-dir; do
+    set +e
+    output="$("$ROOT/bin/agent-stack" sync "$option" 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -eq 64 ]] || fail "$option without an operand returned $status instead of 64"
+    assert_contains "$output" "$option requires"
+
+    set +e
+    output="$("$ROOT/bin/agent-stack" sync "$option" "" 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -eq 64 ]] || fail "$option with an empty operand returned $status instead of 64"
+    assert_contains "$output" "$option requires"
+  done
+}

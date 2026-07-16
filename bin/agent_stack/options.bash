@@ -15,14 +15,14 @@ agent_stack_parse_options() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --source-root) source_root="${2:?--source-root requires a directory}"; shift 2 ;;
-      --compat-root) compat_root="${2:?--compat-root requires a directory}"; shift 2 ;;
-      --runtime-root) runtime_root="${2:?--runtime-root requires a directory}"; shift 2 ;;
-      --host) host="${2:?--host requires codex, claude, or auto}"; shift 2 ;;
-      --target) target="${2:?--target requires a directory}"; shift 2 ;;
-      --mode) mode="${2:?--mode requires copy or symlink}"; shift 2 ;;
-      --delivery-mode) delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"; shift 2 ;;
-      --agent-coord-install-dir) agent_coord_install_dir="${2:?--agent-coord-install-dir requires a directory}"; shift 2 ;;
+      --source-root) [[ $# -ge 2 && -n "$2" ]] || { echo "--source-root requires a directory" >&2; exit 64; }; source_root="$2"; shift 2 ;;
+      --compat-root) [[ $# -ge 2 && -n "$2" ]] || { echo "--compat-root requires a directory" >&2; exit 64; }; compat_root="$2"; shift 2 ;;
+      --runtime-root) [[ $# -ge 2 && -n "$2" ]] || { echo "--runtime-root requires a directory" >&2; exit 64; }; runtime_root="$2"; shift 2 ;;
+      --host) [[ $# -ge 2 && -n "$2" ]] || { echo "--host requires codex, claude, or auto" >&2; exit 64; }; host="$2"; shift 2 ;;
+      --target) [[ $# -ge 2 && -n "$2" ]] || { echo "--target requires a directory" >&2; exit 64; }; target="$2"; shift 2 ;;
+      --mode) [[ $# -ge 2 && -n "$2" ]] || { echo "--mode requires copy or symlink" >&2; exit 64; }; mode="$2"; shift 2 ;;
+      --delivery-mode) [[ $# -ge 2 && -n "$2" ]] || { echo "--delivery-mode requires flat or plugin-companion" >&2; exit 64; }; delivery_mode="$2"; shift 2 ;;
+      --agent-coord-install-dir) [[ $# -ge 2 && -n "$2" ]] || { echo "--agent-coord-install-dir requires a directory" >&2; exit 64; }; agent_coord_install_dir="$2"; shift 2 ;;
       --force-stash) force_stash=true; shift ;;
       --replace-compat) replace_compat=true; shift ;;
       --no-fetch) fetch=false; shift ;;

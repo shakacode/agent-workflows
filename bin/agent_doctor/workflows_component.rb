@@ -120,6 +120,7 @@ module AgentDoctor
 
     def status_guidance(payload)
       return payload["guidance"] if payload["guidance"]
+      return "Upgrade workflows with `agent-stack sync`." if payload["status"] == "UPGRADE_AVAILABLE"
       return "Install workflows with `agent-stack sync`." if payload["status"] == "NOT_INSTALLED"
       return "Run `agent-workflows-status --json` directly for the underlying failure." if payload["status"] == "CHECK_FAILED"
 

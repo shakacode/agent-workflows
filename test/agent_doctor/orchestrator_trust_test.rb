@@ -157,6 +157,19 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     refute_path_exists sentinel
   end
 
+  def test_inode_scan_exhaustion_fails_closed
+    candidate = path("trusted/candidate")
+    linked = path("trusted/linked")
+    source = path("tiny-source")
+    FileUtils.mkdir_p([File.dirname(candidate), source])
+    File.write(candidate, "candidate")
+    File.link(candidate, linked)
+    File.write(File.join(source, "unrelated"), "unrelated")
+
+    refute orchestrator.send(:source_contains_inode?, candidate, source, entry_limit: 10)
+    assert orchestrator.send(:source_contains_inode?, candidate, source, entry_limit: 0)
+  end
+
   def test_degraded_source_allows_external_copy_of_source_delegate
     sentinel = path("copied-workflow-executed")
     source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")

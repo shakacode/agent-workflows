@@ -141,7 +141,7 @@ agent_stack_install_commands() {
   local helper source_file workflow_owns_doctor=false
   for helper in agent-stack agent-stack-doctor; do
     source_file="$source_root/agent-workflows/bin/$helper"
-    [[ -x "$source_file" ]] || { echo "Skipping stack command install: missing $source_file" >&2; return; }
+    [[ -x "$source_file" ]] || { echo "Cannot install stack command: missing $source_file" >&2; return 1; }
     agent_stack_command_destination_safe "$agent_coord_install_dir/$helper" || return 1
   done
   agent_stack_module_destination_safe agent_stack || return 1
@@ -164,7 +164,7 @@ agent_stack_install_coordination() {
   local repo="$source_root/agent-coordination"
   local legacy_alias="$agent_coord_install_dir/agent_coord"
   local had_legacy_alias=false
-  [[ -x "$repo/bin/agent-coord" ]] || { echo "Skipping agent-coord install: missing $repo/bin/agent-coord" >&2; return; }
+  [[ -x "$repo/bin/agent-coord" ]] || { echo "Cannot install agent-coord: missing $repo/bin/agent-coord" >&2; return 1; }
   [[ ! -e "$legacy_alias" && ! -L "$legacy_alias" ]] || had_legacy_alias=true
   "$repo/bin/agent-coord" bootstrap --install-dir "$agent_coord_install_dir"
   if [[ "$had_legacy_alias" = false && ( -e "$legacy_alias" || -L "$legacy_alias" ) ]]; then rm -f "$legacy_alias"; fi
@@ -175,6 +175,6 @@ agent_stack_install_workflows() {
   local args=(--host "$host" --mode "$mode")
   [[ -z "$delivery_mode" ]] || args+=(--delivery-mode "$delivery_mode")
   [[ -z "$target" ]] || args+=(--target "$target")
-  [[ -x "$repo/bin/install-agent-workflows" ]] || { echo "Skipping workflow install: missing $repo/bin/install-agent-workflows" >&2; return; }
+  [[ -x "$repo/bin/install-agent-workflows" ]] || { echo "Cannot install workflows: missing $repo/bin/install-agent-workflows" >&2; return 1; }
   "$repo/bin/install-agent-workflows" "${args[@]}"
 }

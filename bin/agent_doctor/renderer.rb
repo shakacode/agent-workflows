@@ -10,7 +10,7 @@ module AgentDoctor
     def human(payload, output: $stdout)
       counts = payload["components"].group_by { |item| item["status"] }.transform_values(&:length)
       output.puts "Agent Stack Doctor: #{payload['status'].upcase}"
-      output.puts "3 components: #{counts.fetch('healthy', 0)} healthy, #{counts.fetch('degraded', 0)} degraded, #{counts.fetch('failed', 0)} failed"
+      output.puts "#{payload['components'].length} components: #{counts.fetch('healthy', 0)} healthy, #{counts.fetch('degraded', 0)} degraded, #{counts.fetch('failed', 0)} failed"
       payload["components"].sort_by { |item| -Contract::SEVERITY.fetch(item["status"]) }.each do |component|
         output.puts
         output.puts "[#{component['status'].upcase}] #{component['component']}"

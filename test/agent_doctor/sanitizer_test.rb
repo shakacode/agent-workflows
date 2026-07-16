@@ -107,6 +107,22 @@ class AgentDoctorSanitizerTest < Minitest::Test
     refute_includes output, hex_secret
   end
 
+  def test_redacts_percent_encoded_known_secret_in_short_path_segment
+    sanitizer = AgentDoctor::Sanitizer.new("SERVICE_PASSWORD" => "MyS3cr3t!Pass")
+    output = sanitizer.string("https://example.test/report/MyS3cr3t%21Pass/release%20notes")
+
+    assert_equal "https://example.test/report/%5BREDACTED%5D/release%20notes", output
+    refute_includes output, "MyS3cr3t"
+  end
+
+  def test_redacts_high_entropy_opaque_fragment
+    reset_token = "aB3dE5fG7hJ9kLmNpQrStUvWxYz_2468"
+    output = AgentDoctor::Sanitizer.new.string("https://example.test/reset##{reset_token}")
+
+    assert_equal "https://example.test/reset#[REDACTED]", output
+    refute_includes output, reset_token
+  end
+
   def test_strips_terminal_controls_and_encodes_newlines
     output = AgentDoctor::Sanitizer.new.string("bad\n\e[31mtext")
 
