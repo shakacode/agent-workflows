@@ -71,8 +71,9 @@ owns the facts needed to run that process:
 - `AGENTS.md` remains the human-readable authority and points to the seam.
 
 The [seam doctor](adoption.md#seam-validation) validates that the installed
-workflows can resolve this contract. A missing or ambiguous capability fails
-closed instead of being guessed.
+workflows can resolve this contract. Missing required capabilities and ambiguous
+or malformed configuration fail closed; absent optional wrappers are treated as
+`n/a`.
 
 ## Make Agent Work Repeatable And Reviewable
 
@@ -83,8 +84,8 @@ quality rather than an engineering process.
 
 **With this:** portable skills provide named, reviewable workflows for planning,
 batching, implementation, verification, review, CI recovery, and audit. Public
-GitHub content is treated as untrusted until the configured preflight proves
-otherwise, and each repo supplies the commands and policy those workflows must
+GitHub content remains untrusted after the configured defense-in-depth
+preflight, and each repo supplies the commands and policy those workflows must
 respect.
 
 This makes the operating model inspectable: teams can review the shared process
@@ -104,7 +105,8 @@ operational questions:
 
 1. **Ownership:** who currently owns this target?
 2. **Collision prevention:** should another session be allowed to start it?
-3. **Liveness:** is the owning session active, blocked, stale, dead, or unknown?
+3. **Liveness:** is the owning instance live, stale, or dead, or is its liveness
+   unknown?
 4. **Handoff:** what must the next operator or agent know to continue safely?
 5. **Recovery:** how can work resume after a session, app, or machine disappears?
 
