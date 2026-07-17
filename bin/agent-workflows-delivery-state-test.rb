@@ -128,6 +128,51 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_plugin_companion_ignores_unrelated_skill_without_install_metadata
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      unrelated = File.join(target, "skills/personal/SKILL.md")
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.dirname(unrelated))
+      File.write(unrelated, "personal\n")
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert payload.fetch("compatible")
+      assert_equal "absent", payload.dig("flat", "state")
+      assert_empty payload.dig("flat", "blocking")
+      assert_equal "personal\n", File.read(unrelated)
+    end
+  end
+
+  def test_plugin_companion_ignores_unrelated_skill_after_companion_install
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      unrelated = File.join(target, "skills/personal/SKILL.md")
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.dirname(unrelated))
+      File.write(unrelated, "personal\n")
+      write_metadata(target, "delivery_mode" => "plugin-companion")
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert payload.fetch("compatible")
+      assert_equal "absent", payload.dig("flat", "state")
+      assert_empty payload.dig("flat", "blocking")
+      assert_equal "personal\n", File.read(unrelated)
+    end
+  end
+
   def test_codex_enabled_setting_accepts_indentation_and_inline_comments
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")

@@ -327,7 +327,7 @@ module AgentWorkflowsDeliveryState
 
     removable = []
     recorded_names = names.to_h { |name| [name, true] }
-    blocking = if File.directory?(skills_path) && !File.symlink?(skills_path)
+    blocking = if metadata && prior_delivery_mode == "flat" && File.directory?(skills_path) && !File.symlink?(skills_path)
                  Dir.children(skills_path).filter_map do |name|
                    File.join(skills_path, name) unless recorded_names.key?(name)
                  end

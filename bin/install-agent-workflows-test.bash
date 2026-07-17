@@ -291,11 +291,14 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     tmp="$(mktemp -d)"
     target="$tmp/$host-home"
     write_native_scw_state "$host" "$target"
+    mkdir -p "$target/skills/personal"
+    printf 'personal\n' > "$target/skills/personal/SKILL.md"
 
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
       >"$tmp/install.out"
 
     [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
+    grep -qxF 'personal' "$target/skills/personal/SKILL.md" || fail "$host companion install changed an unrelated skill"
     assert_file "$target/LICENSE"
     assert_file "$target/workflows/pr-processing.md"
     assert_file "$target/docs/coordination-backend.md"
@@ -744,9 +747,12 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
     >"$tmp/first.out"
+  mkdir -p "$target/skills/personal"
+  printf 'personal\n' > "$target/skills/personal/SKILL.md"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/second.out"
 
   [[ ! -e "$target/skills/pr-batch" ]] || fail "repeat install changed companion delivery mode"
+  grep -qxF 'personal' "$target/skills/personal/SKILL.md" || fail "repeat companion install changed an unrelated skill"
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
