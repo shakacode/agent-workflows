@@ -56,7 +56,56 @@ class AgentDoctorWorkflowsCLIIntegrationTest < Minitest::Test
     refute_includes stdout, "source-secret"
   end
 
+  def test_empty_target_is_usage_error_without_inspecting_current_directory
+    assert_empty_path_usage_error(
+      ["--target", "", "--source", @source],
+      option: "--target", inspected_root: :current_directory
+    )
+  end
+
+  def test_empty_source_is_usage_error_without_inspecting_current_directory
+    assert_empty_path_usage_error(
+      ["--target", @target, "--source", ""],
+      option: "--source", inspected_root: @target
+    )
+  end
+
+  def test_empty_target_and_source_return_target_usage_error_without_inspecting_current_directory
+    assert_empty_path_usage_error(
+      ["--target", "", "--source", ""],
+      option: "--target", inspected_root: :current_directory
+    )
+  end
+
   private
+
+  def assert_empty_path_usage_error(path_arguments, option:, inspected_root:)
+    current_directory = File.join(@tmp, "current-directory")
+    marker = File.join(@tmp, "inspected-path")
+    FileUtils.mkdir_p(current_directory)
+    inspected_root = current_directory if inspected_root == :current_directory
+    helper = File.join(inspected_root, "bin", "agent-workflows-status")
+    FileUtils.mkdir_p(File.dirname(helper))
+    File.write(helper, <<~'RUBY')
+      #!/usr/bin/env ruby
+      File.write(ENV.fetch("DOCTOR_INSPECTION_MARKER"), "invoked\n")
+      exit 2
+    RUBY
+    File.chmod(0o755, helper)
+
+    stdout, stderr, status = Open3.capture3(
+      { "DOCTOR_INSPECTION_MARKER" => marker },
+      File.join(ROOT, "bin/agent-workflows-doctor"), "--stack-json", "--host", "codex",
+      *path_arguments,
+      chdir: current_directory
+    )
+
+    assert_equal 64, status.exitstatus, stderr
+    assert_empty stdout
+    assert_includes stderr, "#{option} must not be empty"
+    refute_includes stderr, "workflows_cli.rb:"
+    refute_path_exists marker
+  end
 
   def doctor(delay:, timeout: nil, environment: {})
     environment = { "DOCTOR_STATUS_DELAY_SECONDS" => delay.to_s }.merge(environment)
