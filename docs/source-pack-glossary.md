@@ -1,8 +1,8 @@
 # Source Pack Glossary
 
-Canonical vocabulary for distribution, seam, readiness, review, and
-state-machine terms in this source pack. Keep batch coordination terms in the
-root [CONTEXT.md](../CONTEXT.md).
+Canonical vocabulary for distribution, seam, readiness, review, skill
+contracts, and state-machine terms in this source pack. Keep batch coordination
+terms in the root [CONTEXT.md](../CONTEXT.md).
 
 ## Language
 
@@ -64,6 +64,10 @@ A deterministic test fixture that models a GitHub or git workflow state and its
 expected transition.
 _Avoid_: broad prose-only hardening.
 
+**Source Pack Skill Contract Audit**:
+A catalog-wide evidence review that minimizes auto-loaded skill instructions and assigns each rule to the least costly mechanism that preserves its invariant.
+_Avoid_: personal skill audit, line-count minimization, universal release gate.
+
 ## Relationships
 
 - A **Source Pack** can be installed through a **Host Installer Path** or a
@@ -81,6 +85,10 @@ _Avoid_: broad prose-only hardening.
   be shared from the first implementation.
 - The first **State-Machine Fixture** target is `autoreview` target selection;
   broader batch and current-head readiness fixtures come later.
+- A **Source Pack Skill Contract Audit** classifies deterministic rules as
+  `script` or `schema`, judgment controls as `checklist+replay`, conditional
+  guidance as references, and redundant guidance for removal; it does not
+  establish comparative skill effectiveness.
 
 ## Flagged Ambiguities
 
@@ -98,3 +106,10 @@ _Avoid_: broad prose-only hardening.
   incrementally.
 - "state-machine hardening" could target the whole batch workflow at once.
   Resolved: start with `autoreview` target selection fixtures.
+- "skill audit" could mean validating installed files, minimizing line count, or
+  judging personal skill libraries. Resolved: a **Source Pack Skill Contract
+  Audit** reviews only shipped Source Pack skills for minimum sufficient
+  instructions and correct mechanism placement.
+- Contract placement and comparative effectiveness answer different questions.
+  Resolved: the **Source Pack Skill Contract Audit** may flag model-obvious prose,
+  but effectiveness experiments remain separately scoped.
