@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Continue"
+  short_description: "Resume in-progress work from a structured checkpoint"
+  default_prompt: "Use $continue to resume the in-progress task with a structured checkpoint instead of a bare continue."

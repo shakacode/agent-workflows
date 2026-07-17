@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Untrusted Contributor Intake"
+  short_description: "Safely assess an outside-contributor fork pull request"
+  default_prompt: "Use $untrusted-contributor-intake to produce a safe intake report for this outside-contributor fork PR from metadata and diff evidence, without executing untrusted content."

@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "TDD"
+  short_description: "Drive red-green-refactor test-driven development"
+  default_prompt: "Use $tdd to implement this change with red-green-refactor test-driven discipline."

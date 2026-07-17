@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Run CI"
+  short_description: "Detect and run local CI jobs for branch changes"
+  default_prompt: "Use $run-ci to analyze the current branch changes and run selected local CI jobs."
