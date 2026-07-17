@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Status"
+  short_description: "Report done, in-progress, blocked, and next work"
+  default_prompt: "Use $status to report tight progress on the current work without starting new work."

@@ -1,0 +1,5 @@
+# Codex UI metadata for skill picker display text and default prompt.
+interface:
+  display_name: "Verify PR Fix"
+  short_description: "Reproduce a bug before a fix and confirm it is gone after"
+  default_prompt: "Use $verify-pr-fix to manually verify this bug-fix PR by reproducing the failure before the fix and confirming it is gone after, with captured evidence."
