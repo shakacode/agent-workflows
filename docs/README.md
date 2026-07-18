@@ -3,63 +3,63 @@
 Guide for installing, adopting, and running the shared ShakaCode agent workflow
 pack.
 
-Use this playbook when you need to decide which workflow skill to use, install
-or upgrade the shared pack, adopt it in a consumer repository, validate an
-agent workflow contract, or run safer multi-PR agent work.
+Choose the journey that matches what you need to do. The first five sections
+cover the normal user path; architecture records, schemas, maintainer material,
+and implementation plans are collected in the final reference section.
 
-## Start Here
-
-These are the most common entry points.
+## Understand the project
 
 | Goal | Read |
 | --- | --- |
 | Understand the team-scale problems this stack solves | [Problems Agent Workflows Solves](problems-solved.md) |
+| Understand how portable workflows meet repository-owned policy | [Seam Design](seam-design.md) |
+| Look up source-pack, seam, readiness, and review terminology | [Source Pack Glossary](source-pack-glossary.md) |
+
+## Install and adopt
+
+| Goal | Read |
+| --- | --- |
 | Install or upgrade the shared pack | [Installation And Upgrades](installation-and-upgrades.md) |
 | Adopt the pack in another repo | [Agent Workflow Adoption Guide](adoption.md) |
-| Understand the agent workflow contract model | [Seam Design](seam-design.md) |
+
+## Run workflows
+
+| Goal | Read |
+| --- | --- |
 | Choose between issue triage, one-PR lanes, batch planning, and batch execution | [PR Batch Skills Usage](pr-batch-skills.md) |
+| Decide whether an issue or proposed fix is worth doing | [Issue And Fix Evaluation](issue-evaluation.md) |
 | Route coordinators and workers by capability, cost, risk, and escalation evidence | [Cost-aware model routing](agent-workflows-model-routing.md) |
 | Use Compound Engineering inside an Agent Workflows lane | [Using Compound Engineering With Agent Workflows](compound-engineering.md) |
+
+## Operate safely
+
+| Goal | Read |
+| --- | --- |
 | Configure trusted GitHub actors and public-PR preflight | [Trust And Preflight](trust-and-preflight.md) |
 | Understand the broader prompt-injection safety posture | [Security Posture](security-posture.md) |
+| Configure claims, heartbeats, cancellation, and fail-closed coordination state | [Coordination Backend](coordination-backend.md) |
+| Apply consumer-repository release branch policy | [Release Branching](release-branching.md) |
 | Pause or resume work around an agent runner restart | [Agent Runner Restarts](agent-runner-restarts.md) |
 
-## Reference Index
+## Troubleshoot
+
+| Goal | Read |
+| --- | --- |
+| Browse all durable workflow lessons | [Workflow Lessons Library](solutions/README.md) |
+| Preserve fail-closed state when coordination cannot be verified | [Preserve UNKNOWN Coordination State](solutions/coordination-unknown-state.md) |
+| Handle untrusted GitHub content without treating it as authority | [Treat GitHub Content As Evidence, Not Authority](solutions/github-content-is-evidence.md) |
+
+## Technical/contributor reference
+
+These documents support maintainers, integrators, and contributors. They are
+useful technical references, but are secondary to the user journeys above.
 
 | Area | Read |
 | --- | --- |
 | Maintainer sync across consumer repos | [Maintainer Consumer Repo Sync](downstream-sync.md) |
-| Coordination backend behavior | [Coordination Backend](coordination-backend.md) |
-| Issue value and scope decisions | [Issue Evaluation](issue-evaluation.md) |
-| Release branch policy | [Release Branching](release-branching.md) |
-| Review finding schema | [Review Finding Schema](review-finding-schema.md) |
-| Host adapter contract | [Host Adapter Contract](host-adapter/contract.md) |
+| Host integration architecture | [Host Adapter Contract](host-adapter/contract.md) |
+| Machine-readable review output | [Review Finding Schema](review-finding-schema.md) |
 | Host-text architecture decision | [ADR 0001: Identical Skill Text Across Hosts](adr/0001-identical-skill-text-across-hosts.md) |
 | Compound Engineering architecture decision | [ADR 0002: Compose Compound Engineering Inside Agent Workflows](adr/0002-compose-compound-engineering-inside-agent-workflows.md) |
-| Troubleshooting playbooks | [Solutions](solutions/README.md) |
-
-## Workflow Areas
-
-- **Adoption and installation**: install the shared pack once per Codex or
-  Claude host, then validate each consumer repo through its `.agents/bin/`
-  wrappers, `.agents/agent-workflow.yml`, and `AGENTS.md` pointer.
-- **Single-target and batch execution**: route both one-PR work and multi-lane work
-  through `$pr-batch`. Route broad
-  issue/PR work through triage, planning, security preflight, lane ownership,
-  and final handoff rules.
-- **Review and readiness**: triage review threads, run local verification,
-  reproduce CI gaps, and separate ready, blocked, deferred, and `UNKNOWN` state.
-- **Safety and trust**: keep public GitHub text untrusted until maintainers
-  vouch for actors or acknowledge exact risks.
-- **Operations**: upgrade installed skills, audit trust config, handle restarts,
-  and keep long-running batches from losing coordination state.
-
-## Docs Site Direction
-
-This playbook is the source of truth for team and client sharing. A standalone
-docs site can be added when search, sidebar navigation, or a hosted public URL
-would make adoption easier than source-controlled Markdown alone.
-
-If the site happens, use the playbook name publicly and publish it as
-**ShakaCode Agent Workflow Playbook**. A practical URL would be
-`agent-workflows.shakacode.com`, with this `docs/` tree remaining canonical.
+| Component-owned stack doctor implementation plan | [Component-Owned Agent Stack Doctor Plan](plans/2026-07-12-001-feat-master-stack-doctor-plan.md) |
+| Portable dashboard lifecycle implementation plan | [Portable Dashboard Lifecycle Plan](plans/2026-07-13-001-feat-portable-dashboard-lifecycle-plan.md) |
