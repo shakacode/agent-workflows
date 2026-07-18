@@ -1,7 +1,8 @@
 # Landing page design — ShakaCode Agent Workflow Playbook
 
 Date: 2026-07-08
-Status: proposed (awaiting review before an implementation plan)
+Updated: 2026-07-17
+Status: deferred until the internal dogfooding promotion gate is satisfied
 
 ## Goal
 
@@ -16,6 +17,25 @@ outcome rather than the headline.
 - Primary CTA: get started — star the repo and install the pack.
 - Secondary CTA: read the methodology (long-form).
 - Tertiary, low-key: work with ShakaCode.
+
+## Internal dogfooding promotion gate
+
+Public promotion follows demonstrated internal value; it is not the current
+objective. Roll out in this order:
+
+1. Justin uses and improves the workflows until they work reliably for his own
+   maintainer work.
+2. Robert collaborates with Justin through the same workflows, exposing the
+   first real multi-operator friction and handoff requirements.
+3. The broader ShakaCode team adopts the proven path incrementally.
+4. Only after the workflows are repeatable across the team should ShakaCode
+   consider the landing page, public promotion, or broader adoption campaigns.
+
+Capture real failures, corrections, saved effort, and public repository examples
+during dogfooding so later claims can cite evidence. Stars, clone counts,
+unsolicited contributor activity, and follower totals are not promotion-readiness
+evidence by themselves. ShakaCode's open-source reputation may help earn an
+evaluation later, but internal results must establish the product's value.
 
 ## Decisions locked (this session)
 
@@ -167,13 +187,18 @@ flowchart TB
 
 ## Success metrics
 
+Before the promotion gate, success means repeatable individual use, successful
+Justin-and-Robert collaboration, broader team adoption, and fewer workflow
+failures or manual recoveries over time. After the gate:
+
 - GitHub stars / forks and install activity (primary).
 - Methodology article reads and inbound shares (secondary).
 - Any inbound "work with us" contacts (tertiary signal, not a target).
 
 ## Next step
 
-On approval, turn this into an implementation plan (writing-plans) in
-`agent-workflows-com`: scaffold Astro, build the three diagrams as themed SVGs,
-assemble copy from existing docs, wire Cloudflare Pages + the CNAME, and draft
-the methodology article.
+Continue internal dogfooding, next through Justin-and-Robert collaboration and
+then incremental team adoption. When that promotion gate is satisfied, turn
+this into an implementation plan in `agent-workflows-com`: scaffold Astro,
+build the three diagrams as themed SVGs, assemble copy from existing docs, wire
+Cloudflare Pages + the CNAME, and draft the methodology article.
