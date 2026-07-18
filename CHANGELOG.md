@@ -34,6 +34,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Block readiness while viewer-visible current-head `PENDING` review drafts remain.** [PR 146](https://github.com/shakacode/agent-workflows/pull/146) by [justin808](https://github.com/justin808).
 - **Adopt the provisional Conservative Claude routing profile (`claude-profile v0`): Opus 4.8/xhigh multi-lane coordination, unknown/high-risk work, and adversarial QA; Sonnet 5/high only for positively classified simple workers; Opus 4.8/high for routine deterministic QA; Fable 5 stays a non-default experimental candidate pending [issue 151](https://github.com/shakacode/agent-workflows/issues/151) evidence.**
 - **Make the portable update-changelog helper resolve target branches independently from compare branches and select reachable stable or prerelease tags from first-parent history.** [PR 170](https://github.com/shakacode/agent-workflows/pull/170) by [justin808](https://github.com/justin808).
 - **Publish the stable `ShakaCode Agent Workflows` display name in Claude Code's plugin manifest while retaining `scw` as the install and namespace identifier.**
@@ -58,6 +59,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Restore durable Codex goal-prompt headroom and require early splitting without weakening completion contracts.** [PR 148](https://github.com/shakacode/agent-workflows/pull/148) by [justin808](https://github.com/justin808).
 - **Reject empty `agent-workflows-doctor` target and source paths as usage errors instead of expanding them to the current directory.**
 - **Keep trusted PR-batch review closeout autonomous for evidence-backed fix, defer, and decline recommendations under every merge-authority mode, prompting maintainers only when the review outcome explicitly requires their help.**
 - **Reject stale priority replay evidence so only final-head closeout evidence qualifies.** [PR 118](https://github.com/shakacode/agent-workflows/pull/118) by [justin808](https://github.com/justin808).
