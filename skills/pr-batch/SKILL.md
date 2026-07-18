@@ -17,6 +17,12 @@ entry point. After fetching, prefer repo-local `.agents/skills/...` and
 `.agents/workflows/...` files when they exist; otherwise use the installed
 shared files adjacent to this skill, especially `../../workflows/pr-processing.md`.
 
+The completed-batch closeout validation contract requires `pr-batch` and
+`post-merge-audit` from the same Agent Workflows pack revision. Its contract
+test intentionally loads the production receipt parser from the sibling
+`post-merge-audit` skill; an isolated pinned copy must include that companion
+or stop with a precise missing-companion blocker.
+
 Memorable invocation:
 
 ```text

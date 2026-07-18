@@ -92,6 +92,7 @@ OBSOLETE_RELEASE_AUTHORITY_RECONCILIATION_RULE = "may authorize a coordinated re
 TERMINAL_FOLLOW_UP_EVIDENCE_RULE = "A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref."
 UNRESOLVED_HANDOFF_NON_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
 OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
+COMPLETED_BATCH_AUDIT_COMPANION_DEPENDENCY_RULE = "The completed-batch closeout validation contract requires `pr-batch` and `post-merge-audit` from the same Agent Workflows pack revision."
 COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE = "A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records."
 COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
 COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE = "A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`."
@@ -979,6 +980,15 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes pressure_checks,
                     "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions.",
                     "parent pressure fixture must pin completed-batch reconciliation"
+  end
+
+  def test_completed_batch_audit_parser_dependency_is_explicit_in_both_companion_skills
+    {
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md"))
+    }.each do |label, text|
+      assert_text_includes text.gsub(/\s+/, " "), COMPLETED_BATCH_AUDIT_COMPANION_DEPENDENCY_RULE, label
+    end
   end
 
   def test_completed_batch_audit_marker_replay_is_exact_and_fail_closed

@@ -111,14 +111,14 @@ module CompletedBatchAuditReceipt
   end
 
   def publish(expected_batch_id:, targets:, receipt:, other_blockers: [])
-    local = replay_marker(receipt, expected_batch_id:, other_blockers:)
+    comment_body = canonical_comment_body(receipt)
+    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
+
+    marker = comment_marker(comment_body)
+    local = replay_marker(marker, expected_batch_id:, other_blockers:)
     raise Error, "local completed-batch audit receipt is invalid" unless local.fetch("well_formed")
 
-    canonical_receipt = receipt.end_with?("\n") ? receipt : "#{receipt}\n"
-    raise Error, "local completed-batch audit receipt is not canonical" unless marker_state(canonical_receipt)
-
     target, actor = select_verified_anchor(targets)
-    comment_body = "#{COMMENT_HEADER}\n\n#{canonical_receipt}"
     endpoint = "repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}/comments"
     begin
       posted = gh_api(
@@ -391,6 +391,17 @@ module CompletedBatchAuditReceipt
 
     marker = body.delete_prefix(prefix)
     marker if marker_state(marker)
+  end
+
+  def canonical_comment_body(receipt)
+    marker = comment_marker(receipt)
+    marker ||= receipt if marker_state(receipt)
+    return unless marker
+
+    canonical_marker = marker.end_with?("\n") ? marker : "#{marker}\n"
+    return unless marker_state(canonical_marker)
+
+    "#{COMMENT_HEADER}\n\n#{canonical_marker}"
   end
 
   def bot_login?(login)

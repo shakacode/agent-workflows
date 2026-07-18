@@ -19,6 +19,12 @@ Audit merged PRs since the last release candidate
 
 Use `.agents/workflows/post-merge-audit.md` for reusable copy-paste prompts, including independent Codex/Claude audits, comparison, default issue creation, and Claude PR review handoff prompts.
 
+The completed-batch closeout validation contract requires `pr-batch` and
+`post-merge-audit` from the same Agent Workflows pack revision. This skill owns
+the production receipt parser loaded by the sibling `pr-batch` contract test;
+an isolated pinned copy must include both companions or stop with a precise
+missing-companion blocker.
+
 For a verified Codex GPT-5.6 batch, preserve the originating route profile:
 
 - Multi-lane coordinator: Sol/xhigh

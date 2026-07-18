@@ -535,6 +535,71 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_publish_accepts_the_documented_full_durable_comment_body
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      full_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, full_body)
+
+      out, err, status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert status.success?, err
+      assert JSON.parse(out).fetch("ready")
+      assert_equal full_body, File.read(env.fetch("FAKE_GH_BODY"))
+    end
+  end
+
+  def test_publish_rejects_extra_visible_text_around_a_full_durable_comment_body
+    ["unexpected preface\n%s", "%sunexpected suffix\n"].each do |format|
+      with_fake_gh do |env, directory|
+        targets_path = write_json(
+          directory,
+          "targets.json",
+          [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+        )
+        full_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
+        receipt_path = File.join(directory, "receipt.txt")
+        File.write(receipt_path, format(format, full_body))
+
+        out, _err, status = Open3.capture3(
+          env,
+          "ruby",
+          SCRIPT,
+          "publish",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--receipt",
+          receipt_path
+        )
+
+        assert_equal 1, status.exitstatus
+        result = JSON.parse(out)
+        refute result.fetch("well_formed")
+        refute result.fetch("ready")
+        assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+        refute File.exist?(env.fetch("FAKE_GH_LOG"))
+      end
+    end
+  end
+
   def test_replay_fetches_exact_comment_id_and_verifies_reference_bindings
     with_fake_gh do |env, directory|
       targets_path = write_json(
