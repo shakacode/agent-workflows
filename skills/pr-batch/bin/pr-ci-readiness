@@ -307,6 +307,15 @@ module PrCiReadiness
         rows = []
         required_used = false
         requested_hosted_only = true
+        if required_cancellations.any?
+          full_fetch = fetch_checks(repo, pr_number, required: false)
+          full_rows = PrCiReadiness.parse_rows(full_fetch.fetch(:raw))
+          full_query_known = full_fetch.fetch(:known_good)
+          required_contexts = required_cancellations.map { |row| PrCiReadiness.check_identity(row) }
+          rows = PrCiReadiness.active_rows(full_rows).select do |row|
+            required_contexts.include?(PrCiReadiness.check_identity(row))
+          end
+        end
       else
         full_fetch = fetch_checks(repo, pr_number, required: false)
         rows = PrCiReadiness.parse_rows(full_fetch.fetch(:raw))
