@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+load File.expand_path("../../post-merge-audit/bin/completed-batch-audit-receipt", __dir__)
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
@@ -188,61 +189,17 @@ def completed_batch_audit_marker(body)
   "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
 end
 
-CompletedBatchAuditState = Struct.new(:fields, :records, keyword_init: true)
+CompletedBatchAuditState = CompletedBatchAuditReceipt::State
 CompletedBatchAuditReplayResult = Struct.new(:well_formed, :ready, :blockers, keyword_init: true)
-CanonicalCompletedBatchAuditRef = Struct.new(:canonical_display, :identity, keyword_init: true)
-CompletedBatchAuditRecord = Struct.new(:ref, :ref_identity, :owner, :current_status, :disposition, :evidence, keyword_init: true) do
-  def terminal?
-    current_status == "terminal"
-  end
-
-  def fully_evidenced_terminal?
-    terminal? && evidenced_scalar?(evidence)
-  end
-
-  def non_ready?
-    !fully_evidenced_terminal?
-  end
-end
-
-COMPLETED_BATCH_AUDIT_FIELDS = %w[
-  batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
-].freeze
-CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
-TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
-NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
+CanonicalCompletedBatchAuditRef = CompletedBatchAuditReceipt::CanonicalRef
+CompletedBatchAuditRecord = CompletedBatchAuditReceipt::Record
 
 def completed_batch_audit_marker_fields(marker)
-  envelope = marker.match(/\A<!-- completed-batch-audit v1\n(?<body>.*)\n-->\n?\z/m)
-  return nil unless envelope
-
-  fields = {}
-  envelope[:body].each_line do |line|
-    raw_line = line.delete_suffix("\n")
-    match = raw_line.match(/\A([a-z_]+):[ \t]*(.*)\z/)
-    return nil unless match
-
-    key = match[1]
-    return nil unless COMPLETED_BATCH_AUDIT_FIELDS.include?(key)
-    return nil if fields.key?(key)
-    return nil unless single_physical_line?(match[2])
-    return nil if match[2].include?("<!--") || match[2].include?("-->")
-
-    fields[key] = match[2].strip
-  end
-
-  fields.keys.sort == COMPLETED_BATCH_AUDIT_FIELDS.sort ? fields : nil
+  CompletedBatchAuditReceipt.marker_fields(marker)
 end
 
 def completed_batch_audit_state(marker)
-  fields = completed_batch_audit_marker_fields(marker)
-  return nil unless fields
-
-  records = followups_disposition_records(fields["followups_dispositions"])
-  return nil unless records && completed_batch_audit_scalars_well_formed?(fields, records:) &&
-                    completed_batch_audit_fields_are_consistent?(fields, records)
-
-  CompletedBatchAuditState.new(fields:, records:)
+  CompletedBatchAuditReceipt.marker_state(marker)
 end
 
 def completed_batch_audit_marker_well_formed?(marker)
@@ -251,297 +208,52 @@ end
 
 def completed_batch_audit_release_or_archive_ready?(marker)
   state = completed_batch_audit_state(marker)
-  !state.nil? && completed_batch_audit_state_ready?(state)
+  !!(state && completed_batch_audit_state_ready?(state))
 end
 
 def completed_batch_audit_state_ready?(state)
-  fields = state.fields
-  return false unless fields["audit_status"] == "complete" && fields["verdict"] == "clean"
-  return false unless fields["findings"] == "none"
-  return false unless evidenced_scalar?(fields["batch_id"])
-  return false unless evidenced_scalar?(fields["scope_evidence"]) && evidenced_scalar?(fields["checker_evidence"])
+  CompletedBatchAuditReceipt.state_ready?(state)
+end
 
-  state.records.all?(&:fully_evidenced_terminal?)
+def completed_batch_audit_replay_result(marker, other_blockers: [])
+  fields = completed_batch_audit_marker_fields(marker)
+  expected_batch_id = fields&.fetch("batch_id", "__invalid_completed_batch_audit__")
+  result = CompletedBatchAuditReceipt.replay_marker(
+    marker,
+    expected_batch_id: expected_batch_id,
+    other_blockers: other_blockers
+  )
+  CompletedBatchAuditReplayResult.new(
+    well_formed: result.fetch("well_formed"),
+    ready: result.fetch("ready"),
+    blockers: result.fetch("blockers")
+  )
 end
 
 def completed_batch_audit_final_status_replays?(marker, final_line, other_blockers: [])
   return false unless other_blockers.all? { |blocker| well_formed_other_blocker?(blocker) }
 
-  result = completed_batch_audit_replay_result(marker, other_blockers:)
-  return final_line == "Conversation status: Ready for archiving." if result.ready && result.blockers.empty?
-
-  blockers = result.blockers
-  return false if blockers.empty?
-
-  final_line == "Conversation status: Follow-ups remain — #{blockers.join('; ')}."
+  result = completed_batch_audit_replay_result(marker, other_blockers: other_blockers)
+  final_line == CompletedBatchAuditReceipt.final_status(
+    "ready" => result.ready,
+    "blockers" => result.blockers
+  )
 end
 
 def completed_batch_audit_marker_blockers(marker)
   completed_batch_audit_replay_result(marker).blockers
 end
 
-def completed_batch_audit_replay_result(marker, other_blockers: [])
-  state = completed_batch_audit_state(marker)
-  marker_blockers = state ? completed_batch_audit_state_blockers(state) : [COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER]
-  external_blockers = other_blockers.select { |blocker| well_formed_other_blocker?(blocker) }
-
-  CompletedBatchAuditReplayResult.new(
-    well_formed: !state.nil?,
-    ready: !state.nil? && completed_batch_audit_state_ready?(state),
-    blockers: deduped_blockers(marker_blockers + external_blockers)
-  )
-end
-
 def completed_batch_audit_state_blockers(state)
-  fields = state.fields
-  records = state.records
-  scalar_blockers = %w[batch_id audit_status verdict scope_evidence checker_evidence findings].filter_map do |field|
-    "#{field}: UNKNOWN" if fields.fetch(field) == "UNKNOWN"
-  end
-  record_blockers_by_ref = records.filter_map do |record|
-    next unless record.non_ready?
-
-    blocker = if record.terminal?
-                "#{record.ref} (terminal): evidence #{record.evidence == 'UNKNOWN' ? 'UNKNOWN' : 'missing'}"
-              else
-                "#{record.ref} (#{record.current_status}): #{record.disposition}"
-              end
-    [record.ref_identity, blocker]
-  end.to_h
-  record_blockers = record_blockers_by_ref.values
-  finding_blockers = completed_batch_audit_finding_refs(fields.fetch("findings"), records:).to_a.map do |ref|
-    record_blockers_by_ref.fetch(ref.identity, ref.canonical_display)
-  end
-  unlisted_record_blockers = record_blockers.reject do |blocker|
-    finding_blockers.any? { |finding| finding.casecmp?(blocker) }
-  end
-
-  deduped_blockers(scalar_blockers + finding_blockers + unlisted_record_blockers)
+  CompletedBatchAuditReceipt.state_blockers(state)
 end
 
 def well_formed_other_blocker?(value)
-  return false unless value.is_a?(String) && single_physical_line?(value)
-  return false if value.include?("<!--") || value.include?("-->")
-
-  safe_canonical_completed_batch_audit_external_blocker?(canonical_completed_batch_audit_ref(value))
-end
-
-def normalized_blocker(value)
-  canonical_completed_batch_audit_ref(value)&.canonical_display.to_s
-end
-
-def deduped_blockers(blockers)
-  blockers.each_with_object([]) do |blocker, deduped|
-    canonical = canonical_completed_batch_audit_ref(blocker)
-    next unless canonical
-
-    deduped << canonical.canonical_display unless deduped.any? do |known|
-      canonical_completed_batch_audit_ref(known).identity == canonical.identity
-    end
-  end
-end
-
-def completed_batch_audit_scalars_well_formed?(fields, records: [])
-  well_formed_batch_identity?(fields["batch_id"], fields["scope_evidence"]) &&
-    %w[complete blocked UNKNOWN].include?(fields["audit_status"]) &&
-    %w[clean follow-ups-remain UNKNOWN].include?(fields["verdict"]) &&
-    structurally_valid_scalar?(fields["scope_evidence"]) &&
-    structurally_valid_scalar?(fields["checker_evidence"]) &&
-    structurally_valid_followups_dispositions?(fields["followups_dispositions"]) &&
-    well_formed_findings?(fields["findings"], records:)
-end
-
-def well_formed_batch_identity?(value, scope_evidence)
-  return true if exact_unknown?(value)
-  return false unless structurally_valid_scalar?(value) && evidenced_scalar?(value)
-
-  if value.start_with?("non-backend:")
-    return value.match?(/\Anon-backend:\s*[^;\s](?:[^;]*[^;\s])?;\s*rationale:\s*[^;\s](?:[^;]*[^;\s])?\z/) &&
-           exact_target_scope_evidence?(scope_evidence)
-  end
-  if value.start_with?("not-applicable:")
-    return value.match?(/\Anot-applicable:\s*[^;\s](?:[^;]*[^;\s])?\z/) &&
-           exact_target_scope_evidence?(scope_evidence)
-  end
-
-  true
-end
-
-def well_formed_findings?(value, records: [])
-  return true if %w[none UNKNOWN].include?(value)
-
-  refs = completed_batch_audit_finding_refs(value, records:)
-  structurally_valid_scalar?(value) && value.match?(/\AOUTSTANDING\s+\S(?:.*\S)?\z/) &&
-    !unknown_value?(value) && refs && !refs.empty? && refs.all? { |ref| safe_canonical_completed_batch_audit_ref?(ref) } &&
-    refs.map(&:identity).uniq.length == refs.length
-end
-
-def completed_batch_audit_fields_are_consistent?(fields, records)
-  findings = fields.fetch("findings")
-  verdict = fields.fetch("verdict")
-  non_ready_records = records.select(&:non_ready?)
-  outstanding = findings.start_with?("OUTSTANDING ")
-  unknown_marker = fields.fetch("audit_status") == "UNKNOWN" && verdict == "UNKNOWN" && findings == "UNKNOWN"
-  clean_marker = fields.fetch("audit_status") == "complete" && verdict == "clean" && findings == "none"
-
-  return true if clean_marker && non_ready_records.empty?
-  return true if unknown_marker
-
-  return false unless %w[complete blocked].include?(fields.fetch("audit_status"))
-  return false unless verdict == "follow-ups-remain"
-  return false unless findings == "none" || outstanding
-  return false if non_ready_records.empty? && !outstanding
-
-  true
-end
-
-def exact_target_scope_evidence?(value)
-  value.match?(/\Atargets=[^;\s](?:[^;]*[^;\s])?; source=[^;\s](?:[^;]*[^;\s])?\z/) && !unknown_value?(value)
-end
-
-def evidenced_scalar?(value)
-  structurally_valid_scalar?(value) && !unknown_value?(value)
-end
-
-def structurally_valid_scalar?(value)
-  !value.nil? && !value.empty? && single_physical_line?(value) &&
-    !value.include?("<!--") && !value.include?("-->") && (exact_unknown?(value) || !unknown_value?(value))
-end
-
-def structurally_valid_followups_dispositions?(value)
-  !value.nil? && !value.empty? && single_physical_line?(value) &&
-    !value.include?("<!--") && !value.include?("-->")
-end
-
-def single_physical_line?(value)
-  !value.match?(/[\r\n\0\v\f\u0085\u2028\u2029]/)
-end
-
-def exact_unknown?(value)
-  value == "UNKNOWN"
-end
-
-def unknown_value?(value)
-  value.unicode_normalize(:nfkc).match?(/UNKNOWN/i)
+  CompletedBatchAuditReceipt.well_formed_other_blocker?(value)
 end
 
 def followups_disposition_records(value)
-  return [] if value == "none"
-  return nil if value.nil? || value.empty?
-
-  records = value.split(/\s+\|\s+/, -1)
-  return nil if records.empty? || records.any? { |record| record.empty? || record.include?("|") }
-
-  seen_refs = {}
-  records.map do |record|
-    fields = record.split(/\s*;\s*/, -1).each_with_object({}) do |entry, parsed|
-      match = entry.match(/\A(ref|owner|current status|disposition|evidence):\s*(.*)\z/i)
-      break nil unless match
-
-      key = match[1].downcase
-      raw_value = match[2]
-      break nil unless single_physical_line?(raw_value)
-
-      value = raw_value.strip
-      break nil if parsed.key?(key)
-      break nil unless value.empty? ? key == "evidence" : structurally_valid_scalar?(value)
-
-      parsed[key] = value
-    end
-    return nil unless fields&.keys&.sort == ["current status", "disposition", "evidence", "owner", "ref"]
-
-    canonical_ref = canonical_completed_batch_audit_ref(fields.fetch("ref"))
-    return nil unless safe_canonical_completed_batch_audit_ref?(canonical_ref)
-    return nil if seen_refs.key?(canonical_ref.identity)
-
-    seen_refs[canonical_ref.identity] = true
-    status = fields.fetch("current status")
-    return nil unless CURRENT_STATUSES.include?(status)
-
-    disposition = fields.fetch("disposition")
-    return nil unless status == "terminal" ? TERMINAL_DISPOSITIONS.include?(disposition) : NONTERMINAL_ACTIONS.include?(disposition)
-    return nil unless evidenced_scalar?(canonical_ref.canonical_display) && evidenced_scalar?(fields.fetch("owner"))
-    return nil unless status == "terminal" || evidenced_scalar?(fields.fetch("evidence"))
-
-    CompletedBatchAuditRecord.new(
-      ref: canonical_ref.canonical_display,
-      ref_identity: canonical_ref.identity,
-      owner: fields.fetch("owner"),
-      current_status: status,
-      disposition:,
-      evidence: fields.fetch("evidence")
-    )
-  end
-end
-
-def canonical_completed_batch_audit_ref(value)
-  canonical_display = value.to_s.unicode_normalize(:nfkc).gsub(/[[:space:]]+/, " ").strip
-  return nil if canonical_display.empty?
-
-  CanonicalCompletedBatchAuditRef.new(
-    canonical_display:,
-    identity: canonical_display.downcase(:fold)
-  )
-end
-
-def safe_canonical_completed_batch_audit_ref?(canonical_ref)
-  canonical_ref && single_physical_line?(canonical_ref.canonical_display) &&
-    !canonical_ref.canonical_display.include?("<!--") &&
-    !canonical_ref.canonical_display.include?("-->") && !unknown_value?(canonical_ref.canonical_display)
-end
-
-def safe_canonical_completed_batch_audit_external_blocker?(canonical_ref)
-  canonical_ref && single_physical_line?(canonical_ref.canonical_display) &&
-    !canonical_ref.canonical_display.include?("<!--") && !canonical_ref.canonical_display.include?("-->")
-end
-
-def completed_batch_audit_finding_refs(value, records: [])
-  return [] unless value.start_with?("OUTSTANDING ")
-
-  raw_refs = value.delete_prefix("OUTSTANDING ")
-  known_refs = records.map do |record|
-    CanonicalCompletedBatchAuditRef.new(canonical_display: record.ref, identity: record.ref_identity)
-  end
-  known_refs.sort_by! { |ref| -ref.canonical_display.length }
-  canonical_payload = canonical_completed_batch_audit_ref(raw_refs)
-  return nil unless canonical_payload
-
-  whole_record_ref = known_refs.find { |ref| ref.identity == canonical_payload.identity }
-  return [whole_record_ref] if whole_record_ref
-
-  refs = raw_refs.split(/\s*,\s*/, -1).flat_map do |group|
-    completed_batch_audit_finding_group_refs(group, known_refs)
-  end
-  return nil unless refs && !refs.empty? && refs.none?(&:nil?)
-
-  refs
-end
-
-def completed_batch_audit_finding_group_refs(group, known_refs)
-  canonical_group = canonical_completed_batch_audit_ref(group)
-  return nil unless canonical_group
-
-  tokens = canonical_group.canonical_display.split(" ")
-  refs = []
-  index = 0
-  while index < tokens.length
-    remaining_identity = tokens[index..].join(" ").downcase(:fold)
-    record_ref = known_refs.find do |known_ref|
-      remaining_identity == known_ref.identity || remaining_identity.start_with?("#{known_ref.identity} ")
-    end
-    if record_ref
-      refs << record_ref
-      index += record_ref.canonical_display.split(" ").length
-    else
-      ref = canonical_completed_batch_audit_ref(tokens[index])
-      return nil unless ref
-
-      refs << ref
-      index += 1
-    end
-  end
-
-  refs
+  CompletedBatchAuditReceipt.disposition_records(value)
 end
 
 class GoalCompletionContractTest < Minitest::Test

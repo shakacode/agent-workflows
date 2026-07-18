@@ -24,10 +24,15 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_TERMINAL_DISPOSITION_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records."
   REQUIRED_NON_TERMINAL_DISPOSITION_NON_CLEAN_RULE = "A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
   REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
-  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator emits the `completed-batch-audit v1` marker and final `Conversation status` archive/follow-up line, in its final combined handoff after it compares qualifying-checker and advisory-auditor reports and dispositions findings."
-  REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not emit the coordinator handoff marker or coordinator handoff readiness/status line."
+  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings."
+  REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "<!-- completed-batch-audit v1"
+  REQUIRED_DURABLE_RECEIPT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
+  REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
+  REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, read back that exact returned comment ID, and validate every binding before emitting the compact reference."
+  REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
+  REQUIRED_RECEIPT_HELPER_RULE = "Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects."
   REQUIRED_BATCH_IDENTITY_FIELD = "batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>"
   REQUIRED_STRUCTURED_NON_BACKEND_SCOPE_EVIDENCE = "For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source."
   REQUIRED_BATCH_ID_SPECIFIC_UNKNOWN_RATIONALE = "`batch_id: UNKNOWN` is allowed only for genuinely unresolved batch identity, never for release/archive readiness."
@@ -172,6 +177,12 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should make the clean archive-ready status explicit"
       assert_includes normalized_text, REQUIRED_FOLLOW_UP_STATUS,
                       "#{relative_path} should repeat outstanding follow-ups in the final status"
+      assert_includes normalized_text, REQUIRED_COMPACT_RECEIPT_FORMAT,
+                      "#{relative_path} should expose only the compact durable receipt reference in chat"
+      assert_includes normalized_text, REQUIRED_RECEIPT_PUBLISH_ORDER,
+                      "#{relative_path} should require safe publish ordering"
+      assert_includes normalized_text, REQUIRED_RECEIPT_REPLAY_RULE,
+                      "#{relative_path} should require direct exact-ID replay"
     end
   end
 
@@ -184,6 +195,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, REQUIRED_COMPLETED_BATCH_MODE_SCOPE,
                       "#{relative_path} should scope completed-batch ownership to completed-batch mode"
+      assert_includes text, REQUIRED_RECEIPT_HELPER_RULE,
+                      "#{relative_path} should document the durable receipt helper manifest"
     end
   end
 
@@ -198,14 +211,17 @@ class PostMergeAuditPolicyTest < Minitest::Test
     body = guarded_block[:body]
     [
       REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP,
+      REQUIRED_DURABLE_RECEIPT_HEADER,
       COMPLETED_BATCH_AUDIT_MARKER_HEADER,
       REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD
     ].each do |rule|
       assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
     end
-    nested_marker_rule = "  - Only in completed-batch mode, include this visible report marker and fill every field explicitly; use `none` rather than omitting a field:\n\n"
+    nested_marker_rule = "  - Post this exact durable GitHub comment body, with one fixed header, one blank line, and exactly one unchanged v1 wrapper; fill every field explicitly and use `none` rather than omitting a field:\n\n"
     indented_marker_block = [
-      "    ```markdown\n",
+      "    ```text\n",
+      "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
+      "\n",
       "    #{COMPLETED_BATCH_AUDIT_MARKER_HEADER}\n",
       "    #{REQUIRED_BATCH_IDENTITY_FIELD}\n",
       "    audit_status: <complete|blocked|UNKNOWN>\n",
@@ -276,6 +292,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, COMPLETED_BATCH_AUDIT_MARKER_HEADER,
                       "#{relative_path} should require the completed-batch audit marker header"
+      assert_includes text, REQUIRED_DURABLE_RECEIPT_HEADER,
+                      "#{relative_path} should require the fixed durable comment header"
       assert_includes text, REQUIRED_BATCH_IDENTITY_FIELD,
                       "#{relative_path} should require the expanded completed-batch audit identity contract"
       assert_includes text, REQUIRED_STRUCTURED_NON_BACKEND_SCOPE_EVIDENCE,
