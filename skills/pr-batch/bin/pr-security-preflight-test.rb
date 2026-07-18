@@ -35,6 +35,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
+      assert_trust_config_evidence(out, path: global_config, source: "env")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -1097,6 +1098,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       refute status.success?, out
+      assert_trust_config_evidence(out, path: explicit_config, source: "explicit")
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "not in trusted actor allowlist"
     end
@@ -1182,6 +1184,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
+      assert_trust_config_evidence(out, path: File.realpath(repo_config), source: "repo-local")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -1294,6 +1297,7 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       assert status.success?, out
+      assert_trust_config_evidence(out, path: home_config, source: "user-global")
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
     end
@@ -1315,6 +1319,11 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       refute status.success?, out
+      assert_trust_config_evidence(
+        out,
+        path: File.expand_path("../trusted-github-actors.yml", __dir__),
+        source: "packaged-fallback"
+      )
       assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
       assert_includes out, "not in trusted actor allowlist"
     end
@@ -2286,6 +2295,12 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   private
+
+  def assert_trust_config_evidence(out, path:, source:)
+    lines = out.lines.map(&:chomp)
+    assert_includes lines, "Trust config: #{File.expand_path(path)}"
+    assert_includes lines, "Trust config source: #{source}"
+  end
 
   def run_script(env, *args, chdir: nil, clear_git_env: true)
     options = {}
