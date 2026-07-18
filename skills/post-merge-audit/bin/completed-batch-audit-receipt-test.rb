@@ -163,6 +163,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       context: "test actor",
       expected_login: "justin808"
     )
+    ["justin.emu", "justin emu", "justin/emu"].each do |login|
+      assert_raises(CompletedBatchAuditReceipt::Error, login) do
+        CompletedBatchAuditReceipt.verified_human_login!(
+          { "login" => login, "type" => "User" },
+          context: "test actor"
+        )
+      end
+    end
   end
 
   def test_cli_usage_errors_use_documented_exit
@@ -319,6 +327,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       refute result.fetch("well_formed")
       refute result.fetch("ready")
       assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+      assert_equal(
+        "Conversation status: Follow-ups remain — completed-batch-audit marker invalid.",
+        result.fetch("final_status")
+      )
       assert_nil result.fetch("chat_reference")
     end
   end
@@ -345,6 +357,52 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
     assert_equal "pull_request", anchor.fetch("type")
     assert_equal 4, anchor.fetch("number")
+  end
+
+  def test_publish_anchor_selection_never_falls_through_first_deterministic_target
+    targets = [
+      { "host" => "github.com", "repo" => "zulu/widgets", "type" => "pull_request", "number" => 185 },
+      { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    ]
+    calls = []
+    fake_api = lambda do |host, endpoint, method: "GET", input: nil|
+      calls << [host, endpoint, method, input]
+      case endpoint
+      when "user"
+        { "login" => "justin808", "type" => "User" }
+      when "repos/acme/widgets/issues/184"
+        {
+          "number" => 184,
+          "html_url" => "https://github.com/acme/widgets/pull/184",
+          "locked" => true,
+          "pull_request" => {}
+        }
+      when "repos/zulu/widgets/issues/185"
+        {
+          "number" => 185,
+          "html_url" => "https://github.com/zulu/widgets/pull/185",
+          "locked" => false,
+          "pull_request" => {}
+        }
+      when "repos/zulu/widgets/collaborators/justin808/permission"
+        { "permission" => "write", "user" => { "login" => "justin808", "type" => "User" } }
+      else
+        flunk "unexpected API endpoint: #{endpoint}"
+      end
+    end
+
+    error = nil
+    with_stubbed_gh_api(fake_api) do
+      error = assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.select_verified_anchor(targets)
+      end
+    end
+
+    assert_equal "CompletedBatchAuditReceipt::AnchorVerificationError", error.class.name
+    assert_equal [
+      ["github.com", "user", "GET", nil],
+      ["github.com", "repos/acme/widgets/issues/184", "GET", nil]
+    ], calls
   end
 
   def test_target_host_validation_rejects_noncanonical_authorities
@@ -379,6 +437,30 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal 9001, error.comment_id
   end
 
+  def test_typed_operational_errors_map_to_fixed_safe_blockers
+    unsafe_message = "remote\n<!-- untrusted -->"
+    cases = {
+      CompletedBatchAuditReceipt::AnchorVerificationError.new(unsafe_message) =>
+        "completed-batch-audit anchor verification failed",
+      CompletedBatchAuditReceipt::ReplayGitHubApiError.new(unsafe_message) =>
+        "completed-batch-audit replay GitHub API request failed",
+      CompletedBatchAuditReceipt::PostOutcomeUnknownError.new(unsafe_message) =>
+        "completed-batch-audit comment POST outcome unknown",
+      CompletedBatchAuditReceipt::PostReadbackError.new(unsafe_message, comment_id: 9001) =>
+        "completed-batch-audit comment readback verification failed"
+    }
+
+    cases.each do |error, expected|
+      blocker = CompletedBatchAuditReceipt.failure_blocker(error)
+      assert_equal expected, blocker
+      refute_includes blocker, "untrusted"
+    end
+    assert_equal(
+      "completed-batch-audit marker invalid",
+      CompletedBatchAuditReceipt.failure_blocker(CompletedBatchAuditReceipt::Error.new(unsafe_message))
+    )
+  end
+
   def test_empty_manifest_fails_closed_without_post_or_fallback_issue_creation
     with_fake_gh do |env, directory|
       targets_path = write_json(directory, "targets.json", [])
@@ -403,6 +485,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       refute result.fetch("well_formed")
       refute result.fetch("ready")
       assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+      assert_equal(
+        "Conversation status: Follow-ups remain — completed-batch-audit marker invalid.",
+        result.fetch("final_status")
+      )
       assert_nil result.fetch("chat_reference")
       refute File.exist?(env.fetch("FAKE_GH_LOG"))
     end
@@ -540,7 +626,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result = JSON.parse(out)
       refute result.fetch("well_formed")
       refute result.fetch("ready")
-      assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+      assert_equal ["completed-batch-audit replay GitHub API request failed"], result.fetch("blockers")
+      assert_equal(
+        "Conversation status: Follow-ups remain — completed-batch-audit replay GitHub API request failed.",
+        result.fetch("final_status")
+      )
       assert_nil result.fetch("chat_reference")
       refute result.key?("mutation_state")
     end
@@ -686,6 +776,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result = JSON.parse(out)
       assert_equal "comment-created-readback-unknown", result.fetch("mutation_state")
       assert_equal 9001, result.fetch("comment_id")
+      assert_equal ["completed-batch-audit comment readback verification failed"], result.fetch("blockers")
+      assert_equal(
+        "Conversation status: Follow-ups remain — completed-batch-audit comment readback verification failed.",
+        result.fetch("final_status")
+      )
       assert_nil result.fetch("chat_reference")
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(1, calls.count { |call| call.include?("--method POST") })
@@ -720,7 +815,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         assert_equal 1, status.exitstatus, mode
         result = JSON.parse(out)
         assert_equal "comment-created-readback-unknown", result.fetch("mutation_state"), mode
-        assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers"), mode
+        assert_equal ["completed-batch-audit comment readback verification failed"], result.fetch("blockers"), mode
         assert_nil result.fetch("chat_reference"), mode
       end
     end
@@ -754,12 +849,59 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         assert_equal "comment-post-outcome-unknown", result.fetch("mutation_state"), mode
         refute result.key?("comment_id"), mode
-        assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers"), mode
+        assert_equal ["completed-batch-audit comment POST outcome unknown"], result.fetch("blockers"), mode
+        assert_equal(
+          "Conversation status: Follow-ups remain — completed-batch-audit comment POST outcome unknown.",
+          result.fetch("final_status"),
+          mode
+        )
         assert_nil result.fetch("chat_reference"), mode
         calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
         assert_equal 1, calls.count { |call| call.include?("--method POST") }, mode
         assert_equal 0, calls.count { |call| call.include?("issues/comments/") }, mode
       end
+    end
+  end
+
+  def test_post_timeout_is_bounded_and_reaps_child_before_delayed_side_effect
+    with_fake_gh(mode: "post-timeout") do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      out, _err, status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_equal 1, status.exitstatus
+      assert_operator elapsed, :<, 1.75
+      child_pid = Integer(File.read(env.fetch("FAKE_GH_PID"), encoding: "UTF-8"), 10)
+      assert_raises(Errno::ESRCH) { Process.kill(0, child_pid) }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1.25
+      sleep 0.05 while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      refute File.exist?(env.fetch("FAKE_GH_LATE_SIDE_EFFECT"))
+
+      result = JSON.parse(out)
+      assert_equal "comment-post-outcome-unknown", result.fetch("mutation_state")
+      refute result.key?("comment_id")
+      calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+      post_count = calls.count { |call| call.include?("--method POST") }
+      assert_equal 1, post_count
     end
   end
 
@@ -824,6 +966,129 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_publish_and_replay_adopt_api_canonical_repo_casing
+    with_fake_gh(mode: "canonical-repo-case") do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      publish_out, publish_err, publish_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert publish_status.success?, publish_err
+      published = JSON.parse(publish_out)
+      assert_includes published.fetch("chat_reference"), "github.com/Acme/Widgets/pull/184#issuecomment-9001"
+      assert_equal "Acme/Widgets", published.dig("receipt", "repo")
+
+      reference_path = File.join(directory, "reference.txt")
+      File.write(reference_path, published.fetch("chat_reference"))
+      replay_out, replay_err, replay_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "replay",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        reference_path
+      )
+
+      assert replay_status.success?, replay_err
+      replayed = JSON.parse(replay_out)
+      assert replayed.fetch("ready")
+      assert_equal published.fetch("chat_reference"), replayed.fetch("chat_reference")
+      calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+      assert_includes calls, "api --hostname github.com repos/Acme/Widgets/collaborators/justin808/permission"
+      assert_includes calls, "api --hostname github.com repos/Acme/Widgets/issues/184/comments --method POST --input -"
+      comment_read_count = calls.count { |call| call.end_with?("repos/Acme/Widgets/issues/comments/9001") }
+      assert_equal 2, comment_read_count
+    end
+  end
+
+  def test_target_payload_casing_exception_rejects_hostile_identity_changes
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    base = {
+      "number" => 184,
+      "html_url" => "https://github.com/Acme/Widgets/pull/184",
+      "locked" => false,
+      "pull_request" => {}
+    }
+    hostile_payloads = [
+      base.merge("html_url" => "https://example.com/Acme/Widgets/pull/184"),
+      base.merge("html_url" => "https://github.com/Acme/Other/pull/184"),
+      base.merge("html_url" => "https://github.com/Acme/Widgets/issues/184"),
+      base.merge("html_url" => "https://github.com/Acme/Widgets/pull/185"),
+      base.merge("number" => 185)
+    ]
+
+    assert_equal "Acme/Widgets", CompletedBatchAuditReceipt.verify_target_payload!(base, target).fetch("repo")
+    hostile_payloads.each do |payload|
+      assert_raises(CompletedBatchAuditReceipt::Error, payload.fetch("html_url")) do
+        CompletedBatchAuditReceipt.verify_target_payload!(payload, target)
+      end
+    end
+  end
+
+  def test_emu_login_with_underscore_round_trips_publish_and_replay
+    with_fake_gh(mode: "emu-actor") do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      publish_out, publish_err, publish_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+      assert publish_status.success?, publish_err
+      published = JSON.parse(publish_out)
+      assert_includes published.fetch("chat_reference"), "author `justin_emu`"
+
+      reference_path = File.join(directory, "reference.txt")
+      File.write(reference_path, published.fetch("chat_reference"))
+      replay_out, replay_err, replay_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "replay",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        reference_path
+      )
+
+      assert replay_status.success?, replay_err
+      assert JSON.parse(replay_out).fetch("ready")
+    end
+  end
+
   def test_enterprise_issue_api_url_must_preserve_the_manifest_port
     target = {
       "host" => "github.company.example:8443",
@@ -867,7 +1132,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result = JSON.parse(out)
       refute result.fetch("well_formed")
       refute result.fetch("ready")
-      assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+      assert_equal ["completed-batch-audit comment readback verification failed"], result.fetch("blockers")
       assert_equal "comment-created-readback-unknown", result.fetch("mutation_state")
       assert_nil result.fetch("chat_reference")
     end
@@ -898,7 +1163,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       assert_equal 1, status.exitstatus
       result = JSON.parse(out)
-      assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+      assert_equal ["completed-batch-audit anchor verification failed"], result.fetch("blockers")
+      assert_equal(
+        "Conversation status: Follow-ups remain — completed-batch-audit anchor verification failed.",
+        result.fetch("final_status")
+      )
       assert_nil result.fetch("chat_reference")
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(0, calls.count { |call| call.include?("--method POST") })
@@ -932,6 +1201,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result = JSON.parse(out)
       refute result.fetch("well_formed")
       refute result.fetch("ready")
+      assert_equal ["completed-batch-audit anchor verification failed"], result.fetch("blockers")
       assert_nil result.fetch("chat_reference")
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(0, calls.count { |call| call.include?("--method POST") })
@@ -966,7 +1236,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         refute result.fetch("well_formed"), mode
         refute result.fetch("ready"), mode
-        assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers"), mode
+        assert_equal ["completed-batch-audit comment readback verification failed"], result.fetch("blockers"), mode
         assert_nil result.fetch("chat_reference"), mode
         calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
         assert_equal 1, calls.count { |call| call.include?("--method POST") }, mode
@@ -1056,6 +1326,56 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_replay_ignores_current_actor_permission_and_target_lock_state
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      publish_out, publish_err, publish_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+      assert publish_status.success?, publish_err
+
+      reference_path = File.join(directory, "reference.txt")
+      File.write(reference_path, JSON.parse(publish_out).fetch("chat_reference"))
+      File.write(env.fetch("FAKE_GH_LOG"), "")
+      env["FAKE_GH_MODE"] = "replay-current-state-changed"
+      out, err, status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "replay",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        reference_path
+      )
+
+      assert status.success?, err
+      result = JSON.parse(out)
+      assert result.fetch("well_formed")
+      assert result.fetch("ready")
+      assert_equal [
+        "api --hostname github.com repos/acme/widgets/issues/comments/9001"
+      ], File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+    end
+  end
+
   def test_invalid_permission_schema_fails_closed_before_posting
     with_fake_gh(mode: "invalid-permission-user") do |env, directory|
       targets_path = write_json(
@@ -1083,6 +1403,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result = JSON.parse(out)
       refute result.fetch("well_formed")
       refute result.fetch("ready")
+      assert_equal ["completed-batch-audit anchor verification failed"], result.fetch("blockers")
       assert_nil result.fetch("chat_reference")
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(0, calls.count { |call| call.include?("--method POST") })
@@ -1116,6 +1437,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result = JSON.parse(out)
       refute result.fetch("well_formed")
       refute result.fetch("ready")
+      assert_equal ["completed-batch-audit anchor verification failed"], result.fetch("blockers")
       assert_nil result.fetch("chat_reference")
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(0, calls.count { |call| call.include?("--method POST") })
@@ -1303,12 +1625,42 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       end
     end
 
-    assert_equal [
-      ["github.com", "user", "GET", nil],
-      ["github.com", "repos/acme/widgets/issues/184", "GET", nil],
-      ["github.com", "repos/acme/widgets/collaborators/justin808/permission", "GET", nil]
-    ], calls
+    assert_empty calls
     refute(calls.any? { |_host, _endpoint, method, _input| method == "POST" })
+  end
+
+  def test_replay_github_api_failure_has_a_distinct_typed_error
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
+    created_at = "2026-07-18T18:00:00Z"
+    reference = CompletedBatchAuditReceipt.compact_reference(
+      "clean",
+      {
+        "url" => "https://github.com/acme/widgets/pull/184#issuecomment-9001",
+        "sha256" => Digest::SHA256.hexdigest(body),
+        "author" => "justin808",
+        "created_at" => created_at,
+        "updated_at" => created_at
+      }
+    )
+    failing_api = lambda do |_host, _endpoint, method: "GET", input: nil|
+      flunk "unexpected non-GET request" unless method == "GET" && input.nil?
+
+      raise CompletedBatchAuditReceipt::Error, "remote text must not become a blocker"
+    end
+
+    error = nil
+    with_stubbed_gh_api(failing_api) do
+      error = assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.replay_reference(
+          expected_batch_id: "batch-184",
+          targets: [target],
+          reference:
+        )
+      end
+    end
+
+    assert_equal "CompletedBatchAuditReceipt::ReplayGitHubApiError", error.class.name
   end
 
   def write_json(directory, name, value)
@@ -1348,20 +1700,30 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           method = args.fetch(index + 1)
         end
 
-        actor = ENV["FAKE_GH_MODE"] == "bot-actor" ? "automation[bot]" : "justin808"
+        actor = if ENV["FAKE_GH_MODE"] == "bot-actor"
+                  "automation[bot]"
+                elsif ENV["FAKE_GH_MODE"] == "replay-current-state-changed"
+                  "other-current-actor"
+                elsif ENV["FAKE_GH_MODE"] == "emu-actor"
+                  "justin_emu"
+                else
+                  "justin808"
+                end
+        durable_actor = ENV["FAKE_GH_MODE"] == "replay-current-state-changed" ? "justin808" : actor
         actor_type = ENV["FAKE_GH_MODE"] == "actor-type-bot" ? "Bot" : "User"
         target_type = ENV.fetch("FAKE_TARGET_TYPE")
         target_segment = target_type == "pull_request" ? "pull" : "issues"
+        canonical_repo = ENV["FAKE_GH_MODE"] == "canonical-repo-case" ? "Acme/Widgets" : "acme/widgets"
         comment = lambda do |body|
           body = body.sub("checker sol/xhigh", "checker terra/high") if ENV["FAKE_GH_MODE"] == "changed-valid-body"
           body = "malformed durable body" if ENV["FAKE_GH_MODE"] == "malformed-body"
           result = {
             "id" => 9001,
             "node_id" => "IC_kwDO9001",
-            "html_url" => "https://github.com/acme/widgets/#{target_segment}/184#issuecomment-9001",
-            "issue_url" => "https://api.github.com/repos/acme/widgets/issues/184",
+            "html_url" => "https://github.com/#{canonical_repo}/#{target_segment}/184#issuecomment-9001",
+            "issue_url" => "https://api.github.com/repos/#{canonical_repo}/issues/184",
             "user" => {
-              "login" => actor,
+              "login" => durable_actor,
               "type" => ENV["FAKE_GH_MODE"] == "comment-type-bot" ? "Bot" : "User"
             },
             "author_association" => "MEMBER",
@@ -1384,24 +1746,29 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         when ["GET", "repos/acme/widgets/issues/184"]
           target = {
             "number" => 184,
-            "html_url" => "https://github.com/acme/widgets/#{target_segment}/184",
-            "locked" => false
+            "html_url" => "https://github.com/#{canonical_repo}/#{target_segment}/184",
+            "locked" => ENV["FAKE_GH_MODE"] == "replay-current-state-changed"
           }
           target["pull_request"] = { "url" => "https://api.github.com/repos/acme/widgets/pulls/184" } if target_type == "pull_request"
           puts JSON.generate(target)
-        when ["GET", "repos/acme/widgets/collaborators/#{actor}/permission"]
+        when ["GET", "repos/#{canonical_repo}/collaborators/#{actor}/permission"]
           user = if ENV["FAKE_GH_MODE"] == "invalid-permission-user"
                    "not-an-object"
                  else
                    type = ENV["FAKE_GH_MODE"] == "permission-type-bot" ? "Bot" : "User"
                    { "login" => actor, "type" => type }
                  end
-          puts JSON.generate("permission" => "write", "user" => user)
-        when ["POST", "repos/acme/widgets/issues/184/comments"]
+          permission = ENV["FAKE_GH_MODE"] == "replay-current-state-changed" ? "none" : "write"
+          puts JSON.generate("permission" => permission, "user" => user)
+        when ["POST", "repos/#{canonical_repo}/issues/184/comments"]
           payload = JSON.parse($stdin.read)
           File.write(ENV.fetch("FAKE_GH_BODY"), payload.fetch("body"))
           exit 1 if ENV["FAKE_GH_MODE"] == "post-nonzero"
-          sleep 2 if ENV["FAKE_GH_MODE"] == "post-timeout"
+          if ENV["FAKE_GH_MODE"] == "post-timeout"
+            File.write(ENV.fetch("FAKE_GH_PID"), Process.pid.to_s)
+            sleep 2
+            File.write(ENV.fetch("FAKE_GH_LATE_SIDE_EFFECT"), "completed")
+          end
           if ENV["FAKE_GH_MODE"] == "post-invalid-json"
             puts "{"
             exit
@@ -1415,7 +1782,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
             exit
           end
           puts JSON.generate(comment.call(payload.fetch("body")))
-        when ["GET", "repos/acme/widgets/issues/comments/9001"]
+        when ["GET", "repos/#{canonical_repo}/issues/comments/9001"]
           exit 1 if ENV["FAKE_GH_MODE"] == "readback-failure"
           if ENV["FAKE_GH_MODE"] == "readback-invalid-json"
             puts "{"
@@ -1436,6 +1803,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
         "FAKE_GH_LOG" => File.join(directory, "gh.log"),
         "FAKE_GH_BODY" => File.join(directory, "comment-body.txt"),
+        "FAKE_GH_PID" => File.join(directory, "gh.pid"),
+        "FAKE_GH_LATE_SIDE_EFFECT" => File.join(directory, "gh-late-side-effect.txt"),
         "FAKE_GH_MODE" => mode.to_s,
         "FAKE_TARGET_TYPE" => target_type,
         "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "1" : "60"
