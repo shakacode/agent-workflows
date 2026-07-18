@@ -248,24 +248,26 @@ def resolved_trust_config(explicit_path, repo:, github_host:)
     expanded = File.expand_path(explicit_path)
     abort "Trust config not found: #{expanded}" unless File.exist?(expanded)
 
-    return { path: expanded, global: trust_config_global?(expanded, repo, github_host:) }
+    return { path: expanded, global: trust_config_global?(expanded, repo, github_host:), source: "explicit" }
   end
 
   repo_path = repo_trust_config_path
-  return { path: repo_path, global: trust_config_global?(repo_path, repo, github_host:) } if File.exist?(repo_path)
+  if File.exist?(repo_path)
+    return { path: repo_path, global: trust_config_global?(repo_path, repo, github_host:), source: "repo-local" }
+  end
 
   env_path = ENV[USER_TRUST_CONFIG_ENV].to_s
   unless env_path.empty?
     expanded_env_path = File.expand_path(env_path)
     abort "#{USER_TRUST_CONFIG_ENV} points to a missing trust config: #{expanded_env_path}" unless File.exist?(expanded_env_path)
 
-    return { path: expanded_env_path, global: true }
+    return { path: expanded_env_path, global: true, source: "env" }
   end
 
   home_path = File.expand_path(HOME_TRUST_CONFIG)
-  return { path: home_path, global: true } if File.exist?(home_path)
+  return { path: home_path, global: true, source: "user-global" } if File.exist?(home_path)
 
-  { path: PACKAGED_TRUST_CONFIG, global: false }
+  { path: PACKAGED_TRUST_CONFIG, global: false, source: "packaged-fallback" }
 end
 
 def repo_trust_config_path
@@ -1611,7 +1613,13 @@ overall_blockers = []
 acknowledged_findings = []
 permission_cache = {}
 team_cache = {}
-trust_config = load_trust_config(**resolved_trust_config(options.fetch(:trust_config), repo:, github_host:))
+trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
+puts "Trust config: #{trust_config_resolution.fetch(:path)}"
+puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
+trust_config = load_trust_config(
+  path: trust_config_resolution.fetch(:path),
+  global: trust_config_resolution.fetch(:global)
+)
 
 ARGV.each do |arg|
   number = Integer(arg, exception: false)
