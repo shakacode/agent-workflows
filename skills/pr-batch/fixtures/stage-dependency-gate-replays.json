@@ -1,0 +1,1853 @@
+{
+  "contract": "stage-dependency-gate-replays",
+  "version": 1,
+  "templates": {
+    "two-lane": {
+      "contract": "stage-dependency-gate",
+      "version": 1,
+      "lanes": [
+        {
+          "id": "foundation",
+          "maker": "maker-foundation",
+          "checker": "checker-foundation",
+          "head_sha": "1111111111111111111111111111111111111111",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "id": "consumer",
+          "maker": "maker-consumer",
+          "checker": "checker-consumer",
+          "head_sha": "2222222222222222222222222222222222222222",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "preparation": {
+            "source_patch_inspection": "coordination://preparation/source-patch",
+            "collision_domain_mapping": "coordination://preparation/collision-domains",
+            "semantic_adaptation_notes": "coordination://preparation/semantic-adaptation",
+            "validation_review_plan": "coordination://preparation/validation-review",
+            "evidence_templates": "coordination://preparation/evidence-templates"
+          }
+        }
+      ],
+      "edges": []
+    },
+    "same-maker-checker": {
+      "contract": "stage-dependency-gate",
+      "version": 1,
+      "lanes": [
+        {
+          "id": "consumer",
+          "maker": "same-actor",
+          "checker": "same-actor",
+          "head_sha": "2222222222222222222222222222222222222222",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "edges": []
+    },
+    "unknown-maker": {
+      "contract": "stage-dependency-gate",
+      "version": 1,
+      "lanes": [
+        {
+          "id": "consumer",
+          "maker": "UNKNOWN",
+          "checker": "checker-consumer",
+          "head_sha": "2222222222222222222222222222222222222222",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "edges": []
+    }
+  },
+  "cases": [
+    {
+      "name": "empty-lane-array",
+      "input": {
+        "contract": "stage-dependency-gate",
+        "version": 1,
+        "lanes": [],
+        "edges": []
+      },
+      "expected": {
+        "status": "invalid-input",
+        "reason": "lane-array-empty"
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-empty-lane-array",
+        "edges": []
+      }
+    },
+    {
+      "name": "malformed-validation-base-evidence",
+      "input": {
+        "contract": "stage-dependency-gate",
+        "version": 1,
+        "lanes": [
+          {
+            "id": "foundation",
+            "maker": "maker-foundation",
+            "checker": "checker-foundation",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "consumer",
+            "maker": "maker-consumer",
+            "checker": "checker-consumer",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "edges": [
+          {
+            "id": "foundation-before-consumer-open",
+            "state": "satisfied",
+            "evidence": {
+              "evidence_ref": "coordination://batch/lane/foundation/validation",
+              "head_sha": "2222222222222222222222222222222222222222",
+              "base_sha": "aaaaaaa"
+            },
+            "base_movement": {
+              "status": "unchanged",
+              "semantic_overlap": false,
+              "required_dependency": false,
+              "conflict_or_base_sensitive": false,
+              "consumer_policy": false
+            }
+          }
+        ]
+      },
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-base-malformed"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-malformed-validation-base-evidence",
+        "edges": [
+          {
+            "id": "foundation-before-consumer-open",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-edge-type",
+      "input": {
+        "contract": "stage-dependency-gate",
+        "version": 1,
+        "lanes": [
+          {
+            "id": "foundation",
+            "maker": "maker-foundation",
+            "checker": "checker-foundation",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "consumer",
+            "maker": "maker-consumer",
+            "checker": "checker-consumer",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "edges": [
+          {
+            "id": "missing-type",
+            "state": "pending"
+          }
+        ]
+      },
+      "expected": {
+        "status": "invalid-input",
+        "reason": "trusted-plan-edge-tuple-invalid"
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-missing-edge-type",
+        "edges": [
+          {
+            "id": "missing-type",
+            "from": "foundation",
+            "to": "consumer"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported-edge-type",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "unsupported-type",
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "invalid-input",
+        "reason": "trusted-plan-edge-tuple-invalid"
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unsupported-edge-type",
+        "edges": [
+          {
+            "id": "unsupported-type",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "build_first"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-edge-type",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "unknown-type",
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "invalid-input",
+        "reason": "trusted-plan-edge-tuple-invalid"
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unknown-edge-type",
+        "edges": [
+          {
+            "id": "unknown-type",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "UNKNOWN"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-edge-state",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "missing-state"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "edge-state-missing"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-missing-edge-state",
+        "edges": [
+          {
+            "id": "missing-state",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported-edge-state",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "unsupported-state",
+          "state": "complete"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "edge-state-unsupported"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unsupported-edge-state",
+        "edges": [
+          {
+            "id": "unsupported-state",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-edge-state",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "unknown-state",
+          "state": "UNKNOWN"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "edge-state-unknown"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unknown-edge-state",
+        "edges": [
+          {
+            "id": "unknown-state",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-evidence-ref",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "unknown-edit-evidence",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "UNKNOWN"
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-ref-unknown"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unknown-evidence-ref",
+        "edges": [
+          {
+            "id": "unknown-edit-evidence",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-base-movement-state",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "unknown-base-movement",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "base_movement": {
+            "status": "UNKNOWN",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-movement-unknown"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unknown-base-movement-state",
+        "edges": [
+          {
+            "id": "unknown-base-movement",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown-base-refresh-trigger",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "unknown-refresh-trigger",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "base_movement": {
+            "status": "moved",
+            "semantic_overlap": "UNKNOWN",
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-refresh-input-unknown"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unknown-base-refresh-trigger",
+        "edges": [
+          {
+            "id": "unknown-refresh-trigger",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-base-refresh-trigger",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "missing-refresh-trigger",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "base_movement": {
+            "status": "unchanged",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-refresh-input-unknown"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-missing-base-refresh-trigger",
+        "edges": [
+          {
+            "id": "missing-refresh-trigger",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stale-merge-order-head-evidence",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "foundation-before-consumer-merge",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "github://pull/foundation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "terminal_state": "merged"
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "eligible-via-repo-seam",
+        "blocked_capabilities": [
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-head-stale"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-stale-merge-order-head-evidence",
+        "edges": [
+          {
+            "id": "foundation-before-consumer-merge",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "merge_order"
+          }
+        ]
+      }
+    },
+    {
+      "name": "pending-edit-blocks-before-branching",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "pending-edit",
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery"
+        ],
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "pending"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-pending-edit-blocks-before-branching",
+        "edges": [
+          {
+            "id": "pending-edit",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "pending-validation-open-holds-local",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "pending-validation-open",
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery",
+          "branch_worktree_create",
+          "patch_edit",
+          "commit"
+        ],
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "pending"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-pending-validation-open-holds-local",
+        "edges": [
+          {
+            "id": "pending-validation-open",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "pending-merge-order-blocks-only-merge",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "pending-merge-order",
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "eligible-via-repo-seam",
+        "allowed_capabilities": [
+          "read_only_discovery",
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation"
+        ],
+        "blocked_capabilities": [
+          "merge"
+        ],
+        "blocker_reasons": [
+          "pending"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-pending-merge-order-blocks-only-merge",
+        "edges": [
+          {
+            "id": "pending-merge-order",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "merge_order"
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-satisfied-evidence-ref",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "missing-evidence-ref",
+          "state": "satisfied",
+          "evidence": {}
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-ref-missing"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-missing-satisfied-evidence-ref",
+        "edges": [
+          {
+            "id": "missing-evidence-ref",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-validation-head-evidence",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "malformed-validation-head",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "base_movement": {
+            "status": "unchanged",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-head-malformed"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-malformed-validation-head-evidence",
+        "edges": [
+          {
+            "id": "malformed-validation-head",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stale-validation-head-evidence",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "stale-validation-head",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "base_movement": {
+            "status": "unchanged",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-head-stale"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-stale-validation-head-evidence",
+        "edges": [
+          {
+            "id": "stale-validation-head",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "merge-order-predecessor-not-merged",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "predecessor-not-merged",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "github://pull/foundation",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "terminal_state": "closed"
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "eligible-via-repo-seam",
+        "blocked_capabilities": [
+          "merge"
+        ],
+        "blocker_reasons": [
+          "predecessor-not-merged"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-merge-order-predecessor-not-merged",
+        "edges": [
+          {
+            "id": "predecessor-not-merged",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "merge_order"
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-merge-order-head-evidence",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "malformed-merge-head",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "github://pull/foundation",
+            "head_sha": "1111111",
+            "terminal_state": "merged"
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "eligible-via-repo-seam",
+        "blocked_capabilities": [
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-head-malformed"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-malformed-merge-order-head-evidence",
+        "edges": [
+          {
+            "id": "malformed-merge-head",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "merge_order"
+          }
+        ]
+      }
+    },
+    {
+      "name": "merge-order-current-merged-evidence",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "merged-predecessor",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "github://pull/foundation",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "terminal_state": "merged"
+          }
+        }
+      ],
+      "expected": {
+        "status": "eligible",
+        "lane_id": "consumer",
+        "hosted_ci": "eligible-via-repo-seam",
+        "allowed_capabilities": [
+          "read_only_discovery",
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocked_capabilities": [],
+        "blocker_reasons": []
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-merge-order-current-merged-evidence",
+        "edges": [
+          {
+            "id": "merged-predecessor",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "merge_order"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stale-base-with-unchanged-classification",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "stale-base-unclassified",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "base_movement": {
+            "status": "unchanged",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-movement-inconsistent"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-stale-base-with-unchanged-classification",
+        "edges": [
+          {
+            "id": "stale-base-unclassified",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "base-movement-semantic-overlap-refresh",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "semantic-overlap-refresh",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "base_movement": {
+            "status": "moved",
+            "semantic_overlap": true,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-refresh-required"
+        ],
+        "base_refresh": [
+          {
+            "edge_id": "semantic-overlap-refresh",
+            "required": true,
+            "reason": "refresh-trigger-present"
+          }
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-base-movement-semantic-overlap-refresh",
+        "edges": [
+          {
+            "id": "semantic-overlap-refresh",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "base-movement-required-dependency-refresh",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "required-dependency-refresh",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "base_movement": {
+            "status": "moved",
+            "semantic_overlap": false,
+            "required_dependency": true,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-refresh-required"
+        ],
+        "base_refresh": [
+          {
+            "edge_id": "required-dependency-refresh",
+            "required": true,
+            "reason": "refresh-trigger-present"
+          }
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-base-movement-required-dependency-refresh",
+        "edges": [
+          {
+            "id": "required-dependency-refresh",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "base-movement-conflict-sensitive-refresh",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "conflict-sensitive-refresh",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "base_movement": {
+            "status": "moved",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": true,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-refresh-required"
+        ],
+        "base_refresh": [
+          {
+            "edge_id": "conflict-sensitive-refresh",
+            "required": true,
+            "reason": "refresh-trigger-present"
+          }
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-base-movement-conflict-sensitive-refresh",
+        "edges": [
+          {
+            "id": "conflict-sensitive-refresh",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "base-movement-consumer-policy-refresh",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "consumer-policy-refresh",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "base_movement": {
+            "status": "moved",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": true
+          }
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-refresh-required"
+        ],
+        "base_refresh": [
+          {
+            "edge_id": "consumer-policy-refresh",
+            "required": true,
+            "reason": "refresh-trigger-present"
+          }
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-base-movement-consumer-policy-refresh",
+        "edges": [
+          {
+            "id": "consumer-policy-refresh",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "independent-behind-base-no-refresh",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "independent-behind-base",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "base_movement": {
+            "status": "moved",
+            "semantic_overlap": false,
+            "required_dependency": false,
+            "conflict_or_base_sensitive": false,
+            "consumer_policy": false
+          }
+        }
+      ],
+      "expected": {
+        "status": "eligible",
+        "lane_id": "consumer",
+        "hosted_ci": "eligible-via-repo-seam",
+        "allowed_capabilities": [
+          "read_only_discovery",
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocked_capabilities": [],
+        "blocker_reasons": [],
+        "base_refresh": [
+          {
+            "edge_id": "independent-behind-base",
+            "required": false,
+            "reason": "independent-behind-base"
+          }
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-independent-behind-base-no-refresh",
+        "edges": [
+          {
+            "id": "independent-behind-base",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "maker-equals-checker",
+      "template": "same-maker-checker",
+      "edges": [],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "eligible-via-repo-seam",
+        "allowed_capabilities": [
+          "read_only_discovery",
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation"
+        ],
+        "blocked_capabilities": [
+          "merge"
+        ],
+        "blocker_reasons": [
+          "maker-checker-not-distinct"
+        ],
+        "checker_status": "blocked"
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-maker-equals-checker",
+        "edges": []
+      }
+    },
+    {
+      "name": "unknown-maker-identity",
+      "template": "unknown-maker",
+      "edges": [],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery"
+        ],
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "maker-checker-identity-unknown"
+        ],
+        "checker_status": "blocked"
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-unknown-maker-identity",
+        "edges": []
+      }
+    },
+    {
+      "name": "missing-maker-identity",
+      "template": "unknown-maker",
+      "lane_overrides": {
+        "consumer": {
+          "maker": null
+        }
+      },
+      "edges": [],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery"
+        ],
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "maker-checker-identity-unknown"
+        ],
+        "checker_status": "blocked"
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-missing-maker-identity",
+        "edges": []
+      }
+    },
+    {
+      "name": "same-edge-id-retyped-after-launch",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "foundation-before-consumer",
+          "from": "foundation",
+          "to": "consumer",
+          "type": "merge_order",
+          "binding": {
+            "id": "foundation-before-consumer",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "merge_order"
+          },
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery"
+        ],
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "pending"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-same-edge-id-retyped-after-launch",
+        "edges": [
+          {
+            "id": "foundation-before-consumer",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "pending-validation-open-missing-preparation",
+      "template": "two-lane",
+      "lane_overrides": {
+        "consumer": {
+          "preparation": null
+        }
+      },
+      "edges": [
+        {
+          "id": "foundation-before-consumer-open",
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery"
+        ],
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "pending",
+          "preparation-missing"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-pending-validation-open-missing-preparation",
+        "edges": [
+          {
+            "id": "foundation-before-consumer-open",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "pending-validation-open-unknown-preparation",
+      "template": "two-lane",
+      "lane_overrides": {
+        "consumer": {
+          "preparation": {
+            "source_patch_inspection": "coordination://preparation/source-patch",
+            "collision_domain_mapping": "coordination://preparation/collision-domains",
+            "semantic_adaptation_notes": "UNKNOWN",
+            "validation_review_plan": "coordination://preparation/validation-review",
+            "evidence_templates": "coordination://preparation/evidence-templates"
+          }
+        }
+      },
+      "edges": [
+        {
+          "id": "foundation-before-consumer-open",
+          "state": "pending"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery"
+        ],
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "pending",
+          "preparation-unknown"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-pending-validation-open-unknown-preparation",
+        "edges": [
+          {
+            "id": "foundation-before-consumer-open",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crossed-maker-checker-identities",
+      "input": {
+        "contract": "stage-dependency-gate",
+        "version": 1,
+        "lanes": [
+          {
+            "id": "alpha",
+            "maker": " Alice ",
+            "checker": "bOb",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "beta",
+            "maker": " BOB ",
+            "checker": " alice ",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "edges": []
+      },
+      "expected": {
+        "status": "gated",
+        "checker_status": "blocked",
+        "lane_results": [
+          {
+            "lane_id": "alpha",
+            "hosted_ci": "eligible-via-repo-seam",
+            "blocked_capabilities": [
+              "merge"
+            ],
+            "blocker_reasons": [
+              "maker-checker-not-independent"
+            ]
+          },
+          {
+            "lane_id": "beta",
+            "hosted_ci": "eligible-via-repo-seam",
+            "blocked_capabilities": [
+              "merge"
+            ],
+            "blocker_reasons": [
+              "maker-checker-not-independent"
+            ]
+          }
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-crossed-maker-checker-identities",
+        "edges": []
+      }
+    },
+    {
+      "name": "portable-multi-pr-chain",
+      "input": {
+        "contract": "stage-dependency-gate",
+        "version": 1,
+        "lanes": [
+          {
+            "id": "schema",
+            "maker": "maker-schema",
+            "checker": "checker-schema",
+            "head_sha": "1111111111111111111111111111111111111111",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "producer",
+            "maker": "maker-producer",
+            "checker": "checker-producer",
+            "head_sha": "3333333333333333333333333333333333333333",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "consumer",
+            "maker": "maker-consumer",
+            "checker": "checker-consumer",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "preparation": {
+              "source_patch_inspection": "coordination://preparation/source-patch",
+              "collision_domain_mapping": "coordination://preparation/collision-domains",
+              "semantic_adaptation_notes": "coordination://preparation/semantic-adaptation",
+              "validation_review_plan": "coordination://preparation/validation-review",
+              "evidence_templates": "coordination://preparation/evidence-templates"
+            }
+          }
+        ],
+        "edges": [
+          {
+            "id": "schema-producer-edit",
+            "state": "satisfied",
+            "evidence": {
+              "evidence_ref": "coordination://schema/edit-cleared"
+            }
+          },
+          {
+            "id": "producer-consumer-open",
+            "state": "pending"
+          },
+          {
+            "id": "schema-consumer-merge",
+            "state": "pending"
+          }
+        ]
+      },
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "allowed_capabilities": [
+          "read_only_discovery",
+          "branch_worktree_create",
+          "patch_edit",
+          "commit"
+        ],
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "pending",
+          "pending"
+        ],
+        "checker_status": "eligible",
+        "critical_path": {
+          "lane_ids": [
+            "schema",
+            "producer",
+            "consumer"
+          ],
+          "edge_count": 2,
+          "tie_breaker": "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
+          "assignments": [
+            {
+              "lane_id": "schema",
+              "maker": "maker-schema",
+              "checker": "checker-schema"
+            },
+            {
+              "lane_id": "producer",
+              "maker": "maker-producer",
+              "checker": "checker-producer"
+            },
+            {
+              "lane_id": "consumer",
+              "maker": "maker-consumer",
+              "checker": "checker-consumer"
+            }
+          ]
+        },
+        "downstream_requirements": {
+          "final_combined_tip_validation": "required-via-repo-seam",
+          "preserved_gates": [
+            "exact_head_ci",
+            "independent_review",
+            "unresolved_threads",
+            "merge_readiness"
+          ]
+        }
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-portable-multi-pr-chain",
+        "edges": [
+          {
+            "id": "schema-producer-edit",
+            "from": "schema",
+            "to": "producer",
+            "type": "edit"
+          },
+          {
+            "id": "producer-consumer-open",
+            "from": "producer",
+            "to": "consumer",
+            "type": "validation_open"
+          },
+          {
+            "id": "schema-consumer-merge",
+            "from": "schema",
+            "to": "consumer",
+            "type": "merge_order"
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-evidence-object",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "malformed-evidence",
+          "state": "satisfied",
+          "evidence": "not-an-object"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "branch_worktree_create",
+          "patch_edit",
+          "commit",
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "evidence-object-malformed"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-malformed-evidence-object",
+        "edges": [
+          {
+            "id": "malformed-evidence",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "edit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "malformed-base-movement-object",
+      "template": "two-lane",
+      "edges": [
+        {
+          "id": "malformed-base-movement",
+          "state": "satisfied",
+          "evidence": {
+            "evidence_ref": "coordination://foundation/validation",
+            "head_sha": "2222222222222222222222222222222222222222",
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "base_movement": "not-an-object"
+        }
+      ],
+      "expected": {
+        "status": "gated",
+        "lane_id": "consumer",
+        "hosted_ci": "not-yet-eligible",
+        "blocked_capabilities": [
+          "push",
+          "pr_open",
+          "final_validation",
+          "merge"
+        ],
+        "blocker_reasons": [
+          "base-movement-object-malformed"
+        ]
+      },
+      "trusted_plan": {
+        "contract": "stage-dependency-plan",
+        "version": 1,
+        "id": "replay-malformed-base-movement-object",
+        "edges": [
+          {
+            "id": "malformed-base-movement",
+            "from": "foundation",
+            "to": "consumer",
+            "type": "validation_open"
+          }
+        ]
+      }
+    }
+  ]
+}

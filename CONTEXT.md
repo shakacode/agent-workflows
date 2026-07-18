@@ -56,6 +56,48 @@ or one worker's slice of a batch. A lane has a named owner plus its target or
 targets and optional dependencies.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
 
+**Stage-typed dependency**:
+A directed lane edge evaluated by the portable `stage-dependency-gate` v1 JSON
+contract. `edit` protects branch/worktree and edit/commit mutation,
+`validation_open` separates safe held-local work from push/PR/final-validation
+eligibility, and `merge_order` constrains merge only. Missing, unsupported, or
+`UNKNOWN` type/state/evidence fails closed; generic backend `depends_on` state
+is a source fact, not a replacement for the typed edge.
+_Avoid_: dependency (when its blocked lifecycle stage is unstated), ready flag
+
+**Stage dependency edge binding**:
+An immutable pre-launch trusted plan, persisted separately from live replay,
+binds every edge's `id`, `from`, `to`, and `type` under a coordinator-pinned
+plan identity. Live facts update state/evidence by edge id only; tuple copies in
+mutable input are not trusted. The same id cannot be retyped in place;
+reclassification is a new edge id plus a trusted coordinator re-plan.
+_Avoid_: mutable edge type, inferred reclassification
+
+**Preparation replay**:
+A deterministic per-lane record for pending edit or validation/open work:
+source-patch inspection, collision-domain mapping, semantic-adaptation notes,
+validation/review plan, and evidence templates. Missing or unknown preparation
+blocks mutation; validation/open permits held-local work only after replay,
+while edit remains read-only and merge-order remains merge-only.
+_Avoid_: readiness note, implicit preparation
+
+**Dependency evidence binding**:
+A nonempty verified `evidence_ref` plus the type-required full SHA and terminal
+facts for a satisfied stage-typed dependency. Validation/open evidence binds
+the dependent current head and dependency-bearing base; merge-order evidence
+binds the predecessor current head and merged terminal state. Base movement is
+replayed from explicit semantic-overlap, required-dependency,
+conflict/base-sensitive, and consumer-policy facts. The reference conveys no
+cross-PR artifact trust or authority.
+_Avoid_: cached green, inherited CI, artifact handoff
+
+**Stage dependency critical path**:
+The longest path in the typed lane graph, with equal lengths resolved by the
+lexicographically smallest lane-id sequence. Its recorded maker/checker
+assignments keep every normalized checker distinct from every batch maker; the
+path is allocation evidence, not permission to self-check or bypass a gate.
+_Avoid_: priority guess, merge order (only one edge type)
+
 **Coordinator model/effort assignment**:
 The parent coordinator's model and supported reasoning effort, selected for
 scope, risk, routing, integration, review, and closeout independently of worker
@@ -152,6 +194,12 @@ _Avoid_: force kill (without the cleanup steps it names)
 - A **Batch** has one or more **Lanes**; a direct PR task can also be one
   standalone **Lane** without batch planning or worker split machinery. A
   **Lane** has exactly one owner identity at a time.
+- A **Stage-typed dependency** connects predecessor and dependent **Lanes**;
+  backend dependency state supplies facts, while `stage-dependency-gate` decides
+  which lifecycle actions remain gated. Its **Stage dependency critical path**
+  carries maker/checker allocation with each checker independent from every
+  batch maker and never replaces downstream exact-head, review/thread,
+  merge-readiness, or combined-tip gates.
 - A ready **Lane** has one verified **Worker model/effort route** and exactly one
   active **Active model/effort assignment** while its current instance runs; a
   **Model/effort route group** can contain several lanes but creates no

@@ -14,6 +14,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Add `agent-stack doctor` as a read-only master aggregator for uniform component-owned diagnostics, with generic checkout/link discovery, bounded delegates, contract validation, secret-safe human/JSON rendering, and stable `0/1/2/64` exits.**
 - **Add `bin/check-agent-workflow-drift` as a public, pinned drift check with a portable downstream-adoption contract.** [PR 182](https://github.com/shakacode/agent-workflows/pull/182) by [justin808](https://github.com/justin808).
 - **Add a portable dispatcher-capability preflight that records bound, attested route/dispatcher selection or one durable decision request without launching workers or mutating coordination.**
+- **Add deterministic stage-typed dependency gates and raw hostile replay fixtures for separately persisted trusted edge plans, preparation replay, edit, validation/open, merge-order, base-refresh, critical-path, fail-closed maker/checker identity, hosted-CI, and combined-tip decisions.**
 - **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
 - **Add Codex catalog plus Claude Code native-plugin and marketplace metadata for installing the complete semantic skill tree under `scw`, with isolated plugin-root and no-shadow validation.**
