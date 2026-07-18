@@ -22,6 +22,16 @@ the verified target is Codex GPT-5.6, use this informative recommended binding:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
+When the verified target is Claude, use this informative provisional
+recommended binding (`claude-profile v0`):
+
+- Multi-lane coordinator: Opus 4.8/xhigh
+- Simple, positively classified worker: Sonnet 5/high
+- Unknown or uncertain worker: Opus 4.8/xhigh
+- High-risk or escalated work: Opus 4.8/xhigh
+- Independent adversarial QA: Opus 4.8/xhigh
+- Routine deterministic QA: Opus 4.8/high
+
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 

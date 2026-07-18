@@ -26,6 +26,16 @@ For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
+For a verified Claude host, the provisional recommended exact routing profile
+(`claude-profile v0`) is:
+
+- Multi-lane coordinator: Opus 4.8/xhigh
+- Simple, positively classified worker: Sonnet 5/high
+- Unknown or uncertain worker: Opus 4.8/xhigh
+- High-risk or escalated work: Opus 4.8/xhigh
+- Independent adversarial QA: Opus 4.8/xhigh
+- Routine deterministic QA: Opus 4.8/high
+
 Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
 `strongest` classes until dispatch binds an exact supported pair.
 

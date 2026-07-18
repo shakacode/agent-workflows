@@ -60,6 +60,16 @@ keeping provider-neutral classes for other runtimes:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
+For a verified Claude host, use this provisional recommended exact profile
+(`claude-profile v0`):
+
+- Multi-lane coordinator: Opus 4.8/xhigh
+- Simple, positively classified worker: Sonnet 5/high
+- Unknown or uncertain worker: Opus 4.8/xhigh
+- High-risk or escalated work: Opus 4.8/xhigh
+- Independent adversarial QA: Opus 4.8/xhigh
+- Routine deterministic QA: Opus 4.8/high
+
 Memorable invocation:
 
 ```text

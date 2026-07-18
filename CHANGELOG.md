@@ -33,6 +33,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Adopt the provisional Conservative Claude routing profile (`claude-profile v0`): Opus 4.8/xhigh multi-lane coordination, unknown/high-risk work, and adversarial QA; Sonnet 5/high only for positively classified simple workers; Opus 4.8/high for routine deterministic QA; Fable 5 stays a non-default experimental candidate pending [issue 151](https://github.com/shakacode/agent-workflows/issues/151) evidence.**
 - **Make the portable update-changelog helper resolve target branches independently from compare branches and select reachable stable or prerelease tags from first-parent history.** [PR 170](https://github.com/shakacode/agent-workflows/pull/170) by [justin808](https://github.com/justin808).
 - **Publish the stable `ShakaCode Agent Workflows` display name in Claude Code's plugin manifest while retaining `scw` as the install and namespace identifier.**
 - **Adopt the recommended Codex GPT-5.6 routing profile: Sol/xhigh multi-lane coordination, adversarial QA, and high-risk escalation; Terra/high only for positively classified simple workers; and Sol/high for uncertainty and routine deterministic QA.**

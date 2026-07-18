@@ -84,6 +84,70 @@ escalated work uses Sol/xhigh.
 
 Luna is outside this conservative profile.
 
+## Conservative Claude Profile (provisional)
+
+Use this recommended fail-closed profile for Claude batches. Version marker:
+`claude-profile v0`, provisional pending the observed route receipts and
+comparative evidence tracked in shakacode/agent-workflows#151 (adopted via
+shakacode/agent-workflows#171). It is an informative exact binding, not a
+portable default for runtimes that do not expose these models. The roster is
+Opus 4.8 (`claude-opus-4-8`), Sonnet 5 (`claude-sonnet-5`), and Fable 5
+(`claude-fable-5`), and `xhigh` is the extra-high reasoning-effort tier above
+`high`; exact effort-token support on Claude runtimes is unverified, so verify
+that exact effort token on the selected runtime before launch:
+
+- Multi-lane coordinator: Opus 4.8/xhigh
+- Simple, positively classified worker: Sonnet 5/high
+- Unknown or uncertain worker: Opus 4.8/xhigh
+- High-risk or escalated work: Opus 4.8/xhigh
+- Independent adversarial QA: Opus 4.8/xhigh
+- Routine deterministic QA: Opus 4.8/high
+
+The Opus 4.8/xhigh choices are deliberate conservative baselines for
+multi-lane coordination, uncertain work, and independent adversarial QA, where
+shaping or challenging the plan is the high-leverage work. Task-specific
+routing still follows ambiguity, consequence, and verification strength. A
+single-lane, clearly scoped coordinator may use Opus 4.8/high.
+
+Fable 5 is the leading candidate for long-horizon or highest-value
+coordination, but it stays experimental until the
+shakacode/agent-workflows#151 evidence supports promotion. Never make Fable 5
+or `max` effort a default route.
+
+The initiating parent must already be bound to Opus 4.8 at the required effort
+before it interprets targets, approves the plan, or dispatches workers. Record
+the binding source from host session metadata, effective instance-bound
+runtime state, or explicit operator-selected launch configuration. Mutable
+default configuration alone, prompt text, a model's self-report, an installed
+model list, or a dispatch-resolved `strongest` class does not prove the active
+parent assignment. A mismatch or `UNKNOWN` stops the batch for relaunch on the
+required parent.
+
+The independent adversarial checker is a fresh Opus 4.8/xhigh instance,
+distinct from every maker. Routine deterministic QA uses Opus 4.8/high. Sonnet
+may gather mechanical evidence for the checker, but Sonnet does not issue the
+qualifying intent-achievement, risk, or final-readiness verdict.
+
+Sonnet 5/high is allowed only after the coordinator positively classifies the
+work as simple: explicit acceptance criteria, a known bounded file surface, a
+strong deterministic verification oracle, no unresolved design decision, no
+security, authorization, concurrency, persistence, lifecycle, routing, or
+public-contract change, and easy failure detection and rollback. Every Sonnet
+worker receives an Opus-approved execution envelope with the exact goal and
+non-goals, owned paths, supported diagnosis, invariants, acceptance criteria,
+required verification, and stop conditions. Any present or disputed high-risk
+boundary routes to Opus 4.8/xhigh. Any other missing or disputed simplicity
+criterion routes to Opus 4.8/xhigh. Sonnet stops without editing further and
+returns to Opus when evidence contradicts the diagnosis, scope or blast radius
+grows, a high-risk boundary appears, verification weakens, or consequential
+judgment is required.
+
+Haiku 4.5 is outside this provisional profile.
+
+When shakacode/agent-workflows#151 publishes evidence-backed bindings, bump
+the profile version and update the routes across every pinned surface in one
+PR; the routing contract test keeps the surfaces moving together.
+
 ## Decision Framework
 
 Classify every coordinator and worker route with five questions.

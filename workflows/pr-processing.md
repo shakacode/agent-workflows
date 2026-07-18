@@ -499,6 +499,24 @@ criterion routes to Sol/high. Terra and Luna may not initiate or coordinate the
 batch, and Luna is not a worker route in this profile. Shared workflow text
 remains portable for other providers and model generations.
 
+For a verified Claude host, use this provisional recommended exact profile
+(`claude-profile v0`; see the Conservative Claude Profile in
+`docs/agent-workflows-model-routing.md`):
+
+- Multi-lane coordinator: Opus 4.8/xhigh
+- Simple, positively classified worker: Sonnet 5/high
+- Unknown or uncertain worker: Opus 4.8/xhigh
+- High-risk or escalated work: Opus 4.8/xhigh
+- Independent adversarial QA: Opus 4.8/xhigh
+- Routine deterministic QA: Opus 4.8/high
+
+Sonnet 5/high requires the same affirmative simple-task classification and an
+Opus-approved execution envelope. Any present or disputed high-risk boundary
+routes to Opus 4.8/xhigh. Any other missing or disputed simplicity criterion
+routes to Opus 4.8/xhigh. Sonnet and Haiku may not initiate or coordinate the
+batch, and Haiku is not a worker route in this profile. Fable 5 stays an
+experimental candidate, never a default route.
+
 Classify the route from what is difficult (diagnosis/strategy versus execution),
 blast radius, verification strength, acceptance-criteria clarity, and previous
 attempts. File count alone is not a capability signal. Security, authorization,

@@ -11,6 +11,16 @@ For a verified Codex GPT-5.6 batch, preserve this route profile:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
+For a verified Claude batch, preserve this provisional route profile
+(`claude-profile v0`):
+
+- Multi-lane coordinator: Opus 4.8/xhigh
+- Simple, positively classified worker: Sonnet 5/high
+- Unknown or uncertain worker: Opus 4.8/xhigh
+- High-risk or escalated work: Opus 4.8/xhigh
+- Independent adversarial QA: Opus 4.8/xhigh
+- Routine deterministic QA: Opus 4.8/high
+
 ## Coordination Rules
 
 These prompts intentionally repeat the worked-issue scope state machine from

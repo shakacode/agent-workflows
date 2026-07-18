@@ -60,6 +60,15 @@ collapse to one lane.
   - High-risk or escalated work: Sol/xhigh
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
+- **Provisional Claude profile** (`claude-profile v0`): apply only after
+  verifying the exact routes on the actual host; portable classes remain the
+  fallback elsewhere.
+  - Multi-lane coordinator: Opus 4.8/xhigh
+  - Simple, positively classified worker: Sonnet 5/high
+  - Unknown or uncertain worker: Opus 4.8/xhigh
+  - High-risk or escalated work: Opus 4.8/xhigh
+  - Independent adversarial QA: Opus 4.8/xhigh
+  - Routine deterministic QA: Opus 4.8/high
 - **Dispatcher capability preflight**: before launch, pass the requested
   route/dispatcher, explicit authority, ordered candidates, and preserved lane
   state to `bin/dispatcher-capability-preflight`. It records a bound, attested

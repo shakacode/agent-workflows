@@ -37,6 +37,17 @@ CODEX_GPT56_RECOMMENDED_ROUTES = [
   INDEPENDENT_ADVERSARIAL_QA_ROUTE,
   ROUTINE_DETERMINISTIC_QA_ROUTE
 ].freeze
+CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE = "Independent adversarial QA: Opus 4.8/xhigh"
+CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE = "Routine deterministic QA: Opus 4.8/high"
+CLAUDE_PROFILE_VERSION_MARKER = "claude-profile v0"
+CLAUDE_RECOMMENDED_ROUTES = [
+  "Multi-lane coordinator: Opus 4.8/xhigh",
+  "Simple, positively classified worker: Sonnet 5/high",
+  "Unknown or uncertain worker: Opus 4.8/xhigh",
+  "High-risk or escalated work: Opus 4.8/xhigh",
+  CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE,
+  CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE
+].freeze
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -330,6 +341,61 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes text, "easy failure detection and rollback"
       assert_includes text, "Any present or disputed high-risk boundary routes to Sol/xhigh"
       assert_includes text, uncertainty_fallback
+    end
+  end
+
+  def test_claude_recommendation_is_memorialized_across_routing_surfaces
+    paths = %w[
+      docs/agent-workflows-model-routing.md
+      docs/pr-batch-skills.md
+      skills/plan-pr-batch/SKILL.md
+      skills/post-merge-audit/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/triage/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-processing.md
+    ]
+
+    paths.each do |path|
+      text = normalized(read_repo_file(path))
+
+      CLAUDE_RECOMMENDED_ROUTES.each do |route|
+        assert_includes text, route, "#{path} is missing the recommended Claude route: #{route}"
+      end
+
+      assert_includes text, CLAUDE_PROFILE_VERSION_MARKER,
+                      "#{path} must mark the Claude profile as versioned and provisional"
+      refute_includes text, "Sonnet 5/medium", "#{path} must not introduce Sonnet 5/medium into the Claude profile"
+    end
+
+    checker = normalized(read_repo_file("workflows/continuous-evaluation-loop.md"))
+    assert_includes checker, CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE
+    assert_includes checker, CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE
+
+    %w[
+      skills/adversarial-pr-review/SKILL.md
+      workflows/adversarial-pr-review.md
+    ].each do |path|
+      assert_includes normalized(read_repo_file(path)), CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE
+    end
+
+    guide = normalized(read_repo_file("docs/agent-workflows-model-routing.md"))
+    assert_includes guide, "## Conservative Claude Profile (provisional)"
+    assert_includes guide, "provisional pending the observed route receipts and comparative evidence"
+    assert_includes guide, "Routine deterministic QA uses Opus 4.8/high"
+    refute_includes guide, "Routine deterministic QA may use Opus 4.8/high"
+    assert_includes guide, "Never make Fable 5 or `max` effort a default route"
+    assert_includes guide, "Haiku 4.5 is outside this provisional profile"
+    assert_includes guide,
+                    "deliberate conservative baselines for multi-lane coordination, uncertain work, and independent adversarial QA"
+
+    %w[
+      docs/agent-workflows-model-routing.md
+      workflows/pr-processing.md
+    ].each do |path|
+      text = normalized(read_repo_file(path))
+      assert_includes text, "Any present or disputed high-risk boundary routes to Opus 4.8/xhigh"
+      assert_includes text, "Any other missing or disputed simplicity criterion routes to Opus 4.8/xhigh"
     end
   end
 
