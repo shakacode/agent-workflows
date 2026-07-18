@@ -65,7 +65,9 @@ expected transition.
 _Avoid_: broad prose-only hardening.
 
 **Source Pack Skill Contract Audit**:
-A catalog-wide evidence review that minimizes auto-loaded skill instructions and assigns each rule to the least costly mechanism that preserves its invariant.
+A catalog-wide evidence review that minimizes auto-loaded entrypoint `SKILL.md`
+Markdown and assigns each rule to the least costly mechanism that preserves its
+invariant.
 _Avoid_: personal skill audit, line-count minimization, universal release gate.
 
 ## Relationships
@@ -85,10 +87,14 @@ _Avoid_: personal skill audit, line-count minimization, universal release gate.
   be shared from the first implementation.
 - The first **State-Machine Fixture** target is `autoreview` target selection;
   broader batch and current-head readiness fixtures come later.
-- A **Source Pack Skill Contract Audit** classifies deterministic rules as
-  `script` or `schema`, judgment controls as `checklist+replay`, conditional
-  guidance as references, and redundant guidance for removal; it does not
-  establish comparative skill effectiveness.
+- A **Source Pack Skill Contract Audit** keeps only minimum necessary guidance
+  in auto-loaded entrypoint `SKILL.md` Markdown, then classifies rules as
+  executable `script` or `schema`, judgment-control `checklist+replay`, deferred
+  progressive-disclosure `references`, or redundant-guidance `removal`; it does
+  not establish comparative skill effectiveness. This skill-guidance placement
+  taxonomy is deliberately distinct from the existing incident-oriented
+  `Mechanism target` enum (`script | schema | checklist+replay | park | N/A`),
+  despite overlapping labels.
 
 ## Flagged Ambiguities
 
@@ -111,5 +117,5 @@ _Avoid_: personal skill audit, line-count minimization, universal release gate.
   Audit** reviews only shipped Source Pack skills for minimum sufficient
   instructions and correct mechanism placement.
 - Contract placement and comparative effectiveness answer different questions.
-  Resolved: the **Source Pack Skill Contract Audit** may flag model-obvious prose,
-  but effectiveness experiments remain separately scoped.
+  Resolved: the **Source Pack Skill Contract Audit** may flag model-obvious
+  prose, but effectiveness experiments remain separately scoped.
