@@ -48,7 +48,11 @@ the checker must be a fresh instance independent from every maker, with exact
 model/effort and binding evidence satisfying the batch's operator policy. Under
 the conservative GPT-5.6 profile the qualifying audit is independent
 adversarial QA on Sol/xhigh; Sol/high is limited to routine deterministic QA.
-Terra may collect mechanical evidence but does not issue the qualifying verdict. If
+Terra may collect mechanical evidence but does not issue the qualifying verdict.
+Under the provisional Claude profile (`claude-profile v0`) the qualifying audit
+is independent adversarial QA on Opus 4.8/xhigh; Opus 4.8/high is limited to
+routine deterministic QA. Sonnet may collect mechanical evidence but does not
+issue the qualifying verdict. If
 checker route or independence is below policy or `UNKNOWN`, the audit cannot be
 clean; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
 qualifying-checker reservation needed.

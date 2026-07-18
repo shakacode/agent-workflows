@@ -543,6 +543,9 @@ class ModelRoutingContractTest < Minitest::Test
     refute_includes normalized(audit_text), "one launch-assured Sol run as the qualifying checker"
     assert_includes audit_skill, "exact fresh qualifying-checker reservation needed"
     refute_includes audit_skill, "the relaunch needed"
+    [normalized(audit_text), audit_skill].each do |text|
+      assert_includes text, "Sonnet may collect mechanical evidence but does not issue the qualifying verdict"
+    end
 
     [
       "Audit role: <qualifying-checker | advisory-auditor>",
@@ -552,6 +555,8 @@ class ModelRoutingContractTest < Minitest::Test
       "Host session metadata, effective instance-bound runtime state, or explicit operator-selected launch configuration",
       "mutable default configuration, installed rosters, dispatch-resolved classes, prompt text, and model self-report do not",
       "Terra may collect mechanical evidence but must not issue the qualifying audit verdict",
+      "Opus 4.8/high is limited to routine deterministic QA",
+      "Sonnet may collect mechanical evidence but must not issue the qualifying audit verdict",
       "If checker identity, exact model/effort, binding source, or independence is unavailable",
       "below policy, or `UNKNOWN`",
       "do not return a clean verdict",
