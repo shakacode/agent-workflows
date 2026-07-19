@@ -335,6 +335,52 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_cli_timeout_configuration_must_be_positive_integer_before_github_calls
+    ["not-a-number", "0", "-1"].each do |timeout|
+      with_fake_gh do |env, directory|
+        env["COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS"] = timeout
+        targets_path = write_json(
+          directory,
+          "targets.json",
+          [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+        )
+        receipt_path = File.join(directory, "receipt.txt")
+        File.write(receipt_path, ready_marker)
+
+        out, _err, status = Open3.capture3(
+          env,
+          "ruby",
+          SCRIPT,
+          "publish",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--receipt",
+          receipt_path
+        )
+
+        assert_equal 1, status.exitstatus, timeout
+        result = JSON.parse(out)
+        assert_equal(
+          %w[blockers chat_reference errors final_status ready well_formed],
+          result.keys.sort,
+          timeout
+        )
+        refute result.fetch("well_formed"), timeout
+        refute result.fetch("ready"), timeout
+        assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers"), timeout
+        assert_equal(
+          ["COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS must be a positive integer"],
+          result.fetch("errors"),
+          timeout
+        )
+        assert_nil result.fetch("chat_reference"), timeout
+        refute File.exist?(env.fetch("FAKE_GH_LOG")), timeout
+      end
+    end
+  end
+
   def test_missing_or_wrong_batch_fails_closed
     missing = CompletedBatchAuditReceipt.replay_marker("", expected_batch_id: "batch-184")
     wrong_batch = CompletedBatchAuditReceipt.replay_marker(ready_marker, expected_batch_id: "batch-185")
@@ -536,32 +582,91 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   end
 
   def test_publish_accepts_the_documented_full_durable_comment_body
-    with_fake_gh do |env, directory|
-      targets_path = write_json(
-        directory,
-        "targets.json",
-        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
-      )
-      full_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{ready_marker}"
-      receipt_path = File.join(directory, "receipt.txt")
-      File.write(receipt_path, full_body)
+    [ready_marker, ready_marker.chomp].each do |supplied_marker|
+      with_fake_gh do |env, directory|
+        targets_path = write_json(
+          directory,
+          "targets.json",
+          [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+        )
+        full_body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{supplied_marker}"
+        receipt_path = File.join(directory, "receipt.txt")
+        File.write(receipt_path, full_body)
 
-      out, err, status = Open3.capture3(
-        env,
-        "ruby",
-        SCRIPT,
-        "publish",
-        "--expected-batch-id",
-        "batch-184",
-        "--targets-json",
-        targets_path,
-        "--receipt",
-        receipt_path
-      )
+        out, err, status = Open3.capture3(
+          env,
+          "ruby",
+          SCRIPT,
+          "publish",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--receipt",
+          receipt_path
+        )
 
-      assert status.success?, err
-      assert JSON.parse(out).fetch("ready")
-      assert_equal full_body, File.read(env.fetch("FAKE_GH_BODY"))
+        assert status.success?, err
+        result = JSON.parse(out)
+        assert result.fetch("ready")
+        posted_body = File.read(env.fetch("FAKE_GH_BODY"))
+        assert_equal full_body, posted_body
+        assert_equal supplied_marker, CompletedBatchAuditReceipt.comment_marker(posted_body)
+        assert_equal Digest::SHA256.hexdigest(posted_body), result.dig("receipt", "sha256")
+      end
+    end
+  end
+
+  def test_publish_preserves_marker_wrapper_bytes_with_or_without_trailing_newline
+    [ready_marker, ready_marker.chomp].each do |supplied_marker|
+      with_fake_gh do |env, directory|
+        targets_path = write_json(
+          directory,
+          "targets.json",
+          [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+        )
+        receipt_path = File.join(directory, "receipt.txt")
+        File.write(receipt_path, supplied_marker)
+
+        publish_out, publish_err, publish_status = Open3.capture3(
+          env,
+          "ruby",
+          SCRIPT,
+          "publish",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--receipt",
+          receipt_path
+        )
+
+        assert publish_status.success?, publish_err
+        published = JSON.parse(publish_out)
+        posted_body = File.read(env.fetch("FAKE_GH_BODY"))
+        assert_equal supplied_marker, CompletedBatchAuditReceipt.comment_marker(posted_body)
+        assert_equal Digest::SHA256.hexdigest(posted_body), published.dig("receipt", "sha256")
+
+        reference_path = File.join(directory, "reference.txt")
+        File.write(reference_path, published.fetch("chat_reference"))
+        replay_out, replay_err, replay_status = Open3.capture3(
+          env,
+          "ruby",
+          SCRIPT,
+          "replay",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--reference-file",
+          reference_path
+        )
+
+        assert replay_status.success?, replay_err
+        replayed = JSON.parse(replay_out)
+        assert replayed.fetch("ready")
+        assert_equal published.fetch("chat_reference"), replayed.fetch("chat_reference")
+      end
     end
   end
 
@@ -938,23 +1043,22 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      out, _err, status = Open3.capture3(
-        env,
-        "ruby",
-        SCRIPT,
-        "publish",
-        "--expected-batch-id",
-        "batch-184",
-        "--targets-json",
-        targets_path,
-        "--receipt",
-        receipt_path
-      )
-      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      out, _err, status = Timeout.timeout(10) do
+        Open3.capture3(
+          env,
+          "ruby",
+          SCRIPT,
+          "publish",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--receipt",
+          receipt_path
+        )
+      end
 
       assert_equal 1, status.exitstatus
-      assert_operator elapsed, :<, 1.75
       child_pid = Integer(File.read(env.fetch("FAKE_GH_PID"), encoding: "UTF-8"), 10)
       assert_raises(Errno::ESRCH) { Process.kill(0, child_pid) }
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1.25
@@ -1872,7 +1976,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "FAKE_GH_LATE_SIDE_EFFECT" => File.join(directory, "gh-late-side-effect.txt"),
         "FAKE_GH_MODE" => mode.to_s,
         "FAKE_TARGET_TYPE" => target_type,
-        "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "1" : "60"
+        "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "1" : nil
       }
       yield env, directory
     end

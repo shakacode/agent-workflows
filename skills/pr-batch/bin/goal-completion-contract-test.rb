@@ -2,7 +2,19 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-load File.expand_path("../../post-merge-audit/bin/completed-batch-audit-receipt", __dir__)
+require "fileutils"
+require "open3"
+require "tmpdir"
+
+receipt_parser_path = File.expand_path("../../post-merge-audit/bin/completed-batch-audit-receipt", __dir__)
+unless File.file?(receipt_parser_path)
+  abort(
+    "BLOCKED: completed-batch closeout validation requires the sibling post-merge-audit " \
+      "receipt parser from the same Agent Workflows pack revision; " \
+      "missing companion: #{receipt_parser_path}"
+  )
+end
+load receipt_parser_path
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
@@ -988,6 +1000,32 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md"))
     }.each do |label, text|
       assert_text_includes text.gsub(/\s+/, " "), COMPLETED_BATCH_AUDIT_COMPANION_DEPENDENCY_RULE, label
+    end
+  end
+
+  def test_missing_completed_batch_audit_parser_companion_stops_with_precise_blocker
+    Dir.mktmpdir("isolated-pr-batch") do |directory|
+      isolated_script = File.join(
+        File.realpath(directory),
+        "skills/pr-batch/bin/goal-completion-contract-test.rb"
+      )
+      FileUtils.mkdir_p(File.dirname(isolated_script))
+      FileUtils.cp(__FILE__, isolated_script)
+      missing_companion = File.expand_path(
+        "../../post-merge-audit/bin/completed-batch-audit-receipt",
+        File.dirname(isolated_script)
+      )
+
+      out, err, status = Open3.capture3("ruby", isolated_script)
+
+      assert_equal 1, status.exitstatus
+      assert_equal(
+        "BLOCKED: completed-batch closeout validation requires the sibling post-merge-audit " \
+          "receipt parser from the same Agent Workflows pack revision; " \
+          "missing companion: #{missing_companion}\n",
+        err
+      )
+      refute_includes "#{out}\n#{err}", "LoadError"
     end
   end
 

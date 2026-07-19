@@ -20,7 +20,7 @@ module CompletedBatchAuditReceipt
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
   WRITE_PERMISSIONS = %w[admin maintain write].freeze
-  GH_TIMEOUT_SECONDS = Integer(ENV.fetch("COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS", "60"))
+  DEFAULT_GH_TIMEOUT_SECONDS = 60
   PROCESS_TERMINATION_GRACE_SECONDS = 0.25
   FIELDS = %w[
     batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
@@ -395,13 +395,10 @@ module CompletedBatchAuditReceipt
 
   def canonical_comment_body(receipt)
     marker = comment_marker(receipt)
-    marker ||= receipt if marker_state(receipt)
-    return unless marker
+    return receipt if marker
+    return unless marker_state(receipt)
 
-    canonical_marker = marker.end_with?("\n") ? marker : "#{marker}\n"
-    return unless marker_state(canonical_marker)
-
-    "#{COMMENT_HEADER}\n\n#{canonical_marker}"
+    "#{COMMENT_HEADER}\n\n#{receipt}"
   end
 
   def bot_login?(login)
@@ -441,7 +438,7 @@ module CompletedBatchAuditReceipt
     command = ["gh", "api", "--hostname", host, endpoint]
     command.concat(["--method", method, "--input", "-"]) unless method == "GET"
     status = nil
-    stdout, _stderr, status = capture_process(command, input: input.to_s, timeout: GH_TIMEOUT_SECONDS)
+    stdout, _stderr, status = capture_process(command, input: input.to_s, timeout: gh_timeout_seconds)
     raise Error, "GitHub API request failed" unless status.success?
 
     payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
@@ -488,6 +485,22 @@ module CompletedBatchAuditReceipt
     end
     workers.each(&:join)
     wait_thread&.join
+  end
+
+  def configure_gh_timeout!
+    timeout = Integer(
+      ENV.fetch("COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS", DEFAULT_GH_TIMEOUT_SECONDS.to_s),
+      exception: false
+    )
+    unless timeout&.positive?
+      raise Error, "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS must be a positive integer"
+    end
+
+    @gh_timeout_seconds = timeout
+  end
+
+  def gh_timeout_seconds
+    @gh_timeout_seconds || DEFAULT_GH_TIMEOUT_SECONDS
   end
 
   def read_process_stream(stream)
@@ -890,6 +903,7 @@ module CompletedBatchAuditReceipt
       end
     end
 
+    configure_gh_timeout!
     targets = JSON.parse(File.read(options.fetch("targets_json"), encoding: "UTF-8"))
     result = if command == "publish"
                publish(
