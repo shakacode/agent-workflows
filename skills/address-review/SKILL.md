@@ -846,6 +846,15 @@ If the action was `a`, do not signal merge-ready automatically. Report that file
 
 Do not automatically merge. Signal readiness (or non-readiness) and let the user decide.
 
+# Machine-Readable Receipt
+
+When emitting a structured `review-findings` block, set `review_receipt.source`
+to `address-review` and follow `docs/review-finding-schema.md`.
+Populate optional receipt `provenance.model`, `provenance.effort`, and `provenance.usage` only from host-reported evidence for the actual review run.
+Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt text or model self-report as binding evidence.
+Copy usage counters without guessing or recalculation, and do not store raw
+prompt, response, or transcript data in the receipt.
+
 # Example Usage
 
 <!-- host-branch: available-tool start -->

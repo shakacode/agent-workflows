@@ -26,7 +26,15 @@ Emit a structured block as fenced JSON with a top-level `review_findings` array:
     },
     "provenance": {
       "engine": "codex review",
-      "invocation": "codex review --base origin/main"
+      "invocation": "codex review --base origin/main",
+      "model": "gpt-5.6-sol",
+      "effort": "xhigh",
+      "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "cache_read_tokens": 400,
+        "total_tokens": 1500
+      }
     },
     "risk_lenses": [
       {
@@ -125,23 +133,88 @@ workflow into the same shape:
 ## Review Receipt
 
 `review_receipt` is an optional additive top-level object. Existing
-`review-finding-v0` reports without it remain valid. Autoreview uses it to make
-review scope and limitations replayable without making another review engine a
-dependency.
+`review-finding-v0` reports without it remain valid. Autoreview, adversarial PR
+review, continuous evaluation, post-merge audit, and address-review use
+receipts to make review scope and limitations replayable without making another
+review engine a dependency. The `model`, `effort`, and `usage` provenance
+extensions are additive.
+
+Older receipts that omit all three fields remain valid.
 
 The receipt includes:
 
-- `source`: currently `autoreview`; future receipt producers require an
-  explicit schema/validator addition rather than an unchecked alias;
+- `source`: `autoreview`, `adversarial-pr-review`,
+  `continuous-evaluation-loop`, `post-merge-audit`, or `address-review`;
 - `target`: `kind` of `committed` or `uncommitted`, plus non-empty `base_ref`,
   immutable `base_sha`, and `head_sha` strings for the reviewed diff;
-- `provenance`: non-empty `engine` and `invocation` strings;
+- `provenance`: non-empty `engine` and `invocation` strings, plus the optional
+  host-reported fields described below;
 - `risk_lenses`: a non-empty array whose entries have non-empty `name` and
   `reason` strings plus `status` of `applied`, `not_applicable`, `degraded`, or
   `unknown`; lens names must be unique, and `autoreview` receipts always include
   `correctness` and `security`;
 - `coverage`: `status` of `complete`, `partial`, or `unknown`, plus
   `included_paths`, `excluded_paths`, and `limitations` string arrays.
+
+### Model And Usage Provenance
+
+The optional provenance fields describe the actual review invocation:
+
+- `model`: the exact model name reported by the host, or exact uppercase
+  `UNKNOWN` when trusted host evidence is unavailable;
+- `effort`: the exact effort or reasoning-effort value reported by the host, or
+  exact uppercase `UNKNOWN` when unavailable;
+- `usage`: exact uppercase `UNKNOWN` when no trusted usage evidence is
+  available, or an object with all four fields: `input_tokens`,
+  `output_tokens`, `cache_read_tokens`, and `total_tokens`. Each field is a
+  nonnegative integer copied from host evidence or exact uppercase `UNKNOWN`
+  when that individual counter is unavailable.
+
+Use host session metadata or structured command/API result metadata as binding
+evidence. Never infer a model, effort, or token count from route requests,
+prompt text, model self-report, prose output, or arithmetic over missing
+fields. Do not store raw prompts, responses, or transcript text in a receipt;
+record only the bounded provenance metadata above.
+
+The token fields preserve stable per-model host semantics rather than imposing
+one cross-provider cache formula:
+
+- `input_tokens` is the host's primary input counter for the recorded model and
+  invocation. Some hosts include cache reads in this value and some report them
+  separately; do not normalize it in the receipt.
+- `output_tokens` is the host's output counter for that invocation.
+- `cache_read_tokens` is the host's cache-read counter. It can be a subset of
+  input on one host and an additional input component on another.
+- `total_tokens` is the host's reported total. When it and either primary
+  component are known, it must be at least the sum of every known `input_tokens` and `output_tokens` component.
+  `cache_read_tokens` is not added to `total_tokens` by the validator because
+  doing so would double-count hosts where cache reads are already included in
+  input.
+
+Do not compare or aggregate these fields across model/host families without an
+adapter that knows that family's cache semantics. Preserve literal host values
+so receipts for the same model and host remain comparable. If only some usage
+counters are available, emit the complete usage object and use literal
+`UNKNOWN` for the unavailable counters; if the entire usage record is
+unavailable, set `usage` itself to literal `UNKNOWN`.
+
+### Consumer Metrics
+
+Group metrics by exact `provenance.model` and `provenance.effort`; keep engine
+or host families separate unless a documented adapter makes their token and
+cache semantics comparable. Join known token counts to a versioned external pricing snapshot
+rather than putting inferred currency values in the receipt.
+
+- **Cost per verified finding:** sum the externally priced cost of receipts in
+  the group, then divide by findings whose `verification.status` is `verified`
+  and whose disposition is not `rejected_false_positive`,
+  `rejected_not_actionable`, or `unknown`. Report the numerator, denominator,
+  pricing-snapshot version, and an unavailable result when the denominator is
+  zero or required usage/pricing evidence is `UNKNOWN`.
+- **False-positive rate:** divide findings with disposition
+  `rejected_false_positive` by all findings in the group whose disposition is
+  not `unknown`. Report both counts with the rate; do not silently drop
+  receipts or findings merely because their usage is `UNKNOWN`.
 
 Receipts describe what actually ran. Do not mark a lens `applied` merely
 because a reviewer was requested. `complete` requires every lens to be

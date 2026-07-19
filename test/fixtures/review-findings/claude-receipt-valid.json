@@ -1,0 +1,43 @@
+{
+  "schema": "review-finding-v0",
+  "review_receipt": {
+    "source": "adversarial-pr-review",
+    "target": {
+      "kind": "committed",
+      "base_ref": "origin/main",
+      "base_sha": "0123456789abcdef0123456789abcdef01234567",
+      "head_sha": "89abcdef0123456789abcdef0123456789abcdef"
+    },
+    "provenance": {
+      "engine": "claude",
+      "invocation": "claude --print --permission-mode plan",
+      "model": "claude-opus-4-8",
+      "effort": "xhigh",
+      "usage": {
+        "input_tokens": 800,
+        "output_tokens": 250,
+        "cache_read_tokens": 600,
+        "total_tokens": 1650
+      }
+    },
+    "risk_lenses": [
+      {
+        "name": "correctness",
+        "status": "applied",
+        "reason": "Reviewed the complete committed diff."
+      },
+      {
+        "name": "security",
+        "status": "applied",
+        "reason": "Reviewed the changed trust boundaries."
+      }
+    ],
+    "coverage": {
+      "status": "complete",
+      "included_paths": ["lib/example.rb", "test/example_test.rb"],
+      "excluded_paths": [],
+      "limitations": []
+    }
+  },
+  "review_findings": []
+}

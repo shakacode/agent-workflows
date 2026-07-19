@@ -34,7 +34,14 @@ module ValidateReviewFindings
   COVERAGE_STATUSES = %w[complete partial unknown].freeze
   INDEPENDENT_VALIDATION_STATUSES = %w[confirmed rejected degraded].freeze
   RECEIPT_TARGET_KINDS = %w[committed uncommitted].freeze
-  RECEIPT_SOURCES = %w[autoreview].freeze
+  RECEIPT_SOURCES = %w[
+    autoreview
+    adversarial-pr-review
+    continuous-evaluation-loop
+    post-merge-audit
+    address-review
+  ].freeze
+  PROVENANCE_USAGE_FIELDS = %w[input_tokens output_tokens cache_read_tokens total_tokens].freeze
   STRING_ARRAY_FIELDS = %w[evidence links related_ids].freeze
 
   module_function
@@ -117,12 +124,56 @@ module ValidateReviewFindings
       failures << "#{label}.source must be a non-empty string"
     end
     failures.concat(validate_receipt_target(receipt["target"], label))
-    failures.concat(validate_required_string_fields(receipt["provenance"], %w[engine invocation], "#{label}: provenance"))
+    failures.concat(validate_provenance(receipt["provenance"], label))
     failures.concat(validate_risk_lenses(receipt["risk_lenses"], label))
     failures.concat(validate_autoreview_lenses(receipt, label))
     failures.concat(validate_coverage(receipt["coverage"], label))
     failures.concat(validate_complete_coverage(receipt, label))
     failures.concat(validate_uncommitted_coverage(receipt, label))
+    failures
+  end
+
+  def validate_provenance(provenance, label)
+    provenance_label = "#{label}: provenance"
+    failures = validate_required_string_fields(provenance, %w[engine invocation], provenance_label)
+    return failures unless provenance.is_a?(Hash)
+
+    %w[model effort].each do |field|
+      next unless provenance.key?(field)
+
+      unless non_empty_string?(provenance[field])
+        failures << "#{provenance_label}.#{field} must be a non-empty string"
+      end
+      if unknown_sentinel_variant?(provenance[field])
+        failures << "#{provenance_label}.#{field} must use literal UNKNOWN when unknown"
+      end
+    end
+
+    return failures unless provenance.key?("usage")
+    return failures if provenance["usage"] == "UNKNOWN"
+
+    unless provenance["usage"].is_a?(Hash)
+      failures << "#{provenance_label}.usage must be an object or literal UNKNOWN"
+      return failures
+    end
+
+    PROVENANCE_USAGE_FIELDS.each do |field|
+      unless provenance.fetch("usage").key?(field)
+        failures << "#{provenance_label}.usage.#{field} must be present"
+        next
+      end
+      next if nonnegative_integer_or_unknown?(provenance.dig("usage", field))
+
+      failures << "#{provenance_label}.usage.#{field} must be a nonnegative integer or UNKNOWN"
+    end
+    input_tokens = provenance.dig("usage", "input_tokens")
+    output_tokens = provenance.dig("usage", "output_tokens")
+    total_tokens = provenance.dig("usage", "total_tokens")
+    known_primary_tokens = [input_tokens, output_tokens].select { |value| value.is_a?(Integer) }.sum
+    if total_tokens.is_a?(Integer) && total_tokens < known_primary_tokens
+      failures << "#{provenance_label}.usage.total_tokens cannot be less than " \
+                  "known input_tokens + output_tokens"
+    end
     failures
   end
 
@@ -368,6 +419,14 @@ module ValidateReviewFindings
 
   def positive_integer?(value)
     value.is_a?(Integer) && value.positive?
+  end
+
+  def nonnegative_integer_or_unknown?(value)
+    value == "UNKNOWN" || value.is_a?(Integer) && !value.negative?
+  end
+
+  def unknown_sentinel_variant?(value)
+    value.is_a?(String) && value.strip.casecmp?("UNKNOWN") && value != "UNKNOWN"
   end
 
   def full_git_object_id?(value)
