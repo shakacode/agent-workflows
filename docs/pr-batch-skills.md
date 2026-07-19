@@ -196,6 +196,17 @@ and requires `MODEL_ESCALATION_REQUEST` before stronger-model review or replacem
 
 ## Review And Readiness
 
+For each current head, treat configured, explicitly requested, or recognizable
+current-head reviewer checks as a review cohort distinct from validation CI.
+Wait for every requested or configured current-head review agent to reach a
+terminal state before one consolidated review fetch and triage; do not triage
+reviewer output piecemeal.
+Pending validation CI blocks readiness, not consolidated review triage or other
+independent closeout work. Before another bounded poll or sleep, finish every
+runnable in-scope closeout task; wait only when no such work remains. A push
+invalidates both review-wave and validation-CI evidence for the previous head;
+restart both cohorts on the new head.
+
 - Existing PR targets with review feedback should route workers through
   [workflows/address-review.md](../workflows/address-review.md) or
   [skills/address-review/SKILL.md](../skills/address-review/SKILL.md).

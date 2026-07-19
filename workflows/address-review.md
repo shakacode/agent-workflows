@@ -206,9 +206,11 @@ Execution flow when terminal access is available:
    - If no items survive the cutoff, tell me no new review feedback was found since that summary comment and remind me I can say `check all reviews`.
 
 4. Fetch review data:
-   - Before fetching full-PR review data, wait for any in-progress `claude-review` CI run on this PR so triage reflects the latest posted feedback. On every non-specific run, apply the bounded, graceful review-check wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists.
+   - Before a non-specific fetch, resolve the complete review cohort from trusted-base `review_gate` policy, explicit trusted review requests, and recognizable current-head reviewer-check metadata. Bind the exact expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies. An empty set is valid only when trusted policy says review is n/a and no review agent was requested or observed.
+     Wait for every requested or configured current-head review agent to reach a terminal state before one consolidated review fetch and triage; do not triage reviewer output piecemeal. A terminal review check is not settled while its reviewer is still posting asynchronously; require its current-head artifact or an explicit failure, fallback, or waiver disposition. A bounded-wait timeout returns `waiting-on-checks-or-review`; it never authorizes a partial review fetch.
+     On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists.
      A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
-     If `gh pr checks` is unavailable or returns an error, log a warning and continue without blocking.
+     If the expected cohort cannot be resolved, or `gh pr checks` is unavailable or returns an error, return `waiting-on-checks-or-review` with `UNKNOWN` evidence instead of fetching partial feedback.
      ```bash
      if [ "${SPECIFIC_TARGET}" = "1" ] && [ -n "${SOURCE_PR_NUMBER}" ]; then
        echo "Replacement carryover requires a full replacement-PR target" >&2
@@ -265,21 +267,52 @@ Execution flow when terminal access is available:
        if [ -n "${SOURCE_PR_NUMBER}" ] && [ "${SOURCE_HAS_CHECKPOINT}" != "1" ]; then
          REVIEW_WAIT_PRS="${REVIEW_WAIT_PRS} ${SOURCE_PR_NUMBER}"
        fi
+       if ! printf '%s' "${REVIEW_CHECK_NAMES_JSON:-}" |
+         jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' >/dev/null; then
+         echo "waiting-on-checks-or-review: configured review cohort is UNKNOWN" >&2
+         exit 2
+       fi
        for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do
          MAX_WAIT=180
          WAITED=0
-         while [ "$(gh pr checks "${REVIEW_WAIT_PR}" --repo "${REPO}" --json name,bucket 2>/dev/null \
-           | jq '[.[] | select((.name | test("claude.?review"; "i")) and (.bucket == "pending"))] | length' 2>/dev/null || echo 0)" -gt 0 ]; do
-           if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
-             echo "Timed out waiting for claude-review on PR #${REVIEW_WAIT_PR}; continuing with currently available review data." >&2
+         while :; do
+           if REVIEW_CHECKS_JSON="$(gh pr checks "${REVIEW_WAIT_PR}" --repo "${REPO}" --json name,bucket 2>/dev/null)"; then
+             REVIEW_CHECKS_STATUS=0
+           else
+             REVIEW_CHECKS_STATUS=$?
+           fi
+           case "${REVIEW_CHECKS_STATUS}" in
+             0|1|8) ;;
+             *)
+               echo "waiting-on-checks-or-review: review-check state is UNKNOWN for PR #${REVIEW_WAIT_PR}" >&2
+               exit 2
+               ;;
+           esac
+           if ! printf '%s' "${REVIEW_CHECKS_JSON}" | jq -e 'type == "array"' >/dev/null; then
+             echo "waiting-on-checks-or-review: malformed review-check state for PR #${REVIEW_WAIT_PR}" >&2
+             exit 2
+           fi
+           REVIEW_WAVE_PENDING="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
+             jq --argjson expected "${REVIEW_CHECK_NAMES_JSON}" '
+               [ $expected[] as $name |
+                 ([.[] | select(.name == $name)]) as $checks |
+                 select(($checks | length) == 0 or any($checks[]; .bucket == "pending"))
+               ] | length')"
+           if [ "${REVIEW_WAVE_PENDING}" -eq 0 ]; then
              break
            fi
+           if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+             echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s" >&2
+             exit 2
+           fi
+           echo "Waiting for complete review wave on PR #${REVIEW_WAIT_PR}... (${WAITED}s elapsed)"
            sleep 15
            WAITED=$((WAITED + 15))
          done
        done
      fi
      ```
+     After the checks become terminal, take one final current-head reviewer-artifact snapshot before triage. If a reviewer is known to post asynchronously and its artifact or explicit no-findings/failure disposition is not yet observable, return `waiting-on-checks-or-review`; do not fetch and triage the partial wave.
    - Specific issue comment:
      `gh api repos/${REPO}/issues/comments/${COMMENT_ID} | jq '{body: .body, user: .user.login, created_at: .created_at, html_url: .html_url}'`
    - Specific review:
