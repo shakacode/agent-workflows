@@ -34,6 +34,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Publish completed-batch audit v1 receipts as verified durable GitHub comments and keep final chat output to a compact hash-bound reference plus status.** [issue 184](https://github.com/shakacode/agent-workflows/issues/184).
 - **Report the exact resolved trust-config path and stable source provenance in every `pr-security-preflight` scan result.** [issue 164](https://github.com/shakacode/agent-workflows/issues/164).
 - **Block readiness while viewer-visible current-head `PENDING` review drafts remain.** [PR 146](https://github.com/shakacode/agent-workflows/pull/146) by [justin808](https://github.com/justin808).
 - **Adopt the provisional Conservative Claude routing profile (`claude-profile v0`): Opus 4.8/xhigh multi-lane coordination, unknown/high-risk work, and adversarial QA; Sonnet 5/high only for positively classified simple workers; Opus 4.8/high for routine deterministic QA; Fable 5 stays a non-default experimental candidate pending [issue 151](https://github.com/shakacode/agent-workflows/issues/151) evidence.**

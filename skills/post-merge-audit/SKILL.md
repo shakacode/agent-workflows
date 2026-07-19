@@ -19,6 +19,12 @@ Audit merged PRs since the last release candidate
 
 Use `.agents/workflows/post-merge-audit.md` for reusable copy-paste prompts, including independent Codex/Claude audits, comparison, default issue creation, and Claude PR review handoff prompts.
 
+The completed-batch closeout validation contract requires `pr-batch` and
+`post-merge-audit` from the same Agent Workflows pack revision. This skill owns
+the production receipt parser loaded by the sibling `pr-batch` contract test;
+an isolated pinned copy must include both companions or stop with a precise
+missing-companion blocker.
+
 For a verified Codex GPT-5.6 batch, preserve the originating route profile:
 
 - Multi-lane coordinator: Sol/xhigh
@@ -376,9 +382,15 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator emits the `completed-batch-audit v1` marker and final `Conversation status` archive/follow-up line, in its final combined handoff after it compares qualifying-checker and advisory-auditor reports and dispositions findings.
-Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not emit the coordinator handoff marker or coordinator handoff readiness/status line.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings.
+Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
+
+Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, read back that exact returned comment ID, and validate every binding before emitting the compact reference.
+
+Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects.
+
+Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
 A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
 
@@ -392,10 +404,17 @@ Replay the final visible status line from the normalized blocker union: render a
 
 Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
 
-Only in completed-batch mode, include this visible report marker and fill every
-field explicitly; use `none` rather than omitting a field:
+In final chat, this compact receipt line immediately precedes the exact `Conversation status` final line; never include the full wrapper:
 
-```markdown
+Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
+
+Post this exact durable GitHub comment body, with one fixed header, one blank
+line, and exactly one unchanged v1 wrapper; fill every field explicitly and use
+`none` rather than omitting a field:
+
+```text
+Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope.
+
 <!-- completed-batch-audit v1
 batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>
 audit_status: <complete|blocked|UNKNOWN>

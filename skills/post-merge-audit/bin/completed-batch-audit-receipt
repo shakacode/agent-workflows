@@ -1,0 +1,957 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "digest"
+require "open3"
+require "optparse"
+require "timeout"
+require "uri"
+
+module CompletedBatchAuditReceipt
+  INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
+  INVALID_EXTERNAL_BLOCKER = "completed-batch-audit external blocker invalid"
+  ANCHOR_VERIFICATION_BLOCKER = "completed-batch-audit anchor verification failed"
+  REPLAY_GITHUB_API_BLOCKER = "completed-batch-audit replay GitHub API request failed"
+  POST_OUTCOME_BLOCKER = "completed-batch-audit comment POST outcome unknown"
+  POST_READBACK_BLOCKER = "completed-batch-audit comment readback verification failed"
+  COMMENT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
+  TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
+  TRUSTED_HUMAN_TYPES = %w[User].freeze
+  SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
+  WRITE_PERMISSIONS = %w[admin maintain write].freeze
+  DEFAULT_GH_TIMEOUT_SECONDS = 60
+  PROCESS_TERMINATION_GRACE_SECONDS = 0.25
+  FIELDS = %w[
+    batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
+  ].freeze
+  CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
+  TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
+  NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
+
+  State = Struct.new(:fields, :records, keyword_init: true)
+  CanonicalRef = Struct.new(:canonical_display, :identity, keyword_init: true)
+  Record = Struct.new(
+    :ref,
+    :ref_identity,
+    :owner,
+    :current_status,
+    :disposition,
+    :evidence,
+    keyword_init: true
+  ) do
+    def terminal?
+      current_status == "terminal"
+    end
+
+    def fully_evidenced_terminal?
+      terminal? && CompletedBatchAuditReceipt.evidenced_scalar?(evidence)
+    end
+
+    def non_ready?
+      !fully_evidenced_terminal?
+    end
+
+    def to_h
+      {
+        "ref" => ref,
+        "ref_identity" => ref_identity,
+        "owner" => owner,
+        "current_status" => current_status,
+        "disposition" => disposition,
+        "evidence" => evidence
+      }
+    end
+  end
+
+  module_function
+
+  class Error < StandardError; end
+  class AnchorVerificationError < Error; end
+  class ReplayGitHubApiError < Error; end
+  class SuccessfulApiResponseError < Error; end
+  class PostOutcomeUnknownError < Error; end
+
+  class PostReadbackError < Error
+    attr_reader :comment_id
+
+    def initialize(message, comment_id:)
+      @comment_id = Integer(comment_id, exception: false)
+      raise ArgumentError, "post-readback errors require a positive comment id" unless @comment_id&.positive?
+
+      super(message)
+    end
+  end
+
+  def replay_marker(marker, expected_batch_id:, other_blockers: [])
+    state = marker_state(marker)
+    state = nil unless state&.fields&.fetch("batch_id") == expected_batch_id
+    marker_blockers = state ? state_blockers(state) : [INVALID_MARKER_BLOCKER]
+    external_blockers = normalized_external_blockers(other_blockers)
+    blockers = deduped_blockers(marker_blockers + external_blockers)
+
+    {
+      "well_formed" => !state.nil?,
+      "ready" => !state.nil? && state_ready?(state) && blockers.empty?,
+      "blockers" => blockers,
+      "fields" => state&.fields || {},
+      "records" => state ? state.records.map(&:to_h) : []
+    }
+  end
+
+  def deterministic_targets(targets)
+    Array(targets).map { |target| validated_target(target) }.sort_by do |target|
+      [
+        target.fetch("type") == "pull_request" ? 0 : 1,
+        target.fetch("host").downcase,
+        target.fetch("repo").downcase,
+        target.fetch("number")
+      ]
+    end
+  end
+
+  def publish(expected_batch_id:, targets:, receipt:, other_blockers: [])
+    comment_body = canonical_comment_body(receipt)
+    raise Error, "local completed-batch audit receipt is invalid" unless comment_body
+
+    marker = comment_marker(comment_body)
+    local = replay_marker(marker, expected_batch_id:, other_blockers:)
+    raise Error, "local completed-batch audit receipt is invalid" unless local.fetch("well_formed")
+
+    target, actor = select_verified_anchor(targets)
+    endpoint = "repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}/comments"
+    begin
+      posted = gh_api(
+        target.fetch("host"),
+        endpoint,
+        method: "POST",
+        input: JSON.generate("body" => comment_body)
+      )
+    rescue Error, KeyError => e
+      raise PostOutcomeUnknownError, "comment POST outcome is unknown: #{e.message}"
+    end
+    comment_id = Integer(posted["id"], exception: false)
+    unless comment_id&.positive?
+      raise PostOutcomeUnknownError, "comment POST outcome is unknown: response returned no stable positive id"
+    end
+
+    begin
+      readback = gh_api(
+        target.fetch("host"),
+        "repos/#{target.fetch('repo')}/issues/comments/#{comment_id}"
+      )
+      verified = verify_comment(
+        readback,
+        target:,
+        expected_comment_id: comment_id,
+        expected_author: actor,
+        expected_batch_id:,
+        expected_body: comment_body
+      )
+    rescue Error, KeyError => e
+      raise PostReadbackError.new("comment was created but readback verification failed: #{e.message}", comment_id:)
+    end
+    remote = replay_marker(verified.fetch("marker"), expected_batch_id:, other_blockers:)
+    raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
+
+    reference = compact_reference(remote.fetch("fields").fetch("verdict"), verified)
+    remote.merge(
+      "final_status" => final_status(remote),
+      "receipt" => verified.reject { |key, _value| key == "marker" },
+      "chat_reference" => reference,
+      "errors" => []
+    )
+  end
+
+  def replay_reference(expected_batch_id:, targets:, reference:, other_blockers: [])
+    parsed = parse_reference(reference)
+    target = parsed.fetch("target")
+    manifest_target = deterministic_targets(targets).first
+    raise Error, "trusted batch manifest has no deterministic anchor" unless manifest_target
+
+    same_target = manifest_target.fetch("host") == target.fetch("host") &&
+                  manifest_target.fetch("repo").casecmp?(target.fetch("repo")) &&
+                  manifest_target.fetch("type") == target.fetch("type") &&
+                  manifest_target.fetch("number") == target.fetch("number")
+    raise Error, "receipt target is not the deterministic batch anchor" unless same_target
+
+    comment = begin
+      gh_api(
+        target.fetch("host"),
+        "repos/#{target.fetch('repo')}/issues/comments/#{parsed.fetch('comment_id')}"
+      )
+    rescue Error => e
+      raise ReplayGitHubApiError, e.message
+    end
+    verified = verify_comment(
+      comment,
+      target:,
+      expected_comment_id: parsed.fetch("comment_id"),
+      expected_author: parsed.fetch("author"),
+      expected_batch_id:
+    )
+    raise Error, "receipt comment timestamp binding mismatch" unless
+      verified.fetch("created_at") == parsed.fetch("created_at") &&
+      verified.fetch("updated_at") == parsed.fetch("updated_at")
+    raise Error, "receipt comment SHA-256 mismatch" unless verified.fetch("sha256") == parsed.fetch("sha256")
+
+    remote = replay_marker(verified.fetch("marker"), expected_batch_id:, other_blockers:)
+    raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
+    raise Error, "compact reference result does not match receipt verdict" unless
+      remote.fetch("fields").fetch("verdict") == parsed.fetch("verdict")
+
+    canonical = compact_reference(remote.fetch("fields").fetch("verdict"), verified)
+    raise Error, "compact receipt reference is noncanonical" unless reference.chomp == canonical
+
+    remote.merge(
+      "final_status" => final_status(remote),
+      "receipt" => verified.reject { |key, _value| key == "marker" },
+      "chat_reference" => canonical,
+      "errors" => []
+    )
+  rescue ArgumentError => e
+    raise Error, e.message
+  end
+
+  def parse_reference(reference)
+    match = reference.to_s.match(
+      %r{\ACompleted-batch audit: (clean|follow-ups-remain|UNKNOWN) — \[durable v1 receipt\]\((https://[^\s)]+)\); SHA-256 `([0-9a-f]{64})`; author `([A-Za-z0-9_-]+)`; version `([0-9TZ:.-]+)/([0-9TZ:.-]+)`\.\n?\z}
+    )
+    raise Error, "compact receipt reference is malformed" unless match
+
+    url = URI.parse(match[2])
+    raise Error, "receipt reference URL must use HTTPS" unless url.scheme == "https"
+    raise Error, "receipt reference URL must not contain userinfo or query" if url.userinfo || url.query
+
+    fragment = url.fragment.to_s.match(/\Aissuecomment-(\d+)\z/)
+    raise Error, "receipt reference comment fragment is invalid" unless fragment
+
+    path = url.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
+    raise Error, "receipt reference target path is invalid" unless path
+
+    {
+      "verdict" => match[1],
+      "sha256" => match[3],
+      "author" => match[4],
+      "created_at" => match[5],
+      "updated_at" => match[6],
+      "comment_id" => Integer(fragment[1], 10),
+      "target" => {
+        "host" => canonical_host("#{url.host}:#{url.port}"),
+        "repo" => "#{path[1]}/#{path[2]}",
+        "type" => path[3] == "pull" ? "pull_request" : "issue",
+        "number" => Integer(path[4], 10)
+      }
+    }
+  rescue URI::InvalidURIError, ArgumentError
+    raise Error, "receipt reference URL is invalid"
+  end
+
+  def select_verified_anchor(targets)
+    target = deterministic_targets(targets).first
+    raise Error, "trusted batch manifest has no deterministic anchor" unless target
+
+    begin
+      actor = verified_human_login!(
+        gh_api(target.fetch("host"), "user"),
+        context: "authenticated GitHub actor"
+      )
+      target_payload = gh_api(
+        target.fetch("host"),
+        "repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}"
+      )
+      target = verify_target_payload!(target_payload, target)
+      permission_payload = gh_api(
+        target.fetch("host"),
+        "repos/#{target.fetch('repo')}/collaborators/#{actor}/permission"
+      )
+      permission = permission_payload.fetch("permission", "").to_s
+      verified_human_login!(
+        permission_payload.fetch("user", nil),
+        context: "permission response actor",
+        expected_login: actor
+      )
+      raise Error, "authenticated GitHub actor lacks verified write permission" unless WRITE_PERMISSIONS.include?(permission)
+
+      [target, actor]
+    rescue Error, KeyError => e
+      raise AnchorVerificationError, e.message
+    end
+  rescue ArgumentError => e
+    raise Error, e.message
+  end
+
+  def verify_target_payload!(payload, target)
+    raise Error, "target number mismatch" unless payload.fetch("number", nil) == target.fetch("number")
+    raise Error, "target is locked" if payload.fetch("locked", false)
+
+    actual_type = payload.key?("pull_request") ? "pull_request" : "issue"
+    raise Error, "target type mismatch" unless actual_type == target.fetch("type")
+
+    url = URI.parse(payload.fetch("html_url", "").to_s)
+    raise Error, "target URL must use HTTPS" unless url.scheme == "https"
+    raise Error, "target URL must not contain userinfo, query, or fragment" if url.userinfo || url.query || url.fragment
+
+    path = url.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
+    raise Error, "target URL path mismatch" unless path
+
+    actual_host = canonical_host("#{url.host}:#{url.port}")
+    actual_repo = "#{path[1]}/#{path[2]}"
+    url_type = path[3] == "pull" ? "pull_request" : "issue"
+    url_number = Integer(path[4], 10)
+    same_identity = actual_host == target.fetch("host") &&
+                    actual_repo.casecmp?(target.fetch("repo")) &&
+                    url_type == target.fetch("type") &&
+                    url_number == target.fetch("number")
+    raise Error, "target URL identity mismatch" unless same_identity
+
+    target.merge("repo" => actual_repo)
+  rescue URI::InvalidURIError, ArgumentError
+    raise Error, "target URL is invalid"
+  end
+
+  def verify_comment(
+    comment,
+    target:,
+    expected_comment_id:,
+    expected_author:,
+    expected_batch_id:,
+    expected_body: nil
+  )
+    id = Integer(comment.fetch("id", nil), exception: false)
+    raise Error, "comment id mismatch" unless id == expected_comment_id
+
+    expected_url = "#{target_base_url(target)}#issuecomment-#{expected_comment_id}"
+    actual_url = comment.fetch("html_url", "").to_s
+    raise Error, "comment URL mismatch" unless actual_url == expected_url
+
+    verify_issue_url!(comment.fetch("issue_url", "").to_s, target)
+
+    user = comment.fetch("user", nil)
+    author = verified_human_login!(
+      user,
+      context: "comment author",
+      expected_login: expected_author
+    )
+
+    association = comment.fetch("author_association", "").to_s
+    raise Error, "comment author association is not trusted" unless TRUSTED_ASSOCIATIONS.include?(association)
+
+    created_at = comment.fetch("created_at", "").to_s
+    updated_at = comment.fetch("updated_at", "").to_s
+    raise Error, "comment timestamps are missing" if created_at.empty? || updated_at.empty?
+    raise Error, "comment was edited before verification" unless created_at == updated_at
+
+    body = comment.fetch("body", "").to_s
+    raise Error, "comment body changed after POST" if expected_body && body != expected_body
+
+    marker = comment_marker(body)
+    raise Error, "comment body is not the canonical durable receipt" unless marker
+
+    local = replay_marker(marker, expected_batch_id:)
+    raise Error, "comment receipt batch or grammar mismatch" unless local.fetch("well_formed")
+
+    {
+      "host" => target.fetch("host"),
+      "repo" => target.fetch("repo"),
+      "target_type" => target.fetch("type"),
+      "target_number" => target.fetch("number"),
+      "comment_id" => expected_comment_id,
+      "url" => actual_url,
+      "author" => author,
+      "author_association" => association,
+      "created_at" => created_at,
+      "updated_at" => updated_at,
+      "sha256" => Digest::SHA256.hexdigest(body.encode(Encoding::UTF_8)),
+      "marker" => marker
+    }
+  end
+
+  def target_base_url(target)
+    segment = target.fetch("type") == "pull_request" ? "pull" : "issues"
+    "https://#{target.fetch('host')}/#{target.fetch('repo')}/#{segment}/#{target.fetch('number')}"
+  end
+
+  def verify_issue_url!(value, target)
+    uri = URI.parse(value)
+    expected_path = "/repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}"
+    actual_authority = canonical_host("#{uri.host}:#{uri.port}")
+    allowed_authority = target.fetch("host") == "github.com" ? "api.github.com" : target.fetch("host")
+    path_matches = [expected_path, "/api/v3#{expected_path}"].include?(uri.path)
+    raise Error, "comment issue URL mismatch" unless
+      uri.scheme == "https" && actual_authority == allowed_authority && path_matches
+    raise Error, "comment issue URL must not include query or fragment" if uri.query || uri.fragment
+  rescue URI::InvalidURIError, ArgumentError
+    raise Error, "comment issue URL is invalid"
+  end
+
+  def comment_marker(body)
+    prefix = "#{COMMENT_HEADER}\n\n"
+    return unless body.start_with?(prefix)
+
+    marker = body.delete_prefix(prefix)
+    marker if marker_state(marker)
+  end
+
+  def canonical_comment_body(receipt)
+    marker = comment_marker(receipt)
+    return receipt if marker
+    return unless marker_state(receipt)
+
+    "#{COMMENT_HEADER}\n\n#{receipt}"
+  end
+
+  def bot_login?(login)
+    login.to_s.downcase.end_with?("[bot]")
+  end
+
+  def verified_human_login!(user, context:, expected_login: nil)
+    raise Error, "#{context} is not a JSON object" unless user.is_a?(Hash)
+
+    login = user.fetch("login", "").to_s
+    raise Error, "#{context} login is missing" if login.empty?
+    raise Error, "#{context} must not be a bot" if bot_login?(login)
+    raise Error, "#{context} login contains unsafe characters" unless login.match?(SAFE_LOGIN_PATTERN)
+
+    type = user.fetch("type", "").to_s
+    raise Error, "#{context} type is not a trusted human type" unless TRUSTED_HUMAN_TYPES.include?(type)
+    if expected_login && !login.casecmp?(expected_login)
+      raise Error, "#{context} login does not match the expected actor"
+    end
+
+    login
+  end
+
+  def compact_reference(verdict, receipt)
+    "Completed-batch audit: #{verdict} — [durable v1 receipt](#{receipt.fetch('url')}); " \
+      "SHA-256 `#{receipt.fetch('sha256')}`; author `#{receipt.fetch('author')}`; " \
+      "version `#{receipt.fetch('created_at')}/#{receipt.fetch('updated_at')}`."
+  end
+
+  def final_status(result)
+    return "Conversation status: Ready for archiving." if result.fetch("ready") && result.fetch("blockers").empty?
+
+    "Conversation status: Follow-ups remain — #{result.fetch('blockers').join('; ')}."
+  end
+
+  def gh_api(host, endpoint, method: "GET", input: nil)
+    command = ["gh", "api", "--hostname", host, endpoint]
+    command.concat(["--method", method, "--input", "-"]) unless method == "GET"
+    status = nil
+    stdout, _stderr, status = capture_process(command, input: input.to_s, timeout: gh_timeout_seconds)
+    raise Error, "GitHub API request failed" unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    raise SuccessfulApiResponseError, "GitHub API response must be a JSON object" unless payload.is_a?(Hash)
+
+    payload
+  rescue Timeout::Error
+    raise Error, "GitHub API request timed out"
+  rescue JSON::ParserError
+    error_class = status&.success? ? SuccessfulApiResponseError : Error
+    raise error_class, "GitHub API returned invalid JSON"
+  rescue SystemCallError
+    raise Error, "GitHub API request could not be started"
+  end
+
+  def capture_process(command, input:, timeout:)
+    stdin = stdout = stderr = wait_thread = nil
+    workers = []
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*command)
+    writer = Thread.new do
+      stdin.write(input)
+    rescue Errno::EPIPE, IOError
+      nil
+    ensure
+      stdin.close unless stdin.closed?
+    end
+    stdout_reader = Thread.new { read_process_stream(stdout) }
+    stderr_reader = Thread.new { read_process_stream(stderr) }
+    workers = [writer, stdout_reader, stderr_reader]
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+
+    [wait_thread, *workers].each do |thread|
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      raise Timeout::Error if remaining <= 0 || !thread.join(remaining)
+    end
+
+    [stdout_reader.value, stderr_reader.value, wait_thread.value]
+  ensure
+    terminate_process(wait_thread) if wait_thread&.alive?
+    [stdin, stdout, stderr].compact.each do |stream|
+      stream.close unless stream.closed?
+    rescue IOError
+      nil
+    end
+    workers.each(&:join)
+    wait_thread&.join
+  end
+
+  def configure_gh_timeout!
+    timeout = Integer(
+      ENV.fetch("COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS", DEFAULT_GH_TIMEOUT_SECONDS.to_s),
+      exception: false
+    )
+    unless timeout&.positive?
+      raise Error, "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS must be a positive integer"
+    end
+
+    @gh_timeout_seconds = timeout
+  end
+
+  def gh_timeout_seconds
+    @gh_timeout_seconds || DEFAULT_GH_TIMEOUT_SECONDS
+  end
+
+  def read_process_stream(stream)
+    stream.read
+  rescue IOError
+    ""
+  end
+
+  def terminate_process(wait_thread)
+    Process.kill("TERM", wait_thread.pid)
+  rescue Errno::ESRCH
+    wait_thread.join
+  else
+    unless wait_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+      begin
+        Process.kill("KILL", wait_thread.pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+    wait_thread.join
+  end
+
+  def validated_target(target)
+    raise ArgumentError, "target must be a JSON object" unless target.is_a?(Hash)
+
+    host = canonical_host(target.fetch("host"))
+    repo = target.fetch("repo").to_s
+    type = target.fetch("type").to_s
+    number = Integer(target.fetch("number"), exception: false)
+    raise ArgumentError, "target repo is invalid" unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    raise ArgumentError, "target type is invalid" unless %w[pull_request issue].include?(type)
+    raise ArgumentError, "target number is invalid" unless number&.positive?
+
+    { "host" => host, "repo" => repo, "type" => type, "number" => number }
+  end
+
+  def canonical_host(value)
+    match = value.to_s.match(/\A(?<name>[A-Za-z0-9.-]+)(?::(?<port>\d+))?\z/)
+    raise ArgumentError, "target host is invalid" unless match
+
+    name = match[:name].downcase
+    labels = name.split(".", -1)
+    valid_name = name.length <= 253 && labels.all? do |label|
+      label.match?(/\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\z/)
+    end
+    raise ArgumentError, "target host is invalid" unless valid_name
+
+    port = match[:port] && Integer(match[:port], 10)
+    raise ArgumentError, "target host port is invalid" if port && !(1..65_535).cover?(port)
+
+    port && port != 443 ? "#{name}:#{port}" : name
+  end
+
+  def marker_fields(marker)
+    envelope = marker.match(/\A<!-- completed-batch-audit v1\n(?<body>.*)\n-->\n?\z/m)
+    return unless envelope
+
+    fields = envelope[:body].each_line.each_with_object({}) do |line, parsed|
+      raw_line = line.delete_suffix("\n")
+      match = raw_line.match(/\A([a-z_]+):[ \t]*(.*)\z/)
+      break unless match
+
+      key = match[1]
+      break unless FIELDS.include?(key)
+      break if parsed.key?(key)
+      break unless single_physical_line?(match[2])
+      break if match[2].include?("<!--") || match[2].include?("-->")
+
+      parsed[key] = match[2].strip
+    end
+
+    fields if fields&.keys&.sort == FIELDS.sort
+  end
+
+  def marker_state(marker)
+    fields = marker_fields(marker)
+    return unless fields
+
+    records = disposition_records(fields["followups_dispositions"])
+    return unless records && scalars_well_formed?(fields, records:) && fields_consistent?(fields, records)
+
+    State.new(fields:, records:)
+  end
+
+  def state_ready?(state)
+    fields = state.fields
+    return false unless fields["audit_status"] == "complete" && fields["verdict"] == "clean"
+    return false unless fields["findings"] == "none"
+    return false unless evidenced_scalar?(fields["batch_id"])
+    return false unless evidenced_scalar?(fields["scope_evidence"]) && evidenced_scalar?(fields["checker_evidence"])
+
+    state.records.all?(&:fully_evidenced_terminal?)
+  end
+
+  def state_blockers(state)
+    fields = state.fields
+    records = state.records
+    scalar_blockers = %w[batch_id audit_status verdict scope_evidence checker_evidence findings].filter_map do |field|
+      "#{field}: UNKNOWN" if fields.fetch(field) == "UNKNOWN"
+    end
+    record_blockers_by_ref = records.filter_map do |record|
+      next unless record.non_ready?
+
+      blocker = if record.terminal?
+                  "#{record.ref} (terminal): evidence #{record.evidence == 'UNKNOWN' ? 'UNKNOWN' : 'missing'}"
+                else
+                  "#{record.ref} (#{record.current_status}): #{record.disposition}"
+                end
+      [record.ref_identity, blocker]
+    end.to_h
+    record_blockers = record_blockers_by_ref.values
+    finding_blockers = finding_refs(fields.fetch("findings"), records:).to_a.map do |ref|
+      record_blockers_by_ref.fetch(ref.identity, ref.canonical_display)
+    end
+    unlisted_record_blockers = record_blockers.reject do |blocker|
+      finding_blockers.any? { |finding| finding.casecmp?(blocker) }
+    end
+
+    deduped_blockers(scalar_blockers + finding_blockers + unlisted_record_blockers)
+  end
+
+  def scalars_well_formed?(fields, records: [])
+    well_formed_batch_identity?(fields["batch_id"], fields["scope_evidence"]) &&
+      %w[complete blocked UNKNOWN].include?(fields["audit_status"]) &&
+      %w[clean follow-ups-remain UNKNOWN].include?(fields["verdict"]) &&
+      structurally_valid_scalar?(fields["scope_evidence"]) &&
+      structurally_valid_scalar?(fields["checker_evidence"]) &&
+      structurally_valid_dispositions?(fields["followups_dispositions"]) &&
+      well_formed_findings?(fields["findings"], records:)
+  end
+
+  def well_formed_batch_identity?(value, scope_evidence)
+    return true if exact_unknown?(value)
+    return false unless structurally_valid_scalar?(value) && evidenced_scalar?(value)
+
+    if value.start_with?("non-backend:")
+      return value.match?(/\Anon-backend:\s*[^;\s](?:[^;]*[^;\s])?;\s*rationale:\s*[^;\s](?:[^;]*[^;\s])?\z/) &&
+             exact_target_scope_evidence?(scope_evidence)
+    end
+    if value.start_with?("not-applicable:")
+      return value.match?(/\Anot-applicable:\s*[^;\s](?:[^;]*[^;\s])?\z/) &&
+             exact_target_scope_evidence?(scope_evidence)
+    end
+
+    true
+  end
+
+  def well_formed_findings?(value, records: [])
+    return true if %w[none UNKNOWN].include?(value)
+
+    refs = finding_refs(value, records:)
+    structurally_valid_scalar?(value) && value.match?(/\AOUTSTANDING\s+\S(?:.*\S)?\z/) &&
+      !unknown_value?(value) && refs && !refs.empty? && refs.all? { |ref| safe_canonical_ref?(ref) } &&
+      refs.map(&:identity).uniq.length == refs.length
+  end
+
+  def fields_consistent?(fields, records)
+    findings = fields.fetch("findings")
+    verdict = fields.fetch("verdict")
+    non_ready_records = records.select(&:non_ready?)
+    outstanding = findings.start_with?("OUTSTANDING ")
+    unknown_marker = fields.fetch("audit_status") == "UNKNOWN" && verdict == "UNKNOWN" && findings == "UNKNOWN"
+    clean_marker = fields.fetch("audit_status") == "complete" && verdict == "clean" && findings == "none"
+
+    return true if clean_marker && non_ready_records.empty?
+    return true if unknown_marker
+    return false unless %w[complete blocked].include?(fields.fetch("audit_status"))
+    return false unless verdict == "follow-ups-remain"
+    return false unless findings == "none" || outstanding
+    return false if non_ready_records.empty? && !outstanding
+
+    true
+  end
+
+  def exact_target_scope_evidence?(value)
+    value.match?(/\Atargets=[^;\s](?:[^;]*[^;\s])?; source=[^;\s](?:[^;]*[^;\s])?\z/) && !unknown_value?(value)
+  end
+
+  def evidenced_scalar?(value)
+    structurally_valid_scalar?(value) && !unknown_value?(value)
+  end
+
+  def structurally_valid_scalar?(value)
+    !value.nil? && !value.empty? && single_physical_line?(value) &&
+      !value.include?("<!--") && !value.include?("-->") && (exact_unknown?(value) || !unknown_value?(value))
+  end
+
+  def structurally_valid_dispositions?(value)
+    !value.nil? && !value.empty? && single_physical_line?(value) &&
+      !value.include?("<!--") && !value.include?("-->")
+  end
+
+  def single_physical_line?(value)
+    !value.match?(/[\r\n\0\v\f\u0085\u2028\u2029]/)
+  end
+
+  def exact_unknown?(value)
+    value == "UNKNOWN"
+  end
+
+  def unknown_value?(value)
+    value.unicode_normalize(:nfkc).match?(/UNKNOWN/i)
+  end
+
+  def disposition_records(value)
+    return [] if value == "none"
+    return if value.nil? || value.empty?
+
+    records = value.split(/\s+\|\s+/, -1)
+    return if records.empty? || records.any? { |record| record.empty? || record.include?("|") }
+
+    seen_refs = {}
+    records.each_with_object([]) do |record, parsed_records|
+      fields = record.split(/\s*;\s*/, -1).each_with_object({}) do |entry, parsed|
+        match = entry.match(/\A(ref|owner|current status|disposition|evidence):\s*(.*)\z/i)
+        break unless match
+
+        key = match[1].downcase
+        raw_value = match[2]
+        break unless single_physical_line?(raw_value)
+
+        field_value = raw_value.strip
+        break if parsed.key?(key)
+        break unless field_value.empty? ? key == "evidence" : structurally_valid_scalar?(field_value)
+
+        parsed[key] = field_value
+      end
+      break unless fields&.keys&.sort == ["current status", "disposition", "evidence", "owner", "ref"]
+
+      canonical_ref = canonical_ref(fields.fetch("ref"))
+      break unless safe_canonical_ref?(canonical_ref)
+      break if seen_refs.key?(canonical_ref.identity)
+
+      seen_refs[canonical_ref.identity] = true
+      status = fields.fetch("current status")
+      break unless CURRENT_STATUSES.include?(status)
+
+      disposition = fields.fetch("disposition")
+      valid_disposition = status == "terminal" ? TERMINAL_DISPOSITIONS.include?(disposition) : NONTERMINAL_ACTIONS.include?(disposition)
+      break unless valid_disposition
+      break unless evidenced_scalar?(canonical_ref.canonical_display) && evidenced_scalar?(fields.fetch("owner"))
+      break unless status == "terminal" || evidenced_scalar?(fields.fetch("evidence"))
+
+      parsed_records << Record.new(
+        ref: canonical_ref.canonical_display,
+        ref_identity: canonical_ref.identity,
+        owner: fields.fetch("owner"),
+        current_status: status,
+        disposition:,
+        evidence: fields.fetch("evidence")
+      )
+    end
+  end
+
+  def canonical_ref(value)
+    canonical_display = value.to_s.unicode_normalize(:nfkc).gsub(/[[:space:]]+/, " ").strip
+    return if canonical_display.empty?
+
+    CanonicalRef.new(canonical_display:, identity: canonical_display.downcase(:fold))
+  end
+
+  def safe_canonical_ref?(reference)
+    reference && single_physical_line?(reference.canonical_display) &&
+      !reference.canonical_display.include?("<!--") &&
+      !reference.canonical_display.include?("-->") && !unknown_value?(reference.canonical_display)
+  end
+
+  def safe_external_blocker?(reference)
+    reference && single_physical_line?(reference.canonical_display) &&
+      !reference.canonical_display.include?("<!--") && !reference.canonical_display.include?("-->")
+  end
+
+  def well_formed_other_blocker?(value)
+    value.is_a?(String) && single_physical_line?(value) &&
+      !value.include?("<!--") && !value.include?("-->") && safe_external_blocker?(canonical_ref(value))
+  end
+
+  def normalized_external_blockers(values)
+    items = values.is_a?(Array) ? values : [values]
+    blockers = items.map do |value|
+      if well_formed_other_blocker?(value)
+        canonical_ref(value).canonical_display
+      else
+        INVALID_EXTERNAL_BLOCKER
+      end
+    end
+    deduped_blockers(blockers)
+  end
+
+  def failure_blocker(error)
+    case error
+    when PostOutcomeUnknownError
+      POST_OUTCOME_BLOCKER
+    when PostReadbackError
+      POST_READBACK_BLOCKER
+    when AnchorVerificationError
+      ANCHOR_VERIFICATION_BLOCKER
+    when ReplayGitHubApiError
+      REPLAY_GITHUB_API_BLOCKER
+    else
+      INVALID_MARKER_BLOCKER
+    end
+  end
+
+  def deduped_blockers(blockers)
+    blockers.each_with_object([]) do |blocker, deduped|
+      canonical = canonical_ref(blocker)
+      next unless canonical
+
+      deduped << canonical.canonical_display unless deduped.any? do |known|
+        canonical_ref(known).identity == canonical.identity
+      end
+    end
+  end
+
+  def finding_refs(value, records: [])
+    return [] unless value.start_with?("OUTSTANDING ")
+
+    raw_refs = value.delete_prefix("OUTSTANDING ")
+    known_refs = records.map { |record| CanonicalRef.new(canonical_display: record.ref, identity: record.ref_identity) }
+    known_refs.sort_by! { |reference| -reference.canonical_display.length }
+    canonical_payload = canonical_ref(raw_refs)
+    return unless canonical_payload
+
+    whole_record_ref = known_refs.find { |reference| reference.identity == canonical_payload.identity }
+    return [whole_record_ref] if whole_record_ref
+
+    refs = raw_refs.split(/\s*,\s*/, -1).flat_map do |group|
+      finding_group_refs(group, known_refs)
+    end
+    return unless refs && !refs.empty? && refs.none?(&:nil?)
+
+    refs
+  end
+
+  def finding_group_refs(group, known_refs)
+    canonical_group = canonical_ref(group)
+    return unless canonical_group
+
+    tokens = canonical_group.canonical_display.split(" ")
+    refs = []
+    index = 0
+    while index < tokens.length
+      remaining_identity = tokens[index..].join(" ").downcase(:fold)
+      record_ref = known_refs.find do |known_ref|
+        remaining_identity == known_ref.identity || remaining_identity.start_with?("#{known_ref.identity} ")
+      end
+      if record_ref
+        refs << record_ref
+        index += record_ref.canonical_display.split(" ").length
+      else
+        reference = canonical_ref(tokens[index])
+        return unless reference
+
+        refs << reference
+        index += 1
+      end
+    end
+
+    refs
+  end
+
+  def run(argv)
+    command = argv.shift
+    unless %w[publish replay].include?(command)
+      warn usage
+      return 64
+    end
+
+    options = { "other_blockers" => [] }
+    parser = OptionParser.new do |opts|
+      opts.banner = usage
+      opts.on("--expected-batch-id ID") { |value| options["expected_batch_id"] = value }
+      opts.on("--targets-json PATH") { |value| options["targets_json"] = value }
+      opts.on("--receipt PATH") { |value| options["receipt"] = value }
+      opts.on("--reference-file PATH") { |value| options["reference_file"] = value }
+      opts.on("--other-blocker TEXT") { |value| options.fetch("other_blockers") << value }
+      opts.on("-h", "--help") do
+        puts opts
+        return 0
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    %w[expected_batch_id targets_json].each do |field|
+      raise OptionParser::MissingArgument, "--#{field.tr('_', '-')}" if options[field].to_s.empty?
+    end
+
+    if command == "publish"
+      raise OptionParser::MissingArgument, "--receipt" if options["receipt"].to_s.empty?
+      unless options["reference_file"].to_s.empty?
+        raise OptionParser::InvalidArgument, "--reference-file is valid only with replay"
+      end
+    else
+      raise OptionParser::MissingArgument, "--reference-file" if options["reference_file"].to_s.empty?
+      unless options["receipt"].to_s.empty?
+        raise OptionParser::InvalidArgument, "--receipt is valid only with publish"
+      end
+    end
+
+    configure_gh_timeout!
+    targets = JSON.parse(File.read(options.fetch("targets_json"), encoding: "UTF-8"))
+    result = if command == "publish"
+               publish(
+                 expected_batch_id: options.fetch("expected_batch_id"),
+                 targets:,
+                 receipt: File.read(options.fetch("receipt"), encoding: "UTF-8"),
+                 other_blockers: options.fetch("other_blockers")
+               )
+             else
+               reference_path = options.fetch("reference_file")
+               reference = reference_path == "-" ? $stdin.read : File.read(reference_path, encoding: "UTF-8")
+               replay_reference(
+                 expected_batch_id: options.fetch("expected_batch_id"),
+                 targets:,
+                 reference:,
+                 other_blockers: options.fetch("other_blockers")
+               )
+             end
+    puts JSON.pretty_generate(result)
+    0
+  rescue OptionParser::ParseError => e
+    warn "Error: #{e.message}"
+    64
+  rescue Error, ArgumentError, KeyError, SystemCallError, JSON::ParserError => e
+    external_blockers = normalized_external_blockers(options ? options["other_blockers"] : [])
+    blockers = deduped_blockers([failure_blocker(e)] + external_blockers)
+    result = {
+      "well_formed" => false,
+      "ready" => false,
+      "blockers" => blockers,
+      "final_status" => "Conversation status: Follow-ups remain — #{blockers.join('; ')}.",
+      "chat_reference" => nil,
+      "errors" => [e.message]
+    }
+    if e.is_a?(PostOutcomeUnknownError)
+      result["mutation_state"] = "comment-post-outcome-unknown"
+    elsif e.is_a?(PostReadbackError)
+      result["mutation_state"] = "comment-created-readback-unknown"
+      result["comment_id"] = e.comment_id
+    end
+    puts JSON.pretty_generate(result)
+    1
+  end
+
+  def usage
+    "Usage: completed-batch-audit-receipt <publish|replay> --expected-batch-id ID " \
+      "--targets-json PATH (--receipt PATH | --reference-file PATH|-) [--other-blocker TEXT ...]"
+  end
+end
+
+exit(CompletedBatchAuditReceipt.run(ARGV)) if $PROGRAM_NAME == __FILE__

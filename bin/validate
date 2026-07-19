@@ -95,6 +95,7 @@ ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ruby skills/pause/bin/pause-prompt-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
+ruby skills/post-merge-audit/bin/completed-batch-audit-receipt-test.rb
 bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
