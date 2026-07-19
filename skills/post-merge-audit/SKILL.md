@@ -44,6 +44,13 @@ profile (`claude-profile v0`):
 - Independent adversarial QA: Opus 4.8/xhigh
 - Routine deterministic QA: Opus 4.8/high
 
+When emitting a structured `review-findings` block, set `review_receipt.source`
+to `post-merge-audit` and follow `docs/review-finding-schema.md`.
+Populate optional receipt `provenance.model`, `provenance.effort`, and `provenance.usage` only from host-reported evidence for the actual review run.
+Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt text or model self-report as binding evidence.
+Copy usage counters without guessing or recalculation, and do not store raw
+prompt, response, or transcript data in the receipt.
+
 ## Scope Gate
 
 Start by resolving the exact audit range and, when auditing a named agent

@@ -249,3 +249,7 @@ When machine-readable findings are requested, emit the same receipt and conseque
 validation using `docs/review-finding-schema.md`. The additive receipt does not require another
 review engine for ordinary clean reviews and does not transfer commit, push, PR, or merge
 ownership to review tooling.
+Populate optional receipt `provenance.model`, `provenance.effort`, and `provenance.usage` only from host-reported evidence for the actual review run.
+Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt text or model self-report as binding evidence.
+Copy usage counters without guessing or recalculation, and do not store raw prompt, response, or
+transcript data in the receipt.

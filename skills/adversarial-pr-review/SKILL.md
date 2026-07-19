@@ -81,6 +81,11 @@ route reserved for routine deterministic QA.
    `contradicted` and use a rejection disposition rather than leaving the outcome implicit.
    Mark findings as `verified/current` only after checking the real code and current PR or head
    state. Stale, unverified, or unknown findings remain advisory.
+   Set `review_receipt.source` to `adversarial-pr-review` when emitting the receipt.
+   Populate optional receipt `provenance.model`, `provenance.effort`, and `provenance.usage` only from host-reported evidence for the actual review run.
+   Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt text or model self-report as binding evidence.
+   Copy usage counters without guessing or recalculation, and do not store raw prompt, response,
+   or transcript data in the receipt.
 
 ## Merge Gate
 
