@@ -8,6 +8,7 @@
 require "json"
 require "open3"
 require "optparse"
+require "timeout"
 require "uri"
 
 module PrMergeSubmit
@@ -22,6 +23,13 @@ module PrMergeSubmit
 
   def queue_controlled?(output)
     output.match?(QUEUE_CONTROL_PATTERN)
+  end
+
+  def queue_controlled_errors?(errors)
+    errors = Array(errors)
+    errors.any? && errors.all? do |error|
+      error.is_a?(Hash) && queue_controlled?(error["message"].to_s)
+    end
   end
 
   def parse_json!(raw, context)
@@ -262,8 +270,7 @@ module PrMergeSubmit
       direct_output = failure_output(direct_stdout, direct_stderr)
       unless direct_status.success?
         direct_errors = PrMergeSubmit.graphql_errors(direct_stdout)
-        return reconcile_direct_graphql_errors!(options, JSON.generate(direct_errors)) if direct_errors
-        return enqueue_after_queue_race(options, direct_output) if PrMergeSubmit.queue_controlled?(direct_output)
+        return reconcile_direct_graphql_errors!(options, direct_errors) if direct_errors
 
         return reconcile_mutation_outcome!(options, "direct merge submission", direct_output)
       end
@@ -277,8 +284,7 @@ module PrMergeSubmit
       end
       direct_errors = Array(direct_payload["errors"])
       if direct_errors.any?
-        direct_error = JSON.generate(direct_errors)
-        return reconcile_direct_graphql_errors!(options, direct_error)
+        return reconcile_direct_graphql_errors!(options, direct_errors)
       end
 
       merged_pull_request = direct_payload.dig("data", "mergePullRequest", "pullRequest")
@@ -441,7 +447,9 @@ module PrMergeSubmit
         return existing_queue_result(post_enqueue_pull_request, options, direct_output:)
       end
       if exact_merge?(post_enqueue_pull_request, options)
-        return queue_result(post_enqueue_pull_request, entry, options, direct_output:, reconciled: true)
+        return queue_result(
+          post_enqueue_pull_request, entry, options, direct_output:, reconciled: !direct_output.nil?
+        )
       end
 
       raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
@@ -473,13 +481,13 @@ module PrMergeSubmit
     def reconcile_mutation_outcome!(options, context, diagnostics, route: :direct, direct_output: nil)
       pull_request = fetch_pr_for_reconciliation!(options, "#{context} outcome")
       if exact_merge?(pull_request, options)
-        if route == :merge_queue
-          return queue_result(
-            pull_request, nil, options, direct_output:, reconciled: true, diagnostics:
-          )
-        end
-
-        return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true)
+        result = already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => route.to_s,
+          "diagnostics" => diagnostics
+        )
+        result["direct_attempt"] = direct_output.strip if direct_output
+        return result
       end
       if exact_queue?(pull_request, options)
         return existing_queue_result(pull_request, options, direct_output:, reconciled: true)
@@ -494,41 +502,41 @@ module PrMergeSubmit
       diagnostics = JSON.generate(errors)
       pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
       return existing_queue_result(pull_request, options, direct_output:, reconciled: true) if exact_queue?(pull_request, options)
+
       if exact_merge?(pull_request, options)
-        return queue_result(
-          pull_request,
-          nil,
-          options,
-          direct_output:,
-          reconciled: true,
-          diagnostics:
+        result = already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => "merge_queue",
+          "diagnostics" => diagnostics
         )
+        result["direct_attempt"] = direct_output.strip if direct_output
+        return result
       end
 
       reject_mismatched_queue!(pull_request, options)
-      raise Error, "merge-queue submission returned errors: #{diagnostics}"
+      raise UnknownOutcome, "merge-queue submission outcome could not be proven after GraphQL errors; " \
+                            "do not retry blindly: #{diagnostics}"
     end
 
-    def reconcile_direct_graphql_errors!(options, diagnostics)
+    def reconcile_direct_graphql_errors!(options, errors)
+      diagnostics = JSON.generate(errors)
       pull_request = fetch_pr_for_reconciliation!(options, "direct merge GraphQL error outcome")
       if exact_merge?(pull_request, options)
-        if PrMergeSubmit.queue_controlled?(diagnostics)
-          return already_merged_result(pull_request, options).merge(
-            "reconciled_after_failure" => true,
-            "diagnostics" => diagnostics
-          )
-        end
-
-        return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true)
+        return already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => "direct",
+          "diagnostics" => diagnostics
+        )
       end
       return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
 
       if pull_request["state"] == "OPEN" && pull_request["isInMergeQueue"] == false
-        if PrMergeSubmit.queue_controlled?(diagnostics)
+        if PrMergeSubmit.queue_controlled_errors?(errors)
           return enqueue_after_queue_race(options, diagnostics, pull_request:)
         end
 
-        raise Error, "direct merge submission returned errors: #{diagnostics}"
+        raise UnknownOutcome, "direct merge submission outcome could not be proven after GraphQL errors; " \
+                              "do not retry blindly: #{diagnostics}"
       end
 
       raise UnknownOutcome, "direct merge GraphQL error outcome could not be proven: #{diagnostics}"
@@ -569,10 +577,53 @@ module PrMergeSubmit
     end
 
     def run_gh(*args, host:)
-      stdout, stderr, status = Open3.capture3({ "GH_HOST" => host }, "gh", *args)
-      [stdout, stderr, status]
+      timeout_seconds = gh_timeout_seconds
+      timed_out = false
+      captured = Open3.popen3({ "GH_HOST" => host }, "gh", *args, pgroup: true) do |stdin, stdout, stderr, wait_thread|
+        stdin.close
+        stdout_reader = Thread.new { stdout.read }
+        stderr_reader = Thread.new { stderr.read }
+        status = begin
+          Timeout.timeout(timeout_seconds) { wait_thread.value }
+        rescue Timeout::Error
+          timed_out = true
+          terminate_process_group(wait_thread, timeout_seconds)
+          wait_thread.value
+        end
+        [stdout_reader.value, stderr_reader.value, status]
+      end
+      if timed_out
+        captured[1] = failure_output(
+          captured[1],
+          "gh request timed out after #{timeout_seconds} seconds and its process group was terminated"
+        )
+      end
+      captured
     rescue Errno::ENOENT
       raise Error, "gh is not installed or not on PATH"
+    end
+
+    def gh_timeout_seconds
+      value = Float(ENV.fetch("PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS", "60"))
+      raise ArgumentError unless value.positive? && value.finite?
+
+      value
+    rescue ArgumentError
+      raise Error, "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS must be a positive finite number"
+    end
+
+    def terminate_process_group(wait_thread, timeout_seconds)
+      signal_process_group("TERM", wait_thread.pid)
+      Timeout.timeout([timeout_seconds, 1].min) { wait_thread.join }
+    rescue Timeout::Error
+      signal_process_group("KILL", wait_thread.pid)
+      wait_thread.join
+    end
+
+    def signal_process_group(signal, pid)
+      Process.kill(signal, -pid)
+    rescue Errno::ESRCH
+      nil
     end
 
     def failure_output(stdout, stderr)
