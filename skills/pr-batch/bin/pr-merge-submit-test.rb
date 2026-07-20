@@ -206,6 +206,15 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes result.fetch(:stderr), "do not retry blindly"
   end
 
+  def test_non_object_direct_response_reconciles_an_exact_merge
+    result, = run_cli(mode: "direct_non_object_response_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal true, payload.fetch("reconciled_after_failure")
+  end
+
   def test_unresolved_direct_transport_failure_reports_unknown
     result, log = run_cli(mode: "direct_transport_unknown")
 
@@ -238,30 +247,38 @@ class PrMergeSubmitTest < Minitest::Test
     assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
   end
 
-  def test_enqueue_transport_failure_dequeues_a_retargeted_queue_entry
-    assert_retargeted_queue_entry_is_dequeued("enqueue_transport_base_race")
+  def test_non_object_enqueue_response_reconciles_an_exact_queue_entry
+    result, = run_cli(mode: "enqueue_non_object_response_queued")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "merge_queue", payload.fetch("submission")
+    assert_equal true, payload.fetch("reconciled_after_failure")
   end
 
-  def test_enqueue_graphql_errors_dequeue_a_retargeted_queue_entry
-    assert_retargeted_queue_entry_is_dequeued("enqueue_graphql_error_base_race")
+  def test_enqueue_transport_failure_does_not_dequeue_a_retargeted_entry
+    assert_retargeted_queue_entry_is_not_dequeued("enqueue_transport_base_race")
   end
 
-  def test_post_enqueue_base_mismatch_is_dequeued_before_failure
+  def test_enqueue_graphql_errors_do_not_dequeue_a_retargeted_entry
+    assert_retargeted_queue_entry_is_not_dequeued("enqueue_graphql_error_base_race")
+  end
+
+  def test_post_enqueue_base_mismatch_reports_unknown_without_dequeue
     result, log = run_cli(mode: "queue_base_race")
 
-    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
-    assert_includes result.fetch(:stderr), "queue entry was removed"
-    assert_includes log, "dequeuePullRequest"
-    assert_includes log, "pullRequestId=PR_42"
+    assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
+    refute_includes log, "dequeuePullRequest"
   end
 
-  def test_unproven_cleanup_after_base_mismatch_reports_unknown
-    result, log = run_cli(mode: "queue_cleanup_unknown")
+  def test_post_enqueue_replacement_entry_is_not_dequeued
+    result, log = run_cli(mode: "queue_entry_replaced")
 
     assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "queue cleanup could not be proven"
-    assert_includes log, "dequeuePullRequest"
+    assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
+    refute_includes log, "dequeuePullRequest"
   end
 
   def test_expected_head_is_required
@@ -292,13 +309,13 @@ class PrMergeSubmitTest < Minitest::Test
     refute payload.key?("merge_queue_entry")
   end
 
-  def assert_retargeted_queue_entry_is_dequeued(mode)
+  def assert_retargeted_queue_entry_is_not_dequeued(mode)
     result, log = run_cli(mode:)
 
-    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
-    assert_includes result.fetch(:stderr), "queue entry was removed"
-    assert_includes log, "dequeuePullRequest"
+    assert_includes result.fetch(:stderr), "cannot be safely dequeued"
+    refute_includes log, "dequeuePullRequest"
   end
 
   def run_cli(
@@ -378,26 +395,27 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_transport_queued", "enqueue_transport_merged",
                              "enqueue_graphql_error", "enqueue_graphql_error_merged",
                              "enqueue_transport_base_race", "enqueue_graphql_error_base_race",
-                             "queue_base_race", "queue_cleanup_unknown" then true
+                             "enqueue_non_object_response_queued", "queue_base_race",
+                             "queue_entry_replaced" then true
                         when "queue_race" then query_count.positive?
                         else false
                         end
         queued = case current_mode
                  when "already_queued" then true
-                 when "queue", "enqueue_transport_queued" then query_count.positive?
+                 when "queue", "enqueue_transport_queued", "enqueue_non_object_response_queued" then query_count.positive?
                  when "queue_race" then query_count > 1
                  when "queue_base_race", "enqueue_transport_base_race",
-                      "enqueue_graphql_error_base_race" then query_count == 1
-                 when "queue_cleanup_unknown" then query_count.positive?
+                      "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
                  else false
                  end
         merged_after_mutation = [
           "direct_transport_merged", "direct_invalid_json_merged", "direct_graphql_error_merged",
-          "direct_incomplete_response_merged", "enqueue_transport_merged", "enqueue_graphql_error_merged"
+          "direct_incomplete_response_merged", "direct_non_object_response_merged",
+          "enqueue_transport_merged", "enqueue_graphql_error_merged"
         ].include?(current_mode)
         merged = current_mode == "already_merged" || (merged_after_mutation && query_count.positive?)
         base_race_modes = [
-          "queue_base_race", "queue_cleanup_unknown", "enqueue_transport_base_race",
+          "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
         ]
         live_base = if base_race_modes.include?(current_mode) && query_count.positive?
@@ -407,7 +425,8 @@ class PrMergeSubmitTest < Minitest::Test
                     end
         queue_entry = if queued
                         {
-                          "id" => "MQE_1", "position" => 1, "state" => "QUEUED",
+                          "id" => current_mode == "queue_entry_replaced" ? "MQE_2" : "MQE_1",
+                          "position" => 1, "state" => "QUEUED",
                           "estimatedTimeToMerge" => 60
                         }
                       end
@@ -455,6 +474,8 @@ class PrMergeSubmitTest < Minitest::Test
           exit 1
         when "direct_incomplete_response_merged", "direct_incomplete_response_unknown"
           puts JSON.generate("data" => { "mergePullRequest" => { "pullRequest" => nil } })
+        when "direct_non_object_response_merged"
+          puts JSON.generate([])
         else
           puts #{JSON.generate(direct_payload).inspect}
         end
@@ -477,18 +498,11 @@ class PrMergeSubmitTest < Minitest::Test
           )
           exit 1
         end
-        puts #{JSON.generate(queue_payload).inspect}
-        exit 0
-      end
-
-      if ARGV.any? { |arg| arg.include?("dequeuePullRequest") }
-        if #{mode.inspect} == "queue_cleanup_unknown"
-          warn "connection reset after request"
-          exit 1
+        if #{mode.inspect} == "enqueue_non_object_response_queued"
+          puts JSON.generate(nil)
+          exit 0
         end
-        puts JSON.generate(
-          "data" => { "dequeuePullRequest" => { "mergeQueueEntry" => { "id" => "MQE_1" } } }
-        )
+        puts #{JSON.generate(queue_payload).inspect}
         exit 0
       end
 

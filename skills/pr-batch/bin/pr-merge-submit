@@ -25,7 +25,10 @@ module PrMergeSubmit
   end
 
   def parse_json!(raw, context)
-    JSON.parse(raw)
+    payload = JSON.parse(raw)
+    raise Error, "#{context} returned non-object JSON" unless payload.is_a?(Hash)
+
+    payload
   rescue JSON::ParserError => e
     raise Error, "#{context} returned invalid JSON: #{e.message}"
   end
@@ -79,14 +82,6 @@ module PrMergeSubmit
             state
             estimatedTimeToMerge
           }
-        }
-      }
-    GRAPHQL
-
-    DEQUEUE_MUTATION = <<~GRAPHQL
-      mutation($pullRequestId: ID!) {
-        dequeuePullRequest(input: { id: $pullRequestId }) {
-          mergeQueueEntry { id }
         }
       }
     GRAPHQL
@@ -438,7 +433,8 @@ module PrMergeSubmit
       begin
         validate_pr!(post_enqueue_pull_request, options, require_open: false)
       rescue Error => e
-        cleanup_queue_after_mismatch!(pull_request.fetch("id"), options, e.message)
+        raise UnknownOutcome, "#{e.message}; automatic queue cleanup is unsafe because GitHub cannot bind dequeue " \
+                              "to the entry returned by this submission"
       end
 
       return queue_result(post_enqueue_pull_request, entry, options, direct_output:) if exact_queue?(post_enqueue_pull_request, options)
@@ -487,7 +483,7 @@ module PrMergeSubmit
         return existing_queue_result(pull_request, options, direct_output:, reconciled: true)
       end
 
-      cleanup_mismatched_queue!(pull_request, options) if route == :merge_queue
+      reject_mismatched_queue!(pull_request, options) if route == :merge_queue
 
       raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
     end
@@ -507,7 +503,7 @@ module PrMergeSubmit
         )
       end
 
-      cleanup_mismatched_queue!(pull_request, options)
+      reject_mismatched_queue!(pull_request, options)
       raise Error, "merge-queue submission returned errors: #{diagnostics}"
     end
 
@@ -549,7 +545,7 @@ module PrMergeSubmit
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
     end
 
-    def cleanup_mismatched_queue!(pull_request, options)
+    def reject_mismatched_queue!(pull_request, options)
       return unless pull_request["isInMergeQueue"] == true && !exact_target?(pull_request, options)
 
       mismatch = begin
@@ -558,34 +554,9 @@ module PrMergeSubmit
       rescue Error => e
         e.message
       end
-      cleanup_queue_after_mismatch!(pull_request.fetch("id"), options, mismatch)
-    end
-
-    def cleanup_queue_after_mismatch!(pull_request_id, options, mismatch)
-      stdout, stderr, status = run_gh(
-        "api", "graphql",
-        "-H", GRAPHQL_FEATURE_HEADER,
-        "-f", "query=#{DEQUEUE_MUTATION}",
-        "-f", "pullRequestId=#{pull_request_id}",
-        host: options[:host]
-      )
-      cleanup_diagnostics = failure_output(stdout, stderr)
-      if status.success?
-        begin
-          payload = PrMergeSubmit.parse_json!(stdout, "dequeuePullRequest")
-          errors = Array(payload["errors"])
-          cleanup_diagnostics = JSON.generate(errors) if errors.any?
-        rescue Error => e
-          cleanup_diagnostics = e.message
-        end
-      end
-
-      after_cleanup = fetch_pr_for_reconciliation!(options, "queue cleanup verification")
-      if after_cleanup["isInMergeQueue"] == false && after_cleanup["merged"] != true
-        raise Error, "#{mismatch}; the queue entry was removed"
-      end
-
-      raise UnknownOutcome, "#{mismatch}; queue cleanup could not be proven: #{cleanup_diagnostics}"
+      entry_id = pull_request.dig("mergeQueueEntry", "id") || "UNKNOWN"
+      raise UnknownOutcome, "#{mismatch}; live queue entry #{entry_id} cannot be safely dequeued because GitHub " \
+                            "does not accept an expected queue-entry ID"
     end
 
     def run_gh(*args, host:)
