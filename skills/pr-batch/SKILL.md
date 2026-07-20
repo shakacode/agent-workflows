@@ -644,6 +644,12 @@ recorded (the `Agent Merge Confidence` block is the accelerated-RC auto-merge
 block, not the normal-handoff note) for the maintainer to merge. Do not merge
 without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
+When a merge is authorized, submit the exact head through the canonical
+`pr-merge-submit` helper described by `workflows/pr-processing.md`. It preserves
+the consumer's normal direct-merge method and subject, but falls back to
+GitHub's `enqueuePullRequest` only when GitHub explicitly says the base branch's
+strategy is controlled by a merge queue. Queue submission is not terminal:
+continue closeout until GitHub reports the PR merged or exposes a real blocker.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.

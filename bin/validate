@@ -104,6 +104,7 @@ AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contrac
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
+ruby skills/pr-batch/bin/pr-merge-submit-test.rb
 ruby skills/pr-batch/bin/stage-dependency-gate-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb

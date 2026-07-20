@@ -2352,6 +2352,40 @@ Also verify:
 
 Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow -> For All PRs: CI is passing, all current review comments and threads are addressed or explicitly triaged by tier, no major question or discussion item needs maintainer attention, and advisory AI systems such as CodeRabbit.ai are not special approval gates.
 
+### Exact-Head Merge Submission
+
+After the readiness gate passes and merge authority is explicit, use the same
+current head SHA that passed the gate for the final mutation. Resolve
+`PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned helper
+chain, then run:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/pr-merge-submit" <PR> \
+  --repo <OWNER/REPO> \
+  --expected-head <FULL_HEAD_SHA> \
+  --method <merge|rebase|squash> \
+  --subject "<consumer-required direct-merge subject>"
+```
+
+The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
+uses `enqueuePullRequest` for a queue-controlled base and invokes the consumer's
+ordinary direct merge method and subject with `--match-head-commit` otherwise.
+If queue enforcement changes between that read and the direct mutation, only
+GitHub's explicit queue-control error permits one refreshed exact-head enqueue
+retry. It never enables auto-merge, never retries an unrelated direct-merge
+error as a queue operation, and fails closed when the head moved, queue state is
+missing, or GitHub returns no queue entry.
+
+For a queued merge, GitHub's queue configuration controls the actual merge
+method and commit-title/body formatting. Before submission, verify the PR title
+and live repository queue settings satisfy any consumer squash-title policy;
+the direct-only `--subject` cannot override a queue-generated commit title.
+Treat `submission: merge_queue` as in-progress evidence, not as merged state.
+Continue bounded live checks until the PR is actually merged or a queue failure
+becomes a real blocker, then verify the landed commit and expected base branch.
+Do not bypass the queue with administrator privileges merely to preserve a
+direct-merge command shape.
+
 ### Accelerated RC Auto-Merge
 
 In `accelerated-rc` mode, affected areas such as package release, generators,
