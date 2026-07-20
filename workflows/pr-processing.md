@@ -2382,11 +2382,21 @@ auto-merge, never retries an unrelated direct-merge
 error as a queue operation, and fails closed when the head moved, queue state is
 missing, or GitHub returns no queue entry.
 
+Submission is restart-safe for an exact head already merged or already present
+in the queue. After an ambiguous mutation response, the helper re-reads the PR
+and reports success only when that exact expected head and base are proven
+merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
+reconcile live state rather than retrying blindly. If post-enqueue verification
+detects a retarget or head change, the helper attempts to dequeue the PR and
+fails normally only after a live read proves that the queue entry is gone;
+unproven cleanup also exits 2.
+
 GitHub's merge and enqueue mutations expose an atomic expected-head field but
 not an expected-base field. The helper therefore verifies the exact expected
 base immediately before and after its mutation and reports any retarget as a
 blocker; merge authority must not be exercised while another actor is
-retargeting the PR.
+retargeting the PR. Dequeue recovery reduces the impact of an enqueue race but
+cannot create an atomic base precondition that GitHub does not expose.
 
 For a queued merge, GitHub's queue configuration controls the actual merge
 method and commit-title/body formatting. Before submission, verify the PR title

@@ -12,6 +12,7 @@ require "uri"
 
 module PrMergeSubmit
   class Error < StandardError; end
+  class UnknownOutcome < Error; end
 
   QUEUE_CONTROL_PATTERN = /merge strategy for .+ is set by the merge queue/i
   GRAPHQL_FEATURE_HEADER = "GraphQL-Features: merge_queue"
@@ -40,7 +41,17 @@ module PrMergeSubmit
             state
             isDraft
             url
+            merged
+            mergedAt
+            mergeCommit { oid }
+            isInMergeQueue
             isMergeQueueEnabled
+            mergeQueueEntry {
+              id
+              position
+              state
+              estimatedTimeToMerge
+            }
           }
         }
       }
@@ -58,6 +69,14 @@ module PrMergeSubmit
             state
             estimatedTimeToMerge
           }
+        }
+      }
+    GRAPHQL
+
+    DEQUEUE_MUTATION = <<~GRAPHQL
+      mutation($pullRequestId: ID!) {
+        dequeuePullRequest(input: { id: $pullRequestId }) {
+          mergeQueueEntry { id }
         }
       }
     GRAPHQL
@@ -95,12 +114,18 @@ module PrMergeSubmit
 
       validate_options!(options)
       pull_request = fetch_pr(options)
-      validate_pr!(pull_request, options)
-
-      result = submit(pull_request, options)
+      result = if exact_merge?(pull_request, options)
+                 direct_result(pull_request, options, "").merge("already_complete" => true)
+               else
+                 validate_pr!(pull_request, options)
+                 submit(pull_request, options)
+               end
 
       puts JSON.pretty_generate(result)
       0
+    rescue UnknownOutcome => e
+      warn "UNKNOWN: #{e.message}"
+      2
     rescue Error => e
       warn "Error: #{e.message}"
       1
@@ -151,7 +176,9 @@ module PrMergeSubmit
         repository's normal direct merge mutation otherwise. If queue enforcement
         changes between the read and direct mutation, only GitHub's explicit
         queue-control error permits one exact-head enqueue retry. The helper never
-        enables auto-merge or treats an unrelated failure as queue evidence.
+        enables auto-merge or treats an unrelated failure as queue evidence. It
+        reconciles ambiguous mutation responses against live exact-head state;
+        exit 2 means the outcome remains UNKNOWN and must not be retried blindly.
       HELP
       0
     end
@@ -214,6 +241,11 @@ module PrMergeSubmit
     end
 
     def submit(pull_request, options)
+      return existing_queue_result(pull_request, options) if pull_request["isInMergeQueue"] == true
+      unless pull_request["isInMergeQueue"] == false && pull_request["mergeQueueEntry"].nil?
+        raise UnknownOutcome, "PR merge-queue membership is inconsistent or UNKNOWN"
+      end
+
       return enqueue_result(pull_request, options) if pull_request["isMergeQueueEnabled"] == true
       unless pull_request["isMergeQueueEnabled"] == false
         raise Error, "PR merge-queue state is missing or UNKNOWN"
@@ -224,12 +256,12 @@ module PrMergeSubmit
       )
       direct_output = failure_output(direct_stdout, direct_stderr)
       unless direct_status.success?
-        raise Error, "direct merge submission failed: #{direct_output}" unless PrMergeSubmit.queue_controlled?(direct_output)
+        return enqueue_after_queue_race(options, direct_output) if PrMergeSubmit.queue_controlled?(direct_output)
 
-        return enqueue_after_queue_race(options, direct_output)
+        return reconcile_mutation_outcome!(options, "direct merge submission", direct_output)
       end
 
-      direct_payload = PrMergeSubmit.parse_json!(direct_stdout, "mergePullRequest")
+      direct_payload = parse_mutation_json_or_reconcile!(direct_stdout, options, "direct merge", direct_stderr)
       direct_errors = Array(direct_payload["errors"])
       if direct_errors.any?
         direct_error = JSON.generate(direct_errors)
@@ -307,6 +339,15 @@ module PrMergeSubmit
       }.reject { |_key, value| value.nil? || value == "" }
     end
 
+    def existing_queue_result(pull_request, options, direct_output: nil, reconciled: false)
+      entry = pull_request["mergeQueueEntry"]
+      unless entry.is_a?(Hash) && entry["id"]
+        raise UnknownOutcome, "PR reports merge-queue membership without a complete queue entry"
+      end
+
+      queue_result(pull_request, entry, options, direct_output:, reconciled:)
+    end
+
     def enqueue_result(pull_request, options, direct_output: nil)
       stdout, stderr, status = run_gh(
         "api", "graphql",
@@ -316,17 +357,45 @@ module PrMergeSubmit
         "-f", "expectedHeadOid=#{options[:expected_head]}",
         host: options[:host]
       )
-      raise Error, "merge-queue submission failed: #{failure_output(stdout, stderr)}" unless status.success?
+      unless status.success?
+        return reconcile_mutation_outcome!(options, "merge-queue submission", failure_output(stdout, stderr))
+      end
 
-      payload = PrMergeSubmit.parse_json!(stdout, "enqueuePullRequest")
+      payload = parse_mutation_json_or_reconcile!(stdout, options, "merge-queue submission", stderr)
       errors = payload["errors"]
-      raise Error, "merge-queue submission returned errors: #{JSON.generate(errors)}" unless Array(errors).empty?
+      if Array(errors).any?
+        live_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
+        return existing_queue_result(live_pull_request, options, direct_output:, reconciled: true) if exact_queue?(live_pull_request, options)
+        if exact_merge?(live_pull_request, options)
+          return direct_result(live_pull_request, options, JSON.generate(errors))
+                 .merge("reconciled_after_failure" => true)
+        end
+
+        raise Error, "merge-queue submission returned errors: #{JSON.generate(errors)}"
+      end
 
       entry = payload.dig("data", "enqueuePullRequest", "mergeQueueEntry")
-      raise Error, "merge-queue submission returned no queue entry" unless entry.is_a?(Hash) && entry["id"]
+      unless entry.is_a?(Hash) && entry["id"]
+        return reconcile_mutation_outcome!(options, "merge-queue submission", "response contained no queue entry")
+      end
 
-      post_enqueue_pull_request = fetch_pr(options)
-      validate_pr!(post_enqueue_pull_request, options, require_open: false)
+      post_enqueue_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue post-submission verification")
+      begin
+        validate_pr!(post_enqueue_pull_request, options, require_open: false)
+      rescue Error => e
+        cleanup_queue_after_mismatch!(pull_request.fetch("id"), options, e.message)
+      end
+
+      return queue_result(post_enqueue_pull_request, entry, options, direct_output:) if exact_queue?(post_enqueue_pull_request, options)
+      if exact_merge?(post_enqueue_pull_request, options)
+        return queue_result(post_enqueue_pull_request, entry, options, direct_output:, reconciled: true)
+      end
+
+      raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
+    end
+
+    def queue_result(pull_request, entry, options, direct_output: nil, reconciled: false)
+      post_submission_state = pull_request["merged"] == true ? "MERGED" : pull_request["state"]
 
       result = {
         "pr" => options[:pr].to_i,
@@ -338,11 +407,74 @@ module PrMergeSubmit
         "submission" => "merge_queue",
         "direct_method_requested" => options[:method],
         "queue_method" => "repository_configured",
-        "post_submission_state" => post_enqueue_pull_request["state"],
+        "post_submission_state" => post_submission_state,
         "merge_queue_entry" => entry
       }
+      result["merge_commit"] = pull_request.dig("mergeCommit", "oid") if pull_request["merged"] == true
+      result["reconciled_after_failure"] = true if reconciled
       result["direct_attempt"] = direct_output.strip if direct_output
       result
+    end
+
+    def reconcile_mutation_outcome!(options, context, diagnostics)
+      pull_request = fetch_pr_for_reconciliation!(options, "#{context} outcome")
+      return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true) if exact_merge?(pull_request, options)
+      return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
+
+      raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
+    end
+
+    def parse_mutation_json_or_reconcile!(raw, options, context, diagnostics)
+      PrMergeSubmit.parse_json!(raw, context)
+    rescue Error => e
+      reconcile_mutation_outcome!(options, context, failure_output(e.message, diagnostics))
+    end
+
+    def fetch_pr_for_reconciliation!(options, context)
+      fetch_pr(options)
+    rescue Error => e
+      raise UnknownOutcome, "#{context} is UNKNOWN because live PR state could not be read: #{e.message}"
+    end
+
+    def exact_merge?(pull_request, options)
+      pull_request["merged"] == true && exact_target?(pull_request, options)
+    end
+
+    def exact_queue?(pull_request, options)
+      pull_request["isInMergeQueue"] == true && exact_target?(pull_request, options) &&
+        pull_request["mergeQueueEntry"].is_a?(Hash) && pull_request.dig("mergeQueueEntry", "id")
+    end
+
+    def exact_target?(pull_request, options)
+      pull_request["baseRefName"] == options[:expected_base] &&
+        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+    end
+
+    def cleanup_queue_after_mismatch!(pull_request_id, options, mismatch)
+      stdout, stderr, status = run_gh(
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
+        "-f", "query=#{DEQUEUE_MUTATION}",
+        "-f", "pullRequestId=#{pull_request_id}",
+        host: options[:host]
+      )
+      cleanup_diagnostics = failure_output(stdout, stderr)
+      if status.success?
+        begin
+          payload = PrMergeSubmit.parse_json!(stdout, "dequeuePullRequest")
+          errors = Array(payload["errors"])
+          cleanup_diagnostics = JSON.generate(errors) if errors.any?
+        rescue Error => e
+          cleanup_diagnostics = e.message
+        end
+      end
+
+      after_cleanup = fetch_pr_for_reconciliation!(options, "queue cleanup verification")
+      if after_cleanup["isInMergeQueue"] == false && after_cleanup["merged"] != true
+        raise Error, "#{mismatch}; the queue entry was removed"
+      end
+
+      raise UnknownOutcome, "#{mismatch}; queue cleanup could not be proven: #{cleanup_diagnostics}"
     end
 
     def run_gh(*args, host:)

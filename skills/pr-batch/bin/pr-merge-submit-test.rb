@@ -122,8 +122,77 @@ class PrMergeSubmitTest < Minitest::Test
   def test_queue_response_without_entry_fails_closed
     result, = run_cli(mode: "queue_missing_entry")
 
-    refute result.fetch(:status).success?
-    assert_includes result.fetch(:stderr), "merge-queue submission returned no queue entry"
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "outcome could not be proven"
+  end
+
+  def test_existing_exact_queue_entry_is_idempotent
+    result, log = run_cli(mode: "already_queued")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "merge_queue", payload.fetch("submission")
+    assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
+    refute_includes log, "enqueuePullRequest"
+    refute_includes log, "mergePullRequest"
+  end
+
+  def test_existing_exact_merge_is_idempotent
+    result, log = run_cli(mode: "already_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal true, payload.fetch("already_complete")
+    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_direct_transport_failure_reconciles_an_exact_merge
+    result, log = run_cli(mode: "direct_transport_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal true, payload.fetch("reconciled_after_failure")
+    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_unresolved_direct_transport_failure_reports_unknown
+    result, log = run_cli(mode: "direct_transport_unknown")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+    assert_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_enqueue_transport_failure_reconciles_an_exact_queue_entry
+    result, = run_cli(mode: "enqueue_transport_queued")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "merge_queue", payload.fetch("submission")
+    assert_equal true, payload.fetch("reconciled_after_failure")
+  end
+
+  def test_post_enqueue_base_mismatch_is_dequeued_before_failure
+    result, log = run_cli(mode: "queue_base_race")
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "PR base moved"
+    assert_includes result.fetch(:stderr), "queue entry was removed"
+    assert_includes log, "dequeuePullRequest"
+    assert_includes log, "pullRequestId=PR_42"
+  end
+
+  def test_unproven_cleanup_after_base_mismatch_reports_unknown
+    result, log = run_cli(mode: "queue_cleanup_unknown")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "queue cleanup could not be proven"
+    assert_includes log, "dequeuePullRequest"
   end
 
   def test_expected_head_is_required
@@ -215,21 +284,49 @@ class PrMergeSubmitTest < Minitest::Test
         query_count_path = ENV.fetch("GH_LOG") + ".queries"
         query_count = File.exist?(query_count_path) ? File.read(query_count_path).to_i : 0
         File.write(query_count_path, (query_count + 1).to_s)
-        queue_enabled = case #{mode.inspect}
-                        when "queue", "queue_missing_entry" then true
+        current_mode = #{mode.inspect}
+        queue_enabled = case current_mode
+                        when "queue", "queue_missing_entry", "already_queued",
+                             "enqueue_transport_queued", "queue_base_race", "queue_cleanup_unknown" then true
                         when "queue_race" then query_count.positive?
                         else false
                         end
+        queued = case current_mode
+                 when "already_queued" then true
+                 when "queue", "enqueue_transport_queued" then query_count.positive?
+                 when "queue_race" then query_count > 1
+                 when "queue_base_race" then query_count == 1
+                 when "queue_cleanup_unknown" then query_count.positive?
+                 else false
+                 end
+        merged = current_mode == "already_merged" ||
+                 (current_mode == "direct_transport_merged" && query_count.positive?)
+        live_base = if ["queue_base_race", "queue_cleanup_unknown"].include?(current_mode) && query_count.positive?
+                      "release"
+                    else
+                      #{base.inspect}
+                    end
+        queue_entry = if queued
+                        {
+                          "id" => "MQE_1", "position" => 1, "state" => "QUEUED",
+                          "estimatedTimeToMerge" => 60
+                        }
+                      end
         puts JSON.generate(
           "data" => {
             "repository" => {
               "pullRequest" => {
                 "id" => "PR_42",
                 "headRefOid" => #{head.inspect},
-                "baseRefName" => #{base.inspect},
-                "state" => "OPEN",
+                "baseRefName" => live_base,
+                "state" => merged ? "MERGED" : "OPEN",
                 "isDraft" => false,
                 "url" => "https://#{url_host}/owner/repo/pull/42",
+                "merged" => merged,
+                "mergedAt" => merged ? "2026-07-20T15:00:00Z" : nil,
+                "mergeCommit" => merged ? { "oid" => "COMMIT_1" } : nil,
+                "isInMergeQueue" => queued,
+                "mergeQueueEntry" => queue_entry,
                 "isMergeQueueEnabled" => queue_enabled
               }
             }
@@ -244,6 +341,9 @@ class PrMergeSubmitTest < Minitest::Test
           puts JSON.generate("errors" => [{ "message" => "The merge strategy for main is set by the merge queue" }])
         when "direct_failure"
           puts JSON.generate("errors" => [{ "message" => "permission denied" }])
+        when "direct_transport_merged", "direct_transport_unknown"
+          warn "connection reset after request"
+          exit 1
         else
           puts #{JSON.generate(direct_payload).inspect}
         end
@@ -251,7 +351,22 @@ class PrMergeSubmitTest < Minitest::Test
       end
 
       if ARGV.any? { |arg| arg.include?("enqueuePullRequest") }
+        if #{mode.inspect} == "enqueue_transport_queued"
+          warn "connection reset after request"
+          exit 1
+        end
         puts #{JSON.generate(queue_payload).inspect}
+        exit 0
+      end
+
+      if ARGV.any? { |arg| arg.include?("dequeuePullRequest") }
+        if #{mode.inspect} == "queue_cleanup_unknown"
+          warn "connection reset after request"
+          exit 1
+        end
+        puts JSON.generate(
+          "data" => { "dequeuePullRequest" => { "mergeQueueEntry" => { "id" => "MQE_1" } } }
+        )
         exit 0
       end
 
