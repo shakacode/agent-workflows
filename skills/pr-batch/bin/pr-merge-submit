@@ -30,6 +30,16 @@ module PrMergeSubmit
     raise Error, "#{context} returned invalid JSON: #{e.message}"
   end
 
+  def graphql_errors(raw)
+    payload = JSON.parse(raw)
+    return unless payload.is_a?(Hash)
+
+    errors = Array(payload["errors"])
+    errors unless errors.empty?
+  rescue JSON::ParserError
+    nil
+  end
+
   class Runner
     PR_QUERY = <<~GRAPHQL
       query($owner: String!, $name: String!, $number: Int!) {
@@ -115,7 +125,7 @@ module PrMergeSubmit
       validate_options!(options)
       pull_request = fetch_pr(options)
       result = if exact_merge?(pull_request, options)
-                 direct_result(pull_request, options, "").merge("already_complete" => true)
+                 already_merged_result(pull_request, options)
                else
                  validate_pr!(pull_request, options)
                  submit(pull_request, options)
@@ -256,6 +266,8 @@ module PrMergeSubmit
       )
       direct_output = failure_output(direct_stdout, direct_stderr)
       unless direct_status.success?
+        direct_errors = PrMergeSubmit.graphql_errors(direct_stdout)
+        return reconcile_direct_graphql_errors!(options, JSON.generate(direct_errors)) if direct_errors
         return enqueue_after_queue_race(options, direct_output) if PrMergeSubmit.queue_controlled?(direct_output)
 
         return reconcile_mutation_outcome!(options, "direct merge submission", direct_output)
@@ -343,6 +355,21 @@ module PrMergeSubmit
       }.reject { |_key, value| value.nil? || value == "" }
     end
 
+    def already_merged_result(pull_request, options)
+      {
+        "pr" => options[:pr].to_i,
+        "repo" => options[:repo],
+        "url" => pull_request["url"],
+        "expected_head" => options[:expected_head],
+        "expected_base" => options[:expected_base],
+        "submission" => "already_merged",
+        "merge_provenance" => "UNKNOWN",
+        "merged_at" => pull_request["mergedAt"],
+        "merge_commit" => pull_request.dig("mergeCommit", "oid"),
+        "already_complete" => true
+      }.reject { |_key, value| value.nil? || value == "" }
+    end
+
     def existing_queue_result(pull_request, options, direct_output: nil, reconciled: false)
       entry = pull_request["mergeQueueEntry"]
       unless entry.is_a?(Hash) && entry["id"]
@@ -362,6 +389,9 @@ module PrMergeSubmit
         host: options[:host]
       )
       unless status.success?
+        errors = PrMergeSubmit.graphql_errors(stdout)
+        return reconcile_enqueue_graphql_errors!(options, errors, direct_output:) if errors
+
         return reconcile_mutation_outcome!(
           options,
           "merge-queue submission",
@@ -384,20 +414,7 @@ module PrMergeSubmit
       end
       errors = payload["errors"]
       if Array(errors).any?
-        live_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
-        return existing_queue_result(live_pull_request, options, direct_output:, reconciled: true) if exact_queue?(live_pull_request, options)
-        if exact_merge?(live_pull_request, options)
-          return queue_result(
-            live_pull_request,
-            nil,
-            options,
-            direct_output:,
-            reconciled: true,
-            diagnostics: JSON.generate(errors)
-          )
-        end
-
-        raise Error, "merge-queue submission returned errors: #{JSON.generate(errors)}"
+        return reconcile_enqueue_graphql_errors!(options, errors, direct_output:)
       end
 
       entry = payload.dig("data", "enqueuePullRequest", "mergeQueueEntry")
@@ -460,9 +477,32 @@ module PrMergeSubmit
 
         return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true)
       end
-      return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
+      if exact_queue?(pull_request, options)
+        return existing_queue_result(pull_request, options, direct_output:, reconciled: true)
+      end
+
+      cleanup_mismatched_queue!(pull_request, options) if route == :merge_queue
 
       raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
+    end
+
+    def reconcile_enqueue_graphql_errors!(options, errors, direct_output: nil)
+      diagnostics = JSON.generate(errors)
+      pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
+      return existing_queue_result(pull_request, options, direct_output:, reconciled: true) if exact_queue?(pull_request, options)
+      if exact_merge?(pull_request, options)
+        return queue_result(
+          pull_request,
+          nil,
+          options,
+          direct_output:,
+          reconciled: true,
+          diagnostics:
+        )
+      end
+
+      cleanup_mismatched_queue!(pull_request, options)
+      raise Error, "merge-queue submission returned errors: #{diagnostics}"
     end
 
     def reconcile_direct_graphql_errors!(options, diagnostics)
@@ -501,6 +541,18 @@ module PrMergeSubmit
     def exact_target?(pull_request, options)
       pull_request["baseRefName"] == options[:expected_base] &&
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+    end
+
+    def cleanup_mismatched_queue!(pull_request, options)
+      return unless pull_request["isInMergeQueue"] == true && !exact_target?(pull_request, options)
+
+      mismatch = begin
+        validate_pr!(pull_request, options, require_open: false)
+        "queued PR no longer matches the authorized target"
+      rescue Error => e
+        e.message
+      end
+      cleanup_queue_after_mismatch!(pull_request.fetch("id"), options, mismatch)
     end
 
     def cleanup_queue_after_mismatch!(pull_request_id, options, mismatch)

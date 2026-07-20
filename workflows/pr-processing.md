@@ -2403,6 +2403,9 @@ method and commit-title/body formatting. Before submission, verify the PR title
 and live repository queue settings satisfy any consumer squash-title policy;
 the direct-only `--subject` cannot override a queue-generated commit title.
 Treat `submission: merge_queue` as in-progress evidence, not as merged state.
+An idempotent rerun that finds the exact reviewed head and base already merged
+reports `submission: already_merged` with `merge_provenance: UNKNOWN`; it must
+not claim a direct or queued method that the rerun cannot establish.
 Continue bounded live checks until the PR is actually merged or a queue failure
 becomes a real blocker, then verify the landed commit and expected base branch.
 Do not bypass the queue with administrator privileges merely to preserve a

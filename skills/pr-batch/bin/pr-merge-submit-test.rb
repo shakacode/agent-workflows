@@ -66,9 +66,17 @@ class PrMergeSubmitTest < Minitest::Test
   def test_unrelated_direct_failure_does_not_enqueue
     result, log = run_cli(mode: "direct_failure")
 
-    refute result.fetch(:status).success?
+    assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "direct merge submission returned errors"
     refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_enqueue_graphql_failure_is_not_reported_as_unknown
+    result, log = run_cli(mode: "enqueue_graphql_error")
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "merge-queue submission returned errors"
+    assert_includes log, "enqueuePullRequest"
   end
 
   def test_head_movement_stops_before_any_merge_mutation
@@ -142,9 +150,11 @@ class PrMergeSubmitTest < Minitest::Test
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "direct", payload.fetch("submission")
+    assert_equal "already_merged", payload.fetch("submission")
+    assert_equal "UNKNOWN", payload.fetch("merge_provenance")
     assert_equal true, payload.fetch("already_complete")
     assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    refute payload.key?("method")
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
   end
@@ -211,6 +221,14 @@ class PrMergeSubmitTest < Minitest::Test
     assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
   end
 
+  def test_enqueue_transport_failure_dequeues_a_retargeted_queue_entry
+    assert_retargeted_queue_entry_is_dequeued("enqueue_transport_base_race")
+  end
+
+  def test_enqueue_graphql_errors_dequeue_a_retargeted_queue_entry
+    assert_retargeted_queue_entry_is_dequeued("enqueue_graphql_error_base_race")
+  end
+
   def test_post_enqueue_base_mismatch_is_dequeued_before_failure
     result, log = run_cli(mode: "queue_base_race")
 
@@ -255,6 +273,15 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal true, payload.fetch("reconciled_after_failure")
     refute payload.key?("method")
     refute payload.key?("merge_queue_entry")
+  end
+
+  def assert_retargeted_queue_entry_is_dequeued(mode)
+    result, log = run_cli(mode:)
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "PR base moved"
+    assert_includes result.fetch(:stderr), "queue entry was removed"
+    assert_includes log, "dequeuePullRequest"
   end
 
   def run_cli(
@@ -332,7 +359,9 @@ class PrMergeSubmitTest < Minitest::Test
         queue_enabled = case current_mode
                         when "queue", "queue_missing_entry", "already_queued",
                              "enqueue_transport_queued", "enqueue_transport_merged",
-                             "enqueue_graphql_error_merged", "queue_base_race", "queue_cleanup_unknown" then true
+                             "enqueue_graphql_error", "enqueue_graphql_error_merged",
+                             "enqueue_transport_base_race", "enqueue_graphql_error_base_race",
+                             "queue_base_race", "queue_cleanup_unknown" then true
                         when "queue_race" then query_count.positive?
                         else false
                         end
@@ -340,7 +369,8 @@ class PrMergeSubmitTest < Minitest::Test
                  when "already_queued" then true
                  when "queue", "enqueue_transport_queued" then query_count.positive?
                  when "queue_race" then query_count > 1
-                 when "queue_base_race" then query_count == 1
+                 when "queue_base_race", "enqueue_transport_base_race",
+                      "enqueue_graphql_error_base_race" then query_count == 1
                  when "queue_cleanup_unknown" then query_count.positive?
                  else false
                  end
@@ -349,7 +379,11 @@ class PrMergeSubmitTest < Minitest::Test
           "enqueue_transport_merged", "enqueue_graphql_error_merged"
         ].include?(current_mode)
         merged = current_mode == "already_merged" || (merged_after_mutation && query_count.positive?)
-        live_base = if ["queue_base_race", "queue_cleanup_unknown"].include?(current_mode) && query_count.positive?
+        base_race_modes = [
+          "queue_base_race", "queue_cleanup_unknown", "enqueue_transport_base_race",
+          "enqueue_graphql_error_base_race"
+        ]
+        live_base = if base_race_modes.include?(current_mode) && query_count.positive?
                       "release"
                     else
                       #{base.inspect}
@@ -387,8 +421,10 @@ class PrMergeSubmitTest < Minitest::Test
         case #{mode.inspect}
         when "queue_race"
           puts JSON.generate("errors" => [{ "message" => "The merge strategy for main is set by the merge queue" }])
+          exit 1
         when "direct_failure"
           puts JSON.generate("errors" => [{ "message" => "permission denied" }])
+          exit 1
         when "direct_transport_merged", "direct_transport_unknown"
           warn "connection reset after request"
           exit 1
@@ -399,6 +435,7 @@ class PrMergeSubmitTest < Minitest::Test
             "data" => { "mergePullRequest" => { "pullRequest" => nil } },
             "errors" => [{ "message" => "nested field resolution failed" }]
           )
+          exit 1
         else
           puts #{JSON.generate(direct_payload).inspect}
         end
@@ -406,16 +443,20 @@ class PrMergeSubmitTest < Minitest::Test
       end
 
       if ARGV.any? { |arg| arg.include?("enqueuePullRequest") }
-        if ["enqueue_transport_queued", "enqueue_transport_merged"].include?(#{mode.inspect})
+        if [
+          "enqueue_transport_queued", "enqueue_transport_merged", "enqueue_transport_base_race"
+        ].include?(#{mode.inspect})
           warn "connection reset after request"
           exit 1
         end
-        if #{mode.inspect} == "enqueue_graphql_error_merged"
+        if [
+          "enqueue_graphql_error", "enqueue_graphql_error_merged", "enqueue_graphql_error_base_race"
+        ].include?(#{mode.inspect})
           puts JSON.generate(
             "data" => { "enqueuePullRequest" => { "mergeQueueEntry" => nil } },
             "errors" => [{ "message" => "nested field resolution failed" }]
           )
-          exit 0
+          exit 1
         end
         puts #{JSON.generate(queue_payload).inspect}
         exit 0
