@@ -362,14 +362,24 @@ module PrMergeSubmit
         host: options[:host]
       )
       unless status.success?
-        return reconcile_mutation_outcome!(options, "merge-queue submission", failure_output(stdout, stderr))
+        return reconcile_mutation_outcome!(
+          options,
+          "merge-queue submission",
+          failure_output(stdout, stderr),
+          route: :merge_queue,
+          direct_output:
+        )
       end
 
       payload = begin
         PrMergeSubmit.parse_json!(stdout, "merge-queue submission")
       rescue Error => e
         return reconcile_mutation_outcome!(
-          options, "merge-queue submission", failure_output(e.message, stderr)
+          options,
+          "merge-queue submission",
+          failure_output(e.message, stderr),
+          route: :merge_queue,
+          direct_output:
         )
       end
       errors = payload["errors"]
@@ -377,8 +387,14 @@ module PrMergeSubmit
         live_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
         return existing_queue_result(live_pull_request, options, direct_output:, reconciled: true) if exact_queue?(live_pull_request, options)
         if exact_merge?(live_pull_request, options)
-          return direct_result(live_pull_request, options, JSON.generate(errors))
-                 .merge("reconciled_after_failure" => true)
+          return queue_result(
+            live_pull_request,
+            nil,
+            options,
+            direct_output:,
+            reconciled: true,
+            diagnostics: JSON.generate(errors)
+          )
         end
 
         raise Error, "merge-queue submission returned errors: #{JSON.generate(errors)}"
@@ -386,7 +402,13 @@ module PrMergeSubmit
 
       entry = payload.dig("data", "enqueuePullRequest", "mergeQueueEntry")
       unless entry.is_a?(Hash) && entry["id"]
-        return reconcile_mutation_outcome!(options, "merge-queue submission", "response contained no queue entry")
+        return reconcile_mutation_outcome!(
+          options,
+          "merge-queue submission",
+          "response contained no queue entry",
+          route: :merge_queue,
+          direct_output:
+        )
       end
 
       post_enqueue_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue post-submission verification")
@@ -404,7 +426,7 @@ module PrMergeSubmit
       raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
     end
 
-    def queue_result(pull_request, entry, options, direct_output: nil, reconciled: false)
+    def queue_result(pull_request, entry, options, direct_output: nil, reconciled: false, diagnostics: nil)
       post_submission_state = pull_request["merged"] == true ? "MERGED" : pull_request["state"]
 
       result = {
@@ -417,18 +439,27 @@ module PrMergeSubmit
         "submission" => "merge_queue",
         "direct_method_requested" => options[:method],
         "queue_method" => "repository_configured",
-        "post_submission_state" => post_submission_state,
-        "merge_queue_entry" => entry
+        "post_submission_state" => post_submission_state
       }
+      result["merge_queue_entry"] = entry if entry
       result["merge_commit"] = pull_request.dig("mergeCommit", "oid") if pull_request["merged"] == true
       result["reconciled_after_failure"] = true if reconciled
       result["direct_attempt"] = direct_output.strip if direct_output
+      result["diagnostics"] = diagnostics.strip if diagnostics && !diagnostics.strip.empty?
       result
     end
 
-    def reconcile_mutation_outcome!(options, context, diagnostics)
+    def reconcile_mutation_outcome!(options, context, diagnostics, route: :direct, direct_output: nil)
       pull_request = fetch_pr_for_reconciliation!(options, "#{context} outcome")
-      return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true) if exact_merge?(pull_request, options)
+      if exact_merge?(pull_request, options)
+        if route == :merge_queue
+          return queue_result(
+            pull_request, nil, options, direct_output:, reconciled: true, diagnostics:
+          )
+        end
+
+        return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true)
+      end
       return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
 
       raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
