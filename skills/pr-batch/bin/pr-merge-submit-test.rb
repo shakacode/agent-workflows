@@ -189,6 +189,23 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "COMMIT_1", payload.fetch("merge_commit")
   end
 
+  def test_incomplete_direct_response_reconciles_an_exact_merge
+    result, = run_cli(mode: "direct_incomplete_response_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal true, payload.fetch("reconciled_after_failure")
+    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+  end
+
+  def test_incomplete_direct_response_with_unchanged_live_state_reports_unknown
+    result, = run_cli(mode: "direct_incomplete_response_unknown")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+  end
+
   def test_unresolved_direct_transport_failure_reports_unknown
     result, log = run_cli(mode: "direct_transport_unknown")
 
@@ -376,7 +393,7 @@ class PrMergeSubmitTest < Minitest::Test
                  end
         merged_after_mutation = [
           "direct_transport_merged", "direct_invalid_json_merged", "direct_graphql_error_merged",
-          "enqueue_transport_merged", "enqueue_graphql_error_merged"
+          "direct_incomplete_response_merged", "enqueue_transport_merged", "enqueue_graphql_error_merged"
         ].include?(current_mode)
         merged = current_mode == "already_merged" || (merged_after_mutation && query_count.positive?)
         base_race_modes = [
@@ -436,6 +453,8 @@ class PrMergeSubmitTest < Minitest::Test
             "errors" => [{ "message" => "nested field resolution failed" }]
           )
           exit 1
+        when "direct_incomplete_response_merged", "direct_incomplete_response_unknown"
+          puts JSON.generate("data" => { "mergePullRequest" => { "pullRequest" => nil } })
         else
           puts #{JSON.generate(direct_payload).inspect}
         end

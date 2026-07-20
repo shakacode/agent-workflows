@@ -287,7 +287,13 @@ module PrMergeSubmit
       end
 
       merged_pull_request = direct_payload.dig("data", "mergePullRequest", "pullRequest")
-      validate_merged_pr!(merged_pull_request, options)
+      begin
+        validate_merged_pr!(merged_pull_request, options)
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge response validation", failure_output(e.message, direct_stderr)
+        )
+      end
       direct_result(merged_pull_request, options, direct_stderr)
     end
 
