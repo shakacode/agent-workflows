@@ -261,13 +261,17 @@ module PrMergeSubmit
         return reconcile_mutation_outcome!(options, "direct merge submission", direct_output)
       end
 
-      direct_payload = parse_mutation_json_or_reconcile!(direct_stdout, options, "direct merge", direct_stderr)
+      direct_payload = begin
+        PrMergeSubmit.parse_json!(direct_stdout, "direct merge")
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge", failure_output(e.message, direct_stderr)
+        )
+      end
       direct_errors = Array(direct_payload["errors"])
       if direct_errors.any?
         direct_error = JSON.generate(direct_errors)
-        raise Error, "direct merge submission returned errors: #{direct_error}" unless PrMergeSubmit.queue_controlled?(direct_error)
-
-        return enqueue_after_queue_race(options, direct_error)
+        return reconcile_direct_graphql_errors!(options, direct_error)
       end
 
       merged_pull_request = direct_payload.dig("data", "mergePullRequest", "pullRequest")
@@ -275,8 +279,8 @@ module PrMergeSubmit
       direct_result(merged_pull_request, options, direct_stderr)
     end
 
-    def enqueue_after_queue_race(options, direct_output)
-      refreshed_pull_request = fetch_pr(options)
+    def enqueue_after_queue_race(options, direct_output, pull_request: nil)
+      refreshed_pull_request = pull_request || fetch_pr(options)
       validate_pr!(refreshed_pull_request, options)
       unless refreshed_pull_request["isMergeQueueEnabled"] == true
         raise Error, "GitHub reported queue control but the refreshed PR queue state is not enabled"
@@ -361,7 +365,13 @@ module PrMergeSubmit
         return reconcile_mutation_outcome!(options, "merge-queue submission", failure_output(stdout, stderr))
       end
 
-      payload = parse_mutation_json_or_reconcile!(stdout, options, "merge-queue submission", stderr)
+      payload = begin
+        PrMergeSubmit.parse_json!(stdout, "merge-queue submission")
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "merge-queue submission", failure_output(e.message, stderr)
+        )
+      end
       errors = payload["errors"]
       if Array(errors).any?
         live_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
@@ -424,10 +434,22 @@ module PrMergeSubmit
       raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
     end
 
-    def parse_mutation_json_or_reconcile!(raw, options, context, diagnostics)
-      PrMergeSubmit.parse_json!(raw, context)
-    rescue Error => e
-      reconcile_mutation_outcome!(options, context, failure_output(e.message, diagnostics))
+    def reconcile_direct_graphql_errors!(options, diagnostics)
+      pull_request = fetch_pr_for_reconciliation!(options, "direct merge GraphQL error outcome")
+      if exact_merge?(pull_request, options)
+        return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true)
+      end
+      return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
+
+      if pull_request["state"] == "OPEN" && pull_request["isInMergeQueue"] == false
+        if PrMergeSubmit.queue_controlled?(diagnostics)
+          return enqueue_after_queue_race(options, diagnostics, pull_request:)
+        end
+
+        raise Error, "direct merge submission returned errors: #{diagnostics}"
+      end
+
+      raise UnknownOutcome, "direct merge GraphQL error outcome could not be proven: #{diagnostics}"
     end
 
     def fetch_pr_for_reconciliation!(options, context)

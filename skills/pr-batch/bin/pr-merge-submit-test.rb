@@ -159,6 +159,26 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "mergePullRequest"
   end
 
+  def test_invalid_direct_response_reconciles_an_exact_merge
+    result, = run_cli(mode: "direct_invalid_json_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal true, payload.fetch("reconciled_after_failure")
+    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+  end
+
+  def test_direct_graphql_errors_reconcile_an_exact_merge
+    result, = run_cli(mode: "direct_graphql_error_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal true, payload.fetch("reconciled_after_failure")
+    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+  end
+
   def test_unresolved_direct_transport_failure_reports_unknown
     result, log = run_cli(mode: "direct_transport_unknown")
 
@@ -299,8 +319,10 @@ class PrMergeSubmitTest < Minitest::Test
                  when "queue_cleanup_unknown" then query_count.positive?
                  else false
                  end
-        merged = current_mode == "already_merged" ||
-                 (current_mode == "direct_transport_merged" && query_count.positive?)
+        merged_after_mutation = [
+          "direct_transport_merged", "direct_invalid_json_merged", "direct_graphql_error_merged"
+        ].include?(current_mode)
+        merged = current_mode == "already_merged" || (merged_after_mutation && query_count.positive?)
         live_base = if ["queue_base_race", "queue_cleanup_unknown"].include?(current_mode) && query_count.positive?
                       "release"
                     else
@@ -344,6 +366,13 @@ class PrMergeSubmitTest < Minitest::Test
         when "direct_transport_merged", "direct_transport_unknown"
           warn "connection reset after request"
           exit 1
+        when "direct_invalid_json_merged"
+          puts "truncated json"
+        when "direct_graphql_error_merged"
+          puts JSON.generate(
+            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
+            "errors" => [{ "message" => "nested field resolution failed" }]
+          )
         else
           puts #{JSON.generate(direct_payload).inspect}
         end
