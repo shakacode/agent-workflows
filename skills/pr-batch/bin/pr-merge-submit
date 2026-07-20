@@ -14,6 +14,7 @@ module PrMergeSubmit
   class Error < StandardError; end
 
   QUEUE_CONTROL_PATTERN = /merge strategy for .+ is set by the merge queue/i
+  GRAPHQL_FEATURE_HEADER = "GraphQL-Features: merge_queue"
   METHODS = %w[merge rebase squash].freeze
 
   module_function
@@ -190,11 +191,13 @@ module PrMergeSubmit
     def fetch_pr(options)
       owner, name = options[:repo].split("/", 2)
       stdout, stderr, status = run_gh(
-        "api", "--hostname", options[:host], "graphql",
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
         "-f", "query=#{PR_QUERY}",
-        "-F", "owner=#{owner}",
-        "-F", "name=#{name}",
-        "-F", "number=#{options[:pr]}"
+        "-f", "owner=#{owner}",
+        "-f", "name=#{name}",
+        "-F", "number=#{options[:pr]}",
+        host: options[:host]
       )
       raise Error, "could not fetch PR metadata: #{failure_output(stdout, stderr)}" unless status.success?
 
@@ -216,7 +219,9 @@ module PrMergeSubmit
         raise Error, "PR merge-queue state is missing or UNKNOWN"
       end
 
-      direct_stdout, direct_stderr, direct_status = run_gh(*direct_merge_args(pull_request, options))
+      direct_stdout, direct_stderr, direct_status = run_gh(
+        *direct_merge_args(pull_request, options), host: options[:host]
+      )
       direct_output = failure_output(direct_stdout, direct_stderr)
       unless direct_status.success?
         raise Error, "direct merge submission failed: #{direct_output}" unless PrMergeSubmit.queue_controlled?(direct_output)
@@ -262,10 +267,11 @@ module PrMergeSubmit
 
     def direct_merge_args(pull_request, options)
       args = [
-        "api", "--hostname", options[:host], "graphql",
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
         "-f", "query=#{MERGE_MUTATION}",
-        "-F", "pullRequestId=#{pull_request.fetch('id')}",
-        "-F", "expectedHeadOid=#{options[:expected_head]}",
+        "-f", "pullRequestId=#{pull_request.fetch('id')}",
+        "-f", "expectedHeadOid=#{options[:expected_head]}",
         "-f", "mergeMethod=#{options[:method].upcase}"
       ]
       args.concat(["-f", "commitHeadline=#{options[:subject]}"]) if options[:subject]
@@ -303,10 +309,12 @@ module PrMergeSubmit
 
     def enqueue_result(pull_request, options, direct_output: nil)
       stdout, stderr, status = run_gh(
-        "api", "--hostname", options[:host], "graphql",
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
         "-f", "query=#{ENQUEUE_MUTATION}",
-        "-F", "pullRequestId=#{pull_request.fetch('id')}",
-        "-F", "expectedHeadOid=#{options[:expected_head]}"
+        "-f", "pullRequestId=#{pull_request.fetch('id')}",
+        "-f", "expectedHeadOid=#{options[:expected_head]}",
+        host: options[:host]
       )
       raise Error, "merge-queue submission failed: #{failure_output(stdout, stderr)}" unless status.success?
 
@@ -337,8 +345,8 @@ module PrMergeSubmit
       result
     end
 
-    def run_gh(*args)
-      stdout, stderr, status = Open3.capture3("gh", *args)
+    def run_gh(*args, host:)
+      stdout, stderr, status = Open3.capture3({ "GH_HOST" => host }, "gh", *args)
       [stdout, stderr, status]
     rescue Errno::ENOENT
       raise Error, "gh is not installed or not on PATH"

@@ -11,6 +11,7 @@ SCRIPT = File.expand_path("pr-merge-submit", __dir__)
 
 class PrMergeSubmitTest < Minitest::Test
   HEAD_SHA = "a" * 40
+  NUMERIC_SHA = "1" * 40
   MOVED_SHA = "b" * 40
   HOST = "ghe.example:8443"
 
@@ -22,7 +23,8 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "direct", payload.fetch("submission")
     assert_equal "main", payload.fetch("expected_base")
     assert_equal "COMMIT_1", payload.fetch("merge_commit")
-    assert_includes log, "--hostname #{HOST} graphql"
+    assert_includes log, "GH_HOST=#{HOST} api graphql"
+    assert_includes log, "GraphQL-Features: merge_queue"
     assert_includes log, "mergePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
     assert_includes log, "mergeMethod=SQUASH"
@@ -43,7 +45,8 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "mergePullRequest"
     assert_includes log, "enqueuePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
-    assert_includes log, "--hostname #{HOST} graphql"
+    assert_includes log, "GH_HOST=#{HOST} api graphql"
+    assert_equal 3, log.scan("GraphQL-Features: merge_queue").length
     refute_includes log, "--auto"
   end
 
@@ -103,6 +106,19 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "mergePullRequest"
   end
 
+  def test_repository_name_and_commit_oid_are_sent_as_raw_strings
+    result, log = run_cli(
+      mode: "direct", repo: "owner/123", head: NUMERIC_SHA,
+      expected_head: NUMERIC_SHA
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "-f name=123"
+    refute_includes log, "-F name=123"
+    assert_includes log, "-f expectedHeadOid=#{NUMERIC_SHA}"
+    refute_includes log, "-F expectedHeadOid=#{NUMERIC_SHA}"
+  end
+
   def test_queue_response_without_entry_fails_closed
     result, = run_cli(mode: "queue_missing_entry")
 
@@ -130,7 +146,9 @@ class PrMergeSubmitTest < Minitest::Test
 
   def run_cli(
     mode:,
+    repo: "owner/repo",
     head: HEAD_SHA,
+    expected_head: HEAD_SHA,
     base: "main",
     url_host: HOST,
     include_expected_head: true,
@@ -142,10 +160,10 @@ class PrMergeSubmitTest < Minitest::Test
       File.write(gh_path, fake_gh(mode:, head:, base:, url_host:))
       FileUtils.chmod(0o755, gh_path)
       args = [
-        SCRIPT, "42", "--repo", "owner/repo", "--host", HOST,
+        SCRIPT, "42", "--repo", repo, "--host", HOST,
         "--method", "squash", "--subject", "Fix the thing (#42)"
       ]
-      args.concat(["--expected-head", HEAD_SHA]) if include_expected_head
+      args.concat(["--expected-head", expected_head]) if include_expected_head
       args.concat(["--expected-base", "main"]) if include_expected_base
       stdout, stderr, status = Open3.capture3(
         { "PATH" => "#{dir}:#{ENV.fetch('PATH')}", "GH_LOG" => log_path },
@@ -188,7 +206,9 @@ class PrMergeSubmitTest < Minitest::Test
     <<~RUBY
       #!/usr/bin/env ruby
       require "json"
-      File.open(ENV.fetch("GH_LOG"), "a") { |file| file.puts(ARGV.join(" ")) }
+      File.open(ENV.fetch("GH_LOG"), "a") do |file|
+        file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
+      end
       warn "debug diagnostic" if #{mode.inspect} == "direct_with_stderr"
 
       if ARGV.any? { |arg| arg == "number=42" }
