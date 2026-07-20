@@ -2355,26 +2355,38 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Exact-Head Merge Submission
 
 After the readiness gate passes and merge authority is explicit, use the same
-current head SHA that passed the gate for the final mutation. Resolve
+canonical GitHub host, base branch, and current head SHA that passed the gate
+for the final mutation. Resolve
 `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned helper
 chain, then run:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/pr-merge-submit" <PR> \
   --repo <OWNER/REPO> \
+  --host <GITHUB_HOST[:PORT]> \
   --expected-head <FULL_HEAD_SHA> \
+  --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
   --subject "<consumer-required direct-merge subject>"
 ```
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
-uses `enqueuePullRequest` for a queue-controlled base and invokes the consumer's
-ordinary direct merge method and subject with `--match-head-commit` otherwise.
+uses `enqueuePullRequest` for a queue-controlled base and invokes GitHub's
+`mergePullRequest` with the consumer's ordinary direct merge method, subject,
+and expected head otherwise. Every API call is bound to the explicit host, and
+the returned PR URL must match it.
 If queue enforcement changes between that read and the direct mutation, only
 GitHub's explicit queue-control error permits one refreshed exact-head enqueue
-retry. It never enables auto-merge, never retries an unrelated direct-merge
+retry. The helper never invokes the queue-aware `gh pr merge` path, never enables
+auto-merge, never retries an unrelated direct-merge
 error as a queue operation, and fails closed when the head moved, queue state is
 missing, or GitHub returns no queue entry.
+
+GitHub's merge and enqueue mutations expose an atomic expected-head field but
+not an expected-base field. The helper therefore verifies the exact expected
+base immediately before and after its mutation and reports any retarget as a
+blocker; merge authority must not be exercised while another actor is
+retargeting the PR.
 
 For a queued merge, GitHub's queue configuration controls the actual merge
 method and commit-title/body formatting. Before submission, verify the PR title

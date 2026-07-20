@@ -644,7 +644,7 @@ recorded (the `Agent Merge Confidence` block is the accelerated-RC auto-merge
 block, not the normal-handoff note) for the maintainer to merge. Do not merge
 without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
-When a merge is authorized, submit the exact head through the canonical
+When a merge is authorized, submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`. It preserves
 the consumer's normal direct-merge method and subject, but falls back to
 GitHub's `enqueuePullRequest` only when GitHub explicitly says the base branch's

@@ -12,17 +12,23 @@ SCRIPT = File.expand_path("pr-merge-submit", __dir__)
 class PrMergeSubmitTest < Minitest::Test
   HEAD_SHA = "a" * 40
   MOVED_SHA = "b" * 40
+  HOST = "ghe.example:8443"
 
-  def test_direct_merge_is_exact_head_bound_and_never_enables_auto_merge
+  def test_direct_merge_uses_exact_head_bound_graphql_mutation
     result, log = run_cli(mode: "direct")
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "direct", payload.fetch("submission")
-    assert_includes log, "pr merge 42 --repo owner/repo --squash --match-head-commit #{HEAD_SHA}"
-    assert_includes log, "--subject Fix the thing (#42)"
+    assert_equal "main", payload.fetch("expected_base")
+    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_includes log, "--hostname #{HOST} graphql"
+    assert_includes log, "mergePullRequest"
+    assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
+    assert_includes log, "mergeMethod=SQUASH"
+    assert_includes log, "commitHeadline=Fix the thing (#42)"
+    refute_includes log, "pr merge"
     refute_includes log, "--auto"
-    refute_includes log, "pullRequestId="
   end
 
   def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
@@ -32,31 +38,16 @@ class PrMergeSubmitTest < Minitest::Test
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "merge_queue", payload.fetch("submission")
     assert_equal HEAD_SHA, payload.fetch("expected_head")
+    assert_equal "main", payload.fetch("expected_base")
     assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
-    refute_includes log, "pr merge"
-    assert_includes log, "pullRequestId=PR_42"
+    refute_includes log, "mergePullRequest"
+    assert_includes log, "enqueuePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
+    assert_includes log, "--hostname #{HOST} graphql"
     refute_includes log, "--auto"
   end
 
-  def test_unrelated_direct_failure_does_not_enqueue
-    result, log = run_cli(mode: "direct_failure")
-
-    refute result.fetch(:status).success?
-    assert_includes result.fetch(:stderr), "direct merge submission failed: permission denied"
-    refute_includes log, "pullRequestId="
-  end
-
-  def test_head_movement_stops_before_any_merge_mutation
-    result, log = run_cli(mode: "direct", head: MOVED_SHA)
-
-    refute result.fetch(:status).success?
-    assert_includes result.fetch(:stderr), "PR head moved"
-    refute_includes log, "pr merge"
-    refute_includes log, "pullRequestId="
-  end
-
-  def test_queue_enablement_race_requires_a_refreshed_enabled_state
+  def test_queue_enablement_race_retries_only_after_explicit_queue_error
     result, log = run_cli(mode: "queue_race")
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
@@ -64,9 +55,52 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "merge_queue", payload.fetch("submission")
     assert_includes payload.fetch("direct_attempt"), "set by the merge queue"
     query_count = log.lines.count { |line| line.include?("number=42") }
-    assert_equal 2, query_count
-    assert_includes log, "pr merge 42"
-    assert_includes log, "pullRequestId=PR_42"
+    assert_equal 3, query_count
+    assert_includes log, "mergePullRequest"
+    assert_includes log, "enqueuePullRequest"
+  end
+
+  def test_unrelated_direct_failure_does_not_enqueue
+    result, log = run_cli(mode: "direct_failure")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "direct merge submission returned errors"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_head_movement_stops_before_any_merge_mutation
+    result, log = run_cli(mode: "direct", head: MOVED_SHA)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "PR head moved"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_base_retarget_stops_before_any_merge_mutation
+    result, log = run_cli(mode: "direct", base: "release")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "PR base moved"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_successful_api_diagnostics_do_not_corrupt_json
+    result, = run_cli(mode: "direct_with_stderr")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_includes payload.fetch("diagnostics"), "debug diagnostic"
+  end
+
+  def test_returned_pr_url_must_match_explicit_host
+    result, log = run_cli(mode: "direct", url_host: "github.com")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "PR URL host mismatch"
+    refute_includes log, "mergePullRequest"
   end
 
   def test_queue_response_without_entry_fails_closed
@@ -84,16 +118,35 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_expected_base_is_required
+    result, log = run_cli(mode: "direct", include_expected_base: false)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--expected-base must be a valid branch name"
+    assert_empty log
+  end
+
   private
 
-  def run_cli(mode:, head: HEAD_SHA, include_expected_head: true)
+  def run_cli(
+    mode:,
+    head: HEAD_SHA,
+    base: "main",
+    url_host: HOST,
+    include_expected_head: true,
+    include_expected_base: true
+  )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
-      File.write(gh_path, fake_gh(mode:, head:))
+      File.write(gh_path, fake_gh(mode:, head:, base:, url_host:))
       FileUtils.chmod(0o755, gh_path)
-      args = [SCRIPT, "42", "--repo", "owner/repo", "--method", "squash", "--subject", "Fix the thing (#42)"]
+      args = [
+        SCRIPT, "42", "--repo", "owner/repo", "--host", HOST,
+        "--method", "squash", "--subject", "Fix the thing (#42)"
+      ]
       args.concat(["--expected-head", HEAD_SHA]) if include_expected_head
+      args.concat(["--expected-base", "main"]) if include_expected_base
       stdout, stderr, status = Open3.capture3(
         { "PATH" => "#{dir}:#{ENV.fetch('PATH')}", "GH_LOG" => log_path },
         *args
@@ -103,7 +156,7 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def fake_gh(mode:, head:)
+  def fake_gh(mode:, head:, base:, url_host:)
     queue_payload = if mode == "queue_missing_entry"
                       { "data" => { "enqueuePullRequest" => { "mergeQueueEntry" => nil } } }
                     else
@@ -118,12 +171,27 @@ class PrMergeSubmitTest < Minitest::Test
                         }
                       }
                     end
+    direct_payload = {
+      "data" => {
+        "mergePullRequest" => {
+          "pullRequest" => {
+            "headRefOid" => head,
+            "baseRefName" => base,
+            "merged" => true,
+            "mergedAt" => "2026-07-20T15:00:00Z",
+            "url" => "https://#{url_host}/owner/repo/pull/42",
+            "mergeCommit" => { "oid" => "COMMIT_1" }
+          }
+        }
+      }
+    }
     <<~RUBY
       #!/usr/bin/env ruby
       require "json"
       File.open(ENV.fetch("GH_LOG"), "a") { |file| file.puts(ARGV.join(" ")) }
+      warn "debug diagnostic" if #{mode.inspect} == "direct_with_stderr"
 
-      if ARGV[0, 2] == ["api", "graphql"] && ARGV.any? { |arg| arg == "number=42" }
+      if ARGV.any? { |arg| arg == "number=42" }
         query_count_path = ENV.fetch("GH_LOG") + ".queries"
         query_count = File.exist?(query_count_path) ? File.read(query_count_path).to_i : 0
         File.write(query_count_path, (query_count + 1).to_s)
@@ -138,10 +206,10 @@ class PrMergeSubmitTest < Minitest::Test
               "pullRequest" => {
                 "id" => "PR_42",
                 "headRefOid" => #{head.inspect},
-                "baseRefName" => "main",
+                "baseRefName" => #{base.inspect},
                 "state" => "OPEN",
                 "isDraft" => false,
-                "url" => "https://github.com/owner/repo/pull/42",
+                "url" => "https://#{url_host}/owner/repo/pull/42",
                 "isMergeQueueEnabled" => queue_enabled
               }
             }
@@ -150,22 +218,19 @@ class PrMergeSubmitTest < Minitest::Test
         exit 0
       end
 
-      if ARGV[0, 2] == ["pr", "merge"]
+      if ARGV.any? { |arg| arg.include?("mergePullRequest") }
         case #{mode.inspect}
-        when "direct"
-          puts "merged"
-          exit 0
         when "queue_race"
-          warn "The merge strategy for main is set by the merge queue"
-          warn "GraphQL: Auto merge is not allowed (enablePullRequestAutoMerge)"
-          exit 1
+          puts JSON.generate("errors" => [{ "message" => "The merge strategy for main is set by the merge queue" }])
+        when "direct_failure"
+          puts JSON.generate("errors" => [{ "message" => "permission denied" }])
         else
-          warn "permission denied"
-          exit 1
+          puts #{JSON.generate(direct_payload).inspect}
         end
+        exit 0
       end
 
-      if ARGV[0, 2] == ["api", "graphql"]
+      if ARGV.any? { |arg| arg.include?("enqueuePullRequest") }
         puts #{JSON.generate(queue_payload).inspect}
         exit 0
       end
