@@ -63,6 +63,19 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "enqueuePullRequest"
   end
 
+  def test_queue_control_error_followed_by_merge_preserves_unknown_provenance
+    result, log = run_cli(mode: "queue_race_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "already_merged", payload.fetch("submission")
+    assert_equal "UNKNOWN", payload.fetch("merge_provenance")
+    assert_equal true, payload.fetch("reconciled_after_failure")
+    refute payload.key?("method")
+    assert_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
   def test_unrelated_direct_failure_does_not_enqueue
     result, log = run_cli(mode: "direct_failure")
 
@@ -281,6 +294,16 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "dequeuePullRequest"
   end
 
+  def test_post_enqueue_exact_replacement_reports_the_live_queue_entry
+    result, log = run_cli(mode: "queue_entry_replaced_same_target")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "MQE_2", payload.dig("merge_queue_entry", "id")
+    assert_equal 7, payload.dig("merge_queue_entry", "position")
+    refute_includes log, "dequeuePullRequest"
+  end
+
   def test_expected_head_is_required
     result, log = run_cli(mode: "direct", include_expected_head: false)
 
@@ -396,13 +419,14 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_graphql_error", "enqueue_graphql_error_merged",
                              "enqueue_transport_base_race", "enqueue_graphql_error_base_race",
                              "enqueue_non_object_response_queued", "queue_base_race",
-                             "queue_entry_replaced" then true
-                        when "queue_race" then query_count.positive?
+                             "queue_entry_replaced", "queue_entry_replaced_same_target" then true
+                        when "queue_race", "queue_race_merged" then query_count.positive?
                         else false
                         end
         queued = case current_mode
                  when "already_queued" then true
-                 when "queue", "enqueue_transport_queued", "enqueue_non_object_response_queued" then query_count.positive?
+                 when "queue", "enqueue_transport_queued", "enqueue_non_object_response_queued",
+                      "queue_entry_replaced_same_target" then query_count.positive?
                  when "queue_race" then query_count > 1
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
@@ -411,7 +435,7 @@ class PrMergeSubmitTest < Minitest::Test
         merged_after_mutation = [
           "direct_transport_merged", "direct_invalid_json_merged", "direct_graphql_error_merged",
           "direct_incomplete_response_merged", "direct_non_object_response_merged",
-          "enqueue_transport_merged", "enqueue_graphql_error_merged"
+          "enqueue_transport_merged", "enqueue_graphql_error_merged", "queue_race_merged"
         ].include?(current_mode)
         merged = current_mode == "already_merged" || (merged_after_mutation && query_count.positive?)
         base_race_modes = [
@@ -425,8 +449,9 @@ class PrMergeSubmitTest < Minitest::Test
                     end
         queue_entry = if queued
                         {
-                          "id" => current_mode == "queue_entry_replaced" ? "MQE_2" : "MQE_1",
-                          "position" => 1, "state" => "QUEUED",
+                          "id" => current_mode.start_with?("queue_entry_replaced") ? "MQE_2" : "MQE_1",
+                          "position" => current_mode == "queue_entry_replaced_same_target" ? 7 : 1,
+                          "state" => "QUEUED",
                           "estimatedTimeToMerge" => 60
                         }
                       end
@@ -455,7 +480,7 @@ class PrMergeSubmitTest < Minitest::Test
 
       if ARGV.any? { |arg| arg.include?("mergePullRequest") }
         case #{mode.inspect}
-        when "queue_race"
+        when "queue_race", "queue_race_merged"
           puts JSON.generate("errors" => [{ "message" => "The merge strategy for main is set by the merge queue" }])
           exit 1
         when "direct_failure"

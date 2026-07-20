@@ -437,7 +437,9 @@ module PrMergeSubmit
                               "to the entry returned by this submission"
       end
 
-      return queue_result(post_enqueue_pull_request, entry, options, direct_output:) if exact_queue?(post_enqueue_pull_request, options)
+      if exact_queue?(post_enqueue_pull_request, options)
+        return existing_queue_result(post_enqueue_pull_request, options, direct_output:)
+      end
       if exact_merge?(post_enqueue_pull_request, options)
         return queue_result(post_enqueue_pull_request, entry, options, direct_output:, reconciled: true)
       end
@@ -510,6 +512,13 @@ module PrMergeSubmit
     def reconcile_direct_graphql_errors!(options, diagnostics)
       pull_request = fetch_pr_for_reconciliation!(options, "direct merge GraphQL error outcome")
       if exact_merge?(pull_request, options)
+        if PrMergeSubmit.queue_controlled?(diagnostics)
+          return already_merged_result(pull_request, options).merge(
+            "reconciled_after_failure" => true,
+            "diagnostics" => diagnostics
+          )
+        end
+
         return direct_result(pull_request, options, diagnostics).merge("reconciled_after_failure" => true)
       end
       return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
