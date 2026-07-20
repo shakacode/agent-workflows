@@ -6,14 +6,19 @@
 # remain caller responsibilities; this helper only makes the mutation bounded.
 
 require "json"
-require "open3"
 require "optparse"
-require "timeout"
+require "tempfile"
 require "uri"
 
 module PrMergeSubmit
   class Error < StandardError; end
   class UnknownOutcome < Error; end
+
+  class FailedStatus
+    def success?
+      false
+    end
+  end
 
   QUEUE_CONTROL_PATTERN = /merge strategy for .+ is set by the merge queue/i
   GRAPHQL_FEATURE_HEADER = "GraphQL-Features: merge_queue"
@@ -122,6 +127,13 @@ module PrMergeSubmit
     GRAPHQL
 
     def run(argv)
+      @pending_signal = nil
+      @cancellation_signal = nil
+      @mutation_attempted = false
+      previous_handlers = install_signal_handlers do |signal|
+        @pending_signal ||= signal
+        @cancellation_signal ||= signal
+      end
       options = parse_options(argv)
       return print_help if options[:help]
 
@@ -142,6 +154,8 @@ module PrMergeSubmit
     rescue Error => e
       warn "Error: #{e.message}"
       1
+    ensure
+      restore_signal_handlers(previous_handlers) if previous_handlers
     end
 
     private
@@ -265,7 +279,7 @@ module PrMergeSubmit
       end
 
       direct_stdout, direct_stderr, direct_status = run_gh(
-        *direct_merge_args(pull_request, options), host: options[:host]
+        *direct_merge_args(pull_request, options), host: options[:host], mutation: true
       )
       direct_output = failure_output(direct_stdout, direct_stderr)
       unless direct_status.success?
@@ -393,7 +407,8 @@ module PrMergeSubmit
         "-f", "query=#{ENQUEUE_MUTATION}",
         "-f", "pullRequestId=#{pull_request.fetch('id')}",
         "-f", "expectedHeadOid=#{options[:expected_head]}",
-        host: options[:host]
+        host: options[:host],
+        mutation: true
       )
       unless status.success?
         errors = PrMergeSubmit.graphql_errors(stdout)
@@ -576,31 +591,75 @@ module PrMergeSubmit
                             "does not accept an expected queue-entry ID"
     end
 
-    def run_gh(*args, host:)
+    def run_gh(*args, host:, mutation: false)
       timeout_seconds = gh_timeout_seconds
+      if @cancellation_signal && (mutation || !@mutation_attempted)
+        cancellation_signal = @cancellation_signal
+        @mutation_attempted ||= mutation
+        @pending_signal = nil
+        return [
+          "",
+          "gh request was cancelled by SIG#{cancellation_signal} before it started",
+          FailedStatus.new
+        ]
+      end
+      @pending_signal = nil if @cancellation_signal
+      @mutation_attempted ||= mutation
+
+      stdout_file = Tempfile.new("pr-merge-submit-stdout")
+      stderr_file = Tempfile.new("pr-merge-submit-stderr")
+      interrupted_signal = nil
+      pid = Process.spawn(
+        { "GH_HOST" => host }, "gh", *args,
+        out: stdout_file.path, err: stderr_file.path, pgroup: true
+      )
+      deadline = monotonic_time + timeout_seconds
+      status = nil
       timed_out = false
-      captured = Open3.popen3({ "GH_HOST" => host }, "gh", *args, pgroup: true) do |stdin, stdout, stderr, wait_thread|
-        stdin.close
-        stdout_reader = Thread.new { stdout.read }
-        stderr_reader = Thread.new { stderr.read }
-        status = begin
-          Timeout.timeout(timeout_seconds) { wait_thread.value }
-        rescue Timeout::Error
-          timed_out = true
-          terminate_process_group(wait_thread, timeout_seconds)
-          wait_thread.value
+      termination_complete = true
+
+      loop do
+        if @pending_signal
+          interrupted_signal = @pending_signal
+          @pending_signal = nil
+          status, termination_complete = terminate_process_group(pid, signal: interrupted_signal)
+          break
         end
-        [stdout_reader.value, stderr_reader.value, status]
+
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        if waited
+          status = waited[1]
+          break
+        end
+
+        if monotonic_time >= deadline
+          timed_out = true
+          status, termination_complete = terminate_process_group(pid)
+          break
+        end
+
+        sleep 0.05
       end
-      if timed_out
-        captured[1] = failure_output(
-          captured[1],
-          "gh request timed out after #{timeout_seconds} seconds and its process group was terminated"
-        )
+
+      stdout = read_capture(stdout_file)
+      stderr = read_capture(stderr_file)
+      unless termination_complete
+        raise UnknownOutcome, "gh process group did not exit after forced termination; remote outcome is UNKNOWN"
       end
-      captured
+
+      diagnostic = if interrupted_signal
+                     "gh request was interrupted by SIG#{interrupted_signal} and its process group was terminated"
+                   elsif timed_out
+                     "gh request timed out after #{timeout_seconds} seconds and its process group was terminated"
+                   end
+      stderr = failure_output(stderr, diagnostic) if diagnostic
+      status = FailedStatus.new if interrupted_signal || timed_out
+      [stdout, stderr, status || FailedStatus.new]
     rescue Errno::ENOENT
       raise Error, "gh is not installed or not on PATH"
+    ensure
+      stdout_file&.close!
+      stderr_file&.close!
     end
 
     def gh_timeout_seconds
@@ -612,18 +671,74 @@ module PrMergeSubmit
       raise Error, "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS must be a positive finite number"
     end
 
-    def terminate_process_group(wait_thread, timeout_seconds)
-      signal_process_group("TERM", wait_thread.pid)
-      Timeout.timeout([timeout_seconds, 1].min) { wait_thread.join }
-    rescue Timeout::Error
-      signal_process_group("KILL", wait_thread.pid)
-      wait_thread.join
+    def install_signal_handlers
+      %w[INT TERM HUP].to_h do |signal|
+        previous = Signal.trap(signal) { yield signal }
+        [signal, previous]
+      end
+    end
+
+    def restore_signal_handlers(previous_handlers)
+      previous_handlers.each { |signal, handler| Signal.trap(signal, handler) }
+    end
+
+    def terminate_process_group(pid, signal: "TERM", grace_seconds: 1, kill_grace_seconds: 1)
+      signal_process_group(signal, pid)
+      deadline = monotonic_time + grace_seconds
+      status = wait_for_child(pid, deadline)
+      return [status, true] if wait_for_process_group_exit(pid, deadline)
+
+      signal_process_group("KILL", pid)
+      deadline = monotonic_time + kill_grace_seconds
+      status ||= wait_for_child(pid, deadline)
+      [status, wait_for_process_group_exit(pid, deadline)]
     end
 
     def signal_process_group(signal, pid)
       Process.kill(signal, -pid)
     rescue Errno::ESRCH
       nil
+    end
+
+    def wait_for_child(pid, deadline)
+      while monotonic_time < deadline
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        return waited[1] if waited
+
+        sleep 0.05
+      end
+
+      nil
+    rescue Errno::ECHILD
+      nil
+    end
+
+    def process_group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def wait_for_process_group_exit(pid, deadline)
+      while monotonic_time < deadline
+        return true unless process_group_alive?(pid)
+
+        sleep 0.05
+      end
+
+      !process_group_alive?(pid)
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def read_capture(file)
+      file.rewind
+      file.read
     end
 
     def failure_output(stdout, stderr)

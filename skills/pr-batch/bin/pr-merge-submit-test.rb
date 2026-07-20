@@ -8,6 +8,7 @@ require "open3"
 require "tmpdir"
 
 SCRIPT = File.expand_path("pr-merge-submit", __dir__)
+load SCRIPT
 
 class PrMergeSubmitTest < Minitest::Test
   HEAD_SHA = "a" * 40
@@ -289,6 +290,63 @@ class PrMergeSubmitTest < Minitest::Test
     assert_operator elapsed, :<, 2
   end
 
+  def test_timeout_kills_a_surviving_process_group_descendant
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result, = run_cli(mode: "metadata_timeout_descendant")
+
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "timed out"
+    assert_operator elapsed, :<, 3
+  end
+
+  def test_interrupt_is_forwarded_and_mutation_outcome_is_reconciled
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result, log = run_cli_with_interrupt(mode: "direct_interrupt_unknown")
+
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "interrupted by SIGINT"
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+    assert_includes log, "mergePullRequest"
+    assert_operator elapsed, :<, 3
+  end
+
+  def test_interrupted_mutation_that_exits_zero_still_reconciles
+    result, log = run_cli_with_interrupt(mode: "direct_interrupt_exit_zero")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "interrupted by SIGINT"
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_interrupted_metadata_request_that_exits_zero_cannot_mutate
+    result, log = run_cli_with_interrupt(
+      mode: "metadata_interrupt_exit_zero", wait_for: "number=42"
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "interrupted by SIGINT"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_persistent_cancellation_blocks_a_later_fallback_mutation
+    runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(:@mutation_attempted, true)
+    runner.instance_variable_set(:@cancellation_signal, "INT")
+    runner.instance_variable_set(:@pending_signal, nil)
+
+    stdout, stderr, status = runner.send(
+      :run_gh, "api", "graphql", host: HOST, mutation: true
+    )
+
+    assert_empty stdout
+    assert_includes stderr, "cancelled by SIGINT before it started"
+    refute status.success?
+  end
+
   def test_direct_mutation_timeout_with_unchanged_state_is_unknown
     result, = run_cli(mode: "direct_timeout_unknown")
 
@@ -429,23 +487,56 @@ class PrMergeSubmitTest < Minitest::Test
       gh_path = File.join(dir, "gh")
       File.write(gh_path, fake_gh(mode:, head:, base:, url_host:))
       FileUtils.chmod(0o755, gh_path)
-      args = [
-        SCRIPT, "42", "--repo", repo, "--host", HOST,
-        "--method", "squash", "--subject", "Fix the thing (#42)"
-      ]
-      args.concat(["--expected-head", expected_head]) if include_expected_head
-      args.concat(["--expected-base", "main"]) if include_expected_base
       stdout, stderr, status = Open3.capture3(
-        {
-          "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
-          "GH_LOG" => log_path,
-          "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => mode.include?("timeout") ? "0.1" : "60"
-        },
-        *args
+        cli_environment(dir, log_path, mode),
+        *cli_arguments(repo, expected_head, include_expected_head, include_expected_base)
       )
       log = File.exist?(log_path) ? File.read(log_path) : ""
       [{ stdout:, stderr:, status: }, log]
     end
+  end
+
+  def run_cli_with_interrupt(mode:, wait_for: "mergePullRequest")
+    Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
+      log_path = File.join(dir, "gh.log")
+      gh_path = File.join(dir, "gh")
+      File.write(gh_path, fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST))
+      FileUtils.chmod(0o755, gh_path)
+      result = Open3.popen3(
+        cli_environment(dir, log_path, mode),
+        *cli_arguments("owner/repo", HEAD_SHA, true, true)
+      ) do |stdin, stdout, stderr, wait_thread|
+        stdin.close
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+        until File.exist?(log_path) && File.read(log_path).include?(wait_for)
+          raise "gh request did not start before interrupt deadline" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+          sleep 0.01
+        end
+        Process.kill("INT", wait_thread.pid)
+        { stdout: stdout.read, stderr: stderr.read, status: wait_thread.value }
+      end
+      log = File.exist?(log_path) ? File.read(log_path) : ""
+      [result, log]
+    end
+  end
+
+  def cli_environment(dir, log_path, mode)
+    {
+      "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
+      "GH_LOG" => log_path,
+      "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => mode.include?("timeout") ? "0.1" : "60"
+    }
+  end
+
+  def cli_arguments(repo, expected_head, include_expected_head, include_expected_base)
+    args = [
+      SCRIPT, "42", "--repo", repo, "--host", HOST,
+      "--method", "squash", "--subject", "Fix the thing (#42)"
+    ]
+    args.concat(["--expected-head", expected_head]) if include_expected_head
+    args.concat(["--expected-base", "main"]) if include_expected_base
+    args
   end
 
   def fake_gh(mode:, head:, base:, url_host:)
@@ -486,6 +577,18 @@ class PrMergeSubmitTest < Minitest::Test
       warn "debug diagnostic" if #{mode.inspect} == "direct_with_stderr"
 
       if ARGV.any? { |arg| arg == "number=42" }
+        if #{mode.inspect} == "metadata_interrupt_exit_zero"
+          trap("INT") { exit 0 }
+          sleep 5
+        end
+        if #{mode.inspect} == "metadata_timeout_descendant"
+          fork do
+            trap("TERM", "IGNORE")
+            sleep 5
+            exit! 0
+          end
+          sleep 5
+        end
         sleep 5 if #{mode.inspect} == "metadata_timeout"
         query_count_path = ENV.fetch("GH_LOG") + ".queries"
         query_count = File.exist?(query_count_path) ? File.read(query_count_path).to_i : 0
@@ -577,7 +680,13 @@ class PrMergeSubmitTest < Minitest::Test
         when "direct_transport_merged", "direct_transport_unknown"
           warn "connection reset after request"
           exit 1
-        when "direct_timeout_unknown", "direct_timeout_merged"
+        when "direct_timeout_unknown", "direct_timeout_merged", "direct_interrupt_unknown"
+          sleep 5
+        when "direct_interrupt_exit_zero"
+          trap("INT") do
+            puts #{JSON.generate(direct_payload).inspect}
+            exit 0
+          end
           sleep 5
         when "direct_raw_queue_error"
           warn "The merge strategy for main is set by the merge queue"
