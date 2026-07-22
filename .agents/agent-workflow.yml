@@ -7,6 +7,7 @@ approval_exempt: "docs, workflow text, helper scripts, skill metadata, and valid
 # This source repo runs in single-operator mode; consumer repos pick their own
 # coordination backend in their local seam.
 coordination_backend: "n/a"
+agent_claimed_label: "agent-claimed"
 changelog: "CHANGELOG.md"
 benchmark_labels: "n/a"
 merge_ledger: "n/a"

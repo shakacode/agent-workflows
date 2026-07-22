@@ -141,6 +141,9 @@ Plan a PR batch
      excluded item under "Excluded or deferred" as reserved with its assignee
      name; never silently drop reserved work. Items with no assignee, or only an
      automation identity, stay eligible.
+   - Also skip any issue or PR carrying the seam's `agent-claimed` label (an
+     active agent lane claim), listing it as reserved — owned means skip for
+     agents as for humans.
    - Separate independent work from dependency-ordered work. Give every planned
      lane a stable agent id and a lane name; for dependency-ordered work, define
      explicit `depends_on` refs in the form `<batch-id>:<lane-name>` so
