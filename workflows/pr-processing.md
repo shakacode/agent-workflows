@@ -1793,9 +1793,9 @@ hatch**, not a single kill switch:
      `Agent`/`Workflow` coordinator.
   3. Run `agent-coord release` for the lane, or manually clear the orphaned
      claim, so relaunch does not wait for lease expiry, and remove the mirrored
-     claim label (the daemon backstop also reconciles it on lease expiry). This is safe because the
-     cancellation state still prevents another worker from reclaiming the lane
-     while cleanup is in progress.
+     claim label (the daemon backstop also reconciles it on lease expiry). This
+     is safe because the cancellation state still prevents another worker from
+     reclaiming the lane while cleanup is in progress.
   4. Clean the lane worktree. If the directory still exists, run
      `git worktree remove --force` on that path. If the directory is already
      gone, confirm no other active lane depends on deleted worktree metadata,
