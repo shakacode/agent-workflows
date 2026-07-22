@@ -457,6 +457,16 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_repo_with_a_leading_at_segment_is_rejected_before_any_gh_call
+    ["@evil/repo", "owner/@evil"].each do |repo|
+      result, log = run_cli(mode: "direct", repo:)
+
+      refute result.fetch(:status).success?, "expected #{repo} to be rejected"
+      assert_includes result.fetch(:stderr), "--repo must use OWNER/REPO form"
+      assert_empty log
+    end
+  end
+
   private
 
   def assert_reconciled_queue_merge(payload)

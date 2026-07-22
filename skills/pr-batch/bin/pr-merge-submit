@@ -221,7 +221,10 @@ module PrMergeSubmit
 
     def validate_options!(options)
       raise Error, "PR number is required" unless options[:pr].to_s.match?(/\A[1-9]\d*\z/)
-      raise Error, "--repo must use OWNER/REPO form" unless options[:repo].to_s.match?(%r{\A[^/\s]+/[^/\s]+\z})
+      # owner/name are passed to gh as `-f owner=` / `-f name=`, so a leading "@"
+      # in either segment would make gh read a local file (same class as
+      # reject_leading_at!). A real GitHub owner/repo never starts with "@".
+      raise Error, "--repo must use OWNER/REPO form" unless options[:repo].to_s.match?(%r{\A[^@/\s][^/\s]*/[^@/\s][^/\s]*\z})
 
       options[:host] = normalize_host!(options[:host])
       raise Error, "--expected-head must be a full commit SHA" unless options[:expected_head].to_s.match?(/\A[0-9a-f]{40}\z/i)
