@@ -102,7 +102,10 @@ when unresolved. Classify
 assignees after fetching the full scoped set — `no:assignee` alone omits
 automation-only-assigned eligible items. Reserved items are excluded from
 actionable batches and listed with their assignee names; items with no
-assignee, or only an automation identity, stay eligible.
+assignee, or only an automation identity, stay eligible. Also skip any issue or
+PR labeled with the seam's claim label (`agent_claimed_label`, default
+`agent-claimed`) — an active agent lane claim — and list it as reserved; owned
+means skip for agents as for humans.
 
 Before adding issues to a PR batch, classify each target as:
 

@@ -22,9 +22,11 @@ OWNED_SYMMETRY = "Owned means skip is symmetric for humans and agents: a human a
                  "both decay"
 SWEEP_SKIPS_CLAIMED = "The stale-assignment sweep skips `agent-claimed` items"
 # Selection/triage must exclude an agent-claimed item, closing the loop so the
-# mirrored label is actually respected as an ownership marker.
-SELECTION_SKIP = "Also skip any issue or PR carrying the seam's `agent-claimed` label (an active agent lane " \
-                 "claim), listing it as reserved — owned means skip for agents as for humans."
+# mirrored label is actually respected as an ownership marker. The check goes
+# through the seam label, not a hardcoded name, so a renamed consumer label works.
+SELECTION_SKIP = "Also skip any issue or PR labeled with the seam's claim label (`agent_claimed_label`, default " \
+                 "`agent-claimed`) — an active agent lane claim — and list it as reserved; owned means skip for " \
+                 "agents as for humans."
 
 class AgentClaimedMirrorContractTest < Minitest::Test
   def setup
@@ -34,7 +36,9 @@ class AgentClaimedMirrorContractTest < Minitest::Test
     @selection = {
       "plan-pr-batch" => read("skills/plan-pr-batch/SKILL.md"),
       "triage" => read("skills/triage/SKILL.md"),
-      "plan-issue-triage" => read("skills/plan-issue-triage/SKILL.md")
+      "plan-issue-triage" => read("skills/plan-issue-triage/SKILL.md"),
+      "docs/pr-batch-skills.md" => read("docs/pr-batch-skills.md"),
+      "docs/issue-evaluation.md" => read("docs/issue-evaluation.md")
     }
   end
 

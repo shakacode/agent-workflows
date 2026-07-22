@@ -96,9 +96,9 @@ Build a complete current-state inventory for the requested repo or repos:
   self-assignment. List each excluded item under the reserved set with its
   assignee name; never silently drop reserved work. Items with no assignee, or
   only an automation identity, stay eligible.
-- Also skip any issue or PR carrying the seam's `agent-claimed` label (an active
-  agent lane claim), listing it as reserved — owned means skip for agents as for
-  humans.
+- Also skip any issue or PR labeled with the seam's claim label
+  (`agent_claimed_label`, default `agent-claimed`) — an active agent lane claim —
+  and list it as reserved; owned means skip for agents as for humans.
 - Links and edges: issue to PR, PR to PR, issue to issue, shared files, external
   blockers, release gates, and cross-repo dependencies.
 - Live coordination state from the selected backend: active claims, live/stale/dead

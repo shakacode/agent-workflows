@@ -42,7 +42,7 @@ Plan an issue triage
    - Performance-regression bot issues should be reviewed as a cluster first, with duplicate/noise/root-tracking recommendations before per-issue implementation.
    - Tracking, release, and meta issues should be separated from implementation candidates.
    - Reserved work: a human assignee — any assignee outside the repo's resolved automation set — marks an issue or PR as reserved: owned means skip. Resolve the automation set from the trust config's `trusted_bots` plus `[bot]`-suffixed logins via the `pr-security-preflight` chain (`trusted_users` are human actors and stay reservable), failing closed to skip when unresolved. Do not recommend reserved items for implementation; surface them (with assignee names) so reserved work stays visible. Items with no assignee, or only an automation identity, stay eligible.
-   - Also skip any issue or PR carrying the seam's `agent-claimed` label (an active agent lane claim), listing it as reserved — owned means skip for agents as for humans.
+   - Also skip any issue or PR labeled with the seam's claim label (`agent_claimed_label`, default `agent-claimed`) — an active agent lane claim — and list it as reserved; owned means skip for agents as for humans.
 
 5. Require a concise audit output
    - Summary counts by bucket.
