@@ -87,10 +87,12 @@ analog of the coordination backend's agent heartbeat leases.
 - **Flow: nudge → grace → release.** At threshold it posts a nudge comment; four
   days (`--grace-days`) after an *unanswered* nudge it removes the assignee and
   posts an audit comment. It never releases without a prior unanswered nudge. Any
-  assignee reply resets the clock; exempt labels (`--exempt-label`, default
-  `blocked`, `on-hold`) pause it. Before each nudge and each release the live item
-  is re-fetched and re-classified, so a reply or a label/assignee change between
-  scan and mutation aborts the action. A prior nudge only counts when it was
+  assignee reply resets the clock; exempt labels pause it (defaults `blocked`,
+  `on-hold`; `--exempt-label` *adds* to those defaults, it does not replace them).
+  Closed or merged items are skipped — including any that close between the
+  listing and the live re-check. Before each nudge and each release the live item
+  is re-fetched and re-classified, so a reply or a state/label/assignee change
+  between scan and mutation aborts the action. A prior nudge only counts when it was
   posted by one of the sweep's own identities — the gh-authenticated login
   (`gh api user`) unioned with any `--comment-identity`; a mismatch warns, and if
   no identity resolves, releases are disabled (so a misconfigured
@@ -118,6 +120,11 @@ analog of the coordination backend's agent heartbeat leases.
   `STALE_ASSIGNMENT_SWEEP_NOW`; bound gh with
   `STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS`. Run it on a schedule (Actions cron
   or the coordination daemon).
+- **Resilient reads.** A gh failure while reading/classifying one item is
+  reported as an `UNKNOWN … skipped` digest line and does not lose the rest of the
+  digest; a repo whose listing fails is warned and skipped so the other repos
+  still run. Read failures keep the run at exit 0 (they are reported, not fatal);
+  a per-item `--apply` mutation failure aborts only that item.
 
 ## Whole-Surface Triage Flow
 

@@ -58,7 +58,12 @@ module StaleAssignmentSweep
       load_trust_config(options)
       @identities = resolve_identities(options)
       repos = resolve_repos(options)
-      repos.each { |repo| sweep_repo(repo, options) }
+      # One repo's listing failure must not lose the other repos' digests.
+      repos.each do |repo|
+        sweep_repo(repo, options)
+      rescue Error => e
+        warn "WARN: repo #{repo} skipped: #{e.message.lines.first&.strip}"
+      end
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -68,7 +73,11 @@ module StaleAssignmentSweep
     private
 
     def parse_options(argv)
-      options = DEFAULTS.merge(repos: [], exempt_labels: nil, apply: false, help: false)
+      options = DEFAULTS.merge(repos: [], apply: false, help: false)
+      # Seed a fresh copy of the defaults so --exempt-label layers on top of the
+      # built-in blocked/on-hold rather than replacing them (and so we never
+      # mutate the frozen DEFAULTS array).
+      options[:exempt_labels] = DEFAULTS.fetch(:exempt_labels).dup
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: stale-assignment-sweep [--repo OWNER/REPO ...] [--apply] " \
                       "[--now ISO8601] [options]"
@@ -93,8 +102,8 @@ module StaleAssignmentSweep
         opts.on("--grace-days N", Integer, "Days after an unanswered nudge before release") do |value|
           options[:grace] = value
         end
-        opts.on("--exempt-label LABEL", "Label that pauses the clock; repeatable (default: blocked, on-hold)") do |value|
-          (options[:exempt_labels] ||= []) << value
+        opts.on("--exempt-label LABEL", "Additional label that pauses the clock; adds to the defaults blocked, on-hold; repeatable") do |value|
+          options[:exempt_labels] << value
         end
         opts.on("--comment-identity LOGIN", "Login that posts sweep comments (default: gh api user); scopes prior-nudge detection") do |value|
           options[:identity] = value
@@ -105,7 +114,6 @@ module StaleAssignmentSweep
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
       end
       parser.parse!(argv)
-      options[:exempt_labels] ||= DEFAULTS.fetch(:exempt_labels)
       options.merge(parser:)
     rescue OptionParser::ParseError => e
       raise Error, e.message
@@ -292,9 +300,25 @@ module StaleAssignmentSweep
 
     def sweep_repo(repo, options)
       items = list_assigned_items(repo)
-      results = items.map { |item| classify(repo, item, options) }
+      results = items.map { |item| classify_item(repo, item, options) }
       print_digest(repo, results, options)
       apply_actions(repo, results, options) if options[:apply]
+    end
+
+    # A gh failure while reading/classifying one item (e.g. its timeline fetch)
+    # must not lose the rest of the digest: report that item as UNKNOWN and keep
+    # classifying the others.
+    def classify_item(repo, item, options)
+      classify(repo, item, options)
+    rescue Error => e
+      {
+        number: item["number"],
+        kind: item.key?("pull_request") ? "PR" : "issue",
+        assignees: Array(item["assignees"]).filter_map { |assignee| assignee["login"] },
+        labels: [],
+        decision: :skip,
+        reason: "UNKNOWN: #{e.message.lines.first&.strip} — skipped"
+      }
     end
 
     def list_assigned_items(repo)
@@ -320,6 +344,12 @@ module StaleAssignmentSweep
       assignees = Array(item["assignees"]).filter_map { |assignee| assignee["login"] }
       labels = Array(item["labels"]).filter_map { |label| label.is_a?(Hash) ? label["name"] : label }
       base = { number:, kind:, assignees:, labels: }
+
+      # The initial listing is state=open, but the live re-check can return an
+      # item closed/merged between listing and mutation. Guard here so both paths
+      # skip a non-open item.
+      state = item["state"].to_s
+      return base.merge(decision: :skip, reason: "item is #{state} — skipped") unless state == "open"
 
       return base.merge(decision: :ignore, reason: "no assignee") if assignees.empty?
       if labels.include?(AGENT_CLAIMED_LABEL)
@@ -560,6 +590,9 @@ module StaleAssignmentSweep
         when :nudge then apply_nudge(repo, result, options)
         when :release then apply_release(repo, result, options)
         end
+      rescue Error => e
+        # A failed comment/DELETE aborts only this item, never the rest.
+        warn "WARN: apply failed for ##{result.fetch(:number)}: #{e.message.lines.first&.strip}"
       end
     end
 

@@ -42,7 +42,7 @@ class StaleAssignmentSweepTest < Minitest::Test
     result, = run_cli
     out = result.fetch(:stdout)
 
-    assert_includes out, "WOULD NUDGE (8):"
+    assert_includes out, "WOULD NUDGE (10):"
     assert_includes out, "#1 issue @alice: time-to-first-activity 30d inactive >= ttl 7d"
     assert_includes out, "#9 PR @grace: inactivity-after-start 10d inactive >= ttl 7d"
     assert_includes out, "#13 issue @maintainer1: time-to-first-activity 30d inactive >= ttl 7d"
@@ -292,6 +292,55 @@ class StaleAssignmentSweepTest < Minitest::Test
     refute_includes log, "DELETE"
   end
 
+  # --- Fix E: closed/merged items are skipped ---------------------------
+
+  def test_item_closed_between_listing_and_apply_is_not_swept
+    result, log = run_cli(apply: true)
+
+    # #23 is a nudge in the snapshot but closed on the pre-nudge re-fetch.
+    assert_includes result.fetch(:stdout), "SKIPPED nudge #23 on re-check: item is closed — skipped"
+    refute_includes log, "issues/23/comments"
+    refute_includes log, "issues/23/assignees"
+  end
+
+  # --- Fix F: --exempt-label adds to the defaults -----------------------
+
+  def test_exempt_label_flag_layers_on_top_of_the_defaults
+    result, log = run_cli(apply: true, extra_args: ["--exempt-label", "needs-design"])
+    out = result.fetch(:stdout)
+
+    # The built-in default still applies...
+    assert_includes out, "#5 issue: exempt label (blocked) — clock paused"
+    # ...and the added label now exempts #24 (a nudge without the flag).
+    assert_includes out, "#24 issue: exempt label (needs-design) — clock paused"
+    refute_includes log, "issues/24/comments"
+  end
+
+  # --- Fix G: a gh failure degrades gracefully --------------------------
+
+  def test_one_item_read_failure_is_reported_without_aborting_the_run
+    result, = run_cli
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    out = result.fetch(:stdout)
+    # #25's timeline fetch fails; it is reported, not fatal...
+    assert_includes out, "#25 issue: UNKNOWN:"
+    assert_includes out, "skipped"
+    # ...and the rest of the digest still prints.
+    assert_includes out, "WOULD NUDGE (10):"
+    assert_includes out, "#1 issue @alice:"
+  end
+
+  def test_one_failing_repo_does_not_abort_the_others
+    result, = run_cli(repos: ["failrepo/x", "owner/repo"])
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "repo failrepo/x skipped"
+    # The second repo still produces its digest.
+    assert_includes result.fetch(:stdout), "Repo owner/repo — stale-assignment sweep"
+    assert_includes result.fetch(:stdout), "WOULD NUDGE"
+  end
+
   # --- misc --------------------------------------------------------------
 
   def test_repo_with_a_leading_at_segment_is_rejected_before_any_gh_call
@@ -316,17 +365,15 @@ class StaleAssignmentSweepTest < Minitest::Test
     (NOW - (days * 86_400)).utc.iso8601
   end
 
-  def run_cli(apply: false, trust_config: nil, repo: "owner/repo", identity: IDENTITY, gh_fail_user: false)
+  def run_cli(apply: false, trust_config: nil, repo: "owner/repo", repos: nil, identity: IDENTITY,
+              gh_fail_user: false, extra_args: [])
     Dir.mktmpdir("stale-assignment-sweep-test") do |dir|
       build_fixtures(dir)
       log_path = File.join(dir, "gh.log")
-      args = [
-        RUBY_BIN, SCRIPT,
-        "--repo", repo,
-        "--now", NOW_ISO,
-        "--trust-config", trust_config || File.join(dir, "trust.yml")
-      ]
+      args = [RUBY_BIN, SCRIPT, "--now", NOW_ISO, "--trust-config", trust_config || File.join(dir, "trust.yml")]
+      Array(repos || [repo]).each { |value| args.concat(["--repo", value]) }
       args.concat(["--comment-identity", identity]) if identity
+      args.concat(extra_args)
       args << "--apply" if apply
       stdout, stderr, status = Open3.capture3(cli_env(dir, log_path, gh_fail_user), *args)
       stdout = stdout.force_encoding("UTF-8")
@@ -355,9 +402,12 @@ class StaleAssignmentSweepTest < Minitest::Test
     end
     # #17: re-fetch adds an agent-claimed label after the snapshot classified it
     # as a release. #18: re-fetched timeline gains an assignee reply. #21: re-fetch
-    # adds an exempt label after the snapshot classified it as a nudge.
+    # adds an exempt label after the snapshot classified it as a nudge. #23: the
+    # item is closed on re-fetch. #25: the fake gh fails its timeline read.
     File.write(File.join(dir, "issue-17.json"), JSON.generate(issue(17, %w[laura], labels: %w[agent-claimed])))
     File.write(File.join(dir, "issue-21.json"), JSON.generate(issue(21, %w[pat], labels: %w[blocked])))
+    File.write(File.join(dir, "issue-23.json"), JSON.generate(issue(23, %w[sam], state: "closed")))
+    File.write(File.join(dir, "fail-timeline-25"), "")
     File.write(
       File.join(dir, "timeline-18-recheck.json"),
       JSON.generate([[assigned("mona", 30), nudge(5), comment("mona", 1)]])
@@ -397,9 +447,17 @@ class StaleAssignmentSweepTest < Minitest::Test
         end
         print "#{IDENTITY}\\n"
       elsif argv.include?("issues?state=open")
+        if argv.include?("failrepo")
+          warn "gh: simulated listing failure"
+          exit 1
+        end
         print File.read(File.join(fixtures, "list.json"))
       elsif (match = argv.match(%r{issues/(\\d+)/timeline}))
         number = match[1]
+        if File.exist?(File.join(fixtures, "fail-timeline-\#{number}"))
+          warn "gh: simulated timeline failure for \#{number}"
+          exit 1
+        end
         base = File.join(fixtures, "timeline-\#{number}.json")
         recheck = File.join(fixtures, "timeline-\#{number}-recheck.json")
         if File.exist?(recheck)
@@ -454,13 +512,17 @@ class StaleAssignmentSweepTest < Minitest::Test
       issue(19, %w[nora]),
       issue(20, %w[omar]),
       issue(21, %w[pat]),
-      issue(22, %w[quinn rob])
+      issue(22, %w[quinn rob]),
+      issue(23, %w[sam]),
+      issue(24, %w[tara], labels: %w[needs-design]),
+      issue(25, %w[uma])
     ]
   end
 
-  def issue(number, logins, labels: [])
+  def issue(number, logins, labels: [], state: "open")
     {
       "number" => number,
+      "state" => state,
       "assignees" => logins.map { |login| { "login" => login } },
       "labels" => labels.map { |name| { "name" => name } },
       "html_url" => "https://github.com/owner/repo/issues/#{number}"
@@ -491,7 +553,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       21 => [assigned("pat", 30)],
       # quinn is active, rob is not; the item is still reserved (2 human assignees)
       # and never reaches this timeline (multi-human short-circuits before it).
-      22 => [assigned("quinn", 30), assigned("rob", 30), comment("quinn", 2)]
+      22 => [assigned("quinn", 30), assigned("rob", 30), comment("quinn", 2)],
+      23 => [assigned("sam", 30)],
+      24 => [assigned("tara", 30)]
+      # 25 has no timeline fixture: the fake gh fails its timeline fetch (Fix G).
     }
   end
 
