@@ -131,15 +131,16 @@ Plan a PR batch
    - Treat a human assignee as a reservation: a human assignee — any assignee
      outside the repo's resolved automation set — marks an issue or PR as
      reserved: owned means skip. Resolve the automation set from the trust
-     config's `trusted_bots` and any automation entries in `trusted_users` via
-     the `pr-security-preflight` resolution chain, plus any assignee whose login
-     carries the GitHub `[bot]` suffix; when it cannot be resolved, treat any
-     assignee as a human reservation and skip. Fetch the full scoped set and
-     classify assignees after fetch — `no:assignee` alone omits
-     automation-only-assigned items that stay eligible, so it is only a shortcut
-     when the repo uses no automation self-assignment. List each excluded item
-     as reserved with its assignee name; never silently drop reserved work.
-     Items with no assignee, or only an automation identity, stay eligible.
+     config's `trusted_bots` via the `pr-security-preflight` resolution chain,
+     plus any assignee whose login carries the GitHub `[bot]` suffix;
+     `trusted_users` are human actors and stay reservable. When the set cannot
+     be resolved, treat any assignee as a human reservation and skip. Fetch the
+     full scoped set and classify assignees after fetch — `no:assignee` alone
+     omits automation-only-assigned items that stay eligible, so it is only a
+     shortcut when the repo uses no automation self-assignment. List each
+     excluded item under "Excluded or deferred" as reserved with its assignee
+     name; never silently drop reserved work. Items with no assignee, or only an
+     automation identity, stay eligible.
    - Separate independent work from dependency-ordered work. Give every planned
      lane a stable agent id and a lane name; for dependency-ordered work, define
      explicit `depends_on` refs in the form `<batch-id>:<lane-name>` so

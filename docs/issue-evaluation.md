@@ -95,9 +95,10 @@ approved.
 
 Selection is also assignee-aware: a human assignee — any assignee outside the
 repo's resolved automation set — marks an issue or PR as reserved: owned means
-skip. The automation set is resolved from the trust config's
-`trusted_bots`/`trusted_users` (plus `[bot]`-suffixed logins) via the
-`pr-security-preflight` chain, failing closed to skip when unresolved. Classify
+skip. The automation set is resolved from the trust config's `trusted_bots`
+plus `[bot]`-suffixed logins via the `pr-security-preflight` chain
+(`trusted_users` are human actors and stay reservable), failing closed to skip
+when unresolved. Classify
 assignees after fetching the full scoped set — `no:assignee` alone omits
 automation-only-assigned eligible items. Reserved items are excluded from
 actionable batches and listed with their assignee names; items with no

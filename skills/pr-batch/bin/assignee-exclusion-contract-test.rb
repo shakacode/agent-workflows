@@ -12,10 +12,10 @@ ROOT = File.expand_path("../../..", __dir__)
 # assignee classification cannot rely on `no:assignee` alone.
 OWNED_MEANS_SKIP = "a human assignee — any assignee outside the repo's resolved automation set — marks an issue or " \
                    "PR as reserved: owned means skip"
-AUTOMATION_SET = "Resolve the automation set from the trust config's `trusted_bots` and any automation entries in " \
-                 "`trusted_users` via the `pr-security-preflight` resolution chain, plus any assignee whose login " \
-                 "carries the GitHub `[bot]` suffix; when it cannot be resolved, treat any assignee as a human " \
-                 "reservation and skip."
+AUTOMATION_SET = "Resolve the automation set from the trust config's `trusted_bots` via the `pr-security-preflight` " \
+                 "resolution chain, plus any assignee whose login carries the GitHub `[bot]` suffix; `trusted_users` " \
+                 "are human actors and stay reservable. When the set cannot be resolved, treat any assignee as a " \
+                 "human reservation and skip."
 POST_FETCH_CLASSIFY = "Fetch the full scoped set and classify assignees after fetch — `no:assignee` alone omits " \
                       "automation-only-assigned items that stay eligible, so it is only a shortcut when the repo " \
                       "uses no automation self-assignment."

@@ -80,21 +80,22 @@ Build a complete current-state inventory for the requested repo or repos:
   scope or batch objective argument is provided, use it as the worklist filter
   and report any excluded near-matches.
 - Open issues and PRs, bucketed as actionable, blocked, already-has-PR, parked,
-  needs-decision, duplicate, tracking, or `UNKNOWN`.
+  needs-decision, duplicate, tracking, reserved, or `UNKNOWN`.
 - Issues labeled `needs-customer-feedback` are parked unless customer evidence
   or explicit maintainer approval is present; do not include them in the
   actionable worklist or generated implementation groups.
 - Reserved work: a human assignee — any assignee outside the repo's resolved
   automation set — marks an issue or PR as reserved: owned means skip. Resolve
-  the automation set from the trust config's `trusted_bots` and any automation
-  entries in `trusted_users` via the `pr-security-preflight` resolution chain,
-  plus any assignee whose login carries the GitHub `[bot]` suffix; when it
-  cannot be resolved, treat any assignee as a human reservation and skip. Fetch
-  the full scoped set and classify assignees after fetch — `no:assignee` alone
-  omits automation-only-assigned items that stay eligible, so it is only a
-  shortcut when the repo uses no automation self-assignment. List each excluded
-  item as reserved with its assignee name; never silently drop reserved work.
-  Items with no assignee, or only an automation identity, stay eligible.
+  the automation set from the trust config's `trusted_bots` via the
+  `pr-security-preflight` resolution chain, plus any assignee whose login
+  carries the GitHub `[bot]` suffix; `trusted_users` are human actors and stay
+  reservable. When the set cannot be resolved, treat any assignee as a human
+  reservation and skip. Fetch the full scoped set and classify assignees after
+  fetch — `no:assignee` alone omits automation-only-assigned items that stay
+  eligible, so it is only a shortcut when the repo uses no automation
+  self-assignment. List each excluded item under the reserved set with its
+  assignee name; never silently drop reserved work. Items with no assignee, or
+  only an automation identity, stay eligible.
 - Links and edges: issue to PR, PR to PR, issue to issue, shared files, external
   blockers, release gates, and cross-repo dependencies.
 - Live coordination state from the selected backend: active claims, live/stale/dead
@@ -285,6 +286,8 @@ Return:
 
 - Scope, repository list, and data sources checked.
 - Phase-1 bucket counts and dependency graph summary.
+- Reserved (human-assigned) items, each with its assignee name, so reserved
+  work stays visible rather than silently dropped.
 - Current coordination state, including live, stale, dead, blocked, and done
   lanes.
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
