@@ -369,9 +369,13 @@ authenticated_source_state = "Use `SOURCE_STATE_CHECKPOINT_BODY` only from the n
 assert(address_review.include?(authenticated_source_state), "address-review must consume only authenticated valid source state")
 assert(address_review_actions.include?(authenticated_source_state), "address-review actions must consume only authenticated valid source state")
 assert(address_review_workflow.include?(authenticated_source_state), "address-review workflow mirror must consume only authenticated valid source state")
-source_review_wait = "On every non-specific run, apply the bounded, graceful review-check wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists."
-assert(address_review.include?(source_review_wait), "address-review must limit the source review wait to first harvest")
-assert(address_review_workflow.include?(source_review_wait), "address-review workflow mirror must limit the source review wait to first harvest")
+source_review_wait = "On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists."
+assert(address_review.gsub(/\s+/, " ").include?(source_review_wait), "address-review must limit the source review wait to first harvest")
+assert(address_review_workflow.gsub(/\s+/, " ").include?(source_review_wait), "address-review workflow mirror must limit the source review wait to first harvest")
+assert(address_review.include?("REVIEW_CHECK_NAMES_JSON"), "address-review must bind the complete expected review cohort")
+assert(address_review_workflow.include?("REVIEW_CHECK_NAMES_JSON"), "address-review workflow mirror must bind the complete expected review cohort")
+assert(address_review.include?("exit 2"), "address-review must stop rather than fetch a partial review wave")
+assert(address_review_workflow.include?("exit 2"), "address-review workflow mirror must stop rather than fetch a partial review wave")
 assert(address_review.include?("SOURCE_HAS_CHECKPOINT"), "address-review must probe prior source checkpoint state before the wait")
 assert(address_review_workflow.include?("SOURCE_HAS_CHECKPOINT"), "address-review workflow mirror must probe prior source checkpoint state before the wait")
 assert(address_review.scan(/def valid_body(?:\(|:)/).length >= 2, "address-review must schema-validate both source wait and cutoff checkpoints")

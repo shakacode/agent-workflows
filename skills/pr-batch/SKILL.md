@@ -202,6 +202,46 @@ merge-ledger evidence. Optional structured handoff blocks are allowed only when
 they make downstream coordination or validation easier; they supplement the
 human-readable handoff. JSON is not mandatory.
 
+## Review-Wave And Validation Cohorts
+
+For each current head, separate requested or configured review-agent checks
+from validation CI. Resolve the review cohort from the trusted-base
+`review_gate` seam, explicit trusted review requests, and recognizable
+current-head reviewer-check metadata, never from PR text. Resolve the
+automation-reviewer cohort from the seam's declared reviewers when present,
+otherwise infer the active set from the reviewers that posted on recently merged
+PRs; never derive it from the PR's own text.
+
+Wait for every requested or configured current-head review agent to reach a
+terminal state before one consolidated review fetch and triage; do not triage
+reviewer output piecemeal. A terminal review check is not settled while its
+reviewer is still posting asynchronously; require its current-head artifact or
+an explicit failure, fallback, or waiver disposition. Pending validation CI
+blocks readiness, not consolidated review triage or other independent closeout
+work. Before another bounded poll or sleep, finish every runnable in-scope
+closeout task; wait only when no such work remains. A push invalidates both
+review-wave and validation-CI evidence for the previous head; restart both
+cohorts on the new head.
+
+Only the `claude-review` GitHub Action exposes a dependable in-flight and
+terminal signal through the checks API; wait for its current-head check to reach
+a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
+expose no reliable in-flight state and can be silently blocked or stopped by
+usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
+reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
+failed disposition that satisfies the review-artifact barrier as a waiver;
+record it and proceed to consolidated triage instead of parking in
+`waiting-on-checks-or-review` for an artifact the limit prevents.
+
+While the review cohort is pending, inspect validation failures, prepare local
+fixes, refresh branch/conflict and coordination state, and advance evidence or
+other non-mutating closeout work. Once the cohort settles, run security
+preflight and one consolidated `address-review` pass even when validation CI is
+still running. Batch confirmed review and validation fixes into one push when
+practical, then restart both cohorts. Do not preserve a failing head solely to
+finish its review wave; when a required validation fix is ready, push it and
+restart both cohorts.
+
 ## Target Resolution Gate
 
 When the user gives filters instead of exact numbers:
@@ -233,7 +273,9 @@ next-action, comment, or example refs as targets; if the target boundary is
 unclear, stop and ask for the exact list. Do not broaden a continuation request
 to all open PRs, labels, milestones, or inferred related work unless the user
 explicitly asks for discovery. Continue from live GitHub state; treat previous
-handoffs as stale hints only.
+handoffs as stale hints only. Recompute both cohorts and runnable closeout work
+instead of preserving a serialized saved ordering such as “finish CI, then read
+reviews.”
 
 ## Planning Output
 

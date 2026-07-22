@@ -2,6 +2,7 @@
 base_branch: main
 follow_up_prefix: "Follow-up:"
 review_gate: "independent code review for non-trivial workflow or helper changes"
+automation_reviewers: "claude-review (GitHub Action; in-flight and terminal state observable via the checks API) and coderabbitai (advisory; may fail on rate limits)"
 approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable"
 # This source repo runs in single-operator mode; consumer repos pick their own
 # coordination backend in their local seam.

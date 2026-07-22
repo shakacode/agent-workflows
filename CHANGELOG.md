@@ -62,6 +62,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Keep PR closeout work-conserving by batching the complete current-head reviewer wave for one triage pass while independent validation CI and closeout work continue.**
 - **Restore durable Codex goal-prompt headroom and require early splitting without weakening completion contracts.** [PR 148](https://github.com/shakacode/agent-workflows/pull/148) by [justin808](https://github.com/justin808).
 - **Reject empty `agent-workflows-doctor` target and source paths as usage errors instead of expanding them to the current directory.**
 - **Keep trusted PR-batch review closeout autonomous for evidence-backed fix, defer, and decline recommendations under every merge-authority mode, prompting maintainers only when the review outcome explicitly requires their help.**

@@ -196,6 +196,26 @@ and requires `MODEL_ESCALATION_REQUEST` before stronger-model review or replacem
 
 ## Review And Readiness
 
+For each current head, treat configured, explicitly requested, or recognizable
+current-head reviewer checks as a review cohort distinct from validation CI.
+Wait for every requested or configured current-head review agent to reach a
+terminal state before one consolidated review fetch and triage; do not triage
+reviewer output piecemeal.
+Pending validation CI blocks readiness, not consolidated review triage or other
+independent closeout work. Before another bounded poll or sleep, finish every
+runnable in-scope closeout task; wait only when no such work remains. A push
+invalidates both review-wave and validation-CI evidence for the previous head;
+restart both cohorts on the new head.
+Only the `claude-review` GitHub Action exposes a dependable in-flight and
+terminal signal through the checks API; wait for its current-head check to reach
+a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
+expose no reliable in-flight state and can be silently blocked or stopped by
+usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
+reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
+failed disposition that satisfies the review-artifact barrier as a waiver;
+record it and proceed to consolidated triage instead of parking in
+`waiting-on-checks-or-review` for an artifact the limit prevents.
+
 - Existing PR targets with review feedback should route workers through
   [workflows/address-review.md](../workflows/address-review.md) or
   [skills/address-review/SKILL.md](../skills/address-review/SKILL.md).
