@@ -42,7 +42,7 @@ class StaleAssignmentSweepTest < Minitest::Test
     result, = run_cli
     out = result.fetch(:stdout)
 
-    assert_includes out, "WOULD NUDGE (6):"
+    assert_includes out, "WOULD NUDGE (8):"
     assert_includes out, "#1 issue @alice: time-to-first-activity 30d inactive >= ttl 7d"
     assert_includes out, "#9 PR @grace: inactivity-after-start 10d inactive >= ttl 7d"
     assert_includes out, "#13 issue @maintainer1: time-to-first-activity 30d inactive >= ttl 7d"
@@ -189,6 +189,37 @@ class StaleAssignmentSweepTest < Minitest::Test
     refute_includes log, "issues/18/comments"
   end
 
+  # --- Fix A: revalidate before a nudge too -----------------------------
+
+  def test_nudge_aborted_when_recheck_shows_an_added_exempt_label
+    result, log = run_cli(apply: true)
+
+    # #21 was a nudge in the snapshot; a `blocked` label appears on re-fetch.
+    assert_includes result.fetch(:stdout), "SKIPPED nudge #21 on re-check"
+    assert_includes result.fetch(:stdout), "exempt label (blocked) — clock paused"
+    refute_includes log, "issues/21/comments"
+  end
+
+  # --- Fix B: only login-bearing timeline events renew a lease ----------
+
+  def test_cross_referenced_event_by_the_assignee_renews_the_lease
+    result, log = run_cli(apply: true)
+
+    # #19: a cross-referenced event by the assignee 2d ago is recent activity.
+    assert_includes result.fetch(:stdout), "#19 issue: active; inactivity-after-start 2d < ttl 14d"
+    refute_includes log, "issues/19/comments"
+    refute_includes log, "issues/19/assignees"
+  end
+
+  def test_committed_event_without_a_login_does_not_renew_the_lease
+    result, log = run_cli(apply: true)
+
+    # #20's only "activity" is a raw commit (no GitHub login), so it does not
+    # count: the item is still nudged on the first-activity clock.
+    assert_includes result.fetch(:stdout), "#20 issue @omar: time-to-first-activity 30d inactive >= ttl 7d"
+    assert_includes log, "issues/20/comments"
+  end
+
   # --- Fix 3: automation requires the [bot] suffix ----------------------
 
   def test_automation_assignees_are_never_swept
@@ -300,8 +331,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       File.write(File.join(dir, "timeline-#{number}.json"), JSON.generate([events]))
     end
     # #17: re-fetch adds an agent-claimed label after the snapshot classified it
-    # as a release. #18: re-fetched timeline gains an assignee reply.
+    # as a release. #18: re-fetched timeline gains an assignee reply. #21: re-fetch
+    # adds an exempt label after the snapshot classified it as a nudge.
     File.write(File.join(dir, "issue-17.json"), JSON.generate(issue(17, %w[laura], labels: %w[agent-claimed])))
+    File.write(File.join(dir, "issue-21.json"), JSON.generate(issue(21, %w[pat], labels: %w[blocked])))
     File.write(
       File.join(dir, "timeline-18-recheck.json"),
       JSON.generate([[assigned("mona", 30), nudge(5), comment("mona", 1)]])
@@ -394,7 +427,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       issue(15, %w[claude]),
       issue(16, %w[karl]),
       issue(17, %w[laura]),
-      issue(18, %w[mona])
+      issue(18, %w[mona]),
+      issue(19, %w[nora]),
+      issue(20, %w[omar]),
+      issue(21, %w[pat])
     ]
   end
 
@@ -425,7 +461,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       15 => [assigned("claude", 30)],
       16 => [assigned("karl", 30), nudge(5, "imposter")],
       17 => [assigned("laura", 30), nudge(5)],
-      18 => [assigned("mona", 30), nudge(5)]
+      18 => [assigned("mona", 30), nudge(5)],
+      19 => [assigned("nora", 30), cross_referenced("nora", 2)],
+      20 => [assigned("omar", 30), committed_without_login(1)],
+      21 => [assigned("pat", 30)]
     }
   end
 
@@ -455,6 +494,25 @@ class StaleAssignmentSweepTest < Minitest::Test
       "user" => { "login" => login },
       "state" => "COMMENTED",
       "body" => ""
+    }
+  end
+
+  # A commit or PR that references the issue: carries the pusher's actor login.
+  def cross_referenced(login, days)
+    {
+      "event" => "cross-referenced",
+      "created_at" => days_ago(days),
+      "actor" => { "login" => login }
+    }
+  end
+
+  # GitHub's timeline `committed` shape: git author/committer only, no GitHub
+  # login — so it can never be attributed to an assignee.
+  def committed_without_login(days)
+    {
+      "event" => "committed",
+      "author" => { "name" => "Omar Dev", "email" => "omar@example.com", "date" => days_ago(days) },
+      "committer" => { "name" => "Omar Dev", "email" => "omar@example.com", "date" => days_ago(days) }
     }
   end
 

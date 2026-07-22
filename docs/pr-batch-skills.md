@@ -79,8 +79,11 @@ analog of the coordination backend's agent heartbeat leases.
   but zero activity by the assignee since assignment — the primary anti-squatting
   clock. `inactivity-after-start` (default 14 days for issues, 7 for PRs): no
   assignee activity for the TTL. Activity that renews a lease is the assignee's
-  own commits, comments, reviews, or linked-PR events; other people's activity
-  does not renew it.
+  own comments, reviews, and issue-referencing commits or linked-PR events — not
+  raw timeline commits, which carry no GitHub login and so cannot be attributed
+  (a commit renews only when it surfaces as a `referenced`/`cross-referenced`
+  timeline event). Other people's activity does not renew it. The report-only
+  rollout is how you validate this activity coverage before enabling writes.
 - **Flow: nudge → grace → release.** At threshold it posts a nudge comment; four
   days (`--grace-days`) after an *unanswered* nudge it removes the assignee and
   posts an audit comment. It never releases without a prior unanswered nudge. Any

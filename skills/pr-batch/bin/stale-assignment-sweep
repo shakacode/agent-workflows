@@ -24,8 +24,13 @@ module StaleAssignmentSweep
   RELEASE_MARKER = "<!-- stale-assignment-sweep:release -->"
 
   # Timeline event types that count as an assignee renewing their own lease.
-  # Assignment itself is deliberately excluded: being assigned is not activity.
-  ACTIVITY_EVENTS = %w[commented reviewed committed cross-referenced referenced].freeze
+  # These all carry a GitHub `actor`/`user` login we can attribute to the
+  # assignee. Raw `committed` events are deliberately excluded: GitHub's timeline
+  # `committed` shape carries only git author/committer {name,email,date} with no
+  # GitHub login, so it can never be attributed — a commit that references the
+  # issue instead surfaces as a login-bearing `referenced`/`cross-referenced`
+  # event (the pusher), which does renew. Assignment itself is not activity.
+  ACTIVITY_EVENTS = %w[commented reviewed cross-referenced referenced].freeze
 
   AGENT_CLAIMED_LABEL = "agent-claimed"
   EPOCH = Time.at(0).utc
@@ -114,8 +119,10 @@ module StaleAssignmentSweep
           time-to-first-activity  assigned but zero assignee activity since assignment (anti-squatting).
           inactivity-after-start  no assignee activity for the issue/PR inactivity TTL.
 
-        Activity that renews a lease is the ASSIGNEE'S OWN commits, comments, reviews, or
-        linked-PR events; other people's activity does not renew it. Exempt labels pause the
+        Activity that renews a lease is the ASSIGNEE'S OWN comments, reviews, and
+        issue-referencing commits or linked-PR events (raw timeline commits carry no GitHub
+        login, so a commit only renews when it surfaces as a referenced/cross-referenced
+        event); other people's activity does not renew it. Exempt labels pause the
         clock. Items carrying the `#{AGENT_CLAIMED_LABEL}` label are skipped (agent-claim
         staleness is owned by backend heartbeat leases). An assignee is automation only when
         its login carries the `[bot]` suffix AND its base is in the trust config's
@@ -523,9 +530,20 @@ module StaleAssignmentSweep
       end
     end
 
-    def apply_nudge(repo, result, _options)
-      post_comment(repo, result.fetch(:number), nudge_body(result))
-      puts "APPLIED nudge ##{result.fetch(:number)} (#{mentions(result)})"
+    # Re-fetch and re-classify before nudging so we do not ping an assignee who
+    # just replied, or an item that just gained an exempt/`agent-claimed` label,
+    # between scan and mutation. Nudge is low-harm, but the re-check keeps the
+    # comment honest. Only post while the live decision is still `:nudge`.
+    def apply_nudge(repo, result, options)
+      number = result.fetch(:number)
+      recheck = classify(repo, fetch_issue(repo, number), options)
+      unless recheck[:decision] == :nudge
+        puts "SKIPPED nudge ##{number} on re-check: #{recheck.fetch(:reason)}"
+        return
+      end
+
+      post_comment(repo, number, nudge_body(recheck))
+      puts "APPLIED nudge ##{number} (#{mentions(recheck)})"
     end
 
     # Release is destructive and the snapshot may be stale: between classify and
