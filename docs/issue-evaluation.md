@@ -93,6 +93,12 @@ may be allowed while code, branch, issue, PR, label, milestone, assignee,
 title/body, and issue-state changes remain disallowed unless explicitly
 approved.
 
+Selection is also assignee-aware: a human assignee (any assignee that is not the
+repo's automation identity) marks an issue or PR as reserved: owned means skip.
+Reserved items are excluded from actionable batches and listed with their
+assignee names; items with no assignee, or only an automation identity, stay
+eligible.
+
 Before adding issues to a PR batch, classify each target as:
 
 - implementation PR;

@@ -101,6 +101,7 @@ ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/review-wave-contract-test.rb
+ruby skills/pr-batch/bin/assignee-exclusion-contract-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contract-test.rb
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb

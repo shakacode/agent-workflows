@@ -84,6 +84,12 @@ Build a complete current-state inventory for the requested repo or repos:
 - Issues labeled `needs-customer-feedback` are parked unless customer evidence
   or explicit maintainer approval is present; do not include them in the
   actionable worklist or generated implementation groups.
+- Reserved work: a human assignee (any assignee that is not the repo's
+  automation identity) marks an issue or PR as reserved: owned means skip. Use
+  `no:assignee` in `gh` search filters where possible, otherwise filter after
+  fetch, and list each excluded item as reserved with its assignee name; never
+  silently drop reserved work. Items with no assignee, or only an automation
+  identity, stay eligible.
 - Links and edges: issue to PR, PR to PR, issue to issue, shared files, external
   blockers, release gates, and cross-repo dependencies.
 - Live coordination state from the selected backend: active claims, live/stale/dead

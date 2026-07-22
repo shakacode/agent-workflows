@@ -41,10 +41,12 @@ Plan an issue triage
    - Issues labeled `needs-customer-feedback` must not be recommended for implementation without customer evidence or explicit maintainer approval.
    - Performance-regression bot issues should be reviewed as a cluster first, with duplicate/noise/root-tracking recommendations before per-issue implementation.
    - Tracking, release, and meta issues should be separated from implementation candidates.
+   - Reserved work: a human assignee (any assignee that is not the repo's automation identity) marks an issue or PR as reserved: owned means skip. Do not recommend reserved items for implementation; surface them so reserved work stays visible. Items with no assignee, or only an automation identity, stay eligible.
 
 5. Require a concise audit output
    - Summary counts by bucket.
    - High-priority implementation candidates.
+   - Reserved (human-assigned) issues, each with its assignee name.
    - Parked and `needs-customer-feedback` issues.
    - Close, duplicate, or superseded candidates, with proposed or posted comment text.
    - Tracking/meta issues that should remain open.
@@ -83,16 +85,18 @@ Triage rules:
 - Issues labeled needs-customer-feedback must not be recommended for implementation unless there is clear customer evidence or maintainer approval.
 - Review performance-regression bot issues as a cluster first; identify duplicate/noise/root-tracking issues instead of treating every issue as a standalone implementation target.
 - Separate tracking, release, and meta issues from implementation candidates.
+- Treat a human assignee (any assignee that is not the repo's automation identity) as a reservation: owned means skip. Do not recommend reserved items for implementation; list them separately with their assignee names so reserved work stays visible.
 
 Output:
 Produce a concise audit report with:
 1. Summary counts by bucket.
 2. High-priority implementation candidates.
-3. Issues to park or keep under needs-customer-feedback.
-4. Issues that appear closable, duplicate, or superseded, with posted or proposed comment text where useful.
-5. Tracking/meta issues that should remain open.
-6. UNKNOWN items needing maintainer decision.
-7. Suggested next implementation batch, capped at a small safe number.
+3. Reserved (human-assigned) items, each with its assignee name.
+4. Issues to park or keep under needs-customer-feedback.
+5. Issues that appear closable, duplicate, or superseded, with posted or proposed comment text where useful.
+6. Tracking/meta issues that should remain open.
+7. UNKNOWN items needing maintainer decision.
+8. Suggested next implementation batch, capped at a small safe number.
 
 For every issue mentioned, include:
 - Issue number and GitHub URL

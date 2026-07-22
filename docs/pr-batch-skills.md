@@ -60,6 +60,8 @@ The `agents/openai.yaml` file under a skill is optional Codex UI metadata for sk
 2. Return the ready issue-audit prompt and stop. Do not shape worker lanes or produce a `$pr-batch` goal unless the user explicitly asks to turn audit results into implementation planning.
 3. A review-only issue triage may post high-signal GitHub issue comments when useful, but it must not change code, create issues, change labels, milestones, assignees, titles, issue bodies, or issue state unless that permission is explicit.
 
+Beyond permissions, selection itself is assignee-aware: a human assignee (any assignee that is not the repo's automation identity) marks an issue or PR as reserved: owned means skip. `$plan-pr-batch`, `$triage`, and `$plan-issue-triage` exclude reserved items from actionable batches and list them with their assignee names; items with no assignee, or only an automation identity, stay eligible.
+
 ## Whole-Surface Triage Flow
 
 Use `$triage` when the coordinator wants the generated equivalent of a manual

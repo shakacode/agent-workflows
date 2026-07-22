@@ -128,6 +128,12 @@ Plan a PR batch
    - Exclude issues labeled `needs-customer-feedback` from implementation batches unless the user explicitly provides customer evidence or maintainer approval for that issue; list them under "Excluded or deferred" with `needs-customer-feedback` as the reason.
    - For any issue that is speculative, AI/code-analysis-only, over-scoped, or unclear in value, priority, or fix scope, route through the installed or repo-local `evaluate-issue` skill before assigning it to implementation work.
    - Exclude closed or merged items unless the user explicitly asked to audit them.
+   - Treat a human assignee as a reservation: a human assignee (any assignee
+     that is not the repo's automation identity) marks an issue or PR as
+     reserved: owned means skip. Use `no:assignee` in `gh` search filters where
+     possible, otherwise filter after fetch, and list each excluded item as
+     reserved with its assignee name; never silently drop reserved work. Items
+     with no assignee, or only an automation identity, stay eligible.
    - Separate independent work from dependency-ordered work. Give every planned
      lane a stable agent id and a lane name; for dependency-ordered work, define
      explicit `depends_on` refs in the form `<batch-id>:<lane-name>` so
