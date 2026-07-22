@@ -12,8 +12,12 @@ ROOT = File.expand_path("../../..", __dir__)
 # the stale-assignment sweep, agents via heartbeat TTL. Selection and triage must
 # skip agent-claimed items, or the label would be applied but never respected.
 SEAM_LABEL = "the seam's claim\n  label (`agent_claimed_label`, default `agent-claimed`)".gsub(/\s+/, " ")
-APPLY_REMOVE_DAEMON = "apply it after a successful `agent-coord claim`, remove it when the claim is released, and " \
-                      "let the coordination daemon remove it for claims that expire without a clean release."
+APPLY_ON_CLAIM = "apply it after a successful `agent-coord claim`, and remove it when the claim is released — but " \
+                 "only for the lane's own claim"
+CLAIM_SPECIFIC_REMOVAL = "verify this lane is still the claim holder (the holder/generation check) before removing, " \
+                         "so a replacement or retried claim that has already reapplied the label is not cleared."
+DAEMON_EXPIRY = "Let the coordination daemon remove it for claims that expire without a clean release, and " \
+                "reconcile the label to the live claim otherwise."
 HINT_NOT_LOCK = "it is a visible hint for people browsing GitHub, not the durable lock — the backend claim and " \
                 "its heartbeat TTL remain the source of truth"
 BACKEND_NA_SKIP = "Skip label mirroring entirely when `coordination_backend: n/a`"
@@ -43,7 +47,8 @@ class AgentClaimedMirrorContractTest < Minitest::Test
   end
 
   def test_workflow_defines_the_claim_label_mirror_and_symmetry
-    [SEAM_LABEL, APPLY_REMOVE_DAEMON, HINT_NOT_LOCK, BACKEND_NA_SKIP, OWNED_SYMMETRY, SWEEP_SKIPS_CLAIMED].each do |rule|
+    [SEAM_LABEL, APPLY_ON_CLAIM, CLAIM_SPECIFIC_REMOVAL, DAEMON_EXPIRY,
+     HINT_NOT_LOCK, BACKEND_NA_SKIP, OWNED_SYMMETRY, SWEEP_SKIPS_CLAIMED].each do |rule|
       assert_rule @workflow, rule
     end
   end

@@ -1183,8 +1183,12 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
 - Mirror an active lane claim on the claimed issue/PR with the seam's claim
   label (`agent_claimed_label`, default `agent-claimed`) when a coordination
   backend is in use: apply it after a successful
-  `agent-coord claim`, remove it when the claim is released, and let the
-  coordination daemon remove it for claims that expire without a clean release.
+  `agent-coord claim`, and remove it when the claim is released — but only for the
+  lane's own claim: verify this lane is still the claim holder (the
+  holder/generation check) before removing, so a replacement or retried claim that
+  has already reapplied the label is not cleared. Let the coordination daemon
+  remove it for claims that expire without a clean release, and reconcile the
+  label to the live claim otherwise.
   Like `codex-wip`, it is a visible hint for people browsing GitHub, not the
   durable lock — the backend claim and its heartbeat TTL remain the source of
   truth, and a stale `agent-claimed` label after a crash or restart is expected

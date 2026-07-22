@@ -560,9 +560,10 @@ proceed in claim-only mode only after the canonical workflow allows it; and
 structured public claim comments are advisory fallback state only when the repo
 seam allows that fallback. Timed-out claims stop as `UNKNOWN (claim outcome)`
 for backend reconciliation. An issue/PR lane claim also mirrors to the seam's
-`agent-claimed` label (apply on claim, remove on release; hint not lock; skip
-when backend n/a), and selection/triage skip `agent-claimed` items — see the
-canonical rule in `pr-processing.md`.
+claim label (`agent_claimed_label`, default `agent-claimed`; apply on claim,
+remove on release for this lane's own claim; hint not lock; skip when backend
+n/a), and selection/triage skip claimed items — see the canonical rule in
+`pr-processing.md`.
 
 ## Worker Rules
 
