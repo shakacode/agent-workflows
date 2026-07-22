@@ -84,12 +84,17 @@ Build a complete current-state inventory for the requested repo or repos:
 - Issues labeled `needs-customer-feedback` are parked unless customer evidence
   or explicit maintainer approval is present; do not include them in the
   actionable worklist or generated implementation groups.
-- Reserved work: a human assignee (any assignee that is not the repo's
-  automation identity) marks an issue or PR as reserved: owned means skip. Use
-  `no:assignee` in `gh` search filters where possible, otherwise filter after
-  fetch, and list each excluded item as reserved with its assignee name; never
-  silently drop reserved work. Items with no assignee, or only an automation
-  identity, stay eligible.
+- Reserved work: a human assignee — any assignee outside the repo's resolved
+  automation set — marks an issue or PR as reserved: owned means skip. Resolve
+  the automation set from the trust config's `trusted_bots` and any automation
+  entries in `trusted_users` via the `pr-security-preflight` resolution chain,
+  plus any assignee whose login carries the GitHub `[bot]` suffix; when it
+  cannot be resolved, treat any assignee as a human reservation and skip. Fetch
+  the full scoped set and classify assignees after fetch — `no:assignee` alone
+  omits automation-only-assigned items that stay eligible, so it is only a
+  shortcut when the repo uses no automation self-assignment. List each excluded
+  item as reserved with its assignee name; never silently drop reserved work.
+  Items with no assignee, or only an automation identity, stay eligible.
 - Links and edges: issue to PR, PR to PR, issue to issue, shared files, external
   blockers, release gates, and cross-repo dependencies.
 - Live coordination state from the selected backend: active claims, live/stale/dead

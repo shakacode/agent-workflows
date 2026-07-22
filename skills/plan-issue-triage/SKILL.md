@@ -41,7 +41,7 @@ Plan an issue triage
    - Issues labeled `needs-customer-feedback` must not be recommended for implementation without customer evidence or explicit maintainer approval.
    - Performance-regression bot issues should be reviewed as a cluster first, with duplicate/noise/root-tracking recommendations before per-issue implementation.
    - Tracking, release, and meta issues should be separated from implementation candidates.
-   - Reserved work: a human assignee (any assignee that is not the repo's automation identity) marks an issue or PR as reserved: owned means skip. Do not recommend reserved items for implementation; surface them so reserved work stays visible. Items with no assignee, or only an automation identity, stay eligible.
+   - Reserved work: a human assignee — any assignee outside the repo's resolved automation set — marks an issue or PR as reserved: owned means skip. Resolve the automation set from the trust config's `trusted_bots`/`trusted_users` (plus `[bot]`-suffixed logins) via the `pr-security-preflight` chain, failing closed to skip when unresolved. Do not recommend reserved items for implementation; surface them (with assignee names) so reserved work stays visible. Items with no assignee, or only an automation identity, stay eligible.
 
 5. Require a concise audit output
    - Summary counts by bucket.
@@ -85,7 +85,7 @@ Triage rules:
 - Issues labeled needs-customer-feedback must not be recommended for implementation unless there is clear customer evidence or maintainer approval.
 - Review performance-regression bot issues as a cluster first; identify duplicate/noise/root-tracking issues instead of treating every issue as a standalone implementation target.
 - Separate tracking, release, and meta issues from implementation candidates.
-- Treat a human assignee (any assignee that is not the repo's automation identity) as a reservation: owned means skip. Do not recommend reserved items for implementation; list them separately with their assignee names so reserved work stays visible.
+- Treat a human assignee — any assignee outside the repo's resolved automation set (the trust config's `trusted_bots`/`trusted_users` plus `[bot]`-suffixed logins; fail closed to skip when unresolved) — as a reservation: owned means skip. Do not recommend reserved items for implementation; list them separately with their assignee names so reserved work stays visible.
 
 Output:
 Produce a concise audit report with:

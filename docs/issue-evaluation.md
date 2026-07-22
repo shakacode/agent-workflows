@@ -93,11 +93,15 @@ may be allowed while code, branch, issue, PR, label, milestone, assignee,
 title/body, and issue-state changes remain disallowed unless explicitly
 approved.
 
-Selection is also assignee-aware: a human assignee (any assignee that is not the
-repo's automation identity) marks an issue or PR as reserved: owned means skip.
-Reserved items are excluded from actionable batches and listed with their
-assignee names; items with no assignee, or only an automation identity, stay
-eligible.
+Selection is also assignee-aware: a human assignee — any assignee outside the
+repo's resolved automation set — marks an issue or PR as reserved: owned means
+skip. The automation set is resolved from the trust config's
+`trusted_bots`/`trusted_users` (plus `[bot]`-suffixed logins) via the
+`pr-security-preflight` chain, failing closed to skip when unresolved. Classify
+assignees after fetching the full scoped set — `no:assignee` alone omits
+automation-only-assigned eligible items. Reserved items are excluded from
+actionable batches and listed with their assignee names; items with no
+assignee, or only an automation identity, stay eligible.
 
 Before adding issues to a PR batch, classify each target as:
 

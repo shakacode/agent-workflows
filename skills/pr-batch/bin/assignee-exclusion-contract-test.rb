@@ -7,11 +7,18 @@ ROOT = File.expand_path("../../..", __dir__)
 
 # A human assignee reserves work: owned means skip. This invariant must be
 # documented in the batch selection/triage skills and the docs that restate
-# them, so assignee-aware exclusion is not silently dropped.
-OWNED_MEANS_SKIP = "a human assignee (any assignee that is not the repo's automation identity) marks an issue or " \
+# them, so assignee-aware exclusion is not silently dropped. "Automation" is
+# defined via the existing trust config, not a new undefined term, and the
+# assignee classification cannot rely on `no:assignee` alone.
+OWNED_MEANS_SKIP = "a human assignee — any assignee outside the repo's resolved automation set — marks an issue or " \
                    "PR as reserved: owned means skip"
-RESERVED_LISTING = "Use `no:assignee` in `gh` search filters where possible, otherwise filter after fetch, and list " \
-                   "each excluded item as reserved with its assignee name; never silently drop reserved work."
+AUTOMATION_SET = "Resolve the automation set from the trust config's `trusted_bots` and any automation entries in " \
+                 "`trusted_users` via the `pr-security-preflight` resolution chain, plus any assignee whose login " \
+                 "carries the GitHub `[bot]` suffix; when it cannot be resolved, treat any assignee as a human " \
+                 "reservation and skip."
+POST_FETCH_CLASSIFY = "Fetch the full scoped set and classify assignees after fetch — `no:assignee` alone omits " \
+                      "automation-only-assigned items that stay eligible, so it is only a shortcut when the repo " \
+                      "uses no automation self-assignment."
 
 class AssigneeExclusionContractTest < Minitest::Test
   def setup
@@ -28,9 +35,10 @@ class AssigneeExclusionContractTest < Minitest::Test
     end
   end
 
-  def test_batch_shaping_skills_require_reserved_listing_without_silent_drops
+  def test_batch_shaping_skills_define_automation_via_trust_config_and_classify_after_fetch
     [@plan_pr_batch, @triage].each do |text|
-      assert_rule text, RESERVED_LISTING
+      assert_rule text, AUTOMATION_SET
+      assert_rule text, POST_FETCH_CLASSIFY
     end
   end
 
