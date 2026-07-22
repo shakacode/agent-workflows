@@ -47,7 +47,7 @@ Plan an issue triage
 5. Require a concise audit output
    - Summary counts by bucket.
    - High-priority implementation candidates.
-   - Reserved (human-assigned) issues, each with its assignee name.
+   - Reserved issues — human-assigned (with assignee name) or agent-claimed (by the seam's claim label).
    - Parked and `needs-customer-feedback` issues.
    - Close, duplicate, or superseded candidates, with proposed or posted comment text.
    - Tracking/meta issues that should remain open.
@@ -92,7 +92,7 @@ Output:
 Produce a concise audit report with:
 1. Summary counts by bucket.
 2. High-priority implementation candidates.
-3. Reserved (human-assigned) items, each with its assignee name.
+3. Reserved items — human-assigned (with assignee name) or agent-claimed (by the seam's claim label).
 4. Issues to park or keep under needs-customer-feedback.
 5. Issues that appear closable, duplicate, or superseded, with posted or proposed comment text where useful.
 6. Tracking/meta issues that should remain open.

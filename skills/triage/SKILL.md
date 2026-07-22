@@ -289,8 +289,9 @@ Return:
 
 - Scope, repository list, and data sources checked.
 - Phase-1 bucket counts and dependency graph summary.
-- Reserved (human-assigned) items, each with its assignee name, so reserved
-  work stays visible rather than silently dropped.
+- Reserved items — human-assigned (with assignee name) or agent-claimed (by the
+  seam's claim label) — so reserved work stays visible rather than silently
+  dropped.
 - Current coordination state, including live, stale, dead, blocked, and done
   lanes.
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.

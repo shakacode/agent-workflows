@@ -1772,7 +1772,8 @@ hatch**, not a single kill switch:
   minimum cleanup or handoff needed when abandoning would leave remote state
   inconsistent (for example, after a push has already landed), otherwise
   abandons still-local work without pushing, runs `agent-coord release` for the
-  lane, records the cancelled lane as its final state, and exits without leaving
+  lane, removes the mirrored claim label if one was applied, records the
+  cancelled lane as its final state, and exits without leaving
   a half-pushed branch or corrupted worktree. The one-phase-transition latency
   bound holds only for workers that successfully check targeted status at each
   phase transition: `agent-coord status --batch-id <batch-id> --json` for batch
@@ -1788,7 +1789,8 @@ hatch**, not a single kill switch:
      `claude -p` process, or close the Conductor workspace running an in-process
      `Agent`/`Workflow` coordinator.
   3. Run `agent-coord release` for the lane, or manually clear the orphaned
-     claim, so relaunch does not wait for lease expiry. This is safe because the
+     claim, so relaunch does not wait for lease expiry, and remove the mirrored
+     claim label (the daemon backstop also reconciles it on lease expiry). This is safe because the
      cancellation state still prevents another worker from reclaiming the lane
      while cleanup is in progress.
   4. Clean the lane worktree. If the directory still exists, run
