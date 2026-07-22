@@ -62,6 +62,72 @@ The `agents/openai.yaml` file under a skill is optional Codex UI metadata for sk
 
 Beyond permissions, selection itself is assignee-aware: a human assignee — any assignee outside the repo's resolved automation set — marks an issue or PR as reserved: owned means skip. The automation set is resolved from the trust config's `trusted_bots` plus `[bot]`-suffixed logins via the `pr-security-preflight` chain (`trusted_users` are human actors and stay reservable), failing closed to skip when unresolved. `$plan-pr-batch`, `$triage`, and `$plan-issue-triage` classify assignees after fetching the full scoped set (`no:assignee` alone omits automation-only-assigned eligible items), exclude reserved items from actionable batches, and list them with their assignee names; items with no assignee, or only an automation identity, stay eligible.
 
+## Stale-Assignment Sweep
+
+Because owned means skip, an assignment left with no follow-through would block
+that work forever. `skills/pr-batch/bin/stale-assignment-sweep` treats assignment
+as a lease, not a deed: it nudges, then (only after an unanswered grace) releases
+inactive human assignments back to the batch pool. It is the human-timescale
+analog of the coordination backend's agent heartbeat leases.
+
+- **Default is dry-run.** With no `--apply`, it makes zero GitHub mutations and
+  only prints a digest of would-nudge / would-release items, each with its clock,
+  days inactive, and assignee. Run it report-only for ~2 weeks to tune TTLs
+  before enabling writes. `--apply` posts the nudge/audit comments and removes
+  assignees.
+- **Clocks (config-driven).** `time-to-first-activity` (default 7 days): assigned
+  but zero activity by the assignee since assignment — the primary anti-squatting
+  clock. `inactivity-after-start` (default 14 days for issues, 7 for PRs): no
+  assignee activity for the TTL. Activity that renews a lease is the assignee's
+  own comments, reviews, and issue-referencing commits or linked-PR events — not
+  raw timeline commits, which carry no GitHub login and so cannot be attributed
+  (a commit renews only when it surfaces as a `referenced`/`cross-referenced`
+  timeline event). Other people's activity does not renew it. The report-only
+  rollout is how you validate this activity coverage before enabling writes.
+- **Flow: nudge → grace → release.** At threshold it posts a nudge comment; four
+  days (`--grace-days`) after an *unanswered* nudge it removes the assignee and
+  posts an audit comment. It never releases without a prior unanswered nudge. Any
+  assignee reply resets the clock; exempt labels pause it (defaults `blocked`,
+  `on-hold`; `--exempt-label` *adds* to those defaults, it does not replace them).
+  Closed or merged items are skipped — including any that close between the
+  listing and the live re-check. Before each nudge and each release the live item
+  is re-fetched and re-classified, so a reply or a state/label/assignee change
+  between scan and mutation aborts the action. A prior nudge only counts when it was
+  posted by one of the sweep's own identities — the gh-authenticated login
+  (`gh api user`) unioned with any `--comment-identity`; a mismatch warns, and if
+  no identity resolves, releases are disabled (so a misconfigured
+  `--comment-identity` can never cause a silent re-nudge loop).
+- **Automation is never swept.** An assignee is automation when its login carries
+  the `[bot]` suffix. If `trusted_bots` is configured (resolved via the
+  `pr-security-preflight` chain) the base name must also be a member, mirroring
+  `pr-security-preflight`'s own bot check; if `trusted_bots` is empty — the
+  packaged-fallback default for a consumer repo — any `[bot]`-suffixed login
+  qualifies, so bots are never swept by default. A bare login is always human even
+  if it matches a bot's base name, and `trusted_users` are humans and remain
+  reservable/sweepable. Items carrying the `agent-claimed` label are skipped
+  entirely (agent-claim staleness is owned by backend heartbeats). When the trust
+  config cannot be resolved it fails closed: human assignments are left untouched.
+  Every skip is reported, so nothing is silently dropped.
+- **Multi-human items are surfaced, not swept.** In this version the sweep acts
+  only on items with exactly one human assignee (plus any number of bot
+  co-assignees). An item with two or more human assignees is skipped and reported
+  as `reserved (N human assignees) — manual review`, because per-assignee decay is
+  out of scope: one active co-assignee must not shield an inactive squatter, and a
+  release must not remove an active co-assignee.
+- **Config & determinism.** `--repo` (repeatable or comma-separated; defaults to
+  `gh repo view`), `--first-activity-ttl-days`, `--issue-inactivity-ttl-days`,
+  `--pr-inactivity-ttl-days`, `--grace-days`, `--exempt-label`,
+  `--comment-identity` (unioned with the gh login for marker detection),
+  `--trust-config`. Inject the reference clock with `--now` or
+  `STALE_ASSIGNMENT_SWEEP_NOW`; bound gh with
+  `STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS`. Run it on a schedule (Actions cron
+  or the coordination daemon).
+- **Resilient reads.** A gh failure while reading/classifying one item is
+  reported as an `UNKNOWN … skipped` digest line and does not lose the rest of the
+  digest; a repo whose listing fails is warned and skipped so the other repos
+  still run. Read failures keep the run at exit 0 (they are reported, not fatal);
+  a per-item `--apply` mutation failure aborts only that item.
+
 ## Whole-Surface Triage Flow
 
 Use `$triage` when the coordinator wants the generated equivalent of a manual

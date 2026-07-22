@@ -110,6 +110,7 @@ ruby skills/pr-batch/bin/pr-merge-submit-test.rb
 ruby skills/pr-batch/bin/stage-dependency-gate-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb
 ruby skills/pr-batch/bin/pr-security-preflight-test.rb
+ruby skills/pr-batch/bin/stale-assignment-sweep-test.rb
 ruby skills/task-observer/bin/task-observer-test.rb
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contract-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb

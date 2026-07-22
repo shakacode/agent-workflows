@@ -1,0 +1,736 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Warn-then-release ownership decay for human-assigned issues and PRs.
+#
+# Assignment is a lease, not a deed: an item assigned to a human but left
+# inactive is nudged, then (only after an unanswered grace) released back to the
+# batch pool. The default mode is report-only (dry-run); mutations happen only
+# behind --apply. The sweep never touches an automation-set assignee, never
+# releases without a prior unanswered nudge, and fails closed on any state it
+# cannot prove.
+
+require "json"
+require "open3"
+require "optparse"
+require "time"
+require "timeout"
+require "yaml"
+
+module StaleAssignmentSweep
+  # Hidden markers let the sweep recognize its own prior nudge/release comments
+  # regardless of the identity that posted them.
+  NUDGE_MARKER = "<!-- stale-assignment-sweep:nudge -->"
+  RELEASE_MARKER = "<!-- stale-assignment-sweep:release -->"
+
+  # Timeline event types that count as an assignee renewing their own lease.
+  # These all carry a GitHub `actor`/`user` login we can attribute to the
+  # assignee. Raw `committed` events are deliberately excluded: GitHub's timeline
+  # `committed` shape carries only git author/committer {name,email,date} with no
+  # GitHub login, so it can never be attributed — a commit that references the
+  # issue instead surfaces as a login-bearing `referenced`/`cross-referenced`
+  # event (the pusher), which does renew. Assignment itself is not activity.
+  ACTIVITY_EVENTS = %w[commented reviewed cross-referenced referenced].freeze
+
+  AGENT_CLAIMED_LABEL = "agent-claimed"
+
+  DEFAULTS = {
+    first_activity_ttl: 7,
+    issue_inactivity_ttl: 14,
+    pr_inactivity_ttl: 7,
+    grace: 4,
+    exempt_labels: %w[blocked on-hold]
+  }.freeze
+
+  # Option key -> flag name for the non-negative day-count validation.
+  DAY_COUNT_FLAGS = {
+    first_activity_ttl: "--first-activity-ttl-days",
+    issue_inactivity_ttl: "--issue-inactivity-ttl-days",
+    pr_inactivity_ttl: "--pr-inactivity-ttl-days",
+    grace: "--grace-days"
+  }.freeze
+
+  DEFAULT_TRUST_CONFIG = ".agents/trusted-github-actors.yml"
+  HOME_TRUST_CONFIG = "~/.agents/trusted-github-actors.yml"
+  USER_TRUST_CONFIG_ENV = "AGENT_WORKFLOWS_TRUST_CONFIG"
+
+  class Error < StandardError; end
+
+  class Runner
+    def run(argv)
+      options = parse_options(argv)
+      return print_help(options.fetch(:parser)) if options[:help]
+
+      @now = resolve_now(options)
+      load_trust_config(options)
+      @identities = resolve_identities(options)
+      repos = resolve_repos(options)
+      # One repo's listing failure must not lose the other repos' digests.
+      repos.each do |repo|
+        sweep_repo(repo, options)
+      rescue Error => e
+        warn "WARN: repo #{repo} skipped: #{e.message.lines.first&.strip}"
+      end
+      0
+    rescue Error => e
+      warn "Error: #{e.message}"
+      1
+    end
+
+    private
+
+    def parse_options(argv)
+      options = DEFAULTS.merge(repos: [], apply: false, help: false)
+      # Seed a fresh copy of the defaults so --exempt-label layers on top of the
+      # built-in blocked/on-hold rather than replacing them (and so we never
+      # mutate the frozen DEFAULTS array).
+      options[:exempt_labels] = DEFAULTS.fetch(:exempt_labels).dup
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: stale-assignment-sweep [--repo OWNER/REPO ...] [--apply] " \
+                      "[--now ISO8601] [options]"
+        opts.on("--repo OWNER/REPO", "Target repo; repeatable or comma-separated (default: gh repo view)") do |value|
+          options[:repos].concat(value.split(",").map(&:strip).reject(&:empty?))
+        end
+        opts.on("--apply", "Post nudge/audit comments and release assignees (default: dry-run report only)") do
+          options[:apply] = true
+        end
+        opts.on("--now ISO8601", "Reference 'current' time for deterministic clocks (default: env or Time.now)") do |value|
+          options[:now] = value
+        end
+        opts.on("--first-activity-ttl-days N", Integer, "Days assigned with no assignee activity before a nudge") do |value|
+          options[:first_activity_ttl] = value
+        end
+        opts.on("--issue-inactivity-ttl-days N", Integer, "Days of assignee inactivity on issues before a nudge") do |value|
+          options[:issue_inactivity_ttl] = value
+        end
+        opts.on("--pr-inactivity-ttl-days N", Integer, "Days of assignee inactivity on PRs before a nudge") do |value|
+          options[:pr_inactivity_ttl] = value
+        end
+        opts.on("--grace-days N", Integer, "Days after an unanswered nudge before release") do |value|
+          options[:grace] = value
+        end
+        opts.on("--exempt-label LABEL", "Additional label that pauses the clock; adds to the defaults blocked, on-hold; repeatable") do |value|
+          options[:exempt_labels] << value
+        end
+        opts.on("--comment-identity LOGIN", "Login that posts sweep comments (default: gh api user); scopes prior-nudge detection") do |value|
+          options[:identity] = value
+        end
+        opts.on("--trust-config PATH", "Trusted GitHub actor allowlist (pr-security-preflight resolution)") do |value|
+          options[:trust_config] = value
+        end
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+      end
+      parser.parse!(argv)
+      validate_day_counts!(options)
+      options.merge(parser:)
+    rescue OptionParser::ParseError => e
+      raise Error, e.message
+    end
+
+    def validate_day_counts!(options)
+      DAY_COUNT_FLAGS.each do |key, flag|
+        value = options[key]
+        raise Error, "#{flag} must be >= 0, got #{value}" if value.negative?
+      end
+    end
+
+    def print_help(parser)
+      puts parser
+      puts <<~HELP
+
+        Clocks (config-driven; defaults shown above):
+          time-to-first-activity  assigned but zero assignee activity since assignment (anti-squatting).
+          inactivity-after-start  no assignee activity for the issue/PR inactivity TTL.
+
+        Activity that renews a lease is the ASSIGNEE'S OWN comments, reviews, and
+        issue-referencing commits or linked-PR events (raw timeline commits carry no GitHub
+        login, so a commit only renews when it surfaces as a referenced/cross-referenced
+        event); other people's activity does not renew it. Exempt labels pause the
+        clock. Items carrying the `#{AGENT_CLAIMED_LABEL}` label are skipped (agent-claim
+        staleness is owned by backend heartbeat leases). An assignee is automation when its
+        login carries the `[bot]` suffix; if `trusted_bots` is configured its base must also be
+        a member, and if `trusted_bots` is empty (the packaged-fallback default) any
+        `[bot]`-suffixed login qualifies. A bare login is always human even if it equals a
+        bot's base name. Automation-set assignees are never swept; `trusted_users` are humans
+        and remain reservable/sweepable. Day-count flags must be >= 0. Items with two or more
+        human assignees are surfaced for manual
+        review, not auto-swept (per-assignee decay is out of scope in this version); a single
+        human assignee with any number of bot co-assignees is swept normally.
+
+        Flow: nudge -> #{DEFAULTS.fetch(:grace)}-day grace -> release. Release never happens
+        without a prior unanswered nudge attributed to one of the sweep's own identities: the
+        gh-authenticated login (gh api user) unioned with any --comment-identity (a mismatch
+        warns; if none resolves, releases are disabled). Before each nudge and each release the
+        live item is re-fetched and re-classified, so a reply, an added exempt/#{AGENT_CLAIMED_LABEL}
+        label, or a reassignment between scan and mutation aborts it. Environment:
+        STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
+      HELP
+      0
+    end
+
+    def resolve_now(options)
+      raw = options[:now] || ENV["STALE_ASSIGNMENT_SWEEP_NOW"]
+      return Time.now.utc unless raw
+
+      Time.iso8601(raw).utc
+    rescue ArgumentError
+      raise Error, "invalid reference time #{raw.inspect}; expected ISO8601 (e.g. 2026-07-22T00:00:00Z)"
+    end
+
+    def resolve_repos(options)
+      repos = options[:repos].empty? ? [current_repo] : options[:repos]
+      repos.each { |repo| validate_repo!(repo) }
+      repos
+    end
+
+    # repos flow into gh URL paths; a leading "@" segment (or other malformed
+    # value) must never reach gh. A real GitHub owner/repo never starts with "@".
+    def validate_repo!(repo)
+      return if repo.match?(%r{\A[^@/\s][^/\s]*/[^@/\s][^/\s]*\z})
+
+      raise Error, "--repo must use OWNER/REPO form, got #{repo.inspect}"
+    end
+
+    def current_repo
+      JSON.parse(run_gh("repo", "view", "--json", "nameWithOwner")).fetch("nameWithOwner")
+    rescue StandardError => e
+      raise Error, "could not resolve the current repo (pass --repo OWNER/REPO): #{e.message.lines.first&.strip}"
+    end
+
+    # The nudge marker is only a valid release prerequisite when it was posted by
+    # the sweep's own identity; otherwise any commenter could forge a marker on a
+    # public issue and trigger a release. The identity set is the union of the
+    # gh-authenticated login (what gh actually posts as) and any explicit
+    # --comment-identity. Unioning both means a --comment-identity that does not
+    # match the real gh login can never hide the sweep's own current-run nudges,
+    # which would otherwise re-nudge the same item forever without reaching grace.
+    # If nothing resolves we fail closed: an empty set means last_nudge_time never
+    # matches and no release happens (nudging and dry-run reporting still proceed).
+    def resolve_identities(options)
+      gh_login = resolve_gh_login
+      explicit = options[:identity] ? normalized_login(options[:identity]) : nil
+
+      if explicit && gh_login && explicit != gh_login
+        warn "WARN: --comment-identity #{explicit.inspect} differs from the gh-authenticated login " \
+             "#{gh_login.inspect}; recognizing sweep nudges from either identity"
+      elsif explicit && gh_login.nil?
+        warn "WARN: could not confirm the gh-authenticated login; using --comment-identity " \
+             "#{explicit.inspect} for nudge attribution"
+      end
+
+      identities = [gh_login, explicit].compact.uniq
+      if identities.empty?
+        warn "WARN: no sweep identity could be resolved; prior nudges cannot be verified, so no releases will occur"
+      end
+      identities
+    end
+
+    def resolve_gh_login
+      login = run_gh("api", "user", "--jq", ".login").strip
+      login.empty? ? nil : normalized_login(login)
+    rescue Error => e
+      warn "WARN: could not resolve the gh-authenticated login via gh api user " \
+           "(#{e.message.lines.first&.strip})"
+      nil
+    end
+
+    # --- trust config / automation set ------------------------------------
+
+    def load_trust_config(options)
+      path, source = resolve_trust_config_path(options)
+      @trust_source = source
+      data = YAML.safe_load_file(path, aliases: false)
+      raise Error, "expected a YAML mapping at the top level" unless data.is_a?(Hash) || data.nil?
+
+      data ||= {}
+      @trusted_bots = Array(data["trusted_bots"]).map { |login| normalized_bot_login(login) }
+      @trusted_users = Array(data["trusted_users"]).map { |login| normalized_login(login) }
+      @trust_resolved = true
+      @trust_path = path
+    rescue StandardError => e
+      # Fail closed: an unresolvable automation set means we cannot prove which
+      # assignees are automation, so every human-assigned item is left untouched.
+      @trust_resolved = false
+      @trusted_bots = []
+      @trusted_users = []
+      @trust_error = "trust config #{path.inspect} could not be loaded: #{e.message.lines.first&.strip}"
+    end
+
+    def resolve_trust_config_path(options)
+      if options[:trust_config]
+        return [File.expand_path(options[:trust_config]), "explicit"]
+      end
+
+      repo_local = File.join(git_toplevel || Dir.pwd, DEFAULT_TRUST_CONFIG)
+      return [repo_local, "repo-local"] if File.exist?(repo_local)
+
+      env_path = ENV[USER_TRUST_CONFIG_ENV].to_s
+      return [File.expand_path(env_path), "env"] unless env_path.empty?
+
+      home = File.expand_path(HOME_TRUST_CONFIG)
+      return [home, "user-global"] if File.exist?(home)
+
+      [File.expand_path("../trusted-github-actors.yml", __dir__), "packaged-fallback"]
+    end
+
+    def git_toplevel
+      out = nil
+      status = nil
+      Timeout.timeout(gh_timeout) do
+        out, _err, status = Open3.capture3("git", "rev-parse", "--show-toplevel")
+      end
+      return unless status&.success?
+
+      root = out.to_s.strip
+      root unless root.empty?
+    rescue StandardError
+      nil
+    end
+
+    # An assignee is automation only when its login carries the GitHub `[bot]`
+    # suffix. When `trusted_bots` is configured, membership is additionally
+    # required (matching pr-security-preflight's `bot_login_in_set?`); when it is
+    # empty — the packaged-fallback default — any `[bot]`-suffixed login counts so
+    # bots are never swept by default. A bare login is always human even if it
+    # equals a bot's base name (e.g. a human `claude` when `claude` is in
+    # `trusted_bots`), so it stays sweepable. `trusted_users` are humans and are
+    # intentionally never matched here.
+    def automation_login?(login)
+      normalized = normalized_login(login)
+      return false unless normalized.end_with?("[bot]")
+
+      @trusted_bots.empty? || @trusted_bots.include?(normalized.delete_suffix("[bot]"))
+    end
+
+    def normalized_login(login)
+      login.to_s.delete_prefix("@").downcase
+    end
+
+    def normalized_bot_login(login)
+      normalized_login(login).delete_suffix("[bot]")
+    end
+
+    # GitHub logins are alphanumeric/hyphen (optionally a `[bot]` suffix). Reject
+    # anything else so a crafted assignee value can never reach gh as `@file`.
+    def valid_login?(login)
+      login.to_s.match?(/\A[A-Za-z0-9-]+(?:\[bot\])?\z/)
+    end
+
+    # --- per-repo sweep ---------------------------------------------------
+
+    def sweep_repo(repo, options)
+      items = list_assigned_items(repo)
+      results = items.map { |item| classify_item(repo, item, options) }
+      print_digest(repo, results, options)
+      apply_actions(repo, results, options) if options[:apply]
+    end
+
+    # A gh failure while reading/classifying one item (e.g. its timeline fetch)
+    # must not lose the rest of the digest: report that item as UNKNOWN and keep
+    # classifying the others.
+    def classify_item(repo, item, options)
+      classify(repo, item, options)
+    rescue Error => e
+      {
+        number: item["number"],
+        kind: item.key?("pull_request") ? "PR" : "issue",
+        assignees: Array(item["assignees"]).filter_map { |assignee| assignee["login"] },
+        labels: [],
+        decision: :skip,
+        reason: "UNKNOWN: #{e.message.lines.first&.strip} — skipped"
+      }
+    end
+
+    def list_assigned_items(repo)
+      gh_paginated("api", "repos/#{repo}/issues?state=open&assignee=*&per_page=100")
+    end
+
+    def item_timeline(repo, number)
+      gh_paginated(
+        "api",
+        "repos/#{repo}/issues/#{number}/timeline?per_page=100",
+        "-H",
+        "Accept: application/vnd.github+json"
+      )
+    end
+
+    def fetch_issue(repo, number)
+      gh_json("api", "repos/#{repo}/issues/#{number}")
+    end
+
+    def classify(repo, item, options)
+      number = item["number"]
+      kind = item.key?("pull_request") ? "PR" : "issue"
+      assignees = Array(item["assignees"]).filter_map { |assignee| assignee["login"] }
+      labels = Array(item["labels"]).filter_map { |label| label.is_a?(Hash) ? label["name"] : label }
+      base = { number:, kind:, assignees:, labels: }
+
+      # The initial listing is state=open, but the live re-check can return an
+      # item closed/merged between listing and mutation. Guard here so both paths
+      # skip a non-open item.
+      state = item["state"].to_s
+      return base.merge(decision: :skip, reason: "item is #{state} — skipped") unless state == "open"
+
+      return base.merge(decision: :ignore, reason: "no assignee") if assignees.empty?
+      if labels.include?(AGENT_CLAIMED_LABEL)
+        return base.merge(decision: :skip, reason: "#{AGENT_CLAIMED_LABEL} — owned by backend heartbeat leases")
+      end
+
+      human = assignees.reject { |login| automation_login?(login) }
+      automation = assignees - human
+      if human.empty?
+        return base.merge(decision: :ignore, reason: "automation-only assignee (#{automation.join(', ')}) — ignored")
+      end
+
+      unless @trust_resolved
+        return base.merge(
+          decision: :skip,
+          reason: "fail-closed: automation set unresolved (#{@trust_error}) — not nudged or released",
+          human:
+        )
+      end
+
+      # Conservative v1: with 2+ human assignees, one active co-assignee would
+      # shield an inactive squatter (activities.max renews for the whole item) and
+      # a release would wrongly remove the active co-assignee too. Per-assignee
+      # decay is out of scope, so surface these for manual review instead.
+      if human.size > 1
+        return base.merge(
+          decision: :skip,
+          reason: "reserved (#{human.size} human assignees) — manual review; per-assignee decay is out of scope",
+          human:
+        )
+      end
+
+      invalid = human.reject { |login| valid_login?(login) }
+      human -= invalid
+      if human.empty?
+        return base.merge(decision: :skip, reason: "UNKNOWN: assignee login(s) not verifiable (#{invalid.join(', ')})")
+      end
+
+      exempt = labels & options[:exempt_labels]
+      unless exempt.empty?
+        return base.merge(decision: :skip, reason: "exempt label (#{exempt.join(', ')}) — clock paused", human:)
+      end
+
+      classify_by_clock(base, repo, number, kind, human, options)
+    end
+
+    def classify_by_clock(base, repo, number, kind, human, options)
+      events = build_events(item_timeline(repo, number))
+      human_norm = human.map { |login| normalized_login(login) }
+
+      lease = lease_reference(events, human_norm, kind, options)
+      return base.merge(decision: :skip, reason: lease.fetch(:reason), human:) if lease[:unknown]
+
+      decide(base, human, lease, events, options)
+    end
+
+    # Determine which clock governs the item and the reference timestamp the
+    # inactivity is measured from. Any assignee's own activity protects the item;
+    # with no activity we fall back to the most recent assignment (most lenient).
+    # Only activity at or after a login's own `assigned` event renews the lease:
+    # a login with no assignment timestamp contributes no activity, so
+    # pre-assignment history cannot renew and the no-timestamp case falls through
+    # to the fail-closed UNKNOWN branch below.
+    def lease_reference(events, human_norm, kind, options)
+      assignment_times = human_norm.map { |login| assignment_time(events, login) }
+      activities = human_norm.each_with_index.filter_map do |login, index|
+        assigned_at = assignment_times[index]
+        next unless assigned_at
+
+        last_activity(events, login, assigned_at)
+      end
+
+      if activities.any?
+        reference = activities.max
+        { clock: "inactivity-after-start", reference:, ttl: inactivity_ttl(kind, options) }
+      else
+        known = assignment_times.compact
+        if known.empty?
+          return { unknown: true, reason: "UNKNOWN: no assignment timestamp and no activity — fail closed" }
+        end
+
+        { clock: "time-to-first-activity", reference: known.max, ttl: options.fetch(:first_activity_ttl) }
+      end
+    end
+
+    def inactivity_ttl(kind, options)
+      kind == "PR" ? options.fetch(:pr_inactivity_ttl) : options.fetch(:issue_inactivity_ttl)
+    end
+
+    def decide(base, human, lease, events, options)
+      clock = lease.fetch(:clock)
+      ttl = lease.fetch(:ttl)
+      days = ((@now - lease.fetch(:reference)) / 86_400.0)
+      days_label = days.floor
+      last_nudge = last_nudge_time(events)
+      answered = last_nudge && lease.fetch(:reference) > last_nudge
+
+      unless days >= ttl
+        state = answered ? "renewed: assignee replied after nudge" : "active"
+        return base.merge(decision: :skip, reason: "#{state}; #{clock} #{days_label}d < ttl #{ttl}d", human:)
+      end
+
+      context = { clock:, days: days_label, ttl:, grace: options.fetch(:grace) }
+      if last_nudge && !answered
+        release_or_wait(base, human, last_nudge, context, options)
+      else
+        base.merge(
+          decision: :nudge,
+          reason: "#{clock} #{days_label}d inactive >= ttl #{ttl}d",
+          human:,
+          context:
+        )
+      end
+    end
+
+    def release_or_wait(base, human, last_nudge, context, options)
+      nudge_age = (@now - last_nudge) / 86_400.0
+      if nudge_age >= options.fetch(:grace)
+        base.merge(
+          decision: :release,
+          reason: "#{context.fetch(:clock)} #{context.fetch(:days)}d inactive, " \
+                  "nudged #{nudge_age.floor}d ago >= grace #{options.fetch(:grace)}d",
+          human:,
+          context: context.merge(nudge_age: nudge_age.floor)
+        )
+      else
+        left = (options.fetch(:grace) - nudge_age).ceil
+        base.merge(
+          decision: :skip,
+          reason: "nudged #{nudge_age.floor}d ago, in grace (#{left}d left); " \
+                  "#{context.fetch(:clock)} #{context.fetch(:days)}d inactive",
+          human:
+        )
+      end
+    end
+
+    # --- timeline parsing -------------------------------------------------
+
+    def build_events(timeline)
+      Array(timeline).filter_map do |event|
+        next unless event.is_a?(Hash)
+
+        {
+          type: event["event"],
+          login: event_actor_login(event),
+          assignee: normalized_login(event.dig("assignee", "login")),
+          time: event_time(event),
+          body: event["body"].to_s
+        }
+      end
+    end
+
+    def event_actor_login(event)
+      normalized_login(
+        event.dig("actor", "login") ||
+          event.dig("user", "login") ||
+          event.dig("author", "login") ||
+          event.dig("committer", "login")
+      )
+    end
+
+    def event_time(event)
+      raw = event["created_at"] ||
+            event["submitted_at"] ||
+            event.dig("author", "date") ||
+            event.dig("committer", "date")
+      return unless raw
+
+      Time.iso8601(raw).utc
+    rescue ArgumentError
+      nil
+    end
+
+    def assignment_time(events, login)
+      events.filter_map do |event|
+        event[:time] if event[:type] == "assigned" && event[:assignee] == login && event[:time]
+      end.max
+    end
+
+    def last_activity(events, login, since)
+      events.filter_map do |event|
+        time = event[:time]
+        next unless ACTIVITY_EVENTS.include?(event[:type]) && event[:login] == login && time && time >= since
+
+        time
+      end.max
+    end
+
+    # Only a marker attributed to one of the sweep's own identities counts as a
+    # prior nudge. With no resolved identity we fail closed (empty set): no
+    # verifiable nudge, so no release.
+    def last_nudge_time(events)
+      return if @identities.empty?
+
+      events.filter_map do |event|
+        next unless event[:type] == "commented" && event[:body].include?(NUDGE_MARKER)
+        next unless @identities.include?(event[:login])
+
+        event[:time]
+      end.max
+    end
+
+    # --- reporting --------------------------------------------------------
+
+    def print_digest(repo, results, options)
+      mode = options[:apply] ? "APPLY" : "DRY-RUN"
+      puts "Repo #{repo} — stale-assignment sweep (#{mode}) at #{@now.iso8601}"
+      puts "  Trust config: #{@trust_resolved ? "#{@trust_path} (#{@trust_source})" : "UNRESOLVED — #{@trust_error}"}"
+      identity_label = @identities.empty? ? "UNRESOLVED — prior nudges unverifiable, releases disabled" : @identities.join(", ")
+      puts "  Sweep identity (nudge-marker set): #{identity_label}"
+
+      nudges = results.select { |result| result[:decision] == :nudge }
+      releases = results.select { |result| result[:decision] == :release }
+      others = results.reject { |result| %i[nudge release].include?(result[:decision]) }
+
+      print_action_section("WOULD NUDGE", nudges)
+      print_action_section("WOULD RELEASE", releases)
+      print_skip_section(others)
+      puts
+    end
+
+    def print_action_section(label, results)
+      puts "#{label} (#{results.size}):"
+      results.each do |result|
+        puts "  - ##{result.fetch(:number)} #{result.fetch(:kind)} #{mentions(result)}: #{result.fetch(:reason)}"
+      end
+    end
+
+    def print_skip_section(results)
+      puts "SKIPPED / IGNORED (#{results.size}):"
+      results.each do |result|
+        puts "  - ##{result.fetch(:number)} #{result.fetch(:kind)}: #{result.fetch(:reason)}"
+      end
+    end
+
+    def mentions(result)
+      Array(result[:human]).map { |login| "@#{login}" }.join(" ")
+    end
+
+    # --- apply ------------------------------------------------------------
+
+    def apply_actions(repo, results, options)
+      results.each do |result|
+        case result[:decision]
+        when :nudge then apply_nudge(repo, result, options)
+        when :release then apply_release(repo, result, options)
+        end
+      rescue Error => e
+        # A failed comment/DELETE aborts only this item, never the rest.
+        warn "WARN: apply failed for ##{result.fetch(:number)}: #{e.message.lines.first&.strip}"
+      end
+    end
+
+    # Re-fetch and re-classify before nudging so we do not ping an assignee who
+    # just replied, or an item that just gained an exempt/`agent-claimed` label,
+    # between scan and mutation. Nudge is low-harm, but the re-check keeps the
+    # comment honest. Only post while the live decision is still `:nudge`.
+    def apply_nudge(repo, result, options)
+      number = result.fetch(:number)
+      recheck = classify(repo, fetch_issue(repo, number), options)
+      unless recheck[:decision] == :nudge
+        puts "SKIPPED nudge ##{number} on re-check: #{recheck.fetch(:reason)}"
+        return
+      end
+
+      post_comment(repo, number, nudge_body(recheck))
+      puts "APPLIED nudge ##{number} (#{mentions(recheck)})"
+    end
+
+    # Release is destructive and the snapshot may be stale: between classify and
+    # this mutation the assignee may have replied, or a maintainer may have added
+    # `agent-claimed`/an exempt label or reassigned. Re-fetch and re-classify the
+    # live item and only proceed while the decision is still `:release`; act on the
+    # fresh assignee set so a reassignment cannot cause a wrong removal.
+    def apply_release(repo, result, options)
+      number = result.fetch(:number)
+      recheck = classify(repo, fetch_issue(repo, number), options)
+      unless recheck[:decision] == :release
+        puts "SKIPPED release ##{number} on re-check: #{recheck.fetch(:reason)}"
+        return
+      end
+
+      # Remove first, then post the audit comment only if removal succeeded, so a
+      # failed DELETE never leaves a misleading "released" comment behind.
+      Array(recheck[:human]).each { |login| remove_assignee(repo, number, login) }
+      post_comment(repo, number, release_body(recheck))
+      puts "APPLIED release ##{number} (removed #{mentions(recheck)})"
+    end
+
+    def nudge_body(result)
+      context = result.fetch(:context)
+      body = "Heads up #{mentions(result)} — no assignee activity on this #{result.fetch(:kind)} for " \
+             "#{context.fetch(:days)} days. Still on it? Any reply keeps it; otherwise it is released to the " \
+             "batch pool in #{context.fetch(:grace)} days.\n\n#{NUDGE_MARKER}"
+      reject_leading_at!(body, "nudge body")
+    end
+
+    def release_body(result)
+      context = result.fetch(:context)
+      body = "Released #{mentions(result)} after #{context.fetch(:days)} days of inactivity with no reply to the " \
+             "#{context.fetch(:grace)}-day nudge. Reassign to reclaim.\n\n#{RELEASE_MARKER}"
+      reject_leading_at!(body, "release body")
+    end
+
+    def post_comment(repo, number, body)
+      run_gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{body}")
+    end
+
+    def remove_assignee(repo, number, login)
+      raise Error, "refusing to release unverifiable assignee #{login.inspect}" unless valid_login?(login)
+
+      run_gh("api", "-X", "DELETE", "repos/#{repo}/issues/#{number}/assignees", "-f", "assignees[]=#{login}")
+    end
+
+    # gh reads a `-f field=@value` whose value begins with "@" as a local file
+    # path, so any body carrying assignee-derived text must never start with "@".
+    def reject_leading_at!(value, label)
+      return value unless value.start_with?("@")
+
+      raise Error, "#{label} must not begin with '@'; gh would read a leading @ value as a file path"
+    end
+
+    # --- gh execution -----------------------------------------------------
+
+    def run_gh(*args)
+      out = nil
+      err = nil
+      status = nil
+      Timeout.timeout(gh_timeout) do
+        out, err, status = Open3.capture3("gh", *args)
+      end
+      out = out.to_s.force_encoding("UTF-8").scrub
+      err = err.to_s.force_encoding("UTF-8").scrub
+      return out if status.success?
+
+      raise Error, "gh #{args.join(' ')} failed: #{[err, out].reject(&:empty?).join("\n")}"
+    rescue Timeout::Error
+      raise Error, "gh #{args.join(' ')} timed out after #{gh_timeout}s"
+    rescue Errno::ENOENT
+      raise Error, "gh is not installed or not on PATH"
+    end
+
+    def gh_json(*args)
+      JSON.parse(run_gh(*args))
+    end
+
+    def gh_paginated(*args)
+      gh_json(*args, "--paginate", "--slurp").flatten
+    end
+
+    def gh_timeout
+      @gh_timeout ||= begin
+        value = Float(ENV.fetch("STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS", "60"))
+        raise Error, "STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS must be positive and finite" unless value.positive? && value.finite?
+
+        value
+      end
+    rescue ArgumentError
+      raise Error, "STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS must be a positive finite number"
+    end
+  end
+end
+
+exit StaleAssignmentSweep::Runner.new.run(ARGV) if $PROGRAM_NAME == __FILE__
