@@ -42,11 +42,12 @@ Plan an issue triage
    - Performance-regression bot issues should be reviewed as a cluster first, with duplicate/noise/root-tracking recommendations before per-issue implementation.
    - Tracking, release, and meta issues should be separated from implementation candidates.
    - Reserved work: a human assignee — any assignee outside the repo's resolved automation set — marks an issue or PR as reserved: owned means skip. Resolve the automation set from the trust config's `trusted_bots` plus `[bot]`-suffixed logins via the `pr-security-preflight` chain (`trusted_users` are human actors and stay reservable), failing closed to skip when unresolved. Do not recommend reserved items for implementation; surface them (with assignee names) so reserved work stays visible. Items with no assignee, or only an automation identity, stay eligible.
+   - Also skip any issue or PR labeled with the seam's claim label (`agent_claimed_label`, default `agent-claimed`) — an active agent lane claim — and list it as reserved; owned means skip for agents as for humans.
 
 5. Require a concise audit output
    - Summary counts by bucket.
    - High-priority implementation candidates.
-   - Reserved (human-assigned) issues, each with its assignee name.
+   - Reserved issues — human-assigned (with assignee name) or agent-claimed (by the seam's claim label).
    - Parked and `needs-customer-feedback` issues.
    - Close, duplicate, or superseded candidates, with proposed or posted comment text.
    - Tracking/meta issues that should remain open.
@@ -86,12 +87,13 @@ Triage rules:
 - Review performance-regression bot issues as a cluster first; identify duplicate/noise/root-tracking issues instead of treating every issue as a standalone implementation target.
 - Separate tracking, release, and meta issues from implementation candidates.
 - Treat a human assignee — any assignee outside the repo's resolved automation set (the trust config's `trusted_bots` plus `[bot]`-suffixed logins; `trusted_users` are human actors and stay reservable; fail closed to skip when unresolved) — as a reservation: owned means skip. Do not recommend reserved items for implementation; list them separately with their assignee names so reserved work stays visible.
+- Also skip any issue or PR labeled with the seam's claim label (`agent_claimed_label`, default `agent-claimed`) — an active agent lane claim — and list it as reserved; owned means skip for agents as for humans.
 
 Output:
 Produce a concise audit report with:
 1. Summary counts by bucket.
 2. High-priority implementation candidates.
-3. Reserved (human-assigned) items, each with its assignee name.
+3. Reserved items — human-assigned (with assignee name) or agent-claimed (by the seam's claim label).
 4. Issues to park or keep under needs-customer-feedback.
 5. Issues that appear closable, duplicate, or superseded, with posted or proposed comment text where useful.
 6. Tracking/meta issues that should remain open.

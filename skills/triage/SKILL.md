@@ -96,6 +96,9 @@ Build a complete current-state inventory for the requested repo or repos:
   self-assignment. List each excluded item under the reserved set with its
   assignee name; never silently drop reserved work. Items with no assignee, or
   only an automation identity, stay eligible.
+- Also skip any issue or PR labeled with the seam's claim label
+  (`agent_claimed_label`, default `agent-claimed`) — an active agent lane claim —
+  and list it as reserved; owned means skip for agents as for humans.
 - Links and edges: issue to PR, PR to PR, issue to issue, shared files, external
   blockers, release gates, and cross-repo dependencies.
 - Live coordination state from the selected backend: active claims, live/stale/dead
@@ -286,8 +289,9 @@ Return:
 
 - Scope, repository list, and data sources checked.
 - Phase-1 bucket counts and dependency graph summary.
-- Reserved (human-assigned) items, each with its assignee name, so reserved
-  work stays visible rather than silently dropped.
+- Reserved items — human-assigned (with assignee name) or agent-claimed (by the
+  seam's claim label) — so reserved work stays visible rather than silently
+  dropped.
 - Current coordination state, including live, stale, dead, blocked, and done
   lanes.
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.

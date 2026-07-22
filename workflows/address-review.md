@@ -549,6 +549,13 @@ before mutating GitHub or the branch.
   local fix or validation blocks, before push/reply/resolve/summary work,
   blocked/resumed states, and final stable stop. Do not let a live address-review
   run exceed the backend heartbeat TTL without a refresh.
+- After a successful private claim on an issue/PR, mirror it to the seam's claim
+  label (`agent_claimed_label`, default `agent-claimed`) and remove it on release
+  only for this lane's own claim (holder/generation check, so a replacement claim
+  that reapplied the label is not cleared) — the same visible-hint-not-lock rule
+  as the batch claim step (see the `agent-claimed` label-mirror rule in
+  `workflows/pr-processing.md`). Mirror only when the backend provides claim-label
+  expiry reconciliation; skip entirely when `coordination_backend: n/a`.
 - Use a structured public `codex-claim` comment only when the repo's
   `coordination_backend` seam explicitly selects public claim-comment fallback,
   or when the private claim cannot be started or definitively fails with a

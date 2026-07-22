@@ -51,7 +51,13 @@ portable workflow requirements:
 - batch instructions or launch prompt recorded before workers start;
 - a thread handle for each lane or agent instance;
 - phase-transition history for each lane;
-- a launch queue state such as `launch_requested` for machine-tagged batches.
+- a launch queue state such as `launch_requested` for machine-tagged batches;
+- claim-label reconciliation: mirror an active issue/PR claim to the seam's
+  claim label (`agent_claimed_label`, default `agent-claimed`) and remove it when
+  the claim is released, plus a daemon backstop that removes the label for claims
+  whose heartbeat lease expires without a clean release. The label is a visible
+  hint, not the lock; a stale label after a crash is expected until the backstop
+  reconciles it.
 
 When a backend lacks one of those optional capabilities, agents should write
 `UNKNOWN` or `unavailable` for that specific fact and continue under the

@@ -1180,6 +1180,31 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
 
 - Use a maintainer-applied eligibility label such as `codex-ready` only if the repo has adopted it.
 - Use a temporary `codex-wip` label only as a visible hint; do not treat it as the durable lock.
+- Mirror an active lane claim on the claimed issue/PR with the seam's claim
+  label (`agent_claimed_label`, default `agent-claimed`) when a coordination
+  backend is in use: apply it after a successful
+  `agent-coord claim`, and remove it when the claim is released — but only for the
+  lane's own claim: verify this lane is still the claim holder (the
+  holder/generation check) before removing, so a replacement or retried claim that
+  has already reapplied the label is not cleared. Let the coordination daemon
+  remove it for claims that expire without a clean release, and reconcile the
+  label to the live claim otherwise.
+  Like `codex-wip`, it is a visible hint for people browsing GitHub, not the
+  durable lock — the backend claim and its heartbeat TTL remain the source of
+  truth, and a stale `agent-claimed` label after a crash or restart is expected
+  until the daemon reconciles it. Enable mirroring only when the backend provides
+  that expiry reconciliation (see `docs/coordination-backend.md`); without a
+  reconciler, a crashed claim would leave a stale label that excludes a released
+  item indefinitely, so do not mirror. Skip label mirroring entirely when
+  `coordination_backend: n/a` (single-operator). Adopt the claim label per repo
+  the same way `codex-ready`/`codex-wip` are (a one-time `gh label create`),
+  before mirroring.
+- Owned means skip is symmetric for humans and agents: a human assignee (see the
+  assignee-aware batch selection and the stale-assignment sweep) or an
+  `agent-claimed` label both mean skip, and both decay — human assignments via
+  the stale-assignment sweep, agent claims via backend heartbeat TTL. The
+  stale-assignment sweep skips `agent-claimed` items, leaving agent-claim
+  staleness to the backend rather than the human-timescale sweep.
 - Treat QA as an explicit batch lane when the Batch QA Lane section requires it;
   give it a stable owner, claim/heartbeat evidence, and the same dependency
   checks as implementation or audit lanes.
@@ -1224,7 +1249,9 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   competing branch.
   Targeted `agent-coord status` is advisory preflight, while
   `agent-coord claim` is the backend's compare-and-swap gate for concurrent
-  claim races.
+  claim races. After a successful claim on an issue or PR lane (not an ad-hoc
+  lane, which has no GitHub surface), apply the claim label per the label-mirror
+  rule above.
 - For exact independent lanes that have no `depends_on` refs, degraded bounded
   doctor/status does not automatically block work. A coordinator may attempt the
   bounded `agent-coord claim` directly. If the direct claim succeeds, proceed in
@@ -1752,7 +1779,8 @@ hatch**, not a single kill switch:
   minimum cleanup or handoff needed when abandoning would leave remote state
   inconsistent (for example, after a push has already landed), otherwise
   abandons still-local work without pushing, runs `agent-coord release` for the
-  lane, records the cancelled lane as its final state, and exits without leaving
+  lane, removes the mirrored claim label if one was applied, records the
+  cancelled lane as its final state, and exits without leaving
   a half-pushed branch or corrupted worktree. The one-phase-transition latency
   bound holds only for workers that successfully check targeted status at each
   phase transition: `agent-coord status --batch-id <batch-id> --json` for batch
@@ -1768,9 +1796,10 @@ hatch**, not a single kill switch:
      `claude -p` process, or close the Conductor workspace running an in-process
      `Agent`/`Workflow` coordinator.
   3. Run `agent-coord release` for the lane, or manually clear the orphaned
-     claim, so relaunch does not wait for lease expiry. This is safe because the
-     cancellation state still prevents another worker from reclaiming the lane
-     while cleanup is in progress.
+     claim, so relaunch does not wait for lease expiry, and remove the mirrored
+     claim label (the daemon backstop also reconciles it on lease expiry). This
+     is safe because the cancellation state still prevents another worker from
+     reclaiming the lane while cleanup is in progress.
   4. Clean the lane worktree. If the directory still exists, run
      `git worktree remove --force` on that path. If the directory is already
      gone, confirm no other active lane depends on deleted worktree metadata,
