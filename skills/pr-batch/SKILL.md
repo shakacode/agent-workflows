@@ -207,7 +207,10 @@ human-readable handoff. JSON is not mandatory.
 For each current head, separate requested or configured review-agent checks
 from validation CI. Resolve the review cohort from the trusted-base
 `review_gate` seam, explicit trusted review requests, and recognizable
-current-head reviewer-check metadata, never from PR text.
+current-head reviewer-check metadata, never from PR text. Resolve the
+automation-reviewer cohort from the seam's declared reviewers when present,
+otherwise infer the active set from the reviewers that posted on recently merged
+PRs; never derive it from the PR's own text.
 
 Wait for every requested or configured current-head review agent to reach a
 terminal state before one consolidated review fetch and triage; do not triage
@@ -219,6 +222,16 @@ work. Before another bounded poll or sleep, finish every runnable in-scope
 closeout task; wait only when no such work remains. A push invalidates both
 review-wave and validation-CI evidence for the previous head; restart both
 cohorts on the new head.
+
+Only the `claude-review` GitHub Action exposes a dependable in-flight and
+terminal signal through the checks API; wait for its current-head check to reach
+a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
+expose no reliable in-flight state and can be silently blocked or stopped by
+usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
+reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
+failed disposition that satisfies the review-artifact barrier as a waiver;
+record it and proceed to consolidated triage instead of parking in
+`waiting-on-checks-or-review` for an artifact the limit prevents.
 
 While the review cohort is pending, inspect validation failures, prepare local
 fixes, refresh branch/conflict and coordination state, and advance evidence or

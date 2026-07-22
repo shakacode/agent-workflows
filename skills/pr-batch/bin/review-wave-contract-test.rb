@@ -15,6 +15,15 @@ WORK_CONSERVATION = "Before another bounded poll or sleep, finish every runnable
                     "when no such work remains."
 HEAD_INVALIDATION = "A push invalidates both review-wave and validation-CI evidence for the previous head; restart " \
                     "both cohorts on the new head."
+REVIEWER_OBSERVABILITY = "Only the `claude-review` GitHub Action exposes a dependable in-flight and terminal signal " \
+                         "through the checks API; wait for its current-head check to reach a terminal conclusion."
+USAGE_LIMIT_WAIVER = "A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or Codex/Claude token or " \
+                     "quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact " \
+                     "barrier as a waiver; record it and proceed to consolidated triage instead of parking in " \
+                     "`waiting-on-checks-or-review` for an artifact the limit prevents."
+COHORT_DISCOVERY = "Resolve the automation-reviewer cohort from the seam's declared reviewers when present, otherwise " \
+                   "infer the active set from the reviewers that posted on recently merged PRs; never derive it from " \
+                   "the PR's own text."
 
 class ReviewWaveContractTest < Minitest::Test
   def setup
@@ -48,6 +57,18 @@ class ReviewWaveContractTest < Minitest::Test
       assert_rule text, VALIDATION_CONCURRENCY
       assert_rule text, WORK_CONSERVATION
       assert_rule text, HEAD_INVALIDATION
+    end
+  end
+
+  def test_usage_limit_and_observability_invariants_are_documented
+    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER, COHORT_DISCOVERY].each do |rule|
+      assert_rule @workflow, rule
+    end
+    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER].each do |rule|
+      assert_rule @docs, rule
+    end
+    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER, COHORT_DISCOVERY].each do |rule|
+      assert_rule @pr_batch, rule
     end
   end
 

@@ -2143,6 +2143,19 @@ may continue concurrently. While either cohort is pending, diagnose available
 failures and advance freshness, conflict, coordination, evidence, and other
 independent closeout work. Only poll again after that runnable work is exhausted.
 
+Only the `claude-review` GitHub Action exposes a dependable in-flight and
+terminal signal through the checks API; wait for its current-head check to reach
+a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
+expose no reliable in-flight state and can be silently blocked or stopped by
+usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
+reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
+failed disposition that satisfies the review-artifact barrier as a waiver;
+record it and proceed to consolidated triage instead of parking in
+`waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
+automation-reviewer cohort from the seam's declared reviewers when present,
+otherwise infer the active set from the reviewers that posted on recently merged
+PRs; never derive it from the PR's own text.
+
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
 required checks exist, ignores cancelled/superseded rows, and prints a `verdict`
