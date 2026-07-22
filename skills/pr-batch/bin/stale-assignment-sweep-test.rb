@@ -152,7 +152,7 @@ class StaleAssignmentSweepTest < Minitest::Test
     result, log = run_cli(apply: true, identity: nil)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_includes result.fetch(:stdout), "Sweep identity: #{IDENTITY}"
+    assert_includes result.fetch(:stdout), "Sweep identity (nudge-marker set): #{IDENTITY}"
     # Auto-resolved identity matches the nudge author, so #2 still releases.
     assert_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
   end
@@ -161,12 +161,23 @@ class StaleAssignmentSweepTest < Minitest::Test
     result, log = run_cli(apply: true, identity: nil, gh_fail_user: true)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_includes result.fetch(:stdout), "Sweep identity: UNRESOLVED"
+    assert_includes result.fetch(:stdout), "Sweep identity (nudge-marker set): UNRESOLVED"
     # No prior nudge can be verified, so nothing is released even under --apply...
     refute_includes log, "DELETE"
     refute_includes log, "Released @"
     # ...but nudging and reporting still proceed.
     assert_includes log, "issues/1/comments"
+  end
+
+  def test_mismatched_comment_identity_still_recognizes_own_nudge_and_warns
+    result, log = run_cli(apply: true, identity: "other-bot")
+
+    # A --comment-identity that isn't the real gh poster must not hide the sweep's
+    # own gh-posted nudges (else the item is re-nudged forever, never released).
+    assert_includes result.fetch(:stderr), "differs from the gh-authenticated login"
+    assert_includes result.fetch(:stdout), "Sweep identity (nudge-marker set): #{IDENTITY}, other-bot"
+    # The union includes the real gh login, so #2's nudge is recognized -> release.
+    assert_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
   end
 
   # --- Fix 2: revalidate immediately before each release ----------------
@@ -248,6 +259,18 @@ class StaleAssignmentSweepTest < Minitest::Test
     # #14: judy (human) + helper[bot] (automation), nudged 5d ago -> release judy only.
     assert_includes log, "-X DELETE repos/owner/repo/issues/14/assignees -f assignees[]=judy"
     refute_includes log, "assignees[]=helper[bot]"
+  end
+
+  # --- Fix D: multiple human assignees are reserved for manual review ----
+
+  def test_multi_human_assignee_item_is_reserved_and_never_swept
+    result, log = run_cli(apply: true)
+
+    # #22: quinn (active) + rob (inactive). Even under --apply it is only reported.
+    assert_includes result.fetch(:stdout),
+                    "#22 issue: reserved (2 human assignees) — manual review; per-assignee decay is out of scope"
+    refute_includes log, "issues/22/comments"
+    refute_includes log, "issues/22/assignees"
   end
 
   def test_unassigned_and_automation_only_items_are_ignored
@@ -430,7 +453,8 @@ class StaleAssignmentSweepTest < Minitest::Test
       issue(18, %w[mona]),
       issue(19, %w[nora]),
       issue(20, %w[omar]),
-      issue(21, %w[pat])
+      issue(21, %w[pat]),
+      issue(22, %w[quinn rob])
     ]
   end
 
@@ -464,7 +488,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       18 => [assigned("mona", 30), nudge(5)],
       19 => [assigned("nora", 30), cross_referenced("nora", 2)],
       20 => [assigned("omar", 30), committed_without_login(1)],
-      21 => [assigned("pat", 30)]
+      21 => [assigned("pat", 30)],
+      # quinn is active, rob is not; the item is still reserved (2 human assignees)
+      # and never reaches this timeline (multi-human short-circuits before it).
+      22 => [assigned("quinn", 30), assigned("rob", 30), comment("quinn", 2)]
     }
   end
 

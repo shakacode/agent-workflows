@@ -56,7 +56,7 @@ module StaleAssignmentSweep
 
       @now = resolve_now(options)
       load_trust_config(options)
-      @identity = resolve_identity(options)
+      @identities = resolve_identities(options)
       repos = resolve_repos(options)
       repos.each { |repo| sweep_repo(repo, options) }
       0
@@ -128,14 +128,17 @@ module StaleAssignmentSweep
         its login carries the `[bot]` suffix AND its base is in the trust config's
         `trusted_bots`; a bare login is human even if it equals a bot's base name.
         Automation-set assignees are never swept; `trusted_users` are humans and remain
-        reservable/sweepable.
+        reservable/sweepable. Items with two or more human assignees are surfaced for manual
+        review, not auto-swept (per-assignee decay is out of scope in this version); a single
+        human assignee with any number of bot co-assignees is swept normally.
 
         Flow: nudge -> #{DEFAULTS.fetch(:grace)}-day grace -> release. Release never happens
-        without a prior unanswered nudge attributed to the sweep's own identity
-        (--comment-identity, else gh api user; unresolved identity disables releases). Before
-        each release the live item is re-fetched and re-classified, so a reply, an added
-        exempt/#{AGENT_CLAIMED_LABEL} label, or a reassignment between scan and mutation aborts
-        it. Environment: STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
+        without a prior unanswered nudge attributed to one of the sweep's own identities: the
+        gh-authenticated login (gh api user) unioned with any --comment-identity (a mismatch
+        warns; if none resolves, releases are disabled). Before each nudge and each release the
+        live item is re-fetched and re-classified, so a reply, an added exempt/#{AGENT_CLAIMED_LABEL}
+        label, or a reassignment between scan and mutation aborts it. Environment:
+        STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
       HELP
       0
     end
@@ -171,21 +174,38 @@ module StaleAssignmentSweep
 
     # The nudge marker is only a valid release prerequisite when it was posted by
     # the sweep's own identity; otherwise any commenter could forge a marker on a
-    # public issue and trigger a release. When --comment-identity is not given we
-    # resolve the authenticated posting identity via gh. If it cannot be resolved
-    # we fail closed: @identity stays nil, so last_nudge_time never matches and no
-    # release can happen (nudging and dry-run reporting still proceed).
-    def resolve_identity(options)
-      return normalized_login(options[:identity]) if options[:identity]
+    # public issue and trigger a release. The identity set is the union of the
+    # gh-authenticated login (what gh actually posts as) and any explicit
+    # --comment-identity. Unioning both means a --comment-identity that does not
+    # match the real gh login can never hide the sweep's own current-run nudges,
+    # which would otherwise re-nudge the same item forever without reaching grace.
+    # If nothing resolves we fail closed: an empty set means last_nudge_time never
+    # matches and no release happens (nudging and dry-run reporting still proceed).
+    def resolve_identities(options)
+      gh_login = resolve_gh_login
+      explicit = options[:identity] ? normalized_login(options[:identity]) : nil
 
+      if explicit && gh_login && explicit != gh_login
+        warn "WARN: --comment-identity #{explicit.inspect} differs from the gh-authenticated login " \
+             "#{gh_login.inspect}; recognizing sweep nudges from either identity"
+      elsif explicit && gh_login.nil?
+        warn "WARN: could not confirm the gh-authenticated login; using --comment-identity " \
+             "#{explicit.inspect} for nudge attribution"
+      end
+
+      identities = [gh_login, explicit].compact.uniq
+      if identities.empty?
+        warn "WARN: no sweep identity could be resolved; prior nudges cannot be verified, so no releases will occur"
+      end
+      identities
+    end
+
+    def resolve_gh_login
       login = run_gh("api", "user", "--jq", ".login").strip
-      return normalized_login(login) unless login.empty?
-
-      warn "WARN: gh api user returned no login; prior nudges cannot be verified, so no releases will occur"
-      nil
+      login.empty? ? nil : normalized_login(login)
     rescue Error => e
-      warn "WARN: could not resolve the sweep identity via gh api user (#{e.message.lines.first&.strip}); " \
-           "prior nudges cannot be verified, so no releases will occur"
+      warn "WARN: could not resolve the gh-authenticated login via gh api user " \
+           "(#{e.message.lines.first&.strip})"
       nil
     end
 
@@ -316,6 +336,18 @@ module StaleAssignmentSweep
         return base.merge(
           decision: :skip,
           reason: "fail-closed: automation set unresolved (#{@trust_error}) — not nudged or released",
+          human:
+        )
+      end
+
+      # Conservative v1: with 2+ human assignees, one active co-assignee would
+      # shield an inactive squatter (activities.max renews for the whole item) and
+      # a release would wrongly remove the active co-assignee too. Per-assignee
+      # decay is out of scope, so surface these for manual review instead.
+      if human.size > 1
+        return base.merge(
+          decision: :skip,
+          reason: "reserved (#{human.size} human assignees) — manual review; per-assignee decay is out of scope",
           human:
         )
       end
@@ -469,15 +501,15 @@ module StaleAssignmentSweep
       end.max
     end
 
-    # Only a marker attributed to the sweep's own identity counts as a prior
-    # nudge. With no resolved identity we fail closed (nil): no verifiable nudge,
-    # so no release.
+    # Only a marker attributed to one of the sweep's own identities counts as a
+    # prior nudge. With no resolved identity we fail closed (empty set): no
+    # verifiable nudge, so no release.
     def last_nudge_time(events)
-      return if @identity.nil?
+      return if @identities.empty?
 
       events.filter_map do |event|
         next unless event[:type] == "commented" && event[:body].include?(NUDGE_MARKER)
-        next if event[:login] != @identity
+        next unless @identities.include?(event[:login])
 
         event[:time]
       end.max
@@ -489,7 +521,8 @@ module StaleAssignmentSweep
       mode = options[:apply] ? "APPLY" : "DRY-RUN"
       puts "Repo #{repo} — stale-assignment sweep (#{mode}) at #{@now.iso8601}"
       puts "  Trust config: #{@trust_resolved ? "#{@trust_path} (#{@trust_source})" : "UNRESOLVED — #{@trust_error}"}"
-      puts "  Sweep identity: #{@identity || 'UNRESOLVED — prior nudges unverifiable, releases disabled'}"
+      identity_label = @identities.empty? ? "UNRESOLVED — prior nudges unverifiable, releases disabled" : @identities.join(", ")
+      puts "  Sweep identity (nudge-marker set): #{identity_label}"
 
       nudges = results.select { |result| result[:decision] == :nudge }
       releases = results.select { |result| result[:decision] == :release }

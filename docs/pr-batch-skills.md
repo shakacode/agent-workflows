@@ -88,7 +88,13 @@ analog of the coordination backend's agent heartbeat leases.
   days (`--grace-days`) after an *unanswered* nudge it removes the assignee and
   posts an audit comment. It never releases without a prior unanswered nudge. Any
   assignee reply resets the clock; exempt labels (`--exempt-label`, default
-  `blocked`, `on-hold`) pause it.
+  `blocked`, `on-hold`) pause it. Before each nudge and each release the live item
+  is re-fetched and re-classified, so a reply or a label/assignee change between
+  scan and mutation aborts the action. A prior nudge only counts when it was
+  posted by one of the sweep's own identities — the gh-authenticated login
+  (`gh api user`) unioned with any `--comment-identity`; a mismatch warns, and if
+  no identity resolves, releases are disabled (so a misconfigured
+  `--comment-identity` can never cause a silent re-nudge loop).
 - **Automation is never swept.** An assignee is automation when its login carries
   the `[bot]` suffix *and* its base name is in the trust-config `trusted_bots` set
   (resolved via the `pr-security-preflight` chain), mirroring
@@ -98,11 +104,18 @@ analog of the coordination backend's agent heartbeat leases.
   entirely (agent-claim staleness is owned by backend heartbeats). When the trust
   config cannot be resolved it fails closed: human assignments are left untouched.
   Every skip is reported, so nothing is silently dropped.
+- **Multi-human items are surfaced, not swept.** In this version the sweep acts
+  only on items with exactly one human assignee (plus any number of bot
+  co-assignees). An item with two or more human assignees is skipped and reported
+  as `reserved (N human assignees) — manual review`, because per-assignee decay is
+  out of scope: one active co-assignee must not shield an inactive squatter, and a
+  release must not remove an active co-assignee.
 - **Config & determinism.** `--repo` (repeatable or comma-separated; defaults to
   `gh repo view`), `--first-activity-ttl-days`, `--issue-inactivity-ttl-days`,
   `--pr-inactivity-ttl-days`, `--grace-days`, `--exempt-label`,
-  `--comment-identity`, `--trust-config`. Inject the reference clock with `--now`
-  or `STALE_ASSIGNMENT_SWEEP_NOW`; bound gh with
+  `--comment-identity` (unioned with the gh login for marker detection),
+  `--trust-config`. Inject the reference clock with `--now` or
+  `STALE_ASSIGNMENT_SWEEP_NOW`; bound gh with
   `STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS`. Run it on a schedule (Actions cron
   or the coordination daemon).
 
