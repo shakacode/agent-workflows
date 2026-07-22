@@ -229,6 +229,18 @@ module PrMergeSubmit
         raise Error, "--expected-base must be a valid branch name"
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
+
+      reject_leading_at!(options, :subject)
+      reject_leading_at!(options, :body)
+    end
+
+    # gh treats a field value beginning with "@" as a file path to read, so a
+    # merge subject/body derived from an untrusted PR title/body (e.g. "@/etc/passwd")
+    # would silently read a local file into the merge commit. Fail closed instead.
+    def reject_leading_at!(options, field)
+      return unless options[field].to_s.start_with?("@")
+
+      raise Error, "--#{field} must not begin with '@'; gh reads a leading @ value as a file path"
     end
 
     def normalize_host!(host)

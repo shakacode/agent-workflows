@@ -441,6 +441,22 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_subject_beginning_with_at_is_rejected_before_any_gh_call
+    result, log = run_cli(mode: "direct", subject: "@/etc/passwd")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--subject must not begin with '@'"
+    assert_empty log
+  end
+
+  def test_body_beginning_with_at_is_rejected_before_any_gh_call
+    result, log = run_cli(mode: "direct", body: "@~/.ssh/id_rsa")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--body must not begin with '@'"
+    assert_empty log
+  end
+
   private
 
   def assert_reconciled_queue_merge(payload)
@@ -480,7 +496,9 @@ class PrMergeSubmitTest < Minitest::Test
     base: "main",
     url_host: HOST,
     include_expected_head: true,
-    include_expected_base: true
+    include_expected_base: true,
+    subject: "Fix the thing (#42)",
+    body: nil
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       log_path = File.join(dir, "gh.log")
@@ -489,7 +507,7 @@ class PrMergeSubmitTest < Minitest::Test
       FileUtils.chmod(0o755, gh_path)
       stdout, stderr, status = Open3.capture3(
         cli_environment(dir, log_path, mode),
-        *cli_arguments(repo, expected_head, include_expected_head, include_expected_base)
+        *cli_arguments(repo, expected_head, include_expected_head, include_expected_base, subject:, body:)
       )
       log = File.exist?(log_path) ? File.read(log_path) : ""
       [{ stdout:, stderr:, status: }, log]
@@ -529,11 +547,12 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def cli_arguments(repo, expected_head, include_expected_head, include_expected_base)
+  def cli_arguments(repo, expected_head, include_expected_head, include_expected_base, subject: "Fix the thing (#42)", body: nil)
     args = [
       SCRIPT, "42", "--repo", repo, "--host", HOST,
-      "--method", "squash", "--subject", "Fix the thing (#42)"
+      "--method", "squash", "--subject", subject
     ]
+    args.concat(["--body", body]) unless body.nil?
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", "main"]) if include_expected_base
     args
