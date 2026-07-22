@@ -341,6 +341,56 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes result.fetch(:stdout), "WOULD NUDGE"
   end
 
+  # --- Fix J: empty trusted_bots still recognizes bots ------------------
+
+  def test_empty_trusted_bots_still_treats_bot_suffix_as_automation
+    result, log = run_cli(apply: true, trust_file: "empty-trust.yml")
+    out = result.fetch(:stdout)
+
+    # With an empty trusted_bots set, a [bot]-suffixed assignee is still automation...
+    assert_includes out, "#7 issue: automation-only assignee (app-runner[bot]) — ignored"
+    refute_includes log, "issues/7/comments"
+    refute_includes log, "assignees[]=app-runner[bot]"
+    # ...and a bare login is still human and swept.
+    assert_includes out, "#15 issue @claude: time-to-first-activity 30d inactive >= ttl 7d"
+    assert_includes log, "issues/15/comments"
+  end
+
+  # --- Fix H: negative day-count flags are rejected ---------------------
+
+  def test_negative_grace_days_is_rejected_before_any_gh_call
+    result, log = run_cli(apply: true, extra_args: ["--grace-days=-1"])
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--grace-days must be >= 0"
+    assert_empty log
+  end
+
+  # --- Fix I: audit comment only after removal succeeds -----------------
+
+  def test_failed_release_delete_posts_no_audit_comment
+    result, log = run_cli(apply: true, fail_delete: 2)
+
+    # #2 is a release; its assignee DELETE fails, so no "Released" comment lands.
+    assert_includes log, "issues/2/assignees"
+    refute_includes log, "issues/2/comments"
+    refute_includes log, "Released @bob"
+    assert_includes result.fetch(:stderr), "apply failed for #2"
+  end
+
+  # --- Fix K: pre-assignment activity must not renew the lease ----------
+
+  def test_activity_before_assignment_does_not_renew_the_lease
+    result, log = run_cli(apply: true)
+
+    # #26 has an old comment but no `assigned` event, so it is not renewed; it
+    # fails closed to an UNKNOWN skip rather than looking "active".
+    assert_includes result.fetch(:stdout),
+                    "#26 issue: UNKNOWN: no assignment timestamp and no activity — fail closed"
+    refute_includes log, "issues/26/comments"
+    refute_includes log, "issues/26/assignees"
+  end
+
   # --- misc --------------------------------------------------------------
 
   def test_repo_with_a_leading_at_segment_is_rejected_before_any_gh_call
@@ -365,12 +415,12 @@ class StaleAssignmentSweepTest < Minitest::Test
     (NOW - (days * 86_400)).utc.iso8601
   end
 
-  def run_cli(apply: false, trust_config: nil, repo: "owner/repo", repos: nil, identity: IDENTITY,
-              gh_fail_user: false, extra_args: [])
+  def run_cli(apply: false, trust_config: nil, trust_file: "trust.yml", repo: "owner/repo", repos: nil,
+              identity: IDENTITY, gh_fail_user: false, extra_args: [], fail_delete: nil)
     Dir.mktmpdir("stale-assignment-sweep-test") do |dir|
-      build_fixtures(dir)
+      build_fixtures(dir, fail_delete:)
       log_path = File.join(dir, "gh.log")
-      args = [RUBY_BIN, SCRIPT, "--now", NOW_ISO, "--trust-config", trust_config || File.join(dir, "trust.yml")]
+      args = [RUBY_BIN, SCRIPT, "--now", NOW_ISO, "--trust-config", trust_config || File.join(dir, trust_file)]
       Array(repos || [repo]).each { |value| args.concat(["--repo", value]) }
       args.concat(["--comment-identity", identity]) if identity
       args.concat(extra_args)
@@ -393,7 +443,7 @@ class StaleAssignmentSweepTest < Minitest::Test
     env
   end
 
-  def build_fixtures(dir)
+  def build_fixtures(dir, fail_delete: nil)
     write_fake_gh(dir)
     write_trust_config(dir)
     File.write(File.join(dir, "list.json"), JSON.generate([list_items]))
@@ -408,6 +458,7 @@ class StaleAssignmentSweepTest < Minitest::Test
     File.write(File.join(dir, "issue-21.json"), JSON.generate(issue(21, %w[pat], labels: %w[blocked])))
     File.write(File.join(dir, "issue-23.json"), JSON.generate(issue(23, %w[sam], state: "closed")))
     File.write(File.join(dir, "fail-timeline-25"), "")
+    File.write(File.join(dir, "fail-delete-#{fail_delete}"), "") if fail_delete
     File.write(
       File.join(dir, "timeline-18-recheck.json"),
       JSON.generate([[assigned("mona", 30), nudge(5), comment("mona", 1)]])
@@ -415,6 +466,9 @@ class StaleAssignmentSweepTest < Minitest::Test
   end
 
   def write_trust_config(dir)
+    # A separate empty-trusted_bots config exercises the packaged-fallback default
+    # (Fix J): any [bot]-suffixed login is still automation.
+    File.write(File.join(dir, "empty-trust.yml"), "trusted_bots: []\ntrusted_users: []\n")
     File.write(
       File.join(dir, "trust.yml"),
       <<~YAML
@@ -471,7 +525,11 @@ class StaleAssignmentSweepTest < Minitest::Test
         print(File.exist?(path) ? File.read(path) : "[[]]")
       elsif argv.include?("/comments")
         print '{"id":1}'
-      elsif argv.include?("assignees")
+      elsif (match = argv.match(%r{issues/(\\d+)/assignees}))
+        if File.exist?(File.join(fixtures, "fail-delete-\#{match[1]}"))
+          warn "gh: simulated assignee removal failure"
+          exit 1
+        end
         print '{}'
       elsif (match = argv.match(%r{issues/(\\d+)$}))
         override = File.join(fixtures, "issue-\#{match[1]}.json")
@@ -515,7 +573,8 @@ class StaleAssignmentSweepTest < Minitest::Test
       issue(22, %w[quinn rob]),
       issue(23, %w[sam]),
       issue(24, %w[tara], labels: %w[needs-design]),
-      issue(25, %w[uma])
+      issue(25, %w[uma]),
+      issue(26, %w[wes])
     ]
   end
 
@@ -555,8 +614,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       # and never reaches this timeline (multi-human short-circuits before it).
       22 => [assigned("quinn", 30), assigned("rob", 30), comment("quinn", 2)],
       23 => [assigned("sam", 30)],
-      24 => [assigned("tara", 30)]
+      24 => [assigned("tara", 30)],
       # 25 has no timeline fixture: the fake gh fails its timeline fetch (Fix G).
+      # 26: old activity but NO `assigned` event -> must not renew the lease (Fix K).
+      26 => [comment("wes", 100)]
     }
   end
 

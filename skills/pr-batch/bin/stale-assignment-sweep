@@ -33,7 +33,6 @@ module StaleAssignmentSweep
   ACTIVITY_EVENTS = %w[commented reviewed cross-referenced referenced].freeze
 
   AGENT_CLAIMED_LABEL = "agent-claimed"
-  EPOCH = Time.at(0).utc
 
   DEFAULTS = {
     first_activity_ttl: 7,
@@ -41,6 +40,14 @@ module StaleAssignmentSweep
     pr_inactivity_ttl: 7,
     grace: 4,
     exempt_labels: %w[blocked on-hold]
+  }.freeze
+
+  # Option key -> flag name for the non-negative day-count validation.
+  DAY_COUNT_FLAGS = {
+    first_activity_ttl: "--first-activity-ttl-days",
+    issue_inactivity_ttl: "--issue-inactivity-ttl-days",
+    pr_inactivity_ttl: "--pr-inactivity-ttl-days",
+    grace: "--grace-days"
   }.freeze
 
   DEFAULT_TRUST_CONFIG = ".agents/trusted-github-actors.yml"
@@ -114,9 +121,17 @@ module StaleAssignmentSweep
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
       end
       parser.parse!(argv)
+      validate_day_counts!(options)
       options.merge(parser:)
     rescue OptionParser::ParseError => e
       raise Error, e.message
+    end
+
+    def validate_day_counts!(options)
+      DAY_COUNT_FLAGS.each do |key, flag|
+        value = options[key]
+        raise Error, "#{flag} must be >= 0, got #{value}" if value.negative?
+      end
     end
 
     def print_help(parser)
@@ -132,11 +147,13 @@ module StaleAssignmentSweep
         login, so a commit only renews when it surfaces as a referenced/cross-referenced
         event); other people's activity does not renew it. Exempt labels pause the
         clock. Items carrying the `#{AGENT_CLAIMED_LABEL}` label are skipped (agent-claim
-        staleness is owned by backend heartbeat leases). An assignee is automation only when
-        its login carries the `[bot]` suffix AND its base is in the trust config's
-        `trusted_bots`; a bare login is human even if it equals a bot's base name.
-        Automation-set assignees are never swept; `trusted_users` are humans and remain
-        reservable/sweepable. Items with two or more human assignees are surfaced for manual
+        staleness is owned by backend heartbeat leases). An assignee is automation when its
+        login carries the `[bot]` suffix; if `trusted_bots` is configured its base must also be
+        a member, and if `trusted_bots` is empty (the packaged-fallback default) any
+        `[bot]`-suffixed login qualifies. A bare login is always human even if it equals a
+        bot's base name. Automation-set assignees are never swept; `trusted_users` are humans
+        and remain reservable/sweepable. Day-count flags must be >= 0. Items with two or more
+        human assignees are surfaced for manual
         review, not auto-swept (per-assignee decay is out of scope in this version); a single
         human assignee with any number of bot co-assignees is swept normally.
 
@@ -271,15 +288,18 @@ module StaleAssignmentSweep
     end
 
     # An assignee is automation only when its login carries the GitHub `[bot]`
-    # suffix AND its base login is in the trust config's `trusted_bots` — matching
-    # pr-security-preflight's `bot_login_in_set?`. A bare login is human even if it
+    # suffix. When `trusted_bots` is configured, membership is additionally
+    # required (matching pr-security-preflight's `bot_login_in_set?`); when it is
+    # empty — the packaged-fallback default — any `[bot]`-suffixed login counts so
+    # bots are never swept by default. A bare login is always human even if it
     # equals a bot's base name (e.g. a human `claude` when `claude` is in
     # `trusted_bots`), so it stays sweepable. `trusted_users` are humans and are
     # intentionally never matched here.
     def automation_login?(login)
       normalized = normalized_login(login)
+      return false unless normalized.end_with?("[bot]")
 
-      normalized.end_with?("[bot]") && @trusted_bots.include?(normalized.delete_suffix("[bot]"))
+      @trusted_bots.empty? || @trusted_bots.include?(normalized.delete_suffix("[bot]"))
     end
 
     def normalized_login(login)
@@ -409,10 +429,17 @@ module StaleAssignmentSweep
     # Determine which clock governs the item and the reference timestamp the
     # inactivity is measured from. Any assignee's own activity protects the item;
     # with no activity we fall back to the most recent assignment (most lenient).
+    # Only activity at or after a login's own `assigned` event renews the lease:
+    # a login with no assignment timestamp contributes no activity, so
+    # pre-assignment history cannot renew and the no-timestamp case falls through
+    # to the fail-closed UNKNOWN branch below.
     def lease_reference(events, human_norm, kind, options)
       assignment_times = human_norm.map { |login| assignment_time(events, login) }
       activities = human_norm.each_with_index.filter_map do |login, index|
-        last_activity(events, login, assignment_times[index] || EPOCH)
+        assigned_at = assignment_times[index]
+        next unless assigned_at
+
+        last_activity(events, login, assigned_at)
       end
 
       if activities.any?
@@ -625,8 +652,10 @@ module StaleAssignmentSweep
         return
       end
 
-      post_comment(repo, number, release_body(recheck))
+      # Remove first, then post the audit comment only if removal succeeded, so a
+      # failed DELETE never leaves a misleading "released" comment behind.
       Array(recheck[:human]).each { |login| remove_assignee(repo, number, login) }
+      post_comment(repo, number, release_body(recheck))
       puts "APPLIED release ##{number} (removed #{mentions(recheck)})"
     end
 
