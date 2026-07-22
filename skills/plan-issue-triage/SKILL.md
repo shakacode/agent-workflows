@@ -87,6 +87,7 @@ Triage rules:
 - Review performance-regression bot issues as a cluster first; identify duplicate/noise/root-tracking issues instead of treating every issue as a standalone implementation target.
 - Separate tracking, release, and meta issues from implementation candidates.
 - Treat a human assignee — any assignee outside the repo's resolved automation set (the trust config's `trusted_bots` plus `[bot]`-suffixed logins; `trusted_users` are human actors and stay reservable; fail closed to skip when unresolved) — as a reservation: owned means skip. Do not recommend reserved items for implementation; list them separately with their assignee names so reserved work stays visible.
+- Also skip any issue or PR labeled with the seam's claim label (`agent_claimed_label`, default `agent-claimed`) — an active agent lane claim — and list it as reserved; owned means skip for agents as for humans.
 
 Output:
 Produce a concise audit report with:

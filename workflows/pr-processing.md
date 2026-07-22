@@ -1188,7 +1188,10 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   Like `codex-wip`, it is a visible hint for people browsing GitHub, not the
   durable lock — the backend claim and its heartbeat TTL remain the source of
   truth, and a stale `agent-claimed` label after a crash or restart is expected
-  until the daemon reconciles it. Skip label mirroring entirely when
+  until the daemon reconciles it. Enable mirroring only when the backend provides
+  that expiry reconciliation (see `docs/coordination-backend.md`); without a
+  reconciler, a crashed claim would leave a stale label that excludes a released
+  item indefinitely, so do not mirror. Skip label mirroring entirely when
   `coordination_backend: n/a` (single-operator). Adopt the claim label per repo
   the same way `codex-ready`/`codex-wip` are (a one-time `gh label create`),
   before mirroring.
