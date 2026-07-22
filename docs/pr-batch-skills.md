@@ -86,13 +86,15 @@ analog of the coordination backend's agent heartbeat leases.
   posts an audit comment. It never releases without a prior unanswered nudge. Any
   assignee reply resets the clock; exempt labels (`--exempt-label`, default
   `blocked`, `on-hold`) pause it.
-- **Automation is never swept.** The automation set is resolved exactly as batch
-  selection resolves it — trust-config `trusted_bots` plus `[bot]`-suffixed logins
-  via the `pr-security-preflight` chain (`trusted_users` are humans and remain
-  reservable/sweepable). Items carrying the `agent-claimed` label are skipped
-  entirely (agent-claim staleness is owned by backend heartbeats). When the
-  automation set cannot be resolved it fails closed: human assignments are left
-  untouched. Every skip is reported, so nothing is silently dropped.
+- **Automation is never swept.** An assignee is automation when its login carries
+  the `[bot]` suffix *and* its base name is in the trust-config `trusted_bots` set
+  (resolved via the `pr-security-preflight` chain), mirroring
+  `pr-security-preflight`'s own bot check — a bare login is human even if it
+  matches a bot's base name, and `trusted_users` are humans and remain
+  reservable/sweepable. Items carrying the `agent-claimed` label are skipped
+  entirely (agent-claim staleness is owned by backend heartbeats). When the trust
+  config cannot be resolved it fails closed: human assignments are left untouched.
+  Every skip is reported, so nothing is silently dropped.
 - **Config & determinism.** `--repo` (repeatable or comma-separated; defaults to
   `gh repo view`), `--first-activity-ttl-days`, `--issue-inactivity-ttl-days`,
   `--pr-inactivity-ttl-days`, `--grace-days`, `--exempt-label`,

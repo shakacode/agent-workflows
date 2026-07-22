@@ -51,6 +51,7 @@ module StaleAssignmentSweep
 
       @now = resolve_now(options)
       load_trust_config(options)
+      @identity = resolve_identity(options)
       repos = resolve_repos(options)
       repos.each { |repo| sweep_repo(repo, options) }
       0
@@ -90,7 +91,7 @@ module StaleAssignmentSweep
         opts.on("--exempt-label LABEL", "Label that pauses the clock; repeatable (default: blocked, on-hold)") do |value|
           (options[:exempt_labels] ||= []) << value
         end
-        opts.on("--comment-identity LOGIN", "Login that posts sweep comments; scopes prior-nudge detection") do |value|
+        opts.on("--comment-identity LOGIN", "Login that posts sweep comments (default: gh api user); scopes prior-nudge detection") do |value|
           options[:identity] = value
         end
         opts.on("--trust-config PATH", "Trusted GitHub actor allowlist (pr-security-preflight resolution)") do |value|
@@ -100,7 +101,6 @@ module StaleAssignmentSweep
       end
       parser.parse!(argv)
       options[:exempt_labels] ||= DEFAULTS.fetch(:exempt_labels)
-      options[:identity_norm] = normalized_login(options[:identity]) if options[:identity]
       options.merge(parser:)
     rescue OptionParser::ParseError => e
       raise Error, e.message
@@ -117,13 +117,18 @@ module StaleAssignmentSweep
         Activity that renews a lease is the ASSIGNEE'S OWN commits, comments, reviews, or
         linked-PR events; other people's activity does not renew it. Exempt labels pause the
         clock. Items carrying the `#{AGENT_CLAIMED_LABEL}` label are skipped (agent-claim
-        staleness is owned by backend heartbeat leases). Automation-set assignees
-        (trust-config `trusted_bots` plus `[bot]`-suffixed logins) are never swept;
-        `trusted_users` are humans and remain reservable/sweepable.
+        staleness is owned by backend heartbeat leases). An assignee is automation only when
+        its login carries the `[bot]` suffix AND its base is in the trust config's
+        `trusted_bots`; a bare login is human even if it equals a bot's base name.
+        Automation-set assignees are never swept; `trusted_users` are humans and remain
+        reservable/sweepable.
 
         Flow: nudge -> #{DEFAULTS.fetch(:grace)}-day grace -> release. Release never happens
-        without a prior unanswered nudge. Environment: STALE_ASSIGNMENT_SWEEP_NOW,
-        STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
+        without a prior unanswered nudge attributed to the sweep's own identity
+        (--comment-identity, else gh api user; unresolved identity disables releases). Before
+        each release the live item is re-fetched and re-classified, so a reply, an added
+        exempt/#{AGENT_CLAIMED_LABEL} label, or a reassignment between scan and mutation aborts
+        it. Environment: STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
       HELP
       0
     end
@@ -155,6 +160,26 @@ module StaleAssignmentSweep
       JSON.parse(run_gh("repo", "view", "--json", "nameWithOwner")).fetch("nameWithOwner")
     rescue StandardError => e
       raise Error, "could not resolve the current repo (pass --repo OWNER/REPO): #{e.message.lines.first&.strip}"
+    end
+
+    # The nudge marker is only a valid release prerequisite when it was posted by
+    # the sweep's own identity; otherwise any commenter could forge a marker on a
+    # public issue and trigger a release. When --comment-identity is not given we
+    # resolve the authenticated posting identity via gh. If it cannot be resolved
+    # we fail closed: @identity stays nil, so last_nudge_time never matches and no
+    # release can happen (nudging and dry-run reporting still proceed).
+    def resolve_identity(options)
+      return normalized_login(options[:identity]) if options[:identity]
+
+      login = run_gh("api", "user", "--jq", ".login").strip
+      return normalized_login(login) unless login.empty?
+
+      warn "WARN: gh api user returned no login; prior nudges cannot be verified, so no releases will occur"
+      nil
+    rescue Error => e
+      warn "WARN: could not resolve the sweep identity via gh api user (#{e.message.lines.first&.strip}); " \
+           "prior nudges cannot be verified, so no releases will occur"
+      nil
     end
 
     # --- trust config / automation set ------------------------------------
@@ -210,14 +235,16 @@ module StaleAssignmentSweep
       nil
     end
 
-    # An assignee is automation when its login carries the GitHub `[bot]` suffix
-    # or its base login is in the trust config's `trusted_bots`. `trusted_users`
-    # are humans and are intentionally never matched here.
+    # An assignee is automation only when its login carries the GitHub `[bot]`
+    # suffix AND its base login is in the trust config's `trusted_bots` — matching
+    # pr-security-preflight's `bot_login_in_set?`. A bare login is human even if it
+    # equals a bot's base name (e.g. a human `claude` when `claude` is in
+    # `trusted_bots`), so it stays sweepable. `trusted_users` are humans and are
+    # intentionally never matched here.
     def automation_login?(login)
       normalized = normalized_login(login)
-      return true if normalized.end_with?("[bot]")
 
-      @trusted_bots.include?(normalized.delete_suffix("[bot]"))
+      normalized.end_with?("[bot]") && @trusted_bots.include?(normalized.delete_suffix("[bot]"))
     end
 
     def normalized_login(login)
@@ -254,6 +281,10 @@ module StaleAssignmentSweep
         "-H",
         "Accept: application/vnd.github+json"
       )
+    end
+
+    def fetch_issue(repo, number)
+      gh_json("api", "repos/#{repo}/issues/#{number}")
     end
 
     def classify(repo, item, options)
@@ -337,7 +368,7 @@ module StaleAssignmentSweep
       ttl = lease.fetch(:ttl)
       days = ((@now - lease.fetch(:reference)) / 86_400.0)
       days_label = days.floor
-      last_nudge = last_nudge_time(events, options)
+      last_nudge = last_nudge_time(events)
       answered = last_nudge && lease.fetch(:reference) > last_nudge
 
       unless days >= ttl
@@ -431,10 +462,15 @@ module StaleAssignmentSweep
       end.max
     end
 
-    def last_nudge_time(events, options)
+    # Only a marker attributed to the sweep's own identity counts as a prior
+    # nudge. With no resolved identity we fail closed (nil): no verifiable nudge,
+    # so no release.
+    def last_nudge_time(events)
+      return if @identity.nil?
+
       events.filter_map do |event|
         next unless event[:type] == "commented" && event[:body].include?(NUDGE_MARKER)
-        next if options[:identity_norm] && event[:login] != options[:identity_norm]
+        next if event[:login] != @identity
 
         event[:time]
       end.max
@@ -446,6 +482,7 @@ module StaleAssignmentSweep
       mode = options[:apply] ? "APPLY" : "DRY-RUN"
       puts "Repo #{repo} — stale-assignment sweep (#{mode}) at #{@now.iso8601}"
       puts "  Trust config: #{@trust_resolved ? "#{@trust_path} (#{@trust_source})" : "UNRESOLVED — #{@trust_error}"}"
+      puts "  Sweep identity: #{@identity || 'UNRESOLVED — prior nudges unverifiable, releases disabled'}"
 
       nudges = results.select { |result| result[:decision] == :nudge }
       releases = results.select { |result| result[:decision] == :release }
@@ -491,10 +528,22 @@ module StaleAssignmentSweep
       puts "APPLIED nudge ##{result.fetch(:number)} (#{mentions(result)})"
     end
 
-    def apply_release(repo, result, _options)
-      post_comment(repo, result.fetch(:number), release_body(result))
-      Array(result[:human]).each { |login| remove_assignee(repo, result.fetch(:number), login) }
-      puts "APPLIED release ##{result.fetch(:number)} (removed #{mentions(result)})"
+    # Release is destructive and the snapshot may be stale: between classify and
+    # this mutation the assignee may have replied, or a maintainer may have added
+    # `agent-claimed`/an exempt label or reassigned. Re-fetch and re-classify the
+    # live item and only proceed while the decision is still `:release`; act on the
+    # fresh assignee set so a reassignment cannot cause a wrong removal.
+    def apply_release(repo, result, options)
+      number = result.fetch(:number)
+      recheck = classify(repo, fetch_issue(repo, number), options)
+      unless recheck[:decision] == :release
+        puts "SKIPPED release ##{number} on re-check: #{recheck.fetch(:reason)}"
+        return
+      end
+
+      post_comment(repo, number, release_body(recheck))
+      Array(recheck[:human]).each { |login| remove_assignee(repo, number, login) }
+      puts "APPLIED release ##{number} (removed #{mentions(recheck)})"
     end
 
     def nudge_body(result)

@@ -13,8 +13,14 @@ require "tmpdir"
 # logs every invocation so mutation calls can be asserted (or their absence
 # proven). The reference clock is injected via --now so the fixtures are
 # deterministic. No real network or gh access happens.
+#
+# The fake gh is stateful for one item (#18): its timeline changes between the
+# first read (release candidate) and later reads (assignee reply appears), which
+# exercises the pre-release re-check. A separate single-issue fixture (#17) adds
+# an `agent-claimed` label only on the re-fetch.
 class StaleAssignmentSweepTest < Minitest::Test
   SCRIPT = File.expand_path("stale-assignment-sweep", __dir__)
+  RUBY_BIN = "ruby"
   NOW = Time.utc(2026, 7, 22)
   NOW_ISO = NOW.iso8601
   IDENTITY = "sweeper-bot"
@@ -36,12 +42,12 @@ class StaleAssignmentSweepTest < Minitest::Test
     result, = run_cli
     out = result.fetch(:stdout)
 
-    assert_includes out, "WOULD NUDGE (4):"
+    assert_includes out, "WOULD NUDGE (6):"
     assert_includes out, "#1 issue @alice: time-to-first-activity 30d inactive >= ttl 7d"
     assert_includes out, "#9 PR @grace: inactivity-after-start 10d inactive >= ttl 7d"
     assert_includes out, "#13 issue @maintainer1: time-to-first-activity 30d inactive >= ttl 7d"
 
-    assert_includes out, "WOULD RELEASE (2):"
+    assert_includes out, "WOULD RELEASE (4):"
     assert_includes out, "#2 issue @bob:"
     assert_includes out, "nudged 5d ago >= grace 4d"
   end
@@ -57,7 +63,7 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes out, "#7 issue: automation-only assignee (app-runner[bot]) — ignored"
     assert_includes out, "#8 issue: no assignee"
     assert_includes out, "#10 issue: active; inactivity-after-start 10d < ttl 14d"
-    assert_includes out, "#12 issue: automation-only assignee (servicebot) — ignored"
+    assert_includes out, "#12 issue: automation-only assignee (servicebot[bot]) — ignored"
   end
 
   # --- apply: nudge ------------------------------------------------------
@@ -124,17 +130,85 @@ class StaleAssignmentSweepTest < Minitest::Test
     refute_includes log, "issues/6/assignees"
   end
 
-  # --- automation set never swept ---------------------------------------
+  # --- Fix 1: nudge marker must be attributed to the sweep identity ------
+
+  def test_forged_nudge_marker_from_another_login_does_not_trigger_release
+    result, log = run_cli(apply: true)
+
+    # #16 carries a nudge marker posted by `imposter`, not the sweep identity.
+    assert_includes result.fetch(:stdout), "#16 issue @karl: time-to-first-activity 30d inactive >= ttl 7d"
+    assert_includes log, "issues/16/comments"
+    refute_includes log, "issues/16/assignees"
+  end
+
+  def test_marker_from_the_sweep_identity_counts_and_releases_after_grace
+    _result, log = run_cli(apply: true)
+
+    # #2's marker was posted by the sweep identity, so it is a valid prerequisite.
+    assert_includes log, "assignees[]=bob"
+  end
+
+  def test_missing_comment_identity_is_auto_resolved_via_gh_user
+    result, log = run_cli(apply: true, identity: nil)
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stdout), "Sweep identity: #{IDENTITY}"
+    # Auto-resolved identity matches the nudge author, so #2 still releases.
+    assert_includes log, "-X DELETE repos/owner/repo/issues/2/assignees -f assignees[]=bob"
+  end
+
+  def test_unresolvable_identity_fails_closed_and_disables_releases
+    result, log = run_cli(apply: true, identity: nil, gh_fail_user: true)
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stdout), "Sweep identity: UNRESOLVED"
+    # No prior nudge can be verified, so nothing is released even under --apply...
+    refute_includes log, "DELETE"
+    refute_includes log, "Released @"
+    # ...but nudging and reporting still proceed.
+    assert_includes log, "issues/1/comments"
+  end
+
+  # --- Fix 2: revalidate immediately before each release ----------------
+
+  def test_release_aborted_when_recheck_shows_an_added_agent_claimed_label
+    result, log = run_cli(apply: true)
+
+    assert_includes result.fetch(:stdout), "SKIPPED release #17 on re-check"
+    assert_includes result.fetch(:stdout), "agent-claimed"
+    refute_includes log, "issues/17/assignees"
+    refute_includes log, "issues/17/comments"
+  end
+
+  def test_release_aborted_when_recheck_shows_an_assignee_reply
+    result, log = run_cli(apply: true)
+
+    assert_includes result.fetch(:stdout), "SKIPPED release #18 on re-check"
+    assert_includes result.fetch(:stdout), "renewed: assignee replied after nudge"
+    refute_includes log, "issues/18/assignees"
+    refute_includes log, "issues/18/comments"
+  end
+
+  # --- Fix 3: automation requires the [bot] suffix ----------------------
 
   def test_automation_assignees_are_never_swept
     _result, log = run_cli(apply: true)
 
-    # Bot-suffixed and trusted_bots logins are never removed or nudged.
+    # Bot-suffixed logins whose base is in trusted_bots are never removed/nudged.
     refute_includes log, "assignees[]=app-runner[bot]"
     refute_includes log, "assignees[]=helper[bot]"
-    refute_includes log, "assignees[]=servicebot"
+    refute_includes log, "assignees[]=servicebot[bot]"
     refute_includes log, "issues/7/comments"
     refute_includes log, "issues/12/comments"
+  end
+
+  def test_bare_login_matching_a_trusted_bot_base_name_is_human_and_swept
+    result, log = run_cli(apply: true)
+
+    # `claude` is in trusted_bots, but a BARE `claude` (no [bot] suffix) is human.
+    assert_includes result.fetch(:stdout), "#15 issue @claude: time-to-first-activity 30d inactive >= ttl 7d"
+    refute_includes result.fetch(:stdout), "#15 issue: automation-only"
+    assert_includes log, "issues/15/comments"
   end
 
   def test_release_keeps_a_coassigned_automation_identity
@@ -152,7 +226,7 @@ class StaleAssignmentSweepTest < Minitest::Test
     refute_includes log, "issues/8/assignees"
   end
 
-  # --- fail closed -------------------------------------------------------
+  # --- fail closed on unresolved automation set -------------------------
 
   def test_unresolved_automation_set_fails_closed_with_no_mutations
     result, log = run_cli(apply: true, trust_config: "/nonexistent/trusted-github-actors.yml")
@@ -164,6 +238,8 @@ class StaleAssignmentSweepTest < Minitest::Test
     refute_includes log, "DELETE"
   end
 
+  # --- misc --------------------------------------------------------------
+
   def test_repo_with_a_leading_at_segment_is_rejected_before_any_gh_call
     result, log = run_cli(repo: "@evil/repo")
 
@@ -171,8 +247,6 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes result.fetch(:stderr), "--repo must use OWNER/REPO form"
     refute_includes log, "issues?state=open"
   end
-
-  # --- help --------------------------------------------------------------
 
   def test_help_exits_zero_and_documents_clocks
     out, _err, status = Open3.capture3(RUBY_BIN, SCRIPT, "--help")
@@ -184,13 +258,11 @@ class StaleAssignmentSweepTest < Minitest::Test
 
   private
 
-  RUBY_BIN = "ruby"
-
   def days_ago(days)
     (NOW - (days * 86_400)).utc.iso8601
   end
 
-  def run_cli(apply: false, trust_config: nil, repo: "owner/repo")
+  def run_cli(apply: false, trust_config: nil, repo: "owner/repo", identity: IDENTITY, gh_fail_user: false)
     Dir.mktmpdir("stale-assignment-sweep-test") do |dir|
       build_fixtures(dir)
       log_path = File.join(dir, "gh.log")
@@ -198,11 +270,11 @@ class StaleAssignmentSweepTest < Minitest::Test
         RUBY_BIN, SCRIPT,
         "--repo", repo,
         "--now", NOW_ISO,
-        "--comment-identity", IDENTITY,
         "--trust-config", trust_config || File.join(dir, "trust.yml")
       ]
+      args.concat(["--comment-identity", identity]) if identity
       args << "--apply" if apply
-      stdout, stderr, status = Open3.capture3(cli_env(dir, log_path), *args)
+      stdout, stderr, status = Open3.capture3(cli_env(dir, log_path, gh_fail_user), *args)
       stdout = stdout.force_encoding("UTF-8")
       stderr = stderr.force_encoding("UTF-8")
       log = File.exist?(log_path) ? File.read(log_path, encoding: "UTF-8") : ""
@@ -210,12 +282,14 @@ class StaleAssignmentSweepTest < Minitest::Test
     end
   end
 
-  def cli_env(dir, log_path)
-    {
+  def cli_env(dir, log_path, gh_fail_user)
+    env = {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
       "GH_LOG" => log_path,
       "GH_FIXTURE_DIR" => dir
     }
+    env["GH_FAIL_USER"] = "1" if gh_fail_user
+    env
   end
 
   def build_fixtures(dir)
@@ -225,12 +299,27 @@ class StaleAssignmentSweepTest < Minitest::Test
     timelines.each do |number, events|
       File.write(File.join(dir, "timeline-#{number}.json"), JSON.generate([events]))
     end
+    # #17: re-fetch adds an agent-claimed label after the snapshot classified it
+    # as a release. #18: re-fetched timeline gains an assignee reply.
+    File.write(File.join(dir, "issue-17.json"), JSON.generate(issue(17, %w[laura], labels: %w[agent-claimed])))
+    File.write(
+      File.join(dir, "timeline-18-recheck.json"),
+      JSON.generate([[assigned("mona", 30), nudge(5), comment("mona", 1)]])
+    )
   end
 
   def write_trust_config(dir)
     File.write(
       File.join(dir, "trust.yml"),
-      "trusted_bots:\n  - servicebot\ntrusted_users:\n  - maintainer1\n"
+      <<~YAML
+        trusted_bots:
+          - app-runner
+          - helper
+          - servicebot
+          - claude
+        trusted_users:
+          - maintainer1
+      YAML
     )
   end
 
@@ -239,19 +328,45 @@ class StaleAssignmentSweepTest < Minitest::Test
     File.write(path, <<~RUBY)
       #!/usr/bin/env ruby
       # frozen_string_literal: true
+      require "json"
       log = ENV["GH_LOG"]
       File.open(log, "a") { |file| file.puts(ARGV.join(" ")) } if log
       argv = ARGV.join(" ")
       fixtures = ENV.fetch("GH_FIXTURE_DIR")
-      if argv.include?("issues?state=open")
+
+      if argv.include?("api user")
+        if ENV["GH_FAIL_USER"]
+          warn "gh: authentication required"
+          exit 1
+        end
+        print "#{IDENTITY}\\n"
+      elsif argv.include?("issues?state=open")
         print File.read(File.join(fixtures, "list.json"))
       elsif (match = argv.match(%r{issues/(\\d+)/timeline}))
-        path = File.join(fixtures, "timeline-\#{match[1]}.json")
+        number = match[1]
+        base = File.join(fixtures, "timeline-\#{number}.json")
+        recheck = File.join(fixtures, "timeline-\#{number}-recheck.json")
+        if File.exist?(recheck)
+          counter = File.join(fixtures, "reads-\#{number}")
+          reads = File.exist?(counter) ? File.read(counter).to_i : 0
+          File.write(counter, (reads + 1).to_s)
+          path = reads.zero? ? base : recheck
+        else
+          path = base
+        end
         print(File.exist?(path) ? File.read(path) : "[[]]")
       elsif argv.include?("/comments")
         print '{"id":1}'
       elsif argv.include?("assignees")
         print '{}'
+      elsif (match = argv.match(%r{issues/(\\d+)$}))
+        override = File.join(fixtures, "issue-\#{match[1]}.json")
+        if File.exist?(override)
+          print File.read(override)
+        else
+          list = JSON.parse(File.read(File.join(fixtures, "list.json"))).flatten
+          print JSON.generate(list.find { |item| item["number"].to_s == match[1] })
+        end
       else
         warn "unexpected gh invocation: \#{argv}"
         exit 1
@@ -273,9 +388,13 @@ class StaleAssignmentSweepTest < Minitest::Test
       pull(9, %w[grace]),
       issue(10, %w[heidi]),
       issue(11, ["ivan", "app-runner[bot]"]),
-      issue(12, %w[servicebot]),
+      issue(12, ["servicebot[bot]"]),
       issue(13, %w[maintainer1]),
-      issue(14, ["judy", "helper[bot]"])
+      issue(14, ["judy", "helper[bot]"]),
+      issue(15, %w[claude]),
+      issue(16, %w[karl]),
+      issue(17, %w[laura]),
+      issue(18, %w[mona])
     ]
   end
 
@@ -302,7 +421,11 @@ class StaleAssignmentSweepTest < Minitest::Test
       10 => [assigned("heidi", 30), comment("heidi", 10)],
       11 => [assigned("ivan", 30)],
       13 => [assigned("maintainer1", 30)],
-      14 => [assigned("judy", 30), nudge(5)]
+      14 => [assigned("judy", 30), nudge(5)],
+      15 => [assigned("claude", 30)],
+      16 => [assigned("karl", 30), nudge(5, "imposter")],
+      17 => [assigned("laura", 30), nudge(5)],
+      18 => [assigned("mona", 30), nudge(5)]
     }
   end
 
@@ -335,12 +458,12 @@ class StaleAssignmentSweepTest < Minitest::Test
     }
   end
 
-  def nudge(days)
+  def nudge(days, author = IDENTITY)
     {
       "event" => "commented",
       "created_at" => days_ago(days),
-      "actor" => { "login" => IDENTITY },
-      "user" => { "login" => IDENTITY },
+      "actor" => { "login" => author },
+      "user" => { "login" => author },
       "body" => "Heads up — no activity.\n\n#{NUDGE_MARKER}"
     }
   end
