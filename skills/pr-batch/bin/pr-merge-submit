@@ -1,0 +1,778 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Submit one authorized, merge-ready PR against the reviewed GitHub host, base,
+# and head when GitHub may require a merge queue. Readiness and merge authority
+# remain caller responsibilities; this helper only makes the mutation bounded.
+
+require "json"
+require "optparse"
+require "tempfile"
+require "uri"
+
+module PrMergeSubmit
+  class Error < StandardError; end
+  class UnknownOutcome < Error; end
+
+  class FailedStatus
+    def success?
+      false
+    end
+  end
+
+  QUEUE_CONTROL_PATTERN = /merge strategy for .+ is set by the merge queue/i
+  GRAPHQL_FEATURE_HEADER = "GraphQL-Features: merge_queue"
+  METHODS = %w[merge rebase squash].freeze
+
+  module_function
+
+  def queue_controlled?(output)
+    output.match?(QUEUE_CONTROL_PATTERN)
+  end
+
+  def queue_controlled_errors?(errors)
+    errors = Array(errors)
+    errors.any? && errors.all? do |error|
+      error.is_a?(Hash) && queue_controlled?(error["message"].to_s)
+    end
+  end
+
+  def parse_json!(raw, context)
+    payload = JSON.parse(raw)
+    raise Error, "#{context} returned non-object JSON" unless payload.is_a?(Hash)
+
+    payload
+  rescue JSON::ParserError => e
+    raise Error, "#{context} returned invalid JSON: #{e.message}"
+  end
+
+  def graphql_errors(raw)
+    payload = JSON.parse(raw)
+    return unless payload.is_a?(Hash)
+
+    errors = Array(payload["errors"])
+    errors unless errors.empty?
+  rescue JSON::ParserError
+    nil
+  end
+
+  class Runner
+    PR_QUERY = <<~GRAPHQL
+      query($owner: String!, $name: String!, $number: Int!) {
+        repository(owner: $owner, name: $name) {
+          pullRequest(number: $number) {
+            id
+            headRefOid
+            baseRefName
+            state
+            isDraft
+            url
+            merged
+            mergedAt
+            mergeCommit { oid }
+            isInMergeQueue
+            isMergeQueueEnabled
+            mergeQueueEntry {
+              id
+              position
+              state
+              estimatedTimeToMerge
+            }
+          }
+        }
+      }
+    GRAPHQL
+
+    ENQUEUE_MUTATION = <<~GRAPHQL
+      mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+        enqueuePullRequest(input: {
+          pullRequestId: $pullRequestId,
+          expectedHeadOid: $expectedHeadOid
+        }) {
+          mergeQueueEntry {
+            id
+            position
+            state
+            estimatedTimeToMerge
+          }
+        }
+      }
+    GRAPHQL
+
+    MERGE_MUTATION = <<~GRAPHQL
+      mutation(
+        $pullRequestId: ID!,
+        $expectedHeadOid: GitObjectID!,
+        $mergeMethod: PullRequestMergeMethod!,
+        $commitHeadline: String,
+        $commitBody: String
+      ) {
+        mergePullRequest(input: {
+          pullRequestId: $pullRequestId,
+          expectedHeadOid: $expectedHeadOid,
+          mergeMethod: $mergeMethod,
+          commitHeadline: $commitHeadline,
+          commitBody: $commitBody
+        }) {
+          pullRequest {
+            headRefOid
+            baseRefName
+            merged
+            mergedAt
+            url
+            mergeCommit { oid }
+          }
+        }
+      }
+    GRAPHQL
+
+    def run(argv)
+      @pending_signal = nil
+      @cancellation_signal = nil
+      @mutation_attempted = false
+      previous_handlers = install_signal_handlers do |signal|
+        @pending_signal ||= signal
+        @cancellation_signal ||= signal
+      end
+      options = parse_options(argv)
+      return print_help if options[:help]
+
+      validate_options!(options)
+      pull_request = fetch_pr(options)
+      result = if exact_merge?(pull_request, options)
+                 already_merged_result(pull_request, options)
+               else
+                 validate_pr!(pull_request, options)
+                 submit(pull_request, options)
+               end
+
+      puts JSON.pretty_generate(result)
+      0
+    rescue UnknownOutcome => e
+      warn "UNKNOWN: #{e.message}"
+      2
+    rescue Error => e
+      warn "Error: #{e.message}"
+      1
+    ensure
+      restore_signal_handlers(previous_handlers) if previous_handlers
+    end
+
+    private
+
+    def parse_options(argv)
+      options = {
+        method: nil, subject: nil, body: nil, repo: nil, host: nil,
+        expected_head: nil, expected_base: nil, help: false, pr: nil
+      }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
+                      "--expected-head SHA --expected-base BRANCH --method METHOD [options]"
+        opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
+        opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
+        opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
+          options[:expected_head] = value
+        end
+        opts.on("--expected-base BRANCH", "Exact PR base branch already cleared by readiness gates") do |value|
+          options[:expected_base] = value
+        end
+        opts.on("--method METHOD", METHODS, "Direct merge method: merge, rebase, or squash") do |value|
+          options[:method] = value
+        end
+        opts.on("--subject SUBJECT", "Direct merge commit subject") { |value| options[:subject] = value }
+        opts.on("--body BODY", "Direct merge commit body") { |value| options[:body] = value }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+      end
+      remaining = parser.parse(argv)
+      options[:pr] = remaining.shift
+      raise Error, "unexpected arguments: #{remaining.join(' ')}" unless remaining.empty?
+
+      options.merge(parser:)
+    rescue OptionParser::ParseError => e
+      raise Error, e.message
+    end
+
+    def print_help
+      puts <<~HELP
+        Submit one authorized, merge-ready PR at an exact head SHA.
+
+        #{usage_parser}
+
+        The helper reads GitHub's live isMergeQueueEnabled value for the target
+        PR. It uses enqueuePullRequest for a queue-controlled base and the
+        repository's normal direct merge mutation otherwise. If queue enforcement
+        changes between the read and direct mutation, only GitHub's explicit
+        queue-control error permits one exact-head enqueue retry. The helper never
+        enables auto-merge or treats an unrelated failure as queue evidence. It
+        reconciles ambiguous mutation responses against live exact-head state;
+        exit 2 means the outcome remains UNKNOWN and must not be retried blindly.
+      HELP
+      0
+    end
+
+    def usage_parser
+      OptionParser.new do |opts|
+        opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
+                      "--expected-head SHA --expected-base BRANCH --method METHOD [options]"
+        opts.separator "        --subject SUBJECT  Direct merge commit subject"
+        opts.separator "        --body BODY        Direct merge commit body"
+      end
+    end
+
+    def validate_options!(options)
+      raise Error, "PR number is required" unless options[:pr].to_s.match?(/\A[1-9]\d*\z/)
+      # owner/name are passed to gh as `-f owner=` / `-f name=`, so a leading "@"
+      # in either segment would make gh read a local file (same class as
+      # reject_leading_at!). A real GitHub owner/repo never starts with "@".
+      raise Error, "--repo must use OWNER/REPO form" unless options[:repo].to_s.match?(%r{\A[^@/\s][^/\s]*/[^@/\s][^/\s]*\z})
+
+      options[:host] = normalize_host!(options[:host])
+      raise Error, "--expected-head must be a full commit SHA" unless options[:expected_head].to_s.match?(/\A[0-9a-f]{40}\z/i)
+      unless options[:expected_base].to_s.match?(/\A[^\s~^:?*\[\\]+\z/) && !options[:expected_base].include?("..")
+        raise Error, "--expected-base must be a valid branch name"
+      end
+      raise Error, "--method is required" unless METHODS.include?(options[:method])
+
+      reject_leading_at!(options, :subject)
+      reject_leading_at!(options, :body)
+    end
+
+    # gh treats a field value beginning with "@" as a file path to read, so a
+    # merge subject/body derived from an untrusted PR title/body (e.g. "@/etc/passwd")
+    # would silently read a local file into the merge commit. Fail closed instead.
+    def reject_leading_at!(options, field)
+      return unless options[field].to_s.start_with?("@")
+
+      raise Error, "--#{field} must not begin with '@'; gh reads a leading @ value as a file path"
+    end
+
+    def normalize_host!(host)
+      match = host.to_s.match(/\A(?<name>[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::(?<port>\d+))?\z/i)
+      raise Error, "--host must be a hostname with an optional port" unless match
+
+      port = match[:port]&.to_i
+      raise Error, "--host port must be between 1 and 65535" if port && !port.between?(1, 65_535)
+
+      normalized = match[:name].downcase
+      port && port != 443 ? "#{normalized}:#{port}" : normalized
+    end
+
+    def fetch_pr(options)
+      owner, name = options[:repo].split("/", 2)
+      stdout, stderr, status = run_gh(
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
+        "-f", "query=#{PR_QUERY}",
+        "-f", "owner=#{owner}",
+        "-f", "name=#{name}",
+        "-F", "number=#{options[:pr]}",
+        host: options[:host]
+      )
+      raise Error, "could not fetch PR metadata: #{failure_output(stdout, stderr)}" unless status.success?
+
+      payload = PrMergeSubmit.parse_json!(stdout, "PR merge-queue query")
+      errors = payload["errors"]
+      raise Error, "PR merge-queue query returned errors: #{JSON.generate(errors)}" unless Array(errors).empty?
+
+      pull_request = payload.dig("data", "repository", "pullRequest")
+      raise Error, "PR merge-queue query returned no pull request" unless pull_request.is_a?(Hash)
+
+      validate_url_host!(pull_request["url"], options[:host])
+
+      pull_request
+    end
+
+    def submit(pull_request, options)
+      return existing_queue_result(pull_request, options) if pull_request["isInMergeQueue"] == true
+      unless pull_request["isInMergeQueue"] == false && pull_request["mergeQueueEntry"].nil?
+        raise UnknownOutcome, "PR merge-queue membership is inconsistent or UNKNOWN"
+      end
+
+      return enqueue_result(pull_request, options) if pull_request["isMergeQueueEnabled"] == true
+      unless pull_request["isMergeQueueEnabled"] == false
+        raise Error, "PR merge-queue state is missing or UNKNOWN"
+      end
+
+      direct_stdout, direct_stderr, direct_status = run_gh(
+        *direct_merge_args(pull_request, options), host: options[:host], mutation: true
+      )
+      direct_output = failure_output(direct_stdout, direct_stderr)
+      unless direct_status.success?
+        direct_errors = PrMergeSubmit.graphql_errors(direct_stdout)
+        return reconcile_direct_graphql_errors!(options, direct_errors) if direct_errors
+
+        return reconcile_mutation_outcome!(options, "direct merge submission", direct_output)
+      end
+
+      direct_payload = begin
+        PrMergeSubmit.parse_json!(direct_stdout, "direct merge")
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge", failure_output(e.message, direct_stderr)
+        )
+      end
+      direct_errors = Array(direct_payload["errors"])
+      if direct_errors.any?
+        return reconcile_direct_graphql_errors!(options, direct_errors)
+      end
+
+      merged_pull_request = direct_payload.dig("data", "mergePullRequest", "pullRequest")
+      begin
+        validate_merged_pr!(merged_pull_request, options)
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge response validation", failure_output(e.message, direct_stderr)
+        )
+      end
+      direct_result(merged_pull_request, options, direct_stderr)
+    end
+
+    def enqueue_after_queue_race(options, direct_output, pull_request: nil)
+      refreshed_pull_request = pull_request || fetch_pr(options)
+      validate_pr!(refreshed_pull_request, options)
+      unless refreshed_pull_request["isMergeQueueEnabled"] == true
+        raise Error, "GitHub reported queue control but the refreshed PR queue state is not enabled"
+      end
+
+      enqueue_result(refreshed_pull_request, options, direct_output:)
+    end
+
+    def validate_pr!(pull_request, options, require_open: true)
+      allowed_states = require_open ? ["OPEN"] : %w[OPEN MERGED]
+      raise Error, "PR state is not valid for submission: #{pull_request['state']}" unless allowed_states.include?(pull_request["state"])
+      raise Error, "PR is still a draft" if pull_request["isDraft"]
+      unless pull_request["baseRefName"] == options[:expected_base]
+        raise Error, "PR base moved: expected #{options[:expected_base]}, found #{pull_request['baseRefName']}"
+      end
+      return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+
+      raise Error, "PR head moved: expected #{options[:expected_head]}, found #{pull_request['headRefOid']}"
+    end
+
+    def direct_merge_args(pull_request, options)
+      args = [
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
+        "-f", "query=#{MERGE_MUTATION}",
+        "-f", "pullRequestId=#{pull_request.fetch('id')}",
+        "-f", "expectedHeadOid=#{options[:expected_head]}",
+        "-f", "mergeMethod=#{options[:method].upcase}"
+      ]
+      args.concat(["-f", "commitHeadline=#{options[:subject]}"]) if options[:subject]
+      args.concat(["-f", "commitBody=#{options[:body]}"]) if options[:body]
+      args
+    end
+
+    def validate_merged_pr!(pull_request, options)
+      raise Error, "direct merge submission returned no pull request" unless pull_request.is_a?(Hash)
+
+      validate_url_host!(pull_request["url"], options[:host])
+      raise Error, "direct merge did not report a merged PR" unless pull_request["merged"] == true
+      unless pull_request["baseRefName"] == options[:expected_base]
+        raise Error, "PR base moved during direct merge: expected #{options[:expected_base]}, found #{pull_request['baseRefName']}"
+      end
+      return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+
+      raise Error, "PR head moved during direct merge: expected #{options[:expected_head]}, found #{pull_request['headRefOid']}"
+    end
+
+    def direct_result(pull_request, options, diagnostics)
+      {
+        "pr" => options[:pr].to_i,
+        "repo" => options[:repo],
+        "url" => pull_request["url"],
+        "expected_head" => options[:expected_head],
+        "expected_base" => options[:expected_base],
+        "submission" => "direct",
+        "method" => options[:method],
+        "merged_at" => pull_request["mergedAt"],
+        "merge_commit" => pull_request.dig("mergeCommit", "oid"),
+        "diagnostics" => diagnostics.strip
+      }.reject { |_key, value| value.nil? || value == "" }
+    end
+
+    def already_merged_result(pull_request, options)
+      {
+        "pr" => options[:pr].to_i,
+        "repo" => options[:repo],
+        "url" => pull_request["url"],
+        "expected_head" => options[:expected_head],
+        "expected_base" => options[:expected_base],
+        "submission" => "already_merged",
+        "merge_provenance" => "UNKNOWN",
+        "merged_at" => pull_request["mergedAt"],
+        "merge_commit" => pull_request.dig("mergeCommit", "oid"),
+        "already_complete" => true
+      }.reject { |_key, value| value.nil? || value == "" }
+    end
+
+    def existing_queue_result(pull_request, options, direct_output: nil, reconciled: false)
+      entry = pull_request["mergeQueueEntry"]
+      unless entry.is_a?(Hash) && entry["id"]
+        raise UnknownOutcome, "PR reports merge-queue membership without a complete queue entry"
+      end
+
+      queue_result(pull_request, entry, options, direct_output:, reconciled:)
+    end
+
+    def enqueue_result(pull_request, options, direct_output: nil)
+      stdout, stderr, status = run_gh(
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
+        "-f", "query=#{ENQUEUE_MUTATION}",
+        "-f", "pullRequestId=#{pull_request.fetch('id')}",
+        "-f", "expectedHeadOid=#{options[:expected_head]}",
+        host: options[:host],
+        mutation: true
+      )
+      unless status.success?
+        errors = PrMergeSubmit.graphql_errors(stdout)
+        return reconcile_enqueue_graphql_errors!(options, errors, direct_output:) if errors
+
+        return reconcile_mutation_outcome!(
+          options,
+          "merge-queue submission",
+          failure_output(stdout, stderr),
+          route: :merge_queue,
+          direct_output:
+        )
+      end
+
+      payload = begin
+        PrMergeSubmit.parse_json!(stdout, "merge-queue submission")
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options,
+          "merge-queue submission",
+          failure_output(e.message, stderr),
+          route: :merge_queue,
+          direct_output:
+        )
+      end
+      errors = payload["errors"]
+      if Array(errors).any?
+        return reconcile_enqueue_graphql_errors!(options, errors, direct_output:)
+      end
+
+      entry = payload.dig("data", "enqueuePullRequest", "mergeQueueEntry")
+      unless entry.is_a?(Hash) && entry["id"]
+        return reconcile_mutation_outcome!(
+          options,
+          "merge-queue submission",
+          "response contained no queue entry",
+          route: :merge_queue,
+          direct_output:
+        )
+      end
+
+      post_enqueue_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue post-submission verification")
+      begin
+        validate_pr!(post_enqueue_pull_request, options, require_open: false)
+      rescue Error => e
+        raise UnknownOutcome, "#{e.message}; automatic queue cleanup is unsafe because GitHub cannot bind dequeue " \
+                              "to the entry returned by this submission"
+      end
+
+      if exact_queue?(post_enqueue_pull_request, options)
+        return existing_queue_result(post_enqueue_pull_request, options, direct_output:)
+      end
+      if exact_merge?(post_enqueue_pull_request, options)
+        return queue_result(
+          post_enqueue_pull_request, entry, options, direct_output:, reconciled: !direct_output.nil?
+        )
+      end
+
+      raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
+    end
+
+    def queue_result(pull_request, entry, options, direct_output: nil, reconciled: false, diagnostics: nil)
+      post_submission_state = pull_request["merged"] == true ? "MERGED" : pull_request["state"]
+
+      result = {
+        "pr" => options[:pr].to_i,
+        "repo" => options[:repo],
+        "url" => pull_request["url"],
+        "base" => pull_request["baseRefName"],
+        "expected_head" => options[:expected_head],
+        "expected_base" => options[:expected_base],
+        "submission" => "merge_queue",
+        "direct_method_requested" => options[:method],
+        "queue_method" => "repository_configured",
+        "post_submission_state" => post_submission_state
+      }
+      result["merge_queue_entry"] = entry if entry
+      result["merge_commit"] = pull_request.dig("mergeCommit", "oid") if pull_request["merged"] == true
+      result["reconciled_after_failure"] = true if reconciled
+      result["direct_attempt"] = direct_output.strip if direct_output
+      result["diagnostics"] = diagnostics.strip if diagnostics && !diagnostics.strip.empty?
+      result
+    end
+
+    def reconcile_mutation_outcome!(options, context, diagnostics, route: :direct, direct_output: nil)
+      pull_request = fetch_pr_for_reconciliation!(options, "#{context} outcome")
+      if exact_merge?(pull_request, options)
+        result = already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => route.to_s,
+          "diagnostics" => diagnostics
+        )
+        result["direct_attempt"] = direct_output.strip if direct_output
+        return result
+      end
+      if exact_queue?(pull_request, options)
+        return existing_queue_result(pull_request, options, direct_output:, reconciled: true)
+      end
+
+      reject_mismatched_queue!(pull_request, options) if route == :merge_queue
+
+      raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
+    end
+
+    def reconcile_enqueue_graphql_errors!(options, errors, direct_output: nil)
+      diagnostics = JSON.generate(errors)
+      pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
+      return existing_queue_result(pull_request, options, direct_output:, reconciled: true) if exact_queue?(pull_request, options)
+
+      if exact_merge?(pull_request, options)
+        result = already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => "merge_queue",
+          "diagnostics" => diagnostics
+        )
+        result["direct_attempt"] = direct_output.strip if direct_output
+        return result
+      end
+
+      reject_mismatched_queue!(pull_request, options)
+      raise UnknownOutcome, "merge-queue submission outcome could not be proven after GraphQL errors; " \
+                            "do not retry blindly: #{diagnostics}"
+    end
+
+    def reconcile_direct_graphql_errors!(options, errors)
+      diagnostics = JSON.generate(errors)
+      pull_request = fetch_pr_for_reconciliation!(options, "direct merge GraphQL error outcome")
+      if exact_merge?(pull_request, options)
+        return already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => "direct",
+          "diagnostics" => diagnostics
+        )
+      end
+      return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
+
+      if pull_request["state"] == "OPEN" && pull_request["isInMergeQueue"] == false
+        if PrMergeSubmit.queue_controlled_errors?(errors)
+          return enqueue_after_queue_race(options, diagnostics, pull_request:)
+        end
+
+        raise UnknownOutcome, "direct merge submission outcome could not be proven after GraphQL errors; " \
+                              "do not retry blindly: #{diagnostics}"
+      end
+
+      raise UnknownOutcome, "direct merge GraphQL error outcome could not be proven: #{diagnostics}"
+    end
+
+    def fetch_pr_for_reconciliation!(options, context)
+      fetch_pr(options)
+    rescue Error => e
+      raise UnknownOutcome, "#{context} is UNKNOWN because live PR state could not be read: #{e.message}"
+    end
+
+    def exact_merge?(pull_request, options)
+      pull_request["merged"] == true && exact_target?(pull_request, options)
+    end
+
+    def exact_queue?(pull_request, options)
+      pull_request["isInMergeQueue"] == true && exact_target?(pull_request, options) &&
+        pull_request["mergeQueueEntry"].is_a?(Hash) && pull_request.dig("mergeQueueEntry", "id")
+    end
+
+    def exact_target?(pull_request, options)
+      pull_request["baseRefName"] == options[:expected_base] &&
+        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+    end
+
+    def reject_mismatched_queue!(pull_request, options)
+      return unless pull_request["isInMergeQueue"] == true && !exact_target?(pull_request, options)
+
+      mismatch = begin
+        validate_pr!(pull_request, options, require_open: false)
+        "queued PR no longer matches the authorized target"
+      rescue Error => e
+        e.message
+      end
+      entry_id = pull_request.dig("mergeQueueEntry", "id") || "UNKNOWN"
+      raise UnknownOutcome, "#{mismatch}; live queue entry #{entry_id} cannot be safely dequeued because GitHub " \
+                            "does not accept an expected queue-entry ID"
+    end
+
+    def run_gh(*args, host:, mutation: false)
+      timeout_seconds = gh_timeout_seconds
+      if @cancellation_signal && (mutation || !@mutation_attempted)
+        cancellation_signal = @cancellation_signal
+        @mutation_attempted ||= mutation
+        @pending_signal = nil
+        return [
+          "",
+          "gh request was cancelled by SIG#{cancellation_signal} before it started",
+          FailedStatus.new
+        ]
+      end
+      @pending_signal = nil if @cancellation_signal
+      @mutation_attempted ||= mutation
+
+      stdout_file = Tempfile.new("pr-merge-submit-stdout")
+      stderr_file = Tempfile.new("pr-merge-submit-stderr")
+      interrupted_signal = nil
+      pid = Process.spawn(
+        { "GH_HOST" => host }, "gh", *args,
+        out: stdout_file.path, err: stderr_file.path, pgroup: true
+      )
+      deadline = monotonic_time + timeout_seconds
+      status = nil
+      timed_out = false
+      termination_complete = true
+
+      loop do
+        if @pending_signal
+          interrupted_signal = @pending_signal
+          @pending_signal = nil
+          status, termination_complete = terminate_process_group(pid, signal: interrupted_signal)
+          break
+        end
+
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        if waited
+          status = waited[1]
+          break
+        end
+
+        if monotonic_time >= deadline
+          timed_out = true
+          status, termination_complete = terminate_process_group(pid)
+          break
+        end
+
+        sleep 0.05
+      end
+
+      stdout = read_capture(stdout_file)
+      stderr = read_capture(stderr_file)
+      unless termination_complete
+        raise UnknownOutcome, "gh process group did not exit after forced termination; remote outcome is UNKNOWN"
+      end
+
+      diagnostic = if interrupted_signal
+                     "gh request was interrupted by SIG#{interrupted_signal} and its process group was terminated"
+                   elsif timed_out
+                     "gh request timed out after #{timeout_seconds} seconds and its process group was terminated"
+                   end
+      stderr = failure_output(stderr, diagnostic) if diagnostic
+      status = FailedStatus.new if interrupted_signal || timed_out
+      [stdout, stderr, status || FailedStatus.new]
+    rescue Errno::ENOENT
+      raise Error, "gh is not installed or not on PATH"
+    ensure
+      stdout_file&.close!
+      stderr_file&.close!
+    end
+
+    def gh_timeout_seconds
+      value = Float(ENV.fetch("PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS", "60"))
+      raise ArgumentError unless value.positive? && value.finite?
+
+      value
+    rescue ArgumentError
+      raise Error, "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS must be a positive finite number"
+    end
+
+    def install_signal_handlers
+      %w[INT TERM HUP].to_h do |signal|
+        previous = Signal.trap(signal) { yield signal }
+        [signal, previous]
+      end
+    end
+
+    def restore_signal_handlers(previous_handlers)
+      previous_handlers.each { |signal, handler| Signal.trap(signal, handler) }
+    end
+
+    def terminate_process_group(pid, signal: "TERM", grace_seconds: 1, kill_grace_seconds: 1)
+      signal_process_group(signal, pid)
+      deadline = monotonic_time + grace_seconds
+      status = wait_for_child(pid, deadline)
+      return [status, true] if wait_for_process_group_exit(pid, deadline)
+
+      signal_process_group("KILL", pid)
+      deadline = monotonic_time + kill_grace_seconds
+      status ||= wait_for_child(pid, deadline)
+      [status, wait_for_process_group_exit(pid, deadline)]
+    end
+
+    def signal_process_group(signal, pid)
+      Process.kill(signal, -pid)
+    rescue Errno::ESRCH
+      nil
+    end
+
+    def wait_for_child(pid, deadline)
+      while monotonic_time < deadline
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        return waited[1] if waited
+
+        sleep 0.05
+      end
+
+      nil
+    rescue Errno::ECHILD
+      nil
+    end
+
+    def process_group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def wait_for_process_group_exit(pid, deadline)
+      while monotonic_time < deadline
+        return true unless process_group_alive?(pid)
+
+        sleep 0.05
+      end
+
+      !process_group_alive?(pid)
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def read_capture(file)
+      file.rewind
+      file.read
+    end
+
+    def failure_output(stdout, stderr)
+      [stderr, stdout].reject(&:empty?).join("\n").strip
+    end
+
+    def validate_url_host!(url, expected_host)
+      uri = URI.parse(url.to_s)
+      raise Error, "PR URL is not HTTPS" unless uri.scheme == "https" && uri.host
+
+      actual_host = uri.host.downcase
+      actual_host = "#{actual_host}:#{uri.port}" unless uri.port == 443
+      return if actual_host.casecmp?(expected_host)
+
+      raise Error, "PR URL host mismatch: expected #{expected_host}, found #{actual_host}"
+    rescue URI::InvalidURIError
+      raise Error, "PR URL is invalid"
+    end
+  end
+end
+
+exit PrMergeSubmit::Runner.new.run(ARGV) if $PROGRAM_NAME == __FILE__
