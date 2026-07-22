@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Make batch selection and triage assignee-aware: a human assignee reserves an issue or PR (owned means skip), reserved items are listed with their assignee names instead of silently dropped, and items with no assignee or only an automation identity stay eligible.**
 - **Add a bounded exact-head PR merge helper that safely selects direct merge or merge-queue submission, reconciles ambiguous outcomes, and preserves unknown provenance.**
 - **Add Codex picker metadata (`agents/openai.yaml`) for `continue`, `status`, `tdd`, `run-ci`, `verify-pr-fix`, and `untrusted-contributor-intake`, and document `qa-stress` as the deliberate picker-metadata exclusion.**
 - **Add an agent-workflow consumer seam with portable configuration and command wrappers.** [PR 140](https://github.com/shakacode/agent-workflows/pull/140) by [justin808](https://github.com/justin808).
