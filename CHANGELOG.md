@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add `skills/pr-batch/bin/stale-assignment-sweep`, a dry-run-first warn-then-release sweep that decays inactive human assignments (nudge → 4-day grace → release) using anti-squatting and inactivity clocks renewed only by the assignee's own activity, pausing on exempt labels, skipping `agent-claimed` items, and never touching automation-set assignees (failing closed when unresolved).** [issue 209](https://github.com/shakacode/agent-workflows/issues/209).
 - **Make batch selection and triage assignee-aware: a human assignee reserves an issue or PR (owned means skip), reserved items are listed with their assignee names instead of silently dropped, and items with no assignee or only an automation identity stay eligible.**
 - **Add a bounded exact-head PR merge helper that safely selects direct merge or merge-queue submission, reconciles ambiguous outcomes, and preserves unknown provenance.**
 - **Add Codex picker metadata (`agents/openai.yaml`) for `continue`, `status`, `tdd`, `run-ci`, `verify-pr-fix`, and `untrusted-contributor-intake`, and document `qa-stress` as the deliberate picker-metadata exclusion.**

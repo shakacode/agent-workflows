@@ -62,6 +62,45 @@ The `agents/openai.yaml` file under a skill is optional Codex UI metadata for sk
 
 Beyond permissions, selection itself is assignee-aware: a human assignee — any assignee outside the repo's resolved automation set — marks an issue or PR as reserved: owned means skip. The automation set is resolved from the trust config's `trusted_bots` plus `[bot]`-suffixed logins via the `pr-security-preflight` chain (`trusted_users` are human actors and stay reservable), failing closed to skip when unresolved. `$plan-pr-batch`, `$triage`, and `$plan-issue-triage` classify assignees after fetching the full scoped set (`no:assignee` alone omits automation-only-assigned eligible items), exclude reserved items from actionable batches, and list them with their assignee names; items with no assignee, or only an automation identity, stay eligible.
 
+## Stale-Assignment Sweep
+
+Because owned means skip, an assignment left with no follow-through would block
+that work forever. `skills/pr-batch/bin/stale-assignment-sweep` treats assignment
+as a lease, not a deed: it nudges, then (only after an unanswered grace) releases
+inactive human assignments back to the batch pool. It is the human-timescale
+analog of the coordination backend's agent heartbeat leases.
+
+- **Default is dry-run.** With no `--apply`, it makes zero GitHub mutations and
+  only prints a digest of would-nudge / would-release items, each with its clock,
+  days inactive, and assignee. Run it report-only for ~2 weeks to tune TTLs
+  before enabling writes. `--apply` posts the nudge/audit comments and removes
+  assignees.
+- **Clocks (config-driven).** `time-to-first-activity` (default 7 days): assigned
+  but zero activity by the assignee since assignment — the primary anti-squatting
+  clock. `inactivity-after-start` (default 14 days for issues, 7 for PRs): no
+  assignee activity for the TTL. Activity that renews a lease is the assignee's
+  own commits, comments, reviews, or linked-PR events; other people's activity
+  does not renew it.
+- **Flow: nudge → grace → release.** At threshold it posts a nudge comment; four
+  days (`--grace-days`) after an *unanswered* nudge it removes the assignee and
+  posts an audit comment. It never releases without a prior unanswered nudge. Any
+  assignee reply resets the clock; exempt labels (`--exempt-label`, default
+  `blocked`, `on-hold`) pause it.
+- **Automation is never swept.** The automation set is resolved exactly as batch
+  selection resolves it — trust-config `trusted_bots` plus `[bot]`-suffixed logins
+  via the `pr-security-preflight` chain (`trusted_users` are humans and remain
+  reservable/sweepable). Items carrying the `agent-claimed` label are skipped
+  entirely (agent-claim staleness is owned by backend heartbeats). When the
+  automation set cannot be resolved it fails closed: human assignments are left
+  untouched. Every skip is reported, so nothing is silently dropped.
+- **Config & determinism.** `--repo` (repeatable or comma-separated; defaults to
+  `gh repo view`), `--first-activity-ttl-days`, `--issue-inactivity-ttl-days`,
+  `--pr-inactivity-ttl-days`, `--grace-days`, `--exempt-label`,
+  `--comment-identity`, `--trust-config`. Inject the reference clock with `--now`
+  or `STALE_ASSIGNMENT_SWEEP_NOW`; bound gh with
+  `STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS`. Run it on a schedule (Actions cron
+  or the coordination daemon).
+
 ## Whole-Surface Triage Flow
 
 Use `$triage` when the coordinator wants the generated equivalent of a manual
