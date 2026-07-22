@@ -464,6 +464,7 @@ Execution rules:
 - Workers obey owned paths/execution envelope; unlisted paths, contradiction/ambiguity, scope/risk growth, or weaker verification -> stop for coordinator.
 - Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- Mirror an issue/PR lane claim to an `agent-claimed` GitHub label (apply after a successful claim, remove on release; visible hint, not the durable lock; backend heartbeat TTL is the source of truth). Skip when `coordination_backend: n/a`. Owned means skip is symmetric: a human assignee or an `agent-claimed` label both mean skip, decaying via the stale-assignment sweep (humans) or backend heartbeat TTL (agents); the sweep skips `agent-claimed` items.
 - Apply Batch QA Lane; include QA Evidence.
 - Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
 - Final handoff: canonical closeout; links/tests/blockers/next, confidence/UNKNOWN, authority, QA, state.

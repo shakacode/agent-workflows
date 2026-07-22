@@ -1180,6 +1180,22 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
 
 - Use a maintainer-applied eligibility label such as `codex-ready` only if the repo has adopted it.
 - Use a temporary `codex-wip` label only as a visible hint; do not treat it as the durable lock.
+- Mirror an active lane claim on the claimed issue/PR with an `agent-claimed`
+  label when a coordination backend is in use: apply it after a successful
+  `agent-coord claim`, remove it when the claim is released, and let the
+  coordination daemon remove it for claims that expire without a clean release.
+  Like `codex-wip`, it is a visible hint for people browsing GitHub, not the
+  durable lock — the backend claim and its heartbeat TTL remain the source of
+  truth, and a stale `agent-claimed` label after a crash or restart is expected
+  until the daemon reconciles it. Skip label mirroring entirely when
+  `coordination_backend: n/a` (single-operator). Create the `agent-claimed`
+  label in target repos as part of coordination setup.
+- Owned means skip is symmetric for humans and agents: a human assignee (see the
+  assignee-aware batch selection and the stale-assignment sweep) or an
+  `agent-claimed` label both mean skip, and both decay — human assignments via
+  the stale-assignment sweep, agent claims via backend heartbeat TTL. The
+  stale-assignment sweep skips `agent-claimed` items, leaving agent-claim
+  staleness to the backend rather than the human-timescale sweep.
 - Treat QA as an explicit batch lane when the Batch QA Lane section requires it;
   give it a stable owner, claim/heartbeat evidence, and the same dependency
   checks as implementation or audit lanes.
@@ -1224,7 +1240,10 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   competing branch.
   Targeted `agent-coord status` is advisory preflight, while
   `agent-coord claim` is the backend's compare-and-swap gate for concurrent
-  claim races.
+  claim races. After a successful claim on an issue or PR lane (not an ad-hoc
+  lane, which has no GitHub surface), apply the `agent-claimed` label to that
+  issue/PR when a coordination backend is in use, and remove it on the
+  release/teardown path.
 - For exact independent lanes that have no `depends_on` refs, degraded bounded
   doctor/status does not automatically block work. A coordinator may attempt the
   bounded `agent-coord claim` directly. If the direct claim succeeds, proceed in
