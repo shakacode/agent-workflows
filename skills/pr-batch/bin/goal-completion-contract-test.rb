@@ -126,6 +126,14 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
+PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each `-`, `_`, or space separated segment of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`)."
+PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`),\n   never the full repository name"
+LEGACY_PROJECT_ABBREVIATION_PHRASES = [
+  "`<PROJECT>` is a short abbreviation derived from the current repository name",
+  "Derive `<PROJECT>` from the current repository name",
+  "line using a repository abbreviation"
+].freeze
+ARCHIVE_READINESS_HANDOFF_RULE = "End every final batch handoff with the exact archive-readiness status line: use `Conversation status: Ready for archiving.` only when the completed-batch audit is clean and no OUTSTANDING finding, follow-up, unresolved question, pending work, or `UNKNOWN` fact remains; otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive."
 CANONICAL_READINESS_STATES = %w[
   merged
   ready-gates-clean
@@ -646,6 +654,47 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, DATE_COMMAND, label
+    end
+  end
+
+  def test_batch_title_project_rule_is_a_deterministic_uppercase_abbreviation
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_text_includes text, PROJECT_ABBREVIATION_RULE, label
+    end
+
+    assert_text_includes @pr_batch_docs, PROJECT_ABBREVIATION_DOCS_RULE, "docs/pr-batch-skills.md"
+  end
+
+  def test_batch_title_rules_reject_the_full_repository_name
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      LEGACY_PROJECT_ABBREVIATION_PHRASES.each do |phrase|
+        refute_includes text, phrase,
+                        "#{label} restores vague batch title guidance that the full repository name satisfies: #{phrase}"
+      end
+    end
+  end
+
+  def test_batch_handoff_format_requires_the_archive_readiness_status_line
+    {
+      "workflows/pr-processing.md" => extract_markdown_section(@workflow, "### Batch Handoff Format"),
+      "skills/pr-batch/SKILL.md" => extract_markdown_section(
+        @pr_batch_skill,
+        "## Batch Handoff Format",
+        end_heading: /^##\s+/
+      )
+    }.each do |label, section|
+      assert_text_includes section, ARCHIVE_READINESS_HANDOFF_RULE, "#{label} Batch Handoff Format section"
     end
   end
 

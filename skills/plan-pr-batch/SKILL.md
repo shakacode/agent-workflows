@@ -347,12 +347,12 @@ Plan a PR batch
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
      `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-     Derive `<PROJECT>` from the current repository name or maintainer-supplied
-     abbreviation. Include A, B, C, etc. only when creating multiple batch
+     `<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each `-`, `_`, or space separated segment of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`).
+     Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - Add `Thread handle:` as the first worker-specific line. Derive
-     `<batch-short>` from the batch title's `<PROJECT>` plus optional A/B/C
+     `<batch-short>` from the lowercased batch title `<PROJECT>` plus optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
      `<word>` from a short coordinator-chosen session word. Record the handle
      before dispatch so workers copy it unchanged.

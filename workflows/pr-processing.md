@@ -1006,11 +1006,11 @@ owner/serial decision without repeating the expanded map:
 > Target ids: PR/Issue #N or Ad-hoc `adhoc:<yyyymmdd>-<short-slug>`
 
 Use this goal prompt shape:
-Before filling the `Batch title:` line, derive `<PROJECT>` from the current
-repository name or maintainer-supplied abbreviation, and run
+Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+`<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each `-`, `_`, or space separated segment of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`).
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
-from the batch title's `<PROJECT>` plus optional A/B/C suffix, `<lane>` from the
+from the lowercased batch title `<PROJECT>` plus optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
@@ -1154,6 +1154,10 @@ while required QA coverage/scope evidence is missing, stale, scope-mismatched,
 marked `blocked`, release-audit `in_progress`, or `unknown`, or still `UNKNOWN`;
 a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
 use the documented fallback evidence.
+
+End every final batch handoff with the exact archive-readiness status line: use `Conversation status: Ready for archiving.` only when the completed-batch audit is clean and no OUTSTANDING finding, follow-up, unresolved question, pending work, or `UNKNOWN` fact remains; otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+See [Coordinator Closeout Lane](#coordinator-closeout-lane) for the audit-marker
+replay that decides which of the two lines applies.
 
 ### Goal Mode Completion Contract
 
@@ -1709,8 +1713,8 @@ target list for each batch:
 
 <!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
 
-Before filling the `Batch title:` line, derive `<PROJECT>` from the current
-repository name or maintainer-supplied abbreviation, and run
+Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule from
+[Plan To Goal Handoff](#plan-to-goal-handoff), and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
 
 ```text

@@ -154,9 +154,9 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    untrusted public discovery that needs confirmation.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Batch title**: for pasteable batch prompts, derive a short title in the form
-   `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`, where
-   `<PROJECT>` is a short abbreviation derived from the current repository name
-   or a maintainer-supplied abbreviation. Fill the optional `A?` slot with A,
+   `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   `<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each `-`, `_`, or space separated segment of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`).
+   Fill the optional `A?` slot with A,
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
    prompt, and use that output for `MM-DD HH:MM`.
@@ -327,11 +327,11 @@ Before implementation or worker launch, produce:
 
 After any target-specific invocation line, each pasteable batch prompt must put
 `Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>` near the top.
-Derive `<PROJECT>` from the current repository name or maintainer-supplied
-abbreviation, and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
+Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
+and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
 local shell when creating the prompt.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
-from the batch title's `<PROJECT>` plus optional A/B/C suffix, `<lane>` from the
+from the lowercased batch title `<PROJECT>` plus optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. Record the handle before dispatch so workers
 copy it unchanged.
@@ -544,6 +544,10 @@ lane whose private coordination claim/heartbeat is `UNKNOWN` while documented QA
 evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
 split final states from `.agents/workflows/pr-processing.md`.
+
+End every final batch handoff with the exact archive-readiness status line: use `Conversation status: Ready for archiving.` only when the completed-batch audit is clean and no OUTSTANDING finding, follow-up, unresolved question, pending work, or `UNKNOWN` fact remains; otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+See [Coordinator Closeout Lane](#coordinator-closeout-lane) for the audit-marker
+replay that decides which of the two lines applies.
 
 ## Coordination State
 
