@@ -267,6 +267,24 @@ class CoordinationDeclarationContractTest < Minitest::Test
                     "the declaration belongs in the canonical handoff contract the goal prompt routes to"
   end
 
+  # The continuation prompt is a supported entry point that emits its own final
+  # handoff, so it has to demand the declaration too or it reopens the bug.
+  def test_continuation_prompt_requires_the_declaration
+    workflow = read_repo_file(WORKFLOW_PATH)
+    start_index = workflow.index("### Generic PR-Batch Continuation Prompt")
+    refute_nil start_index, "workflows/pr-processing.md must keep the continuation prompt section"
+
+    end_match = workflow.match(/^###\s+/, start_index + 1)
+    section = normalize_prose(workflow[start_index...(end_match ? end_match.begin(0) : workflow.length)])
+
+    assert_includes section, "coordination: registered <batch-id>",
+                    "the continuation prompt must require the registered form"
+    assert_includes section, "coordination: unavailable #{EM_DASH} <reason>",
+                    "the continuation prompt must require the unavailable form"
+    assert_includes section, "A missing declaration is a hard blocker, not a clean handoff.",
+                    "the continuation prompt must make an absent declaration a blocker"
+  end
+
   def test_rule_states_both_declared_forms_verbatim
     assert_includes COORDINATION_DECLARATION_RULE, "`coordination: registered <batch-id>`"
     assert_includes COORDINATION_DECLARATION_RULE, "`coordination: unavailable #{EM_DASH} <reason>`"
