@@ -32,7 +32,13 @@ module StaleAssignmentSweep
   # event (the pusher), which does renew. Assignment itself is not activity.
   ACTIVITY_EVENTS = %w[commented reviewed cross-referenced referenced].freeze
 
-  AGENT_CLAIMED_LABEL = "agent-claimed"
+  # Default agent-claim label. The effective label is resolved from the
+  # `agent_claimed_label` seam in `.agents/agent-workflow.yml` (overridable with
+  # --agent-claimed-label) so a consumer repo that renames the label still has its
+  # claimed items skipped, rather than the sweep matching only this literal.
+  DEFAULT_AGENT_CLAIMED_LABEL = "agent-claimed"
+
+  DEFAULT_WORKFLOW_CONFIG = ".agents/agent-workflow.yml"
 
   DEFAULTS = {
     first_activity_ttl: 7,
@@ -63,6 +69,7 @@ module StaleAssignmentSweep
 
       @now = resolve_now(options)
       load_trust_config(options)
+      options[:agent_claimed_label] = resolve_agent_claimed_label(options)
       @identities = resolve_identities(options)
       repos = resolve_repos(options)
       # One repo's listing failure must not lose the other repos' digests.
@@ -118,6 +125,10 @@ module StaleAssignmentSweep
         opts.on("--trust-config PATH", "Trusted GitHub actor allowlist (pr-security-preflight resolution)") do |value|
           options[:trust_config] = value
         end
+        opts.on("--agent-claimed-label LABEL",
+                "Claim label to skip (default: agent_claimed_label from #{DEFAULT_WORKFLOW_CONFIG}, else #{DEFAULT_AGENT_CLAIMED_LABEL})") do |value|
+          options[:agent_claimed_label] = value
+        end
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
       end
       parser.parse!(argv)
@@ -146,8 +157,10 @@ module StaleAssignmentSweep
         issue-referencing commits or linked-PR events (raw timeline commits carry no GitHub
         login, so a commit only renews when it surfaces as a referenced/cross-referenced
         event); other people's activity does not renew it. Exempt labels pause the
-        clock. Items carrying the `#{AGENT_CLAIMED_LABEL}` label are skipped (agent-claim
-        staleness is owned by backend heartbeat leases). An assignee is automation when its
+        clock. Items carrying the agent-claim label are skipped (agent-claim
+        staleness is owned by backend heartbeat leases); the label is resolved from the
+        `agent_claimed_label` seam in `#{DEFAULT_WORKFLOW_CONFIG}` (default
+        `#{DEFAULT_AGENT_CLAIMED_LABEL}`, overridable with --agent-claimed-label). An assignee is automation when its
         login carries the `[bot]` suffix; if `trusted_bots` is configured its base must also be
         a member, and if `trusted_bots` is empty (the packaged-fallback default) any
         `[bot]`-suffixed login qualifies. A bare login is always human even if it equals a
@@ -161,7 +174,7 @@ module StaleAssignmentSweep
         without a prior unanswered nudge attributed to one of the sweep's own identities: the
         gh-authenticated login (gh api user) unioned with any --comment-identity (a mismatch
         warns; if none resolves, releases are disabled). Before each nudge and each release the
-        live item is re-fetched and re-classified, so a reply, an added exempt/#{AGENT_CLAIMED_LABEL}
+        live item is re-fetched and re-classified, so a reply, an added exempt/agent-claim
         label, or a reassignment between scan and mutation aborts it. Environment:
         STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
       HELP
@@ -274,6 +287,26 @@ module StaleAssignmentSweep
       [File.expand_path("../trusted-github-actors.yml", __dir__), "packaged-fallback"]
     end
 
+    # The agent-claim label is a seam so a consumer repo can rename it; the sweep
+    # must skip whatever the seam names (default `agent-claimed`), not a hardcoded
+    # literal, or it would nudge/release an actively agent-claimed item in a repo
+    # that renamed the label. An explicit --agent-claimed-label wins; otherwise
+    # read `agent_claimed_label` from `.agents/agent-workflow.yml`.
+    def resolve_agent_claimed_label(options)
+      return options[:agent_claimed_label] if options[:agent_claimed_label]
+
+      workflow_path = File.join(git_toplevel || Dir.pwd, DEFAULT_WORKFLOW_CONFIG)
+      return DEFAULT_AGENT_CLAIMED_LABEL unless File.exist?(workflow_path)
+
+      data = YAML.safe_load_file(workflow_path, aliases: false) || {}
+      return DEFAULT_AGENT_CLAIMED_LABEL unless data.is_a?(Hash)
+
+      label = data.fetch("agent_claimed_label", DEFAULT_AGENT_CLAIMED_LABEL).to_s
+      label.empty? ? DEFAULT_AGENT_CLAIMED_LABEL : label
+    rescue StandardError
+      DEFAULT_AGENT_CLAIMED_LABEL
+    end
+
     def git_toplevel
       out, _err, status, outcome = capture_process_group("git", "rev-parse", "--show-toplevel")
       return unless outcome == :ok && status&.success?
@@ -378,8 +411,10 @@ module StaleAssignmentSweep
       return base.merge(decision: :skip, reason: "item is #{state} — skipped") unless state == "open"
 
       return base.merge(decision: :ignore, reason: "no assignee") if assignees.empty?
-      if labels.include?(AGENT_CLAIMED_LABEL)
-        return base.merge(decision: :skip, reason: "#{AGENT_CLAIMED_LABEL} — owned by backend heartbeat leases")
+
+      claim_label = options.fetch(:agent_claimed_label)
+      if labels.include?(claim_label)
+        return base.merge(decision: :skip, reason: "#{claim_label} — owned by backend heartbeat leases")
       end
 
       human = assignees.reject { |login| automation_login?(login) }
