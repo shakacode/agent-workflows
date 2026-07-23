@@ -546,6 +546,7 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
 When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
 ready/merge claim, include replayable `qa-evidence v1` and
 `priority-finding-dispositions v1` markers as defined in
