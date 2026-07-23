@@ -30,14 +30,20 @@ on the prior delivery state:
 
 Exact Source Pack skill-name collisions remain blocking unless the legacy flat
 migration can prove that they are unchanged pack-owned copies or managed
-symlinks.
+symlinks. For companion installs, collision names come from the intersection of
+the current Source Pack and the verified active native plugin roots. This keeps
+a companion install fail-closed when the active plugin adds a skill after the
+recorded companion revision, without treating every other direct child as
+pack-owned.
 
 ## Implementation
 
-Keep the existing inventory algorithm, but seed the list of unknown-name
-blockers only while migrating a recorded legacy flat installation. For fresh or
-already-companion states, inventory only Source Pack skill names and ignore
-unrelated direct children. No unrelated path is deleted or modified.
+Keep the recorded revision only for proving and removing legacy flat ownership.
+Seed the list of unknown-name blockers only while migrating a recorded legacy
+flat installation. For fresh or already-companion states, block direct children
+whose names occur in both the current Source Pack and the verified active native
+plugin roots, and ignore other unrelated direct children. No unrelated path is
+deleted or modified.
 
 ## Verification
 
@@ -49,6 +55,9 @@ Add installer-level regression cases proving:
    is installed.
 4. The existing legacy flat migration test continues to refuse an unknown
    direct skill without mutation.
+5. A companion reinstall fails without mutation when the current Source Pack
+   and active native plugin add a colliding skill after the recorded install
+   revision.
 
 Follow test-driven development: observe the new regression fail before changing
 production code, then run the focused delivery-state and installer suites plus

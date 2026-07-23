@@ -759,6 +759,42 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_repeat_companion_install_blocks_new_current_native_skill_collision() {
+  local tmp source target plugin_root metadata_before output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/first.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  mkdir -p "$source/skills/current-only" "$plugin_root/skills/current-only" "$target/skills/current-only"
+  printf 'current source\n' > "$source/skills/current-only/SKILL.md"
+  git -C "$source" add skills/current-only
+  git -C "$source" commit --quiet -m "add current skill"
+  printf 'current native\n' > "$plugin_root/skills/current-only/SKILL.md"
+  printf 'personal collision\n' > "$target/skills/current-only/SKILL.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat companion install replaced a newly colliding skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "$target/skills/current-only"
+  grep -qxF 'personal collision' "$target/skills/current-only/SKILL.md" || \
+    fail "repeat companion collision changed the flat path"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "repeat companion collision changed install metadata"
+}
+
 test_invalid_recorded_delivery_mode_fails_before_mutation() {
   local tmp target output status metadata_before sentinel_before target_paths_before
   tmp="$(mktemp -d)"
@@ -1585,6 +1621,7 @@ main() {
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
+    test_repeat_companion_install_blocks_new_current_native_skill_collision
     test_invalid_recorded_delivery_mode_fails_before_mutation
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host

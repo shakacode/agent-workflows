@@ -173,6 +173,50 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_plugin_companion_blocks_new_current_native_skill_missing_from_recorded_revision
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+      write_codex_native_state(target)
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "plugin-companion",
+        "source" => source,
+        "source_revision" => recorded_revision
+      )
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      metadata_before = File.binread(metadata_path)
+
+      new_skill = File.join(source, "skills/current-only/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(new_skill))
+      File.write(new_skill, "current source\n")
+      system("git", "-C", source, "add", "skills/current-only", exception: true)
+      system("git", "-C", source, "commit", "--quiet", "-m", "add current skill", exception: true)
+      native_skill = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0/skills/current-only/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(native_skill))
+      File.write(native_skill, "current native\n")
+      flat_skill = File.join(target, "skills/current-only/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(flat_skill))
+      File.write(flat_skill, "personal collision\n")
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?
+      refute payload.fetch("compatible")
+      assert_equal [File.dirname(flat_skill)], payload.dig("flat", "blocking")
+      assert_equal "personal collision\n", File.binread(flat_skill)
+      assert_equal metadata_before, File.binread(metadata_path)
+    end
+  end
+
   def test_codex_enabled_setting_accepts_indentation_and_inline_comments
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")
