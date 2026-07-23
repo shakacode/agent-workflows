@@ -257,7 +257,7 @@ precise blocker.
    keep it under 8 000 characters, and split or compact it when too large rather
    than applying the Codex split threshold. Put a short `Batch title:` after the
    target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   `<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 4 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
+   `<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
    Use A/B/C group letters
    only when multiple prompts are created, and get `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell.

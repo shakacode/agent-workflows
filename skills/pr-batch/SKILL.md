@@ -155,7 +155,7 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Batch title**: for pasteable batch prompts, derive a short title in the form
    `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   `<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 4 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
+   `<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
    Fill the optional `A?` slot with A,
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
@@ -545,10 +545,7 @@ evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
 split final states from `.agents/workflows/pr-processing.md`.
 
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line: use `Conversation status: Ready for archiving.` only when the completed-batch audit is clean and no OUTSTANDING finding, follow-up, unresolved question, pending work, or `UNKNOWN` fact remains; otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
-See [Coordinator Closeout Lane](#coordinator-closeout-lane) for the audit-marker
-replay that decides which of the two lines applies.
-
+End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
 ## Coordination State
 
 Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as the
