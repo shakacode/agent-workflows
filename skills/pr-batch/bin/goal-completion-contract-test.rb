@@ -126,7 +126,7 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
-PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each `-`, `_`, or space separated segment of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`)."
+PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`)."
 PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`),\n   never the full repository name"
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",

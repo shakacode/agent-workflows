@@ -347,7 +347,7 @@ Plan a PR batch
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
      `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-     `<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each `-`, `_`, or space separated segment of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`).
+     `<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`).
      Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
