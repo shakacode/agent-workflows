@@ -1008,7 +1008,7 @@ owner/serial decision without repeating the expanded map:
 Use this goal prompt shape:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
-`<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
+`<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise, for a multi-segment name take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and for a single-segment name take its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
@@ -1156,6 +1156,7 @@ a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
 use the documented fallback evidence.
 
 End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+
 ### Goal Mode Completion Contract
 
 Use this compact, self-contained `GMCC-v2` line verbatim in PR-batch goal
