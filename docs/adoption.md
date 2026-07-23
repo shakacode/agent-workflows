@@ -80,6 +80,9 @@ notes.
    bootstrapping a new consumer repo. When an existing mapping needs new
    required keys, initialization appends them without rewriting its comments or
    formatting and fails closed if that merge cannot be represented safely.
+   Optionally set `repo_prefix` to 1-6 uppercase ASCII letters or digits to
+   override the deterministic repository-name abbreviation used in batch titles
+   and thread handles. The initializer does not add this optional key.
 
 5. **Review repo-local trust YAML.** The generated
    `.agents/trusted-github-actors.yml` contains empty, fail-closed lists. Add

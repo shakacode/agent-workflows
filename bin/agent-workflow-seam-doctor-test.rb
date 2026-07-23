@@ -336,6 +336,51 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_optional_repo_prefix_accepts_valid_value_and_remains_optional
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      without_prefix_out, without_prefix_status = run_doctor(root)
+      assert without_prefix_status.success?, without_prefix_out
+
+      write_policy(root, POLICY.merge("repo_prefix" => "ROR"))
+      with_prefix_out, with_prefix_status = run_doctor(root)
+      assert with_prefix_status.success?, with_prefix_out
+    end
+  end
+
+  def test_empty_optional_repo_prefix_reports_only_the_unresolved_diagnostic
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("repo_prefix" => ""))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_equal 1, out.scan("unresolved policy value for key: repo_prefix").length
+      refute_includes out, "invalid policy value for key: repo_prefix"
+    end
+  end
+
+  def test_optional_repo_prefix_rejects_values_outside_title_contract
+    ["n/a", "aw", "TOO-LONG", "SEVEN77", 123].each do |repo_prefix|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("repo_prefix" => repo_prefix))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?
+        assert_includes out,
+                        "invalid policy value for key: repo_prefix " \
+                        "(expected 1-6 uppercase ASCII letters or digits)"
+      end
+    end
+  end
+
   def test_invalid_policy_yaml_fails
     with_repo do |root|
       write_agents(root)

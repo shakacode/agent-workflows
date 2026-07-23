@@ -2,6 +2,10 @@
 # Replace n/a values with repo-specific policy as each workflow is adopted.
 ---
 base_branch: main
+# Optional: override the deterministic repository-name prefix used in batch
+# titles and thread handles. Use 1-6 uppercase ASCII letters or digits. Omit
+# repo_prefix when unset; this optional key does not accept the "n/a" sentinel.
+# repo_prefix: "APP"
 follow_up_prefix: "Follow-up:"
 review_gate: "n/a"
 approval_exempt: "n/a"

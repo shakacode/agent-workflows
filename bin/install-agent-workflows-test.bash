@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAKE_CODEX_DIR="$(mktemp -d)"
-trap 'rm -rf "$FAKE_CODEX_DIR"' EXIT
+TEST_SOURCE_ROOT=""
+cleanup() {
+  rm -rf "$FAKE_CODEX_DIR"
+  [[ -z "$TEST_SOURCE_ROOT" ]] || rm -rf "$TEST_SOURCE_ROOT"
+}
+trap cleanup EXIT
 export AGENT_WORKFLOWS_CODEX_EXECUTABLE="$FAKE_CODEX_DIR/codex"
 cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
 #!/usr/bin/env ruby
@@ -1551,6 +1556,10 @@ test_upgrade_validates_consumer_root_after_install() {
 }
 
 main() {
+  TEST_SOURCE_ROOT="$(mktemp -d)"
+  new_source_repo "$TEST_SOURCE_ROOT"
+  ROOT="$TEST_SOURCE_ROOT"
+
   local tests=(
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation

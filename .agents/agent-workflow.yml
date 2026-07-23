@@ -1,5 +1,6 @@
 ---
 base_branch: main
+repo_prefix: "AW"
 follow_up_prefix: "Follow-up:"
 review_gate: "independent code review for non-trivial workflow or helper changes"
 automation_reviewers: "claude-review (GitHub Action; in-flight and terminal state observable via the checks API) and coderabbitai (advisory; may fail on rate limits)"

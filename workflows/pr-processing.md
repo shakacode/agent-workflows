@@ -1008,9 +1008,19 @@ owner/serial decision without repeating the expanded map:
 Use this goal prompt shape:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
-`<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise, for a multi-segment name take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and for a single-segment name take its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
+Resolve `<PROJECT>` from the optional `repo_prefix` in
+`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII
+letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
+deterministically from the repository name: use the basename of the `origin`
+remote after stripping `.git`, or the repository root basename when `origin` is
+unavailable; for a multi-segment name take the first letter of each of the first
+six `-`, `_`, or space-separated segments, and for a single-segment name take
+its first 4 letters or the whole name when shorter, then uppercase the result
+(`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`,
+`go` -> `GO`). An invalid configured `repo_prefix` is a blocker; do not silently
+fall back.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
-from the lowercased batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
+from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.

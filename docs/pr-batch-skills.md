@@ -209,12 +209,14 @@ omit the queue summary and note that queue state is unavailable.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
-   line using an uppercase repository abbreviation (`agent-workflows` -> `AW`)
-   rather than the full repository name, A/B/C only when multiple prompts are
-   produced, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the local shell, and a
-   short title. `skills/pr-batch/SKILL.md` carries the full derivation rule,
-   including how names too short to abbreviate are handled.
-   Add `Thread handle:` using the lowercased batch abbreviation plus lane id
+   line using the optional validated `repo_prefix` from
+   `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
+   repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
+   multiple prompts are produced, `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell, and a short title.
+   `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
+   Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
+   `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
    workers emit the canonical card after claim, PR-open, blocked/cancelled, and
    final handoff states. Dashboard-generated and skill-generated prompts must
