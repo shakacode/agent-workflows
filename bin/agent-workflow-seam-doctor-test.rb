@@ -350,8 +350,22 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_empty_optional_repo_prefix_reports_only_the_unresolved_diagnostic
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("repo_prefix" => ""))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_equal 1, out.scan("unresolved policy value for key: repo_prefix").length
+      refute_includes out, "invalid policy value for key: repo_prefix"
+    end
+  end
+
   def test_optional_repo_prefix_rejects_values_outside_title_contract
-    ["", "aw", "TOO-LONG", "SEVEN77", 123].each do |repo_prefix|
+    ["n/a", "aw", "TOO-LONG", "SEVEN77", 123].each do |repo_prefix|
       with_repo do |root|
         write_valid_binstub_contract(root)
         write_policy(root, POLICY.merge("repo_prefix" => repo_prefix))

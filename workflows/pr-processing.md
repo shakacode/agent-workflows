@@ -1014,7 +1014,7 @@ letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
 deterministically from the repository name: use the basename of the `origin`
 remote after stripping `.git`, or the repository root basename when `origin` is
 unavailable; for a multi-segment name take the first letter of each of the first
-six `-`, `_`, or space separated segments, and for a single-segment name take
+six `-`, `_`, or space-separated segments, and for a single-segment name take
 its first 4 letters or the whole name when shorter, then uppercase the result
 (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`,
 `go` -> `GO`). An invalid configured `repo_prefix` is a blocker; do not silently

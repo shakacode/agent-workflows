@@ -215,8 +215,9 @@ omit the queue summary and note that queue state is unavailable.
    multiple prompts are produced, `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell, and a short title.
    `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
-   Add `Thread handle:` using the lowercased resolved batch abbreviation plus
-   lane id and a coordinator-chosen session word. Add the compact `Lane Card:` line so
+   Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
+   `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
+   and a coordinator-chosen session word. Add the compact `Lane Card:` line so
    workers emit the canonical card after claim, PR-open, blocked/cancelled, and
    final handoff states. Dashboard-generated and skill-generated prompts must
    carry the same execution rules, including thread handles, claim holders, Lane

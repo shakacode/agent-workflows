@@ -104,7 +104,9 @@ Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 repository-name abbreviation used as `<PROJECT>` in batch titles and, in
 lowercase form, in thread handles. Its value must contain 1-6 uppercase ASCII
 letters or digits. An invalid configured value is a seam-doctor error; an
-absent key remains valid and uses the portable repository-name fallback.
+absent key remains valid and uses the portable repository-name fallback. Omit
+`repo_prefix` when it is unset; unlike neighboring policy keys, this optional
+key does not accept the `n/a` sentinel.
 
 Repos that use `untrusted-contributor-intake` add one explicit trusted-base
 authority mapping. The seam doctor requires all three values when the mapping

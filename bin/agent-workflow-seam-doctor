@@ -1671,6 +1671,7 @@ module AgentWorkflowSeamDoctor
     end
 
     if config.key?(REPO_PREFIX_POLICY_KEY) &&
+       !unresolved_policy_value?(config[REPO_PREFIX_POLICY_KEY]) &&
        (!config[REPO_PREFIX_POLICY_KEY].is_a?(String) ||
         !config[REPO_PREFIX_POLICY_KEY].match?(REPO_PREFIX_PATTERN))
       issues << "invalid policy value for key: #{REPO_PREFIX_POLICY_KEY} " \
