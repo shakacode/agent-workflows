@@ -344,8 +344,16 @@ Before implementation or worker launch, produce:
     coordinator-approved execution envelope from the canonical workflow. If a
     route or exact-policy launch assurance is unavailable, stop and re-plan;
     otherwise preserve unavailable binding as `UNKNOWN`.
+12. Batch-registration provenance: verified loaded-pack `pack_sha` (or verified
+    installed-release identifier), `coordinator_route` model/effort/binding
+    source, and each lane's actual `host` plus `worker_route`
+    model/effort/binding source. A dirty or unverifiable pack and every
+    unverifiable scalar stay literal `UNKNOWN`. Persist the manifest after
+    dispatcher selection and before worker launch when registration is
+    supported; backend `n/a` keeps it in durable coordinator state. Follow the
+    canonical example and resolution rules in `docs/coordination-backend.md`.
 <!-- host-branch: codex-only start -->
-12. A final `/goal` prompt when the user asked for Goal mode.
+13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
 After any target-specific invocation line, each pasteable batch prompt must put
@@ -517,6 +525,7 @@ merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
+Manifest: pack_sha=<rev|UNKNOWN>; coordinator_route=<model/effort@binding|UNKNOWN>; lanes=<host+worker_route>; no guesses.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.
@@ -553,6 +562,13 @@ Classify every unresolved question before continuing:
 
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
+
+For a private-backend blocking stop, emit `help_requested` with exact `reason`
+`blocked-user-input`, `question`, or `permission` alongside the prose handoff.
+When a worker verifies a P0/P1 finding, confirmed regression, or required
+revert, emit `error` with `severity`, `category`, and `message`. Backend `n/a`
+skips these signals; degraded or rejected writes remain best-effort and are
+recorded as `UNKNOWN` in the Lane Card/handoff.
 
 <!-- Keep this hosted-CI uncertainty rule in sync with `.agents/workflows/pr-processing.md`. -->
 
@@ -680,6 +696,13 @@ remove on release for this lane's own claim; hint not lock; skip when backend
 n/a), and selection/triage skip claimed items — see the canonical rule in
 `pr-processing.md`.
 
+The same canonical section defines provenance and operational telemetry. Batch
+registration carries `pack_sha`, `coordinator_route`, and per-lane
+`host`/`worker_route`. Workers emit `help_requested`,
+`escalation_requested`, `error`, and `human_intervention` at the existing
+checkpoints without replacing prose packets. Do not duplicate auto lifecycle
+events `claim.acquired`, `claim.released`, or `phase.changed`.
+
 ## Worker Rules
 
 Follow the canonical
@@ -709,6 +732,8 @@ the coordinator pair. Model collation does not combine lane ownership, and an
 unavailable route requires re-planning. Workers remain on the initial route for
 a focused correction after a small first failure and emit
 `MODEL_ESCALATION_REQUEST` only at the canonical evidence threshold.
+Alongside that packet, a private-backend worker emits
+`escalation_requested` with `from_route`, `to_route`, and `evidence`.
 Before editing, lower-capability workers restate the coordinator-approved
 execution envelope. Contradictory evidence, ambiguous criteria, scope/risk
 growth, weakened verification, or consequential judgment returns control to the
@@ -726,6 +751,9 @@ instead of cancelling the batch. Stop the old worker, capture or reconstruct its
 start the replacement only after fencing prevents overlap. For already-running
 batches that need the staged route policy, use the canonical
 [Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+After the prior instance is stopped and ownership is reconciled, emit
+`human_intervention` with `kind: supersede` (or `kind: takeover` for abandoned
+ownership) when a private backend is active.
 
 ### Normal Agent-Runner Restart
 
@@ -751,6 +779,9 @@ then release the coordination claim and exit; wedged workers are stopped at the
 process level. Restarting with updated skills requires launching fresh workers
 from a checkout that already has the updated `.agents/skills/...` and
 `.agents/workflows/...` files — a still-running worker keeps its old skill text.
+Each draining private-backend lane emits one `human_intervention` event with
+`kind: drain`; an event-write failure stays best-effort/`UNKNOWN` and never
+prevents safe drain or release.
 
 ## Coordinator Closeout Lane
 
@@ -764,8 +795,11 @@ per-PR merge-ledger run, stale release-mode classification updates and the final
 distinct), hosted-CI request and waitback when uncertainty remains, and any
 authorized ready/merge action, required QA Evidence verification, and the late
 post-merge bot-finding sweep before final batch handoff. Once every batch target
-has a final state, the batch coordinator must run its completed-batch audit
-before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff. The qualifying checker must
+has a final state, run the private backend's telemetry-completeness
+`batch-audit` after terminal releases; incomplete or `UNKNOWN` coverage blocks
+telemetry closeout, while backend `n/a` skips it. Once every batch target has a
+final state, the batch coordinator must run its completed-batch audit before
+its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff. The qualifying checker must
 match launch assurance and be independent from every maker; an unverified,
 below-policy, or non-independent checker keeps the audit verdict `UNKNOWN`. The audit deep-audits only
 the verified batch subset; coverage catch-up mode handles user-requested

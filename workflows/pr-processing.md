@@ -1166,6 +1166,7 @@ merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
+Manifest: pack_sha=<rev|UNKNOWN>; coordinator_route=<model/effort@binding|UNKNOWN>; lanes=<host+worker_route>; no guesses.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.
@@ -1202,6 +1203,13 @@ Classify every unresolved question before continuing:
 
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine GitHub targets, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For an ad-hoc target, record the question in the lane handoff because no target comment exists. A worker handoff should include the question, any comment URL, and that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
+
+Before a private-backend lane pauses for a blocking question, emit
+`help_requested` alongside the prose handoff. Use `reason:
+blocked-user-input` for the final-state stop, `reason: question` for a required
+maintainer/product answer, or `reason: permission` for an approval/capability
+stop. Follow the backend `n/a`, best-effort, and degraded-`UNKNOWN` rules under
+[Coordination Telemetry And Provenance](#coordination-telemetry-and-provenance).
 
 ### Maintainer Attention Contract
 
@@ -1371,9 +1379,12 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   `mobile-codex-batch2` or `desktop-claude-fable-lane1`.
 - When the backend supports batch registration, the coordinator records the
   batch objective, launch prompt or instructions, lane owners, thread handles,
-  and dependencies before workers start. If registration is unavailable, carry
-  those facts in the coordinator handoff and mark backend-held batch metadata as
-  `UNKNOWN` or `unavailable` instead of treating it as absent work.
+  dependencies, loaded-pack `pack_sha`, `coordinator_route`, and each lane's
+  `host`/`worker_route` before workers start. Persist dispatcher selection
+  first, then register the manifest before launch. If registration is
+  unavailable, carry those facts in the coordinator handoff and mark
+  backend-held batch metadata as `UNKNOWN` or `unavailable` instead of treating
+  it as absent work.
 - Treat the backend as available when bounded `agent-coord doctor --json` and
   targeted lane-scoped status probes exit 0. Resolve `PR_BATCH_SKILL_DIR` with
   the env-var / loaded-skill / repo-local chain, then use
@@ -1483,6 +1494,64 @@ claim/heartbeat state. Use claim comments only to recover context when the
 private claim could not be started, definitively failed before mutation, or was
 explicitly mirrored.
 
+### Coordination Telemetry And Provenance
+
+Before batch registration, resolve provenance for the exact Agent Workflows
+pack and actors that will run the batch. `pack_sha` is the verified full git SHA
+of the loaded pack checkout or its verified installed-release identifier; a
+dirty checkout, different installed copy, consumer repository SHA, or remote
+guess is not exact evidence and stays `UNKNOWN`. `coordinator_route` carries
+model, effort, and binding source. Every lane carries its actual `host` and a
+`worker_route` with model, effort, and binding source from the persisted
+dispatcher selection; never inherit the coordinator route. Use the
+backend-neutral manifest example in
+[coordination-backend.md](../docs/coordination-backend.md#batch-provenance-manifest).
+Backend `n/a` keeps the same provenance in durable coordinator state, while a
+degraded registration remains `UNKNOWN` with retry evidence.
+
+Typed operational-signal events supplement the existing prose packet, Lane
+Card, heartbeat, and final handoff; they never replace them. When the resolved
+private backend is active and supports typed events, emit the matching event at
+the existing checkpoint and attach the known batch, lane, agent, repository,
+target, branch, and status context. Required typed payload fields are:
+
+| Checkpoint | Typed event | Required fields |
+| ---------- | ----------- | --------------- |
+| help-needed pause | `help_requested` | `reason` |
+| model escalation request | `escalation_requested` | `from_route`, `to_route`, `evidence` |
+| human intervention | `human_intervention` | `kind` |
+| serious error | `error` | `severity`, `category`, `message` |
+
+Use `help_requested.reason` values `blocked-user-input`, `question`, or
+`permission`. A `MODEL_ESCALATION_REQUEST` emits `escalation_requested` with
+the current and requested model/effort routes plus the evidence summary from
+the prose packet. Map intervention checkpoints deliberately:
+`takeover` -> `kind: takeover`; a same-lane replacement or explicit supersede
+-> `kind: supersede`; a human-authored repair -> `kind: manual-fix`; and a
+coordinator cancellation drain -> `kind: drain`. A confirmed P0/P1 finding,
+regression, or revert requirement emits `error`; `severity` is one of `P0`,
+`P1`, `P2`, or `P3`, while `category` and `message` carry the evidence-backed
+classification and summary. Do not invent a severity or route to make an event
+valid; preserve the missing fact as `UNKNOWN` in the handoff.
+
+Emission is best-effort for the in-flight operation: a failed event write does
+not turn a successful claim, handoff, pause, or drain into a failed operation.
+No coordination backend (`n/a`): skip the event silently. When the selected
+private backend is degraded, lacks the typed-event capability, or rejects the
+write, preserve `UNKNOWN` for that event emission in the next Lane Card and
+handoff with the bounded error evidence. Public claim comments are not a typed
+event transport.
+
+Backends may auto-emit the lifecycle events `claim.acquired`, `claim.released`,
+and `phase.changed` from claim, release, and phase-transition operations. Do
+not duplicate those lifecycle events with explicit typed-signal writes; the
+four operational signals above are additive. At batch closeout, use the
+backend's read-only telemetry-completeness check after terminal releases. For
+an `agent-coord` compatible backend this is `batch-audit --batch-id <id>
+--json`: incomplete or `UNKNOWN` lifecycle coverage blocks telemetry closeout
+until the coordinator repairs or explicitly carries the gap. Backend `n/a`
+skips this check.
+
 ### Worker Rules
 
 When worker subagents are explicitly authorized:
@@ -1579,6 +1648,13 @@ Before replacing a responsive worker:
    pushes.
 6. Bind and revalidate the replacement's exact model/effort pair on its actual
    host, then provide the saved handoff and live-state reconciliation.
+
+Alongside a qualifying `MODEL_ESCALATION_REQUEST`, emit
+`escalation_requested` with `from_route`, `to_route`, and the packet's
+`evidence`. After the old instance is stopped and ownership is reconciled,
+emit `human_intervention` with `kind: supersede` for a same-lane replacement or
+`kind: takeover` when recovering abandoned ownership. These events supplement,
+not replace, the handoff and fencing proof.
 
 The old and replacement instances must not overlap. A replacement may not edit,
 push, refresh the old holder's claim, or start another target until the old
@@ -1951,6 +2027,10 @@ hatch**, not a single kill switch:
   `agent-coord status --repo <owner/repo> --target <issue-or-pr> --json` for
   single-lane workers. A worker deep inside one target may not stop until its
   next checkpoint, and a wedged worker requires the hard escape hatch.
+  When a private backend is active, the draining lane emits one lane-scoped
+  `human_intervention` event with `kind: drain` when it first observes the
+  cancellation; a failed event write remains best-effort/`UNKNOWN` and does not
+  prevent the safe drain or claim release.
 - **Hard escape hatch.** For a wedged or unresponsive worker that is not reaching a
   checkpoint, use this sequence:
   1. Ensure cancellation is recorded in the backend, or record that backend state
@@ -2124,7 +2204,13 @@ The closeout lane is:
     their live GitHub/CI status, and inspect late review/check comments that
     arrived around or after merge. Route release-relevant findings into the next
     post-merge audit intake.
-12. Once every batch target has a final state, the batch coordinator must run
+12. When a private backend is active, run its read-only
+    telemetry-completeness check after terminal claim releases. For an
+    `agent-coord` compatible backend, run `batch-audit --batch-id <id> --json`.
+    An incomplete result or `UNKNOWN` backend/readback state blocks telemetry
+    closeout and must be repaired or carried as an exact final blocker; backend
+    `n/a` skips this step.
+13. Once every batch target has a final state, the batch coordinator must run
     its completed-batch audit before its final handoff. Each completed-batch
     audit is owned by its batch coordinator. A parent orchestration agent only
     reconciles the durable audit handoff. Use the launch-assured independent
@@ -2139,7 +2225,7 @@ The closeout lane is:
     ranges. Reserve release/range audit for final-release readiness, suspected
     bad merges, missing or unverified batch scope, or a lightweight sweep that
     finds a blocker, failed post-merge check, or credible release-readiness risk.
-13. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker.
+14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker.
 
 ## Self-Review Gate
 
@@ -2392,6 +2478,13 @@ Use `.agents/skills/address-review/SKILL.md` when skills are available; Claude C
   `DISCUSS`. For `f+o`, `o <nums>`, and `all optional`, fix each selected item
   inline or escalate it to `DISCUSS`; autonomous defer does not apply.
 - `SKIPPED`: reply with rationale only when useful; do not create work from noise.
+
+When review triage verifies a P0/P1 finding, confirmed regression, or required
+revert, emit the private-backend `error` event with the evidence-backed
+`severity`, `category`, and `message` before fixing, waiving, or handing it off.
+Do not classify an advisory label alone as an error; follow the canonical
+best-effort/`UNKNOWN` event rules when the backend or a required field is
+unavailable.
 
 Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.
 For replacement carryover, the trusted PR-batch parent invokes `address-review` on the pushable owned replacement PR and sets numeric `COORDINATED_REVIEW_SOURCE_PR=<original-pr-number>` together with `COORDINATED_AUTOFIX=1`.

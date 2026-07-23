@@ -26,6 +26,14 @@ repeat:
    independent in-scope steps while an external command, check, review, or agent is pending. Stop
    after completing the objective.
 
+For a resumed PR-batch lane, complete bounded ownership recovery before any
+write. If a new actor takes over abandoned ownership, emit private-backend
+`human_intervention` with `kind: takeover`; if a fenced replacement supersedes
+the prior actor, use `kind: supersede`. A routine same-thread resume with the
+same verified holder is neither a takeover nor a supersede and emits no event.
+Backend `n/a` skips silently; a degraded or rejected event write is best-effort
+and remains `UNKNOWN` in the resumed handoff.
+
 If the user supplied focus text or arguments, treat it as additional direction or a narrowed scope
 for what to continue.
 

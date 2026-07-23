@@ -79,6 +79,91 @@ When a backend lacks one of those optional capabilities, agents should write
 fallback rules in the workflow. Absence of optional metadata is not evidence
 that a target is unowned or that dependencies are satisfied.
 
+## Batch Provenance Manifest
+
+When the selected private backend supports batch registration, register the
+batch only after the coordinator has assembled provenance for the exact Agent
+Workflows pack and routes that will run it. The manifest is backend-neutral and
+remains ordinary JSON; an `agent-coord` compatible backend accepts it through
+its batch-registration seam. A representative dry-run manifest is:
+
+```json
+{
+  "batch_id": "batch-20260723-a",
+  "repo": "OWNER/REPO",
+  "objective": "Process the approved targets",
+  "pack_sha": "0123456789abcdef0123456789abcdef01234567",
+  "coordinator_route": {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "binding_source": "instance-bound-runtime-metadata"
+  },
+  "lanes": [
+    {
+      "name": "implementation",
+      "owner": "batch-a-implementation",
+      "targets": ["issue:123"],
+      "host": "codex",
+      "worker_route": {
+        "model": "gpt-5.6-terra",
+        "effort": "high",
+        "binding_source": "dispatcher-bound"
+      }
+    }
+  ]
+}
+```
+
+`pack_sha` is the verified full git SHA of the loaded Agent Workflows pack, or
+the verified installed-release identifier when the pack is not a git checkout.
+Resolve it from the pack that supplied the loaded skill and workflow, not the
+consumer repository, a different installed copy, or the latest remote ref. A
+dirty source checkout does not identify its loaded contents by `HEAD` alone;
+record literal `UNKNOWN` unless a trusted installed-release identifier covers
+those exact files.
+
+`coordinator_route` and each lane's `worker_route` carry `model`, `effort`, and
+`binding_source`. Each lane also carries its actual host (`codex`, `claude`, or
+another verified host identifier). Take route and binding values from launch
+assurance and the persisted dispatcher selection; do not infer them from prompt
+text, mutable defaults, or the coordinator's route. Any unverifiable scalar is
+literal `UNKNOWN`. Register this manifest after dispatcher selection is
+persisted and before the worker launch so downstream consumers can group batch
+outcomes by `pack_sha`, coordinator route, worker route, and host.
+
+When the backend is `n/a`, keep the same provenance in the durable coordinator
+handoff instead of inventing a registration surface. A degraded registration
+write is `UNKNOWN`; preserve the manifest locally and report the exact retry or
+reconciliation needed.
+
+## Operational Signal Events
+
+An active private backend may expose a typed event interface. The portable
+workflow emits these signals at existing checkpoints, alongside its prose
+packets and handoffs:
+
+- `help_requested` requires `reason`: `blocked-user-input`, `question`, or
+  `permission`.
+- `escalation_requested` requires nonempty `from_route`, `to_route`, and
+  `evidence`.
+- `error` requires `severity` (`P0`, `P1`, `P2`, or `P3`), nonempty `category`,
+  and nonempty `message`.
+- `human_intervention` requires `kind`: `takeover`, `supersede`, `manual-fix`,
+  or `drain`.
+
+Include batch, lane, agent, repository, target, branch, and status context when
+known. Typed payload fields remain data rather than path components. Event
+writes are best-effort for the primary operation: backend `n/a` skips silently,
+while degraded, unavailable, or rejected writes become `UNKNOWN` handoff
+evidence. Public claim comments are not a typed event transport.
+
+Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
+own those lifecycle events; workers do not duplicate them. After terminal
+releases, the coordinator runs the backend's read-only telemetry-completeness
+check. An `agent-coord` compatible backend exposes this as `batch-audit
+--batch-id <id> --json`; incomplete or `UNKNOWN` coverage blocks telemetry
+closeout, while backend `n/a` skips the check.
+
 ## Typed Dependency Facts
 
 Backend `depends_on` and `blocked_on` values describe coordination state; they

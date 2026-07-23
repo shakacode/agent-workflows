@@ -22,6 +22,12 @@ Print operator prompts for safe agent-runner restarts.
   case.
 - Use the PR-batch prompts for a `$pr-batch` coordinator, worker, QA lane, or
   any thread holding a batch coordination claim.
+- For a PR-batch help-needed pause, emit private-backend `help_requested`
+  alongside the restart/block handoff with `reason: blocked-user-input`,
+  `reason: question`, or `reason: permission` as applicable. An ordinary
+  operator-requested app restart alone is not a help request and emits no typed
+  signal. Backend `n/a` skips silently; a degraded or rejected write is
+  best-effort and recorded as `UNKNOWN` in the handoff.
 - Include the new-chat restart prompt when the user asks how to restart,
   resume after an app restart, move to a new chat, or preserve copy/paste
   handoff state.

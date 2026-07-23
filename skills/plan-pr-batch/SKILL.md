@@ -364,6 +364,19 @@ Plan a PR batch
      Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
      A `selected` result may resume Goal mode; `blocked-user-input` carries one
      `dispatch-decision-request v1` and stops.
+   - Build the batch-registration provenance from the pack and actors that will
+     actually run the batch. Record `pack_sha` as the verified full git SHA of
+     the loaded Agent Workflows checkout, or its verified installed-release
+     identifier; a dirty checkout or unverified source is `UNKNOWN`, never the
+     consumer repo SHA or a remote guess. Record `coordinator_route` with model,
+     effort, and binding source. For every lane, record the actual `host` plus
+     `worker_route` model, effort, and binding source from the persisted
+     dispatcher selection; never inherit the coordinator route. When batch
+     registration is supported, persist this manifest after dispatcher
+     selection and before worker launch. Backend `n/a` keeps the same
+     provenance in the durable Batch Plan/handoff; a degraded registration is
+     `UNKNOWN` with exact retry evidence. Use the canonical example in
+     `docs/coordination-backend.md` -> **Batch Provenance Manifest**.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -508,6 +521,9 @@ backend must say so in the declaration.
 - Worker model/effort routes: initial and escalation pairs or classes, lane ids,
   escalation threshold and maximum, and availability evidence; keep any
   `UNKNOWN` route out of a ready prompt.
+- Batch manifest provenance: `pack_sha`, `coordinator_route` model/effort/binding
+  source, and each lane's `host` plus `worker_route` model/effort/binding source;
+  name the registration evidence or the durable backend-`n/a` handoff.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
@@ -568,6 +584,7 @@ merge_authority: <none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
+Manifest: pack_sha=<rev|UNKNOWN>; coordinator_route=<model/effort@binding|UNKNOWN>; lanes=<host+worker_route>; no guesses.
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.

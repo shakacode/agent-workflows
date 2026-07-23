@@ -15,6 +15,9 @@ BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wa
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/<effort>."
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
+MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest: pack_sha=<rev|UNKNOWN>; " \
+                                  "coordinator_route=<model/effort@binding|UNKNOWN>; " \
+                                  "lanes=<host+worker_route>; no guesses."
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
@@ -115,6 +118,7 @@ GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   Batch size target: <codex|claude|generic>; wave: <cap/items>.
   Coordinator model/effort: <model/class>/<effort>.
   Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
+  #{MANIFEST_PROVENANCE_PROMPT_LINE}
   Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
   Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
   #{STAGE_DEPENDENCY_PROMPT_LINE}
@@ -491,6 +495,7 @@ required_all_prompt_phrases = [
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
   LAUNCH_ASSURANCE_PROMPT_LINE,
+  MANIFEST_PROVENANCE_PROMPT_LINE,
   WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
   MODEL_EFFORT_DISPATCH_LINE,
   DISPATCHER_PREFLIGHT_PROMPT_LINE,
