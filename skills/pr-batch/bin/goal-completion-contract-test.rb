@@ -126,8 +126,8 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
-PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase 2-6 character abbreviation, never the full repository name: use a maintainer-supplied abbreviation when one exists, otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`)."
-PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`),\n   never the full repository name"
+PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 2 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`)."
+PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`), never the full repository name"
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
@@ -191,6 +191,15 @@ end
 
 def assert_text_includes(text, phrase, label)
   assert text.include?(phrase), "#{label} is missing required phrase: #{phrase}"
+end
+
+# Collapse markdown line wrapping so prose assertions fail on meaning changes, not reflows.
+def squish(text)
+  text.gsub(/\s+/, " ").strip
+end
+
+def assert_squished_includes(text, phrase, label)
+  assert_text_includes(squish(text), squish(phrase), label)
 end
 
 def invalid_readiness_marker_values(text)
@@ -664,10 +673,10 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
-      assert_text_includes text, PROJECT_ABBREVIATION_RULE, label
+      assert_squished_includes text, PROJECT_ABBREVIATION_RULE, label
     end
 
-    assert_text_includes @pr_batch_docs, PROJECT_ABBREVIATION_DOCS_RULE, "docs/pr-batch-skills.md"
+    assert_squished_includes @pr_batch_docs, PROJECT_ABBREVIATION_DOCS_RULE, "docs/pr-batch-skills.md"
   end
 
   def test_batch_title_rules_reject_the_full_repository_name
@@ -679,7 +688,7 @@ class GoalCompletionContractTest < Minitest::Test
       "docs/pr-batch-skills.md" => @pr_batch_docs
     }.each do |label, text|
       LEGACY_PROJECT_ABBREVIATION_PHRASES.each do |phrase|
-        refute_includes text, phrase,
+        refute_includes squish(text), squish(phrase),
                         "#{label} restores vague batch title guidance that the full repository name satisfies: #{phrase}"
       end
     end
@@ -694,7 +703,7 @@ class GoalCompletionContractTest < Minitest::Test
         end_heading: /^##\s+/
       )
     }.each do |label, section|
-      assert_text_includes section, ARCHIVE_READINESS_HANDOFF_RULE, "#{label} Batch Handoff Format section"
+      assert_squished_includes section, ARCHIVE_READINESS_HANDOFF_RULE, "#{label} Batch Handoff Format section"
     end
   end
 

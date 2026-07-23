@@ -212,7 +212,8 @@ omit the queue summary and note that queue state is unavailable.
    line using an uppercase repository abbreviation (`agent-workflows` -> `AW`),
    never the full repository name, A/B/C only when multiple prompts are
    produced, `MM-DD HH:MM` from `date +'%m-%d %H:%M'` in the local shell, and a
-   short title. Add `Thread handle:` using the lowercased batch abbreviation plus lane id
+   short title. `skills/pr-batch/SKILL.md` carries the full derivation rule.
+   Add `Thread handle:` using the lowercased batch abbreviation plus lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
    workers emit the canonical card after claim, PR-open, blocked/cancelled, and
    final handoff states. Dashboard-generated and skill-generated prompts must
