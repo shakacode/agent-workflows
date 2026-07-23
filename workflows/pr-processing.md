@@ -1145,6 +1145,19 @@ Every target must use one explicit final state:
 - `no-pr-evidence`: no PR was created; link the evidence-backed issue/PR
   comment and disposition. For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists.
 
+Batch Coordination Declaration: every final batch handoff must carry exactly one
+`coordination:` line, and no handoff is complete or clean without it. Use
+`coordination: registered <batch-id>` only when this batch actually registered
+with the coordination backend, and quote the exact backend batch id. Otherwise
+use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
+a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
+backend, or a deliberately uncoordinated single-operator run. A missing
+`coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
+reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
+a clean handoff.
+Silence is not an accepted value; a batch that wrote nothing to the coordination
+backend must say so in the declaration.
+
 Do not put hosted-CI uncertainty in Immediate at final readiness after local
 validation and the final push. Request hosted CI and log it in FYI.
 Do not report a PR/target as `complete` while the repo's merge ledger in strict
@@ -1700,7 +1713,11 @@ Continue through QA, validation, review, CI, readiness, and the existing Goal
 Mode Completion Contract. The final handoff reports links, tests, blockers,
 next actions, initial/final model and effort, credible attempts, replacement
 handoffs, escalation requests/dispositions, escalation role, return to initial
-tier, remaining risk/UNKNOWN, human decisions, QA evidence, and final state.
+tier, remaining risk/UNKNOWN, human decisions, QA evidence, and final state. It
+must also carry exactly one coordination declaration: `coordination: registered <batch-id>`
+when this batch registered with the coordination backend, or
+`coordination: unavailable — <reason>` with an exact nonempty reason that is not
+`UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
 
 ### Generic PR-Batch Continuation Prompt
@@ -1746,7 +1763,7 @@ Goal completion contract:
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
 
-Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state.
+Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
 
 Pressure scenarios this prompt must satisfy:
