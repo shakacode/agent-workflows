@@ -517,6 +517,38 @@ class StaleAssignmentSweepTest < Minitest::Test
   # --- #218: a timed-out gh call terminates its whole process group ------
 
   def test_timed_out_gh_call_terminates_its_process_group_with_no_orphan
+    # An empty PID list means the stub `gh` never reached its first line before
+    # the deadline: on a loaded machine process start can exceed the timeout, and
+    # then the pgroup path under test was never exercised at all. That is a
+    # precondition miss, not a product failure, so retry it instead of reporting
+    # a misleading orphan. A real orphan regression still fails, because there
+    # the stub does run, records its child, and the child survives termination.
+    status = nil
+    pids = []
+    3.times do
+      status, pids = run_hanging_gh_sweep
+      break unless pids.empty?
+    end
+
+    # Every hung gh call times out, but the run still completes (per-repo and
+    # per-item failures degrade, they do not abort).
+    assert status.success?, "sweep should exit 0 even when its gh calls time out"
+
+    # The pgroup path was exercised: the hanging gh spawned children, and each
+    # was terminated with its process group instead of being orphaned.
+    refute_empty pids, "expected the hanging gh to record at least one spawned child"
+    pids.each do |pid|
+      assert child_terminated?(pid),
+             "gh child #{pid} was orphaned instead of terminated with its process group"
+    end
+  end
+
+  private
+
+  # One attempt at the hanging-gh scenario. Returns [status, child_pids] so the
+  # caller can tell "the stub never started" (empty pids -> retry, nothing was
+  # tested) from "the stub started and its child survived" (a real regression).
+  def run_hanging_gh_sweep
     Dir.mktmpdir("stale-assignment-sweep-timeout") do |dir|
       pids_file = File.join(dir, "gh-children.pids")
       write_hanging_gh(dir, pids_file)
@@ -533,22 +565,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       ]
       _out, _err, status = Open3.capture3(env, *args)
 
-      # Every hung gh call times out, but the run still completes (per-repo and
-      # per-item failures degrade, they do not abort).
-      assert status.success?, "sweep should exit 0 even when its gh calls time out"
-
-      # The pgroup path was exercised: the hanging gh spawned children, and each
-      # was terminated with its process group instead of being orphaned.
       pids = File.exist?(pids_file) ? File.read(pids_file).split.map(&:to_i) : []
-      refute_empty pids, "expected the hanging gh to record at least one spawned child"
-      pids.each do |pid|
-        assert child_terminated?(pid),
-               "gh child #{pid} was orphaned instead of terminated with its process group"
-      end
+      [status, pids]
     end
   end
-
-  private
 
   # A gh stand-in that never returns: it spawns a long-lived child in the SAME
   # process group, records its PID, then blocks on it. The sweep's timeout must
