@@ -43,8 +43,9 @@ COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every final bat
                                 "reason, such as a repo seam that sets `coordination_backend: n/a`, an " \
                                 "unreachable or degraded backend, or a deliberately uncoordinated " \
                                 "single-operator run. A missing `coordination:` line, an empty or `UNKNOWN` " \
-                                "batch id, an empty reason, or both forms at once is a hard blocker: report NOT " \
-                                "COMPLETE instead of a clean handoff. Silence is not an accepted value; a batch " \
+                                "batch id, an empty or `UNKNOWN` reason, or both forms at once is a hard " \
+                                "blocker: report NOT COMPLETE instead of a clean handoff. Silence is not an " \
+                                "accepted value; a batch " \
                                 "that wrote nothing to the coordination backend must say so in the declaration.".freeze
 
 MISSING_DECLARATION_BLOCKER = "final handoff is missing the mandatory `coordination:` declaration; " \
@@ -111,6 +112,11 @@ def unavailable_blockers(remainder)
 
   reason = remainder.lstrip.delete_prefix(EM_DASH).strip
   return ["`coordination: unavailable` is missing its exact nonempty reason"] if reason.empty?
+
+  if unknown_sentinel?(reason)
+    return ["`coordination: unavailable` reason is `UNKNOWN`; the declaration must state the exact " \
+            "reason coordination did not happen"]
+  end
 
   []
 end
@@ -192,6 +198,19 @@ class CoordinationDeclarationContractTest < Minitest::Test
     blockers = coordination_declaration_blockers("coordination: unavailable #{EM_DASH}\n")
 
     assert_equal ["`coordination: unavailable` is missing its exact nonempty reason"], blockers
+  end
+
+  def test_unavailable_with_an_unknown_reason_fails
+    blockers = coordination_declaration_blockers("coordination: unavailable #{EM_DASH} UNKNOWN\n")
+
+    refute_empty blockers, "`UNKNOWN` is the silence the declaration exists to remove, not a reason"
+    assert_includes blockers.first, "reason is `UNKNOWN`"
+  end
+
+  def test_unavailable_with_the_em_dash_and_an_unknown_variant_reason_fails
+    blockers = coordination_declaration_blockers("coordination: unavailable #{EM_DASH}   unknown  \n")
+
+    refute_empty blockers, "the `UNKNOWN` sentinel check is case- and whitespace-insensitive"
   end
 
   def test_unavailable_without_the_em_dash_fails

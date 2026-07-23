@@ -539,8 +539,9 @@ with the coordination backend, and quote the exact backend batch id. Otherwise
 use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
 a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
 backend, or a deliberately uncoordinated single-operator run. A missing
-`coordination:` line, an empty or `UNKNOWN` batch id, an empty reason, or both
-forms at once is a hard blocker: report NOT COMPLETE instead of a clean handoff.
+`coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
+reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
+a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
 When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
