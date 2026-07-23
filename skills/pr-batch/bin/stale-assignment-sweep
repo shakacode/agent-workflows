@@ -11,8 +11,8 @@
 # cannot prove.
 
 require "json"
-require "open3"
 require "optparse"
+require "tempfile"
 require "time"
 require "timeout"
 require "yaml"
@@ -32,7 +32,13 @@ module StaleAssignmentSweep
   # event (the pusher), which does renew. Assignment itself is not activity.
   ACTIVITY_EVENTS = %w[commented reviewed cross-referenced referenced].freeze
 
-  AGENT_CLAIMED_LABEL = "agent-claimed"
+  # Default agent-claim label. The effective label is resolved from the
+  # `agent_claimed_label` seam in `.agents/agent-workflow.yml` (overridable with
+  # --agent-claimed-label) so a consumer repo that renames the label still has its
+  # claimed items skipped, rather than the sweep matching only this literal.
+  DEFAULT_AGENT_CLAIMED_LABEL = "agent-claimed"
+
+  DEFAULT_WORKFLOW_CONFIG = ".agents/agent-workflow.yml"
 
   DEFAULTS = {
     first_activity_ttl: 7,
@@ -63,6 +69,7 @@ module StaleAssignmentSweep
 
       @now = resolve_now(options)
       load_trust_config(options)
+      options[:agent_claimed_label] = resolve_agent_claimed_label(options)
       @identities = resolve_identities(options)
       repos = resolve_repos(options)
       # One repo's listing failure must not lose the other repos' digests.
@@ -118,6 +125,10 @@ module StaleAssignmentSweep
         opts.on("--trust-config PATH", "Trusted GitHub actor allowlist (pr-security-preflight resolution)") do |value|
           options[:trust_config] = value
         end
+        opts.on("--agent-claimed-label LABEL",
+                "Claim label to skip (default: agent_claimed_label from #{DEFAULT_WORKFLOW_CONFIG}, else #{DEFAULT_AGENT_CLAIMED_LABEL})") do |value|
+          options[:agent_claimed_label] = value
+        end
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
       end
       parser.parse!(argv)
@@ -146,8 +157,10 @@ module StaleAssignmentSweep
         issue-referencing commits or linked-PR events (raw timeline commits carry no GitHub
         login, so a commit only renews when it surfaces as a referenced/cross-referenced
         event); other people's activity does not renew it. Exempt labels pause the
-        clock. Items carrying the `#{AGENT_CLAIMED_LABEL}` label are skipped (agent-claim
-        staleness is owned by backend heartbeat leases). An assignee is automation when its
+        clock. Items carrying the agent-claim label are skipped (agent-claim
+        staleness is owned by backend heartbeat leases); the label is resolved from the
+        `agent_claimed_label` seam in `#{DEFAULT_WORKFLOW_CONFIG}` (default
+        `#{DEFAULT_AGENT_CLAIMED_LABEL}`, overridable with --agent-claimed-label). An assignee is automation when its
         login carries the `[bot]` suffix; if `trusted_bots` is configured its base must also be
         a member, and if `trusted_bots` is empty (the packaged-fallback default) any
         `[bot]`-suffixed login qualifies. A bare login is always human even if it equals a
@@ -161,7 +174,7 @@ module StaleAssignmentSweep
         without a prior unanswered nudge attributed to one of the sweep's own identities: the
         gh-authenticated login (gh api user) unioned with any --comment-identity (a mismatch
         warns; if none resolves, releases are disabled). Before each nudge and each release the
-        live item is re-fetched and re-classified, so a reply, an added exempt/#{AGENT_CLAIMED_LABEL}
+        live item is re-fetched and re-classified, so a reply, an added exempt/agent-claim
         label, or a reassignment between scan and mutation aborts it. Environment:
         STALE_ASSIGNMENT_SWEEP_NOW, STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
       HELP
@@ -244,7 +257,9 @@ module StaleAssignmentSweep
 
       data ||= {}
       @trusted_bots = Array(data["trusted_bots"]).map { |login| normalized_bot_login(login) }
-      @trusted_users = Array(data["trusted_users"]).map { |login| normalized_login(login) }
+      # `trusted_users` (humans) is intentionally not read here: the sweep treats
+      # humans as sweepable, so `automation_login?` only consults `trusted_bots`
+      # and the `[bot]` suffix. Parsing it would be a dead field.
       @trust_resolved = true
       @trust_path = path
     rescue StandardError => e
@@ -252,7 +267,6 @@ module StaleAssignmentSweep
       # assignees are automation, so every human-assigned item is left untouched.
       @trust_resolved = false
       @trusted_bots = []
-      @trusted_users = []
       @trust_error = "trust config #{path.inspect} could not be loaded: #{e.message.lines.first&.strip}"
     end
 
@@ -273,13 +287,65 @@ module StaleAssignmentSweep
       [File.expand_path("../trusted-github-actors.yml", __dir__), "packaged-fallback"]
     end
 
-    def git_toplevel
-      out = nil
-      status = nil
-      Timeout.timeout(gh_timeout) do
-        out, _err, status = Open3.capture3("git", "rev-parse", "--show-toplevel")
+    # The agent-claim label is a seam so a consumer repo can rename it; the sweep
+    # must skip whatever the seam names (default `agent-claimed`), not a hardcoded
+    # literal, or it would nudge/release an actively agent-claimed item in a repo
+    # that renamed the label. An explicit --agent-claimed-label wins; otherwise
+    # read `agent_claimed_label` from `.agents/agent-workflow.yml`.
+    #
+    # Every rejection path must fail CLOSED to the default label rather than to a
+    # blank/garbage one: a label that matches nothing silently disables the
+    # agent-claim skip, which under --apply nudges and then auto-releases an
+    # actively claimed item. A blank explicit flag is a caller error, so it is
+    # fatal; a bad seam value falls back to the default with a warning.
+    def resolve_agent_claimed_label(options)
+      if (explicit = options[:agent_claimed_label])
+        label = explicit.to_s.strip
+        raise Error, "--agent-claimed-label must not be blank" if label.empty?
+
+        return label
       end
-      return unless status&.success?
+
+      workflow_path = File.join(git_toplevel || Dir.pwd, DEFAULT_WORKFLOW_CONFIG)
+      return DEFAULT_AGENT_CLAIMED_LABEL unless File.exist?(workflow_path)
+
+      data = YAML.safe_load_file(workflow_path, aliases: false) || {}
+      return DEFAULT_AGENT_CLAIMED_LABEL unless data.is_a?(Hash)
+      return DEFAULT_AGENT_CLAIMED_LABEL unless data.key?("agent_claimed_label")
+
+      seam_agent_claimed_label(data.fetch("agent_claimed_label"), workflow_path)
+    rescue Error
+      raise
+    rescue StandardError => e
+      warn "WARN: could not read agent_claimed_label from #{workflow_path.inspect} " \
+           "(#{e.message.lines.first&.strip}); using #{DEFAULT_AGENT_CLAIMED_LABEL.inspect}"
+      DEFAULT_AGENT_CLAIMED_LABEL
+    end
+
+    # A seam value must be a non-blank String. A list/mapping/number would stringify
+    # into something that matches no label (e.g. `["agent-claimed"]`), silently
+    # disabling the skip, so anything else is rejected back to the default.
+    def seam_agent_claimed_label(raw, workflow_path)
+      label = raw.is_a?(String) ? raw.strip : nil
+      return label if label && !label.empty?
+
+      warn "WARN: agent_claimed_label in #{workflow_path.inspect} must be a non-blank string " \
+           "(got #{raw.inspect}); using #{DEFAULT_AGENT_CLAIMED_LABEL.inspect}"
+      DEFAULT_AGENT_CLAIMED_LABEL
+    end
+
+    # Memoized: both the trust-config and agent-claim-label resolution consult it,
+    # and each miss spawns a real `git` subprocess through capture_process_group.
+    # `defined?` (not `||=`) so a nil result is cached too and never re-spawns.
+    def git_toplevel
+      return @git_toplevel if defined?(@git_toplevel)
+
+      @git_toplevel = compute_git_toplevel
+    end
+
+    def compute_git_toplevel
+      out, _err, status, outcome = capture_process_group("git", "rev-parse", "--show-toplevel")
+      return unless outcome == :ok && status&.success?
 
       root = out.to_s.strip
       root unless root.empty?
@@ -345,6 +411,15 @@ module StaleAssignmentSweep
       gh_paginated("api", "repos/#{repo}/issues?state=open&assignee=*&per_page=100")
     end
 
+    # API cost is O(N) in assigned items: one listing plus one paginated timeline
+    # read per assigned item (and `--apply` re-fetches the item and timeline once
+    # more per nudge/release). This is a deliberately bounded cost for a scheduled,
+    # report-only sweep: each timeline is capped at per_page=100 and only the
+    # handful of items that are actually assigned (assignee=* in the listing) are
+    # walked, so a normal repo makes tens of calls, not thousands. Batching or a
+    # GraphQL timeline query would cut the call count but add real complexity and a
+    # second API shape to keep fail-closed; the report-only cadence does not justify
+    # that here. Revisit if a repo carries hundreds of long-lived assigned items.
     def item_timeline(repo, number)
       gh_paginated(
         "api",
@@ -372,8 +447,10 @@ module StaleAssignmentSweep
       return base.merge(decision: :skip, reason: "item is #{state} — skipped") unless state == "open"
 
       return base.merge(decision: :ignore, reason: "no assignee") if assignees.empty?
-      if labels.include?(AGENT_CLAIMED_LABEL)
-        return base.merge(decision: :skip, reason: "#{AGENT_CLAIMED_LABEL} — owned by backend heartbeat leases")
+
+      claim_label = options.fetch(:agent_claimed_label)
+      if labels.include?(claim_label)
+        return base.merge(decision: :skip, reason: "#{claim_label} — owned by backend heartbeat leases")
       end
 
       human = assignees.reject { |login| automation_login?(login) }
@@ -580,6 +657,9 @@ module StaleAssignmentSweep
       puts "  Trust config: #{@trust_resolved ? "#{@trust_path} (#{@trust_source})" : "UNRESOLVED — #{@trust_error}"}"
       identity_label = @identities.empty? ? "UNRESOLVED — prior nudges unverifiable, releases disabled" : @identities.join(", ")
       puts "  Sweep identity (nudge-marker set): #{identity_label}"
+      # Surface the resolved claim label: a mis-resolved label silently disables the
+      # agent-claim skip, so every run must show which label it is actually honoring.
+      puts "  Claim label: #{options.fetch(:agent_claimed_label)}"
 
       nudges = results.select { |result| result[:decision] == :nudge }
       releases = results.select { |result| result[:decision] == :release }
@@ -695,21 +775,130 @@ module StaleAssignmentSweep
     # --- gh execution -----------------------------------------------------
 
     def run_gh(*args)
-      out = nil
-      err = nil
-      status = nil
-      Timeout.timeout(gh_timeout) do
-        out, err, status = Open3.capture3("gh", *args)
+      out, err, status, outcome = capture_process_group("gh", *args)
+      case outcome
+      when :undead
+        raise Error, "gh #{args.join(' ')} timed out after #{gh_timeout}s and its process group " \
+                     "could not be terminated; outcome is UNKNOWN"
+      when :timed_out
+        raise Error, "gh #{args.join(' ')} timed out after #{gh_timeout}s"
       end
-      out = out.to_s.force_encoding("UTF-8").scrub
-      err = err.to_s.force_encoding("UTF-8").scrub
-      return out if status.success?
+      return out if status&.success?
 
       raise Error, "gh #{args.join(' ')} failed: #{[err, out].reject(&:empty?).join("\n")}"
-    rescue Timeout::Error
-      raise Error, "gh #{args.join(' ')} timed out after #{gh_timeout}s"
     rescue Errno::ENOENT
       raise Error, "gh is not installed or not on PATH"
+    end
+
+    # Spawn a subprocess in its own process group and block on it with a bounded
+    # timeout. The prior Timeout.timeout wrapper raised in this process but left
+    # the spawned gh (and any child it forked) running as an orphan; here a
+    # timeout instead terminates the whole group (TERM, escalating to KILL),
+    # mirroring pr-merge-submit's run_gh so a hung call reaps its children. The
+    # wait is a blocking waitpid — not a poll loop — so the fast path adds no
+    # latency to the sweep's O(N) gh calls. Returns [stdout, stderr, status,
+    # outcome] where outcome is :ok, :timed_out, or :undead (a group that would
+    # not die -> the caller reports UNKNOWN). Honors
+    # STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
+    def capture_process_group(*command)
+      stdout_file = Tempfile.new("stale-assignment-sweep-out")
+      stderr_file = Tempfile.new("stale-assignment-sweep-err")
+      pid = Process.spawn(*command, out: stdout_file.path, err: stderr_file.path, pgroup: true)
+      status = nil
+      outcome = :ok
+      begin
+        Timeout.timeout(gh_timeout) { status = Process.waitpid2(pid).last }
+      rescue Timeout::Error
+        # Timeout::Error can land after the blocking waitpid2 already reaped the
+        # child but before `status =` completed. Signalling then would target a
+        # pgid the OS may have recycled onto an unrelated process group, so only
+        # terminate once we confirm the child is still ours (alive or a zombie).
+        # ECHILD means it was already reaped: nothing left to kill.
+        reaped = begin
+          Process.waitpid2(pid, Process::WNOHANG)
+        rescue Errno::ECHILD
+          :gone
+        end
+        if reaped == :gone
+          outcome = :timed_out
+        else
+          # Still ours (alive, or a zombie whose group may still hold children):
+          # terminate the group so no child is orphaned.
+          status, terminated = terminate_process_group(pid)
+          outcome = terminated ? :timed_out : :undead
+        end
+      end
+
+      [scrub(read_capture(stdout_file)), scrub(read_capture(stderr_file)), status, outcome]
+    ensure
+      stdout_file&.close!
+      stderr_file&.close!
+    end
+
+    # Terminate the process group led by pid: TERM, a short grace to let it exit,
+    # then KILL if it lingers. Returns [child_status, terminated?] where
+    # terminated? is false only when the group still will not die after KILL.
+    def terminate_process_group(pid, signal: "TERM", grace_seconds: 1, kill_grace_seconds: 1)
+      signal_process_group(signal, pid)
+      deadline = monotonic_time + grace_seconds
+      status = wait_for_child(pid, deadline)
+      return [status, true] if wait_for_process_group_exit(pid, deadline)
+
+      signal_process_group("KILL", pid)
+      deadline = monotonic_time + kill_grace_seconds
+      status ||= wait_for_child(pid, deadline)
+      [status, wait_for_process_group_exit(pid, deadline)]
+    end
+
+    def signal_process_group(signal, pid)
+      Process.kill(signal, -pid)
+    rescue Errno::ESRCH
+      nil
+    end
+
+    def wait_for_child(pid, deadline)
+      while monotonic_time < deadline
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        return waited[1] if waited
+
+        sleep 0.05
+      end
+
+      nil
+    rescue Errno::ECHILD
+      nil
+    end
+
+    def process_group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def wait_for_process_group_exit(pid, deadline)
+      while monotonic_time < deadline
+        return true unless process_group_alive?(pid)
+
+        sleep 0.05
+      end
+
+      !process_group_alive?(pid)
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def read_capture(file)
+      file.rewind
+      file.read
+    end
+
+    def scrub(text)
+      text.to_s.force_encoding("UTF-8").scrub
     end
 
     def gh_json(*args)

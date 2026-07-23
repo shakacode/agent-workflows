@@ -409,28 +409,218 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes out, "inactivity-after-start"
   end
 
+  # --- #221: the claim label is resolved from the seam, not hardcoded ---
+
+  def test_default_agent_claimed_label_still_skips_agent_claimed_items
+    result, log = run_cli(apply: true)
+    out = result.fetch(:stdout)
+
+    # Default (no override): the `agent-claimed` label is still the claim label.
+    assert_includes out, "#6 issue: agent-claimed — owned by backend heartbeat leases"
+    refute_includes log, "issues/6/comments"
+    refute_includes log, "issues/6/assignees"
+    # A non-default `codex-active` label is NOT a claim label by default, so #27
+    # is classified normally (its recent activity keeps it active, not swept).
+    assert_includes out, "#27 issue: active; inactivity-after-start 1d < ttl 14d"
+    refute_includes log, "issues/27/comments"
+    refute_includes log, "issues/27/assignees"
+  end
+
+  def test_agent_claimed_label_override_skips_the_renamed_claim_label
+    result, log = run_cli(apply: true, agent_claimed_label: "codex-active")
+    out = result.fetch(:stdout)
+
+    # With the label renamed to `codex-active`, the sweep skips the renamed label...
+    assert_includes out, "#27 issue: codex-active — owned by backend heartbeat leases"
+    refute_includes log, "issues/27/comments"
+    refute_includes log, "issues/27/assignees"
+    # ...and no longer treats the hardcoded default `agent-claimed` as the claim label.
+    refute_includes out, "#6 issue: agent-claimed — owned by backend heartbeat leases"
+  end
+
+  def test_agent_claimed_label_resolved_from_workflow_seam_file
+    result, log = run_cli(apply: true, workflow_label: "codex-active")
+    out = result.fetch(:stdout)
+
+    # No flag: the label is read from `.agents/agent-workflow.yml` in the repo.
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes out, "#27 issue: codex-active — owned by backend heartbeat leases"
+    refute_includes log, "issues/27/assignees"
+    refute_includes out, "#6 issue: agent-claimed — owned by backend heartbeat leases"
+  end
+
+  # --- #221 follow-up: the resolved label must never fail open ----------
+
+  def test_digest_reports_the_resolved_claim_label
+    result, = run_cli
+
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+  end
+
+  def test_blank_agent_claimed_label_flag_is_rejected_before_any_mutation
+    result, log = run_cli(apply: true, agent_claimed_label: "")
+
+    # A blank label matches nothing, which would silently disable the claim skip
+    # and let --apply release an actively claimed item. It must be fatal.
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--agent-claimed-label must not be blank"
+    refute_includes log, "/comments"
+    refute_includes log, "DELETE"
+  end
+
+  def test_whitespace_only_agent_claimed_label_flag_is_rejected
+    result, log = run_cli(apply: true, agent_claimed_label: "   ")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--agent-claimed-label must not be blank"
+    refute_includes log, "DELETE"
+  end
+
+  def test_agent_claimed_label_flag_is_stripped
+    result, log = run_cli(apply: true, agent_claimed_label: "  codex-active  ")
+    out = result.fetch(:stdout)
+
+    assert_includes out, "Claim label: codex-active"
+    assert_includes out, "#27 issue: codex-active — owned by backend heartbeat leases"
+    refute_includes log, "issues/27/assignees"
+  end
+
+  def test_non_string_seam_value_falls_back_to_the_default_with_a_warning
+    # A YAML list stringifies to `["agent-claimed"]`, which matches no label.
+    result, log = run_cli(apply: true, workflow_raw: "agent_claimed_label: [agent-claimed]\n")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "must be a non-blank string"
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+    # Falling back to the default keeps the claim skip working.
+    assert_includes result.fetch(:stdout), "#6 issue: agent-claimed — owned by backend heartbeat leases"
+    refute_includes log, "issues/6/assignees"
+  end
+
+  def test_blank_seam_value_falls_back_to_the_default_with_a_warning
+    result, = run_cli(workflow_raw: "agent_claimed_label: \"   \"\n")
+
+    assert_includes result.fetch(:stderr), "must be a non-blank string"
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+  end
+
+  def test_malformed_workflow_seam_warns_and_falls_back_to_the_default
+    result, = run_cli(workflow_raw: "agent_claimed_label: [unclosed\n")
+
+    # The blanket rescue must leave a diagnostic, not swallow the parse failure.
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "could not read agent_claimed_label"
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+    assert_includes result.fetch(:stdout), "#6 issue: agent-claimed — owned by backend heartbeat leases"
+  end
+
+  # --- #218: a timed-out gh call terminates its whole process group ------
+
+  def test_timed_out_gh_call_terminates_its_process_group_with_no_orphan
+    Dir.mktmpdir("stale-assignment-sweep-timeout") do |dir|
+      pids_file = File.join(dir, "gh-children.pids")
+      write_hanging_gh(dir, pids_file)
+      trust = File.join(dir, "trust.yml")
+      File.write(trust, "trusted_bots: []\ntrusted_users: []\n")
+
+      env = {
+        "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
+        "STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS" => "2"
+      }
+      args = [
+        RUBY_BIN, SCRIPT, "--now", NOW_ISO, "--trust-config", trust,
+        "--repo", "owner/repo", "--comment-identity", IDENTITY
+      ]
+      _out, _err, status = Open3.capture3(env, *args)
+
+      # Every hung gh call times out, but the run still completes (per-repo and
+      # per-item failures degrade, they do not abort).
+      assert status.success?, "sweep should exit 0 even when its gh calls time out"
+
+      # The pgroup path was exercised: the hanging gh spawned children, and each
+      # was terminated with its process group instead of being orphaned.
+      pids = File.exist?(pids_file) ? File.read(pids_file).split.map(&:to_i) : []
+      refute_empty pids, "expected the hanging gh to record at least one spawned child"
+      pids.each do |pid|
+        assert child_terminated?(pid),
+               "gh child #{pid} was orphaned instead of terminated with its process group"
+      end
+    end
+  end
+
   private
+
+  # A gh stand-in that never returns: it spawns a long-lived child in the SAME
+  # process group, records its PID, then blocks on it. The sweep's timeout must
+  # terminate the whole group (killing this child); the old Timeout-only path
+  # would have left the child orphaned. A shell stub (not ruby) is used so it
+  # boots and records the PID well within the timeout even under load.
+  def write_hanging_gh(dir, pids_file)
+    path = File.join(dir, "gh")
+    File.write(path, <<~SH)
+      #!/bin/sh
+      sleep 300 &
+      echo "$!" >> '#{pids_file}'
+      wait
+    SH
+    FileUtils.chmod(0o755, path)
+  end
+
+  # Poll until the pid is gone (ESRCH). Orphaned zombies are reaped by init, so a
+  # short grace avoids a race with reaping.
+  def child_terminated?(pid)
+    deadline = Time.now + 5
+    loop do
+      begin
+        Process.kill(0, pid)
+      rescue Errno::ESRCH
+        return true
+      rescue Errno::EPERM
+        return false
+      end
+      return false if Time.now >= deadline
+
+      sleep 0.05
+    end
+  end
 
   def days_ago(days)
     (NOW - (days * 86_400)).utc.iso8601
   end
 
   def run_cli(apply: false, trust_config: nil, trust_file: "trust.yml", repo: "owner/repo", repos: nil,
-              identity: IDENTITY, gh_fail_user: false, extra_args: [], fail_delete: nil)
+              identity: IDENTITY, gh_fail_user: false, extra_args: [], fail_delete: nil,
+              agent_claimed_label: nil, workflow_label: nil, workflow_raw: nil)
     Dir.mktmpdir("stale-assignment-sweep-test") do |dir|
       build_fixtures(dir, fail_delete:)
       log_path = File.join(dir, "gh.log")
       args = [RUBY_BIN, SCRIPT, "--now", NOW_ISO, "--trust-config", trust_config || File.join(dir, trust_file)]
       Array(repos || [repo]).each { |value| args.concat(["--repo", value]) }
       args.concat(["--comment-identity", identity]) if identity
+      args.concat(["--agent-claimed-label", agent_claimed_label]) if agent_claimed_label
       args.concat(extra_args)
       args << "--apply" if apply
-      stdout, stderr, status = Open3.capture3(cli_env(dir, log_path, gh_fail_user), *args)
+      # workflow_label exercises seam resolution (no --agent-claimed-label flag):
+      # make dir its own git repo carrying an agent-workflow.yml, then run there.
+      spawn_opts = {}
+      if workflow_label || workflow_raw
+        write_workflow_seam(dir, workflow_raw || "agent_claimed_label: #{workflow_label}\n")
+        spawn_opts[:chdir] = dir
+      end
+      stdout, stderr, status = Open3.capture3(cli_env(dir, log_path, gh_fail_user), *args, **spawn_opts)
       stdout = stdout.force_encoding("UTF-8")
       stderr = stderr.force_encoding("UTF-8")
       log = File.exist?(log_path) ? File.read(log_path, encoding: "UTF-8") : ""
       [{ stdout:, stderr:, status: }, log]
     end
+  end
+
+  # Make dir a self-contained git repo whose `.agents/agent-workflow.yml` carries
+  # the given contents, so the sweep's git_toplevel-based seam resolution reads it.
+  def write_workflow_seam(dir, contents)
+    system("git", "-C", dir, "init", "--quiet", exception: true)
+    FileUtils.mkdir_p(File.join(dir, ".agents"))
+    File.write(File.join(dir, ".agents", "agent-workflow.yml"), contents)
   end
 
   def cli_env(dir, log_path, gh_fail_user)
@@ -574,7 +764,11 @@ class StaleAssignmentSweepTest < Minitest::Test
       issue(23, %w[sam]),
       issue(24, %w[tara], labels: %w[needs-design]),
       issue(25, %w[uma]),
-      issue(26, %w[wes])
+      issue(26, %w[wes]),
+      # #27 carries a NON-default `codex-active` label with recent activity: by
+      # default it is just an active item, but a repo whose `agent_claimed_label`
+      # seam is `codex-active` must skip it as an agent-claim (#221).
+      issue(27, %w[victor], labels: %w[codex-active])
     ]
   end
 
@@ -617,7 +811,10 @@ class StaleAssignmentSweepTest < Minitest::Test
       24 => [assigned("tara", 30)],
       # 25 has no timeline fixture: the fake gh fails its timeline fetch (Fix G).
       # 26: old activity but NO `assigned` event -> must not renew the lease (Fix K).
-      26 => [comment("wes", 100)]
+      26 => [comment("wes", 100)],
+      # 27: assigned + recent activity so it is "active" by default; only a repo
+      # whose claim label is `codex-active` skips it as an agent-claim (#221).
+      27 => [assigned("victor", 30), comment("victor", 1)]
     }
   end
 
