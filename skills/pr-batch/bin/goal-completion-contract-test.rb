@@ -127,7 +127,7 @@ PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subag
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 4 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`)."
-PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`), never the full repository name"
+PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`) rather than the full repository name"
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
