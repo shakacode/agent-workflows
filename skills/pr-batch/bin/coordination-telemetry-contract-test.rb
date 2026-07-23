@@ -120,7 +120,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "### Worker Model Replacement And Escalation" => %w[escalation_requested human_intervention supersede],
       "### Cancelling Or Stopping A Batch" => %w[human_intervention drain],
       "## Review Comment Handling" => %w[error P0 P1 regression revert],
-      "### Coordinator Closeout Lane" => ["batch-audit", "telemetry-completeness"]
+      "### Coordinator Closeout Lane" => %w[batch-audit telemetry-completeness]
     }.each do |heading, phrases|
       section = extract_section(workflow, heading)
       phrases.each { |phrase| assert_includes section, phrase, "#{heading} is missing #{phrase}" }
