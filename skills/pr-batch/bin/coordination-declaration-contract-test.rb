@@ -116,11 +116,16 @@ def registered_blockers(batch_id)
 end
 
 def unavailable_blockers(remainder)
-  unless remainder.lstrip.start_with?(EM_DASH)
+  trimmed = remainder.strip
+  # Report a bare `unavailable` as a missing reason rather than blaming the
+  # separator, which is the more direct diagnosis for that input.
+  return ["`coordination: unavailable` is missing its exact nonempty reason"] if trimmed.empty?
+
+  unless trimmed.start_with?(EM_DASH)
     return ["`coordination: unavailable` must separate its reason with an em dash (#{EM_DASH})"]
   end
 
-  reason = remainder.lstrip.delete_prefix(EM_DASH).strip
+  reason = trimmed.delete_prefix(EM_DASH).strip
   return ["`coordination: unavailable` is missing its exact nonempty reason"] if reason.empty?
 
   if unknown_sentinel?(reason)
@@ -221,6 +226,13 @@ class CoordinationDeclarationContractTest < Minitest::Test
     blockers = coordination_declaration_blockers("coordination: unavailable #{EM_DASH}   unknown  \n")
 
     refute_empty blockers, "the `UNKNOWN` sentinel check is case- and whitespace-insensitive"
+  end
+
+  def test_bare_unavailable_reports_a_missing_reason_not_a_separator_problem
+    blockers = coordination_declaration_blockers("coordination: unavailable\n")
+
+    refute_empty blockers, "a bare `unavailable` declares nothing and must be blocked"
+    assert_equal ["`coordination: unavailable` is missing its exact nonempty reason"], blockers
   end
 
   def test_unavailable_without_the_em_dash_fails
