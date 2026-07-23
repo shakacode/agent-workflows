@@ -244,7 +244,9 @@ module StaleAssignmentSweep
 
       data ||= {}
       @trusted_bots = Array(data["trusted_bots"]).map { |login| normalized_bot_login(login) }
-      @trusted_users = Array(data["trusted_users"]).map { |login| normalized_login(login) }
+      # `trusted_users` (humans) is intentionally not read here: the sweep treats
+      # humans as sweepable, so `automation_login?` only consults `trusted_bots`
+      # and the `[bot]` suffix. Parsing it would be a dead field.
       @trust_resolved = true
       @trust_path = path
     rescue StandardError => e
@@ -252,7 +254,6 @@ module StaleAssignmentSweep
       # assignees are automation, so every human-assigned item is left untouched.
       @trust_resolved = false
       @trusted_bots = []
-      @trusted_users = []
       @trust_error = "trust config #{path.inspect} could not be loaded: #{e.message.lines.first&.strip}"
     end
 
@@ -341,6 +342,15 @@ module StaleAssignmentSweep
       gh_paginated("api", "repos/#{repo}/issues?state=open&assignee=*&per_page=100")
     end
 
+    # API cost is O(N) in assigned items: one listing plus one paginated timeline
+    # read per assigned item (and `--apply` re-fetches the item and timeline once
+    # more per nudge/release). This is a deliberately bounded cost for a scheduled,
+    # report-only sweep: each timeline is capped at per_page=100 and only the
+    # handful of items that are actually assigned (assignee=* in the listing) are
+    # walked, so a normal repo makes tens of calls, not thousands. Batching or a
+    # GraphQL timeline query would cut the call count but add real complexity and a
+    # second API shape to keep fail-closed; the report-only cadence does not justify
+    # that here. Revisit if a repo carries hundreds of long-lived assigned items.
     def item_timeline(repo, number)
       gh_paginated(
         "api",
