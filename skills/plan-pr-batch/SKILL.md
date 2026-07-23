@@ -429,6 +429,8 @@ QA, or merge-ledger evidence; do not turn unknown evidence into an optimistic
 state. Optional structured handoff blocks may reduce ambiguity for a coordinator
 or validator, but they are not required and JSON is not mandatory.
 
+<!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered

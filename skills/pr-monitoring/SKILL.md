@@ -136,6 +136,8 @@ Use the same split states as `pr-batch`:
 Never collapse pending checks, unresolved current-head threads, merge conflicts,
 missing validation, or missing merge authority into a vague `ready`.
 
+<!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered

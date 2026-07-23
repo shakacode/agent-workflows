@@ -32,6 +32,8 @@ operating details unless they need an exact command snippet.
 - Preserve `UNKNOWN` when coordination facts cannot be verified. A missing or
   degraded backend is not evidence that no one owns a target.
 
+<!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered

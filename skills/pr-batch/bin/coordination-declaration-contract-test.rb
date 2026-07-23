@@ -83,10 +83,12 @@ def coordination_declaration_blockers(handoff_text)
 end
 
 def declared_value_blockers(value)
+  # Require whitespace (or end of value) after the keyword. `\b` is a zero-width
+  # boundary, so `registered-aw-1` would otherwise parse as a valid declaration.
   case value
-  when /\Aregistered\b(.*)\z/m
+  when /\Aregistered(?:[[:space:]]+(.*))?\z/m
     registered_blockers(Regexp.last_match(1).to_s.strip)
-  when /\Aunavailable\b(.*)\z/m
+  when /\Aunavailable(?:[[:space:]]+(.*))?\z/m
     unavailable_blockers(Regexp.last_match(1).to_s)
   else
     ["unrecognized `coordination:` declaration #{value.inspect}; " \
@@ -218,6 +220,19 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
     refute_empty blockers
     assert_includes blockers.first, "em dash"
+  end
+
+  def test_keyword_must_be_followed_by_whitespace_not_a_word_boundary
+    {
+      "coordination: registered-aw-1\n" => "registered",
+      "coordination: unavailable-backend down\n" => "unavailable"
+    }.each do |handoff, keyword|
+      blockers = coordination_declaration_blockers(handoff)
+
+      refute_empty blockers, "#{keyword} glued to its value must not parse as a valid declaration"
+      assert_includes blockers.first, "unrecognized",
+                      "#{keyword} glued to its value must fall through to the unrecognized branch"
+    end
   end
 
   def test_unrecognized_declaration_form_fails

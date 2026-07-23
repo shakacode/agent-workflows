@@ -281,6 +281,8 @@ inventory phase; do not fall back to a fixed number of groups. Queue state is
 advisory; omit the queue summary section and note unavailability when the
 selected backend does not support it.
 
+<!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered

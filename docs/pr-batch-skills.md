@@ -304,6 +304,8 @@ record it and proceed to consolidated triage instead of parking in
   when a failing hosted check appears to depend on runner/toolchain parity.
 - Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, and explicit `UNKNOWN` entries.
 
+<!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
