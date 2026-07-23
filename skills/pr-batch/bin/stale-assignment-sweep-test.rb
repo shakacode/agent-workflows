@@ -449,6 +449,71 @@ class StaleAssignmentSweepTest < Minitest::Test
     refute_includes out, "#6 issue: agent-claimed — owned by backend heartbeat leases"
   end
 
+  # --- #221 follow-up: the resolved label must never fail open ----------
+
+  def test_digest_reports_the_resolved_claim_label
+    result, = run_cli
+
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+  end
+
+  def test_blank_agent_claimed_label_flag_is_rejected_before_any_mutation
+    result, log = run_cli(apply: true, agent_claimed_label: "")
+
+    # A blank label matches nothing, which would silently disable the claim skip
+    # and let --apply release an actively claimed item. It must be fatal.
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--agent-claimed-label must not be blank"
+    refute_includes log, "/comments"
+    refute_includes log, "DELETE"
+  end
+
+  def test_whitespace_only_agent_claimed_label_flag_is_rejected
+    result, log = run_cli(apply: true, agent_claimed_label: "   ")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--agent-claimed-label must not be blank"
+    refute_includes log, "DELETE"
+  end
+
+  def test_agent_claimed_label_flag_is_stripped
+    result, log = run_cli(apply: true, agent_claimed_label: "  codex-active  ")
+    out = result.fetch(:stdout)
+
+    assert_includes out, "Claim label: codex-active"
+    assert_includes out, "#27 issue: codex-active — owned by backend heartbeat leases"
+    refute_includes log, "issues/27/assignees"
+  end
+
+  def test_non_string_seam_value_falls_back_to_the_default_with_a_warning
+    # A YAML list stringifies to `["agent-claimed"]`, which matches no label.
+    result, log = run_cli(apply: true, workflow_raw: "agent_claimed_label: [agent-claimed]\n")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "must be a non-blank string"
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+    # Falling back to the default keeps the claim skip working.
+    assert_includes result.fetch(:stdout), "#6 issue: agent-claimed — owned by backend heartbeat leases"
+    refute_includes log, "issues/6/assignees"
+  end
+
+  def test_blank_seam_value_falls_back_to_the_default_with_a_warning
+    result, = run_cli(workflow_raw: "agent_claimed_label: \"   \"\n")
+
+    assert_includes result.fetch(:stderr), "must be a non-blank string"
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+  end
+
+  def test_malformed_workflow_seam_warns_and_falls_back_to_the_default
+    result, = run_cli(workflow_raw: "agent_claimed_label: [unclosed\n")
+
+    # The blanket rescue must leave a diagnostic, not swallow the parse failure.
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "could not read agent_claimed_label"
+    assert_includes result.fetch(:stdout), "Claim label: agent-claimed"
+    assert_includes result.fetch(:stdout), "#6 issue: agent-claimed — owned by backend heartbeat leases"
+  end
+
   # --- #218: a timed-out gh call terminates its whole process group ------
 
   def test_timed_out_gh_call_terminates_its_process_group_with_no_orphan
@@ -525,7 +590,7 @@ class StaleAssignmentSweepTest < Minitest::Test
 
   def run_cli(apply: false, trust_config: nil, trust_file: "trust.yml", repo: "owner/repo", repos: nil,
               identity: IDENTITY, gh_fail_user: false, extra_args: [], fail_delete: nil,
-              agent_claimed_label: nil, workflow_label: nil)
+              agent_claimed_label: nil, workflow_label: nil, workflow_raw: nil)
     Dir.mktmpdir("stale-assignment-sweep-test") do |dir|
       build_fixtures(dir, fail_delete:)
       log_path = File.join(dir, "gh.log")
@@ -538,8 +603,8 @@ class StaleAssignmentSweepTest < Minitest::Test
       # workflow_label exercises seam resolution (no --agent-claimed-label flag):
       # make dir its own git repo carrying an agent-workflow.yml, then run there.
       spawn_opts = {}
-      if workflow_label
-        write_workflow_seam(dir, workflow_label)
+      if workflow_label || workflow_raw
+        write_workflow_seam(dir, workflow_raw || "agent_claimed_label: #{workflow_label}\n")
         spawn_opts[:chdir] = dir
       end
       stdout, stderr, status = Open3.capture3(cli_env(dir, log_path, gh_fail_user), *args, **spawn_opts)
@@ -550,12 +615,12 @@ class StaleAssignmentSweepTest < Minitest::Test
     end
   end
 
-  # Make dir a self-contained git repo whose `.agents/agent-workflow.yml` sets the
-  # claim label, so the sweep's git_toplevel-based seam resolution reads it.
-  def write_workflow_seam(dir, label)
+  # Make dir a self-contained git repo whose `.agents/agent-workflow.yml` carries
+  # the given contents, so the sweep's git_toplevel-based seam resolution reads it.
+  def write_workflow_seam(dir, contents)
     system("git", "-C", dir, "init", "--quiet", exception: true)
     FileUtils.mkdir_p(File.join(dir, ".agents"))
-    File.write(File.join(dir, ".agents", "agent-workflow.yml"), "agent_claimed_label: #{label}\n")
+    File.write(File.join(dir, ".agents", "agent-workflow.yml"), contents)
   end
 
   def cli_env(dir, log_path, gh_fail_user)

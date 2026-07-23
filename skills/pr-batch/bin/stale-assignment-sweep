@@ -292,22 +292,58 @@ module StaleAssignmentSweep
     # literal, or it would nudge/release an actively agent-claimed item in a repo
     # that renamed the label. An explicit --agent-claimed-label wins; otherwise
     # read `agent_claimed_label` from `.agents/agent-workflow.yml`.
+    #
+    # Every rejection path must fail CLOSED to the default label rather than to a
+    # blank/garbage one: a label that matches nothing silently disables the
+    # agent-claim skip, which under --apply nudges and then auto-releases an
+    # actively claimed item. A blank explicit flag is a caller error, so it is
+    # fatal; a bad seam value falls back to the default with a warning.
     def resolve_agent_claimed_label(options)
-      return options[:agent_claimed_label] if options[:agent_claimed_label]
+      if (explicit = options[:agent_claimed_label])
+        label = explicit.to_s.strip
+        raise Error, "--agent-claimed-label must not be blank" if label.empty?
+
+        return label
+      end
 
       workflow_path = File.join(git_toplevel || Dir.pwd, DEFAULT_WORKFLOW_CONFIG)
       return DEFAULT_AGENT_CLAIMED_LABEL unless File.exist?(workflow_path)
 
       data = YAML.safe_load_file(workflow_path, aliases: false) || {}
       return DEFAULT_AGENT_CLAIMED_LABEL unless data.is_a?(Hash)
+      return DEFAULT_AGENT_CLAIMED_LABEL unless data.key?("agent_claimed_label")
 
-      label = data.fetch("agent_claimed_label", DEFAULT_AGENT_CLAIMED_LABEL).to_s
-      label.empty? ? DEFAULT_AGENT_CLAIMED_LABEL : label
-    rescue StandardError
+      seam_agent_claimed_label(data.fetch("agent_claimed_label"), workflow_path)
+    rescue Error
+      raise
+    rescue StandardError => e
+      warn "WARN: could not read agent_claimed_label from #{workflow_path.inspect} " \
+           "(#{e.message.lines.first&.strip}); using #{DEFAULT_AGENT_CLAIMED_LABEL.inspect}"
       DEFAULT_AGENT_CLAIMED_LABEL
     end
 
+    # A seam value must be a non-blank String. A list/mapping/number would stringify
+    # into something that matches no label (e.g. `["agent-claimed"]`), silently
+    # disabling the skip, so anything else is rejected back to the default.
+    def seam_agent_claimed_label(raw, workflow_path)
+      label = raw.is_a?(String) ? raw.strip : nil
+      return label if label && !label.empty?
+
+      warn "WARN: agent_claimed_label in #{workflow_path.inspect} must be a non-blank string " \
+           "(got #{raw.inspect}); using #{DEFAULT_AGENT_CLAIMED_LABEL.inspect}"
+      DEFAULT_AGENT_CLAIMED_LABEL
+    end
+
+    # Memoized: both the trust-config and agent-claim-label resolution consult it,
+    # and each miss spawns a real `git` subprocess through capture_process_group.
+    # `defined?` (not `||=`) so a nil result is cached too and never re-spawns.
     def git_toplevel
+      return @git_toplevel if defined?(@git_toplevel)
+
+      @git_toplevel = compute_git_toplevel
+    end
+
+    def compute_git_toplevel
       out, _err, status, outcome = capture_process_group("git", "rev-parse", "--show-toplevel")
       return unless outcome == :ok && status&.success?
 
@@ -621,6 +657,9 @@ module StaleAssignmentSweep
       puts "  Trust config: #{@trust_resolved ? "#{@trust_path} (#{@trust_source})" : "UNRESOLVED — #{@trust_error}"}"
       identity_label = @identities.empty? ? "UNRESOLVED — prior nudges unverifiable, releases disabled" : @identities.join(", ")
       puts "  Sweep identity (nudge-marker set): #{identity_label}"
+      # Surface the resolved claim label: a mis-resolved label silently disables the
+      # agent-claim skip, so every run must show which label it is actually honoring.
+      puts "  Claim label: #{options.fetch(:agent_claimed_label)}"
 
       nudges = results.select { |result| result[:decision] == :nudge }
       releases = results.select { |result| result[:decision] == :release }
@@ -770,8 +809,24 @@ module StaleAssignmentSweep
       begin
         Timeout.timeout(gh_timeout) { status = Process.waitpid2(pid).last }
       rescue Timeout::Error
-        status, terminated = terminate_process_group(pid)
-        outcome = terminated ? :timed_out : :undead
+        # Timeout::Error can land after the blocking waitpid2 already reaped the
+        # child but before `status =` completed. Signalling then would target a
+        # pgid the OS may have recycled onto an unrelated process group, so only
+        # terminate once we confirm the child is still ours (alive or a zombie).
+        # ECHILD means it was already reaped: nothing left to kill.
+        reaped = begin
+          Process.waitpid2(pid, Process::WNOHANG)
+        rescue Errno::ECHILD
+          :gone
+        end
+        if reaped == :gone
+          outcome = :timed_out
+        else
+          # Still ours (alive, or a zombie whose group may still hold children):
+          # terminate the group so no child is orphaned.
+          status, terminated = terminate_process_group(pid)
+          outcome = terminated ? :timed_out : :undead
+        end
       end
 
       [scrub(read_capture(stdout_file)), scrub(read_capture(stderr_file)), status, outcome]
