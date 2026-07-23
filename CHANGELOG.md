@@ -38,6 +38,8 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Pin `<PROJECT>` in batch titles to a deterministic uppercase abbreviation of at most 6 characters (`agent-workflows` -> `AW`) instead of "a short abbreviation derived from the current repository name", which the full repository name satisfied, and derive the thread handle from its lowercased form.** [issue 233](https://github.com/shakacode/agent-workflows/issues/233).
+- **Require the exact archive-readiness `Conversation status:` line in the Batch Handoff Format itself, so a final batch handoff written from that section tells the operator whether the conversation is safe to archive instead of leaving the rule only in the closeout lane.** [issue 234](https://github.com/shakacode/agent-workflows/issues/234).
 - **Publish completed-batch audit v1 receipts as verified durable GitHub comments and keep final chat output to a compact hash-bound reference plus status.** [issue 184](https://github.com/shakacode/agent-workflows/issues/184).
 - **Report the exact resolved trust-config path and stable source provenance in every `pr-security-preflight` scan result.** [issue 164](https://github.com/shakacode/agent-workflows/issues/164).
 - **Block readiness while viewer-visible current-head `PENDING` review drafts remain.** [PR 146](https://github.com/shakacode/agent-workflows/pull/146) by [justin808](https://github.com/justin808).

@@ -126,6 +126,14 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
+PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise, for a multi-segment name take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and for a single-segment name take its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`)."
+PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`) rather than the full repository name"
+LEGACY_PROJECT_ABBREVIATION_PHRASES = [
+  "`<PROJECT>` is a short abbreviation derived from the current repository name",
+  "Derive `<PROJECT>` from the current repository name",
+  "line using a repository abbreviation"
+].freeze
+ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive."
 CANONICAL_READINESS_STATES = %w[
   merged
   ready-gates-clean
@@ -183,6 +191,15 @@ end
 
 def assert_text_includes(text, phrase, label)
   assert text.include?(phrase), "#{label} is missing required phrase: #{phrase}"
+end
+
+# Collapse markdown line wrapping so prose assertions fail on meaning changes, not reflows.
+def squish(text)
+  text.gsub(/\s+/, " ").strip
+end
+
+def assert_squished_includes(text, phrase, label)
+  assert_text_includes(squish(text), squish(phrase), label)
 end
 
 def invalid_readiness_marker_values(text)
@@ -646,6 +663,48 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, DATE_COMMAND, label
+    end
+  end
+
+  def test_batch_title_project_rule_is_a_deterministic_uppercase_abbreviation
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_squished_includes text, PROJECT_ABBREVIATION_RULE, label
+    end
+
+    assert_squished_includes @pr_batch_docs, PROJECT_ABBREVIATION_DOCS_RULE, "docs/pr-batch-skills.md"
+  end
+
+  def test_batch_title_rules_reject_the_full_repository_name
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      LEGACY_PROJECT_ABBREVIATION_PHRASES.each do |phrase|
+        # Case-insensitive: pr-processing.md carried the same clause lowercased mid-sentence.
+        refute_includes squish(text).downcase, squish(phrase).downcase,
+                        "#{label} restores vague batch title guidance that the full repository name satisfies: #{phrase}"
+      end
+    end
+  end
+
+  def test_batch_handoff_format_requires_the_archive_readiness_status_line
+    {
+      "workflows/pr-processing.md" => extract_markdown_section(@workflow, "### Batch Handoff Format"),
+      "skills/pr-batch/SKILL.md" => extract_markdown_section(
+        @pr_batch_skill,
+        "## Batch Handoff Format",
+        end_heading: /^##\s+/
+      )
+    }.each do |label, section|
+      assert_squished_includes section, ARCHIVE_READINESS_HANDOFF_RULE, "#{label} Batch Handoff Format section"
     end
   end
 
