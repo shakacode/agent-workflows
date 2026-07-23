@@ -572,26 +572,23 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
-Thread handle: <batch-short>-<lane>-<word>
-Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
-
+Batch title:<PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Thread handle:<batch-short>-<lane>-<word>
+Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
-
-Repo: OWNER/REPO
-Objective: ...
-merge_authority: <none | ask | auto_merge_when_gates_pass>.
+Repo:OWNER/REPO
+Objective:...
+merge_authority:<none | ask | auto_merge_when_gates_pass>.
 Batch size target: <codex|claude|generic>; wave: <cap/items>.
-Coordinator model/effort: <model/class>/<effort>.
-Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
-Manifest: pack_sha=<rev|UNKNOWN>; coordinator_route=<model/effort@binding|UNKNOWN>; lanes=<host+worker_route>; no guesses.
-Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
+Coordinator model/effort:<model/class>/<effort>.
+Launch assurance:parent <exact model>/<effort>@<source>;checker <exact model>/<effort>@<source>;exact-policy UNKNOWN blocks.
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model/effort@binding|UNKNOWN>;lanes=<host+worker_route>;no guesses.
+Worker model/effort routes:<initial model/class>/<effort>-><lane ids>;escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST;max <N>.
+Dispatch <lane_id>:route policy <hard|preferred>;requested <dispatcher>@<route>;fallbacks <dispatcher>@<route>->...|none;auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
-Batch QA Lane: <owner/scope|none+rationale>.
+Batch QA Lane:<owner/scope|none+rationale>.
 Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
-
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original: trusted ad-hoc prompt; else n/a.
@@ -601,17 +598,17 @@ Items:
 
 Execution rules:
 - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
-- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One target or one disjoint lane per worker; never multiple lanes; shared context stays in-lane; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted/contradictory/ambiguous, scope/risk growth, or weaker verification=>stop.
-- Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
-- Coordination claims/dependencies: stable ids+heartbeats; register before launch when supported; refusal=>stop; push holder/generation check; known deps=>gate; missing/UNKNOWN=>stop.
-- Apply Batch QA Lane; include QA Evidence.
-- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
+- Resolve `$pr-batch`;autoload/self-contained: load persisted state pre-preflight;persist output pre-resume/launch;preflight issue/PR only.
+- Bind on-host;unbound->stop;no inheritance/substitution;exact-policy parent mismatch/UNKNOWN->relaunch;checker mismatch/UNKNOWN->reserve fresh
+- Dispatch: pending->persist/reissue token;active->no launch;input->decision;fence->stop/reconcile.
+- Current wave: each target/disjoint lane exactly once;exactly one target/lane per worker;shared context in-lane;serial/UNKNOWN apart.
+- Workers: owned paths/envelope only;contradiction/ambiguity,scope/risk growth,weaker verification=>stop.
+- Verify live GitHub before edits;unverifiable facts are UNKNOWN.
+- Coordination: ids+heartbeats;register before launch when supported;refusal=>stop;push holder/generation check;deps known=>gate;missing/UNKNOWN=>stop.
+- Apply Batch QA Lane+QA Evidence.
+- Run gates;merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists,release+gates pass;document confidence data in the PR description.
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-- Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
+- Final handoff: canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/auth/QA/state.
 ```
 
 ## Common Mistakes

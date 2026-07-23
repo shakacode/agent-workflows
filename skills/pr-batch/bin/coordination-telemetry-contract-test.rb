@@ -7,13 +7,14 @@ require "json"
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
-MANIFEST_PROMPT_LINE = "Manifest: pack_sha=<rev|UNKNOWN>; " \
-                       "coordinator_route=<model/effort@binding|UNKNOWN>; " \
-                       "lanes=<host+worker_route>; no guesses."
+MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
+                       "coordinator_route=<model/effort@binding|UNKNOWN>;" \
+                       "lanes=<host+worker_route>;no guesses."
 HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
   "otherwise `blocked-user-input` for other required user input."
+BATCH_AUDIT_COMMAND = "agent-coord batch-audit --batch-id <id> --json"
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -124,7 +125,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "### Worker Model Replacement And Escalation" => %w[escalation_requested human_intervention supersede],
       "### Cancelling Or Stopping A Batch" => %w[human_intervention drain],
       "## Review Comment Handling" => %w[error P0 P1 regression revert],
-      "### Coordinator Closeout Lane" => %w[batch-audit telemetry-completeness]
+      "### Coordinator Closeout Lane" => %w[telemetry-completeness]
     }.each do |heading, phrases|
       section = extract_section(workflow, heading)
       phrases.each { |phrase| assert_includes section, phrase, "#{heading} is missing #{phrase}" }
@@ -132,7 +133,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
     {
       "skills/plan-pr-batch/SKILL.md" => %w[pack_sha coordinator_route worker_route host],
-      "skills/pr-batch/SKILL.md" => %w[help_requested escalation_requested error human_intervention batch-audit],
+      "skills/pr-batch/SKILL.md" => %w[help_requested escalation_requested error human_intervention],
       "skills/pr-monitoring/SKILL.md" => %w[help_requested error],
       "skills/pause/SKILL.md" => %w[help_requested blocked-user-input],
       "skills/continue/SKILL.md" => %w[human_intervention takeover supersede]
@@ -160,6 +161,19 @@ class CoordinationTelemetryContractTest < Minitest::Test
     ].each do |path|
       text = read_repo_file(File.join(ROOT, path)).gsub(/\s+/, " ")
       assert_includes text, HELP_REQUESTED_REASON_PRECEDENCE, "#{path} has a stale reason mapping"
+    end
+  end
+
+  def test_authoritative_closeout_surfaces_use_exact_batch_audit_command
+    {
+      WORKFLOW_PATH => 2,
+      COORDINATION_DOC_PATH => 1
+    }.each do |path, expected_count|
+      text = read_repo_file(path).gsub(/\s+/, " ")
+      assert_equal expected_count, text.scan("`#{BATCH_AUDIT_COMMAND}`").length,
+                   "#{path} must use the exact executable and batch-audit subcommand"
+      refute_match(/(?<!agent-coord )batch-audit --batch-id <id> --json/, text,
+                   "#{path} contains a weak batch-audit command without the executable")
     end
   end
 end
