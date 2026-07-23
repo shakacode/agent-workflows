@@ -104,6 +104,14 @@ def registered_blockers(batch_id)
             "declare `unavailable #{EM_DASH} <reason>`"]
   end
 
+  # A batch id is a single opaque token. Without this, one line carrying both
+  # forms -- `registered aw-1 unavailable #{EM_DASH} backend flaky` -- would be
+  # swallowed whole into the batch id and pass as a clean declaration.
+  if batch_id.match?(/[[:space:]]/)
+    return ["`coordination: registered` batch id must be a single token, got #{batch_id.inspect}; " \
+            "declare exactly one form, never both on one line"]
+  end
+
   []
 end
 
@@ -240,6 +248,22 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
     refute_empty blockers
     assert_includes blockers.first, "unrecognized"
+  end
+
+  def test_both_forms_on_one_line_fail
+    handoff = "coordination: registered aw-1 unavailable #{EM_DASH} backend flaky\n"
+    blockers = coordination_declaration_blockers(handoff)
+
+    refute_empty blockers, "one line carrying both forms must not pass as a clean declaration"
+    assert_includes blockers.first, "single token"
+    assert_includes blockers.first, "never both on one line"
+  end
+
+  def test_registered_batch_id_rejects_trailing_prose
+    blockers = coordination_declaration_blockers("coordination: registered aw-1 (probably)\n")
+
+    refute_empty blockers, "a batch id must stay an opaque single token"
+    assert_includes blockers.first, "single token"
   end
 
   def test_duplicate_declarations_fail
