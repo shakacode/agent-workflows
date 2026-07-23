@@ -347,12 +347,12 @@ Plan a PR batch
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
      `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-     `<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 2 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`).
+     `<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 4 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
      Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - Add `Thread handle:` as the first worker-specific line. Derive
-     `<batch-short>` from the lowercased batch title `<PROJECT>` plus optional A/B/C
+     `<batch-short>` from the lowercased batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
      `<word>` from a short coordinator-chosen session word. Record the handle
      before dispatch so workers copy it unchanged.

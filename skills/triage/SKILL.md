@@ -257,12 +257,14 @@ precise blocker.
    keep it under 8 000 characters, and split or compact it when too large rather
    than applying the Codex split threshold. Put a short `Batch title:` after the
    target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   `<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 2 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`).
+   `<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 4 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
    Use A/B/C group letters
    only when multiple prompts are created, and get `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell.
    Use `Thread handle:` as the first worker-specific line:
-   `Thread handle: <batch-short>-<lane>-<word>.`, with `<word>` as a short
+   `Thread handle: <batch-short>-<lane>-<word>.`, deriving `<batch-short>` from
+   the lowercased batch title `<PROJECT>` plus its lowercased optional A/B/C
+   suffix, `<lane>` from the lane id or owner slug, and `<word>` as a short
    coordinator-chosen session word. Then add the compact
    `Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder, branch/PR, phase, URLs or UNKNOWN.`
    line so workers emit the canonical Lane Card after a successful claim, on

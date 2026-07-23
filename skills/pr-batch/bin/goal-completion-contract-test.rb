@@ -126,14 +126,14 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
-PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 2 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 2-4 letters (`shakapacker` -> `SHAK`)."
+PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase abbreviation of at most 6 characters, never the full repository name unless that name is itself 4 characters or fewer: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and abbreviate a single-segment name to its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`)."
 PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`), never the full repository name"
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
   "line using a repository abbreviation"
 ].freeze
-ARCHIVE_READINESS_HANDOFF_RULE = "End every final batch handoff with the exact archive-readiness status line: use `Conversation status: Ready for archiving.` only when the completed-batch audit is clean and no OUTSTANDING finding, follow-up, unresolved question, pending work, or `UNKNOWN` fact remains; otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive."
+ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying the batch handoff with the exact archive-readiness status line: use `Conversation status: Ready for archiving.` only when the completed-batch audit is clean and no OUTSTANDING finding, follow-up, unresolved question, pending work, or `UNKNOWN` fact remains; otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive."
 CANONICAL_READINESS_STATES = %w[
   merged
   ready-gates-clean
@@ -688,7 +688,8 @@ class GoalCompletionContractTest < Minitest::Test
       "docs/pr-batch-skills.md" => @pr_batch_docs
     }.each do |label, text|
       LEGACY_PROJECT_ABBREVIATION_PHRASES.each do |phrase|
-        refute_includes squish(text), squish(phrase),
+        # Case-insensitive: pr-processing.md carried the same clause lowercased mid-sentence.
+        refute_includes squish(text).downcase, squish(phrase).downcase,
                         "#{label} restores vague batch title guidance that the full repository name satisfies: #{phrase}"
       end
     end

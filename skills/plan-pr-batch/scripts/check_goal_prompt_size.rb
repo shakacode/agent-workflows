@@ -419,6 +419,7 @@ required_skill_rule_phrases = [
   "After the target-specific invocation line",
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
+  "uppercase abbreviation of at most 6 characters",
   "current repository name",
   "date +'%m-%d %H:%M'",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
