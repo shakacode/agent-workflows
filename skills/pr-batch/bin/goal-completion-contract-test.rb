@@ -126,8 +126,19 @@ PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
-PROJECT_ABBREVIATION_RULE = "`<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise, for a multi-segment name take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and for a single-segment name take its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`)."
-PROJECT_ABBREVIATION_DOCS_RULE = "an uppercase repository abbreviation (`agent-workflows` -> `AW`) rather than the full repository name"
+PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
+                      "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
+                      "letters or digits. If `repo_prefix` is absent, derive `<PROJECT>` deterministically " \
+                      "from the repository name: use the basename of the `origin` remote after stripping " \
+                      "`.git`, or the repository root basename when `origin` is unavailable; for a " \
+                      "multi-segment name take the first letter of each of the first six `-`, `_`, or " \
+                      "space separated segments, and for a single-segment name take its first 4 letters " \
+                      "or the whole name when shorter, then uppercase the result (`agent-workflows` -> " \
+                      "`AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`). An invalid " \
+                      "configured `repo_prefix` is a blocker; do not silently fall back."
+PROJECT_PREFIX_DOCS_RULE = "using the optional validated `repo_prefix` from " \
+                           "`.agents/agent-workflow.yml` when present. Otherwise use the deterministic " \
+                           "repository-name abbreviation (`agent-workflows` -> `AW`)"
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
@@ -666,17 +677,17 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_batch_title_project_rule_is_a_deterministic_uppercase_abbreviation
+  def test_batch_title_project_rule_prefers_config_and_has_deterministic_fallback
     {
       "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
-      assert_squished_includes text, PROJECT_ABBREVIATION_RULE, label
+      assert_squished_includes text, PROJECT_PREFIX_RULE, label
     end
 
-    assert_squished_includes @pr_batch_docs, PROJECT_ABBREVIATION_DOCS_RULE, "docs/pr-batch-skills.md"
+    assert_squished_includes @pr_batch_docs, PROJECT_PREFIX_DOCS_RULE, "docs/pr-batch-skills.md"
   end
 
   def test_batch_title_rules_reject_the_full_repository_name

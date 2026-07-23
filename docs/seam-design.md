@@ -100,6 +100,12 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+`repo_prefix` is optional. When present, it overrides the deterministic
+repository-name abbreviation used as `<PROJECT>` in batch titles and, in
+lowercase form, in thread handles. Its value must contain 1-6 uppercase ASCII
+letters or digits. An invalid configured value is a seam-doctor error; an
+absent key remains valid and uses the portable repository-name fallback.
+
 Repos that use `untrusted-contributor-intake` add one explicit trusted-base
 authority mapping. The seam doctor requires all three values when the mapping
 is present, and the skill fails closed when the mapping is absent or invalid:

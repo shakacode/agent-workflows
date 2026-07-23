@@ -155,7 +155,17 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
 4. **Batch title**: for pasteable batch prompts, derive a short title in the form
    `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   `<PROJECT>` is an uppercase abbreviation of at most 6 characters and is never the full repository name, except that a single-segment name of 4 characters or fewer abbreviates to itself: use a maintainer-supplied abbreviation when one exists, uppercased and truncated to 6 characters; otherwise, for a multi-segment name take the first letter of each of the first six `-`, `_`, or space separated segments of the current repository name (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`), and for a single-segment name take its first 4 letters, or the whole name when shorter (`shakapacker` -> `SHAK`, `go` -> `GO`).
+   Resolve `<PROJECT>` from the optional `repo_prefix` in
+   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
+   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
+   deterministically from the repository name: use the basename of the `origin`
+   remote after stripping `.git`, or the repository root basename when `origin`
+   is unavailable; for a multi-segment name take the first letter of each of the
+   first six `-`, `_`, or space separated segments, and for a single-segment
+   name take its first 4 letters or the whole name when shorter, then uppercase
+   the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
+   `shakapacker` -> `SHAK`, `go` -> `GO`). An invalid configured `repo_prefix`
+   is a blocker; do not silently fall back.
    Fill the optional `A?` slot with A,
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
@@ -331,7 +341,7 @@ Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
 and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
 local shell when creating the prompt.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
-from the lowercased batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
+from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. Record the handle before dispatch so workers
 copy it unchanged.

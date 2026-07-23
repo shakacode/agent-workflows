@@ -124,6 +124,8 @@ module AgentWorkflowSeamDoctor
     hosted_ci_trigger
     ci_change_detector
   ].freeze
+  REPO_PREFIX_POLICY_KEY = "repo_prefix"
+  REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY = "untrusted_contributor_intake"
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS = %w[
     trusted_github_host
@@ -1666,6 +1668,13 @@ module AgentWorkflowSeamDoctor
       next unless unresolved_policy_value?(value)
 
       issues << "unresolved policy value for key: #{key}"
+    end
+
+    if config.key?(REPO_PREFIX_POLICY_KEY) &&
+       (!config[REPO_PREFIX_POLICY_KEY].is_a?(String) ||
+        !config[REPO_PREFIX_POLICY_KEY].match?(REPO_PREFIX_PATTERN))
+      issues << "invalid policy value for key: #{REPO_PREFIX_POLICY_KEY} " \
+                "(expected 1-6 uppercase ASCII letters or digits)"
     end
 
     issues.concat(untrusted_contributor_intake_policy_issues(config))
