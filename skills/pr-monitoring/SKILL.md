@@ -137,8 +137,7 @@ cohorts on the new head.
    - `none`: hand off as `ready-no-merge-authority` when checks, review
      threads, and policy gates are clean.
    - Before a private-backend `blocked-user-input` or help-needed pause, emit
-     `help_requested` with `reason` `blocked-user-input`, `question`, or
-     `permission` as applicable.
+     `help_requested`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 
 Typed event emission is best-effort and follows the canonical `pr-batch`
 backend-neutral rule: backend `n/a` skips silently; a degraded backend, missing

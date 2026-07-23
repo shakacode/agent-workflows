@@ -1186,10 +1186,10 @@ Execution rules:
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- One target or one disjoint lane per worker; never multiple lanes; shared context stays in-lane; serial/UNKNOWN separate.
+- Workers obey owned paths/envelope; unlisted/contradictory/ambiguous, scope/risk growth, or weaker verification=>stop.
+- Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- Coordination claims/dependencies: stable ids+heartbeats; register before launch when supported; refusal=>stop; push holder/generation check; known deps=>gate; missing/UNKNOWN=>stop.
 - Apply Batch QA Lane; include QA Evidence.
 - Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
@@ -1204,11 +1204,8 @@ Classify every unresolved question before continuing:
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine GitHub targets, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For an ad-hoc target, record the question in the lane handoff because no target comment exists. A worker handoff should include the question, any comment URL, and that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
 
-Before a private-backend lane pauses for a blocking question, emit
-`help_requested` alongside the prose handoff. Use `reason:
-blocked-user-input` for the final-state stop, `reason: question` for a required
-maintainer/product answer, or `reason: permission` for an approval/capability
-stop. Follow the backend `n/a`, best-effort, and degraded-`UNKNOWN` rules under
+Before a private-backend lane pauses for required user input, emit
+`help_requested` alongside the prose handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. Follow the backend `n/a`, best-effort, and degraded-`UNKNOWN` rules under
 [Coordination Telemetry And Provenance](#coordination-telemetry-and-provenance).
 
 ### Maintainer Attention Contract
@@ -1522,8 +1519,7 @@ target, branch, and status context. Required typed payload fields are:
 | human intervention | `human_intervention` | `kind` |
 | serious error | `error` | `severity`, `category`, `message` |
 
-Use `help_requested.reason` values `blocked-user-input`, `question`, or
-`permission`. A `MODEL_ESCALATION_REQUEST` emits `escalation_requested` with
+Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. A `MODEL_ESCALATION_REQUEST` emits `escalation_requested` with
 the current and requested model/effort routes plus the evidence summary from
 the prose packet. Map intervention checkpoints deliberately:
 `takeover` -> `kind: takeover`; a same-lane replacement or explicit supersede

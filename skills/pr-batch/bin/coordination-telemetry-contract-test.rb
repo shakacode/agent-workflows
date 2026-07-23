@@ -10,6 +10,10 @@ COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
 MANIFEST_PROMPT_LINE = "Manifest: pack_sha=<rev|UNKNOWN>; " \
                        "coordinator_route=<model/effort@binding|UNKNOWN>; " \
                        "lanes=<host+worker_route>; no guesses."
+HELP_REQUESTED_REASON_PRECEDENCE =
+  "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
+  "approval or capability; otherwise `question` for a required maintainer or product answer; " \
+  "otherwise `blocked-user-input` for other required user input."
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -135,6 +139,27 @@ class CoordinationTelemetryContractTest < Minitest::Test
     }.each do |path, phrases|
       text = read_repo_file(File.join(ROOT, path))
       phrases.each { |phrase| assert_includes text, phrase, "#{path} is missing #{phrase}" }
+    end
+  end
+
+  def test_help_requested_reason_precedence_is_mutually_exclusive_everywhere
+    workflow = read_repo_file(WORKFLOW_PATH)
+    [
+      "### Question And Decision Handling",
+      "### Coordination Telemetry And Provenance"
+    ].each do |heading|
+      section = extract_section(workflow, heading).gsub(/\s+/, " ")
+      assert_includes section, HELP_REQUESTED_REASON_PRECEDENCE, "#{heading} has a stale reason mapping"
+    end
+
+    %w[
+      docs/coordination-backend.md
+      skills/pr-batch/SKILL.md
+      skills/pr-monitoring/SKILL.md
+      skills/pause/SKILL.md
+    ].each do |path|
+      text = read_repo_file(File.join(ROOT, path)).gsub(/\s+/, " ")
+      assert_includes text, HELP_REQUESTED_REASON_PRECEDENCE, "#{path} has a stale reason mapping"
     end
   end
 end

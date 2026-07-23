@@ -604,10 +604,10 @@ Execution rules:
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- One target or one disjoint lane per worker; never multiple lanes; shared context stays in-lane; serial/UNKNOWN separate.
+- Workers obey owned paths/envelope; unlisted/contradictory/ambiguous, scope/risk growth, or weaker verification=>stop.
+- Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- Coordination claims/dependencies: stable ids+heartbeats; register before launch when supported; refusal=>stop; push holder/generation check; known deps=>gate; missing/UNKNOWN=>stop.
 - Apply Batch QA Lane; include QA Evidence.
 - Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean

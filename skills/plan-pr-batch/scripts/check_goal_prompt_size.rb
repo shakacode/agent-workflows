@@ -18,6 +18,8 @@ LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest: pack_sha=<rev|UNKNOWN>; " \
                                   "coordinator_route=<model/effort@binding|UNKNOWN>; " \
                                   "lanes=<host+worker_route>; no guesses."
+ONE_LANE_PER_WORKER_PROMPT_LINE = "- One target or one disjoint lane per worker; never multiple lanes; " \
+                                  "shared context stays in-lane; serial/UNKNOWN separate."
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
@@ -496,6 +498,7 @@ required_all_prompt_phrases = [
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
   LAUNCH_ASSURANCE_PROMPT_LINE,
   MANIFEST_PROVENANCE_PROMPT_LINE,
+  ONE_LANE_PER_WORKER_PROMPT_LINE,
   WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
   MODEL_EFFORT_DISPATCH_LINE,
   DISPATCHER_PREFLIGHT_PROMPT_LINE,
@@ -508,7 +511,7 @@ required_all_prompt_phrases = [
   "ready-no-merge-authority",
   "document confidence data in the PR description",
   "verifies live GitHub before edits",
-  "respect coordination claims and dependencies",
+  "Coordination claims/dependencies",
   "register before launch when supported",
   "push holder/generation check",
   "facts are UNKNOWN"
@@ -626,6 +629,7 @@ end
   require_occurrence_count(template, GOAL_MODE_COMPACT_CONTRACT, 1, "#{label} compact completion contract")
   require_occurrence_count(template, STAGE_DEPENDENCY_PROMPT_LINE, 1, "#{label} stage-dependency contract")
   require_occurrence_count(template, STAGE_DEPENDENCY_SCOPE_LINE, 1, "#{label} stage-dependency scope")
+  require_occurrence_count(template, ONE_LANE_PER_WORKER_PROMPT_LINE, 1, "#{label} one-lane-per-worker contract")
 end
 require_occurrence_count(
   triage_prompt_contract_text,

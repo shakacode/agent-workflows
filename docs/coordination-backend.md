@@ -142,8 +142,7 @@ An active private backend may expose a typed event interface. The portable
 workflow emits these signals at existing checkpoints, alongside its prose
 packets and handoffs:
 
-- `help_requested` requires `reason`: `blocked-user-input`, `question`, or
-  `permission`.
+- `help_requested` requires `reason`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 - `escalation_requested` requires nonempty `from_route`, `to_route`, and
   `evidence`.
 - `error` requires `severity` (`P0`, `P1`, `P2`, or `P3`), nonempty `category`,
