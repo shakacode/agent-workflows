@@ -108,8 +108,13 @@ def registered_blockers(batch_id)
   # forms -- `registered aw-1 unavailable #{EM_DASH} backend flaky` -- would be
   # swallowed whole into the batch id and pass as a clean declaration.
   if batch_id.match?(/[[:space:]]/)
-    return ["`coordination: registered` batch id must be a single token, got #{batch_id.inspect}; " \
-            "declare exactly one form, never both on one line"]
+    tail = batch_id.split(/[[:space:]]+/, 2).last.to_s
+    hint = if tail.start_with?("unavailable")
+             "declare exactly one form, never both on one line"
+           else
+             "drop the trailing text after the batch id"
+           end
+    return ["`coordination: registered` batch id must be a single token, got #{batch_id.inspect}; #{hint}"]
   end
 
   []
@@ -276,6 +281,9 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
     refute_empty blockers, "a batch id must stay an opaque single token"
     assert_includes blockers.first, "single token"
+    assert_includes blockers.first, "drop the trailing text after the batch id"
+    refute_includes blockers.first, "never both on one line",
+                    "trailing prose is not a two-forms problem and must not be described as one"
   end
 
   def test_duplicate_declarations_fail
@@ -318,22 +326,29 @@ class CoordinationDeclarationContractTest < Minitest::Test
                     "the declaration belongs in the canonical handoff contract the goal prompt routes to"
   end
 
-  # The continuation prompt is a supported entry point that emits its own final
-  # handoff, so it has to demand the declaration too or it reopens the bug.
-  def test_continuation_prompt_requires_the_declaration
+  # Every prompt that tells a coordinator what its own final handoff must contain
+  # is a supported path to a handoff, so each one has to demand the declaration
+  # or it reopens the bug for anyone launched through it.
+  def test_handoff_emitting_prompts_require_the_declaration
     workflow = read_repo_file(WORKFLOW_PATH)
-    start_index = workflow.index("### Generic PR-Batch Continuation Prompt")
-    refute_nil start_index, "workflows/pr-processing.md must keep the continuation prompt section"
 
-    end_match = workflow.match(/^###\s+/, start_index + 1)
-    section = normalize_prose(workflow[start_index...(end_match ? end_match.begin(0) : workflow.length)])
+    [
+      "### Generic PR-Batch Continuation Prompt",
+      "### Model-Routing Recovery Prompt"
+    ].each do |heading|
+      start_index = workflow.index(heading)
+      refute_nil start_index, "workflows/pr-processing.md must keep #{heading}"
 
-    assert_includes section, "coordination: registered <batch-id>",
-                    "the continuation prompt must require the registered form"
-    assert_includes section, "coordination: unavailable #{EM_DASH} <reason>",
-                    "the continuation prompt must require the unavailable form"
-    assert_includes section, "A missing declaration is a hard blocker, not a clean handoff.",
-                    "the continuation prompt must make an absent declaration a blocker"
+      end_match = workflow.match(/^###\s+/, start_index + 1)
+      section = normalize_prose(workflow[start_index...(end_match ? end_match.begin(0) : workflow.length)])
+
+      assert_includes section, "coordination: registered <batch-id>",
+                      "#{heading} must require the registered form"
+      assert_includes section, "coordination: unavailable #{EM_DASH} <reason>",
+                      "#{heading} must require the unavailable form"
+      assert_includes section, "A missing declaration is a hard blocker, not a clean handoff.",
+                      "#{heading} must make an absent declaration a blocker"
+    end
   end
 
   def test_rule_states_both_declared_forms_verbatim

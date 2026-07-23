@@ -1711,7 +1711,11 @@ Continue through QA, validation, review, CI, readiness, and the existing Goal
 Mode Completion Contract. The final handoff reports links, tests, blockers,
 next actions, initial/final model and effort, credible attempts, replacement
 handoffs, escalation requests/dispositions, escalation role, return to initial
-tier, remaining risk/UNKNOWN, human decisions, QA evidence, and final state.
+tier, remaining risk/UNKNOWN, human decisions, QA evidence, and final state. It
+must also carry exactly one coordination declaration: `coordination: registered <batch-id>`
+when this batch registered with the coordination backend, or
+`coordination: unavailable — <reason>` with an exact nonempty reason that is not
+`UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
 
 ### Generic PR-Batch Continuation Prompt
