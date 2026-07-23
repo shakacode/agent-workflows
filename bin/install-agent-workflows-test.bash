@@ -15,8 +15,11 @@ cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
 abort "unexpected arguments: #{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
 case ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
 when "enabled"
+  root = ENV["QA_CODEX_PLUGIN_ROOT"] ||
+         File.join(ENV.fetch("CODEX_HOME"), "plugins/cache/agent-workflows/scw/0.1.0")
+  version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", File.basename(root))
   puts "PLUGIN STATUS VERSION PATH"
-  puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+  puts "scw@agent-workflows  installed, enabled  #{version}  #{root}"
 when "disabled"
   puts "PLUGIN STATUS VERSION PATH"
   puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
@@ -793,6 +796,65 @@ test_repeat_companion_install_blocks_new_current_native_skill_collision() {
     fail "repeat companion collision changed the flat path"
   cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
     fail "repeat companion collision changed install metadata"
+}
+
+test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() {
+  local tmp source target stale_root candidate_root manifest_dir metadata_before output status host
+
+  for host in codex claude; do
+    tmp="$(mktemp -d)"
+    source="$tmp/source"
+    target="$tmp/$host-home"
+    stale_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+    candidate_root="$target/plugins/cache/agent-workflows/scw/0.2.0"
+    mkdir -p "$source"
+    new_source_repo "$source"
+    write_native_scw_state "$host" "$target"
+
+    "$source/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
+      >"$tmp/first.out"
+    cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+    metadata_before="$tmp/metadata.before"
+
+    mkdir -p "$source/skills/mixed-root" "$candidate_root/skills/mixed-root" "$target/skills/mixed-root"
+    printf 'current source\n' > "$source/skills/mixed-root/SKILL.md"
+    git -C "$source" add skills/mixed-root
+    git -C "$source" commit --quiet -m "add mixed-root skill"
+    printf 'candidate native\n' > "$candidate_root/skills/mixed-root/SKILL.md"
+    manifest_dir="$candidate_root/$([[ "$host" = codex ]] && printf .codex-plugin || printf .claude-plugin)"
+    mkdir -p "$manifest_dir"
+    printf '{malformed\n' > "$manifest_dir/plugin.json"
+    printf 'personal collision\n' > "$target/skills/mixed-root/SKILL.md"
+
+    if [[ "$host" = claude ]]; then
+      ruby -rjson -e '
+        path, stale_root, candidate_root = ARGV
+        receipts = [
+          {"scope" => "user", "installPath" => stale_root, "version" => "0.1.0"},
+          {"scope" => "user", "installPath" => candidate_root, "version" => "0.2.0"}
+        ]
+        File.write(path, JSON.generate({"version" => 2, "plugins" => {"scw@agent-workflows" => receipts}}) + "\n")
+      ' "$target/plugins/installed_plugins.json" "$stale_root" "$candidate_root"
+    fi
+
+    set +e
+    if [[ "$host" = codex ]]; then
+      output="$(QA_CODEX_PLUGIN_ROOT="$candidate_root" \
+        "$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+      status=$?
+    else
+      output="$("$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+      status=$?
+    fi
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$host companion install ignored an invalid candidate native root"
+    assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+    grep -qxF 'personal collision' "$target/skills/mixed-root/SKILL.md" || \
+      fail "$host mixed-root failure changed the flat path"
+    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+      fail "$host mixed-root failure changed install metadata"
+  done
 }
 
 test_invalid_recorded_delivery_mode_fails_before_mutation() {
@@ -1622,6 +1684,7 @@ main() {
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_repeat_companion_install_blocks_new_current_native_skill_collision
+    test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
     test_invalid_recorded_delivery_mode_fails_before_mutation
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host

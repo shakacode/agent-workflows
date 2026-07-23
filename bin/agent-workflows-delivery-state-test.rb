@@ -20,8 +20,11 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
       case state
       when "enabled"
+        root = ENV["QA_CODEX_PLUGIN_ROOT"] ||
+               File.join(ENV.fetch("CODEX_HOME"), "plugins/cache/agent-workflows/scw/0.1.0")
+        version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", File.basename(root))
         puts "PLUGIN STATUS VERSION PATH"
-        puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+        puts "scw@agent-workflows  installed, enabled  \#{version}  \#{root}"
       when "disabled"
         puts "PLUGIN STATUS VERSION PATH"
         puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
@@ -48,11 +51,12 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     FileUtils.remove_entry(@fake_codex_dir)
   end
 
-  def run_state(*args, codex_state: "enabled", codex_executable: @fake_codex)
+  def run_state(*args, codex_state: "enabled", codex_executable: @fake_codex, codex_root: nil)
     env = {
       "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => codex_executable,
       "QA_CODEX_PLUGIN_STATE" => codex_state
     }
+    env["QA_CODEX_PLUGIN_ROOT"] = codex_root if codex_root
     Open3.capture3(env, "ruby", SCRIPT, *args)
   end
 
@@ -214,6 +218,70 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_equal [File.dirname(flat_skill)], payload.dig("flat", "blocking")
       assert_equal "personal collision\n", File.binread(flat_skill)
       assert_equal metadata_before, File.binread(metadata_path)
+    end
+  end
+
+  def test_plugin_companion_rejects_mixed_valid_and_invalid_candidate_native_roots
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+
+      %w[codex claude].each do |host|
+        target = File.join(tmp, host)
+        stale_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+        candidate_root = File.join(target, "plugins/cache/agent-workflows/scw/0.2.0")
+        write_manifest(stale_root, host: host)
+        manifest_dir = File.join(candidate_root, host == "codex" ? ".codex-plugin" : ".claude-plugin")
+        FileUtils.mkdir_p(File.join(candidate_root, "skills/beta"))
+        FileUtils.mkdir_p(manifest_dir)
+        File.write(File.join(candidate_root, "skills/beta/SKILL.md"), "candidate beta\n")
+        File.write(File.join(manifest_dir, "plugin.json"), "{malformed\n")
+
+        if host == "codex"
+          File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
+        else
+          FileUtils.mkdir_p(File.join(target, "plugins"))
+          File.write(
+            File.join(target, "settings.json"),
+            "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n"
+          )
+          receipts = {
+            "plugins" => {
+              "scw@agent-workflows" => [{ "installPath" => stale_root }, { "installPath" => candidate_root }]
+            }
+          }
+          File.write(
+            File.join(target, "plugins/installed_plugins.json"),
+            "#{JSON.generate(receipts)}\n"
+          )
+        end
+
+        write_metadata(
+          target,
+          "host" => host,
+          "mode" => "copy",
+          "delivery_mode" => "plugin-companion",
+          "source" => source,
+          "source_revision" => recorded_revision
+        )
+        metadata_path = File.join(target, ".agent-workflows-install.json")
+        metadata_before = File.binread(metadata_path)
+        flat_skill = File.join(target, "skills/beta/SKILL.md")
+        FileUtils.mkdir_p(File.dirname(flat_skill))
+        File.write(flat_skill, "personal beta\n")
+
+        out, _err, status = run_state(
+          "check", "--host", host, "--target", target, "--source", source,
+          "--delivery-mode", "plugin-companion", "--json", codex_root: candidate_root
+        )
+        payload = JSON.parse(out)
+
+        refute status.success?, "#{host}: #{out}"
+        assert_equal "unknown", payload.dig("native", "state"), host
+        assert_equal "personal beta\n", File.binread(flat_skill)
+        assert_equal metadata_before, File.binread(metadata_path)
+      end
     end
   end
 

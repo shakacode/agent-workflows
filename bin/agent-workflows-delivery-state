@@ -12,7 +12,7 @@ require_relative "agent_doctor/timeout_budget"
 module AgentWorkflowsDeliveryState
   module_function
 
-  def plugin_manifest_skill_names(root, host)
+  def plugin_manifest_skill_names(root, host, expected_version: nil)
     directory = host == "codex" ? ".codex-plugin" : ".claude-plugin"
     path = File.join(root, directory, "plugin.json")
     return nil unless File.file?(path)
@@ -24,6 +24,7 @@ module AgentWorkflowsDeliveryState
     skills_root = File.realpath(File.expand_path(skills, root))
     plugin_root = File.realpath(root)
     return nil unless manifest.fetch("name") == "scw"
+    return nil if expected_version && manifest["version"] != expected_version
     return nil unless skills_root == plugin_root || skills_root.start_with?("#{plugin_root}/")
 
     names = Dir.glob(File.join(skills_root, "*", "SKILL.md")).map { |skill| File.basename(File.dirname(skill)) }.sort
@@ -53,18 +54,20 @@ module AgentWorkflowsDeliveryState
     return cli_state if cli_state["state"] == "unknown"
     return { "state" => "inactive", "reason" => "scw@agent-workflows is disabled" } if cli_state["state"] == "disabled"
 
-    manifests = Dir.glob(cache_pattern).filter_map do |root|
-      names = plugin_manifest_skill_names(root, "codex")
-      [root, names] if names
-    end
-    if manifests.empty?
-      return { "state" => "unknown", "reason" => "enabled Codex scw plugin has no valid installed cache" }
+    root = cli_state.fetch("root")
+    names = plugin_manifest_skill_names(root, "codex", expected_version: cli_state.fetch("version"))
+    unless names
+      return {
+        "state" => "unknown",
+        "reason" => "Codex reports an enabled scw plugin whose active root has no valid installed cache: #{root}"
+      }
     end
 
     {
       "state" => "active",
-      "roots" => manifests.map(&:first).sort,
-      "skill_names" => manifests.flat_map(&:last).uniq.sort
+      "roots" => [root],
+      "skill_names" => names,
+      "version" => cli_state.fetch("version")
     }
   rescue SystemCallError => e
     { "state" => "unknown", "reason" => "unable to read Codex plugin state: #{e.message}" }
@@ -109,10 +112,17 @@ module AgentWorkflowsDeliveryState
     return { "state" => "unknown", "reason" => "Codex scw plugin is absent from marketplace agent-workflows" } if rows.empty?
     return { "state" => "unknown", "reason" => "Codex scw plugin state is ambiguous" } unless rows.length == 1
 
-    status_text = rows.first[1]
+    row = rows.first
+    status_text = row[1]
     case status_text
     when "installed, enabled"
-      { "state" => "enabled" }
+      version = row[2]
+      root = row[3]
+      if version.to_s.empty? || root.to_s.empty?
+        return { "state" => "unknown", "reason" => "enabled Codex scw plugin is missing its active version or path" }
+      end
+
+      { "state" => "enabled", "version" => version, "root" => File.expand_path(root) }
     when "installed, disabled"
       { "state" => "disabled" }
     else
@@ -150,15 +160,29 @@ module AgentWorkflowsDeliveryState
     end
 
     receipts = receipt_state.dig("plugins", "scw@agent-workflows")
-    manifests = Array(receipts).filter_map { |receipt| receipt["installPath"] if receipt.is_a?(Hash) }.filter_map do |root|
-      names = plugin_manifest_skill_names(root, "claude")
-      [root, names] if names
-    end
-    if manifests.empty?
-      missing = receipts.nil? || Array(receipts).empty?
-      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" } if !explicit && missing
+    candidates = Array(receipts)
+    if candidates.empty?
+      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" } unless explicit
 
-      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no valid installed cache" }
+      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no install candidate" }
+    end
+
+    manifests = candidates.map do |receipt|
+      unless receipt.is_a?(Hash) && receipt["installPath"].is_a?(String) && !receipt["installPath"].empty?
+        return { "state" => "unknown", "reason" => "Claude scw plugin has an invalid candidate install receipt" }
+      end
+
+      root = File.expand_path(receipt.fetch("installPath"))
+      expected_version = receipt["version"] if receipt["version"].is_a?(String) && !receipt["version"].empty?
+      names = plugin_manifest_skill_names(root, "claude", expected_version: expected_version)
+      unless names
+        return {
+          "state" => "unknown",
+          "reason" => "Claude scw plugin candidate root is invalid: #{root}"
+        }
+      end
+
+      [root, names]
     end
 
     {

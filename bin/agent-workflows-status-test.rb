@@ -19,8 +19,9 @@ class AgentWorkflowsStatusTest < Minitest::Test
     @fake_codex = File.join(@fake_codex_dir, "codex")
     File.write(@fake_codex, <<~RUBY)
       #!#{RbConfig.ruby}
+      root = File.join(ENV.fetch("CODEX_HOME"), "plugins/cache/agent-workflows/scw/0.1.0")
       puts "PLUGIN STATUS VERSION PATH"
-      puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+      puts "scw@agent-workflows  installed, enabled  0.1.0  \#{root}"
     RUBY
     FileUtils.chmod(0o755, @fake_codex)
   end

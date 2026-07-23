@@ -45,6 +45,12 @@ whose names occur in both the current Source Pack and the verified active native
 plugin roots, and ignore other unrelated direct children. No unrelated path is
 deleted or modified.
 
+Native-root verification is fail-closed. Codex uses the unique active version
+and path reported by its plugin CLI instead of searching every cached version.
+Claude treats every installed receipt candidate as potentially active unless
+settings explicitly disable the plugin, so an invalid candidate cannot be
+silently discarded in favor of a stale valid cache.
+
 ## Verification
 
 Add installer-level regression cases proving:
@@ -58,6 +64,8 @@ Add installer-level regression cases proving:
 5. A companion reinstall fails without mutation when the current Source Pack
    and active native plugin add a colliding skill after the recorded install
    revision.
+6. Mixed native-root state fails without mutation when a stale valid cache
+   exists beside an invalid authoritative or candidate root.
 
 Follow test-driven development: observe the new regression fail before changing
 production code, then run the focused delivery-state and installer suites plus
