@@ -16,6 +16,32 @@ class PrMergeSubmitTest < Minitest::Test
   MOVED_SHA = "b" * 40
   HOST = "ghe.example:8443"
 
+  # A gh deadline has to be sized against what the scenario needs to SUCCEED,
+  # not just against the hang it is meant to catch.
+  #
+  # These four modes hang exactly one call -- the mutation -- and need the
+  # metadata query before it and the reconciliation query after it to succeed.
+  # At 0.1s those queries lost the race with the stub's own startup, so the run
+  # died in setup and the mutation-timeout path was never exercised (#222).
+  #
+  # `warm_stub` removes the multi-second first-exec tail, leaving a warm stub
+  # measured at p50 0.075s / max 0.101s over 60 samples on a loaded machine.
+  # 2s is ~20x that, and matches the deadline the sibling hanging-gh test in
+  # stale-assignment-sweep-test.rb uses; only the stub's deliberate 5s sleep
+  # can cross it.
+  MUTATION_TIMEOUT_MODES = %w[
+    direct_timeout_unknown direct_timeout_merged
+    enqueue_timeout_unknown enqueue_timeout_merged
+  ].freeze
+  MUTATION_TIMEOUT_GH_SECONDS = "2"
+  # The remaining timeout modes hang their only gh call, so a startup-induced
+  # timeout is the same observable event as the hang under test. They keep the
+  # tight deadline that makes their elapsed-time bounds meaningful.
+  SOLE_CALL_TIMEOUT_GH_SECONDS = "0.1"
+  NO_TIMEOUT_GH_SECONDS = "60"
+  # Attempts allowed for a mutation-timeout scenario whose setup query raced.
+  MUTATION_TIMEOUT_ATTEMPTS = 3
+
   def test_direct_merge_uses_exact_head_bound_graphql_mutation
     result, log = run_cli(mode: "direct")
 
@@ -348,7 +374,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_direct_mutation_timeout_with_unchanged_state_is_unknown
-    result, = run_cli(mode: "direct_timeout_unknown")
+    result = run_mutation_timeout_cli("direct_timeout_unknown")
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "timed out"
@@ -356,7 +382,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_direct_mutation_timeout_reconciles_with_unknown_provenance
-    result, = run_cli(mode: "direct_timeout_merged")
+    result = run_mutation_timeout_cli("direct_timeout_merged")
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_unknown_reconciled_merge(
@@ -365,7 +391,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_mutation_timeout_with_unchanged_state_is_unknown
-    result, = run_cli(mode: "enqueue_timeout_unknown")
+    result = run_mutation_timeout_cli("enqueue_timeout_unknown")
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "timed out"
@@ -373,7 +399,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_mutation_timeout_reconciles_with_unknown_provenance
-    result, = run_cli(mode: "enqueue_timeout_merged")
+    result = run_mutation_timeout_cli("enqueue_timeout_merged")
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_unknown_reconciled_merge(
@@ -498,6 +524,41 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "dequeuePullRequest"
   end
 
+  # One mutation-timeout scenario, retried only while the harness raced itself.
+  #
+  # These scenarios hang the mutation alone: the metadata query before it and
+  # the reconciliation query after it are supposed to succeed. When one of those
+  # queries times out instead, the stub `gh` never finished starting inside the
+  # deadline, the mutation was never issued (or its outcome never read live
+  # state), and the run says nothing about the product -- a precondition miss,
+  # not a failure. Retry it, the same way #230 handles the sibling hanging-gh
+  # test in stale-assignment-sweep-test.rb.
+  #
+  # A real regression still fails: there the queries succeed, the loop stops on
+  # the first attempt, and the caller's assertions run against a genuine
+  # outcome. A precondition that never holds fails too, naming what went wrong.
+  def run_mutation_timeout_cli(mode)
+    result = nil
+    MUTATION_TIMEOUT_ATTEMPTS.times do
+      result, = run_cli(mode:)
+      break unless setup_query_timed_out?(result)
+    end
+
+    refute setup_query_timed_out?(result),
+           "stub gh never started inside the #{MUTATION_TIMEOUT_GH_SECONDS}s deadline in " \
+           "#{MUTATION_TIMEOUT_ATTEMPTS} attempts, so the #{mode} path was never exercised: " \
+           "#{result.fetch(:stderr)}"
+    result
+  end
+
+  # True when a gh call this scenario needs to SUCCEED timed out instead. Both
+  # the initial fetch and the reconciliation fetch report through "could not
+  # fetch PR metadata"; a timed-out mutation never does.
+  def setup_query_timed_out?(result)
+    stderr = result.fetch(:stderr)
+    stderr.include?("could not fetch PR metadata") && stderr.include?("timed out")
+  end
+
   def run_cli(
     mode:,
     repo: "owner/repo",
@@ -515,6 +576,7 @@ class PrMergeSubmitTest < Minitest::Test
       gh_path = File.join(dir, "gh")
       File.write(gh_path, fake_gh(mode:, head:, base:, url_host:))
       FileUtils.chmod(0o755, gh_path)
+      warm_stub(dir, gh_path) if mode.include?("timeout")
       stdout, stderr, status = Open3.capture3(
         cli_environment(dir, log_path, mode),
         *cli_arguments(repo, expected_head, include_expected_head, include_expected_base, subject:, body:)
@@ -530,6 +592,7 @@ class PrMergeSubmitTest < Minitest::Test
       gh_path = File.join(dir, "gh")
       File.write(gh_path, fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST))
       FileUtils.chmod(0o755, gh_path)
+      warm_stub(dir, gh_path)
       result = Open3.popen3(
         cli_environment(dir, log_path, mode),
         *cli_arguments("owner/repo", HEAD_SHA, true, true)
@@ -549,12 +612,38 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  # Pay the stub's first-execution cost before anything is being timed.
+  #
+  # macOS assesses a newly written executable the first time it runs. Measured
+  # on this stub, spawned exactly as the product spawns gh: the first exec of a
+  # fresh file is p50 0.205s but has a 9.9s tail (2 of 60 samples over 2s),
+  # while re-executing the same file is p50 0.075s, max 0.101s. That cold tail,
+  # not the product, is what blew the gh deadline in #222 and is what any
+  # deadline in this file would otherwise have to out-wait.
+  #
+  # The warm-up call matches no request branch in the stub, so it changes no
+  # stub state, and its log goes to a throwaway path so GH_LOG still records
+  # only the gh calls the run under test actually made.
+  def warm_stub(dir, gh_path)
+    system(
+      { "GH_LOG" => File.join(dir, "warmup.log") },
+      gh_path, "--version", out: File::NULL, err: File::NULL
+    )
+  end
+
   def cli_environment(dir, log_path, mode)
     {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
       "GH_LOG" => log_path,
-      "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => mode.include?("timeout") ? "0.1" : "60"
+      "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }
+  end
+
+  def gh_timeout_seconds_for(mode)
+    return NO_TIMEOUT_GH_SECONDS unless mode.include?("timeout")
+    return MUTATION_TIMEOUT_GH_SECONDS if MUTATION_TIMEOUT_MODES.include?(mode)
+
+    SOLE_CALL_TIMEOUT_GH_SECONDS
   end
 
   def cli_arguments(repo, expected_head, include_expected_head, include_expected_base, subject: "Fix the thing (#42)", body: nil)
