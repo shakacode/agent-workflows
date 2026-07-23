@@ -409,7 +409,75 @@ class StaleAssignmentSweepTest < Minitest::Test
     assert_includes out, "inactivity-after-start"
   end
 
+  # --- #218: a timed-out gh call terminates its whole process group ------
+
+  def test_timed_out_gh_call_terminates_its_process_group_with_no_orphan
+    Dir.mktmpdir("stale-assignment-sweep-timeout") do |dir|
+      pids_file = File.join(dir, "gh-children.pids")
+      write_hanging_gh(dir, pids_file)
+      trust = File.join(dir, "trust.yml")
+      File.write(trust, "trusted_bots: []\ntrusted_users: []\n")
+
+      env = {
+        "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
+        "STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS" => "2"
+      }
+      args = [
+        RUBY_BIN, SCRIPT, "--now", NOW_ISO, "--trust-config", trust,
+        "--repo", "owner/repo", "--comment-identity", IDENTITY
+      ]
+      _out, _err, status = Open3.capture3(env, *args)
+
+      # Every hung gh call times out, but the run still completes (per-repo and
+      # per-item failures degrade, they do not abort).
+      assert status.success?, "sweep should exit 0 even when its gh calls time out"
+
+      # The pgroup path was exercised: the hanging gh spawned children, and each
+      # was terminated with its process group instead of being orphaned.
+      pids = File.exist?(pids_file) ? File.read(pids_file).split.map(&:to_i) : []
+      refute_empty pids, "expected the hanging gh to record at least one spawned child"
+      pids.each do |pid|
+        assert child_terminated?(pid),
+               "gh child #{pid} was orphaned instead of terminated with its process group"
+      end
+    end
+  end
+
   private
+
+  # A gh stand-in that never returns: it spawns a long-lived child in the SAME
+  # process group, records its PID, then blocks on it. The sweep's timeout must
+  # terminate the whole group (killing this child); the old Timeout-only path
+  # would have left the child orphaned. A shell stub (not ruby) is used so it
+  # boots and records the PID well within the timeout even under load.
+  def write_hanging_gh(dir, pids_file)
+    path = File.join(dir, "gh")
+    File.write(path, <<~SH)
+      #!/bin/sh
+      sleep 300 &
+      echo "$!" >> '#{pids_file}'
+      wait
+    SH
+    FileUtils.chmod(0o755, path)
+  end
+
+  # Poll until the pid is gone (ESRCH). Orphaned zombies are reaped by init, so a
+  # short grace avoids a race with reaping.
+  def child_terminated?(pid)
+    deadline = Time.now + 5
+    loop do
+      begin
+        Process.kill(0, pid)
+      rescue Errno::ESRCH
+        return true
+      rescue Errno::EPERM
+        return false
+      end
+      return false if Time.now >= deadline
+
+      sleep 0.05
+    end
+  end
 
   def days_ago(days)
     (NOW - (days * 86_400)).utc.iso8601

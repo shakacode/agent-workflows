@@ -11,8 +11,8 @@
 # cannot prove.
 
 require "json"
-require "open3"
 require "optparse"
+require "tempfile"
 require "time"
 require "timeout"
 require "yaml"
@@ -274,12 +274,8 @@ module StaleAssignmentSweep
     end
 
     def git_toplevel
-      out = nil
-      status = nil
-      Timeout.timeout(gh_timeout) do
-        out, _err, status = Open3.capture3("git", "rev-parse", "--show-toplevel")
-      end
-      return unless status&.success?
+      out, _err, status, outcome = capture_process_group("git", "rev-parse", "--show-toplevel")
+      return unless outcome == :ok && status&.success?
 
       root = out.to_s.strip
       root unless root.empty?
@@ -695,21 +691,114 @@ module StaleAssignmentSweep
     # --- gh execution -----------------------------------------------------
 
     def run_gh(*args)
-      out = nil
-      err = nil
-      status = nil
-      Timeout.timeout(gh_timeout) do
-        out, err, status = Open3.capture3("gh", *args)
+      out, err, status, outcome = capture_process_group("gh", *args)
+      case outcome
+      when :undead
+        raise Error, "gh #{args.join(' ')} timed out after #{gh_timeout}s and its process group " \
+                     "could not be terminated; outcome is UNKNOWN"
+      when :timed_out
+        raise Error, "gh #{args.join(' ')} timed out after #{gh_timeout}s"
       end
-      out = out.to_s.force_encoding("UTF-8").scrub
-      err = err.to_s.force_encoding("UTF-8").scrub
-      return out if status.success?
+      return out if status&.success?
 
       raise Error, "gh #{args.join(' ')} failed: #{[err, out].reject(&:empty?).join("\n")}"
-    rescue Timeout::Error
-      raise Error, "gh #{args.join(' ')} timed out after #{gh_timeout}s"
     rescue Errno::ENOENT
       raise Error, "gh is not installed or not on PATH"
+    end
+
+    # Spawn a subprocess in its own process group and block on it with a bounded
+    # timeout. The prior Timeout.timeout wrapper raised in this process but left
+    # the spawned gh (and any child it forked) running as an orphan; here a
+    # timeout instead terminates the whole group (TERM, escalating to KILL),
+    # mirroring pr-merge-submit's run_gh so a hung call reaps its children. The
+    # wait is a blocking waitpid — not a poll loop — so the fast path adds no
+    # latency to the sweep's O(N) gh calls. Returns [stdout, stderr, status,
+    # outcome] where outcome is :ok, :timed_out, or :undead (a group that would
+    # not die -> the caller reports UNKNOWN). Honors
+    # STALE_ASSIGNMENT_SWEEP_GH_TIMEOUT_SECONDS.
+    def capture_process_group(*command)
+      stdout_file = Tempfile.new("stale-assignment-sweep-out")
+      stderr_file = Tempfile.new("stale-assignment-sweep-err")
+      pid = Process.spawn(*command, out: stdout_file.path, err: stderr_file.path, pgroup: true)
+      status = nil
+      outcome = :ok
+      begin
+        Timeout.timeout(gh_timeout) { status = Process.waitpid2(pid).last }
+      rescue Timeout::Error
+        status, terminated = terminate_process_group(pid)
+        outcome = terminated ? :timed_out : :undead
+      end
+
+      [scrub(read_capture(stdout_file)), scrub(read_capture(stderr_file)), status, outcome]
+    ensure
+      stdout_file&.close!
+      stderr_file&.close!
+    end
+
+    # Terminate the process group led by pid: TERM, a short grace to let it exit,
+    # then KILL if it lingers. Returns [child_status, terminated?] where
+    # terminated? is false only when the group still will not die after KILL.
+    def terminate_process_group(pid, signal: "TERM", grace_seconds: 1, kill_grace_seconds: 1)
+      signal_process_group(signal, pid)
+      deadline = monotonic_time + grace_seconds
+      status = wait_for_child(pid, deadline)
+      return [status, true] if wait_for_process_group_exit(pid, deadline)
+
+      signal_process_group("KILL", pid)
+      deadline = monotonic_time + kill_grace_seconds
+      status ||= wait_for_child(pid, deadline)
+      [status, wait_for_process_group_exit(pid, deadline)]
+    end
+
+    def signal_process_group(signal, pid)
+      Process.kill(signal, -pid)
+    rescue Errno::ESRCH
+      nil
+    end
+
+    def wait_for_child(pid, deadline)
+      while monotonic_time < deadline
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        return waited[1] if waited
+
+        sleep 0.05
+      end
+
+      nil
+    rescue Errno::ECHILD
+      nil
+    end
+
+    def process_group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def wait_for_process_group_exit(pid, deadline)
+      while monotonic_time < deadline
+        return true unless process_group_alive?(pid)
+
+        sleep 0.05
+      end
+
+      !process_group_alive?(pid)
+    end
+
+    def monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def read_capture(file)
+      file.rewind
+      file.read
+    end
+
+    def scrub(text)
+      text.to_s.force_encoding("UTF-8").scrub
     end
 
     def gh_json(*args)
