@@ -70,6 +70,15 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin install scw@agent-workflows
 ```
 
+The Claude plugin deliberately omits an explicit `version`. Claude therefore
+uses the Git commit SHA as the plugin version, so every commit on the
+marketplace's tracked branch is updateable without maintaining duplicate
+release numbers. This is the rolling-main channel intended for ShakaCode-owned
+repositories. Enable auto-update for the `agent-workflows` marketplace in
+Claude's **Plugins → Marketplaces** UI; third-party marketplace auto-update is
+disabled by default. A running session keeps the version it loaded until
+`/reload-plugins` or the next launch.
+
 For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
 
