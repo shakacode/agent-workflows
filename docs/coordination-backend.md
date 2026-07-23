@@ -32,6 +32,18 @@ operating details unless they need an exact command snippet.
 - Preserve `UNKNOWN` when coordination facts cannot be verified. A missing or
   degraded backend is not evidence that no one owns a target.
 
+Batch Coordination Declaration: every final batch handoff must carry exactly one
+`coordination:` line, and no handoff is complete or clean without it. Use
+`coordination: registered <batch-id>` only when this batch actually registered
+with the coordination backend, and quote the exact backend batch id. Otherwise
+use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
+a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
+backend, or a deliberately uncoordinated single-operator run. A missing
+`coordination:` line, an empty or `UNKNOWN` batch id, an empty reason, or both
+forms at once is a hard blocker: report NOT COMPLETE instead of a clean handoff.
+Silence is not an accepted value; a batch that wrote nothing to the coordination
+backend must say so in the declaration.
+
 ## Backend Contract
 
 A backend used by these workflows should be able to answer:

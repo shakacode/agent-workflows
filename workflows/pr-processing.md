@@ -1145,6 +1145,18 @@ Every target must use one explicit final state:
 - `no-pr-evidence`: no PR was created; link the evidence-backed issue/PR
   comment and disposition. For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists.
 
+Batch Coordination Declaration: every final batch handoff must carry exactly one
+`coordination:` line, and no handoff is complete or clean without it. Use
+`coordination: registered <batch-id>` only when this batch actually registered
+with the coordination backend, and quote the exact backend batch id. Otherwise
+use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
+a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
+backend, or a deliberately uncoordinated single-operator run. A missing
+`coordination:` line, an empty or `UNKNOWN` batch id, an empty reason, or both
+forms at once is a hard blocker: report NOT COMPLETE instead of a clean handoff.
+Silence is not an accepted value; a batch that wrote nothing to the coordination
+backend must say so in the declaration.
+
 Do not put hosted-CI uncertainty in Immediate at final readiness after local
 validation and the final push. Request hosted CI and log it in FYI.
 Do not report a PR/target as `complete` while the repo's merge ledger in strict
