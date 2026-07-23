@@ -1558,6 +1558,47 @@ test_upgrade_reinstalls_new_source_revision() {
   assert_contains "$output" "UP_TO_DATE"
 }
 
+test_upgrade_fetches_linked_worktree_source() {
+  local tmp source source_git publisher origin target output expected_revision installed_revision
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  source_git="$tmp/source.git"
+  publisher="$tmp/publisher"
+  origin="$tmp/origin.git"
+  target="$tmp/codex-home"
+  mkdir -p "$source" "$publisher"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  git init --quiet --bare --initial-branch=main "$origin"
+  git -C "$source" init --quiet --initial-branch=main --separate-git-dir "$source_git"
+  git -C "$source" config user.email "agent-workflows-test@example.com"
+  git -C "$source" config user.name "Agent Workflows Test"
+  git -C "$source" add .
+  git -C "$source" commit --quiet -m "initial"
+  git -C "$source" remote add origin "$origin"
+  git -C "$source" push --quiet --set-upstream origin main
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  git clone --quiet "$origin" "$publisher"
+  git -C "$publisher" config user.email "agent-workflows-test@example.com"
+  git -C "$publisher" config user.name "Agent Workflows Test"
+  printf '0.1.1\n' > "$publisher/VERSION"
+  git -C "$publisher" add VERSION
+  git -C "$publisher" commit --quiet -m "bump version"
+  git -C "$publisher" push --quiet
+  expected_revision="$(git -C "$publisher" rev-parse HEAD)"
+
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  installed_revision="$(ruby -rjson -e '
+    puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")
+  ' "$target/.agent-workflows-install.json")"
+
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  [[ "$(git -C "$source" rev-parse HEAD)" = "$expected_revision" ]] ||
+    fail "linked source did not fast-forward"
+  [[ "$installed_revision" = "$expected_revision" ]] ||
+    fail "linked source upgrade installed $installed_revision instead of $expected_revision"
+}
+
 test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
   local tmp source target
   tmp="$(mktemp -d)"
@@ -1772,6 +1813,7 @@ main() {
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
+    test_upgrade_fetches_linked_worktree_source
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
     test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds

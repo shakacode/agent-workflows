@@ -110,7 +110,8 @@ module AgentWorkflowsStatus
   def available_revision(source, metadata, fetch:)
     return [nil, "missing source root: #{source}"] unless File.directory?(source)
 
-    unless File.directory?(File.join(source, ".git"))
+    inside_work_tree, = git_output(source, "rev-parse", "--is-inside-work-tree")
+    unless inside_work_tree == "true"
       version = version_for(source)
       return ["version:#{version}", nil]
     end

@@ -76,6 +76,36 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_linked_git_worktree_uses_commit_revision
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        git_dir = File.join(File.dirname(source), "#{File.basename(source)}.git")
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        system("git", "-C", source, "init", "--quiet", "--separate-git-dir", git_dir, exception: true)
+        system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+        system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+        system("git", "-C", source, "add", ".", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "fixture", exception: true)
+        revision, revision_status = Open3.capture2("git", "-C", source, "rev-parse", "HEAD")
+        assert revision_status.success?, revision
+        revision = revision.strip
+        write_metadata(
+          target,
+          "version" => "older-version",
+          "source" => source,
+          "source_revision" => revision
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        assert_equal revision, payload.fetch("available_revision")
+      end
+    end
+  end
+
   def test_companion_status_reports_delivery_and_native_state
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|

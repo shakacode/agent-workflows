@@ -117,7 +117,7 @@ short_revision() {
 }
 
 update_source_clone() {
-  [[ -d "$source/.git" ]] || return 0
+  [[ "$(git -C "$source" rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ]] || return 0
 
   git -C "$source" fetch --quiet --prune origin
   local branch upstream
