@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "assets": {
+    "skill": "skills/pr-batch/SKILL.md",
+    "workflow": "workflows/pr-processing.md",
+    "related_workflows": {
+      "address_review": "workflows/address-review.md",
+      "adversarial_pr_review": "workflows/adversarial-pr-review.md",
+      "continuous_evaluation_loop": "workflows/continuous-evaluation-loop.md",
+      "evaluate_issue": "workflows/evaluate-issue.md",
+      "post_merge_audit": "workflows/post-merge-audit.md",
+      "tdd": "workflows/tdd.md"
+    },
+    "docs": {
+      "agent_workflows_model_routing": "docs/agent-workflows-model-routing.md",
+      "coordination_backend": "docs/coordination-backend.md",
+      "host_adapter_contract": "docs/host-adapter/contract.md",
+      "pr_batch_skills": "docs/pr-batch-skills.md",
+      "release_branching": "docs/release-branching.md",
+      "review_finding_schema": "docs/review-finding-schema.md",
+      "security_posture": "docs/security-posture.md",
+      "trust_and_preflight": "docs/trust-and-preflight.md"
+    }
+  },
+  "capabilities": {
+    "pr-merge-submit": {
+      "executable": "skills/pr-batch/bin/pr-merge-submit",
+      "instruction_dependencies": [
+        "skills/pr-batch/SKILL.md",
+        "workflows/pr-processing.md",
+        "docs/coordination-backend.md",
+        "docs/host-adapter/contract.md",
+        "docs/security-posture.md"
+      ],
+      "mutation": true,
+      "requires_current_provider": true
+    }
+  }
+}

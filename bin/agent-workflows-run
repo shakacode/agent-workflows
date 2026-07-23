@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+
+require_relative "agent_workflows_operation/runner"
+
+options = {}
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: agent-workflows-run --operation HANDLE CAPABILITY -- ARGS..."
+  opts.on("--operation HANDLE") { |value| options[:operation] = value }
+end
+parser.order!
+capability = ARGV.shift
+ARGV.shift if ARGV.first == "--"
+
+abort "--operation is required" unless options[:operation]
+abort "CAPABILITY is required" unless capability
+
+target = File.expand_path("..", __dir__)
+begin
+  AgentWorkflowsOperation::Runner.new(target: target).launch!(
+    handle: options.fetch(:operation),
+    capability: capability,
+    arguments: ARGV
+  )
+rescue AgentWorkflowsOperation::Error => e
+  warn e.message
+  exit 1
+end

@@ -124,6 +124,34 @@ from cached-but-disabled plugin files. They fail closed when native state is
 enabled but its install receipt/cache cannot be verified, or when native and
 installer-managed flat skills would coexist.
 
+For a ShakaCode rolling-main PR operation, the native plugin and copied
+companion install must be at the same canonical `main` SHA. Begin before reading
+deeper shared workflows or running helpers:
+
+```bash
+"${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve" begin --host codex --json
+# or
+"${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve" begin --host claude --json
+```
+
+Do not look up this bootstrap resolver through `PATH`.
+The returned opaque handle binds the operation-provided skill, workflow, docs,
+and registered capability launcher. Invoke a registered mutation through the
+absolute runner returned by the same begin result:
+`RUNNER --operation HANDLE CAPABILITY -- ARGS`. Do not resolve the runner from
+`PATH` or run its snapshot executable directly. A degraded begin is read-only
+and cannot authorize current-provider mutations.
+
+If alignment fails, follow the complete host-specific update/reinstall/reload
+action printed by the resolver. A provider update in a running session always
+requires a host reload and a new session; the operation never assumes that
+already-loaded skill text changed in place.
+
+Claude rolling operations additionally require the native installation receipt
+to expose one full `gitCommitSha` and matching `installPath`. Generic companion
+installation remains compatible with older receipt shapes, but they cannot
+prove an exact rolling-operation provider revision.
+
 Validate both native manifests, the Claude marketplace, and the complete shared
 skill tree from the source pack root with:
 

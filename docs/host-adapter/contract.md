@@ -40,9 +40,9 @@ adapter maps those verbs to the current host's mechanisms at runtime.
 | Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check |
 | Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source |
 
-If a host cannot load installed shared skills, use a repo-pinned `.agents/`
-copy as the fallback. Repo-local copies may carry pinned compatibility changes,
-so resolve them before the installed home.
+Pinned/released profiles may declare a repo-pinned `.agents/` fallback when a
+host cannot load installed shared skills. The ShakaCode rolling-main profile
+does not: failure to load and bind the current provider is a hard stop.
 
 Native plugins add a host namespace without changing the portable skill name:
 Codex uses the plugin-qualified `scw:<skill>` surface and Claude Code uses
@@ -162,28 +162,89 @@ additional repo-owned binstubs, package managers, test runners, or CI parity
 commands named in its `AGENTS.md` seam. Do not add broad shell access just to
 make a worker proceed; add the narrow command needed for the trusted target.
 
+## Provider-Bound Rolling Operations
+
+ShakaCode rolling-main workflows bind one consequential operation to one exact
+canonical commit. The loaded `pr-batch` skill runs
+the active host home's absolute `bin/agent-workflows-resolve` path before
+reading any deeper shared instruction or invoking a helper. It never resolves
+this bootstrap through `PATH`. The resolver:
+
+1. fetches `refs/heads/main` from the literal
+   `https://github.com/shakacode/agent-workflows.git` into a fresh private
+   quarantine and explicit private ref;
+2. runs Git with system/global configuration, URL rewrites, inherited
+   refspecs, hooks, object alternates, replacement objects, and inherited Git
+   environment disabled;
+3. resolves the fetched ref to one full commit SHA and verifies the extracted
+   tree against that exact Git object before atomic publication into a private
+   per-SHA store;
+4. requires one active native root and one copied plugin-companion install at
+   that SHA, including exact active-tree content;
+5. additionally requires a clean matching Git HEAD for Codex, or one matching
+   Claude `gitCommitSha` plus `installPath` receipt;
+6. publishes an opaque operation handle only after the private launcher,
+   runtime, capability copies, registry, instruction assets, and provider
+   evidence all verify.
+
+The production fetch URL is not configurable. Tests use a test-defined
+resolver subclass and local HTTP transport; neither the CLI nor installed
+runtime exposes a remote override. The capability registry rejects absolute or
+traversing paths, missing dependencies, symlinks where regular files are
+required, and non-executable capability targets. The initial current-only
+mutation is `pr-merge-submit`, invoked as:
+
+```bash
+"${AGENT_WORKFLOWS_RUNNER}" --operation "$AGENT_WORKFLOWS_OPERATION" pr-merge-submit -- ARGS...
+```
+
+The runner revalidates the operation against its private canonical Git store,
+the active native and companion providers, and the recorded launcher/runtime/
+capability device, inode, size, mode, and content immediately before execution.
+It refuses provider movement after begin. `--degraded` may bind a coherent
+already-stored snapshot for read-only diagnosis, but cannot authorize a
+capability marked `requires_current_provider`.
+
+State roots and operation/store directories are owned by the current uid and
+private; staging cleanup proceeds only when the original device/inode/owner
+identity still names the resolver-created directory. Publication is a rename
+after complete staging and verification. A replaced staging path is preserved
+for diagnosis rather than recursively removed.
+
+This is a same-uid integrity boundary, not isolation from another malicious
+process running as the same user. Portable Ruby cannot atomically hash and
+`exec` a pathname through one immutable file descriptor on every supported
+host. Private `0700` directories, non-writable operation copies, repeated
+inode/hash checks immediately before `exec`, and provider revalidation narrow
+the race; they do not justify a claim that a hostile same-uid process is
+cryptographically excluded. Operation metadata hashes are consistency checks,
+not authentication. Provenance comes from revalidation against the exact
+private canonical Git object.
+
+The machine binds assets and execution. It cannot prove that a language model
+actually consumed the returned Markdown. Reading the returned workflow/docs is
+a mandatory workflow action. The already-loaded entry skill is also assumed
+stable only while the host provider does not update during the session. After
+any Codex or Claude provider update, reload/restart the host and start a new
+session before beginning another operation.
+
 ## Cross-File Path Resolution
 
-When a skill references sibling helpers, resolve paths in this order:
+Inside a provider-bound operation, there is no path-precedence chain. Use only
+the absolute skill, workflow, related-workflow, and doc paths returned by the
+resolver. Derive `PR_BATCH_SKILL_DIR` only from the returned `assets.skill`; do
+not accept an environment override or substitute repo-local, installed-home,
+plugin-cache, or checkout files. Bind `AGENT_WORKFLOWS_RUNNER` only from the
+absolute first element of the begin result's `runner` array. Registered
+semantic capabilities run only through that runner.
 
-1. An explicit environment variable such as `PR_BATCH_SKILL_DIR`, when set.
-2. The loaded skill's own base directory, when the host exposes it for an
-   installed skill.
-3. A repo-local pinned copy such as `.agents/skills/<name>`.
-4. Stop with a precise blocker naming the missing helper and paths checked.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command wrappers
+remain authoritative local policy. They do not replace bound shared files.
 
-For workflow references, prefer repo-local `.agents/workflows/...` first because
-a consumer repo may intentionally pin an override. Otherwise resolve the
-installed workflow adjacent to the loaded skill pack, such as
-`../../workflows/pr-processing.md` from a skill directory. Do not guess another
-checkout, substitute a different host's home, or rewrite paths at install time.
-
-For a compatibility alias that delegates its entire policy to another skill,
-an explicit path still wins, but prefer a repo-pinned canonical skill before an
-installed sibling so the alias honors the consumer's compatibility choice. If a
-picker exposes only the alias text and not its loaded directory, a reliably
-identified host may use its shared skill home from the Host Table. Do not guess
-between host homes.
+Pinned/released external profiles that do not opt into a bound rolling
+operation retain their declared provider's own resolution contract. They must
+not silently enter the ShakaCode rolling profile or mix pinned and rolling
+assets.
 
 ## Availability Checks
 

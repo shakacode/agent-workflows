@@ -22,6 +22,8 @@ Installed paths:
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
+  <target>/bin/agent-workflows-resolve
+  <target>/bin/agent-workflows-run
   <target>/bin/agent_doctor/*
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
@@ -42,6 +44,8 @@ bin_helpers=(
   agent-workflow-seam-doctor
   agent-workflows-delivery-state
   agent-workflows-doctor
+  agent-workflows-resolve
+  agent-workflows-run
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows
@@ -272,6 +276,22 @@ ensure_real_directory() {
     exit 1
   fi
   mkdir -p "$directory"
+}
+
+ensure_trusted_directory() {
+  local directory="$1"
+  ensure_real_directory "$directory"
+
+  if ! ruby -e '
+    path = ARGV.fetch(0)
+    stat = File.lstat(path)
+    exit 1 unless stat.directory? && !stat.symlink?
+    exit 1 unless stat.uid == Process.uid
+    exit 1 unless (stat.mode & 0o022).zero?
+  ' "$directory"; then
+    echo "Refusing unsafe trusted directory: $directory" >&2
+    exit 1
+  fi
 }
 
 copy_children_preserving_unrelated() {
@@ -617,10 +637,13 @@ if [[ "$delivery_status" -ne 0 ]]; then
   '
   exit 1
 fi
+if [[ "$mode" = "copy" ]]; then
+  ensure_trusted_directory "$target/bin"
+  ensure_trusted_directory "$target/bin/agent_workflows_operation"
+fi
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
-  ensure_real_directory "$target/bin"
   prepare_workflow_doctor_copy_destination
   copy_pack_license
   if [[ "$delivery_mode" = "flat" ]]; then
@@ -635,6 +658,7 @@ if [[ "$mode" = "copy" ]]; then
     "$repo_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
   ruby -e 'File.chmod(File.stat(ARGV.fetch(0)).mode & 0o7777, ARGV.fetch(1))' "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
   write_workflow_doctor_managed_marker
+  rsync -a --delete "$repo_root/bin/agent_workflows_operation/" "$target/bin/agent_workflows_operation/"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -L "$destination" ]]; then
@@ -659,6 +683,10 @@ else
   fi
   link_pack_license
   mkdir -p "$target/bin"
+  if [[ -e "$target/bin/agent_workflows_operation" && ! -L "$target/bin/agent_workflows_operation" ]]; then
+    echo "Refusing to replace non-symlink path: $target/bin/agent_workflows_operation" >&2
+    exit 1
+  fi
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
     echo "Refusing to replace non-symlink path: $target/workflows" >&2
     exit 1
@@ -679,6 +707,7 @@ else
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
   ln -sfn "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+  ln -sfn "$repo_root/bin/agent_workflows_operation" "$target/bin/agent_workflows_operation"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -e "$destination" && ! -L "$destination" ]]; then

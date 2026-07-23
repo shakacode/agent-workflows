@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+require_relative "agent_workflows_operation/resolver"
+
+action = ARGV.shift
+options = { degraded: false }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: agent-workflows-resolve begin --host codex|claude [--target DIR] [--degraded] [--json]"
+  opts.on("--host HOST") { |value| options[:host] = value }
+  opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
+  opts.on("--degraded") { options[:degraded] = true }
+  opts.on("--json") { options[:json] = true }
+end
+parser.parse!
+
+abort "action must be begin" unless action == "begin"
+abort "--host must be codex or claude" unless %w[codex claude].include?(options[:host])
+options[:target] ||= if options[:host] == "codex"
+                       ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex"))
+                     else
+                       ENV.fetch("CLAUDE_HOME", File.join(Dir.home, ".claude"))
+                     end
+
+begin
+  result = AgentWorkflowsOperation::Resolver.new(
+    host: options.fetch(:host),
+    target: options.fetch(:target)
+  ).begin!(degraded: options.fetch(:degraded))
+  puts(options[:json] ? JSON.pretty_generate(result) : result.fetch("operation"))
+rescue AgentWorkflowsOperation::Error => e
+  warn e.message
+  exit 1
+end

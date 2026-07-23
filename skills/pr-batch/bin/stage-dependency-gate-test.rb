@@ -20,6 +20,19 @@ HELPER_RESOLUTION_RULES = [
   "repo-local `.agents/skills/pr-batch`",
   "stop with a precise blocker"
 ].freeze
+PROVIDER_BOUND_HELPER_RULES = {
+  "skills/pr-batch/SKILL.md" => [
+    "Bind `PR_BATCH_SKILL_DIR` once to the parent directory of `assets.skill`.",
+    "Use only the already-bound operation snapshot `PR_BATCH_SKILL_DIR`; a missing helper is a provider-contract " \
+    "failure, not permission to search a live or repo-local fallback."
+  ],
+  "workflows/pr-processing.md" => [
+    "Bind `PR_BATCH_SKILL_DIR` to the parent of that operation's `assets.skill`; never derive it from an " \
+    "environment override, repo-local `.agents` copy, live plugin cache, installed-home path, or another checkout.",
+    "Use only the operation-bound `PR_BATCH_SKILL_DIR`; a missing helper is a provider-contract failure."
+  ]
+}.freeze
+LEGACY_HELPER_ASSIGNMENT = 'PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"'
 SINGLE_TARGET_MANIFEST_CONTRACT = "When no planner/triage handoff supplies dependency artifacts, synthesize and " \
                                   "persist a verified one-lane `stage-dependency-plan` v1 file with a known plan " \
                                   "id and `edges: []`, plus a `stage-dependency-gate` v1 live replay: use the " \
@@ -50,10 +63,8 @@ TRUSTED_PLAN_ID_CALL = '--trusted-plan-id "${STAGE_DEPENDENCY_PLAN_ID}"'
 class StageDependencyGateTest < Minitest::Test
   def test_instruction_surfaces_resolve_and_invoke_the_portable_helper
     surfaces = %w[
-      skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
-      workflows/pr-processing.md
     ]
 
     surfaces.each do |path|
@@ -64,6 +75,26 @@ class StageDependencyGateTest < Minitest::Test
       end
       assert_includes text, PORTABLE_HELPER_CALL, "#{path} must use the resolved portable helper"
       refute_includes text, REPOSITORY_RELATIVE_HELPER, "#{path} must not use a repository-relative helper"
+    end
+  end
+
+  def test_provider_bound_pr_batch_surfaces_use_only_the_operation_snapshot_helper
+    PROVIDER_BOUND_HELPER_RULES.each do |path, rules|
+      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      normalized_text = text.gsub(/\s+/, " ").strip
+
+      rules.each do |rule|
+        assert_includes normalized_text, rule, "#{path} is missing provider-bound helper rule: #{rule}"
+      end
+      assert_includes text, PORTABLE_HELPER_CALL, "#{path} must invoke the operation-snapshot helper"
+      refute_includes text, REPOSITORY_RELATIVE_HELPER, "#{path} must not use a repository-relative helper"
+      refute_includes text, LEGACY_HELPER_ASSIGNMENT, "#{path} must not silently fall back to a repo-local provider"
+      refute_includes normalized_text, "explicit environment variable; the loaded skill's base directory",
+                      "#{path} must not mix the legacy helper-resolution chain with its bound provider"
+      refute_includes normalized_text, "Resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local chain",
+                      "#{path} must not retain abbreviated legacy provider fallback guidance"
+      refute_includes normalized_text, "resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local chain",
+                      "#{path} must not retain abbreviated legacy provider fallback guidance"
     end
   end
 
