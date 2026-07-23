@@ -12,7 +12,13 @@ require_relative "agent_doctor/timeout_budget"
 module AgentWorkflowsDeliveryState
   module_function
 
-  def plugin_manifest_skill_names(root, host, expected_version: nil)
+  def normalized_plugin_source(value)
+    return nil unless value.is_a?(String) && !value.strip.empty?
+
+    value.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
+  end
+
+  def plugin_manifest_skill_names(root, host, expected_version: nil, expected_source: nil)
     directory = host == "codex" ? ".codex-plugin" : ".claude-plugin"
     path = File.join(root, directory, "plugin.json")
     return nil unless File.file?(path)
@@ -25,6 +31,9 @@ module AgentWorkflowsDeliveryState
     plugin_root = File.realpath(root)
     return nil unless manifest.fetch("name") == "scw"
     return nil if expected_version && manifest["version"] != expected_version
+    if expected_source && normalized_plugin_source(manifest["repository"]) != normalized_plugin_source(expected_source)
+      return nil
+    end
     return nil unless skills_root == plugin_root || skills_root.start_with?("#{plugin_root}/")
 
     names = Dir.glob(File.join(skills_root, "*", "SKILL.md")).map { |skill| File.basename(File.dirname(skill)) }.sort
@@ -54,8 +63,36 @@ module AgentWorkflowsDeliveryState
     return cli_state if cli_state["state"] == "unknown"
     return { "state" => "inactive", "reason" => "scw@agent-workflows is disabled" } if cli_state["state"] == "disabled"
 
-    root = cli_state.fetch("root")
-    names = plugin_manifest_skill_names(root, "codex", expected_version: cli_state.fetch("version"))
+    version = cli_state.fetch("version")
+    source = cli_state.fetch("source")
+    unless version.match?(/\A[0-9A-Za-z][0-9A-Za-z._+-]*\z/)
+      return { "state" => "unknown", "reason" => "Codex reports an invalid active scw plugin version: #{version}" }
+    end
+
+    cache_root = File.join(target, "plugins/cache/agent-workflows/scw")
+    candidates = if File.directory?(cache_root) && !File.symlink?(cache_root)
+                   Dir.children(cache_root).filter_map do |entry|
+                     File.join(cache_root, entry) if entry == version
+                   end
+                 else
+                   []
+                 end
+    unless candidates.length == 1
+      return {
+        "state" => "unknown",
+        "reason" => "Codex active scw version #{version} has #{candidates.length} matching cache candidates"
+      }
+    end
+
+    root = candidates.first
+    names = if File.directory?(root) && !File.symlink?(root)
+              plugin_manifest_skill_names(
+                root,
+                "codex",
+                expected_version: version,
+                expected_source: source
+              )
+            end
     unless names
       return {
         "state" => "unknown",
@@ -67,7 +104,8 @@ module AgentWorkflowsDeliveryState
       "state" => "active",
       "roots" => [root],
       "skill_names" => names,
-      "version" => cli_state.fetch("version")
+      "version" => version,
+      "source" => source
     }
   rescue SystemCallError => e
     { "state" => "unknown", "reason" => "unable to read Codex plugin state: #{e.message}" }
@@ -117,12 +155,12 @@ module AgentWorkflowsDeliveryState
     case status_text
     when "installed, enabled"
       version = row[2]
-      root = row[3]
-      if version.to_s.empty? || root.to_s.empty?
-        return { "state" => "unknown", "reason" => "enabled Codex scw plugin is missing its active version or path" }
+      source = row[3]
+      if version.to_s.empty? || source.to_s.empty?
+        return { "state" => "unknown", "reason" => "enabled Codex scw plugin is missing its active version or source" }
       end
 
-      { "state" => "enabled", "version" => version, "root" => File.expand_path(root) }
+      { "state" => "enabled", "version" => version, "source" => source }
     when "installed, disabled"
       { "state" => "disabled" }
     else

@@ -15,11 +15,10 @@ cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
 abort "unexpected arguments: #{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
 case ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
 when "enabled"
-  root = ENV["QA_CODEX_PLUGIN_ROOT"] ||
-         File.join(ENV.fetch("CODEX_HOME"), "plugins/cache/agent-workflows/scw/0.1.0")
-  version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", File.basename(root))
+  version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
+  source = ENV.fetch("QA_CODEX_PLUGIN_SOURCE", "https://github.com/shakacode/agent-workflows.git")
   puts "PLUGIN STATUS VERSION PATH"
-  puts "scw@agent-workflows  installed, enabled  #{version}  #{root}"
+  puts "scw@agent-workflows  installed, enabled  #{version}  #{source}"
 when "disabled"
   puts "PLUGIN STATUS VERSION PATH"
   puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
@@ -64,7 +63,8 @@ write_native_scw_state() {
   if [[ "$host" = "codex" ]]; then
     mkdir -p "$plugin_root/.codex-plugin"
     printf '[plugins."scw@agent-workflows"]\nenabled = true\n' > "$target/config.toml"
-    printf '{"name":"scw","version":"0.1.0","skills":"./skills/"}\n' > "$plugin_root/.codex-plugin/plugin.json"
+    printf '{"name":"scw","version":"0.1.0","repository":"https://github.com/shakacode/agent-workflows","skills":"./skills/"}\n' \
+      > "$plugin_root/.codex-plugin/plugin.json"
   else
     mkdir -p "$target/plugins" "$plugin_root/.claude-plugin"
     printf '{"enabledPlugins":{"scw@agent-workflows":true}}\n' > "$target/settings.json"
@@ -839,7 +839,7 @@ test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() 
 
     set +e
     if [[ "$host" = codex ]]; then
-      output="$(QA_CODEX_PLUGIN_ROOT="$candidate_root" \
+      output="$(QA_CODEX_PLUGIN_VERSION="0.2.0" \
         "$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
       status=$?
     else

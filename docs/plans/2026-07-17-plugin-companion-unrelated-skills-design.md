@@ -45,11 +45,13 @@ whose names occur in both the current Source Pack and the verified active native
 plugin roots, and ignore other unrelated direct children. No unrelated path is
 deleted or modified.
 
-Native-root verification is fail-closed. Codex uses the unique active version
-and path reported by its plugin CLI instead of searching every cached version.
-Claude treats every installed receipt candidate as potentially active unless
-settings explicitly disable the plugin, so an invalid candidate cannot be
-silently discarded in favor of a stale valid cache.
+Native-root verification is fail-closed. Codex treats the CLI `PATH` column as
+source provenance, matches it against the cache manifest's canonical repository,
+and resolves the reported version to exactly one non-symlinked cache directory
+at `plugins/cache/agent-workflows/scw/<version>`. It does not search other cached
+versions. Claude treats every installed receipt candidate as potentially active
+unless settings explicitly disable the plugin, so an invalid candidate cannot
+be silently discarded in favor of a stale valid cache.
 
 ## Verification
 

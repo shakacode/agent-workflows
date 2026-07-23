@@ -20,11 +20,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
       case state
       when "enabled"
-        root = ENV["QA_CODEX_PLUGIN_ROOT"] ||
-               File.join(ENV.fetch("CODEX_HOME"), "plugins/cache/agent-workflows/scw/0.1.0")
-        version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", File.basename(root))
+        version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
+        source = ENV.fetch("QA_CODEX_PLUGIN_SOURCE", "https://github.com/shakacode/agent-workflows.git")
         puts "PLUGIN STATUS VERSION PATH"
-        puts "scw@agent-workflows  installed, enabled  \#{version}  \#{root}"
+        puts "scw@agent-workflows  installed, enabled  \#{version}  \#{source}"
       when "disabled"
         puts "PLUGIN STATUS VERSION PATH"
         puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
@@ -51,12 +50,19 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     FileUtils.remove_entry(@fake_codex_dir)
   end
 
-  def run_state(*args, codex_state: "enabled", codex_executable: @fake_codex, codex_root: nil)
+  def run_state(
+    *args,
+    codex_state: "enabled",
+    codex_executable: @fake_codex,
+    codex_version: nil,
+    codex_source: nil
+  )
     env = {
       "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => codex_executable,
       "QA_CODEX_PLUGIN_STATE" => codex_state
     }
-    env["QA_CODEX_PLUGIN_ROOT"] = codex_root if codex_root
+    env["QA_CODEX_PLUGIN_VERSION"] = codex_version if codex_version
+    env["QA_CODEX_PLUGIN_SOURCE"] = codex_source if codex_source
     Open3.capture3(env, "ruby", SCRIPT, *args)
   end
 
@@ -73,7 +79,13 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     FileUtils.mkdir_p(manifest_dir)
     FileUtils.mkdir_p(File.join(root, "skills/example"))
     File.write(File.join(root, "skills/example/SKILL.md"), "example\n")
-    File.write(File.join(manifest_dir, "plugin.json"), "#{JSON.pretty_generate('name' => 'scw', 'version' => '0.1.0', 'skills' => './skills/')}\n")
+    manifest = {
+      "name" => "scw",
+      "version" => File.basename(root),
+      "repository" => "https://github.com/shakacode/agent-workflows",
+      "skills" => "./skills/"
+    }
+    File.write(File.join(manifest_dir, "plugin.json"), "#{JSON.pretty_generate(manifest)}\n")
   end
 
   def write_codex_native_state(target)
@@ -129,6 +141,34 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         assert status.success?, "#{host}: #{out}#{err}"
         assert_equal "active", JSON.parse(out).dig("native", "state")
       end
+    end
+  end
+
+  def test_codex_real_cli_source_url_resolves_the_unique_versioned_cache
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      write_codex_native_state(target)
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", payload.dig("native", "state")
+      assert_equal [plugin_root], payload.dig("native", "roots")
+      assert_equal "https://github.com/shakacode/agent-workflows.git", payload.dig("native", "source")
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json",
+        codex_source: "https://github.com/example/unrelated.git"
+      )
+
+      refute status.success?, out
+      assert_equal "unknown", JSON.parse(out).dig("native", "state")
     end
   end
 
@@ -273,7 +313,7 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
         out, _err, status = run_state(
           "check", "--host", host, "--target", target, "--source", source,
-          "--delivery-mode", "plugin-companion", "--json", codex_root: candidate_root
+          "--delivery-mode", "plugin-companion", "--json", codex_version: "0.2.0"
         )
         payload = JSON.parse(out)
 

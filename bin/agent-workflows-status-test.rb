@@ -19,9 +19,8 @@ class AgentWorkflowsStatusTest < Minitest::Test
     @fake_codex = File.join(@fake_codex_dir, "codex")
     File.write(@fake_codex, <<~RUBY)
       #!#{RbConfig.ruby}
-      root = File.join(ENV.fetch("CODEX_HOME"), "plugins/cache/agent-workflows/scw/0.1.0")
       puts "PLUGIN STATUS VERSION PATH"
-      puts "scw@agent-workflows  installed, enabled  0.1.0  \#{root}"
+      puts "scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git"
     RUBY
     FileUtils.chmod(0o755, @fake_codex)
   end
@@ -45,7 +44,13 @@ class AgentWorkflowsStatusTest < Minitest::Test
     FileUtils.mkdir_p(File.join(cache_root, "skills/example"))
     File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
     File.write(File.join(cache_root, "skills/example/SKILL.md"), "example\n")
-    File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate('name' => 'scw', 'version' => '0.1.0', 'skills' => './skills/')}\n")
+    manifest = {
+      "name" => "scw",
+      "version" => "0.1.0",
+      "repository" => "https://github.com/shakacode/agent-workflows",
+      "skills" => "./skills/"
+    }
+    File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate(manifest)}\n")
   end
 
   def test_not_installed_target_reports_not_installed
