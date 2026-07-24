@@ -261,6 +261,45 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_plugin_companion_blocks_native_skill_removed_from_current_source
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+      write_codex_native_state(target)
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "plugin-companion",
+        "source" => source,
+        "source_revision" => recorded_revision
+      )
+
+      native_skill = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0/skills/alpha/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(native_skill))
+      File.write(native_skill, "recorded native\n")
+      FileUtils.rm_r(File.join(source, "skills/alpha"))
+      system("git", "-C", source, "add", "-u", "skills/alpha", exception: true)
+      system("git", "-C", source, "commit", "--quiet", "-m", "remove alpha skill", exception: true)
+      flat_skill = File.join(target, "skills/alpha/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(flat_skill))
+      File.write(flat_skill, "flat duplicate\n")
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?
+      refute payload.fetch("compatible")
+      assert_equal [File.dirname(flat_skill)], payload.dig("flat", "blocking")
+      assert_equal "flat duplicate\n", File.binread(flat_skill)
+    end
+  end
+
   def test_plugin_companion_rejects_mixed_valid_and_invalid_candidate_native_roots
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")

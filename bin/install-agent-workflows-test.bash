@@ -798,6 +798,42 @@ test_repeat_companion_install_blocks_new_current_native_skill_collision() {
     fail "repeat companion collision changed install metadata"
 }
 
+test_repeat_companion_install_blocks_native_skill_removed_from_current_source() {
+  local tmp source target plugin_root metadata_before output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/first.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  mkdir -p "$plugin_root/skills/address-review" "$target/skills/address-review"
+  cp "$source/skills/address-review/SKILL.md" "$plugin_root/skills/address-review/SKILL.md"
+  rm -rf "$source/skills/address-review"
+  git -C "$source" add -u skills/address-review
+  git -C "$source" commit --quiet -m "remove address-review skill"
+  printf 'flat duplicate\n' > "$target/skills/address-review/SKILL.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat companion install ignored a native skill removed from current source"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "$target/skills/address-review"
+  grep -qxF 'flat duplicate' "$target/skills/address-review/SKILL.md" || \
+    fail "removed-source collision changed the flat path"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "removed-source collision changed install metadata"
+}
+
 test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() {
   local tmp source target stale_root candidate_root manifest_dir metadata_before output status host
 
@@ -1684,6 +1720,7 @@ main() {
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
     test_repeat_companion_install_blocks_new_current_native_skill_collision
+    test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
     test_invalid_recorded_delivery_mode_fails_before_mutation
     test_companion_to_flat_refuses_unowned_same_named_skill

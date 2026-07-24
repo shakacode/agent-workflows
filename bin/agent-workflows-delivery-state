@@ -455,7 +455,7 @@ module AgentWorkflowsDeliveryState
 
   def check(host:, target:, source:, delivery_mode:)
     native = native_state(host, target)
-    collision_names = current_skill_names(source) & Array(native["skill_names"])
+    collision_names = Array(native["skill_names"])
     flat = managed_flat_inventory(
       target: target,
       source: source,
