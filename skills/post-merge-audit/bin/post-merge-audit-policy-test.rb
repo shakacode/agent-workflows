@@ -24,13 +24,16 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_TERMINAL_DISPOSITION_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records."
   REQUIRED_NON_TERMINAL_DISPOSITION_NON_CLEAN_RULE = "A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
   REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
-  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings."
+  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description."
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "<!-- completed-batch-audit v1"
-  REQUIRED_DURABLE_RECEIPT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
+  REQUIRED_DURABLE_RECEIPT_HEADER = "Completed-batch audit: replay evidence follows."
+  REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
-  REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, read back that exact returned comment ID, and validate every binding before emitting the compact reference."
+  REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
   REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
   REQUIRED_RECEIPT_HELPER_RULE = "Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects."
   REQUIRED_BATCH_IDENTITY_FIELD = "batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>"
@@ -217,7 +220,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
     ].each do |rule|
       assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
     end
-    nested_marker_rule = "  - Post this exact durable GitHub comment body, with one fixed header, one blank line, and exactly one unchanged v1 wrapper; fill every field explicitly and use `none` rather than omitting a field:\n\n"
+    nested_marker_rule = "  - Post this exact durable GitHub comment body, with one concise header, one blank line, and exactly one unchanged v1 wrapper; fill every field explicitly and use `none` rather than omitting a field:\n\n"
     indented_marker_block = [
       "    ```text\n",
       "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
@@ -236,6 +239,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
     assert_includes body, nested_marker_rule + indented_marker_block,
                     "completed-batch-only guard must keep the marker rule, fence, wrapper, and every marker line four-space indented"
+    assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_RULE
+    assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_START
+    assert_includes body, REQUIRED_PR_DESCRIPTION_SUMMARY_END
     refute_includes body, REQUIRED_DEFAULT,
                     "general follow-up issue rules must remain outside the completed-batch-only guard"
   end

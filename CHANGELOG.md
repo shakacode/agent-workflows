@@ -39,6 +39,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Emit a small managed PR-description summary for completed-batch audit status, keep its update separate from the comment-once receipt transaction, and reduce the durable comment to a concise replay-evidence header while retaining legacy receipt replay compatibility.**
 - **Allow consumer seams to set an optional validated `repo_prefix` for consistent batch titles and thread handles, while preserving a deterministic repository-name fallback for existing consumers.**
 - **Pin `<PROJECT>` in batch titles to a deterministic uppercase abbreviation of at most 6 characters (`agent-workflows` -> `AW`) instead of "a short abbreviation derived from the current repository name", which the full repository name satisfied, and derive the thread handle from its lowercased form.** [issue 233](https://github.com/shakacode/agent-workflows/issues/233).
 - **Require the exact archive-readiness `Conversation status:` line in the Batch Handoff Format itself, so a final batch handoff written from that section tells the operator whether the conversation is safe to archive instead of leaving the rule only in the closeout lane.** [issue 234](https://github.com/shakacode/agent-workflows/issues/234).
