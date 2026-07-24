@@ -1,0 +1,60 @@
+{
+  "contract": "autonomous-merge-regression-fixture",
+  "version": 1,
+  "modeled_on": "shakacode/hichee#9831",
+  "ordinary_readiness": {
+    "status": "passed",
+    "ci": "clean",
+    "reviews": "clean",
+    "threads": "resolved",
+    "mergeability": "clean"
+  },
+  "observed": {
+    "changed_files": 57,
+    "changed_lines": 2511,
+    "commits": 12,
+    "reviewed_heads": 4,
+    "migrations": true,
+    "cross_cutting_runtime": true,
+    "rollback_uncertain": true,
+    "unresolved_maintainer_architecture_concern": true
+  },
+  "independent_expectations": {
+    "changed_files": {
+      "verdict": "human-approval-required",
+      "gate": "changed-files-limit"
+    },
+    "changed_lines": {
+      "verdict": "human-approval-required",
+      "gate": "changed-lines-limit"
+    },
+    "commits": {
+      "verdict": "human-approval-required",
+      "gate": "commit-count-limit"
+    },
+    "reviewed_heads_after_graduation": {
+      "verdict": "human-approval-required",
+      "gate": "reviewed-heads-limit"
+    },
+    "migrations": {
+      "verdict": "human-approval-required",
+      "gate": "persistent-data-storage"
+    },
+    "cross_cutting_runtime": {
+      "verdict": "human-approval-required",
+      "gate": "architectural-product-judgment"
+    },
+    "rollback_uncertain": {
+      "verdict": "UNKNOWN",
+      "gate": null
+    },
+    "unresolved_maintainer_architecture_concern": {
+      "verdict": "human-approval-required",
+      "gate": "architectural-product-judgment"
+    }
+  },
+  "combined_expectation": {
+    "verdict": "human-approval-required",
+    "ordinary_readiness_remains_clean": true
+  }
+}

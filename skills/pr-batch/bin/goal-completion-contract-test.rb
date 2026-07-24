@@ -31,16 +31,20 @@ TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
 CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
-COMPACT_CONTRACT_LINE = "GMCC-v2: waiting-on-checks-or-review; pending/missing/untriaged " \
-                        "current-head CI/configured review agents; unresolved current-head review threads; " \
-                        "fail/UNKNOWN=>NOT COMPLETE; poll/fix; bounded-watch resume handoff; " \
-                        "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume; " \
-                        "stop unblocked/done; ready-no-merge-authority iff no auth; " \
-                        "auto_merge_when_gates_pass=>no real blocker: merge+close any PR; " \
-                        "close target+any issue."
-CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, unless a real blocker prevents it, " \
-                                 "done means the PR is merged and closed out when present, the target is " \
-                                 "closed out, and the issue is closed where applicable."
+COMPACT_CONTRACT_LINE = "GMCC-v3: current-head CI/configured-reviewers " \
+                        "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
+                        "waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m " \
+                        "same-thread-watch else exact manual resume; stop clear/done; " \
+                        "no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; " \
+                        "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
+                        "durable-decision(proven-human+merge-authority); else ready-human-review-required|" \
+                        "autonomous-merge-evidence-unknown; merge+close PR/target/issue."
+CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus " \
+                                 "`autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact " \
+                                 "live verdict/head, exact sorted gate set, rollback disposition, and durable " \
+                                 "proven-human decision with verified merge authority are established; otherwise " \
+                                 "stop in the exact autonomous eligibility state, and unless another real " \
+                                 "blocker prevents it, merge and close the PR, target, and issue."
 LEGACY_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done means merged and closed out " \
                               "unless a real blocker prevents it."
 CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
@@ -61,22 +65,23 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
                           "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
-  "waiting-on-checks-or-review",
-  "pending/missing/untriaged current-head CI/configured review agents",
-  "unresolved current-head review threads",
-  "fail/UNKNOWN=>NOT COMPLETE",
-  "poll/fix; bounded-watch resume handoff",
-  "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume",
-  "stop unblocked/done",
-  "ready-no-merge-authority iff no auth",
-  "auto_merge_when_gates_pass=>no real blocker:",
-  "merge+close any PR",
-  "close target+any issue"
+  "current-head CI/configured-reviewers pending|missing|untriaged",
+  "threads unresolved",
+  "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
+  "poll/fix",
+  "auto-clear=>1 15m same-thread-watch else exact manual resume",
+  "stop clear/done",
+  "no auth=>ready-no-merge-authority",
+  "auto=>exact verdict/head/sorted-gates/rollback",
+  "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
+  "durable-decision(proven-human+merge-authority)",
+  "else ready-human-review-required|autonomous-merge-evidence-unknown",
+  "merge+close PR/target/issue"
 ].freeze
-GMCC_ALIGNMENT_SENTENCE = "`GMCC-v2` is a version key that pins drift, not an external-only pointer; " \
+GMCC_ALIGNMENT_SENTENCE = "`GMCC-v3` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
-CANONICAL_CLOSEOUT_PROMPT_LINE = "Final handoff: canonical closeout;"
+CANONICAL_CLOSEOUT_PROMPT_LINE = "Final: canonical closeout;"
 BATCH_COORDINATOR_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
 OBSOLETE_PARENT_AUDIT_OWNERSHIP = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
 PROMPT_ONLY_ARCHIVE_RULE = "Do not archive if an unhanded-off question or planner-owned `UNKNOWN` remains. A durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive."
@@ -197,7 +202,7 @@ def contract_line(text)
 end
 
 def compact_contract_line(text)
-  text.lines.grep(/^\s*GMCC-v2:/).first&.strip
+  text.lines.grep(/^\s*GMCC-v3:/).first&.strip
 end
 
 def assert_text_includes(text, phrase, label)
@@ -369,12 +374,12 @@ class GoalCompletionContractTest < Minitest::Test
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
       line = compact_contract_line(text)
-      assert_text_includes line, "auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume",
+      assert_text_includes line, "auto-clear=>1 15m same-thread-watch else exact manual resume",
                            "compact completion contract"
       refute_includes line, "`blocked`=>", "compact completion contract"
       refute_includes line, "non-user block=>", "compact completion contract"
       assert_text_includes line, "else exact manual resume", "compact completion contract"
-      assert_text_includes line, "stop unblocked/done", "compact completion contract"
+      assert_text_includes line, "stop clear/done", "compact completion contract"
     end
 
     assert_text_includes @workflow_contract_section, "recurring automation/wakeup capability",
@@ -417,7 +422,7 @@ class GoalCompletionContractTest < Minitest::Test
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
     expected_counts = surfaces.transform_values { 1 }
     assert_equal expected_counts, actual_counts,
-                 "all generation surfaces must carry the exact GMCC-v2 alignment sentence once"
+                 "all generation surfaces must carry the exact GMCC-v3 alignment sentence once"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       refute_includes prompt, GMCC_ALIGNMENT_SENTENCE,
@@ -428,8 +433,9 @@ class GoalCompletionContractTest < Minitest::Test
   def test_triaged_but_unresolved_current_head_review_thread_is_not_complete
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
-      assert_text_includes line, "unresolved current-head review threads", "compact completion contract"
-      assert_operator line.index("unresolved current-head review threads"), :<, line.index("=>NOT COMPLETE")
+      assert_text_includes line, "threads unresolved", "compact completion contract"
+      assert_operator line.index("threads unresolved"), :<,
+                      line.index("=>waiting-on-checks-or-review/NOT COMPLETE")
     end
   end
 
@@ -441,8 +447,8 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "pending/missing/untriaged current-head CI/configured review agents; " \
-                           "unresolved current-head review threads",
+                           "current-head CI/configured-reviewers pending|missing|untriaged or " \
+                           "threads unresolved",
                            "compact completion contract"
       refute_includes line, "CI/reviews/review agents",
                       "compact completion contract must not duplicate the review category"
@@ -452,13 +458,13 @@ class GoalCompletionContractTest < Minitest::Test
   def test_compact_contract_rejects_configured_reviewer_omission
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
-      assert_includes line, "CI/configured review agents",
+      assert_includes line, "CI/configured-reviewers",
                       "standalone completion must retain the configured-reviewer gate"
 
-      omission_mutation = line.sub("configured review agents", "review agents")
-      refute_includes omission_mutation, "CI/configured review agents",
+      omission_mutation = line.sub("configured-reviewers", "reviewers")
+      refute_includes omission_mutation, "CI/configured-reviewers",
                       "configured-reviewer omission mutation must lose the required invariant"
-      assert_includes omission_mutation, "CI/review agents",
+      assert_includes omission_mutation, "CI/reviewers",
                       "mutation fixture must exercise the exact reviewer qualifier omission"
     end
   end
@@ -467,9 +473,16 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "auto_merge_when_gates_pass=>no real blocker: merge+close any PR",
+                           "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
+                           "autonomous-merge-eligible OR human-approved-for-current-head",
                            "compact completion contract"
-      assert_text_includes line, "close target+any issue", "compact completion contract"
+      assert_text_includes line,
+                           "durable-decision(proven-human+merge-authority)",
+                           "compact completion contract"
+      assert_text_includes line,
+                           "ready-human-review-required|autonomous-merge-evidence-unknown",
+                           "compact completion contract"
+      assert_text_includes line, "merge+close PR/target/issue", "compact completion contract"
       refute_includes line, "merge+close PR+issue",
                       "PR-only and ad-hoc closeout must not require an issue that does not exist"
       refute_match(/applicable issue absent blocker/, line,
@@ -604,7 +617,7 @@ class GoalCompletionContractTest < Minitest::Test
     }
 
     contracts.each do |label, line|
-      refute_nil line, "#{label} is missing the GMCC-v2 line"
+      refute_nil line, "#{label} is missing the GMCC-v3 line"
       assert_equal COMPACT_CONTRACT_LINE, line, "#{label} drifted"
     end
   end
@@ -634,8 +647,8 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert_text_includes text, "pending/missing/untriaged current-head CI", label
-      assert_text_includes text, "fail/UNKNOWN=>NOT COMPLETE", label
+      assert_text_includes text, "current-head CI/configured-reviewers pending|missing|untriaged", label
+      assert_text_includes text, "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE", label
     end
   end
 
@@ -741,7 +754,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert_text_includes text, "ready-no-merge-authority iff no auth", label
+      assert_text_includes text, "no auth=>ready-no-merge-authority", label
     end
   end
 
@@ -755,9 +768,16 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text,
-                           "auto_merge_when_gates_pass=>no real blocker: merge+close any PR",
+                           "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
+                           "autonomous-merge-eligible OR human-approved-for-current-head",
                            label
-      assert_text_includes text, "close target+any issue", label
+      assert_text_includes text,
+                           "durable-decision(proven-human+merge-authority)",
+                           label
+      assert_text_includes text,
+                           "ready-human-review-required|autonomous-merge-evidence-unknown",
+                           label
+      assert_text_includes text, "merge+close PR/target/issue", label
     end
   end
 

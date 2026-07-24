@@ -84,6 +84,14 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
+   The optional `autonomous_merge` mapping is seeded as an empty mapping by
+   downstream presets without overwriting repo-owned policy. An empty or absent
+   mapping uses portable defaults. Add only repository-specific critical paths,
+   policy paths, safe groups, generated-path reporting, or stricter thresholds.
+   Any relaxed threshold needs a durable
+   `threshold_relaxation.rationale`. Validate the mapping with the seam doctor
+   before enabling or continuing autonomous merge.
+
 5. **Review repo-local trust YAML.** The generated
    `.agents/trusted-github-actors.yml` contains empty, fail-closed lists. Add
    only repo-specific maintainers, teams, or automation that this repository

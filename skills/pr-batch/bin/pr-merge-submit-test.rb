@@ -307,8 +307,11 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_initial_metadata_timeout_is_bounded
-    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    result, = run_cli(mode: "metadata_timeout")
+    started_at = nil
+    result, = run_cli(
+      mode: "metadata_timeout",
+      after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    )
 
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
     assert_equal 1, result.fetch(:status).exitstatus
@@ -317,8 +320,11 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_timeout_kills_a_surviving_process_group_descendant
-    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    result, = run_cli(mode: "metadata_timeout_descendant")
+    started_at = nil
+    result, = run_cli(
+      mode: "metadata_timeout_descendant",
+      after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    )
 
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
     assert_equal 1, result.fetch(:status).exitstatus
@@ -327,8 +333,11 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_interrupt_is_forwarded_and_mutation_outcome_is_reconciled
-    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    result, log = run_cli_with_interrupt(mode: "direct_interrupt_unknown")
+    started_at = nil
+    result, log = run_cli_with_interrupt(
+      mode: "direct_interrupt_unknown",
+      after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+    )
 
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
     assert_equal 2, result.fetch(:status).exitstatus
@@ -569,7 +578,8 @@ class PrMergeSubmitTest < Minitest::Test
     include_expected_head: true,
     include_expected_base: true,
     subject: "Fix the thing (#42)",
-    body: nil
+    body: nil,
+    after_stub_warmup: nil
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       log_path = File.join(dir, "gh.log")
@@ -577,6 +587,7 @@ class PrMergeSubmitTest < Minitest::Test
       File.write(gh_path, fake_gh(mode:, head:, base:, url_host:))
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path) if mode.include?("timeout")
+      after_stub_warmup&.call
       stdout, stderr, status = Open3.capture3(
         cli_environment(dir, log_path, mode),
         *cli_arguments(repo, expected_head, include_expected_head, include_expected_base, subject:, body:)
@@ -586,13 +597,14 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def run_cli_with_interrupt(mode:, wait_for: "mergePullRequest")
+  def run_cli_with_interrupt(mode:, wait_for: "mergePullRequest", after_stub_warmup: nil)
     Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
       File.write(gh_path, fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST))
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path)
+      after_stub_warmup&.call
       result = Open3.popen3(
         cli_environment(dir, log_path, mode),
         *cli_arguments("owner/repo", HEAD_SHA, true, true)

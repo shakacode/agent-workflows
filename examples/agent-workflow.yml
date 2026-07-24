@@ -17,6 +17,38 @@ ci_parity_environment: "n/a"
 hosted_ci_trigger: "n/a"
 ci_change_detector: "n/a"
 
+# Optional: configure stricter repo-owned autonomous-merge gates and bounded
+# safe path groups. Omission uses the portable defaults. The seam doctor
+# rejects unknown keys, duplicate keys, unsupported globs, and relaxed
+# thresholds without a nonempty threshold_relaxation.rationale. A complete
+# `**` component crosses zero or more path components; `*`, `?`, and bracket
+# classes stay within one component.
+# autonomous_merge:
+#   thresholds:
+#     max_changed_files: 29
+#     max_changed_lines: 999
+#     max_commits: 9
+#     max_reviewed_heads: 3
+#   human_review_paths:
+#     - id: "production-config"
+#       pattern: "config/production/**"
+#       reason: "infrastructure"
+#   policy_paths:
+#     - ".agents/**"
+#   safe_path_groups:
+#     documentation:
+#       include:
+#         - "docs/**"
+#       exclude:
+#         - "docs/runbooks/**"
+#     tests:
+#       include:
+#         - "test/**"
+#       exclude:
+#         - "test/fixtures/runtime/**"
+#   generated_paths:
+#     - "dist/generated/**"
+
 # Optional: enable the untrusted-contributor-intake skill with an explicit
 # trusted-base authority. Replace OWNER/REPO before uncommenting; the seam
 # doctor validates the complete mapping and the skill fails closed if omitted.

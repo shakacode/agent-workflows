@@ -100,6 +100,53 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+`autonomous_merge` is an optional closed mapping. When absent, the shared
+workflow uses its portable thresholds and common hard-risk categories. When
+present, it may tighten or explicitly justify relaxing the four thresholds,
+add reason-tagged human-review paths and policy paths, define bounded
+documentation/test safe groups, and identify generated paths for reporting:
+
+```yaml
+autonomous_merge:
+  thresholds:
+    max_changed_files: 29
+    max_changed_lines: 999
+    max_commits: 9
+    max_reviewed_heads: 3
+  human_review_paths:
+    - id: production-config
+      pattern: "config/production/**"
+      reason: infrastructure
+  policy_paths:
+    - ".agents/**"
+  safe_path_groups:
+    documentation:
+      include: ["docs/**"]
+      exclude: ["docs/runbooks/**"]
+    tests:
+      include: ["test/**"]
+      exclude: ["test/fixtures/runtime/**"]
+  generated_paths:
+    - "dist/generated/**"
+```
+
+Thresholds are inclusive maxima: the next value triggers human review. A value
+above a portable default also requires
+`threshold_relaxation.rationale`. Duplicate/unknown keys, wrong scalar types,
+invalid enums or globs, and malformed mappings fail closed. Safe and generated
+classifications never subtract common hard, repository path, size, churn,
+rollback, or maintainer-concern gates. The evaluator always reads this mapping
+from the trusted base, so a PR cannot weaken its own policy.
+
+Glob patterns are repository-root-relative. A complete `**` path component
+crosses zero or more components; `*`, `?`, and valid bracket classes remain
+within one component. Absolute paths, `..`, negation, backslashes, braces,
+empty or malformed bracket classes, and `**` embedded in another component
+fail closed. A semantic assessment must explicitly set
+`safe_classification_complete: true` and a valid `safe_class`; missing,
+contradictory, or ambiguous safe classification yields `UNKNOWN`. Explicit
+complete `safe_class: none` remains valid.
+
 `repo_prefix` is optional. When present, it overrides the deterministic
 repository-name abbreviation used as `<PROJECT>` in batch titles and, in
 lowercase form, in thread handles. Its value must contain 1-6 uppercase ASCII
@@ -174,6 +221,8 @@ remove the marker deliberately before taking direct ownership.
   include the repo-root `cd` preamble
 - `.agents/agent-workflow.yml` parses and has all required policy keys with
   resolved values
+- an optional `autonomous_merge` mapping conforms to the shared closed schema;
+  malformed policy is reported instead of silently falling back
 - an optional `.agents/trusted-github-actors.yml` parses as a mapping and has no
   normalized bot login in both actionable and metadata-only roles; regular
   checks and `--init` preserve preflight compatibility with legacy scalar

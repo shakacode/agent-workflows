@@ -1,0 +1,1128 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require "minitest/autorun"
+require "open3"
+require "tmpdir"
+require_relative "../lib/autonomous_merge_decision"
+require_relative "../lib/autonomous_merge_runtime_trust"
+
+SCRIPT = File.expand_path("autonomous-merge-eligibility", __dir__)
+FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
+
+class AutonomousMergeEligibilityTest < Minitest::Test
+  HEAD_SHA = "a" * 40
+  def test_changed_files_value_immediately_below_portable_boundary_is_eligible
+    result = evaluate { |base_sha| evidence(base_sha:, files: files(29)) }
+
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+    assert_equal [], result.fetch("triggered_gates")
+    assert_equal HEAD_SHA, result.fetch("head_sha")
+    assert_equal "mechanically-verified", result.dig("helper_trust", "status")
+    assert_equal(
+      "skills/pr-batch/bin/autonomous-merge-eligibility",
+      result.dig("helper_trust", "manifest", "helper")
+    )
+  end
+
+  def test_portable_size_and_commit_boundaries_are_inclusive_human_gates
+    cases = {
+      "changed-files-limit" => evidence_override(files: files(30)),
+      "changed-lines-limit" => evidence_override(
+        files: [{ "path" => "lib/large.rb", "additions" => 700, "deletions" => 300 }]
+      ),
+      "commit-count-limit" => evidence_override(
+        commits: Array.new(10) { |index| { "sha" => format("%040x", index + 1) } }
+      )
+    }
+
+    cases.each do |expected_gate, override|
+      result = evaluate { |base_sha| evidence(base_sha:, **override) }
+
+      assert_equal "human-approval-required", result.fetch("verdict"), expected_gate
+      assert_equal [expected_gate], result.fetch("triggered_gates"), expected_gate
+    end
+  end
+
+  def test_distinct_submitted_reviewed_heads_are_shadow_only_before_calibration_graduation
+    reviews = [
+      review("APPROVED", "1" * 40),
+      review("CHANGES_REQUESTED", "2" * 40),
+      review("COMMENTED", "3" * 40),
+      review("DISMISSED", "4" * 40),
+      review("COMMENTED", "4" * 40),
+      review("PENDING", "5" * 40)
+    ]
+
+    result = evaluate { |base_sha| evidence(base_sha:, files: files(1), reviews:) }
+
+    assert_equal 4, result.dig("metrics", "reviewed_heads")
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+    assert_equal [], result.fetch("triggered_gates")
+    assert_equal ["reviewed-heads-limit"], result.fetch("shadow_triggered_gates")
+  end
+
+  def test_graduated_reviewed_heads_threshold_enforces_the_same_distinct_head_signal
+    reviews = Array.new(4) { |index| review("COMMENTED", format("%040x", index + 1)) }
+    result = evaluate(reviewed_heads_mode: "enforced") do |base_sha|
+      evidence(base_sha:, files: files(1), reviews:)
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal ["reviewed-heads-limit"], result.fetch("triggered_gates")
+    assert_equal [], result.fetch("shadow_triggered_gates")
+  end
+
+  def test_reviewed_head_policy_can_tighten_portable_calibration_in_shadow_and_enforced_modes
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        thresholds:
+          max_reviewed_heads: 1
+    YAML
+    reviews = [
+      review("COMMENTED", "1" * 40),
+      review("APPROVED", "2" * 40)
+    ]
+
+    shadow = evaluate(policy_yaml:, reviewed_heads_mode: "shadow") do |base_sha|
+      evidence(base_sha:, files: files(1), reviews:)
+    end
+    enforced = evaluate(policy_yaml:, reviewed_heads_mode: "enforced") do |base_sha|
+      evidence(base_sha:, files: files(1), reviews:)
+    end
+
+    assert_equal ["reviewed-heads-limit"], shadow.fetch("shadow_triggered_gates")
+    assert_equal "autonomous-merge-eligible", shadow.fetch("verdict")
+    assert_equal ["reviewed-heads-limit"], enforced.fetch("triggered_gates")
+    assert_equal "human-approval-required", enforced.fetch("verdict")
+  end
+
+  def test_reviewed_head_policy_can_justifiably_relax_portable_calibration_in_shadow_and_enforced_modes
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        thresholds:
+          max_reviewed_heads: 4
+        threshold_relaxation:
+          rationale: This repository requires a separate current-head review gate for every push.
+    YAML
+    reviews = Array.new(4) { |index| review("COMMENTED", format("%040x", index + 1)) }
+
+    shadow = evaluate(policy_yaml:, reviewed_heads_mode: "shadow") do |base_sha|
+      evidence(base_sha:, files: files(1), reviews:)
+    end
+    enforced = evaluate(policy_yaml:, reviewed_heads_mode: "enforced") do |base_sha|
+      evidence(base_sha:, files: files(1), reviews:)
+    end
+
+    assert_equal [], shadow.fetch("shadow_triggered_gates")
+    assert_equal "autonomous-merge-eligible", shadow.fetch("verdict")
+    assert_equal [], enforced.fetch("triggered_gates")
+    assert_equal "autonomous-merge-eligible", enforced.fetch("verdict")
+  end
+
+  def test_missing_submitted_review_head_is_shadow_unknown_until_graduation
+    reviews = [review("COMMENTED", nil)]
+
+    shadow = evaluate { |base_sha| evidence(base_sha:, files: files(1), reviews:) }
+    enforced = evaluate(reviewed_heads_mode: "enforced") do |base_sha|
+      evidence(base_sha:, files: files(1), reviews:)
+    end
+
+    assert_equal "autonomous-merge-eligible", shadow.fetch("verdict")
+    assert_equal ["submitted-review-head-missing"], shadow.fetch("shadow_evidence_unknown")
+    assert_equal "UNKNOWN", enforced.fetch("verdict")
+  end
+
+  def test_trusted_base_threshold_seam_tightens_defaults_and_requires_rationale_to_relax
+    strict = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        thresholds:
+          max_changed_files: 0
+    YAML
+      evidence(base_sha:, files: files(1))
+    end
+    relaxed = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        thresholds:
+          max_changed_files: 30
+        threshold_relaxation:
+          rationale: Generated API clients are reviewed through a separate required gate.
+    YAML
+      evidence(base_sha:, files: files(30))
+    end
+    malformed = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        thresholds:
+          max_changed_files: 30
+    YAML
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal ["changed-files-limit"], strict.fetch("triggered_gates")
+    assert_equal "autonomous-merge-eligible", relaxed.fetch("verdict")
+    assert_equal "UNKNOWN", malformed.fetch("verdict")
+    assert_includes malformed.fetch("evidence_failures"), "threshold_relaxation.rationale is required"
+  end
+
+  def test_malformed_or_ambiguous_trusted_base_seam_fails_closed
+    policies = {
+      "duplicate key" => <<~YAML,
+        autonomous_merge:
+          thresholds:
+            max_commits: 9
+            max_commits: 8
+      YAML
+      "unknown key" => <<~YAML,
+        autonomous_merge:
+          thresholds:
+            max_comments: 3
+      YAML
+      "wrong scalar type" => <<~YAML,
+        autonomous_merge:
+          thresholds:
+            max_commits: "9"
+      YAML
+      "negative maximum" => <<~YAML
+        autonomous_merge:
+          thresholds:
+            max_commits: -1
+      YAML
+    }
+
+    policies.each do |name, policy_yaml|
+      result = evaluate(policy_yaml:) { |base_sha| evidence(base_sha:, files: files(1)) }
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), name
+      refute_empty result.fetch("evidence_failures"), name
+    end
+  end
+
+  def test_each_common_semantic_category_is_a_non_subtractable_human_gate
+    categories = {
+      "persistent_data_storage" => "persistent-data-storage",
+      "infrastructure_delivery" => "infrastructure-delivery",
+      "irreversible_external_effect" => "irreversible-external-effect",
+      "public_compatibility" => "public-compatibility",
+      "security_auth_privacy" => "security-auth-privacy",
+      "architectural_product_judgment" => "architectural-product-judgment",
+      "unresolved_maintainer_concern" => "architectural-product-judgment"
+    }
+
+    categories.each do |fact, gate|
+      result = evaluate do |base_sha|
+        evidence(
+          base_sha:,
+          files: files(1),
+          semantic: semantic_assessment.merge(fact => true)
+        )
+      end
+
+      assert_equal "human-approval-required", result.fetch("verdict"), fact
+      assert_equal [gate], result.fetch("triggered_gates"), fact
+    end
+  end
+
+  def test_reason_tagged_repo_paths_and_builtin_policy_sources_add_human_gates
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        human_review_paths:
+          - id: checkout-hot-path
+            pattern: app/services/checkout/**
+            reason: hot-path
+        policy_paths:
+          - config/release-policy.yml
+    YAML
+    result = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [
+          file("app/services/checkout/charge.rb"),
+          file("config/release-policy.yml"),
+          file("workflows/pr-processing.md")
+        ]
+      )
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal(
+      ["autonomous-merge-policy-change", "repo-path:checkout-hot-path"],
+      result.fetch("triggered_gates")
+    )
+    assert_includes result.fetch("path_matches"), {
+      "path" => "app/services/checkout/charge.rb",
+      "gate" => "repo-path:checkout-hot-path",
+      "reason" => "hot-path"
+    }
+  end
+
+  def test_evaluator_calibrator_libraries_and_checked_decisions_are_builtin_policy_sources
+    fixture = JSON.parse(
+      File.read(File.join(FIXTURE_DIR, "autonomous-merge-policy-sources.json"), encoding: "UTF-8")
+    )
+    protected_paths = fixture.fetch("paths")
+    result = evaluate do |base_sha|
+      evidence(base_sha:, files: protected_paths.map { |path| file(path) })
+    end
+
+    assert_equal fixture.fetch("expected_verdict"), result.fetch("verdict")
+    assert_equal [fixture.fetch("expected_gate")], result.fetch("triggered_gates")
+    protected_paths.each do |path|
+      assert_includes result.fetch("path_matches"), {
+        "path" => path,
+        "gate" => "autonomous-merge-policy-change",
+        "reason" => "policy"
+      }
+    end
+  end
+
+  def test_invalid_repo_glob_fails_closed
+    result = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        human_review_paths:
+          - id: bad-pattern
+            pattern: ../secrets/**
+            reason: security
+    YAML
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert(result.fetch("evidence_failures").any? { |failure| failure.include?("invalid glob") })
+  end
+
+  def test_portable_globs_cross_zero_or_many_components_and_honor_bracket_classes
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        safe_path_groups:
+          documentation:
+            include:
+              - docs/**/guide[0-9].md
+            exclude:
+              - docs/**/private/**
+    YAML
+    zero_component = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/guide1.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    nested = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/product/v2/guide2.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    excluded = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/product/private/guide3.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+
+    assert_equal "documentation", zero_component.fetch("safe_class")
+    assert_equal "documentation", nested.fetch("safe_class")
+    assert_equal "UNKNOWN", excluded.fetch("verdict")
+    assert_includes excluded.fetch("evidence_failures"), "safe classification documentation contradicts path evidence"
+  end
+
+  def test_portable_globs_reject_empty_malformed_and_ambiguous_double_star_components
+    patterns = [
+      "docs/[]/guide.md",
+      "docs/[!]/guide.md",
+      "docs/[abc/guide.md",
+      "docs/file**/guide.md",
+      "docs/**suffix/guide.md",
+      "docs/***/guide.md"
+    ]
+
+    patterns.each do |pattern|
+      result = evaluate(policy_yaml: <<~YAML) do |base_sha|
+        autonomous_merge:
+          policy_paths:
+            - #{pattern}
+      YAML
+        evidence(base_sha:, files: files(1))
+      end
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), pattern
+      assert(result.fetch("evidence_failures").any? { |failure| failure.include?("invalid glob") }, pattern)
+    end
+  end
+
+  def test_safe_groups_are_conjunctive_and_never_subtract_size_or_hard_gates
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        safe_path_groups:
+          documentation:
+            include:
+              - docs/**
+            exclude:
+              - docs/operator/**
+          tests:
+            include:
+              - spec/**
+            exclude:
+              - spec/fixtures/runtime/**
+    YAML
+    safe = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/guide.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    excluded = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/operator/release.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    large = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: Array.new(30) { |index| file("docs/guide_#{index}.md") },
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    weakened_tests = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("spec/service_spec.rb")],
+        semantic: semantic_assessment.merge("safe_class" => "tests", "test_change" => "weakens")
+      )
+    end
+
+    assert_equal "documentation", safe.fetch("safe_class")
+    assert_equal "UNKNOWN", excluded.fetch("verdict")
+    assert_equal ["changed-files-limit"], large.fetch("triggered_gates")
+    assert_equal "UNKNOWN", weakened_tests.fetch("verdict")
+  end
+
+  def test_missing_false_invalid_or_ambiguous_safe_classification_fails_closed
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        safe_path_groups:
+          documentation:
+            include:
+              - docs/**
+          tests:
+            include:
+              - spec/**
+    YAML
+    semantic_cases = {
+      "missing completeness" => semantic_assessment.tap { |value| value.delete("safe_classification_complete") },
+      "false completeness" => semantic_assessment.merge("safe_classification_complete" => false),
+      "missing class" => semantic_assessment.tap { |value| value.delete("safe_class") },
+      "invalid class" => semantic_assessment.merge("safe_class" => "mostly-documentation"),
+      "path mismatch" => semantic_assessment.merge("safe_class" => "documentation"),
+      "ambiguous test effect" => semantic_assessment.merge("safe_class" => "tests", "test_change" => "UNKNOWN")
+    }
+
+    semantic_cases.each do |name, semantic|
+      path = name == "ambiguous test effect" ? "spec/service_spec.rb" : "lib/service.rb"
+      result = evaluate(policy_yaml:) do |base_sha|
+        evidence(base_sha:, files: [file(path)], semantic:)
+      end
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), name
+      refute_empty result.fetch("evidence_failures"), name
+    end
+
+    explicit_none = evaluate(policy_yaml:) do |base_sha|
+      evidence(base_sha:, files: [file("lib/service.rb")])
+    end
+    assert_equal "autonomous-merge-eligible", explicit_none.fetch("verdict")
+    assert_equal "none", explicit_none.fetch("safe_class")
+  end
+
+  def test_generated_paths_are_reporting_only_and_all_generated_lines_still_count
+    result = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        generated_paths:
+          - generated/**
+    YAML
+      evidence(
+        base_sha:,
+        files: [file("generated/client.rb", additions: 1_000)]
+      )
+    end
+
+    assert_equal 1_000, result.dig("metrics", "changed_lines")
+    assert_equal ["changed-lines-limit"], result.fetch("triggered_gates")
+    assert_includes result.fetch("path_matches"), {
+      "path" => "generated/client.rb",
+      "classification" => "generated"
+    }
+  end
+
+  def test_exact_head_human_decision_requires_durable_marker_exact_gate_set_and_proven_provenance
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    valid_comment = decision_comment(
+      id: "1",
+      url:,
+      body: decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url)
+    )
+    approved = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [valid_comment],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      )
+    end
+    stale = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [
+          valid_comment.merge(
+            "body" => decision_body(head_sha: "f" * 40, gates: ["changed-files-limit"], evidence: url)
+          )
+        ],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      )
+    end
+    unproven = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [valid_comment],
+        semantic: semantic_assessment.merge("decision_provenance" => [])
+      )
+    end
+
+    assert_equal "human-approved-for-current-head", approved.fetch("verdict")
+    assert_equal url, approved.dig("human_decision_evidence", "url")
+    assert_equal "human-approval-required", stale.fetch("verdict")
+    assert_equal "UNKNOWN", unproven.fetch("verdict")
+    assert_equal "uncertain", unproven.dig("human_decision_evidence", "status")
+    assert_includes unproven.fetch("evidence_failures"), "exact current-head human decision provenance is uncertain"
+  end
+
+  def test_newer_malformed_decision_does_not_erase_older_valid_exact_head_decision
+    older_url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    comments = [
+      decision_comment(
+        id: "1",
+        url: older_url,
+        created_at: "2026-07-20T00:00:00Z",
+        body: decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: older_url)
+      ),
+      decision_comment(
+        id: "2",
+        url: "https://github.com/example/repo/pull/1#issuecomment-2",
+        created_at: "2026-07-21T00:00:00Z",
+        body: "preface\n<!-- autonomous-merge-risk-decision:v1 -->\n---\ndecision: approve\n..."
+      )
+    ]
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: comments,
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1"), decision_provenance("2")]
+        )
+      )
+    end
+
+    assert_equal "human-approved-for-current-head", result.fetch("verdict")
+    assert_equal older_url, result.dig("human_decision_evidence", "url")
+  end
+
+  def test_live_objective_collection_does_not_trust_fixture_completeness_flags
+    incomplete_files = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1)).tap do |input|
+        input.fetch("objective")["files_complete"] = false
+      end
+    end
+    incomplete_commits = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1)).tap do |input|
+        input.fetch("objective")["commits_complete"] = false
+      end
+    end
+    incomplete_reviews_shadow = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1)).tap do |input|
+        input.fetch("objective")["reviews_complete"] = false
+      end
+    end
+    incomplete_reviews_enforced = evaluate(reviewed_heads_mode: "enforced") do |base_sha|
+      evidence(base_sha:, files: files(1)).tap do |input|
+        input.fetch("objective")["reviews_complete"] = false
+      end
+    end
+    rollback_unknown = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(1),
+        semantic: semantic_assessment.merge("rollback_assessment" => "UNKNOWN")
+      )
+    end
+
+    assert_equal "autonomous-merge-eligible", incomplete_files.fetch("verdict")
+    assert_equal "autonomous-merge-eligible", incomplete_commits.fetch("verdict")
+    assert_equal "autonomous-merge-eligible", incomplete_reviews_shadow.fetch("verdict")
+    assert_equal [], incomplete_reviews_shadow.fetch("shadow_evidence_unknown")
+    assert_equal "autonomous-merge-eligible", incomplete_reviews_enforced.fetch("verdict")
+    assert_equal "UNKNOWN", rollback_unknown.fetch("verdict")
+  end
+
+  def test_live_deleted_comment_author_returns_structured_unknown
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(1),
+        decision_comments: [
+          decision_comment(
+            id: "123",
+            url: "https://github.com/example/repo/pull/1#issuecomment-123",
+            body: "decision"
+          ).merge("author" => "__deleted__")
+        ]
+      )
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_includes result.fetch("evidence_failures"), "GitHub comment author must contain a nonempty login"
+  end
+
+  def test_commit_and_nonnull_submitted_review_heads_require_full_shas
+    malformed_commit = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1), commits: [{ "sha" => "abc123" }])
+    end
+    malformed_shadow_review = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1), reviews: [review("COMMENTED", "abc123")])
+    end
+    malformed_enforced_review = evaluate(reviewed_heads_mode: "enforced") do |base_sha|
+      evidence(base_sha:, files: files(1), reviews: [review("APPROVED", "g" * 40)])
+    end
+
+    [malformed_commit, malformed_shadow_review, malformed_enforced_review].each do |result|
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert(result.fetch("evidence_failures").any? { |failure| failure.include?("full hexadecimal SHA") })
+    end
+    assert_equal [], malformed_shadow_review.fetch("shadow_evidence_unknown")
+  end
+
+  def test_unestablished_helper_provenance_fails_closed
+    Dir.mktmpdir("autonomous-merge-helper-provenance-test") do |root|
+      base_sha = initialize_trusted_base(root, policy_yaml: nil)
+      calibration_path = write_calibration(root)
+      input = JSON.generate(evidence(base_sha:, files: files(1)))
+
+      missing = invoke(root:, calibration_path:, stdin_data: input, helper_provenance: nil)
+      malformed = invoke(
+        root:,
+        calibration_path:,
+        stdin_data: input,
+        helper_provenance: "verified-installed-pack:not-a-digest"
+      )
+
+      assert_equal "UNKNOWN", missing.fetch("verdict")
+      assert_equal "UNKNOWN", malformed.fetch("verdict")
+      assert_includes missing.fetch("evidence_failures").first, "helper provenance"
+      assert_includes malformed.fetch("evidence_failures").first, "helper provenance"
+    end
+  end
+
+  def test_unverified_stdin_objective_cannot_establish_a_passing_verdict
+    Dir.mktmpdir("autonomous-merge-unverified-stdin-test") do |root|
+      base_sha = initialize_trusted_base(root, policy_yaml: nil)
+      calibration_path = write_calibration(root)
+      result = invoke(
+        root:,
+        calibration_path:,
+        stdin_data: JSON.generate(evidence(base_sha:, files: files(1))),
+        helper_provenance: installed_pack_provenance(calibration_path)
+      )
+
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_includes result.fetch("evidence_failures").first, "stdin objective evidence is unverified"
+    end
+  end
+
+  def test_trusted_base_claim_fails_when_any_runtime_source_is_absent_from_the_tree
+    Dir.mktmpdir("autonomous-merge-missing-runtime-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil)
+      result = invoke(
+        root:,
+        calibration_path:,
+        stdin_data: JSON.generate(evidence(base_sha:, files: files(1)))
+      )
+
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert(result.fetch("evidence_failures").any? { |failure| failure.include?("byte-identical") })
+    end
+  end
+
+  def test_trusted_base_claim_rejects_runtime_bytes_modified_in_the_claimed_tree
+    Dir.mktmpdir("autonomous-merge-modified-runtime-test") do |root|
+      calibration_path = write_calibration(root)
+      initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      helper_path = File.join(root, "skills/pr-batch/bin/autonomous-merge-eligibility")
+      File.open(helper_path, "a") { |file| file.write("\n# branch-modified runtime\n") }
+      system("git", "-C", root, "add", helper_path, exception: true)
+      system("git", "-C", root, "commit", "--quiet", "-m", "modify runtime", exception: true)
+      base_sha, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+      assert status.success?
+      base_sha = base_sha.strip
+      system("git", "-C", root, "update-ref", "refs/heads/trusted-base", base_sha, exception: true)
+
+      result = invoke(
+        root:,
+        calibration_path:,
+        stdin_data: JSON.generate(evidence(base_sha:, files: files(1)))
+      )
+
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert(result.fetch("evidence_failures").any? { |failure| failure.start_with?("helper is not byte-identical") })
+    end
+  end
+
+  def test_installed_pack_claim_binds_the_selected_calibration_bytes
+    Dir.mktmpdir("autonomous-merge-installed-pack-digest-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil)
+      provenance = installed_pack_provenance(calibration_path)
+      File.open(calibration_path, "a") { |file| file.write("\n") }
+      result = invoke(
+        root:,
+        calibration_path:,
+        stdin_data: JSON.generate(evidence(base_sha:, files: files(1))),
+        helper_provenance: provenance
+      )
+
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_includes result.fetch("evidence_failures").first, "runtime digest mismatch"
+    end
+  end
+
+  def test_repo_contained_semantic_assessment_cannot_establish_a_passing_verdict
+    Dir.mktmpdir("autonomous-merge-repo-semantic-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      evaluation = evidence(base_sha:, files: files(1))
+      semantic_path = File.join(root, "semantic-assessment.json")
+      File.write(semantic_path, JSON.generate(evaluation.fetch("semantic_assessment")))
+      result = invoke(root:, calibration_path:, evaluation:, semantic_path:)
+
+      assert_equal "UNKNOWN", result.fetch("verdict")
+      assert_includes result.fetch("evidence_failures").first, "outside the evaluated repository"
+    end
+  end
+
+  def test_malformed_evaluation_and_calibration_inputs_return_structured_unknown
+    Dir.mktmpdir("autonomous-merge-eligibility-malformed-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      malformed_json = invoke(root:, calibration_path:, stdin_data: "{")
+      missing_reviews = evidence(base_sha:, files: files(1))
+      missing_reviews.fetch("objective").delete("reviews")
+      malformed_shape = invoke(root:, calibration_path:, stdin_data: JSON.generate(missing_reviews))
+
+      File.write(calibration_path, JSON.generate("contract" => "wrong", "version" => 1))
+      malformed_calibration = invoke(
+        root:,
+        calibration_path:,
+        evaluation: evidence(base_sha:, files: files(1)),
+        helper_provenance: installed_pack_provenance(calibration_path)
+      )
+
+      assert_equal "UNKNOWN", malformed_json.fetch("verdict")
+      assert_includes malformed_json.fetch("evidence_failures").first, "malformed"
+      assert_equal "UNKNOWN", malformed_shape.fetch("verdict")
+      assert_includes malformed_shape.fetch("evidence_failures").first, "stdin objective evidence is unverified"
+      assert_equal "UNKNOWN", malformed_calibration.fetch("verdict")
+      assert_includes malformed_calibration.fetch("evidence_failures").first, "calibration"
+    end
+  end
+
+  def test_risk_marker_never_converts_unknown_evidence_into_approval
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [
+          decision_comment(
+            id: "1",
+            url:,
+            body: decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url)
+          )
+        ],
+        semantic: semantic_assessment.merge(
+          "rollback_assessment" => "UNKNOWN",
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      )
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_equal "none", result.dig("human_decision_evidence", "status")
+  end
+
+  def test_hichee_9831_regression_fixture_triggers_every_risk_independently_and_when_combined
+    fixture = JSON.parse(
+      File.read(File.join(FIXTURE_DIR, "autonomous-merge-hichee-9831.json"), encoding: "UTF-8")
+    )
+    observed = fixture.fetch("observed")
+    cases = {
+      "changed_files" => ->(base_sha) { evidence(base_sha:, files: files(observed.fetch("changed_files"))) },
+      "changed_lines" => lambda do |base_sha|
+        evidence(base_sha:, files: [file("app/models/listing.rb", additions: observed.fetch("changed_lines"))])
+      end,
+      "commits" => lambda do |base_sha|
+        commits = Array.new(observed.fetch("commits")) { |index| { "sha" => format("%040x", index + 1) } }
+        evidence(base_sha:, files: files(1), commits:)
+      end,
+      "reviewed_heads_after_graduation" => lambda do |base_sha|
+        reviews = Array.new(observed.fetch("reviewed_heads")) do |index|
+          review("COMMENTED", format("%040x", index + 1))
+        end
+        evidence(base_sha:, files: files(1), reviews:)
+      end,
+      "migrations" => lambda do |base_sha|
+        semantic = semantic_assessment.merge("persistent_data_storage" => true)
+        evidence(base_sha:, files: [file("db/migrate/add_redirects.rb")], semantic:)
+      end,
+      "cross_cutting_runtime" => lambda do |base_sha|
+        semantic = semantic_assessment.merge("architectural_product_judgment" => true)
+        evidence(base_sha:, files: [file("app/models/listing.rb")], semantic:)
+      end,
+      "rollback_uncertain" => lambda do |base_sha|
+        semantic = semantic_assessment.merge("rollback_assessment" => "UNKNOWN")
+        evidence(base_sha:, files: files(1), semantic:)
+      end,
+      "unresolved_maintainer_architecture_concern" => lambda do |base_sha|
+        semantic = semantic_assessment.merge("unresolved_maintainer_concern" => true)
+        evidence(base_sha:, files: files(1), semantic:)
+      end
+    }
+
+    cases.each do |name, input_builder|
+      mode = name == "reviewed_heads_after_graduation" ? "enforced" : "shadow"
+      result = evaluate(reviewed_heads_mode: mode, &input_builder)
+      expectation = fixture.fetch("independent_expectations").fetch(name)
+      assert_equal expectation.fetch("verdict"), result.fetch("verdict"), name
+      gate = expectation["gate"]
+      assert_includes result.fetch("triggered_gates"), gate, name if gate
+    end
+
+    combined = evaluate do |base_sha|
+      reviews = Array.new(observed.fetch("reviewed_heads")) do |index|
+        review("COMMENTED", format("%040x", index + 1))
+      end
+      evidence(
+        base_sha:,
+        files: Array.new(observed.fetch("changed_files")) do |index|
+          file(
+            index.zero? ? "db/migrate/add_redirects.rb" : "app/runtime/file_#{index}.rb",
+            additions: index.zero? ? observed.fetch("changed_lines") : 0
+          )
+        end,
+        commits: Array.new(observed.fetch("commits")) { |index| { "sha" => format("%040x", index + 1) } },
+        reviews:,
+        semantic: semantic_assessment.merge(
+          "persistent_data_storage" => true,
+          "architectural_product_judgment" => true,
+          "unresolved_maintainer_concern" => true,
+          "rollback_assessment" => "forward-recovery-established"
+        )
+      ).merge("ordinary_readiness" => fixture.fetch("ordinary_readiness"))
+    end
+    assert_equal fixture.dig("combined_expectation", "verdict"), combined.fetch("verdict")
+  end
+
+  def test_decision_marker_parser_rejects_non_exact_envelopes
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    valid = decision_body(head_sha: HEAD_SHA, gates: ["changed-files-limit"], evidence: url)
+    invalid = {
+      "marker later in body" => "preface\n#{valid}",
+      "multiple markers" => "#{valid}\n<!-- autonomous-merge-risk-decision:v1 -->",
+      "CRLF boundary" => valid.gsub("\n", "\r\n"),
+      "trailing prose" => "#{valid}\ntrailing",
+      "alias" => valid.sub("head_sha: #{HEAD_SHA}", "head_sha: &head #{HEAD_SHA}")
+                      .sub("approved_by: maintainer", "approved_by: *head"),
+      "custom tag" => valid.sub("head_sha: #{HEAD_SHA}", "head_sha: !custom #{HEAD_SHA}"),
+      "duplicate key" => valid.sub("decision: approve", "decision: approve\ndecision: approve"),
+      "unknown key" => valid.sub("decision: approve", "extra: value\ndecision: approve"),
+      "multiple YAML documents" => "#{valid}\n---\ndecision: approve\n..."
+    }
+
+    refute_nil AutonomousMergeDecision.parse(valid)
+    invalid.each do |name, body|
+      assert_nil AutonomousMergeDecision.parse(body), name
+    end
+  end
+
+  private
+
+  def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
+             helper_provenance: :trusted_base)
+    command = [
+      "ruby",
+      SCRIPT,
+      "--repo-root", root,
+      "--trusted-base", "trusted-base",
+      "--calibration-decision", calibration_path
+    ]
+    if helper_provenance
+      resolved_provenance = if helper_provenance == :trusted_base
+                              sha, status = Open3.capture2("git", "-C", root, "rev-parse", "trusted-base")
+                              assert status.success?
+                              "trusted-base:#{sha.strip}"
+                            else
+                              helper_provenance
+                            end
+      command.concat(["--trusted-helper-provenance", resolved_provenance])
+    end
+    if evaluation
+      Dir.mktmpdir("autonomous-merge-live-input") do |input_root|
+        objective_path = File.join(input_root, "objective.json")
+        resolved_semantic_path = semantic_path || File.join(input_root, "semantic.json")
+        fake_gh = File.join(input_root, "gh")
+        File.write(objective_path, JSON.generate(evaluation.fetch("objective")))
+        File.write(resolved_semantic_path, JSON.generate(evaluation.fetch("semantic_assessment"))) unless semantic_path
+        write_fake_gh(fake_gh)
+        command.concat(
+          ["--repo", "example/repo", "--pr", "1", "--semantic-assessment", resolved_semantic_path]
+        )
+        stdout, stderr, status = Open3.capture3(
+          { "AUTONOMOUS_MERGE_GH" => fake_gh, "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path },
+          *command,
+          stdin_data:
+        )
+        assert status.success?, stderr
+        return JSON.parse(stdout)
+      end
+    end
+
+    stdout, stderr, status = Open3.capture3(*command, stdin_data:)
+    assert status.success?, stderr
+    JSON.parse(stdout)
+  end
+
+  def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil)
+    Dir.mktmpdir("autonomous-merge-eligibility-test") do |root|
+      calibration_path = write_calibration(root, reviewed_heads_mode:)
+      base_sha = initialize_trusted_base(root, policy_yaml:, include_runtime: true)
+      evaluation = yield(base_sha)
+      invoke(root:, calibration_path:, evaluation:)
+    end
+  end
+
+  def write_calibration(root, reviewed_heads_mode: "shadow", max: 3)
+    calibration_path = File.join(
+      root,
+      "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+    )
+    FileUtils.mkdir_p(File.dirname(calibration_path))
+    File.write(
+      calibration_path,
+      JSON.generate(
+        "contract" => "autonomous-merge-calibration-decision",
+        "version" => 1,
+        "reviewed_heads" => {
+          "disposition" => reviewed_heads_mode,
+          "max" => max,
+          "evidence" => "test fixture"
+        }
+      )
+    )
+    calibration_path
+  end
+
+  def installed_pack_provenance(calibration_path)
+    digest = AutonomousMergeRuntimeTrust.installed_pack_digest(
+      AutonomousMergeRuntimeTrust.runtime_sources(calibration_path)
+    )
+    "verified-installed-pack:#{digest}"
+  end
+
+  def initialize_trusted_base(root, policy_yaml:, include_runtime: false)
+    system("git", "init", "--quiet", root, exception: true)
+    system("git", "-C", root, "config", "user.email", "test@example.com", exception: true)
+    system("git", "-C", root, "config", "user.name", "Test", exception: true)
+    File.write(File.join(root, "README.md"), "trusted base\n")
+    copy_trusted_runtime_sources(root) if include_runtime
+    if policy_yaml
+      agents_dir = File.join(root, ".agents")
+      Dir.mkdir(agents_dir)
+      File.write(File.join(agents_dir, "agent-workflow.yml"), policy_yaml)
+    end
+    system("git", "-C", root, "add", ".", exception: true)
+    system(
+      { "GIT_AUTHOR_DATE" => "2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE" => "2000-01-01T00:00:00Z" },
+      "git", "-C", root, "commit", "--quiet", "-m", "base",
+      exception: true
+    )
+    actual_base, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+    assert status.success?
+    actual_base = actual_base.strip
+    system("git", "-C", root, "update-ref", "refs/heads/trusted-base", actual_base, exception: true)
+    actual_base
+  end
+
+  def copy_trusted_runtime_sources(root)
+    AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.each_value do |source|
+      destination = File.join(root, source.fetch(:tree_paths).first)
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp(source.fetch(:path), destination)
+    end
+  end
+
+  def write_fake_gh(path)
+    File.write(path, <<~'RUBY')
+      #!/usr/bin/env ruby
+      require "json"
+
+      objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      request = ARGV.fetch(-1)
+      response = case request
+                 when "repos/example/repo/pulls/1"
+                   {
+                     "head" => { "sha" => objective.fetch("head_sha") },
+                     "base" => { "sha" => objective.fetch("base_sha") },
+                     "updated_at" => "2026-07-25T12:00:00Z"
+                   }
+                 when "repos/example/repo/issues/1/timeline?per_page=100&page=1"
+                   []
+                 when "repos/example/repo/pulls/1/files?per_page=100&page=1"
+                   objective.fetch("files").map do |file|
+                     {
+                       "filename" => file.fetch("path"),
+                       "additions" => file.fetch("additions"),
+                       "deletions" => file.fetch("deletions")
+                     }
+                   end
+                 when "repos/example/repo/pulls/1/commits?per_page=100&page=1"
+                   objective.fetch("commits")
+                 when "repos/example/repo/pulls/1/reviews?per_page=100&page=1"
+                   objective.fetch("reviews")
+                 when "repos/example/repo/issues/1/comments?per_page=100&page=1"
+                   objective.fetch("decision_comments").map do |comment|
+                     author = comment.fetch("author")
+                     {
+                       "id" => comment.fetch("id"),
+                       "html_url" => comment.fetch("url"),
+                       "created_at" => comment.fetch("created_at"),
+                       "body" => comment.fetch("body"),
+                       "user" => author == "__deleted__" ? nil : { "login" => author }
+                     }
+                   end
+                 else
+                   warn "unexpected GitHub API path: #{request}"
+                   exit 1
+                 end
+      puts JSON.generate(response)
+    RUBY
+    File.chmod(0o755, path)
+  end
+
+  def evidence_override(files: files(1), commits: [{ "sha" => "c" * 40 }])
+    { files:, commits: }
+  end
+
+  def evidence(base_sha:, files:, commits: [{ "sha" => "c" * 40 }], reviews: [],
+               semantic: semantic_assessment, decision_comments: [])
+    {
+      "contract" => "autonomous-merge-evaluation",
+      "version" => 1,
+      "objective" => {
+        "head_sha" => HEAD_SHA,
+        "base_sha" => base_sha,
+        "files_complete" => true,
+        "files" => files,
+        "commits_complete" => true,
+        "commits" => commits,
+        "reviews_complete" => true,
+        "reviews" => reviews,
+        "decision_comments_complete" => true,
+        "decision_comments" => decision_comments
+      },
+      "semantic_assessment" => semantic
+    }
+  end
+
+  def semantic_assessment
+    {
+      "provenance" => "trusted-coordinator",
+      "persistent_data_storage" => false,
+      "infrastructure_delivery" => false,
+      "irreversible_external_effect" => false,
+      "public_compatibility" => false,
+      "security_auth_privacy" => false,
+      "architectural_product_judgment" => false,
+      "unresolved_maintainer_concern" => false,
+      "rollback_assessment" => "code-only-rollback-established",
+      "safe_class" => "none",
+      "safe_classification_complete" => true,
+      "test_change" => "not-applicable",
+      "decision_provenance" => []
+    }
+  end
+
+  def files(count)
+    Array.new(count) do |index|
+      {
+        "path" => format("lib/file_%02d.rb", index),
+        "additions" => 1,
+        "deletions" => 0
+      }
+    end
+  end
+
+  def file(path, additions: 1, deletions: 0)
+    { "path" => path, "additions" => additions, "deletions" => deletions }
+  end
+
+  def review(state, commit_id)
+    { "state" => state, "commit_id" => commit_id }
+  end
+
+  def decision_comment(id:, url:, body:, created_at: "2026-07-20T00:00:00Z")
+    {
+      "id" => id,
+      "url" => url,
+      "created_at" => created_at,
+      "body" => body,
+      "author" => "maintainer"
+    }
+  end
+
+  def decision_provenance(comment_id)
+    {
+      "comment_id" => comment_id,
+      "source" => "direct-user-task",
+      "human_provenance_verified" => true,
+      "merge_authority_verified" => true
+    }
+  end
+
+  def decision_body(head_sha:, gates:, evidence:)
+    <<~YAML.chomp
+      <!-- autonomous-merge-risk-decision:v1 -->
+      ---
+      head_sha: #{head_sha}
+      triggered_gates:
+      #{gates.map { |gate| "  - #{gate}" }.join("\n")}
+      rollback_disposition: Code rollback and forward recovery were reviewed.
+      decision: approve
+      approved_by: maintainer
+      source: direct-user-task
+      evidence: #{evidence}
+      ...
+    YAML
+  end
+end

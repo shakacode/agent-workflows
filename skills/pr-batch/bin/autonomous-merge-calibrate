@@ -1,0 +1,164 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "date"
+require "digest"
+require "json"
+require "optparse"
+require_relative "../lib/autonomous_merge_calibration"
+
+options = {
+  repositories: [],
+  sample: 5,
+  format: "report",
+  maxima: {
+    "changed_files" => 29,
+    "changed_lines" => 999,
+    "commits" => 9,
+    "reviewed_heads" => 3
+  }
+}
+OptionParser.new do |parser|
+  parser.on("--input PATH", "Cached/checkpointed calibration dataset") { |value| options[:input] = value }
+  parser.on("--collect PATH", "Collect or resume a GitHub dataset at this explicit checkpoint") do |value|
+    options[:collect] = value
+  end
+  parser.on("--repo OWNER/REPO") { |value| options[:repositories] << value }
+  parser.on("--since YYYY-MM-DD") { |value| options[:since] = Date.iso8601(value) }
+  parser.on("--pr-count NUMBER", Integer) { |value| options[:pr_count] = value }
+  parser.on("--sample NUMBER", Integer) { |value| options[:sample] = value }
+  parser.on("--format FORMAT", %w[report decision]) { |value| options[:format] = value }
+  parser.on("--max-changed-files NUMBER", Integer) { |value| options[:maxima]["changed_files"] = value }
+  parser.on("--max-changed-lines NUMBER", Integer) { |value| options[:maxima]["changed_lines"] = value }
+  parser.on("--max-commits NUMBER", Integer) { |value| options[:maxima]["commits"] = value }
+  parser.on("--max-reviewed-heads NUMBER", Integer) { |value| options[:maxima]["reviewed_heads"] = value }
+end.parse!
+
+if options[:collect]
+  abort "--input and --collect are mutually exclusive" if options[:input]
+  abort "--collect requires at least one --repo OWNER/REPO" if options[:repositories].empty?
+  abort "--collect requires exactly one of --since or --pr-count" if options[:since].nil? == options[:pr_count].nil?
+
+  begin
+    dataset = AutonomousMergeCalibration.collect(
+      checkpoint_path: options.fetch(:collect),
+      repositories: options.fetch(:repositories),
+      since: options[:since],
+      pr_count: options[:pr_count]
+    )
+    puts JSON.pretty_generate(dataset)
+    exit
+  rescue AutonomousMergeCalibration::CollectionError => e
+    warn "calibration collection stopped (#{e.kind}): #{e.message}"
+    exit 1
+  end
+end
+
+abort "--input is required; use a cached/checkpointed dataset" unless options[:input]
+abort "--sample must be positive" unless options[:sample].positive?
+abort "--pr-count must be positive" if options[:pr_count] && !options[:pr_count].positive?
+abort "threshold maxima must be nonnegative" unless options[:maxima].values.all? { |value| value >= 0 }
+
+raw = File.read(options[:input], encoding: "UTF-8")
+dataset = JSON.parse(raw)
+unless dataset["contract"] == "autonomous-merge-calibration-dataset" && dataset["version"] == 1
+  abort "invalid autonomous-merge-calibration-dataset contract or version"
+end
+scope = dataset.fetch("scope")
+prs = dataset.fetch("prs")
+abort "calibration PRs must be a list" unless prs.is_a?(Array)
+
+repositories = options[:repositories].empty? ? scope.fetch("repositories") : options[:repositories]
+prs = prs.select { |pr| repositories.include?(pr.fetch("repository")) }
+if options[:since]
+  prs = prs.select { |pr| DateTime.iso8601(pr.fetch("merged_at")).to_date >= options[:since] }
+end
+if options[:pr_count]
+  prs = prs.group_by { |pr| pr.fetch("repository") }.flat_map do |_repo, repo_prs|
+    repo_prs.sort_by { |pr| pr.fetch("merged_at") }.reverse.first(options[:pr_count])
+  end
+end
+prs.sort_by! { |pr| [pr.fetch("repository"), pr.fetch("number")] }
+
+maxima = options[:maxima]
+metrics = maxima.keys
+triggered = prs.select do |pr|
+  metrics.any? { |metric| pr[metric].is_a?(Integer) && pr.fetch(metric) > maxima.fetch(metric) }
+end
+near_misses = prs.reject { |pr| triggered.include?(pr) }.select do |pr|
+  metrics.any? { |metric| pr[metric] == maxima.fetch(metric) }
+end
+reviewed_known = prs.count { |pr| pr["reviewed_heads"].is_a?(Integer) }
+graduation_blockers = []
+graduation_blockers << "dataset scope is incomplete" unless scope["complete"] == true
+graduation_blockers << "reviewed-head history is incomplete" unless reviewed_known == prs.length
+graduation_blockers << "requested repositories are missing" unless repositories.all? do |repo|
+  prs.any? { |pr| pr["repository"] == repo }
+end
+sampled = (triggered.first(options[:sample]) + near_misses.first(options[:sample])).uniq
+unless sampled.all? { |pr| pr["semantic_inspection"].is_a?(String) && !pr["semantic_inspection"].strip.empty? }
+  graduation_blockers << "semantic trigger and near-miss samples are incomplete"
+end
+decision = scope["reviewed_heads_decision"]
+unless decision.is_a?(Hash) && decision["disposition"] == "enforced" &&
+       decision["rationale"].is_a?(String) && !decision["rationale"].strip.empty?
+  graduation_blockers << "no explicit reviewed-head graduation decision"
+end
+disposition = graduation_blockers.empty? ? "enforced" : "shadow"
+
+def distribution(values)
+  sorted = values.sort
+  return { "count" => 0, "p50" => nil, "p90" => nil, "max" => nil } if sorted.empty?
+
+  percentile = lambda do |fraction|
+    sorted[((sorted.length - 1) * fraction).ceil]
+  end
+  {
+    "count" => sorted.length,
+    "p50" => percentile.call(0.50),
+    "p90" => percentile.call(0.90),
+    "max" => sorted.last
+  }
+end
+
+report = {
+  "contract" => "autonomous-merge-calibration-report",
+  "version" => 1,
+  "dataset_sha256" => Digest::SHA256.hexdigest(raw),
+  "window" => scope.fetch("window"),
+  "repositories" => repositories.sort,
+  "thresholds" => maxima,
+  "coverage" => {
+    "pr_count" => prs.length,
+    "reviewed_heads_known" => reviewed_known,
+    "scope_complete" => scope["complete"] == true
+  },
+  "distributions" => metrics.to_h do |metric|
+    [metric, distribution(prs.filter_map { |pr| pr[metric] if pr[metric].is_a?(Integer) })]
+  end,
+  "triggered_count" => triggered.length,
+  "triggered_sample" => triggered.first(options[:sample]),
+  "near_miss_sample" => near_misses.first(options[:sample]),
+  "reviewed_heads" => {
+    "disposition" => disposition,
+    "max" => maxima.fetch("reviewed_heads"),
+    "graduation_blockers" => graduation_blockers
+  },
+  "merge_decisions_emitted" => false
+}
+
+output = if options[:format] == "decision"
+           {
+             "contract" => "autonomous-merge-calibration-decision",
+             "version" => 1,
+             "reviewed_heads" => {
+               "disposition" => disposition,
+               "max" => maxima.fetch("reviewed_heads"),
+               "evidence" => "dataset-sha256:#{report.fetch('dataset_sha256')}; " \
+                             "prs=#{prs.length}; blockers=#{graduation_blockers.join(' | ')}"
+             }
+           }
+         else
+           report
+         end
+puts JSON.pretty_generate(output)

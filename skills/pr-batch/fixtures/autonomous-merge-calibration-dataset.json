@@ -1,0 +1,85 @@
+{
+  "contract": "autonomous-merge-calibration-dataset",
+  "version": 1,
+  "scope": {
+    "complete": false,
+    "window": "ADR 0003 cited PRs with only facts stated in the accepted ADR; not the missing 397-PR raw history",
+    "repositories": [
+      "cypress-playwright-on-rails/cypress-playwright-on-rails",
+      "shakacode/hichee",
+      "shakacode/react_on_rails",
+      "shakacode/shakapacker"
+    ]
+  },
+  "prs": [
+    {
+      "repository": "cypress-playwright-on-rails/cypress-playwright-on-rails",
+      "number": 237,
+      "merged_at": "2026-01-01T00:00:00Z",
+      "changed_files": 1,
+      "changed_lines": 93,
+      "commits": null,
+      "reviewed_heads": null,
+      "automation_reviewed_heads": null,
+      "path_categories": [
+        "workflow-permissions"
+      ],
+      "semantic_inspection": "Small numeric footprint still requires human approval through infrastructure-delivery."
+    },
+    {
+      "repository": "shakacode/hichee",
+      "number": 9831,
+      "merged_at": "2026-01-01T00:00:00Z",
+      "changed_files": 57,
+      "changed_lines": 2511,
+      "commits": 12,
+      "reviewed_heads": null,
+      "automation_reviewed_heads": null,
+      "path_categories": [
+        "migrations",
+        "cross-cutting-runtime"
+      ],
+      "semantic_inspection": "Human design, rollback, persistent-data, size, and churn gates apply independently."
+    },
+    {
+      "repository": "shakacode/react_on_rails",
+      "number": 4669,
+      "merged_at": "2026-01-01T00:00:00Z",
+      "changed_files": 3,
+      "changed_lines": 16489,
+      "commits": 16,
+      "reviewed_heads": 15,
+      "automation_reviewed_heads": null,
+      "path_categories": [
+        "release-automation"
+      ],
+      "semantic_inspection": "Line, commit, reviewed-head, and release behavior gates apply."
+    },
+    {
+      "repository": "shakacode/react_on_rails",
+      "number": 4701,
+      "merged_at": "2026-01-01T00:00:00Z",
+      "changed_files": 44,
+      "changed_lines": 4925,
+      "commits": 16,
+      "reviewed_heads": 14,
+      "automation_reviewed_heads": null,
+      "path_categories": [
+        "broad-runtime"
+      ],
+      "semantic_inspection": "All recorded size and churn metrics exceed the portable maxima."
+    },
+    {
+      "repository": "shakacode/shakapacker",
+      "number": 1206,
+      "merged_at": "2026-01-01T00:00:00Z",
+      "changed_files": null,
+      "changed_lines": null,
+      "commits": 1,
+      "reviewed_heads": 11,
+      "automation_reviewed_heads": null,
+      "path_categories": [],
+      "semantic_inspection": "One final commit does not erase eleven distinct reviewed heads."
+    }
+  ]
+}

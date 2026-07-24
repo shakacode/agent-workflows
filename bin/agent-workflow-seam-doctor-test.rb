@@ -381,6 +381,62 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_optional_autonomous_merge_policy_uses_the_shared_closed_schema
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "autonomous_merge" => {
+            "thresholds" => { "max_changed_files" => 20 },
+            "human_review_paths" => [
+              {
+                "id" => "production-hot-path",
+                "pattern" => "app/services/checkout/**",
+                "reason" => "hot-path"
+              }
+            ],
+            "safe_path_groups" => {
+              "documentation" => {
+                "include" => ["docs/**"],
+                "exclude" => ["docs/operator/**"]
+              }
+            }
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_invalid_autonomous_merge_policy_is_reported_by_the_seam_doctor
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      File.open(policy_path, "a") do |file|
+        file.write(<<~YAML)
+          autonomous_merge:
+            human_review_paths:
+              - id: custom-risk
+                pattern: "../outside/**"
+                reason: other
+        YAML
+      end
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid autonomous_merge policy"
+      assert_includes out, "invalid glob"
+      assert_includes out, "detail must be a nonempty string"
+    end
+  end
+
   def test_invalid_policy_yaml_fails
     with_repo do |root|
       write_agents(root)
