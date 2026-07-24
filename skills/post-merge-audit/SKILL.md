@@ -389,11 +389,11 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description.
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
-Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, read back that exact returned comment ID, and validate every binding before emitting the compact reference.
+Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects.
 
@@ -415,12 +415,12 @@ In final chat, this compact receipt line immediately precedes the exact `Convers
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
-Post this exact durable GitHub comment body, with one fixed header, one blank
+Post this exact durable GitHub comment body, with one concise header, one blank
 line, and exactly one unchanged v1 wrapper; fill every field explicitly and use
 `none` rather than omitting a field:
 
 ```text
-Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope.
+Completed-batch audit: replay evidence follows.
 
 <!-- completed-batch-audit v1
 batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>
@@ -431,6 +431,19 @@ checker_evidence: <identity/route/independence refs|UNKNOWN>
 findings: <none|OUTSTANDING concise refs|UNKNOWN>
 followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>
 -->
+```
+
+For a PR anchor, `publish` and `replay` emit this small managed section after
+comment readback; neither mutates the PR description. The coordinator applies it
+through a separate freshly-read update, preserves all surrounding text, never
+duplicates the markers, and never reruns `publish` to retry description sync:
+
+```markdown
+<!-- completed-batch-audit-summary:start -->
+## Completed-batch audit
+
+**Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
+<!-- completed-batch-audit-summary:end -->
 ```
 
 For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source. `batch_id: UNKNOWN` is allowed only for genuinely unresolved batch identity, never for release/archive readiness.

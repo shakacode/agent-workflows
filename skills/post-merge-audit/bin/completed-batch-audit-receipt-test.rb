@@ -573,9 +573,19 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_includes reference, "https://github.com/acme/widgets/pull/184#issuecomment-9001"
       assert_match(/SHA-256 `[0-9a-f]{64}`/, reference)
       refute_includes reference, "<!-- completed-batch-audit"
+      posted_comment = File.read(env.fetch("FAKE_GH_BODY"))
+      assert posted_comment.start_with?("Completed-batch audit: replay evidence follows.\n\n")
+      summary = result.fetch("pr_description_summary")
+      assert_equal "https://github.com/acme/widgets/pull/184", summary.fetch("url")
+      assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_START
+      assert_includes summary.fetch("section"), "## Completed-batch audit"
+      assert_includes summary.fetch("section"), "**Status:** Clean — no outstanding findings or follow-ups."
+      assert_includes summary.fetch("section"), "pull/184#issuecomment-9001"
+      assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_END
 
       calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
       assert_equal(1, calls.count { |call| call.include?("--method POST") })
+      assert_equal(0, calls.count { |call| call.include?("--method PATCH") })
       assert_operator(calls.index { |call| call.include?("--method POST") }, :<,
                       calls.index { |call| call.end_with?("repos/acme/widgets/issues/comments/9001") })
     end
@@ -614,6 +624,48 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         assert_equal supplied_marker, CompletedBatchAuditReceipt.comment_marker(posted_body)
         assert_equal Digest::SHA256.hexdigest(posted_body), result.dig("receipt", "sha256")
       end
+    end
+  end
+
+  def test_replay_parser_keeps_legacy_durable_comments_valid
+    legacy_body = "#{CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER}\n\n#{ready_marker}"
+
+    assert_equal ready_marker, CompletedBatchAuditReceipt.comment_marker(legacy_body)
+    replayed = CompletedBatchAuditReceipt.replay_marker(
+      CompletedBatchAuditReceipt.comment_marker(legacy_body),
+      expected_batch_id: "batch-184"
+    )
+    assert replayed.fetch("well_formed")
+    assert replayed.fetch("ready")
+  end
+
+  def test_publish_canonicalizes_legacy_full_comment_to_the_concise_header
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, "#{CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER}\n\n#{ready_marker}")
+
+      _out, err, status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert status.success?, err
+      posted_body = File.read(env.fetch("FAKE_GH_BODY"))
+      assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+      refute_includes posted_body, CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER
     end
   end
 
@@ -839,6 +891,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "Conversation status: Follow-ups remain — release owner confirmation.",
         published.fetch("final_status")
       )
+      summary = published.fetch("pr_description_summary").fetch("section")
+      assert_includes summary, "**Status:** Follow-ups remain — see the durable receipt."
+      refute_includes summary, "**Status:** Clean"
 
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, published.fetch("chat_reference"))
@@ -863,6 +918,28 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       refute replayed.fetch("ready")
       assert_equal ["release owner confirmation"], replayed.fetch("blockers")
       assert_equal published.fetch("chat_reference"), replayed.fetch("chat_reference")
+      replay_summary = replayed.fetch("pr_description_summary").fetch("section")
+      assert_equal summary, replay_summary
+
+      cleared_out, cleared_err, cleared_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "replay",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        reference_path
+      )
+
+      assert cleared_status.success?, cleared_err
+      cleared = JSON.parse(cleared_out)
+      assert cleared.fetch("ready")
+      cleared_summary = cleared.fetch("pr_description_summary").fetch("section")
+      assert_includes cleared_summary, "**Status:** Clean — no outstanding findings or follow-ups."
+      refute_equal summary, cleared_summary
     end
   end
 

@@ -15,7 +15,10 @@ module CompletedBatchAuditReceipt
   REPLAY_GITHUB_API_BLOCKER = "completed-batch-audit replay GitHub API request failed"
   POST_OUTCOME_BLOCKER = "completed-batch-audit comment POST outcome unknown"
   POST_READBACK_BLOCKER = "completed-batch-audit comment readback verification failed"
-  COMMENT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
+  COMMENT_HEADER = "Completed-batch audit: replay evidence follows."
+  LEGACY_COMMENT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
+  PR_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
+  PR_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
@@ -158,6 +161,11 @@ module CompletedBatchAuditReceipt
     remote.merge(
       "final_status" => final_status(remote),
       "receipt" => verified.reject { |key, _value| key == "marker" },
+      "pr_description_summary" => pr_description_summary(
+        target:,
+        result: remote,
+        receipt_url: verified.fetch("url")
+      ),
       "chat_reference" => reference,
       "errors" => []
     )
@@ -206,6 +214,11 @@ module CompletedBatchAuditReceipt
     remote.merge(
       "final_status" => final_status(remote),
       "receipt" => verified.reject { |key, _value| key == "marker" },
+      "pr_description_summary" => pr_description_summary(
+        target:,
+        result: remote,
+        receipt_url: verified.fetch("url")
+      ),
       "chat_reference" => canonical,
       "errors" => []
     )
@@ -385,20 +398,49 @@ module CompletedBatchAuditReceipt
     raise Error, "comment issue URL is invalid"
   end
 
-  def comment_marker(body)
-    prefix = "#{COMMENT_HEADER}\n\n"
-    return unless body.start_with?(prefix)
+  def pr_description_summary(target:, result:, receipt_url:)
+    return unless target.fetch("type") == "pull_request"
 
-    marker = body.delete_prefix(prefix)
+    {
+      "url" => target_base_url(target),
+      "section" => canonical_pr_description_summary(result:, receipt_url:)
+    }
+  end
+
+  def canonical_pr_description_summary(result:, receipt_url:)
+    status = if result.fetch("ready") && result.fetch("blockers").empty?
+               "Clean — no outstanding findings or follow-ups."
+             elsif result.dig("fields", "verdict") == "UNKNOWN"
+               "Unknown — see the durable receipt."
+             else
+               "Follow-ups remain — see the durable receipt."
+             end
+
+    <<~MARKDOWN.chomp
+      #{PR_SUMMARY_START}
+      ## Completed-batch audit
+
+      **Status:** #{status} [Durable receipt](#{receipt_url}).
+      #{PR_SUMMARY_END}
+    MARKDOWN
+  end
+
+  def comment_marker(body)
+    header = [COMMENT_HEADER, LEGACY_COMMENT_HEADER].find do |candidate|
+      body.start_with?("#{candidate}\n\n")
+    end
+    return unless header
+
+    marker = body.delete_prefix("#{header}\n\n")
     marker if marker_state(marker)
   end
 
   def canonical_comment_body(receipt)
     marker = comment_marker(receipt)
-    return receipt if marker
-    return unless marker_state(receipt)
+    marker ||= receipt if marker_state(receipt)
+    return unless marker
 
-    "#{COMMENT_HEADER}\n\n#{receipt}"
+    "#{COMMENT_HEADER}\n\n#{marker}"
   end
 
   def bot_login?(login)
@@ -938,9 +980,10 @@ module CompletedBatchAuditReceipt
       "chat_reference" => nil,
       "errors" => [e.message]
     }
-    if e.is_a?(PostOutcomeUnknownError)
+    case e
+    when PostOutcomeUnknownError
       result["mutation_state"] = "comment-post-outcome-unknown"
-    elsif e.is_a?(PostReadbackError)
+    when PostReadbackError
       result["mutation_state"] = "comment-created-readback-unknown"
       result["comment_id"] = e.comment_id
     end
