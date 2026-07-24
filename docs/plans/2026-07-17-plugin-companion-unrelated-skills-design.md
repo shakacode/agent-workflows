@@ -8,10 +8,10 @@ migration guarantees introduced for legacy flat Agent Workflows installs.
 
 ## Scope
 
-The change is limited to flat-skill inventory classification and its installer
-regression coverage. It does not change native plugin discovery, ownership
-proof for Source Pack skills, migration staging, rollback, metadata formats, or
-ordinary flat delivery.
+The change is limited to flat-skill inventory classification, fail-closed
+native-plugin root and provenance resolution for that inventory, and regression
+coverage. It does not change ownership proof for Source Pack skills, migration
+staging, rollback, metadata formats, or ordinary flat delivery.
 
 ## State Distinction
 
@@ -30,20 +30,20 @@ on the prior delivery state:
 
 Exact Source Pack skill-name collisions remain blocking unless the legacy flat
 migration can prove that they are unchanged pack-owned copies or managed
-symlinks. For companion installs, collision names come from the intersection of
-the current Source Pack and the verified active native plugin roots. This keeps
-a companion install fail-closed when the active plugin adds a skill after the
-recorded companion revision, without treating every other direct child as
-pack-owned.
+symlinks. For companion installs, collision names are every skill advertised by
+the verified active native plugin roots. This keeps a companion install
+fail-closed both when the active plugin adds a skill after the recorded
+companion revision and when an older active plugin still advertises a skill that
+the current Source Pack has removed. Direct children whose names do not occur in
+the active native plugin remain unrelated.
 
 ## Implementation
 
 Keep the recorded revision only for proving and removing legacy flat ownership.
 Seed the list of unknown-name blockers only while migrating a recorded legacy
 flat installation. For fresh or already-companion states, block direct children
-whose names occur in both the current Source Pack and the verified active native
-plugin roots, and ignore other unrelated direct children. No unrelated path is
-deleted or modified.
+whose names occur in the verified active native plugin roots, and ignore other
+unrelated direct children. No unrelated path is deleted or modified.
 
 Native-root verification is fail-closed. Codex treats the CLI `PATH` column as
 source provenance, matches it against the cache manifest's canonical repository,
@@ -63,9 +63,10 @@ Add installer-level regression cases proving:
    is installed.
 4. The existing legacy flat migration test continues to refuse an unknown
    direct skill without mutation.
-5. A companion reinstall fails without mutation when the current Source Pack
-   and active native plugin add a colliding skill after the recorded install
-   revision.
+5. A companion reinstall fails without mutation when a flat skill collides with
+   any skill advertised by the verified active native plugin, including a skill
+   added after the recorded install revision or removed from the current Source
+   Pack while an older native plugin remains active.
 6. Mixed native-root state fails without mutation when a stale valid cache
    exists beside an invalid authoritative or candidate root.
 
