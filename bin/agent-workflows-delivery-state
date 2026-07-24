@@ -24,6 +24,8 @@ module AgentWorkflowsDeliveryState
     return nil unless File.file?(path)
 
     manifest = JSON.parse(File.binread(path))
+    return nil unless manifest.is_a?(Hash)
+
     skills = manifest.fetch("skills")
     return nil unless skills.is_a?(String) && !skills.empty?
 

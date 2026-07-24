@@ -100,6 +100,37 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_companion_status_reports_scalar_native_manifests_as_unknown
+    ["scw", 123, true].each do |manifest|
+      Dir.mktmpdir("agent-workflows-status-test") do |target|
+        Dir.mktmpdir("agent-workflows-status-source") do |source|
+          File.write(File.join(source, "VERSION"), "9.9.9\n")
+          write_codex_native_state(target)
+          manifest_path = File.join(
+            target,
+            "plugins/cache/agent-workflows/scw/0.1.0/.codex-plugin/plugin.json"
+          )
+          File.write(manifest_path, "#{JSON.generate(manifest)}\n")
+          write_metadata(
+            target,
+            "version" => "9.9.9",
+            "source" => source,
+            "source_revision" => "",
+            "delivery_mode" => "plugin-companion"
+          )
+
+          out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+          payload = JSON.parse(out)
+
+          assert_equal 3, status.exitstatus, out
+          assert_equal "CHECK_FAILED", payload.fetch("status")
+          assert_equal "unknown", payload.dig("native", "state")
+          refute_includes out, "NoMethodError"
+        end
+      end
+    end
+  end
+
   def test_status_fails_closed_on_native_plus_flat_collision_with_guidance
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
