@@ -172,6 +172,56 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_claude_commit_receipt_accepts_a_versionless_plugin_manifest
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "claude")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/commit")
+      FileUtils.mkdir_p(File.join(target, "plugins"))
+      File.write(
+        File.join(target, "settings.json"),
+        "#{JSON.pretty_generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n"
+      )
+      revision = "a" * 40
+      receipt_path = File.join(target, "plugins/installed_plugins.json")
+      receipt = {
+        "version" => 2,
+        "plugins" => {
+          "scw@agent-workflows" => [{
+            "scope" => "user",
+            "installPath" => plugin_root,
+            "version" => "unknown",
+            "gitCommitSha" => revision
+          }]
+        }
+      }
+      File.write(receipt_path, "#{JSON.pretty_generate(receipt)}\n")
+      write_manifest(plugin_root, host: "claude")
+      manifest_path = File.join(plugin_root, ".claude-plugin/plugin.json")
+      manifest = JSON.parse(File.binread(manifest_path))
+      manifest.delete("version")
+      File.write(manifest_path, "#{JSON.pretty_generate(manifest)}\n")
+
+      out, err, status = run_state(
+        "check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", JSON.parse(out).dig("native", "state")
+
+      receipt["plugins"]["scw@agent-workflows"].first.delete("gitCommitSha")
+      File.write(receipt_path, "#{JSON.pretty_generate(receipt)}\n")
+      out, _err, status = run_state(
+        "check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?, out
+      assert_equal "unknown", JSON.parse(out).dig("native", "state")
+      assert_includes JSON.parse(out).dig("native", "reason"), "valid gitCommitSha"
+    end
+  end
+
   def test_plugin_companion_ignores_unrelated_skill_without_install_metadata
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")

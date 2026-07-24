@@ -213,7 +213,19 @@ module AgentWorkflowsDeliveryState
       end
 
       root = File.expand_path(receipt.fetch("installPath"))
-      expected_version = receipt["version"] if receipt["version"].is_a?(String) && !receipt["version"].empty?
+      receipt_version = receipt["version"]
+      if receipt_version == "unknown"
+        revision = receipt["gitCommitSha"]
+        unless revision.is_a?(String) && revision.match?(/\A[0-9a-f]{40}\z/)
+          return {
+            "state" => "unknown",
+            "reason" => "Claude scw plugin Git receipt has no valid gitCommitSha"
+          }
+        end
+      end
+      expected_version = receipt_version if receipt_version.is_a?(String) &&
+                                            !receipt_version.empty? &&
+                                            receipt_version != "unknown"
       names = plugin_manifest_skill_names(root, "claude", expected_version: expected_version)
       unless names
         return {
