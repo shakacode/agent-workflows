@@ -25,6 +25,7 @@ dry_run=false
 fetch=true
 consumer_roots=()
 metadata_name=".agent-workflows-install.json"
+declared_git_source=false
 
 default_target_for_host() {
   case "$1" in
@@ -116,9 +117,34 @@ short_revision() {
   printf '%s\n' "${value:0:12}"
 }
 
-update_source_clone() {
-  [[ "$(git -C "$source" rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ]] || return 0
+validate_declared_git_source() {
+  if [[ ! -e "$source/.git" && ! -L "$source/.git" ]]; then
+    declared_git_source=false
+    return 0
+  fi
+  declared_git_source=true
 
+  local inside_work_tree top_level revision
+  if ! inside_work_tree="$(git -C "$source" rev-parse --is-inside-work-tree 2>&1)" ||
+     [[ "$inside_work_tree" != "true" ]]; then
+    echo "CHECK_FAILED declared Git source is invalid: $inside_work_tree" >&2
+    return 3
+  fi
+  if ! top_level="$(git -C "$source" rev-parse --show-toplevel 2>&1)"; then
+    echo "CHECK_FAILED declared Git source root check failed: $top_level" >&2
+    return 3
+  fi
+  if [[ "$(cd "$top_level" && pwd -P)" != "$(cd "$source" && pwd -P)" ]]; then
+    echo "CHECK_FAILED declared Git source resolves to another worktree root: $top_level" >&2
+    return 3
+  fi
+  if ! revision="$(git -C "$source" rev-parse --verify --quiet 'HEAD^{commit}' 2>&1)"; then
+    echo "CHECK_FAILED declared Git source commit check failed: $revision" >&2
+    return 3
+  fi
+}
+
+update_source_clone() {
   git -C "$source" fetch --quiet --prune origin
   local branch upstream
   branch="$(git -C "$source" branch --show-current 2>/dev/null || true)"
@@ -252,6 +278,10 @@ if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
   exit 3
 fi
 
+if ! validate_declared_git_source; then
+  exit 3
+fi
+
 if [[ "$dry_run" = "true" ]]; then
   status_args=(--host "$host" --target "$target" --source "$source" --delivery-mode "$delivery_mode")
   if [[ "$fetch" = "true" ]]; then
@@ -269,8 +299,11 @@ fi
 
 old_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
 
-if [[ "$fetch" = "true" ]]; then
+if [[ "$fetch" = "true" && "$declared_git_source" = "true" ]]; then
   update_source_clone
+  if ! validate_declared_git_source; then
+    exit 3
+  fi
 fi
 
 backup_target

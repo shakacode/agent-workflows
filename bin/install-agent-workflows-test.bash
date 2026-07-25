@@ -1630,6 +1630,101 @@ test_upgrade_fetches_linked_worktree_source() {
     fail "linked source upgrade installed $installed_revision instead of $expected_revision"
 }
 
+test_upgrade_rejects_a_declared_broken_git_checkout() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  printf 'gitdir: /definitely/missing\n' > "$source/.git"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "broken declared Git source returned $status: $output"
+  assert_contains "$output" "CHECK_FAILED declared Git source is invalid"
+  assert_not_contains "$output" "UPGRADE_COMPLETE"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "broken declared Git source installed workflow metadata"
+}
+
+test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  printf 'gitdir: /definitely/missing\n' > "$source/.git"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "broken declared Git source without fetch returned $status: $output"
+  assert_contains "$output" "CHECK_FAILED declared Git source is invalid"
+  assert_not_contains "$output" "UPGRADE_COMPLETE"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "broken declared Git source without fetch installed workflow metadata"
+}
+
+test_upgrade_fetches_no_plain_standalone_source() {
+  local tmp source target output
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  [[ -e "$target/.agent-workflows-install.json" ]] ||
+    fail "standalone plain source did not install workflow metadata"
+}
+
+test_upgrade_fetches_no_plain_source_nested_in_a_git_checkout() {
+  local tmp parent source target output
+  tmp="$(mktemp -d)"
+  parent="$tmp/parent"
+  source="$parent/plain-pack"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  git -C "$parent" init --quiet
+
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  [[ -e "$target/.agent-workflows-install.json" ]] ||
+    fail "nested plain source did not install workflow metadata"
+}
+
+test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  git -C "$source" update-ref -d HEAD
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "declared Git source without HEAD returned $status: $output"
+  assert_contains "$output" "CHECK_FAILED declared Git source commit check failed"
+  assert_not_contains "$output" "UPGRADE_COMPLETE"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "declared Git source without HEAD installed workflow metadata"
+}
+
 test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
   local tmp source target
   tmp="$(mktemp -d)"
@@ -1846,6 +1941,11 @@ main() {
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
     test_upgrade_fetches_linked_worktree_source
+    test_upgrade_rejects_a_declared_broken_git_checkout
+    test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout
+    test_upgrade_fetches_no_plain_standalone_source
+    test_upgrade_fetches_no_plain_source_nested_in_a_git_checkout
+    test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
     test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds

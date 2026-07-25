@@ -12,6 +12,7 @@ require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
+load SCRIPT
 
 class AgentWorkflowsStatusTest < Minitest::Test
   def setup
@@ -103,6 +104,32 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "UP_TO_DATE", payload.fetch("status")
         assert_equal revision, payload.fetch("available_revision")
       end
+    end
+  end
+
+  def test_declared_broken_git_checkout_does_not_fall_back_to_version
+    Dir.mktmpdir("agent-workflows-status-source") do |source|
+      File.write(File.join(source, "VERSION"), "9.9.9\n")
+      File.write(File.join(source, ".git"), "gitdir: /definitely/missing\n")
+
+      revision, error = AgentWorkflowsStatus.available_revision(source, {}, fetch: false)
+
+      assert_nil revision
+      assert_includes error, "declared Git source is invalid"
+    end
+  end
+
+  def test_plain_pack_nested_in_another_checkout_uses_version
+    Dir.mktmpdir("agent-workflows-status-parent") do |parent|
+      system("git", "-C", parent, "init", "--quiet", exception: true)
+      source = File.join(parent, "plain-pack")
+      FileUtils.mkdir_p(source)
+      File.write(File.join(source, "VERSION"), "9.9.9\n")
+
+      revision, error = AgentWorkflowsStatus.available_revision(source, {}, fetch: false)
+
+      assert_nil error
+      assert_equal "version:9.9.9", revision
     end
   end
 

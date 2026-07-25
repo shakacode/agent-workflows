@@ -110,10 +110,20 @@ module AgentWorkflowsStatus
   def available_revision(source, metadata, fetch:)
     return [nil, "missing source root: #{source}"] unless File.directory?(source)
 
-    inside_work_tree, = git_output(source, "rev-parse", "--is-inside-work-tree")
-    unless inside_work_tree == "true"
+    git_marker = File.join(source, ".git")
+    unless File.exist?(git_marker) || File.symlink?(git_marker)
       version = version_for(source)
       return ["version:#{version}", nil]
+    end
+    inside_work_tree, probe_error = git_output(source, "rev-parse", "--is-inside-work-tree")
+    unless inside_work_tree == "true"
+      reason = probe_error.to_s.empty? ? "not a working tree" : probe_error
+      return [nil, "declared Git source is invalid: #{reason}"]
+    end
+    top_level, top_level_error = git_output(source, "rev-parse", "--show-toplevel")
+    return [nil, "declared Git source root check failed: #{top_level_error}"] if top_level_error
+    unless File.realpath(top_level) == File.realpath(source)
+      return [nil, "declared Git source resolves to another worktree root: #{top_level}"]
     end
 
     ref =
