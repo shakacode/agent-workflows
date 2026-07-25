@@ -1518,6 +1518,41 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
     end
   end
 
+  def test_policy_apply_supplies_fallback_commit_identity_on_clean_runner
+    Dir.mktmpdir("push-downstream-policy-git") do |dir|
+      remote, = seed_valid_remote(dir)
+      empty_gitconfig = File.join(dir, "empty-gitconfig")
+      File.write(empty_gitconfig, "")
+      clean_identity_env = {
+        "GIT_CONFIG_GLOBAL" => empty_gitconfig,
+        "GIT_CONFIG_SYSTEM" => empty_gitconfig,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "user.useConfigOnly",
+        "GIT_CONFIG_VALUE_0" => "true"
+      }
+      previous_env = clean_identity_env.keys.to_h { |key| [key, ENV[key]] }
+      clean_identity_env.each { |key, value| ENV[key] = value }
+      begin
+        with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
+          with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+            out, = capture_io do
+              assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
+            end
+            assert_includes out, "PR local/consumer https://example.test/pr/1"
+          end
+        end
+      ensure
+        previous_env.each do |key, value|
+          value.nil? ? ENV.delete(key) : ENV[key] = value
+        end
+      end
+
+      branch = "refs/heads/agent-workflows/repo-prefix"
+      author = `git --git-dir=#{remote.shellescape} show -s --format='%an <%ae>' #{branch.shellescape}`.strip
+      assert_equal "Agent Workflows <agent-workflows@users.noreply.github.com>", author
+    end
+  end
+
   def test_policy_apply_revalidates_committed_head_when_malicious_pre_commit_stages_readme
     Dir.mktmpdir("push-downstream-policy-git") do |dir|
       remote, = seed_valid_remote(dir)

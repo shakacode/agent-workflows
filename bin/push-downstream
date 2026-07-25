@@ -21,6 +21,8 @@ module PushDownstream
   POLICY_PR_LIST_LIMIT = 100
   POLICY_KEY_PATTERN = /\A[A-Za-z][A-Za-z0-9_]*\z/
   DISABLED_HOOKS_PATH = File::NULL
+  FALLBACK_GIT_USER_NAME = "Agent Workflows"
+  FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
   THIN_CLAUDE = "# CLAUDE.md\n\nSee @AGENTS.md for canonical agent instructions, commands, and policy.\n"
   COMMAND_PURPOSES = {
@@ -1633,7 +1635,8 @@ module PushDownstream
 
     policy_path = AgentWorkflowSeamDoctor::POLICY_CONFIG
     git(clone, "add", "--", policy_path)
-    unless git(clone, "-c", "commit.gpgsign=false", "commit", "-m", POLICY_COMMIT_TITLE)
+    unless git(clone, *git_commit_identity_args(clone), "-c", "commit.gpgsign=false",
+               "commit", "-m", POLICY_COMMIT_TITLE)
       warn "FAIL #{repo.fetch(:nwo)}: refreshed policy commit failed"
       return false
     end
@@ -1821,7 +1824,8 @@ module PushDownstream
 
     policy_path = AgentWorkflowSeamDoctor::POLICY_CONFIG
     git(clone, "add", "--", policy_path)
-    unless git(clone, "-c", "commit.gpgsign=false", "commit", "-m", POLICY_COMMIT_TITLE)
+    unless git(clone, *git_commit_identity_args(clone), "-c", "commit.gpgsign=false",
+               "commit", "-m", POLICY_COMMIT_TITLE)
       warn "FAIL #{repo.fetch(:nwo)}: policy commit failed"
       return false
     end
@@ -1937,6 +1941,16 @@ module PushDownstream
 
   def git(dir, *)
     system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}", "-C", dir, *, out: File::NULL, err: File::NULL)
+  end
+
+  def git_commit_identity_args(dir)
+    {
+      "user.name" => FALLBACK_GIT_USER_NAME,
+      "user.email" => FALLBACK_GIT_USER_EMAIL
+    }.each_with_object([]) do |(key, fallback), args|
+      value, status = Open3.capture2("git", "-C", dir, "config", "--get", key)
+      args.concat(["-c", "#{key}=#{fallback}"]) unless status.success? && !value.strip.empty?
+    end
   end
 
   def existing_pr_url(repo, branch)
