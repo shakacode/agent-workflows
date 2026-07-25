@@ -63,3 +63,46 @@ repos:
   - { repo: react-on-rails-example-migration, preset: ror-demo }
   - { repo: react-webpack-rails-tutorial, preset: ror-demo, base_branch: master }
   - { repo: react-on-rails-demo-ssr-hmr, preset: ror-demo, base_branch: master }
+
+# Policy-only fleet registries never invoke the scaffold synchronizer above.
+# Each fleet lists every allowed policy key and exact target value, so applying
+# one updates only those keys in an already-valid consumer seam.
+policy_fleets:
+  repo-prefix:
+    policy_keys: [repo_prefix]
+    pr_branch: agent-workflows/repo-prefix
+    repos:
+      - { repo: agent-coord-sim-alpha, base_branch: main, policy: { repo_prefix: ACSA } }
+      - { repo: agent-coord-sim-beta, base_branch: main, policy: { repo_prefix: ACSB } }
+      - { repo: agent-coordination, base_branch: main, policy: { repo_prefix: AC } }
+      - { repo: agent-coordination-dashboard, base_branch: main, policy: { repo_prefix: ACD } }
+      - { repo: agent-workflows-com, base_branch: main, policy: { repo_prefix: AWC } }
+      - { repo: blog.hichee.com, base_branch: main, policy: { repo_prefix: HCB } }
+      - { repo: commercial-licensing, base_branch: main, policy: { repo_prefix: CL } }
+      - { repo: control-plane-flow, base_branch: main, policy: { repo_prefix: CPF } }
+      - { repo: cypress-playwright-on-rails, base_branch: master, policy: { repo_prefix: CPOR } }
+      - { repo: e2eonrails-com, base_branch: main, policy: { repo_prefix: E2E } }
+      - { repo: hichee, base_branch: master, policy: { repo_prefix: HC } }
+      - { repo: hichee-backup, base_branch: master, policy: { repo_prefix: HCBK } }
+      - { repo: laniakeabeachhouse.com, base_branch: main, policy: { repo_prefix: LBH } }
+      - { repo: react-on-rails-demo-flagship, base_branch: main, policy: { repo_prefix: RORF } }
+      - { repo: react-on-rails-demo-gumroad-rsc, base_branch: main, policy: { repo_prefix: RORG } }
+      - { repo: react-on-rails-demo-hacker-news-rsc, base_branch: main, policy: { repo_prefix: RORHN } }
+      - { repo: react-on-rails-demo-marketplace-rsc, base_branch: main, policy: { repo_prefix: RORM } }
+      - { repo: react-on-rails-demo-ssr-hmr, base_branch: master, policy: { repo_prefix: RORSH } }
+      - { repo: react-on-rails-demos, base_branch: main, policy: { repo_prefix: RORD } }
+      - { repo: react-on-rails-example-migration, base_branch: main, policy: { repo_prefix: RORMIG } }
+      - { repo: react-on-rails-example-open-flights, base_branch: main, policy: { repo_prefix: ROROF } }
+      - { repo: react-on-rails-starter-tanstack, base_branch: main, policy: { repo_prefix: RORTS } }
+      - { repo: react-ppr-from-scratch, base_branch: main, policy: { repo_prefix: PPR } }
+      - { repo: react-webpack-rails-tutorial, base_branch: master, policy: { repo_prefix: RWRT } }
+      - { repo: react_on_rails, base_branch: main, policy: { repo_prefix: ROR } }
+      - { repo: react_on_rails-demo-octochangelog-on-rails-pro, base_branch: main, policy: { repo_prefix: ROROCT } }
+      - { repo: react_on_rails_rsc, base_branch: main, policy: { repo_prefix: RSC } }
+      - { repo: reactonrails.com, base_branch: main, policy: { repo_prefix: RORCOM } }
+      - { repo: sc-website, base_branch: master, policy: { repo_prefix: SCW } }
+      - { repo: shakaflow, base_branch: main, policy: { repo_prefix: SF } }
+      - { repo: shakapacker, base_branch: main, policy: { repo_prefix: SP } }
+      - { repo: shakaperf, base_branch: main, policy: { repo_prefix: PERF } }
+      - { repo: shakastack-com, base_branch: main, policy: { repo_prefix: SS } }
+      - { repo: team-reports-plugin, base_branch: main, policy: { repo_prefix: TRP } }

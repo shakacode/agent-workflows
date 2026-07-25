@@ -145,6 +145,36 @@ bin/push-downstream --root /path/to/consumer/repo
 bin/push-downstream --root /path/to/consumer/repo --apply
 ```
 
+### Policy-Only Fleets
+
+`policy_fleets` in `downstream.yml` is an organized registry for a narrowly
+selected policy rollout. Unlike the normal registry, a policy fleet never
+creates command wrappers, pointers, trust files, or `CLAUDE.md`; it requires
+the consumer's existing seam to pass the seam doctor before it can update the
+existing `.agents/agent-workflow.yml` file. Every fleet declares its complete
+set of allowed policy keys, and every member must provide exactly those values.
+Unknown fleet names, unknown `--only` selections, malformed registry entries,
+missing policy configs, or invalid seams fail closed.
+
+The registered repo-prefix fleet covers the confirmed consumer inventory. Plan
+it first, then apply it to create one dedicated `agent-workflows/repo-prefix`
+branch and PR per consumer:
+
+```bash
+bin/push-downstream --policy-fleet repo-prefix
+bin/push-downstream --policy-fleet repo-prefix --apply
+```
+
+To make a single consumer PR after reviewing the fleet plan:
+
+```bash
+bin/push-downstream --policy-fleet repo-prefix --only hichee --apply
+```
+
+Policy-fleet mode stages only `.agents/agent-workflow.yml`, and only changes
+the key(s) explicitly declared by the selected fleet. It does not use presets
+or the broad scaffold reconciliation path.
+
 Seed a repo-local trust config locally:
 
 ```bash
@@ -165,6 +195,7 @@ wrappers before relying on them for real validation.
 | `--config FILE` | Registry path (default `downstream.yml`). |
 | `--presets FILE` | Preset path (default `seam-presets.yml`). |
 | `--root DIR` | Reconcile one checkout instead of the registry; no network. |
+| `--policy-fleet NAME` | Run a named policy-only fleet; updates only that fleet's explicitly registered policy keys. |
 | `--only a,b` | Restrict to named repos (selects even if `enabled: false`). |
 | `--all` | Include repos marked `enabled: false`. |
 | `--apply` | Perform writes; in registry mode, push branches and open PRs. |

@@ -5,6 +5,7 @@
 # repositories listed in downstream.yml.
 
 require "fileutils"
+require "json"
 require "open3"
 require "optparse"
 require "tmpdir"
@@ -16,6 +17,9 @@ module PushDownstream
   module_function
 
   COMMIT_TITLE = "Add agent workflow binstub contract"
+  POLICY_COMMIT_TITLE = "Configure agent workflow repo policy"
+  POLICY_PR_LIST_LIMIT = 100
+  POLICY_KEY_PATTERN = /\A[A-Za-z][A-Za-z0-9_]*\z/
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
   THIN_CLAUDE = "# CLAUDE.md\n\nSee @AGENTS.md for canonical agent instructions, commands, and policy.\n"
   COMMAND_PURPOSES = {
@@ -87,6 +91,92 @@ module PushDownstream
     end
   end
 
+  def load_policy_fleet(config_path, fleet_name)
+    data = YAML.safe_load(File.read(config_path), aliases: false) || {}
+    raise "invalid downstream registry: expected a mapping" unless data.is_a?(Hash)
+
+    fleets = data["policy_fleets"]
+    raise "missing policy_fleets registry" unless fleets.is_a?(Hash)
+
+    fleet = fleets[fleet_name]
+    raise "unknown policy fleet: #{fleet_name}" unless fleet.is_a?(Hash)
+
+    defaults = data["defaults"] || {}
+    keys = fleet["policy_keys"]
+    raise "policy fleet #{fleet_name} must declare policy_keys" unless keys.is_a?(Array) && !keys.empty?
+    unless keys.all? { |key| key.is_a?(String) && key.match?(POLICY_KEY_PATTERN) } && keys.uniq.length == keys.length
+      raise "policy fleet #{fleet_name} policy_keys must be unique top-level YAML key names"
+    end
+
+    pr_branch = fleet["pr_branch"]
+    raise "policy fleet #{fleet_name} must declare pr_branch" unless pr_branch.is_a?(String) && !pr_branch.empty?
+
+    entries = fleet["repos"]
+    raise "policy fleet #{fleet_name} must declare repos" unless entries.is_a?(Array) && !entries.empty?
+
+    repos = entries.map do |entry|
+      raise "policy fleet #{fleet_name} repo entry must be a mapping" unless entry.is_a?(Hash)
+
+      merged = defaults.merge("pr_branch" => pr_branch).merge(entry)
+      owner = merged.fetch("owner")
+      repo = merged.fetch("repo")
+      base_branch = merged.fetch("base_branch")
+      repo_pr_branch = merged.fetch("pr_branch")
+      policy = merged.fetch("policy")
+      unless owner.is_a?(String) && !owner.empty? && repo.is_a?(String) && !repo.empty? &&
+             base_branch.is_a?(String) && !base_branch.empty? &&
+             repo_pr_branch.is_a?(String) && !repo_pr_branch.empty? && policy.is_a?(Hash)
+        raise "invalid policy fleet entry for #{repo || '<unknown>'}"
+      end
+      if repo_pr_branch == base_branch
+        raise "policy fleet #{fleet_name} #{owner}/#{repo} pr_branch must differ from base_branch (#{base_branch})"
+      end
+      unless policy.keys.sort == keys.sort
+        raise "policy fleet #{fleet_name} #{owner}/#{repo} must set exactly: #{keys.join(', ')}"
+      end
+
+      {
+        owner: owner,
+        repo: repo,
+        nwo: "#{owner}/#{repo}",
+        base_branch: base_branch,
+        pr_branch: repo_pr_branch,
+        policy: stringify_keys(policy)
+      }
+    end
+
+    duplicate_repos = repos.group_by { |repo| repo.fetch(:nwo) }.select { |_nwo, matches| matches.length > 1 }.keys
+    raise "policy fleet #{fleet_name} has duplicate repos: #{duplicate_repos.join(', ')}" unless duplicate_repos.empty?
+
+    validate_policy_fleet_values!(fleet_name, repos, keys)
+    { name: fleet_name, policy_keys: keys, repos: repos }
+  rescue KeyError => e
+    raise "policy fleet #{fleet_name} is missing #{e.key}"
+  end
+
+  def validate_policy_fleet_values!(fleet_name, repos, keys)
+    repos.each do |repo|
+      keys.each do |key|
+        value = repo.fetch(:policy).fetch(key)
+        begin
+          policy_scalar_yaml(value)
+        rescue RuntimeError
+          raise "policy fleet #{fleet_name} has unsupported scalar #{key} for #{repo.fetch(:nwo)}"
+        end
+      end
+    end
+
+    return unless keys.include?(AgentWorkflowSeamDoctor::REPO_PREFIX_POLICY_KEY)
+
+    prefixes = repos.map { |repo| repo.fetch(:policy).fetch(AgentWorkflowSeamDoctor::REPO_PREFIX_POLICY_KEY) }
+    unless prefixes.all? { |prefix| prefix.is_a?(String) && prefix.match?(AgentWorkflowSeamDoctor::REPO_PREFIX_PATTERN) }
+      raise "policy fleet #{fleet_name} has an invalid repo_prefix"
+    end
+
+    duplicates = prefixes.group_by(&:itself).select { |_prefix, matches| matches.length > 1 }.keys
+    raise "policy fleet #{fleet_name} has duplicate repo_prefix values: #{duplicates.join(', ')}" unless duplicates.empty?
+  end
+
   def load_presets(path)
     YAML.safe_load(File.read(path), aliases: false) || {}
   end
@@ -139,6 +229,21 @@ module PushDownstream
     else
       repos.select { |repo| repo[:enabled] }
     end
+  end
+
+  def select_policy_fleet_repos(repos, only: nil)
+    return repos if only.nil?
+
+    normalized_only = only.map(&:strip)
+    if normalized_only.empty? || normalized_only.any?(&:empty?)
+      raise "policy fleet selection must include at least one non-blank repository"
+    end
+
+    available = repos.flat_map { |repo| [repo.fetch(:repo), repo.fetch(:nwo)] }
+    missing = normalized_only - available
+    raise "unknown policy fleet selection: #{missing.join(', ')}" unless missing.empty?
+
+    repos.select { |repo| normalized_only.include?(repo.fetch(:repo)) || normalized_only.include?(repo.fetch(:nwo)) }
   end
 
   def reconcile_agents_pointer(text)
@@ -578,6 +683,26 @@ module PushDownstream
     failures.zero? ? 0 : 1
   end
 
+  def run_policy_fleet(config_path, fleet_name:, only:, apply:)
+    fleet = load_policy_fleet(config_path, fleet_name)
+    repos = select_policy_fleet_repos(fleet.fetch(:repos), only: only)
+
+    unless apply
+      puts "Planned policy-only fleet #{fleet.fetch(:name)} (#{repos.length} repo(s)); " \
+           "re-run with --apply to update only #{fleet.fetch(:policy_keys).join(', ')} in .agents/agent-workflow.yml:"
+      repos.each do |repo|
+        values = fleet.fetch(:policy_keys).map { |key| "#{key}=#{repo.fetch(:policy).fetch(key)}" }.join(", ")
+        puts "- #{repo.fetch(:nwo)} (base #{repo.fetch(:base_branch)} -> branch #{repo.fetch(:pr_branch)}; #{values})"
+      end
+      return 0
+    end
+
+    repos.count { |repo| !sync_policy_repo(repo, fleet.fetch(:policy_keys)) }.zero? ? 0 : 1
+  rescue RuntimeError => e
+    warn "FAIL policy fleet #{fleet_name}: #{e.message}"
+    1
+  end
+
   def sync_repo(repo, contract)
     Dir.mktmpdir("push-downstream-sync") do |dir|
       clone = File.join(dir, repo[:repo])
@@ -621,6 +746,974 @@ module PushDownstream
     end
   end
 
+  def reconcile_policy_keys(root, selected_policy)
+    path = File.join(root, AgentWorkflowSeamDoctor::POLICY_CONFIG)
+    policy_config_path_must_be_safe_regular_file!(root, path)
+
+    content = File.binread(path).force_encoding("UTF-8").scrub
+    unless policy_config_has_exactly_one_document?(content)
+      raise "policy config must contain exactly one YAML document; policy-only reconciliation is unsafe"
+    end
+
+    selected_policy.each do |key, value|
+      raise "invalid selected policy key: #{key}" unless key.is_a?(String) && !key.empty?
+      unless value.is_a?(String) || value.is_a?(Numeric) || value == true || value == false
+        raise "invalid selected policy value for key: #{key} (expected a scalar)"
+      end
+    end
+
+    top_level_key_counts = policy_top_level_string_key_counts(content)
+    unless top_level_key_counts
+      raise "policy config has ambiguous or non-scalar top-level keys; policy-only reconciliation is unsafe"
+    end
+
+    duplicate_selected_keys = selected_policy.keys.select do |key|
+      top_level_key_counts.fetch(key, 0) > 1
+    end
+    unless duplicate_selected_keys.empty?
+      raise "selected policy key is ambiguous or not a top-level scalar: #{duplicate_selected_keys.join(', ')}"
+    end
+
+    entries = policy_top_level_entries(content)
+    unless entries
+      raise "policy config has ambiguous or non-scalar top-level policy keys; policy-only reconciliation is unsafe"
+    end
+
+    unsupported_selected_keys = policy_selected_keys_with_unsupported_entries(entries, selected_policy.keys)
+    unless unsupported_selected_keys.empty?
+      raise "selected policy key is not a supported single-line top-level scalar: #{unsupported_selected_keys.join(', ')}"
+    end
+
+    existing = AgentWorkflowSeamDoctor.load_policy_config(path)
+    raise "invalid policy config: #{AgentWorkflowSeamDoctor::POLICY_CONFIG}" unless existing.is_a?(Hash)
+
+    changes = selected_policy.reject { |key, value| policy_values_equal?(existing[key], value) }
+    return false if changes.empty?
+
+    appended_policy = {}
+    updated = content.dup
+    changes.each do |key, value|
+      if existing.key?(key)
+        raise "selected policy key is not a scalar: #{key}" unless existing[key].is_a?(String) || existing[key].is_a?(Numeric) || existing[key] == true || existing[key] == false
+
+        updated_entries = policy_top_level_entries(updated)
+        entry = updated_entries && updated_entries[key]
+        raise "selected policy key is ambiguous or not a top-level scalar: #{key}" unless entry
+
+        existing_line = entry.fetch(:raw)
+        unless policy_line_represents_single_line_scalar?(existing_line, key, existing[key])
+          raise "selected policy key is not a supported single-line top-level scalar: #{key}"
+        end
+
+        prefix = existing_line.match(policy_key_prefix_pattern(key))[1]
+        leading_whitespace, suffix = policy_scalar_line_layout(existing_line, prefix)
+        replacement = "#{prefix}#{leading_whitespace}#{policy_scalar_yaml(value)}#{suffix}"
+        updated = replace_policy_entry(updated, entry, replacement)
+      else
+        unless policy_allows_top_level_append?(content)
+          raise "cannot append selected policy key outside a top-level block mapping"
+        end
+
+        updated << "\n" unless updated.empty? || updated.end_with?("\n")
+        updated << "#{policy_key_yaml(key)}: #{policy_scalar_yaml(value)}\n"
+        appended_policy[key] = value
+      end
+    end
+
+    unless appended_policy.empty? || policy_appended_keys_round_trip?(updated, appended_policy)
+      raise "appended policy keys do not round-trip exactly"
+    end
+
+    write_if_changed(path, updated)
+  rescue Psych::Exception
+    raise "invalid policy config: #{AgentWorkflowSeamDoctor::POLICY_CONFIG}"
+  end
+
+  def policy_config_path_must_be_safe_regular_file!(root, path)
+    root_path = File.expand_path(root)
+    policy_path = File.expand_path(path)
+    policy_parent = File.dirname(policy_path)
+    unless policy_path == File.join(root_path, AgentWorkflowSeamDoctor::POLICY_CONFIG)
+      raise "policy config path escapes root: #{AgentWorkflowSeamDoctor::POLICY_CONFIG}"
+    end
+
+    begin
+      [root_path, policy_parent].each do |ancestor|
+        stat = File.lstat(ancestor)
+        unless stat.directory? && !stat.symlink?
+          raise "policy config path has a symlink or non-directory ancestor: #{ancestor}"
+        end
+      end
+
+      policy_config_stat = File.lstat(path)
+    rescue Errno::ENOENT
+      raise "missing policy config: #{AgentWorkflowSeamDoctor::POLICY_CONFIG}"
+    end
+    unless policy_config_stat.file? && !policy_config_stat.symlink?
+      raise "policy config must be a regular non-symlink file: #{AgentWorkflowSeamDoctor::POLICY_CONFIG}"
+    end
+
+    resolved_root = File.realpath(root_path)
+    resolved_policy_path = File.realpath(policy_path)
+    return if resolved_policy_path.start_with?("#{resolved_root}#{File::SEPARATOR}")
+
+    raise "policy config path escapes root: #{AgentWorkflowSeamDoctor::POLICY_CONFIG}"
+  end
+
+  def policy_scalar_yaml(value)
+    unless valid_policy_scalar?(value)
+      raise "invalid policy scalar"
+    end
+
+    serialized = YAML.dump(value)
+    scalar = serialized.sub(/\A---[\t ]?/, "").delete_suffix("\n")
+    if scalar.match?(/[\r\n]/)
+      raise "policy scalar cannot be represented on one YAML line"
+    end
+
+    unless serialized.start_with?("--- ") && serialized.end_with?("\n")
+      raise "policy scalar cannot be represented on one YAML line"
+    end
+
+    round_trip = YAML.safe_load(scalar, aliases: false)
+    unless round_trip.instance_of?(value.class) && round_trip == value
+      raise "policy scalar does not round-trip exactly"
+    end
+
+    scalar
+  rescue Psych::Exception
+    raise "invalid policy scalar"
+  end
+
+  def policy_key_yaml(key)
+    raise "invalid selected policy key: #{key}" unless key.is_a?(String) && key.match?(POLICY_KEY_PATTERN)
+
+    serialized = YAML.dump(key)
+    scalar = serialized.sub(/\A---[\t ]?/, "").delete_suffix("\n")
+    unless serialized.start_with?("--- ") && serialized.end_with?("\n") && !scalar.match?(/[\r\n]/)
+      raise "policy key cannot be represented on one YAML line"
+    end
+
+    parsed = YAML.safe_load("#{scalar}: marker\n", aliases: false)
+    unless parsed.is_a?(Hash) && parsed.keys == [key] && parsed[key] == "marker"
+      raise "policy key does not round-trip exactly"
+    end
+
+    scalar
+  rescue Psych::Exception
+    raise "invalid selected policy key: #{key}"
+  end
+
+  def valid_policy_scalar?(value)
+    case value
+    when String
+      true
+    when true, false
+      true
+    when Integer
+      true
+    when Float
+      value.finite? && !(value.zero? && (1.0 / value).negative?)
+    else
+      false
+    end
+  end
+
+  def policy_values_equal?(actual, desired)
+    actual.instance_of?(desired.class) && actual == desired
+  end
+
+  def policy_line_represents_single_line_scalar?(line, key, value)
+    match = line.match(policy_key_prefix_pattern(key))
+    return false if match.nil? || line.delete_prefix(match[0]).lstrip.start_with?("|", ">")
+
+    parsed = YAML.safe_load(line, aliases: false)
+    parsed.is_a?(Hash) && parsed.keys == [key] && policy_values_equal?(parsed[key], value)
+  rescue Psych::Exception
+    false
+  end
+
+  def policy_scalar_line_layout(line, prefix)
+    remainder = line.delete_prefix(prefix)
+    terminal_newline =
+      if remainder.end_with?("\r\n")
+        "\r\n"
+      elsif remainder.end_with?("\n")
+        "\n"
+      else
+        ""
+      end
+    remainder = remainder.delete_suffix(terminal_newline)
+    comment_index = nil
+    quote = nil
+    escaped = false
+    remainder.each_char.with_index do |character, index|
+      if quote == '"' && escaped
+        escaped = false
+      elsif quote == '"' && character == "\\"
+        escaped = true
+      elsif quote
+        quote = nil if character == quote
+      elsif ['"', "'"].include?(character)
+        quote = character
+      elsif character == "#" && index.positive? && remainder[index - 1].match?(/[\t ]/)
+        comment_index = index
+        break
+      end
+    end
+
+    suffix_start = comment_index || remainder.length
+    suffix_start -= 1 while suffix_start.positive? && remainder[suffix_start - 1].match?(/[\t ]/)
+    scalar_portion = remainder[0...suffix_start]
+    leading_whitespace = scalar_portion[/\A[\t ]*/]
+    suffix = "#{remainder[suffix_start..]}#{terminal_newline}"
+    [leading_whitespace, suffix]
+  end
+
+  def policy_appended_keys_round_trip?(content, appended_policy)
+    parsed = YAML.safe_load(content, aliases: false)
+    parsed.is_a?(Hash) && appended_policy.all? do |key, value|
+      parsed.key?(key) && policy_values_equal?(parsed[key], value)
+    end
+  rescue Psych::Exception
+    false
+  end
+
+  def policy_allows_top_level_append?(content)
+    return false if content.match?(/^\.\.\.[\t ]*(?:#[^\r\n]*)?\r?$/)
+
+    first_content_line = content.lines.find do |line|
+      stripped = line.strip
+      !stripped.empty? && !stripped.start_with?("#") && stripped != "---"
+    end
+    return false if first_content_line.nil?
+
+    first_content_line.match?(/\A(?:[A-Za-z][A-Za-z0-9_]*|'[^']*'|"[^"]*")[\t ]*:/)
+  end
+
+  def policy_key_prefix_pattern(key)
+    /^((?:#{policy_key_name_pattern(key)})[\t ]*:)/
+  end
+
+  def policy_key_name_pattern(key)
+    escaped = Regexp.escape(key)
+    "(?:#{escaped}|'#{escaped}'|\"#{escaped}\")"
+  end
+
+  def policy_key_line_pattern(key)
+    /^#{policy_key_name_pattern(key)}[\t ]*:[^\n]*(?:\n|\z)/
+  end
+
+  def policy_patch_line_pattern(key)
+    /\A[+-]#{policy_key_name_pattern(key)}[\t ]*:[^\n]*\n?\z/
+  end
+
+  def sync_policy_repo(repo, policy_keys)
+    Dir.mktmpdir("push-downstream-policy") do |dir|
+      clone = File.join(dir, repo.fetch(:repo))
+      unless system("git", "clone", "--depth", "1", "--branch", repo.fetch(:base_branch),
+                    repo_url(repo), clone, out: File::NULL, err: File::NULL)
+        warn "FAIL #{repo.fetch(:nwo)}: clone of #{repo.fetch(:base_branch)} failed"
+        return false
+      end
+
+      base_preflight_issues = AgentWorkflowSeamDoctor.check(clone)
+      unless base_preflight_issues.empty?
+        warn "FAIL #{repo.fetch(:nwo)}: seam doctor on current base before policy update: #{base_preflight_issues.join('; ')}"
+        return false
+      end
+
+      selected_policy = repo.fetch(:policy).slice(*policy_keys)
+      unless selected_policy.keys.sort == policy_keys.sort
+        warn "FAIL #{repo.fetch(:nwo)}: policy fleet selection is incomplete"
+        return false
+      end
+
+      unless policy_base_selected_keys_are_unambiguous?(repo, clone, policy_keys)
+        return false
+      end
+
+      branch_state = checkout_sync_branch(repo, clone)
+      unless branch_state
+        warn "FAIL #{repo.fetch(:nwo)}: could not prepare branch #{repo.fetch(:pr_branch)}"
+        return false
+      end
+
+      if branch_state == :existing_remote && !policy_branch_isolated?(repo, clone, policy_keys)
+        return false
+      end
+
+      if branch_state == :existing_remote && policy_base_has_desired_values?(repo, clone, selected_policy)
+        unless policy_base_ref_matches_remote?(repo, clone)
+          warn "FAIL #{repo.fetch(:nwo)}: current base moved while checking retained policy branch; rerun from fresh state"
+          return false
+        end
+
+        open_pr_url, pr_query_succeeded = policy_open_pr_state(repo, any_base: true)
+        unless pr_query_succeeded
+          warn "FAIL #{repo.fetch(:nwo)}: could not prove whether the retained policy branch has an open PR on any base before reporting up to date; rerun after GitHub is available"
+          return false
+        end
+        unless open_pr_url.nil?
+          warn "FAIL #{repo.fetch(:nwo)}: retained policy branch has open PR on any base #{open_pr_url}; close it before reporting up to date"
+          return false
+        end
+
+        puts "UP_TO_DATE #{repo.fetch(:nwo)}"
+        return true
+      end
+
+      expected_remote_branch_head = nil
+      if branch_state == :existing_remote
+        open_pr_url, pr_query_succeeded, pr_base, open_pr_matches = policy_open_pr_state(repo, any_base: true)
+        open_pr_matches ||= open_pr_url ? [{ "url" => open_pr_url, "baseRefName" => pr_base }] : []
+        alternate_base_pr = open_pr_matches.find do |pull_request|
+          pull_request.fetch("baseRefName", nil) != repo.fetch(:base_branch)
+        end
+        if alternate_base_pr
+          alternate_url = normalize_url(alternate_base_pr.fetch("url", nil))
+          alternate_base = alternate_base_pr.fetch("baseRefName", nil) || "unknown"
+          warn "FAIL #{repo.fetch(:nwo)}: retained policy branch has open PR on alternate base #{alternate_base} #{alternate_url}; rebase or close it before policy update"
+          return false
+        end
+        unless pr_query_succeeded
+          warn "FAIL #{repo.fetch(:nwo)}: could not prove whether the retained policy branch has an open PR on any base before policy update; rerun after GitHub is available"
+          return false
+        end
+
+        expected_remote_branch_head = local_ref_head(clone, "refs/remotes/origin/#{repo.fetch(:pr_branch)}")
+        if expected_remote_branch_head.nil?
+          warn "FAIL #{repo.fetch(:nwo)}: could not resolve retained policy branch head before policy update"
+          return false
+        end
+      end
+
+      preflight_issues = AgentWorkflowSeamDoctor.check(clone)
+      unless preflight_issues.empty?
+        warn "FAIL #{repo.fetch(:nwo)}: seam doctor before policy update: #{preflight_issues.join('; ')}"
+        return false
+      end
+
+      begin
+        changed = reconcile_policy_keys(clone, selected_policy)
+      rescue RuntimeError => e
+        warn "FAIL #{repo.fetch(:nwo)}: #{e.message}"
+        return false
+      end
+
+      issues = AgentWorkflowSeamDoctor.check(clone)
+      unless issues.empty?
+        warn "FAIL #{repo.fetch(:nwo)}: seam doctor after policy update: #{issues.join('; ')}"
+        return false
+      end
+
+      unless changed
+        if branch_state == :existing_remote
+          open_pr_url, pr_query_succeeded = policy_open_pr_state(repo)
+          unless pr_query_succeeded
+            warn "FAIL #{repo.fetch(:nwo)}: could not prove whether the retained policy branch has an open PR; rerun after GitHub is available"
+            return false
+          end
+          unless open_pr_url.nil?
+            return report_retained_policy_pr(repo, clone, open_pr_url)
+          end
+
+          return refresh_policy_branch_from_base(repo, clone, selected_policy)
+        end
+
+        puts "UP_TO_DATE #{repo.fetch(:nwo)}"
+        return true
+      end
+
+      open_policy_pull_request(
+        repo,
+        clone,
+        expected_remote_branch_head: expected_remote_branch_head,
+        require_new_remote_branch: branch_state == :new_local
+      )
+    end
+  end
+
+  def policy_branch_isolated?(repo, clone, policy_keys)
+    merge_base = policy_branch_merge_base(repo, clone)
+    return false if merge_base.nil?
+
+    base_content = policy_config_content_at_ref(clone, merge_base)
+    head_content = policy_config_content_at_ref(clone, "HEAD")
+    unless base_content && head_content && policy_config_has_exactly_one_document?(base_content) &&
+           policy_config_has_exactly_one_document?(head_content)
+      warn "FAIL #{repo.fetch(:nwo)}: existing policy branch does not have exactly one YAML document; policy-only isolation is unsafe"
+      return false
+    end
+    base_policy = policy_config_raw_from_content(base_content)
+    head_policy = policy_config_raw_from_content(head_content)
+    unless base_policy && head_policy && policy_unselected_values_match?(base_policy, head_policy, policy_keys)
+      warn "FAIL #{repo.fetch(:nwo)}: existing policy branch changes parsed unselected policy values"
+      return false
+    end
+    unless policy_selected_keys_are_supported_in_contents?(base_content, head_content, policy_keys)
+      warn "FAIL #{repo.fetch(:nwo)}: existing policy branch has an unsupported selected top-level policy scalar; policy-only isolation is unsafe"
+      return false
+    end
+    unless policy_unselected_entries_are_unchanged?(base_content, head_content, policy_keys)
+      warn "FAIL #{repo.fetch(:nwo)}: existing policy branch changes content outside selected top-level policy lines"
+      return false
+    end
+
+    unless policy_branch_commits_are_isolated?(repo, clone, merge_base, policy_keys)
+      return false
+    end
+
+    changed_paths, status = Open3.capture2("git", "-C", clone, "diff", "--name-only", merge_base, "HEAD")
+    unless status.success?
+      warn "FAIL #{repo.fetch(:nwo)}: could not compare existing policy branch with its merge base"
+      return false
+    end
+
+    paths = changed_paths.lines.map(&:strip).reject(&:empty?)
+    unexpected_paths = paths - [AgentWorkflowSeamDoctor::POLICY_CONFIG]
+    unless unexpected_paths.empty?
+      warn "FAIL #{repo.fetch(:nwo)}: existing policy branch includes non-policy paths: #{unexpected_paths.join(', ')}"
+      return false
+    end
+
+    unless paths.empty?
+      patch, patch_status = Open3.capture2(
+        "git", "-C", clone, "diff", "--no-ext-diff", "--unified=0", merge_base, "HEAD", "--",
+        AgentWorkflowSeamDoctor::POLICY_CONFIG
+      )
+      unless patch_status.success? && policy_patch_allows_only_selected_lines?(patch, policy_keys)
+        warn "FAIL #{repo.fetch(:nwo)}: existing policy branch changes content outside selected top-level policy lines"
+        return false
+      end
+    end
+
+    head_key_counts = policy_top_level_string_key_counts(head_content)
+    unless head_key_counts
+      warn "FAIL #{repo.fetch(:nwo)}: existing policy branch has ambiguous or non-scalar top-level policy keys; policy-only isolation is unsafe"
+      return false
+    end
+    duplicate_keys = policy_keys.select { |key| head_key_counts.fetch(key, 0) > 1 }
+    unless duplicate_keys.empty?
+      warn "FAIL #{repo.fetch(:nwo)}: existing policy branch has ambiguous selected policy keys: #{duplicate_keys.join(', ')}"
+      return false
+    end
+
+    true
+  end
+
+  def policy_branch_commits_are_isolated?(repo, clone, merge_base, policy_keys)
+    commits, status = Open3.capture2("git", "-C", clone, "rev-list", "#{merge_base}..HEAD")
+    unless status.success?
+      warn "FAIL #{repo.fetch(:nwo)}: could not enumerate commits on existing policy branch"
+      return false
+    end
+
+    commits.lines.map(&:strip).reject(&:empty?).each do |commit|
+      parents, parent_status = Open3.capture2("git", "-C", clone, "show", "-s", "--format=%P", commit)
+      unless parent_status.success?
+        warn "FAIL #{repo.fetch(:nwo)}: could not inspect parents for existing policy branch commit #{commit}"
+        return false
+      end
+
+      parent_refs = parents.split
+      if parent_refs.empty?
+        warn "FAIL #{repo.fetch(:nwo)}: existing policy branch commit #{commit} has no parent; policy-only isolation is unsafe"
+        return false
+      end
+
+      parent_refs.each do |parent|
+        changed_paths, changed_paths_status = Open3.capture2("git", "-C", clone, "diff", "--name-only", parent, commit)
+        unless changed_paths_status.success?
+          warn "FAIL #{repo.fetch(:nwo)}: could not inspect existing policy branch commit #{commit}"
+          return false
+        end
+
+        paths = changed_paths.lines.map(&:strip).reject(&:empty?)
+        unexpected_paths = paths - [AgentWorkflowSeamDoctor::POLICY_CONFIG]
+        unless unexpected_paths.empty?
+          warn "FAIL #{repo.fetch(:nwo)}: existing policy branch includes non-policy paths: #{unexpected_paths.join(', ')} (commit #{commit})"
+          return false
+        end
+
+        next if paths.empty?
+
+        parent_content = policy_config_content_at_ref(clone, parent)
+        commit_content = policy_config_content_at_ref(clone, commit)
+        unless policy_unselected_entries_are_unchanged?(parent_content, commit_content, policy_keys)
+          warn "FAIL #{repo.fetch(:nwo)}: existing policy branch changes content outside selected top-level policy lines (commit #{commit})"
+          return false
+        end
+
+        patch, patch_status = Open3.capture2(
+          "git", "-C", clone, "diff", "--no-ext-diff", "--unified=0", parent, commit, "--",
+          AgentWorkflowSeamDoctor::POLICY_CONFIG
+        )
+        unless patch_status.success? && policy_patch_allows_only_selected_lines?(patch, policy_keys)
+          warn "FAIL #{repo.fetch(:nwo)}: existing policy branch changes content outside selected top-level policy lines (commit #{commit})"
+          return false
+        end
+      end
+    end
+
+    true
+  end
+
+  def policy_branch_merge_base(repo, clone)
+    base_ref = "origin/#{repo.fetch(:base_branch)}"
+    merge_base, status = Open3.capture2("git", "-C", clone, "merge-base", base_ref, "HEAD")
+    return merge_base.strip if status.success? && !merge_base.strip.empty?
+
+    unless shallow_git_repository?(clone)
+      warn "FAIL #{repo.fetch(:nwo)}: could not find merge base for existing policy branch"
+      return nil
+    end
+
+    unless system("git", "-C", clone, "fetch", "--unshallow", "origin", out: File::NULL, err: File::NULL)
+      warn "FAIL #{repo.fetch(:nwo)}: could not deepen history for existing policy branch"
+      return nil
+    end
+
+    merge_base, status = Open3.capture2("git", "-C", clone, "merge-base", base_ref, "HEAD")
+    if status.success? && !merge_base.strip.empty?
+      merge_base.strip
+    else
+      warn "FAIL #{repo.fetch(:nwo)}: could not find merge base for existing policy branch"
+      nil
+    end
+  end
+
+  def shallow_git_repository?(clone)
+    output, status = Open3.capture2("git", "-C", clone, "rev-parse", "--is-shallow-repository")
+    status.success? && output.strip == "true"
+  end
+
+  def policy_patch_allows_only_selected_lines?(patch, policy_keys)
+    previous_was_selected_policy_line = false
+    lines = patch.each_line.to_a
+    index = 0
+    while index < lines.length
+      line = lines.fetch(index)
+      if line.start_with?("diff --git ", "index ", "--- ", "+++ ", "@@ ")
+        previous_was_selected_policy_line = false
+        index += 1
+        next
+      end
+      if line.start_with?("\\ No newline at end of file")
+        return false unless previous_was_selected_policy_line
+
+        index += 1
+        next
+      end
+      unless line.start_with?("+", "-")
+        return false
+      end
+
+      if eof_newline_normalization_before_selected_insertion?(lines, index, policy_keys)
+        previous_was_selected_policy_line = true
+        index += 4
+        next
+      end
+
+      previous_was_selected_policy_line = policy_keys.any? { |key| line.match?(policy_patch_line_pattern(key)) }
+      return false unless previous_was_selected_policy_line
+
+      index += 1
+    end
+
+    true
+  end
+
+  def eof_newline_normalization_before_selected_insertion?(lines, index, policy_keys)
+    removed = lines[index]
+    marker = lines[index + 1]
+    restored = lines[index + 2]
+    inserted = lines[index + 3]
+    return false unless removed&.start_with?("-") && marker == "\\ No newline at end of file\n"
+    return false unless restored == "+#{removed.delete_prefix('-')}"
+    return false unless inserted&.start_with?("+")
+    return false if policy_keys.any? { |key| removed.match?(policy_patch_line_pattern(key)) }
+
+    policy_keys.any? { |key| inserted.match?(policy_patch_line_pattern(key)) }
+  end
+
+  def policy_top_level_string_key_counts(content)
+    document = Psych.parse(content)
+    mapping = document.children.first
+    return nil unless mapping.is_a?(Psych::Nodes::Mapping) && mapping.children.length.even?
+
+    mapping.children.each_slice(2).each_with_object(Hash.new(0)) do |(key_node, _value_node), counts|
+      key = policy_top_level_string_key_value(key_node)
+      return nil if key.nil?
+
+      counts[key] += 1
+    end
+  rescue Psych::Exception
+    nil
+  end
+
+  def policy_top_level_entries(content)
+    return nil unless content.is_a?(String)
+
+    document = Psych.parse(content)
+    mapping = document.children.first
+    return nil unless mapping.is_a?(Psych::Nodes::Mapping) && mapping.children.length.even?
+
+    line_starts = [0]
+    offset = 0
+    content.each_line do |line|
+      offset += line.bytesize
+      line_starts << offset
+    end
+
+    mapping.children.each_slice(2).each_with_object({}) do |(key_node, value_node), entries|
+      key = policy_top_level_string_key_value(key_node)
+      return nil if key.nil? || entries.key?(key)
+
+      start_offset = line_starts.fetch(key_node.start_line, content.bytesize)
+      end_offset = line_starts.fetch(value_node.end_line + 1, content.bytesize)
+      entries[key] = {
+        value_node: value_node,
+        raw: content.byteslice(start_offset...end_offset),
+        start_offset: start_offset,
+        end_offset: end_offset
+      }
+    end
+  rescue Psych::Exception
+    nil
+  end
+
+  def replace_policy_entry(content, entry, replacement)
+    start_offset = entry.fetch(:start_offset)
+    end_offset = entry.fetch(:end_offset)
+    "#{content.byteslice(0...start_offset)}#{replacement}#{content.byteslice(end_offset..)}"
+  end
+
+  def policy_selected_keys_with_unsupported_entries(entries, policy_keys)
+    policy_keys.select do |key|
+      entry = entries[key]
+      entry && !policy_entry_is_single_line_scalar?(entry)
+    end
+  end
+
+  def policy_entry_is_single_line_scalar?(entry)
+    value_node = entry.fetch(:value_node)
+    value_node.is_a?(Psych::Nodes::Scalar) && value_node.start_line == value_node.end_line &&
+      ![Psych::Nodes::Scalar::LITERAL, Psych::Nodes::Scalar::FOLDED].include?(value_node.style)
+  end
+
+  def policy_selected_keys_are_supported_in_contents?(base_content, head_content, policy_keys)
+    [base_content, head_content].all? do |content|
+      entries = policy_top_level_entries(content)
+      entries && policy_selected_keys_with_unsupported_entries(entries, policy_keys).empty?
+    end
+  end
+
+  def policy_unselected_entries_are_unchanged?(base_content, head_content, policy_keys)
+    base_entries = policy_top_level_entries(base_content)
+    head_entries = policy_top_level_entries(head_content)
+    return false unless base_entries && head_entries
+
+    (base_entries.keys | head_entries.keys).all? do |key|
+      next true if policy_keys.include?(key)
+
+      base_entry = base_entries[key]
+      head_entry = head_entries[key]
+      base_entry && head_entry && policy_unselected_entry_bytes_match?(base_entries, head_entries, key, policy_keys)
+    end
+  end
+
+  def policy_unselected_entry_bytes_match?(base_entries, head_entries, key, policy_keys)
+    base_raw = base_entries.fetch(key).fetch(:raw)
+    head_raw = head_entries.fetch(key).fetch(:raw)
+    return true if base_raw == head_raw
+    return false unless base_entries.keys.last == key
+    return false unless head_entries.keys.drop_while { |entry_key| entry_key != key }.drop(1).all? { |entry_key| policy_keys.include?(entry_key) }
+
+    ["\n", "\r\n"].any? { |newline| "#{base_raw}#{newline}" == head_raw }
+  end
+
+  def policy_top_level_string_key_value(key_node)
+    return nil unless key_node.is_a?(Psych::Nodes::Scalar)
+    return key_node.value if key_node.tag == "tag:yaml.org,2002:str"
+    return nil unless key_node.tag.nil?
+    return key_node.value unless key_node.style == Psych::Nodes::Scalar::PLAIN
+
+    scalar = Psych::ScalarScanner.new(Psych::ClassLoader::Restricted.new([], [])).tokenize(key_node.value)
+    scalar.is_a?(String) ? scalar : nil
+  end
+
+  def policy_base_has_desired_values?(repo, clone, selected_policy)
+    base_ref = "origin/#{repo.fetch(:base_branch)}"
+    base_policy = policy_config_at_ref(clone, base_ref)
+    base_policy && selected_policy.all? { |key, value| policy_values_equal?(base_policy[key], value) }
+  end
+
+  def policy_base_selected_keys_are_unambiguous?(repo, clone, policy_keys)
+    content = policy_config_content_at_ref(clone, "HEAD")
+    if content.nil?
+      warn "FAIL #{repo.fetch(:nwo)}: could not read current base policy config before policy update"
+      return false
+    end
+
+    key_counts = policy_top_level_string_key_counts(content)
+    unless key_counts
+      warn "FAIL #{repo.fetch(:nwo)}: current base policy config has ambiguous or non-scalar top-level policy keys; policy-only reconciliation is unsafe"
+      return false
+    end
+
+    duplicate_keys = policy_keys.select { |key| key_counts.fetch(key, 0) > 1 }
+    unless duplicate_keys.empty?
+      warn "FAIL #{repo.fetch(:nwo)}: current base policy config has ambiguous selected policy keys: #{duplicate_keys.join(', ')}"
+      return false
+    end
+
+    true
+  end
+
+  def policy_base_ref_matches_remote?(repo, clone)
+    base_branch = repo.fetch(:base_branch)
+    remote_head = remote_ref_head(clone, "refs/heads/#{base_branch}")
+    local_head = local_ref_head(clone, "refs/remotes/origin/#{base_branch}")
+    !remote_head.nil? && remote_head == local_head
+  end
+
+  def policy_branch_ref_matches_remote?(repo, clone)
+    branch = repo.fetch(:pr_branch)
+    remote_head = remote_ref_head(clone, "refs/heads/#{branch}")
+    local_head = local_ref_head(clone, "HEAD")
+    !remote_head.nil? && remote_head == local_head
+  end
+
+  def report_retained_policy_pr(repo, clone, url)
+    unless policy_branch_ref_matches_remote?(repo, clone)
+      warn "FAIL #{repo.fetch(:nwo)}: retained policy branch moved while confirming its open PR; rerun from fresh state"
+      return false
+    end
+
+    puts "PR #{repo.fetch(:nwo)} #{url}"
+    true
+  end
+
+  def refresh_policy_branch_from_base(repo, clone, selected_policy)
+    open_pr_url, pr_query_succeeded = policy_open_pr_state(repo, any_base: true)
+    unless pr_query_succeeded
+      warn "FAIL #{repo.fetch(:nwo)}: could not prove whether the retained policy branch has an open PR on any base; rerun after GitHub is available"
+      return false
+    end
+    unless open_pr_url.nil?
+      warn "FAIL #{repo.fetch(:nwo)}: retained policy branch has open PR on any base #{open_pr_url}; rebase or close it before refresh"
+      return false
+    end
+
+    branch = repo.fetch(:pr_branch)
+    base_ref = "origin/#{repo.fetch(:base_branch)}"
+    remote_branch_head = remote_ref_head(clone, "refs/heads/#{branch}")
+    remote_base_head = remote_ref_head(clone, "refs/heads/#{repo.fetch(:base_branch)}")
+    local_branch_head = local_ref_head(clone, "refs/remotes/origin/#{branch}")
+    local_base_head = local_ref_head(clone, base_ref)
+    if remote_branch_head.nil? || remote_base_head.nil? || local_branch_head.nil? || local_base_head.nil?
+      warn "FAIL #{repo.fetch(:nwo)}: could not resolve exact remote heads for safe policy-branch refresh"
+      return false
+    end
+    if remote_branch_head != local_branch_head || remote_base_head != local_base_head
+      warn "FAIL #{repo.fetch(:nwo)}: remote branch or base moved during refresh preparation; rerun from fresh state"
+      return false
+    end
+
+    unless git(clone, "checkout", "-B", branch, base_ref)
+      warn "FAIL #{repo.fetch(:nwo)}: could not reset retained policy branch to current base"
+      return false
+    end
+
+    preflight_issues = AgentWorkflowSeamDoctor.check(clone)
+    unless preflight_issues.empty?
+      warn "FAIL #{repo.fetch(:nwo)}: seam doctor before policy-branch refresh: #{preflight_issues.join('; ')}"
+      return false
+    end
+
+    begin
+      changed = reconcile_policy_keys(clone, selected_policy)
+    rescue RuntimeError => e
+      warn "FAIL #{repo.fetch(:nwo)}: #{e.message}"
+      return false
+    end
+    unless changed
+      warn "FAIL #{repo.fetch(:nwo)}: policy branch refresh found no change after base values differed; rerun from fresh state"
+      return false
+    end
+
+    issues = AgentWorkflowSeamDoctor.check(clone)
+    unless issues.empty?
+      warn "FAIL #{repo.fetch(:nwo)}: seam doctor after policy-branch refresh: #{issues.join('; ')}"
+      return false
+    end
+
+    policy_path = AgentWorkflowSeamDoctor::POLICY_CONFIG
+    git(clone, "add", "--", policy_path)
+    unless git(clone, "-c", "commit.gpgsign=false", "commit", "-m", POLICY_COMMIT_TITLE)
+      warn "FAIL #{repo.fetch(:nwo)}: refreshed policy commit failed"
+      return false
+    end
+
+    lease = "refs/heads/#{branch}:#{remote_branch_head}"
+    open_pr_url, pr_query_succeeded = policy_open_pr_state(repo, any_base: true)
+    unless pr_query_succeeded
+      warn "FAIL #{repo.fetch(:nwo)}: could not re-check open PR state on any base before leased refresh push; rerun after GitHub is available"
+      return false
+    end
+    unless open_pr_url.nil?
+      warn "FAIL #{repo.fetch(:nwo)}: retained policy branch gained open PR on any base #{open_pr_url}; refresh push cancelled"
+      return false
+    end
+
+    unless remote_ref_head(clone, "refs/heads/#{repo.fetch(:base_branch)}") == remote_base_head
+      warn "FAIL #{repo.fetch(:nwo)}: current base moved before leased policy refresh push; rerun from fresh state"
+      return false
+    end
+
+    unless git(clone, "push", "--force-with-lease=#{lease}", "origin", "HEAD:#{branch}")
+      warn "FAIL #{repo.fetch(:nwo)}: retained policy branch changed before leased refresh push; rerun from fresh state"
+      return false
+    end
+
+    url = create_policy_pr(repo, branch)
+    if url.to_s.empty?
+      warn "FAIL #{repo.fetch(:nwo)}: refreshed policy PR create failed"
+      return false
+    end
+
+    report_policy_pull_request(repo, clone, url)
+  end
+
+  def policy_open_pr_state(repo, any_base: false)
+    command = ["gh", "pr", "list", "--repo", repo.fetch(:nwo), "--head", repo.fetch(:pr_branch)]
+    command += ["--base", repo.fetch(:base_branch)] unless any_base
+    command += ["--state", "open", "--limit", POLICY_PR_LIST_LIMIT.to_s,
+                "--json", "url,baseRefName,headRepository,headRepositoryOwner,headRefName"]
+    out, status = Open3.capture2(*command)
+    return [nil, false] unless status.success?
+
+    pull_requests = JSON.parse(out)
+    return [nil, false] unless pull_requests.is_a?(Array)
+
+    authoritative_pull_requests = pull_requests.select { |entry| policy_pr_head_matches_repo?(entry, repo) }
+    if authoritative_pull_requests.length > 1
+      return [nil, false, nil, authoritative_pull_requests]
+    end
+
+    if any_base && pull_requests.length >= POLICY_PR_LIST_LIMIT
+      return [nil, false, nil, authoritative_pull_requests]
+    end
+
+    pull_request = authoritative_pull_requests.first
+    unless pull_request.nil?
+      return [normalize_url(pull_request.fetch("url", nil)), true, pull_request.fetch("baseRefName", nil), authoritative_pull_requests]
+    end
+
+    return [nil, false, nil, []] if pull_requests.length >= POLICY_PR_LIST_LIMIT
+
+    [nil, true, nil, []]
+  rescue JSON::ParserError
+    [nil, false]
+  end
+
+  def policy_pr_head_matches_repo?(pull_request, repo)
+    return false unless pull_request.is_a?(Hash) && pull_request["headRefName"] == repo.fetch(:pr_branch)
+
+    owner, name = repo.fetch(:nwo).split("/", 2)
+    head_repository = pull_request["headRepository"]
+    head_owner = pull_request["headRepositoryOwner"]
+    return false unless head_repository.is_a?(Hash) && head_owner.is_a?(Hash)
+
+    head_repository["nameWithOwner"] == repo.fetch(:nwo) ||
+      (head_repository["name"] == name && head_owner["login"] == owner)
+  end
+
+  def remote_ref_head(clone, ref)
+    output, status = Open3.capture2("git", "-C", clone, "ls-remote", "--heads", "origin", ref)
+    return nil unless status.success?
+
+    output.split.first
+  end
+
+  def local_ref_head(clone, ref)
+    output, status = Open3.capture2("git", "-C", clone, "rev-parse", "--verify", ref)
+    status.success? ? output.strip : nil
+  end
+
+  def policy_config_content_at_ref(clone, ref)
+    content, status = Open3.capture2("git", "-C", clone, "show", "#{ref}:#{AgentWorkflowSeamDoctor::POLICY_CONFIG}")
+    status.success? ? content : nil
+  end
+
+  def policy_config_at_ref(clone, ref)
+    content = policy_config_content_at_ref(clone, ref)
+    return nil if content.nil?
+
+    policy_config_from_content(content)
+  end
+
+  def policy_config_from_content(content)
+    config = policy_config_raw_from_content(content)
+    config.is_a?(Hash) ? stringify_keys(config) : nil
+  end
+
+  def policy_config_raw_from_content(content)
+    config = YAML.safe_load(content, aliases: false)
+    config.is_a?(Hash) ? config : nil
+  rescue Psych::Exception
+    nil
+  end
+
+  def policy_config_contains_multiline_scalar?(content)
+    yaml_node_contains_multiline_scalar?(Psych.parse(content))
+  rescue Psych::Exception
+    true
+  end
+
+  def policy_config_has_exactly_one_document?(content)
+    stream = Psych.parse_stream(content)
+    stream.children.length == 1
+  rescue Psych::Exception
+    false
+  end
+
+  def yaml_node_contains_multiline_scalar?(node)
+    return true if node.is_a?(Psych::Nodes::Scalar) && node.start_line != node.end_line
+
+    children = node.respond_to?(:children) ? node.children : nil
+    children&.any? { |child| yaml_node_contains_multiline_scalar?(child) } || false
+  end
+
+  def policy_unselected_values_match?(base_policy, head_policy, policy_keys)
+    base_unselected = base_policy.reject { |key, _value| policy_keys.include?(key) }
+    head_unselected = head_policy.reject { |key, _value| policy_keys.include?(key) }
+    policy_values_exactly_equal?(base_unselected, head_unselected)
+  end
+
+  def policy_values_exactly_equal?(left, right)
+    return false unless left.instance_of?(right.class)
+
+    case left
+    when Hash
+      return false unless left.length == right.length
+
+      unmatched = right.to_a
+      left.all? do |key, value|
+        index = unmatched.index { |other_key, _other_value| policy_values_exactly_equal?(key, other_key) }
+        next false if index.nil?
+
+        _other_key, other_value = unmatched.delete_at(index)
+        policy_values_exactly_equal?(value, other_value)
+      end
+    when Array
+      left.length == right.length && left.zip(right).all? { |value, other| policy_values_exactly_equal?(value, other) }
+    else
+      left == right
+    end
+  end
+
   def open_pull_request(repo, clone, follow_ups)
     branch = repo[:pr_branch]
     git(clone, "add", ".agents", "AGENTS.md", "CLAUDE.md")
@@ -637,6 +1730,54 @@ module PushDownstream
     ensure_pull_request(repo, follow_ups)
   end
 
+  def open_policy_pull_request(repo, clone, expected_remote_branch_head: nil, require_new_remote_branch: false)
+    policy_path = AgentWorkflowSeamDoctor::POLICY_CONFIG
+    git(clone, "add", "--", policy_path)
+    unless git(clone, "-c", "commit.gpgsign=false", "commit", "-m", POLICY_COMMIT_TITLE)
+      warn "FAIL #{repo.fetch(:nwo)}: policy commit failed"
+      return false
+    end
+
+    branch = repo.fetch(:pr_branch)
+    push_args = ["push"]
+    if expected_remote_branch_head
+      push_args << "--force-with-lease=refs/heads/#{branch}:#{expected_remote_branch_head}"
+    elsif require_new_remote_branch
+      push_args << "--force-with-lease=refs/heads/#{branch}:"
+    end
+    push_args += ["origin", "HEAD:#{branch}"]
+
+    if expected_remote_branch_head
+      open_pr_url, pr_query_succeeded, pr_base, open_pr_matches = policy_open_pr_state(repo, any_base: true)
+      unless pr_query_succeeded
+        warn "FAIL #{repo.fetch(:nwo)}: could not re-check open PR state on any base before leased policy push; rerun after GitHub is available"
+        return false
+      end
+
+      open_pr_matches ||= open_pr_url ? [{ "url" => open_pr_url, "baseRefName" => pr_base }] : []
+      alternate_base_pr = open_pr_matches.find do |pull_request|
+        pull_request.fetch("baseRefName", nil) != repo.fetch(:base_branch)
+      end
+      if alternate_base_pr
+        alternate_url = normalize_url(alternate_base_pr.fetch("url", nil))
+        alternate_base = alternate_base_pr.fetch("baseRefName", nil) || "unknown"
+        warn "FAIL #{repo.fetch(:nwo)}: retained policy branch gained open PR on alternate base #{alternate_base} #{alternate_url}; policy push cancelled"
+        return false
+      end
+    end
+
+    unless policy_base_ref_matches_remote?(repo, clone)
+      warn "FAIL #{repo.fetch(:nwo)}: current base moved before policy push; rerun from fresh state"
+      return false
+    end
+    unless git(clone, *push_args)
+      warn "FAIL #{repo.fetch(:nwo)}: policy push failed"
+      return false
+    end
+
+    ensure_policy_pull_request(repo, clone)
+  end
+
   def ensure_pull_request(repo, follow_ups)
     branch = repo[:pr_branch]
     url = existing_pr_url(repo, branch) || create_pr(repo, branch, follow_ups)
@@ -649,16 +1790,54 @@ module PushDownstream
     true
   end
 
+  def ensure_policy_pull_request(repo, clone = nil)
+    url, query_succeeded = policy_open_pr_state(repo)
+    unless query_succeeded
+      warn "FAIL #{repo.fetch(:nwo)}: could not prove whether the policy branch has an open PR; rerun after GitHub is available"
+      return false
+    end
+
+    url ||= create_policy_pr(repo, repo.fetch(:pr_branch))
+    if url.to_s.empty?
+      warn "FAIL #{repo.fetch(:nwo)}: policy PR create failed"
+      return false
+    end
+
+    return report_policy_pull_request(repo, clone, url) unless clone.nil?
+
+    puts "PR #{repo.fetch(:nwo)} #{url}"
+    true
+  end
+
+  def report_policy_pull_request(repo, clone, url)
+    unless policy_branch_ref_matches_remote?(repo, clone)
+      warn "FAIL #{repo.fetch(:nwo)}: policy branch moved while confirming its PR; rerun from fresh state"
+      return false
+    end
+
+    puts "PR #{repo.fetch(:nwo)} #{url}"
+    true
+  end
+
   def checkout_sync_branch(repo, clone)
     branch = repo.fetch(:pr_branch)
-    if git(clone, "ls-remote", "--exit-code", "--heads", "origin", branch)
+    case remote_branch_state(clone, branch)
+    when :present
       if git(clone, "fetch", "origin", "#{branch}:refs/remotes/origin/#{branch}") &&
          git(clone, "checkout", "-B", branch, "origin/#{branch}")
         :existing_remote
       end
-    elsif git(clone, "checkout", "-b", branch)
-      :new_local
+    when :absent
+      git(clone, "checkout", "-b", branch) && :new_local
     end
+  end
+
+  def remote_branch_state(clone, branch)
+    _output, status = Open3.capture2("git", "-C", clone, "ls-remote", "--exit-code", "--heads", "origin", branch)
+    return :present if status.success?
+    return :absent if status.exitstatus == 2
+
+    :error
   end
 
   def repo_url(repo)
@@ -681,6 +1860,14 @@ module PushDownstream
     out, status = Open3.capture2(
       "gh", "pr", "create", "--repo", repo[:nwo], "--base", repo[:base_branch],
       "--head", branch, "--title", COMMIT_TITLE, "--body", pr_body(follow_ups)
+    )
+    normalize_url(status.success? ? out.strip.lines.last.to_s.strip : nil)
+  end
+
+  def create_policy_pr(repo, branch)
+    out, status = Open3.capture2(
+      "gh", "pr", "create", "--repo", repo.fetch(:nwo), "--base", repo.fetch(:base_branch),
+      "--head", branch, "--title", POLICY_COMMIT_TITLE, "--body", policy_pr_body
     )
     normalize_url(status.success? ? out.strip.lines.last.to_s.strip : nil)
   end
@@ -715,6 +1902,22 @@ module PushDownstream
       - `agent-workflow-seam-doctor --root . --shared <agent-workflows-root>`
     BODY
   end
+
+  def policy_pr_body
+    <<~BODY
+      ## Summary
+
+      - reconcile the explicitly registered policy key(s) in `.agents/agent-workflow.yml`
+      - preserve all command wrappers, `AGENTS.md`, `CLAUDE.md`, trust configuration, and unrelated policy keys
+
+      Generated by the policy-only fleet mode of `bin/push-downstream` from
+      [`shakacode/agent-workflows`](https://github.com/shakacode/agent-workflows).
+
+      ## Validation
+
+      - `agent-workflow-seam-doctor --root . --shared <agent-workflows-root>`
+    BODY
+  end
 end
 
 if $PROGRAM_NAME == __FILE__
@@ -722,6 +1925,7 @@ if $PROGRAM_NAME == __FILE__
     config: File.expand_path("../downstream.yml", __dir__),
     presets: File.expand_path("../seam-presets.yml", __dir__),
     root: nil,
+    policy_fleet: nil,
     only: nil,
     include_disabled: false,
     apply: false,
@@ -730,8 +1934,9 @@ if $PROGRAM_NAME == __FILE__
   }
 
   OptionParser.new do |opts|
-    opts.banner = "Usage: push-downstream [--root DIR | --config FILE] [--only a,b] [--all] [--apply] [--trusted-user LOGIN]"
+    opts.banner = "Usage: push-downstream [--root DIR | --policy-fleet NAME | --config FILE] [--only a,b] [--all] [--apply] [--trusted-user LOGIN]"
     opts.on("--root DIR", "Reconcile one local checkout instead of the registry") { |value| options[:root] = value }
+    opts.on("--policy-fleet NAME", "Apply only explicitly registered policy keys for a named fleet") { |value| options[:policy_fleet] = value }
     opts.on("--config FILE", "Downstream registry YAML (default: downstream.yml)") { |value| options[:config] = value }
     opts.on("--presets FILE", "Seam preset YAML (default: seam-presets.yml)") { |value| options[:presets] = value }
     opts.on("--only a,b", Array, "Restrict to these repo names") { |value| options[:only] = value }
@@ -758,12 +1963,32 @@ if $PROGRAM_NAME == __FILE__
 
   code =
     if options[:root]
-      PushDownstream.run_local(
-        options[:root],
-        base_branch: options[:base_branch],
-        trust: options[:trust],
-        apply: options[:apply]
-      )
+      if options[:policy_fleet]
+        warn "--policy-fleet cannot be combined with --root"
+        1
+      else
+        PushDownstream.run_local(
+          options[:root],
+          base_branch: options[:base_branch],
+          trust: options[:trust],
+          apply: options[:apply]
+        )
+      end
+    elsif options[:policy_fleet]
+      if options[:include_disabled]
+        warn "--all cannot be combined with --policy-fleet; fleet membership is explicit"
+        1
+      elsif !PushDownstream.trust_config_empty?(options[:trust])
+        warn "--trusted-* flags require --root; policy fleets read only their registered policy values"
+        1
+      else
+        PushDownstream.run_policy_fleet(
+          options[:config],
+          fleet_name: options[:policy_fleet],
+          only: options[:only],
+          apply: options[:apply]
+        )
+      end
     else
       unless PushDownstream.trust_config_empty?(options[:trust])
         warn "--trusted-* flags require --root; use downstream.yml or seam-presets.yml trust blocks in registry mode"
