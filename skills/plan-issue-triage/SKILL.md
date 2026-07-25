@@ -91,10 +91,25 @@ Return the prompt in a fenced `text` block. Adapt bracketed parts and omit irrel
 
 ```text
 This receiving invocation must bind its own provider. Read active-host install
-metadata (missing `provider_profile` means `pinned`; unknown stops). For
-`managed`, run the active host home's absolute `bin/agent-workflows-resolve
-begin` and use only newly returned assets. Never inherit operation handles or
-paths from the sender.
+metadata and select exactly one branch. If metadata is unavailable, use the
+pinned/offline branch. A missing `provider_profile` means `pinned`; an unknown
+value stops.
+
+Managed provider branch:
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result as `triage_operation`. Read
+`triage_operation.assets.skills.evaluate_issue` and
+`triage_operation.assets.skills.plan_pr_batch` only from that result; stop if
+either is absent. Never inherit operation handles or paths from the sender.
+
+Pinned or offline provider branch:
+Do not run the provider resolver. This copied prompt requires sibling shared
+skill instructions, so stop without running the issue triage. Report the
+pinned/offline limitation and request a managed-provider invocation.
+
+After provider branch selection:
+Continue only from the managed branch's retained `triage_operation`; the
+pinned/offline branch has already stopped.
 
 Use the operation-bound $evaluate-issue and $plan-pr-batch guidance to run a review-only triage of [scope] in [OWNER/REPO].
 
@@ -110,7 +125,9 @@ Repository and skill context:
 - Scope: [exact issue search, label, milestone, or all open issues]
 - Use $evaluate-issue for priority/value decisions.
 - Use $plan-pr-batch only to shape follow-up implementation batches.
-- Read `evaluate-issue` and `plan-pr-batch` only from the returned named skill assets; stop if either asset is absent.
+- Read the two skill instructions only from
+  `triage_operation.assets.skills.evaluate_issue` and
+  `triage_operation.assets.skills.plan_pr_batch`.
 
 Triage rules:
 - Fetch the current GitHub state before evaluating issues.

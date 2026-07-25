@@ -122,18 +122,12 @@ class ProviderOperationContractTest < Minitest::Test
     assert_empty failures, failures.join("\n")
   end
 
-  def test_restart_surfaces_fence_provider_revision_changes
-    %w[
-      skills/pause/SKILL.md
-      workflows/pr-processing.md
-      docs/agent-runner-restarts.md
-      skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
-    ].each do |path|
-      text = read(path)
-      assert_includes text, "originating_provider_revision", path
-      assert_includes text, "On mismatch, stop normal resume", path
-      assert_includes text, "cancellation/relaunch or state reconciliation", path
-    end
+  def test_generated_restart_fixture_uses_the_structural_provider_contract
+    source = read("skills/plan-pr-batch/scripts/check_goal_prompt_size.rb")
+    fixture = source.match(/CANONICAL_RESUME_SNIPPET = <<~TEXT\.chomp\n(.*?)^TEXT$/m)&.captures&.first
+
+    refute_nil fixture
+    assert_restart_provider_contract(fixture, "generated canonical resume fixture")
   end
 
   def test_copy_paste_surfaces_require_recipient_local_binding
@@ -150,6 +144,26 @@ class ProviderOperationContractTest < Minitest::Test
     triage = read("skills/plan-issue-triage/SKILL.md")
     assert_includes triage, "This receiving invocation must bind its own provider"
     assert_includes triage, "Never inherit operation handles"
+  end
+
+  def test_plan_issue_triage_copied_prompt_has_safe_provider_branches
+    prompt = fenced_prompt_after(
+      read("skills/plan-issue-triage/SKILL.md"),
+      "## Prompt Template"
+    )
+    managed, pinned = provider_branches(prompt)
+
+    assert_equal 1, managed.scan("agent-workflows-resolve begin").length
+    assert_includes managed, "`triage_operation.assets.skills.evaluate_issue`"
+    assert_includes managed, "`triage_operation.assets.skills.plan_pr_batch`"
+    refute_match(/(?<!triage_operation\.)\bassets\./, managed)
+    assert_equal ["triage_operation"], prompt.scan(/\b([a-z_]+_operation)\.assets\./).flatten.uniq
+    refute_match(/(?<!triage_operation\.)\bassets\./, prompt)
+
+    refute_includes pinned, "agent-workflows-resolve begin"
+    refute_includes pinned, "triage_operation"
+    refute_match(/\bassets\./, pinned)
+    assert_includes pinned, "stop without running the issue triage"
   end
 
   def test_every_asset_consuming_copy_paste_prompt_binds_inside_the_received_body
@@ -170,19 +184,17 @@ class ProviderOperationContractTest < Minitest::Test
     assert_empty failures, failures.join("\n")
   end
 
-  def test_every_restart_or_replacement_prompt_contains_revision_fencing
+  def test_every_restart_or_replacement_prompt_has_structural_provider_fencing
     paths = %w[skills/pause/SKILL.md docs/agent-runner-restarts.md workflows/pr-processing.md]
-    failures = paths.flat_map do |path|
-      fenced_text_blocks(read(path)).filter_map.with_index do |body, index|
-        next unless body.lstrip.start_with?("Resume", "Restart")
-        next if body.include?("originating_provider_revision") &&
-                body.include?("On mismatch, stop normal resume")
-
-        "#{path}: restart prompt #{index + 1} lacks provider-revision fencing"
+    paths.each do |path|
+      prompts = fenced_text_blocks(read(path)).select do |body|
+        body.lstrip.start_with?("Resume", "Restart")
+      end
+      refute_empty prompts, path
+      prompts.each.with_index(1) do |body, index|
+        assert_restart_provider_contract(body, "#{path}: restart prompt #{index}")
       end
     end
-
-    assert_empty failures, failures.join("\n")
   end
 
   def test_public_provider_docs_use_neutral_profile_terminology
@@ -255,6 +267,51 @@ class ProviderOperationContractTest < Minitest::Test
   end
 
   private
+
+  def assert_restart_provider_contract(prompt, label)
+    managed, pinned = provider_branches(prompt)
+
+    assert_equal 1, managed.scan("agent-workflows-resolve begin").length, label
+    assert_equal 1, prompt.scan("agent-workflows-resolve begin").length, label
+    assert_equal ["resume_operation"], managed.scan(/\b([a-z_]+_operation)\.revision\b/).flatten.uniq, label
+    assert_equal ["resume_operation"], prompt.scan(/\b([a-z_]+_operation)\.assets\./).flatten.uniq, label
+    refute_match(/(?<!resume_operation\.)\bassets\./, prompt, label)
+    assert_operator managed.index("resume_operation.revision"), :<,
+                    managed.index("resume_operation.assets"), label
+
+    refute_includes pinned, "agent-workflows-resolve begin", label
+    refute_match(/\b[a-z_]+_operation\b/, pinned, label)
+    refute_match(/\bassets\./, pinned, label)
+    assert_match(/continue only|stop before/i, pinned, label)
+  end
+
+  def fenced_prompt_after(text, heading)
+    heading_start = text.index(heading)
+    raise "missing heading #{heading.inspect}" unless heading_start
+
+    fenced_text_blocks(text[heading_start..]).fetch(0)
+  end
+
+  def provider_branches(prompt)
+    managed_marker = "Managed provider branch:"
+    pinned_marker = "Pinned or offline provider branch:"
+    after_marker = "After provider branch selection:"
+    managed_start = prompt.index(managed_marker)
+    pinned_start = prompt.index(pinned_marker)
+    after_start = prompt.index(after_marker)
+
+    refute_nil managed_start, "missing managed branch"
+    refute_nil pinned_start, "missing pinned branch"
+    refute_nil after_start, "missing post-selection boundary"
+    assert_operator managed_start, :<, pinned_start
+    assert_operator pinned_start, :<, after_start
+    assert_match(%r{If metadata\s+is unavailable,\s+use\s+the\s+pinned/offline branch},
+                 prompt[0...managed_start])
+
+    managed = prompt[(managed_start + managed_marker.length)...pinned_start]
+    pinned = prompt[(pinned_start + pinned_marker.length)...after_start]
+    [managed, pinned]
+  end
 
   def fenced_text_blocks(text)
     text.scan(/^(`{3,4})text\s*$\n(.*?)^\1\s*$/m).map(&:last)

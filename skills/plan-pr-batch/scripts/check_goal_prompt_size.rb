@@ -124,13 +124,30 @@ TEXT
 CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Resume batch processing now.
 
-  Start a new provider operation from the active host home's absolute resolver,
-  re-read returned `assets.skills.pause` and `assets.workflow`, then run the
-  bounded status recovery steps under "Pausing For An Agent-Runner Restart"
-  before editing, pushing, polling, or starting any new target. Compare the returned
-  revision with the handoff's `originating_provider_revision`. Use the new snapshot
-  only when they match. On mismatch, stop normal resume and require explicit
-  cancellation/relaunch or state reconciliation before any work continues.
+  Read the active-host install metadata and select exactly one branch. If metadata
+  is unavailable, use the pinned/offline branch. A missing `provider_profile`
+  means `pinned`; an unknown value stops.
+
+  Managed provider branch:
+  Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+  exactly once and retain that exact JSON result as `resume_operation`. Do not
+  begin a second operation. Compare `resume_operation.revision` with the handoff's
+  `originating_provider_revision` before reading any shared instruction.
+  On mismatch, stop normal resume and require explicit cancellation/relaunch or
+  state reconciliation before any work continues. On match, re-read only
+  `resume_operation.assets.skills.pause` and
+  `resume_operation.assets.workflow`, then run that workflow's bounded status
+  recovery steps under "Pausing For An Agent-Runner Restart" before editing,
+  pushing, polling, or starting a target.
+
+  Pinned or offline provider branch:
+  Do not run the provider resolver. This batch resume requires shared workflow and
+  claim-recovery instructions, so stop before editing, pushing, polling, changing
+  a claim, or starting a target. Report the pinned/offline limitation and require
+  a managed-provider resume or explicit coordinator cancellation.
+
+  After provider branch selection:
+  Continue only after the applicable branch's checks pass.
 TEXT
 
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".

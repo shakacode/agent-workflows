@@ -28,6 +28,12 @@ def extract_fenced_prompt(text, heading)
   text[body_start...fence_end]
 end
 
+def extract_restart_prompts(text)
+  text.scan(/^```text\s*$\n(.*?)^```\s*$/m)
+      .map(&:first)
+      .select { |body| body.lstrip.start_with?("Resume", "Restart") }
+end
+
 class PausePromptTest < Minitest::Test
   def setup
     @docs = read_repo_file(DOCS_PATH)
@@ -82,5 +88,61 @@ class PausePromptTest < Minitest::Test
     assert_includes @skill, "<PASTE_RESTART_HANDOFF_HERE>"
     assert_includes @skill, "not inspect the repo"
     assert_includes @skill, "pause current work"
+  end
+
+  def test_every_restart_prompt_has_structural_managed_and_pinned_branches
+    surfaces = {
+      "skills/pause/SKILL.md" => [@skill, 4],
+      "docs/agent-runner-restarts.md" => [@docs, 4],
+      "workflows/pr-processing.md" => [@workflow, 1]
+    }
+
+    surfaces.each do |path, (text, expected_count)|
+      prompts = extract_restart_prompts(text)
+      assert_equal expected_count, prompts.length, path
+
+      prompts.each.with_index(1) do |prompt, index|
+        managed, pinned = extract_provider_branches(prompt, "#{path} prompt #{index}")
+
+        assert_equal 1, managed.scan("agent-workflows-resolve begin").length
+        assert_includes managed, "`resume_operation.revision`"
+        assert_includes managed, "`originating_provider_revision`"
+        assert_includes managed, "`resume_operation.assets.skills.pause`"
+        refute_match(/(?<!resume_operation\.)\bassets\./, managed)
+        assert_operator managed.index("`resume_operation.revision`"), :<,
+                        managed.index("`resume_operation.assets.skills.pause`")
+
+        refute_includes pinned, "agent-workflows-resolve begin"
+        refute_includes pinned, "resume_operation"
+        refute_match(/\bassets\./, pinned)
+        assert_match(/continue only|stop before/i, pinned)
+
+        assert_operator prompt.scan("agent-workflows-resolve begin").length, :<=, 1
+        refute_match(/(?<!resume_operation\.)\bassets\./, prompt)
+      end
+    end
+  end
+
+  private
+
+  def extract_provider_branches(prompt, label)
+    managed_marker = "Managed provider branch:"
+    pinned_marker = "Pinned or offline provider branch:"
+    after_marker = "After provider branch selection:"
+    managed_start = prompt.index(managed_marker)
+    pinned_start = prompt.index(pinned_marker)
+    after_start = prompt.index(after_marker)
+
+    refute_nil managed_start, "#{label}: missing managed branch"
+    refute_nil pinned_start, "#{label}: missing pinned branch"
+    refute_nil after_start, "#{label}: missing post-selection boundary"
+    assert_operator managed_start, :<, pinned_start, label
+    assert_operator pinned_start, :<, after_start, label
+    assert_match(%r{If metadata\s+is unavailable,\s+use\s+the\s+pinned/offline branch},
+                 prompt[0...managed_start], label)
+
+    managed = prompt[(managed_start + managed_marker.length)...pinned_start]
+    pinned = prompt[(pinned_start + pinned_marker.length)...after_start]
+    [managed, pinned]
   end
 end
