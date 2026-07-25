@@ -20,6 +20,7 @@ module PushDownstream
   POLICY_COMMIT_TITLE = "Configure agent workflow repo policy"
   POLICY_PR_LIST_LIMIT = 100
   POLICY_KEY_PATTERN = /\A[A-Za-z][A-Za-z0-9_]*\z/
+  DISABLED_HOOKS_PATH = File::NULL
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
   THIN_CLAUDE = "# CLAUDE.md\n\nSee @AGENTS.md for canonical agent instructions, commands, and policy.\n"
   COMMAND_PURPOSES = {
@@ -706,7 +707,8 @@ module PushDownstream
   def sync_repo(repo, contract)
     Dir.mktmpdir("push-downstream-sync") do |dir|
       clone = File.join(dir, repo[:repo])
-      unless system("git", "clone", "--depth", "1", "--branch", repo[:base_branch],
+      unless system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
+                    "clone", "--depth", "1", "--branch", repo[:base_branch],
                     repo_url(repo), clone, out: File::NULL, err: File::NULL)
         warn "FAIL #{repo[:nwo]}: clone of #{repo[:base_branch]} failed"
         return false
@@ -1011,7 +1013,8 @@ module PushDownstream
   def sync_policy_repo(repo, policy_keys)
     Dir.mktmpdir("push-downstream-policy") do |dir|
       clone = File.join(dir, repo.fetch(:repo))
-      unless system("git", "clone", "--depth", "1", "--branch", repo.fetch(:base_branch),
+      unless system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
+                    "clone", "--depth", "1", "--branch", repo.fetch(:base_branch),
                     repo_url(repo), clone, out: File::NULL, err: File::NULL)
         warn "FAIL #{repo.fetch(:nwo)}: clone of #{repo.fetch(:base_branch)} failed"
         return false
@@ -1128,6 +1131,7 @@ module PushDownstream
       open_policy_pull_request(
         repo,
         clone,
+        policy_keys: policy_keys,
         expected_remote_branch_head: expected_remote_branch_head,
         require_new_remote_branch: branch_state == :new_local
       )
@@ -1259,6 +1263,80 @@ module PushDownstream
     true
   end
 
+  def policy_commit_snapshot(repo, clone)
+    expected_parent = local_ref_head(clone, "HEAD")
+    expected_merge_base = policy_branch_merge_base(repo, clone)
+    policy_path = File.join(clone, AgentWorkflowSeamDoctor::POLICY_CONFIG)
+    validated_content = File.binread(policy_path)
+    if expected_parent && expected_merge_base
+      return { expected_parent: expected_parent, expected_merge_base: expected_merge_base,
+               validated_content: validated_content }
+    end
+
+    warn "FAIL #{repo.fetch(:nwo)}: could not snapshot the validated policy update before commit"
+    nil
+  rescue SystemCallError => e
+    warn "FAIL #{repo.fetch(:nwo)}: could not snapshot the validated policy update before commit: #{e.message}"
+    nil
+  end
+
+  def policy_committed_head_is_isolated?(repo, clone, policy_keys, snapshot)
+    expected_parent = snapshot.fetch(:expected_parent)
+    expected_merge_base = snapshot.fetch(:expected_merge_base)
+    validated_content = snapshot.fetch(:validated_content)
+    head = local_ref_head(clone, "HEAD")
+    parents, parent_status = Open3.capture2("git", "-C", clone, "show", "-s", "--format=%P", "HEAD")
+    unless head && parent_status.success? && parents.split == [expected_parent]
+      return policy_commit_isolation_failure(repo, "committed HEAD does not have the expected single parent")
+    end
+
+    merge_base = policy_branch_merge_base(repo, clone)
+    unless merge_base == expected_merge_base
+      return policy_commit_isolation_failure(repo, "committed HEAD changed the validated merge base")
+    end
+
+    changed_paths, changed_paths_status = Open3.capture2(
+      "git", "-C", clone, "diff", "--no-ext-diff", "--no-renames", "--name-only", expected_parent, head
+    )
+    paths = changed_paths.lines.map(&:strip).reject(&:empty?)
+    unless changed_paths_status.success? && paths == [AgentWorkflowSeamDoctor::POLICY_CONFIG]
+      return policy_commit_isolation_failure(repo, "committed HEAD changes paths other than the policy config")
+    end
+
+    parent_content = policy_config_content_at_ref(clone, expected_parent)
+    head_content = policy_config_content_at_ref(clone, head)
+    unless head_content == validated_content
+      return policy_commit_isolation_failure(repo, "committed policy blob differs from the validated worktree content")
+    end
+    unless parent_content && policy_config_has_exactly_one_document?(parent_content) &&
+           policy_config_has_exactly_one_document?(head_content)
+      return policy_commit_isolation_failure(repo, "committed policy update does not preserve one YAML document")
+    end
+
+    parent_policy = policy_config_raw_from_content(parent_content)
+    head_policy = policy_config_raw_from_content(head_content)
+    unless parent_policy && head_policy && policy_unselected_values_match?(parent_policy, head_policy, policy_keys) &&
+           policy_selected_keys_are_supported_in_contents?(parent_content, head_content, policy_keys) &&
+           policy_unselected_entries_are_unchanged?(parent_content, head_content, policy_keys)
+      return policy_commit_isolation_failure(repo, "committed policy update changes unselected policy content")
+    end
+
+    patch, patch_status = Open3.capture2(
+      "git", "-C", clone, "diff", "--no-ext-diff", "--unified=0", expected_parent, head, "--",
+      AgentWorkflowSeamDoctor::POLICY_CONFIG
+    )
+    unless patch_status.success? && policy_patch_allows_only_selected_lines?(patch, policy_keys)
+      return policy_commit_isolation_failure(repo, "committed policy patch changes content outside selected top-level policy lines")
+    end
+
+    true
+  end
+
+  def policy_commit_isolation_failure(repo, reason)
+    warn "FAIL #{repo.fetch(:nwo)}: committed policy update failed policy-only isolation: #{reason}"
+    false
+  end
+
   def policy_branch_merge_base(repo, clone)
     base_ref = "origin/#{repo.fetch(:base_branch)}"
     merge_base, status = Open3.capture2("git", "-C", clone, "merge-base", base_ref, "HEAD")
@@ -1269,7 +1347,8 @@ module PushDownstream
       return nil
     end
 
-    unless system("git", "-C", clone, "fetch", "--unshallow", "origin", out: File::NULL, err: File::NULL)
+    unless system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
+                  "-C", clone, "fetch", "--unshallow", "origin", out: File::NULL, err: File::NULL)
       warn "FAIL #{repo.fetch(:nwo)}: could not deepen history for existing policy branch"
       return nil
     end
@@ -1549,10 +1628,16 @@ module PushDownstream
       return false
     end
 
+    commit_snapshot = policy_commit_snapshot(repo, clone)
+    return false unless commit_snapshot
+
     policy_path = AgentWorkflowSeamDoctor::POLICY_CONFIG
     git(clone, "add", "--", policy_path)
     unless git(clone, "-c", "commit.gpgsign=false", "commit", "-m", POLICY_COMMIT_TITLE)
       warn "FAIL #{repo.fetch(:nwo)}: refreshed policy commit failed"
+      return false
+    end
+    unless policy_committed_head_is_isolated?(repo, clone, selected_policy.keys, commit_snapshot)
       return false
     end
 
@@ -1730,11 +1815,17 @@ module PushDownstream
     ensure_pull_request(repo, follow_ups)
   end
 
-  def open_policy_pull_request(repo, clone, expected_remote_branch_head: nil, require_new_remote_branch: false)
+  def open_policy_pull_request(repo, clone, policy_keys:, expected_remote_branch_head: nil, require_new_remote_branch: false)
+    commit_snapshot = policy_commit_snapshot(repo, clone)
+    return false unless commit_snapshot
+
     policy_path = AgentWorkflowSeamDoctor::POLICY_CONFIG
     git(clone, "add", "--", policy_path)
     unless git(clone, "-c", "commit.gpgsign=false", "commit", "-m", POLICY_COMMIT_TITLE)
       warn "FAIL #{repo.fetch(:nwo)}: policy commit failed"
+      return false
+    end
+    unless policy_committed_head_is_isolated?(repo, clone, policy_keys, commit_snapshot)
       return false
     end
 
@@ -1845,7 +1936,7 @@ module PushDownstream
   end
 
   def git(dir, *)
-    system("git", "-C", dir, *, out: File::NULL, err: File::NULL)
+    system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}", "-C", dir, *, out: File::NULL, err: File::NULL)
   end
 
   def existing_pr_url(repo, branch)

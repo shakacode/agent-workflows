@@ -1518,6 +1518,90 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
     end
   end
 
+  def test_policy_apply_revalidates_committed_head_when_malicious_pre_commit_stages_readme
+    Dir.mktmpdir("push-downstream-policy-git") do |dir|
+      remote, = seed_valid_remote(dir)
+      branch = "agent-workflows/repo-prefix"
+      original_git = PushDownstream.method(:git)
+      pull_requests_created = 0
+
+      with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
+        with_module_stub(PushDownstream, :create_policy_pr, lambda { |_repo, _branch|
+          pull_requests_created += 1
+          "https://example.test/pr/1"
+        }) do
+          with_module_stub(PushDownstream, :git, lambda { |clone, *args|
+            unless args.include?("commit")
+              next original_git.call(clone, *args)
+            end
+
+            hook = File.join(clone, ".git/hooks/pre-commit")
+            File.write(hook, <<~SH)
+              #!/bin/sh
+              printf 'staged by malicious hook\n' > README.md
+              git add README.md
+            SH
+            File.chmod(0o755, hook)
+            system("git", "-C", clone, *args, out: File::NULL, err: File::NULL)
+          }) do
+            out, err = capture_io do
+              refute PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
+            end
+            refute_includes out, "PR local/consumer"
+            assert_includes err, "committed policy update failed policy-only isolation"
+          end
+        end
+      end
+
+      assert_equal 0, pull_requests_created
+      refute system("git", "--git-dir=#{remote}", "show-ref", "--verify", "--quiet", "refs/heads/#{branch}")
+    end
+  end
+
+  def test_policy_apply_suppresses_configured_git_hooks
+    Dir.mktmpdir("push-downstream-policy-git") do |dir|
+      remote, = seed_valid_remote(dir)
+      hooks = File.join(dir, "hooks")
+      sentinel = File.join(dir, "hook-ran")
+      FileUtils.mkdir_p(hooks)
+      hook = File.join(hooks, "pre-commit")
+      File.write(hook, <<~SH)
+        #!/bin/sh
+        touch #{Shellwords.escape(sentinel)}
+        printf 'staged by malicious hook\n' > README.md
+        git add README.md
+      SH
+      File.chmod(0o755, hook)
+
+      config_env = {
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "core.hooksPath",
+        "GIT_CONFIG_VALUE_0" => hooks
+      }
+      previous_env = config_env.keys.to_h { |key| [key, ENV[key]] }
+      config_env.each { |key, value| ENV[key] = value }
+      begin
+        with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
+          with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+            out, = capture_io do
+              assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
+            end
+            assert_includes out, "PR local/consumer https://example.test/pr/1"
+          end
+        end
+      ensure
+        previous_env.each do |key, value|
+          value.nil? ? ENV.delete(key) : ENV[key] = value
+        end
+      end
+
+      refute File.exist?(sentinel)
+      policy_branch = `git --git-dir=#{remote.shellescape} rev-parse refs/heads/agent-workflows/repo-prefix`.strip
+      changed_paths = `git --git-dir=#{remote.shellescape} diff --name-only refs/heads/main...#{policy_branch}`.lines.map(&:strip)
+      assert_equal [".agents/agent-workflow.yml"], changed_paths
+    end
+  end
+
   def test_policy_apply_fails_closed_when_consumer_seam_is_missing
     Dir.mktmpdir("push-downstream-policy-git") do |dir|
       remote = File.join(dir, "remote.git")
