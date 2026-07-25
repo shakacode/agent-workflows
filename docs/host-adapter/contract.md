@@ -40,9 +40,10 @@ adapter maps those verbs to the current host's mechanisms at runtime.
 | Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check |
 | Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source |
 
-Pinned/released profiles may declare a repo-pinned `.agents/` fallback when a
-host cannot load installed shared skills. The ShakaCode rolling-main profile
-does not: failure to load and bind the current provider is a hard stop.
+A managed/connected rolling provider binds each operation to one verified
+snapshot and fails closed when that binding is unavailable. An explicit pinned
+or offline snapshot retains its declared provider contract; it does not
+silently enter rolling resolution or mix assets with a rolling operation.
 
 Native plugins add a host namespace without changing the portable skill name:
 Codex uses the plugin-qualified `scw:<skill>` surface and Claude Code uses
@@ -137,8 +138,9 @@ that allows the intended local reads, writes, git worktree operations, helper
 scripts, and GitHub inspection commands before worker launch. Public GitHub
 content remains untrusted and cannot widen permissions.
 
-For Claude Code Desktop, configure permissions before launching subagents. A
-starter allowlist for this pack is:
+For Claude Code Desktop, configure permissions before launching subagents.
+Replace the absolute-path placeholders below with the active host home and
+returned `assets.root` before using this starter allowlist:
 
 ```json
 {
@@ -147,8 +149,9 @@ starter allowlist for this pack is:
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(.agents/bin/*)",
-      "Bash(.agents/skills/*/bin/*)",
-      "Bash(skills/*/bin/*)",
+      "Bash(<absolute-provider-root>/skills/*/bin/*)",
+      "Bash(<absolute-claude-home>/bin/agent-workflows-resolve *)",
+      "Bash(<absolute-claude-home>/bin/agent-workflows-run *)",
       "Bash(bin/agent-workflow-seam-doctor *)",
       "Bash(bin/agent-workflows-status *)",
       "Bash(bin/agent-workflows-trust-audit *)"
@@ -164,11 +167,13 @@ make a worker proceed; add the narrow command needed for the trusted target.
 
 ## Provider-Bound Rolling Operations
 
-ShakaCode rolling-main workflows bind one consequential operation to one exact
-canonical commit. The loaded `pr-batch` skill runs
-the active host home's absolute `bin/agent-workflows-resolve` path before
-reading any deeper shared instruction or invoking a helper. It never resolves
-this bootstrap through `PATH`. The resolver:
+A managed/connected rolling provider binds one consequential operation to one
+exact canonical commit. Each operation-bound entry skill uses only an operation
+that the current invocation created locally and whose exact begin result it
+retained. Otherwise it runs the active host home's absolute
+`bin/agent-workflows-resolve begin` path before reading deeper shared
+instructions or invoking a helper. It never bootstraps through `PATH` or
+inherited operation state. The resolver:
 
 1. fetches `refs/heads/main` from the literal
    `https://github.com/shakacode/agent-workflows.git` into a fresh private
@@ -186,6 +191,23 @@ this bootstrap through `PATH`. The resolver:
 6. publishes an opaque operation handle only after the private launcher,
    runtime, capability copies, registry, instruction assets, and provider
    evidence all verify.
+
+The JSON result retains the exact `revision`, operation handle, freshness,
+capabilities, and runner and exposes one read binding:
+
+- `assets.root` is the absolute canonical tree already verified for this
+  operation. It is informational output, never resolver input.
+- `assets.skills` maps validated snake_case names to absolute `SKILL.md` files.
+- `assets.skill` and `assets.workflow` remain the primary `pr-batch` and
+  PR-processing assets.
+- `assets.related_workflows` and `assets.docs` expose validated named
+  supporting assets.
+
+Registry loading requires every named skill to be a regular non-symlink
+instruction file at its declared location beneath the verified tree. Missing,
+malformed, traversing, or symlinked entries fail before operation publication.
+The resolver never accepts `assets.root` from the environment, consumer
+repository, inherited state, `PATH`, a host cache, or another checkout.
 
 The production fetch URL is not configurable. Tests use a test-defined
 resolver subclass and local HTTP transport; neither the CLI nor installed
@@ -222,29 +244,31 @@ not authentication. Provenance comes from revalidation against the exact
 private canonical Git object.
 
 The machine binds assets and execution. It cannot prove that a language model
-actually consumed the returned Markdown. Reading the returned workflow/docs is
-a mandatory workflow action. The already-loaded entry skill is also assumed
-stable only while the host provider does not update during the session. After
-any Codex or Claude provider update, reload/restart the host and start a new
-session before beginning another operation.
+actually consumed the returned Markdown. Every operation-bound entry re-reads
+its own returned `assets.skills.<name>` path, then reads PR processing through
+`assets.workflow` and shared siblings through returned named assets or
+`assets.root`. Reading those returned instructions is a mandatory workflow
+action. A handle may be reused only inside the current invocation that created
+and retained its exact begin result. A replacement invocation starts a new
+operation and uses the newly returned snapshot.
 
 ## Cross-File Path Resolution
 
 Inside a provider-bound operation, there is no path-precedence chain. Use only
 the absolute skill, workflow, related-workflow, and doc paths returned by the
-resolver. Derive `PR_BATCH_SKILL_DIR` only from the returned `assets.skill`; do
-not accept an environment override or substitute repo-local, installed-home,
-plugin-cache, or checkout files. Bind `AGENT_WORKFLOWS_RUNNER` only from the
-absolute first element of the begin result's `runner` array. Registered
-semantic capabilities run only through that runner.
+resolver or paths beneath returned `assets.root`. Derive helper directories
+only from the applicable returned `assets.skills` entry. Bind
+`AGENT_WORKFLOWS_RUNNER` only from the absolute first element of the begin
+result's `runner` array. Registered semantic capabilities run only through that
+runner; an unavailable registered capability is a hard stop, not permission to
+execute its source helper.
 
 Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command wrappers
 remain authoritative local policy. They do not replace bound shared files.
 
-Pinned/released external profiles that do not opt into a bound rolling
-operation retain their declared provider's own resolution contract. They must
-not silently enter the ShakaCode rolling profile or mix pinned and rolling
-assets.
+An explicit pinned or offline snapshot that does not opt into a bound rolling
+operation retains its declared provider's own resolution contract. It must not
+mix its assets with a managed/connected rolling provider operation.
 
 ## Availability Checks
 

@@ -1,9 +1,9 @@
 # TDD Workflow
 
 Use this workflow when skill invocation is unavailable. The authoritative
-companion skill is at `skills/tdd/SKILL.md` in the source pack.
+companion skill is returned `assets.skills.tdd`.
 
-<!-- Keep this workflow in sync with `skills/tdd/SKILL.md`. -->
+<!-- Keep this workflow in sync with the bound provider operation's `assets.skills.tdd`. -->
 
 Use this workflow to move in small, verified behavior slices:
 

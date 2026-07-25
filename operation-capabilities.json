@@ -3,6 +3,23 @@
   "assets": {
     "skill": "skills/pr-batch/SKILL.md",
     "workflow": "workflows/pr-processing.md",
+    "skills": {
+      "address_review": "skills/address-review/SKILL.md",
+      "adversarial_pr_review": "skills/adversarial-pr-review/SKILL.md",
+      "autoreview": "skills/autoreview/SKILL.md",
+      "evaluate_issue": "skills/evaluate-issue/SKILL.md",
+      "pause": "skills/pause/SKILL.md",
+      "plan_issue_triage": "skills/plan-issue-triage/SKILL.md",
+      "plan_pr_batch": "skills/plan-pr-batch/SKILL.md",
+      "post_merge_audit": "skills/post-merge-audit/SKILL.md",
+      "pr_batch": "skills/pr-batch/SKILL.md",
+      "pr_monitoring": "skills/pr-monitoring/SKILL.md",
+      "spec": "skills/spec/SKILL.md",
+      "tdd": "skills/tdd/SKILL.md",
+      "triage": "skills/triage/SKILL.md",
+      "update_changelog": "skills/update-changelog/SKILL.md",
+      "verify": "skills/verify/SKILL.md"
+    },
     "related_workflows": {
       "address_review": "workflows/address-review.md",
       "adversarial_pr_review": "workflows/adversarial-pr-review.md",

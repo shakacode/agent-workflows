@@ -4,6 +4,29 @@ description: Fetch GitHub PR review comments, triage them into must-fix/discuss/
 argument-hint: '[autopilot] <pr-number-or-url> [check all reviews]'
 ---
 
+# Address Review
+
+## Bound Provider Operation
+
+Use only a provider operation that the current invocation created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`). Never bootstrap through `PATH`, and never trust
+inherited operation handles, runner paths, or asset variables.
+
+Re-read this entry at the returned `assets.skills.address_review` path before
+proceeding. Read canonical PR processing only through `assets.workflow`.
+Resolve shared sibling skills, workflows, and docs through returned named
+assets or paths beneath `assets.root`; stop if any required asset is absent.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
+the local policy and command seams.
+
+Reuse a handle only when this current invocation created and retained that exact
+result. Run registered provider mutation capabilities only through the returned
+runner; stop when a required registered capability is unavailable.
+
 Fetch review comments from a GitHub PR in this repository, triage them, and create a todo list only for items worth addressing.
 
 Mutating address-review runs assume one active operator per target PR. Repos
@@ -11,7 +34,7 @@ that configure a coordination backend or public claim-comment fallback must use
 the mutual-exclusion gate below before triage. A repo that explicitly opts out
 of both mechanisms is declaring a single-operator workflow; do not run
 concurrent address-review workers against the same PR in that repo.
-Use `docs/coordination-backend.md` as the canonical vocabulary for private
+Use returned `assets.docs.coordination_backend` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
 # Instructions
@@ -420,8 +443,8 @@ Include the review body as a general comment when it contains actionable feedbac
 **If only PR number is provided (full-PR scan), fetch all review data with the helper:**
 
 ```bash
-# Resolve ADDRESS_REVIEW_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
-ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
+# Set ADDRESS_REVIEW_SKILL_DIR to the parent directory of the path in assets.skills.address_review.
+: "${ADDRESS_REVIEW_SKILL_DIR:?set from assets.skills.address_review}"
 "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json
 if [ -n "${SOURCE_PR_NUMBER}" ]; then
   "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" > source-review-data.json
@@ -604,7 +627,7 @@ a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on
 both.
 Read-only fetches in Steps 3-4 may run before this gate. Follow the repo's
 `coordination_backend` seam and the vocabulary in
-`docs/coordination-backend.md`: use the selected private backend when available,
+returned `assets.docs.coordination_backend`: use the selected private backend when available,
 use public claim comments only when the seam allows them, and treat `n/a` as a
 single-operator workflow. Do not create todos, present an unattended
 `autopilot` action, commit, push, post replies, resolve threads, or post a
@@ -629,16 +652,8 @@ against the fresh data before mutating GitHub or the branch.
   concurrent sessions against the same PR:
 
   ```bash
-  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
-    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
-    elif [ -d ".agents/skills/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
-    else
-      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
-      exit 1
-    fi
-  fi
+  # Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
+  : "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   coord_read_degraded=0
@@ -845,15 +860,14 @@ Do not post the PR summary checkpoint during this triage-only phase. Post it onl
 
 ## Step 8: Execute the Chosen Action
 
-Before executing any action path, read `references/actions.md` from this skill
-directory or the equivalent repo-pinned skill copy used for this run. Follow the
-matching action subsection and the general rules for all actions in that
-reference.
+Before executing any action path, read `references/actions.md` beneath the
+parent directory of returned `assets.skills.address_review`. Follow the matching
+action subsection and the general rules for all actions in that reference.
 
 Before preparing deferred-work tracking or posting a PR summary/status
-checkpoint, read `references/templates.md` from this skill directory or the
-equivalent repo-pinned skill copy used for this run. Use it for Step 9
-deferred-work tracking and Step 10 PR summary/status comment templates.
+checkpoint, read `references/templates.md` beneath that same bound skill
+directory. Use it for Step 9 deferred-work tracking and Step 10 PR summary/status
+comment templates.
 
 Action index:
 
@@ -907,7 +921,7 @@ Do not automatically merge. Signal readiness (or non-readiness) and let the user
 # Machine-Readable Receipt
 
 When emitting a structured `review-findings` block, set `review_receipt.source`
-to `address-review` and follow `docs/review-finding-schema.md`.
+to `address-review` and follow returned `assets.docs.review_finding_schema`.
 Populate optional receipt `provenance.model`, `provenance.effort`, and `provenance.usage` only from host-reported evidence for the actual review run.
 Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt text or model self-report as binding evidence.
 Copy usage counters without guessing or recalculation, and do not store raw

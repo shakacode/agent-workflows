@@ -124,7 +124,11 @@ TEXT
 CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Resume batch processing now.
 
-  Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+  Start a new provider operation from the active host home's absolute resolver,
+  re-read returned `assets.skills.pause` and `assets.workflow`, then run the
+  bounded status recovery steps under "Pausing For An Agent-Runner Restart"
+  before editing, pushing, polling, or starting any new target. Use only the newly
+  returned snapshot.
 TEXT
 
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
@@ -470,7 +474,7 @@ required_skill_rule_phrases = [
   "bulky detail stays in the Batch Plan",
   "Keep bulky evidence",
   "outside the prompt",
-  "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
+  'AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby "${PLAN_PR_BATCH_SKILL_DIR}/scripts/check_goal_prompt_size.rb"'
 ]
 
 required_codex_prompt_phrases = [

@@ -13,6 +13,23 @@ require_relative "agent_workflows_operation/runner"
 
 class AgentWorkflowsOperationTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
+  BOUND_SKILLS = %w[
+    address_review
+    adversarial_pr_review
+    autoreview
+    evaluate_issue
+    pause
+    plan_issue_triage
+    plan_pr_batch
+    post_merge_audit
+    pr_batch
+    pr_monitoring
+    spec
+    tdd
+    triage
+    update_changelog
+    verify
+  ].freeze
 
   def setup
     @tmp = Dir.mktmpdir("agent-workflows-operation")
@@ -348,8 +365,13 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assets = operation.fetch("assets")
     expected_root = File.join(state_root, "store", @revision, "tree")
 
+    assert_equal expected_root, assets.fetch("root")
     assert assets.fetch("skill").start_with?("#{expected_root}/")
     assert assets.fetch("workflow").start_with?("#{expected_root}/")
+    assert_equal BOUND_SKILLS, assets.fetch("skills").keys.sort
+    assets.fetch("skills").each do |name, path|
+      assert_equal File.join(expected_root, "skills", name.tr("_", "-"), "SKILL.md"), path
+    end
     assets.fetch("docs").each_value { |path| assert path.start_with?("#{expected_root}/") }
     refute_includes File.read(assets.fetch("skill")), ".agents/workflows"
     refute_includes File.read(assets.fetch("workflow")), "PR_BATCH_SKILL_DIR"
@@ -361,9 +383,10 @@ class AgentWorkflowsOperationTest < Minitest::Test
     contract = File.binread(File.join(ROOT, "docs/host-adapter/contract.md"))
 
     assert_operator skill.index("bin/agent-workflows-resolve"), :<, skill.index("## Single-Target Mode")
-    assert_includes skill, "never substitute a repo-local"
+    assert_includes skill, "assets.skills.pr_batch"
+    assert_includes skill, "assets.root"
     assert_includes skill, "AGENT_WORKFLOWS_RUNNER"
-    assert_includes skill, '"${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve"'
+    assert_includes skill, "${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin"
     refute_match(/^agent-workflows-resolve begin/, skill)
     refute_includes skill, 'PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"'
     assert_operator workflow.index("## Required Provider Operation"), :<, workflow.index("## Default Operating Model")
@@ -406,6 +429,55 @@ class AgentWorkflowsOperationTest < Minitest::Test
     end
   end
 
+  def test_registry_requires_named_skill_assets
+    payload = JSON.parse(File.binread(File.join(@source, "operation-capabilities.json")))
+    payload.fetch("assets").delete("skills")
+
+    error = assert_raises(AgentWorkflowsOperation::RegistryError) do
+      AgentWorkflowsOperation::Registry.new(payload, @source)
+    end
+    assert_includes error.message, "assets.skills"
+  end
+
+  def test_registry_rejects_missing_named_skill_asset
+    payload = registry_with_skills("missing_skill" => "skills/missing/SKILL.md")
+
+    error = assert_raises(AgentWorkflowsOperation::RegistryError) do
+      AgentWorkflowsOperation::Registry.new(payload, @source)
+    end
+    assert_includes error.message, "assets.skills.missing_skill"
+  end
+
+  def test_registry_rejects_traversing_named_skill_asset
+    payload = registry_with_skills("escape" => "../skills/pr-batch/SKILL.md")
+
+    error = assert_raises(AgentWorkflowsOperation::RegistryError) do
+      AgentWorkflowsOperation::Registry.new(payload, @source)
+    end
+    assert_includes error.message, "assets.skills.escape"
+  end
+
+  def test_registry_rejects_malformed_named_skill_asset
+    payload = registry_with_skills("not-kebab-case" => "skills/pr-batch/SKILL.md")
+
+    error = assert_raises(AgentWorkflowsOperation::RegistryError) do
+      AgentWorkflowsOperation::Registry.new(payload, @source)
+    end
+    assert_includes error.message, "snake_case"
+  end
+
+  def test_registry_rejects_symlinked_named_skill_asset
+    symlink = File.join(@source, "skills/symlinked/SKILL.md")
+    FileUtils.mkdir_p(File.dirname(symlink))
+    File.symlink(File.join(@source, "skills/pr-batch/SKILL.md"), symlink)
+    payload = registry_with_skills("symlinked" => "skills/symlinked/SKILL.md")
+
+    error = assert_raises(AgentWorkflowsOperation::RegistryError) do
+      AgentWorkflowsOperation::Registry.new(payload, @source)
+    end
+    assert_includes error.message, "regular non-symlink"
+  end
+
   private
 
   def stub_singleton_method(object, name, replacement)
@@ -418,6 +490,12 @@ class AgentWorkflowsOperationTest < Minitest::Test
 
   def begin_current_operation
     fixture_resolver.begin!
+  end
+
+  def registry_with_skills(skills)
+    JSON.parse(File.binread(File.join(@source, "operation-capabilities.json"))).tap do |payload|
+      payload.fetch("assets")["skills"] = skills
+    end
   end
 
   def fixture_resolver
@@ -473,7 +551,6 @@ class AgentWorkflowsOperationTest < Minitest::Test
         "skills" => "./skills/"
       ),
       ".claude-plugin/plugin.json" => JSON.generate("name" => "scw", "skills" => "./skills/"),
-      "skills/pr-batch/SKILL.md" => "operation snapshot skill\n",
       "skills/pr-batch/bin/pr-merge-submit" => "#!/bin/sh\nprintf 'fixture-helper'; printf ' %s' \"$@\"; printf '\\n'\n",
       "workflows/pr-processing.md" => "operation snapshot workflow\n",
       "workflows/address-review.md" => "address review\n",
@@ -504,6 +581,9 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "bin/upgrade-agent-workflows" => "#!/bin/sh\n",
       "operation-capabilities.json" => File.binread(File.join(ROOT, "operation-capabilities.json"))
     }
+    BOUND_SKILLS.each do |name|
+      files["skills/#{name.tr('_', '-')}/SKILL.md"] = "operation snapshot #{name} skill\n"
+    end
     Dir.glob(File.join(ROOT, "bin/agent_workflows_operation", "*.rb")).each do |path|
       files["bin/agent_workflows_operation/#{File.basename(path)}"] = File.binread(path)
     end

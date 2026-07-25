@@ -146,17 +146,22 @@ module AgentWorkflowsOperation
     end
 
     def operation_result(handle, snapshot, registry, freshness)
+      asset_root = File.realpath(snapshot.tree)
       {
         "operation" => handle,
         "revision" => snapshot.revision,
         "freshness" => freshness,
         "assets" => {
-          "skill" => File.join(snapshot.tree, registry.assets.fetch("skill")),
-          "workflow" => File.join(snapshot.tree, registry.assets.fetch("workflow")),
-          "related_workflows" => registry.assets.fetch("related_workflows").transform_values do |path|
-            File.join(snapshot.tree, path)
+          "root" => asset_root,
+          "skill" => File.join(asset_root, registry.assets.fetch("skill")),
+          "workflow" => File.join(asset_root, registry.assets.fetch("workflow")),
+          "skills" => registry.assets.fetch("skills").transform_values do |path|
+            File.join(asset_root, path)
           end,
-          "docs" => registry.assets.fetch("docs").transform_values { |path| File.join(snapshot.tree, path) }
+          "related_workflows" => registry.assets.fetch("related_workflows").transform_values do |path|
+            File.join(asset_root, path)
+          end,
+          "docs" => registry.assets.fetch("docs").transform_values { |path| File.join(asset_root, path) }
         },
         "capabilities" => registry.capabilities.keys.sort,
         "runner" => [File.join(target, "bin/agent-workflows-run"), "--operation", handle]

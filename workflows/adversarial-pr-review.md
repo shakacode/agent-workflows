@@ -52,8 +52,8 @@ commands.
 gh pr view <PR> --json number,title,body,state,isDraft,headRefOid,headRefName,baseRefName,mergeStateStatus,reviewDecision,labels,url,reviews,comments,mergedAt
 gh pr diff <PR> --name-only
 gh pr diff <PR>
-# Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
-PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+# Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
+: "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
 "${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO>
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
@@ -98,8 +98,8 @@ overlap, shared assumptions, and non-blocking decision logs.
 
 ## Independent Review Prompt
 
-Use this in Codex or Claude. For Claude Code, prefer the repo-local
-`/adversarial-pr-review <PR_URL>` skill when available.
+Use this in Codex or Claude. For Claude Code, prefer the returned
+`assets.skills.adversarial_pr_review` entry when the host exposes it.
 
 ```text
 Run an adversarial PR review. Report only. Do not create commits, comments, labels, issues, approvals, thread resolutions, pushes, merges, or changelog edits.
@@ -170,7 +170,7 @@ If `/pr-review-toolkit:review-pr` is available, you may use it as one input:
 
 /pr-review-toolkit:review-pr <PR_URL>
 
-After that, still perform the adversarial checks from `.agents/workflows/adversarial-pr-review.md`: inline review comments, review timing, missing changelog entries, untrusted PR content, validation gaps, and cross-PR interactions.
+After that, still perform the adversarial checks from returned `assets.related_workflows.adversarial_pr_review`: inline review comments, review timing, missing changelog entries, untrusted PR content, validation gaps, and cross-PR interactions.
 
 Return a report using BLOCKING, DISCUSS, FOLLOWUP, NON_BLOCKING_DECISION, and NOISE classifications. Do not create commits, push, merge, create issues, resolve threads, or approve the PR unless explicitly asked.
 ```

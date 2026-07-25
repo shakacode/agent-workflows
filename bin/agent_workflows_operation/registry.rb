@@ -50,6 +50,7 @@ module AgentWorkflowsOperation
 
       skill = validate_instruction_file!(value["skill"], "assets.skill")
       workflow = validate_instruction_file!(value["workflow"], "assets.workflow")
+      skills = validate_named_skill_files!(value["skills"], "assets.skills")
       related_workflows = validate_named_instruction_files!(
         value["related_workflows"],
         "assets.related_workflows"
@@ -59,6 +60,7 @@ module AgentWorkflowsOperation
       {
         "skill" => skill,
         "workflow" => workflow,
+        "skills" => skills,
         "related_workflows" => related_workflows,
         "docs" => validated_docs
       }
@@ -118,6 +120,17 @@ module AgentWorkflowsOperation
 
         [name, validate_instruction_file!(path, "#{label}.#{name}")]
       end
+    end
+
+    def validate_named_skill_files!(value, label)
+      validated = validate_named_instruction_files!(value, label)
+      validated.each do |name, path|
+        expected = "skills/#{name.tr('_', '-')}/SKILL.md"
+        next if path == expected
+
+        raise RegistryError, "registry #{label}.#{name} must name #{expected}"
+      end
+      validated
     end
 
     def validate_executable!(relative, label)

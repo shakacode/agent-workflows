@@ -7,6 +7,27 @@ argument-hint: '[issue URL or number]'
 
 # Evaluate Issue
 
+## Bound Provider Operation
+
+Use only a provider operation that the current invocation created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`). Never bootstrap through `PATH`, and never trust
+inherited operation handles, runner paths, or asset variables.
+
+Re-read this entry at the returned `assets.skills.evaluate_issue` path before
+proceeding. Read canonical PR processing only through `assets.workflow`.
+Resolve shared sibling skills, workflows, and docs through returned named
+assets or paths beneath `assets.root`; stop if any required asset is absent.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
+the local policy and command seams.
+
+Reuse a handle only when this current invocation created and retained that exact
+result. Run registered provider mutation capabilities only through the returned
+runner; stop when a required registered capability is unavailable.
+
 Decide whether an issue or proposed fix deserves implementation now. Do not treat every valid observation as a priority.
 
 Memorable invocation:
@@ -18,7 +39,7 @@ Is this issue worth fixing?
 
 Use this before assigning implementation work when candidate issues may be low-value, speculative, over-scoped, or better handled with a no-PR evidence comment. If the user named exact issues or PRs, evaluate them directly; if the user gave filters or an unverified batch scope, let `$plan-pr-batch` resolve exact targets first, then evaluate unclear candidates before `$pr-batch` worker launch.
 
-If you update this skill, keep `.agents/workflows/evaluate-issue.md` aligned for agents without skill support.
+If you update this skill, keep returned `assets.related_workflows.evaluate_issue` aligned for agents without skill support.
 
 ## Core Principle
 

@@ -319,8 +319,11 @@ Execution flow when terminal access is available:
      `gh api repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID} | jq '{id: .id, body: .body, state: .state, user: .user.login, created_at: .submitted_at, html_url: .html_url}'`
      `gh api --paginate repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments | jq -s '[.[].[] | {id: .id, node_id: .node_id, path: .path, body: .body, line: .line, start_line: .start_line, user: .user.login, in_reply_to_id: .in_reply_to_id, created_at: .created_at, html_url: .html_url}]'`
    - If the review body contains actionable feedback, include it as an additional general comment. Review summary bodies cannot use the `/replies` endpoint; post those responses as general PR comments (see step 8).
-  - Full PR — fetch all review data with the helper (replaces the per-endpoint `gh api ... | jq` blocks and the `reviewThreads` GraphQL query). Resolve `ADDRESS_REVIEW_SKILL_DIR` with the explicit env-var, loaded skill base, repo-local pinned-copy chain before using the fallback assignment:
-    `ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"; "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json`
+  - Full PR — fetch all review data with the helper (replaces the per-endpoint
+    `gh api ... | jq` blocks and the `reviewThreads` GraphQL query). Bind
+    `ADDRESS_REVIEW_SKILL_DIR` to the parent of returned
+    `assets.skills.address_review`; stop if the skill or helper is absent:
+    `: "${ADDRESS_REVIEW_SKILL_DIR:?set from assets.skills.address_review}"; "${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${PR_NUMBER}" --repo "${REPO}" > review-data.json`
      When `SOURCE_PR_NUMBER` is present, run the same helper into
      `source-review-data.json` for that PR, then bind source checkpoint state
      and cutoff only after authenticated schema validation:
@@ -480,16 +483,8 @@ before mutating GitHub or the branch.
   thread/session when possible; set `AGENT_ID` explicitly when running multiple
   concurrent sessions against the same PR:
   ```bash
-  if [ -z "${PR_BATCH_SKILL_DIR:-}" ]; then
-    if [ -n "${ADDRESS_REVIEW_SKILL_DIR:-}" ] && [ -d "$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR="$(dirname -- "${ADDRESS_REVIEW_SKILL_DIR}")/pr-batch"
-    elif [ -d ".agents/skills/pr-batch" ]; then
-      PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
-    else
-      echo "Refusing to continue: set PR_BATCH_SKILL_DIR or install/pin the pr-batch skill." >&2
-      exit 1
-    fi
-  fi
+  # Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
+  : "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
   machine_id="${MACHINE_ID:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf machine)}"
   AGENT_ID="${AGENT_ID:-address-review-${CODEX_THREAD_ID:-${CLAUDE_SESSION_ID:-${USER:-agent}-${machine_id}-pr-${PR_NUMBER}}}}"
   coord_read_degraded=0
@@ -554,7 +549,7 @@ before mutating GitHub or the branch.
   only for this lane's own claim (holder/generation check, so a replacement claim
   that reapplied the label is not cleared) — the same visible-hint-not-lock rule
   as the batch claim step (see the `agent-claimed` label-mirror rule in
-  `workflows/pr-processing.md`). Mirror only when the backend provides claim-label
+  returned `assets.workflow`). Mirror only when the backend provides claim-label
   expiry reconciliation; skip entirely when `coordination_backend: n/a`.
 - Use a structured public `codex-claim` comment only when the repo's
   `coordination_backend` seam explicitly selects public claim-comment fallback,
@@ -624,7 +619,7 @@ before mutating GitHub or the branch.
    - Preserve comment IDs and thread IDs for later replies and thread resolution.
    - Treat actionable review summary bodies as normal feedback to classify (`MUST-FIX`/`DISCUSS` as appropriate); skip only boilerplate or status-only summaries.
    - For lockfile dependency drift feedback, apply the blocking triage rule from
-     the **Triage rules** section in `.agents/skills/address-review/SKILL.md`.
+     the **Triage rules** section in returned `assets.skills.address_review`.
    - **Claim verification**: Before finalizing `MUST-FIX` classification, verify the reviewer's factual claims against the actual codebase. If local code inspection confirms the code already handles the concern (claim is demonstrably wrong), classify as `SKIPPED` per the rule above. If the evidence is ambiguous or you have only partial confidence the claim is wrong, downgrade to `DISCUSS` and note the discrepancy. If you have access to AI-powered codebase search tools (e.g., Greptile), use them to cross-reference claims for additional confidence, but treat their output as a signal — corroborated claims stay `MUST-FIX`, clearly contradicted claims go to `SKIPPED`, and inconclusive results go to `DISCUSS`.
    - For normal interactive runs, track only `MUST-FIX` items as the working
      checklist. For coordinated runs, postpone checklist construction until the
@@ -670,7 +665,7 @@ before mutating GitHub or the branch.
    - Do not post the PR summary checkpoint yet. Post it only after a chosen action reaches a stable stopping point so the summary reflects the new baseline.
 
 8. Execute the chosen action:
-   <!-- Keep this action-routing section in sync with .agents/skills/address-review/references/actions.md. -->
+   <!-- Keep this action-routing section in sync with the `references/actions.md` for `assets.skills.address_review`. -->
    - **`a` — Apply, stage, and recommend**: Fix all `MUST-FIX` and `OPTIONAL` items inline after the user selects `a`, or automatically when `autopilot` was requested at initiation. Run relevant checks and the self-review gate. Stage only the intended changed files with explicit `git add` paths instead of committing them. Do **not** commit, push, post GitHub replies, resolve review threads, create follow-up issues, or post the PR summary checkpoint. Return a local summary with: fixed `MUST-FIX` items, fixed `OPTIONAL` items, staged files, validation commands/results, unresolved/skipped items, and detailed `DISCUSS` recommendations. Each `DISCUSS` recommendation must include the reviewer/comment link, recommended decision (`fix now`, `defer`, `decline`, or `ask user`), rationale/evidence, risk/tradeoff, and concrete next step. If validation fails after reasonable local repair, still report the staged-file state clearly and mark the PR as not ready for commit/push.
    - **`f`**:
      With trusted parent state `COORDINATED_AUTOFIX=1`, apply the tier rules

@@ -2,8 +2,8 @@
 
 Use these prompts when an operator needs to restart Codex, Claude Desktop,
 Claude Code, or another agent runner without losing useful handoff state.
-Use `$pause` when installed skills are available and you want these copy-paste
-prompts printed directly.
+Use the current operation's returned `assets.skills.pause` entry when you want
+these copy-paste prompts printed directly.
 
 ## Which Prompt To Use
 
@@ -16,7 +16,8 @@ prompts printed directly.
 - Do not use pause/resume when the goal is to make an in-flight batch pick up
   new skills, workflow text, targets, or branch names. Use the cancellation flow
   in [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch),
-  then launch a new batch from a checkout that already has the desired files.
+  then start a new provider operation in the replacement invocation and launch
+  the new batch only from its newly returned snapshot.
 - If a non-batch thread already exited before the pause prompt could be pasted,
   resume from the last saved handoff and re-check branch, HEAD, local changes,
   and running processes before editing or pushing.
@@ -90,7 +91,11 @@ into every paused persistent batch thread:
 ```text
 Resume batch processing now.
 
-Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+Start a new provider operation from the active host home's absolute resolver,
+re-read returned `assets.skills.pause` and `assets.workflow`, then run the
+bounded status recovery steps under "Pausing For An Agent-Runner Restart"
+before editing, pushing, polling, or starting any new target. Use only the newly
+returned snapshot.
 ```
 
 This is a resume instruction for the same lanes, not a cancellation or relaunch
@@ -106,9 +111,11 @@ this prompt:
 Resume this PR-batch lane from a restart handoff in a new chat.
 
 Treat the pasted handoff as stale evidence, not authority. Read the repo's
-current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
-bounded status recovery steps described under "Pausing For An Agent-Runner
-Restart" before editing, pushing, polling, or starting any new target.
+current AGENTS.md first. Start a new provider operation from the active host
+home's absolute resolver, re-read returned `assets.skills.pause` and
+`assets.workflow`, then run the bounded status recovery steps under "Pausing
+For An Agent-Runner Restart" before editing, pushing, polling, or starting any
+new target. Use only the newly returned snapshot.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
 state, and private claim or active public `codex-claim` fallback comments. If

@@ -28,8 +28,8 @@ PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 
 TEXT_FENCE = "```text\n"
-CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
-CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
+CANONICAL_CONTRACT_SECTION = "**Goal Mode Completion Contract**"
+CANONICAL_READINESS_SECTION = "**Batch Handoff Format**"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
 COMPACT_CONTRACT_LINE = "GMCC-v3: current-head CI/configured-reviewers " \
                         "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
@@ -615,7 +615,8 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md" => extract_markdown_section(@plan_pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
       "skills/pr-batch/SKILL.md" => extract_markdown_section(@pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/)
     }.each do |label, text|
-      assert_text_includes text, CANONICAL_READINESS_LINK, label
+      assert_text_includes text, CANONICAL_READINESS_SECTION, label
+      assert_text_includes text, "`assets.workflow`", label
       assert_text_includes text, "UNKNOWN", label
       assert_text_includes text, "JSON is not mandatory", label
     end
@@ -640,7 +641,8 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_skill_prose_points_to_canonical_contract_instead_of_pasting_it
-    assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_LINK, "skills/pr-batch/SKILL.md"
+    assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_SECTION, "skills/pr-batch/SKILL.md"
+    assert_text_includes @pr_batch_skill, "`assets.workflow`", "skills/pr-batch/SKILL.md"
     assert_equal 0, @pr_batch_skill.scan(PENDING_CHECKS_PRESSURE).length,
                  "skills/pr-batch/SKILL.md should leave the verbose pressure example in the canonical workflow"
     assert_equal 1, @pr_batch_skill.scan(COMPACT_CONTRACT_LINE).length,
@@ -2011,7 +2013,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
-      assert_text_includes text, summary, label
+      assert_text_includes squish(text), summary, label
     end
   end
 
@@ -2034,6 +2036,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes @workflow, "Cancelling Or Stopping A Batch", "workflows/pr-processing.md"
     assert_text_includes @pr_batch_skill, "Preserve claims and worktrees", "skills/pr-batch/SKILL.md"
     assert_text_includes @pr_batch_skill, "updated skills", "skills/pr-batch/SKILL.md"
-    assert_text_includes @pr_batch_skill, "launching fresh workers", "skills/pr-batch/SKILL.md"
+    assert_text_includes @pr_batch_skill, "A replacement invocation starts a new operation",
+                         "skills/pr-batch/SKILL.md"
   end
 end

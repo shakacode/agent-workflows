@@ -6,10 +6,31 @@ argument-hint: '[PR URL or number; defaults to current branch]'
 
 # Adversarial PR Review
 
+## Bound Provider Operation
+
+Use only a provider operation that the current invocation created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`). Never bootstrap through `PATH`, and never trust
+inherited operation handles, runner paths, or asset variables.
+
+Re-read this entry at the returned `assets.skills.adversarial_pr_review` path before
+proceeding. Read canonical PR processing only through `assets.workflow`.
+Resolve shared sibling skills, workflows, and docs through returned named
+assets or paths beneath `assets.root`; stop if any required asset is absent.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
+the local policy and command seams.
+
+Reuse a handle only when this current invocation created and retained that exact
+result. Run registered provider mutation capabilities only through the returned
+runner; stop when a required registered capability is unavailable.
+
 Run a skeptical, report-only review of a PR. This is a red-team gate, not a
 normal style review and not a code-editing workflow.
 
-Use `.agents/workflows/adversarial-pr-review.md` for reusable prompts, Claude
+Use returned `assets.related_workflows.adversarial_pr_review` for reusable prompts, Claude
 handoffs, Codex/Claude comparison, and output templates.
 
 For a verified Codex GPT-5.6 route profile:
@@ -69,7 +90,7 @@ route reserved for routine deterministic QA.
 5. Return a report with evidence, exact files/lines where possible, and commands/data sources used.
 6. When structured output would help a batch, ledger, or follow-up workflow, append an optional
    `review-findings` JSON block using the shared
-   [Review Finding schema](../../docs/review-finding-schema.md). Keep the human-readable report
+   Review Finding schema in returned `assets.docs.review_finding_schema`. Keep the human-readable report
    first and map this skill's labels explicitly:
    - `BLOCKING` -> `must_fix`, usually `P1` or `P0`.
    - `DISCUSS` -> `needs_decision`.
@@ -107,7 +128,7 @@ Apply this stricter mode when a PR touches release-sensitive surfaces:
 release-candidate or version-bump changes, user-visible runtime behavior,
 CI/workflow/build-config, generated output, benchmark-sensitive code,
 package/runtime boundaries, or concurrent batch work. It adds three demands on
-top of the steps above; see `.agents/workflows/adversarial-pr-review.md` under
+top of the steps above; see returned `assets.related_workflows.adversarial_pr_review` under
 **High-Risk Mode** for the full checklist, adversarial-question seed, and the
 `pending_maintainer_action` dashboard block.
 For high-risk or concurrent-batch PRs, the review is required before readiness

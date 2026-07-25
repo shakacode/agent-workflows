@@ -15,20 +15,16 @@ BASE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 PORTABLE_HELPER_CALL = '"${PR_BATCH_SKILL_DIR}/bin/stage-dependency-gate"'
 REPOSITORY_RELATIVE_HELPER = "skills/pr-batch/bin/stage-dependency-gate"
 HELPER_RESOLUTION_RULES = [
-  "explicit environment variable",
-  "the loaded skill's base directory when the host exposes it",
-  "repo-local `.agents/skills/pr-batch`",
-  "stop with a precise blocker"
+  "parent of returned `assets.skills.pr_batch`",
+  "provider-contract blocker"
 ].freeze
 PROVIDER_BOUND_HELPER_RULES = {
   "skills/pr-batch/SKILL.md" => [
-    "Bind `PR_BATCH_SKILL_DIR` once to the parent directory of `assets.skill`.",
-    "Use only the already-bound operation snapshot `PR_BATCH_SKILL_DIR`; a missing helper is a provider-contract " \
-    "failure, not permission to search a live or repo-local fallback."
+    "Bind `PR_BATCH_SKILL_DIR` once to the parent of `assets.skills.pr_batch`",
+    "never re-resolve that directory from an environment override or any other source"
   ],
   "workflows/pr-processing.md" => [
-    "Bind `PR_BATCH_SKILL_DIR` to the parent of that operation's `assets.skill`; never derive it from an " \
-    "environment override, repo-local `.agents` copy, live plugin cache, installed-home path, or another checkout.",
+    "Bind `PR_BATCH_SKILL_DIR` only to the parent of `assets.skills.pr_batch`.",
     "Use only the operation-bound `PR_BATCH_SKILL_DIR`; a missing helper is a provider-contract failure."
   ]
 }.freeze

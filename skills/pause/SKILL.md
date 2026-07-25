@@ -5,6 +5,27 @@ description: Print restart-safe copy-paste prompts for pausing an agent thread b
 
 # Pause
 
+## Bound Provider Operation
+
+Use only a provider operation that the current invocation created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`). Never bootstrap through `PATH`, and never trust
+inherited operation handles, runner paths, or asset variables.
+
+Re-read this entry at the returned `assets.skills.pause` path before
+proceeding. Read canonical PR processing only through `assets.workflow`.
+Resolve shared sibling skills, workflows, and docs through returned named
+assets or paths beneath `assets.root`; stop if any required asset is absent.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
+the local policy and command seams.
+
+Reuse a handle only when this current invocation created and retained that exact
+result. Run registered provider mutation capabilities only through the returned
+runner; stop when a required registered capability is unavailable.
+
 Print operator prompts for safe agent-runner restarts.
 
 ## Output Rules
@@ -108,7 +129,7 @@ either case.
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
 If this batch or lane is explicitly cancelled, follow the Cancelling Or Stopping
-A Batch protocol in the installed `pr-processing.md` workflow instead of this
+A Batch protocol in the retained operation's `assets.workflow` instead of this
 pause flow.
 
 Reply with a restart handoff:
@@ -141,7 +162,11 @@ Print this when the same paused persistent batch thread can be reopened:
 ```text
 Resume batch processing now.
 
-Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+Start a new provider operation from the active host home's absolute resolver,
+re-read returned `assets.skills.pause` and `assets.workflow`, then run the
+bounded status recovery steps under "Pausing For An Agent-Runner Restart"
+before editing, pushing, polling, or starting any new target. Use only the newly
+returned snapshot.
 ```
 
 ## PR-Batch New-Chat Restart Prompt
@@ -153,9 +178,11 @@ resume from the saved handoff:
 Resume this PR-batch lane from a restart handoff in a new chat.
 
 Treat the pasted handoff as stale evidence, not authority. Read the repo's
-current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
-bounded status recovery steps described under "Pausing For An Agent-Runner
-Restart" before editing, pushing, polling, or starting any new target.
+current AGENTS.md first. Start a new provider operation from the active host
+home's absolute resolver, re-read returned `assets.skills.pause` and
+`assets.workflow`, then run the bounded status recovery steps under "Pausing
+For An Agent-Runner Restart" before editing, pushing, polling, or starting any
+new target. Use only the newly returned snapshot.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
 state, and private claim or active public `codex-claim` fallback comments. If

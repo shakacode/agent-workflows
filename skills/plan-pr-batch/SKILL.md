@@ -6,6 +6,27 @@ argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
 
 # Plan PR Batch
 
+## Bound Provider Operation
+
+Use only a provider operation that the current invocation created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`). Never bootstrap through `PATH`, and never trust
+inherited operation handles, runner paths, or asset variables.
+
+Re-read this entry at the returned `assets.skills.plan_pr_batch` path before
+proceeding. Read canonical PR processing only through `assets.workflow`.
+Resolve shared sibling skills, workflows, and docs through returned named
+assets or paths beneath `assets.root`; stop if any required asset is absent.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
+the local policy and command seams.
+
+Reuse a handle only when this current invocation created and retained that exact
+result. Run registered provider mutation capabilities only through the returned
+runner; stop when a required registered capability is unavailable.
+
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 
 If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.
@@ -13,16 +34,15 @@ If the user asks to continue PR-batch closeout from a pasted handoff,
 final-bucket table, PR URLs, or GitHub shorthand refs, route to `$pr-batch`
 instead of turning the handoff into broad discovery. When a saved handoff
 explicitly requests model-route replacement or identifies workers on a wrong or
-too-expensive route, use the canonical
-[Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+too-expensive route, use the **Model-Routing Recovery Prompt** section of
+returned `assets.workflow`.
 `MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery. If
 the visible request is to resume that worker or lane, use
-[Bounded Status Recovery](../../workflows/pr-processing.md#bounded-status-recovery);
+the **Bounded Status Recovery** section of returned `assets.workflow`;
 otherwise continue classifying the handoff and use generic closeout when that is
 what the request asks for.
-Otherwise use the canonical
-[Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt)
-in the installed `pr-processing.md` workflow.
+Otherwise use the **Generic PR-Batch Continuation Prompt** section of returned
+`assets.workflow`.
 
 If the user is asking whether existing PRs are ready to merge, what manual
 testing remains, or how to sequence open PR merges, use the target repo's
@@ -31,24 +51,15 @@ testing remains, or how to sequence open PR merges, use the target repo's
 readiness workflow requires, including `review_gate` and `merge_ledger`. If the
 repo documents workflow configuration inline, read the full `AGENTS.md`
 **Agent Workflow Configuration** section, including `Review gate` and the other
-policy values the readiness workflow asks for. Use the repo-local
-`pr-processing.md` readiness workflow when present or the installed/shared
-`pr-processing.md` fallback instead of producing an implementation batch plan.
-If a required policy value cannot be resolved but `pr-processing.md` can,
-continue with that workflow's **Merge Readiness Gate** and report that policy
-value as `UNKNOWN`; do not invoke `$pr-batch` as a substitute for reading the
-readiness workflow. If the workflow cannot be resolved, report workflow state as
-`UNKNOWN` rather than guessing.
+policy values the readiness workflow asks for. Use only returned
+`assets.workflow` as the readiness workflow instead of producing an
+implementation batch plan. If a required policy value cannot be resolved,
+continue with that workflow's **Merge Readiness Gate** and report the policy
+value as `UNKNOWN`; do not invoke `$pr-batch` as a substitute for reading it.
 
-If a skill picker only exposes installed/global skills, treat this skill as an
-entry point. After fetching, prefer repo-local `.agents/skills/...` and
-`.agents/workflows/...` files when they exist; otherwise use the installed
-shared files adjacent to this skill.
-
-When helper scripts need a `*_SKILL_DIR`, resolve it in this order: explicit
-environment variable; the loaded skill's base directory when the host exposes
-it; repo-local `.agents/skills/<skill>`; then stop with a precise blocker if the
-helper is still missing.
+Derive each helper's `*_SKILL_DIR` from the parent of its returned
+`assets.skills.<name>` path. Stop with a precise provider-contract blocker if a
+required named skill or helper is absent.
 
 For a verified Codex GPT-5.6 host, use this recommended exact profile while
 keeping provider-neutral classes for other runtimes:
@@ -128,7 +139,9 @@ Plan a PR batch
 
 3. Shape
    - Exclude issues labeled `needs-customer-feedback` from implementation batches unless the user explicitly provides customer evidence or maintainer approval for that issue; list them under "Excluded or deferred" with `needs-customer-feedback` as the reason.
-   - For any issue that is speculative, AI/code-analysis-only, over-scoped, or unclear in value, priority, or fix scope, route through the installed or repo-local `evaluate-issue` skill before assigning it to implementation work.
+   - For any issue that is speculative, AI/code-analysis-only, over-scoped, or
+     unclear in value, priority, or fix scope, route through returned
+     `assets.skills.evaluate_issue` before assigning implementation work.
    - Exclude closed or merged items unless the user explicitly asked to audit them.
    - Treat a human assignee as a reservation: a human assignee — any assignee
      outside the repo's resolved automation set — marks an issue or PR as
@@ -156,7 +169,7 @@ Plan a PR batch
      start; otherwise targeted batch status cannot report `blocked_on` lanes.
    - Emit a persisted `stage-dependency-plan` v1 file for the complete planned
      graph plus a separate `stage-dependency-gate` v1 live replay, using the
-     exact schemas in `workflows/pr-processing.md` -> **Stage-Typed Dependency
+     exact schemas in returned `assets.workflow` -> **Stage-Typed Dependency
      Gate**. Backend `depends_on` refs are coordination facts, not a substitute
      for typed edges. The immutable pre-launch trusted plan assigns a known plan
      id and records each edge's exact `id`, `from`, `to`, and `type`; retyping
@@ -174,11 +187,10 @@ Plan a PR batch
      prompt. Name `STAGE_DEPENDENCY_PLAN_PATH`, `STAGE_DEPENDENCY_PLAN_ID`, and
      the inline live replay or its durable reference in the goal's `Scope` data;
      persist them with stable planning state. Backend storage is optional, and
-     backend `n/a` uses a coordinator-owned local plan file. Resolve
-     `PR_BATCH_SKILL_DIR` in this order: explicit environment variable; the
-     loaded skill's base directory when the host exposes it; repo-local
-     `.agents/skills/pr-batch`; then stop with a precise blocker if the helper is
-     still missing. Run `"${PR_BATCH_SKILL_DIR}/bin/stage-dependency-gate"`
+     backend `n/a` uses a coordinator-owned local plan file. Bind
+     `PR_BATCH_SKILL_DIR` to the parent of returned `assets.skills.pr_batch` and
+     stop if the skill or helper is absent. Run
+     `"${PR_BATCH_SKILL_DIR}/bin/stage-dependency-gate"`
      `--trusted-plan "${STAGE_DEPENDENCY_PLAN_PATH}"`
      `--trusted-plan-id "${STAGE_DEPENDENCY_PLAN_ID}"` with the live replay on
      stdin before calling the plan ready; report its deterministic critical
@@ -187,7 +199,7 @@ Plan a PR batch
      malformed, `UNKNOWN`, or mismatched plan path/id/data blocks mutation. A
      verified independent graph still contains every lane and emits `edges: []`
      in both artifacts; the lane array is never empty.
-   - Apply `.agents/workflows/pr-processing.md` under **Batch QA Lane**. Record
+   - Apply returned `assets.workflow` under **Batch QA Lane**. Record
      whether QA is required, which subset qualifies, the planned owner/lane, and
      final QA Evidence expectations. If QA is omitted for low-risk work, record
      `not required` plus the rationale. For batches that need post-merge replay,
@@ -228,10 +240,10 @@ Plan a PR batch
      diff and the Files API must independently agree on the path set — a
      fail-safe against a silent under-report scheduling two colliding items into
      the same wave:
-     Resolve `PLAN_PR_BATCH_SKILL_DIR` with the explicit env-var, loaded skill
-     base, repo-local pinned-copy chain before using the fallback assignment.
-     Then run:
-     `PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"; "${PLAN_PR_BATCH_SKILL_DIR}/bin/pr-file-touch-map" N --repo OWNER/REPO --cross-check`
+     Bind `PLAN_PR_BATCH_SKILL_DIR` to the parent of returned
+     `assets.skills.plan_pr_batch`; stop if the skill or helper is absent. Then
+     run:
+     `: "${PLAN_PR_BATCH_SKILL_DIR:?set from assets.skills.plan_pr_batch}"; "${PLAN_PR_BATCH_SKILL_DIR}/bin/pr-file-touch-map" N --repo OWNER/REPO --cross-check`
      It prints `{pr, repo, source, changed_files, paths, renames}`:
      - `source` is `verified` (cross-check: both sources agreed — the only value
        safe to place in a parallel worktree lane), `local-diff` / `files-api`
@@ -329,9 +341,9 @@ Plan a PR batch
      and immediate stop conditions. Contradictory evidence, ambiguous criteria,
      scope or risk growth, weakened verification, or consequential judgment
      returns control to the coordinator before further edits.
-     Before any worker launch, resolve `PLAN_PR_BATCH_SKILL_DIR` through the
-     explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
-     `batch-plan-preflight` v1 envelope on stdin to
+     Before any worker launch, use `PLAN_PR_BATCH_SKILL_DIR` already bound from
+     returned `assets.skills.plan_pr_batch` and pass a `batch-plan-preflight` v1
+     envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
      owns schema, collision, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
@@ -352,10 +364,10 @@ Plan a PR batch
      record and durable evidence reference. A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its
      held lanes unlaunched.
-     Before launch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var /
-     loaded-skill / repo-local pinned-copy chain, then send the requested
-     route/dispatcher, explicit route and dispatch authority, ordered candidates,
-     and lane state to `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`.
+     Before launch, use `PR_BATCH_SKILL_DIR` already bound from returned
+     `assets.skills.pr_batch`, then send the requested route/dispatcher,
+     explicit route and dispatch authority, ordered candidates, and lane state
+     to `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`.
      It selects only a bound, attested tuple or explicitly authorized ordered
      fallback; generic subagent wording and the coordinator route grant nothing.
      Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
@@ -463,12 +475,15 @@ Plan a PR batch
      depends on, in the same request.
    - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
 
-Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
+Use the **Planning-Chat Lifecycle** section of returned `assets.workflow`: a
+prompt-only planning chat may hand off stable planning state; a planning parent
+supervises worker execution and performs narrow read-only cross-batch
+reconciliation; batch coordinators execute and own live lanes and closeout.
 
 ## Canonical Readiness Vocabulary
 
 Use the canonical human-facing readiness states from
-[Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format)
+the **Batch Handoff Format** section of returned `assets.workflow`
 in planning notes, done conditions, and final-bucket handoffs. Normal
 interactive output stays human-readable; do not replace those states with vague
 labels such as `ready`, `complete`, or `done`. Preserve explicit `UNKNOWN` for
@@ -477,7 +492,7 @@ QA, or merge-ledger evidence; do not turn unknown evidence into an optimistic
 state. Optional structured handoff blocks may reduce ambiguity for a coordinator
 or validator, but they are not required and JSON is not mandatory.
 
-<!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+<!-- Keep this rule in sync with `### Batch Handoff Format` in the bound provider operation's `assets.workflow`. -->
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
@@ -627,5 +642,5 @@ Execution rules:
 After editing this skill's goal prompt rules or template, run:
 
 ```bash
-AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby "${PLAN_PR_BATCH_SKILL_DIR}/scripts/check_goal_prompt_size.rb"
 ```

@@ -3,14 +3,11 @@
 ## Required Provider Operation
 
 This workflow is valid only at the absolute `assets.workflow` path returned by
-a successful current `agent-workflows-resolve begin` operation. If no bound
-operation handle exists, stop here and run the resolver from the active host's
-absolute `${CODEX_HOME:-$HOME/.codex}/bin` or
-`${CLAUDE_HOME:-$HOME/.claude}/bin` path before reading deeper instructions or
-invoking any helper. Never resolve this bootstrap through `PATH`. Bind
-`PR_BATCH_SKILL_DIR` to the parent of that operation's `assets.skill`; never
-derive it from an environment override, repo-local `.agents` copy, live plugin
-cache, installed-home path, or another checkout. Set
+a provider operation that the current invocation created locally and whose
+exact `begin --json` result it retained. Otherwise stop here and run the active
+host home's absolute `bin/agent-workflows-resolve begin` path. Never resolve this bootstrap through
+`PATH`. Bind `PR_BATCH_SKILL_DIR` only to the parent of
+`assets.skills.pr_batch`. Set
 `AGENT_WORKFLOWS_OPERATION` only from the current begin result, never from
 inherited shell state. Set `AGENT_WORKFLOWS_RUNNER` only from the absolute first
 element of that result's `runner` array, never from `PATH` or inherited shell
@@ -29,7 +26,7 @@ hard stop, not permission to execute its underlying path.
 Use this workflow when an agent is assigned an issue, an existing PR, a PR review-fix pass, or a multi-PR landing plan. The goal is to reduce review turns, CI churn, and follow-up issue noise by doing more local work before asking GitHub to spend reviewer or runner time.
 
 For high-concurrency issue or PR batches, use the operation-provided
-`assets.skill`. A memorable invocation is:
+`assets.skills.pr_batch`. A memorable invocation is:
 
 ```text
 $pr-batch
@@ -42,9 +39,9 @@ For assistants without skill support, begin the provider operation directly,
 read its returned skill/workflow/docs paths, and then follow the high-concurrency
 batch launch rules below.
 
-For post-merge audits after a concurrent batch or before a release candidate, use `.agents/skills/post-merge-audit/SKILL.md` when skills are available. Reusable audit, comparison, issue-creation, and Claude handoff prompts live in `.agents/workflows/post-merge-audit.md`.
+For post-merge audits after a concurrent batch or before a release candidate, use returned `assets.skills.post_merge_audit` when skills are available. Reusable audit, comparison, issue-creation, and Claude handoff prompts live in returned `assets.related_workflows.post_merge_audit`.
 
-For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversarial-pr-review/SKILL.md` when skills are available. Reusable Codex, Claude, and comparison prompts live in `.agents/workflows/adversarial-pr-review.md`.
+For adversarial pre-merge or post-merge PR review, use returned `assets.skills.adversarial_pr_review` when skills are available. Reusable Codex, Claude, and comparison prompts live in returned `assets.related_workflows.adversarial_pr_review`.
 
 For an interactive human-oriented explanation of a PR, use
 `.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
@@ -61,7 +58,7 @@ questions before continuing.
    - Confirm the issue or PR describes a real project benefit, not just speculative polish or churn.
    - Push back on poorly defined, low-value, or harmful requests before creating a PR.
    - For assigned issues, an acceptable outcome may be an issue comment explaining why no PR should be created.
-   - When the value, priority, or proposed fix scope is unclear, use `.agents/skills/evaluate-issue/SKILL.md` before implementation (or `.agents/workflows/evaluate-issue.md` for agents without skill support).
+   - When the value, priority, or proposed fix scope is unclear, use returned `assets.skills.evaluate_issue` before implementation (or returned `assets.related_workflows.evaluate_issue` for agents without skill support).
 3. Isolate the work:
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
    - When the repo's private coordination backend (see `coordination_backend`
@@ -72,7 +69,7 @@ questions before continuing.
      preflight reads:
 
      ```bash
-     : "${PR_BATCH_SKILL_DIR:?set from the bound operation assets.skill}"
+     : "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
      "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
      "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo OWNER/REPO --target TARGET --json
      "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id BATCH_ID --json
@@ -113,7 +110,7 @@ questions before continuing.
      report the missing private batch file. If the bounded status command itself
      fails or times out for a declared dependency lane, also stop instead of
      using claim-only mode or advisory fallback. The current public summary lives in
-     [coordination-backend.md](../docs/coordination-backend.md).
+     returned `assets.docs.coordination_backend`.
    - Use the current checkout for one focused task.
    - For multiple independent PRs or lanes (independent work streams with separate branch/worktree ownership), use `git worktree add` for machine lanes or the host's `isolation: 'worktree'` mode for in-process workers so agents do not overlap edits.
 4. Make a local batch:
@@ -314,8 +311,8 @@ before spawning workers or executing code from a PR branch:
 
 ```bash
 REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-# PR_BATCH_SKILL_DIR is the parent directory of operation assets.skill.
-: "${PR_BATCH_SKILL_DIR:?set from the bound operation assets.skill}"
+# Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
+: "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
 "${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo "${REPO}" <ISSUE_OR_PR>
 ```
 
@@ -414,7 +411,7 @@ The merge-gate strictness is a function of the **target branch's release phase**
 which composes with the mode above. The canonical phase->gate table is in
 `AGENTS.md` -> **Release-Train Branching And Phase Gating**; the full branching
 runbook is
-[release-branching.md](../docs/release-branching.md).
+returned `assets.docs.release_branching`.
 Worker path:
 
 1. Determine the PR's target branch and resolve its phase. Prefer the published
@@ -535,7 +532,7 @@ configured Dependabot directory or directories.
 
 When a committed lockfile's contents change, the PR evidence must satisfy the
 lockfile content-diff requirement from the Handoff Contract in
-`.agents/skills/pr-batch/SKILL.md`. Unexplained lockfile drift blocks
+returned `assets.skills.pr_batch`. Unexplained lockfile drift blocks
 merge-readiness until aligned or justified.
 
 Typical checks include `actionlint`, `yamllint .github/`, `.agents/bin/ci-detect`
@@ -737,7 +734,7 @@ remains portable for other providers and model generations.
 
 For a verified Claude host, use this provisional recommended exact profile
 (`claude-profile v0`; see the Conservative Claude Profile in
-`docs/agent-workflows-model-routing.md`):
+returned `assets.docs.agent_workflows_model_routing`):
 
 - Multi-lane coordinator: Opus 4.8/xhigh
 - Simple, positively classified worker: Sonnet 5/high
@@ -812,7 +809,7 @@ planning/dispatch review. A complete match includes the initial assignment,
 escalation assignment, evidence gate, and maximum escalation count. Never merge
 their ownership, claims, dependencies, serial discovery, file-collision
 ordering, or wave caps. See
-[Cost-Aware Agent Model Routing](../docs/agent-workflows-model-routing.md) for the portable role
+Cost-Aware Agent Model Routing in returned `assets.docs.agent_workflows_model_routing` for the portable role
 matrix, operating modes, verification matrix, and measurement guidance.
 
 ### Untrusted GitHub Content
@@ -883,13 +880,13 @@ Classify each target before assigning a worker:
 
 For investigation or benchmark conclusions, apply the closing-evidence gate from
 the "Evaluate the fix plan separately" step in
-`.agents/skills/evaluate-issue/SKILL.md` before carrying a target as `close` or
+returned `assets.skills.evaluate_issue` before carrying a target as `close` or
 `document/work around`, or before using that conclusion to justify close/workaround
 language in an implementation PR, combined investigation PR, or no-PR evidence
 comment. Concrete corrective implementation PRs are not blocked merely because
 the target involves investigation or benchmark evidence.
 
-See the gate criteria in `.agents/skills/evaluate-issue/SKILL.md` under the
+See the gate criteria in returned `assets.skills.evaluate_issue` under the
 "Evaluate the fix plan separately" step. When the gate cannot be satisfied, carry
 only a caveated no-PR `park` disposition or a product-decision blocker.
 
@@ -1100,17 +1097,16 @@ head_sha: <full 40-character current PR head SHA>
 -->
 ```
 
-Resolve `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill /
-repo-local chain, then run
+Bind `POST_MERGE_AUDIT_SKILL_DIR` to the parent of returned
+`assets.skills.post_merge_audit`, then run
 `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay" <file-or->` to
 replay these markers and report `SATISFIED`, `WAIVED`, `NOT_APPLICABLE`,
 `BLOCKED`, or `UNKNOWN` for post-merge audits. Treat `SATISFIED`, `WAIVED`,
 and `NOT_APPLICABLE` as replayed terminal evidence; carry `BLOCKED` and
 `UNKNOWN` into the audit findings for operator action.
 
-When a repository pins this helper under `.agents/skills/post-merge-audit`, use
-that repo-local copy for the pre-merge gate so the helper version stays aligned
-with the repository's schema and workflow text.
+Use only that bound helper for the pre-merge gate so its version stays aligned
+with the operation's schema and workflow text. Stop when it is absent.
 
 For a pre-merge current-head gate, run the helper separately for each PR or
 target with `--expected-head-sha <full-final-head-SHA>`, feeding it only that
@@ -1144,7 +1140,7 @@ or `unknown`.
 
 If the user is using `/plan`, or asks to prepare a Codex goal, stop after producing the approved plan and exact Codex goal text. Do not begin implementation just because the plan was approved unless the user explicitly says to launch now.
 
-Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`,
+Keep this goal prompt aligned with returned `assets.skills.pr_batch`,
 including the review/audit gate paragraphs.
 
 The `$pr-batch` skill links to this canonical `Coordination:` paragraph instead
@@ -1236,7 +1232,7 @@ outcomes, decision-point counts, confidence/readiness notes, and `UNKNOWN`
 facts in the PR description or handoff instead of turning them into separate
 maintainer pings.
 
-<!-- Keep this hosted-CI uncertainty rule in sync with `.agents/skills/pr-batch/SKILL.md`. -->
+<!-- Keep this hosted-CI uncertainty rule in sync with the bound provider operation's `assets.skills.pr_batch`. -->
 
 Hosted-CI uncertainty at the final readiness gate after local validation and the
 final push is a non-blocking decision. If the branch needs remote confirmation,
@@ -1261,7 +1257,7 @@ Before merge or final readiness, scan the PR description for the decision log an
 
 ### Batch Handoff Format
 
-<!-- Canonical batch handoff copy. `.agents/skills/pr-batch/SKILL.md` should point here instead of duplicating this section. -->
+<!-- Canonical Batch Handoff Format. The bound `assets.skills.pr_batch` entry must reference this section, not duplicate it. -->
 
 > **A handoff is a comment, not a new issue.** Per `AGENTS.md` → _Tracking Issues
 > And Handoffs_: record the handoff below on the relevant parent tracking issue
@@ -1375,7 +1371,7 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   durable lock — the backend claim and its heartbeat TTL remain the source of
   truth, and a stale `agent-claimed` label after a crash or restart is expected
   until the daemon reconciles it. Enable mirroring only when the backend provides
-  that expiry reconciliation (see `docs/coordination-backend.md`); without a
+  that expiry reconciliation (see returned `assets.docs.coordination_backend`); without a
   reconciler, a crashed claim would leave a stale label that excludes a released
   item indefinitely, so do not mirror. Skip label mirroring entirely when
   `coordination_backend: n/a` (single-operator). Adopt the claim label per repo
@@ -1688,7 +1684,7 @@ either case.
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
 If this batch or lane is explicitly cancelled, follow the Cancelling Or Stopping
-A Batch protocol in the installed `pr-processing.md` workflow instead of this
+A Batch protocol in the retained operation's `assets.workflow` instead of this
 pause flow.
 
 Reply with a restart handoff:
@@ -1724,12 +1720,16 @@ coordinator cancellation switches to the
 After the runner relaunches, explicitly resume each paused persistent thread
 with this companion prompt:
 
-<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+<!-- Pinned by the plan-pr-batch goal-prompt-size contract. -->
 
 ```text
 Resume batch processing now.
 
-Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+Start a new provider operation from the active host home's absolute resolver,
+re-read returned `assets.skills.pause` and `assets.workflow`, then run the
+bounded status recovery steps under "Pausing For An Agent-Runner Restart"
+before editing, pushing, polling, or starting any new target. Use only the newly
+returned snapshot.
 ```
 
 After relaunch, reopen each paused persistent thread and resume from its
@@ -1755,12 +1755,11 @@ ownership is `UNKNOWN`, stop and report the conflict; do not refresh the
 heartbeat or public fallback claim, and do not continue work until the
 coordinator resolves it.
 
-For new batches after a restart, start fresh coordinator and worker sessions
-from a checkout that already contains the desired `.agents/skills/...` and
-`.agents/workflows/...` files. Do not reuse a paused worker to run a new batch
-or to pick up updated workflow text; skills and workflow instructions are read
-at process/session start. Let healthy paused batches finish on their loaded
-instructions, or use the
+Within the same invocation, resume only with the exact operation result that it
+created and retained. After a restart or in any replacement invocation, start a
+new operation and use only its newly returned snapshot. Do not reuse a paused
+worker to pick up updated workflow text. Let healthy paused batches finish on
+their bound snapshot, or use the
 [Cancelling Or Stopping A Batch](#cancelling-or-stopping-a-batch) protocol when
 a batch must be restarted with new rules, targets, or branch names.
 
@@ -1893,7 +1892,7 @@ Use this saved clipboard prompt when a prior handoff or final-bucket table
 contains the batch closeout targets but the operator should not hand-edit a
 target list for each batch:
 
-<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+<!-- Pinned by the plan-pr-batch goal-prompt-size contract. -->
 
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule from
 [Plan To Goal Handoff](#plan-to-goal-handoff), and run
@@ -1953,7 +1952,7 @@ hatch**, not a single kill switch:
   coordinator or maintainer marks a batch — or specific lanes — cancelled in the
   private backend `batches/<batch-id>.json`. Workers observe it through bounded
   `agent-coord status`. See
-  [coordination-backend.md](../docs/coordination-backend.md)
+  returned `assets.docs.coordination_backend`
   → **Cancellation** for the public contract; use the private backend README or
   schema beside `batches/<batch-id>.json` as the source of truth for the exact
   JSON field name until `agent-coord cancel` exists. Untrusted issue, PR, or
@@ -2005,9 +2004,9 @@ hatch**, not a single kill switch:
 - **Restarting with updated skills.** Stopping a batch does not reload skills,
   workflow rules, or this file into an already-running process; skills are read at
   process/session start. To roll an update into a running fleet, drain or stop the
-  batch, then launch **fresh** workers from a checkout that already contains the
-  updated `.agents/skills/...` and `.agents/workflows/...` files. A still-running
-  worker that merely receives a new batch assignment keeps its old skill text.
+  batch, then launch **fresh** workers. Each replacement invocation starts a new
+  operation and uses only the newly returned snapshot. A still-running worker
+  that merely receives a new batch assignment keeps its bound snapshot.
 - **Fallback.** When the private backend is unavailable or degraded (bounded
   `agent-coord doctor` / `status` timeout or non-zero), do not assume
   cancellation state was recorded. If the coordinator recorded cancellation
@@ -2189,7 +2188,7 @@ asking GitHub reviewers or CI to spend another cycle.
 1. Commit the intended implementation batch locally first so every later suggestion has a
    clean before/after diff. Do not push only to trigger review.
 2. Apply the local/adversarial self-review gate on the committed branch diff, normally via
-   `.agents/skills/autoreview/SKILL.md`. Resolve the base branch from
+   returned `assets.skills.autoreview`. Resolve the base branch from
    `.agents/agent-workflow.yml`; the default engine is `codex review --base origin/<base>` or the
    PR's real base.
 3. When the maintainer asks for Claude review, or when the change is high-risk, hosted-CI-labeled,
@@ -2256,7 +2255,7 @@ summaries, inline review comments, or quota-limit notices as part of routine PR 
 
 ## Reproduction And TDD Gate
 
-For first-class red-green-refactor workflow instructions, use `$tdd` when skills are available. For assistants without skill support, use the companion TDD workflow at `workflows/tdd.md`.
+For first-class red-green-refactor workflow instructions, use `$tdd` when skills are available. For assistants without skill support, use the companion TDD workflow at returned `assets.related_workflows.tdd`.
 
 Before fixing a bug, changing existing behavior, or implementing new behavior, follow the selected TDD entry point where possible.
 
@@ -2345,8 +2344,8 @@ review-agent checks for advisory reviewer completion. Run these under the
 current tool's timeout or a shell timeout when available:
 
 ```bash
-# PR_BATCH_SKILL_DIR is the parent directory of operation assets.skill.
-: "${PR_BATCH_SKILL_DIR:?set from the bound operation assets.skill}"
+# Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
+: "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
 "${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO>
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
@@ -2407,7 +2406,7 @@ still running.
 
 ## Review Comment Handling
 
-Use `.agents/skills/address-review/SKILL.md` when skills are available; Claude Code exposes the same workflow as `/address-review`. For assistants without skill support, use `.agents/workflows/address-review.md`. The default stance is:
+Use returned `assets.skills.address_review` when skills are available; Claude Code exposes the same workflow as `/address-review`. For assistants without skill support, use returned `assets.related_workflows.address_review`. The default stance is:
 
 - `MUST-FIX`: fix in the PR.
 - `DISCUSS`: ask the user or make a narrow, evidence-backed decision.
@@ -2530,7 +2529,7 @@ Use `address-review` for actionable GitHub review comments instead of skimming t
 
 ### Adversarial Review Gate
 
-Use `.agents/skills/adversarial-pr-review/SKILL.md` for high-risk PRs,
+Use returned `assets.skills.adversarial_pr_review` for high-risk PRs,
 concurrent batch PRs, suspected bad merges, release-candidate risk, or when the
 user asks for a Claude/Codex red-team pass. It is also required in any release
 phase that `AGENTS.md` marks as requiring adversarial review. The high-risk
@@ -2545,13 +2544,14 @@ Codex cannot assume that Claude Code slash commands are executable from the curr
 When the user wants Claude as an independent PR reviewer:
 
 1. Create or update a draft PR first if the Claude command needs a GitHub PR URL.
-2. Prefer the repo-local `/adversarial-pr-review <PR_URL>` skill, or use the handoff prompt in `.agents/workflows/adversarial-pr-review.md`.
+2. Prefer returned `assets.skills.adversarial_pr_review`, or use the handoff
+   prompt in returned `assets.related_workflows.adversarial_pr_review`.
 3. Use `/pr-review-toolkit:review-pr <PR_URL>` only as review input or when the user accepts that the command may interact with GitHub according to the active Claude permissions.
 4. Keep Codex and Claude independent until Claude posts or returns its report.
 5. Fetch Claude review comments and classify them with `address-review`.
 6. Do not mark the PR ready or merge until Claude's `BLOCKING`, `MUST-FIX`, `DISCUSS`, compatibility, security, regression, and missing-changelog findings are fixed, explicitly decided, or waived by a maintainer.
 
-For local pre-push review, use the configured local review tool such as `.agents/skills/autoreview/SKILL.md` or an available `codex review` CLI. Use Claude PR review after a draft PR exists unless the Claude tooling explicitly supports local diff review.
+For local pre-push review, use the configured local review tool such as returned `assets.skills.autoreview` or an available `codex review` CLI. Use Claude PR review after a draft PR exists unless the Claude tooling explicitly supports local diff review.
 
 ## Follow-Up Tracking Policy
 
@@ -2966,8 +2966,8 @@ Auto-merge requires all of the following:
 Use the `Agent Merge Confidence` template defined in `AGENTS.md` -> `Release Mode And Auto-Merge Coordination`. Do not maintain a separate template copy here.
 
 Comment tiers (`MUST-FIX`, `DISCUSS`, `OPTIONAL`, `SKIPPED`) are assigned by
-`.agents/skills/address-review/SKILL.md` when skills are available; otherwise use
-`.agents/workflows/address-review.md` as the fallback.
+returned `assets.skills.address_review` when skills are available; otherwise use
+returned `assets.related_workflows.address_review` as the fallback.
 
 If approved and green but not merging immediately, use the repository's standard
 ready-to-merge marker from `AGENTS.md` when available.
@@ -3042,7 +3042,7 @@ deep audit because modes imply different scope and base selection.
    to confirm the obvious just-run batch. If batch work is in scope but the
    batch/run id or hint is unknown:
    - run bounded `agent-coord doctor --json`, then broad `agent-coord status`
-     through the resolved `pr-batch` bounded helper only as an audit/discovery read to list
+     through the bounded helper beneath returned `assets.skills.pr_batch` only as an audit/discovery read to list
      candidate batch/run ids and lanes
    - record `worked_issue_scope: UNKNOWN (needs batch confirmation)`
    - ask the user to confirm a candidate before treating any candidate lane list
@@ -3086,8 +3086,8 @@ deep audit because modes imply different scope and base selection.
    recovered rows advisory `UNKNOWN` until coordination state is corrected.
 
    Sync note: this scope algorithm is intentionally mirrored in
-   `.agents/skills/post-merge-audit/SKILL.md` and
-   `.agents/workflows/post-merge-audit.md`; update all copies together.
+   returned `assets.skills.post_merge_audit` and
+   returned `assets.related_workflows.post_merge_audit`; update all copies together.
 
 3. List every PR merged in the range. When `worked_issue_scope` is verified
    from coordination state, identify the batch subset by coordination state,
@@ -3119,7 +3119,7 @@ deep audit because modes imply different scope and base selection.
    parked disposition satisfied the issue or batch intent; verify the final
    state; classify worked issues as `in_progress`, `realized`, `partial`,
    `missed`, `regressed`, `stalled`, or `unknown` using
-   `.agents/workflows/continuous-evaluation-loop.md`; and classify QA lanes with
+   returned `assets.related_workflows.continuous_evaluation_loop`; and classify QA lanes with
    the QA-coverage result from the Batch QA Lane section. Treat healthy
    active/live worked-issue lanes as `in_progress` no-action items unless they
    have a stalled, regressed, partial, missed, or unknown signal; treat required

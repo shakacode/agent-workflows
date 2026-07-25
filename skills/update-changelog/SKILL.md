@@ -6,6 +6,27 @@ argument-hint: '[classification-sweep BASE_REF..TARGET_REF|release|rc|beta|versi
 
 # Update Changelog
 
+## Bound Provider Operation
+
+Use only a provider operation that the current invocation created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`). Never bootstrap through `PATH`, and never trust
+inherited operation handles, runner paths, or asset variables.
+
+Re-read this entry at the returned `assets.skills.update_changelog` path before
+proceeding. Read canonical PR processing only through `assets.workflow`.
+Resolve shared sibling skills, workflows, and docs through returned named
+assets or paths beneath `assets.root`; stop if any required asset is absent.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
+the local policy and command seams.
+
+Reuse a handle only when this current invocation created and retained that exact
+result. Run registered provider mutation capabilities only through the returned
+runner; stop when a required registered capability is unavailable.
+
 You are helping to add an entry to the repo's changelog. Resolve the changelog path and configured base branch from `.agents/agent-workflow.yml` (`changelog` and `base_branch`), then independently resolve the PR target and compare-link branches for the current mode from repo policy before fetching or editing.
 
 ## Arguments
@@ -111,8 +132,8 @@ BASE_REF="${BASE_REF:?set BASE_REF, e.g. v17.0.0.rc.1}"
 BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from .agents/agent-workflow.yml base_branch}"
 TARGET_REF="${TARGET_REF:?set TARGET_REF, e.g. v17.0.0.rc.2 or origin/${BASE_BRANCH}}"
 PR_TARGET_BRANCH="${PR_TARGET_BRANCH:-${BASE_BRANCH}}"
-# Resolve UPDATE_CHANGELOG_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy before using this fallback.
-UPDATE_CHANGELOG_SKILL_DIR="${UPDATE_CHANGELOG_SKILL_DIR:-.agents/skills/update-changelog}"
+# Set UPDATE_CHANGELOG_SKILL_DIR to the parent directory of the path in assets.skills.update_changelog.
+: "${UPDATE_CHANGELOG_SKILL_DIR:?set from assets.skills.update_changelog}"
 
 # JSON array of {pr, sha, subject}; pr is an integer, or the string "UNKNOWN".
 "${UPDATE_CHANGELOG_SKILL_DIR}/bin/changelog-merged-prs" "${BASE_REF}..${TARGET_REF}" --target-branch "${PR_TARGET_BRANCH}"
