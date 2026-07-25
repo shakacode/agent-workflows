@@ -1552,6 +1552,32 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
     end
   end
 
+  def test_policy_apply_compares_validated_non_ascii_policy_content_as_bytes
+    Dir.mktmpdir("push-downstream-policy-git") do |dir|
+      remote, seed = seed_valid_remote(dir)
+      policy_path = File.join(seed, ".agents/agent-workflow.yml")
+      File.open(policy_path, "a") { |file| file << "# café policy\n" }
+      system("git", "-C", seed, "add", ".agents/agent-workflow.yml")
+      system("git", "-C", seed, "commit", "-m", "document non-ASCII policy", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+          out, err = capture_io do
+            assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
+          end
+          assert_empty err
+          assert_includes out, "PR local/consumer https://example.test/pr/1"
+        end
+      end
+
+      branch = "refs/heads/agent-workflows/repo-prefix"
+      policy_content = `git --git-dir=#{remote.shellescape} show #{branch.shellescape}:.agents/agent-workflow.yml`
+      assert_includes policy_content, "# café policy"
+      assert_includes policy_content, "repo_prefix: ROR"
+    end
+  end
+
   def test_policy_apply_revalidates_committed_head_when_malicious_pre_commit_stages_readme
     Dir.mktmpdir("push-downstream-policy-git") do |dir|
       remote, = seed_valid_remote(dir)

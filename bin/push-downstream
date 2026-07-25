@@ -1307,7 +1307,7 @@ module PushDownstream
 
     parent_content = policy_config_content_at_ref(clone, expected_parent)
     head_content = policy_config_content_at_ref(clone, head)
-    unless head_content == validated_content
+    unless head_content && head_content.bytes == validated_content.bytes
       return policy_commit_isolation_failure(repo, "committed policy blob differs from the validated worktree content")
     end
     unless parent_content && policy_config_has_exactly_one_document?(parent_content) &&
