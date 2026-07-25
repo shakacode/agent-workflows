@@ -82,9 +82,9 @@ if options[:pr_count]
 end
 prs.sort_by! { |pr| [pr.fetch("repository"), pr.fetch("number")] }
 
-def threshold_triggered?(pr, maxima)
+def threshold_triggered?(pull_request, maxima)
   maxima.any? do |metric, maximum|
-    pr[metric].is_a?(Integer) && pr.fetch(metric) > maximum
+    pull_request[metric].is_a?(Integer) && pull_request.fetch(metric) > maximum
   end
 end
 
