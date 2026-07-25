@@ -310,7 +310,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert raced
     assert_equal @revision, operation.fetch("revision")
     assert_equal [File.join(@target, "bin/agent-workflows-run"), "--operation", operation.fetch("operation")],
-                 operation.fetch("runner")
+                 operation.fetch("runner").last(3)
   end
 
   def test_failed_post_rename_verification_removes_the_owned_store
@@ -388,9 +388,8 @@ class AgentWorkflowsOperationTest < Minitest::Test
     operation = begin_current_operation
     File.write(@fake_gh, "#!/bin/sh\nexit 99\n")
     FileUtils.chmod(0o755, @fake_gh)
-    installed_runner, operation_flag, handle = operation.fetch("runner")
     _output, error, status = Open3.capture3(
-      installed_runner, operation_flag, handle, "pr-merge-submit", "--", "--probe"
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--probe"
     )
 
     refute status.success?
@@ -400,12 +399,16 @@ class AgentWorkflowsOperationTest < Minitest::Test
 
   def test_installed_runner_executes_the_operation_copy
     operation = begin_current_operation
-    installed_runner, operation_flag, handle = operation.fetch("runner")
-    assert_equal File.join(@target, "bin", "agent-workflows-run"), installed_runner
-    assert_equal ["--operation", operation.fetch("operation")], [operation_flag, handle]
+    trusted_env_paths = %w[/usr/bin/env /bin/env].select { |path| File.exist?(path) }.map { |path| File.realpath(path) }
+    assert_includes trusted_env_paths, operation.fetch("runner").first
+    assert_includes operation.fetch("runner"), "RUBYOPT"
+    assert_includes operation.fetch("runner"), "RUBYLIB"
+    assert_includes operation.fetch("runner"), File.realpath(RbConfig.ruby)
+    assert_equal File.join(@target, "bin/agent-workflows-run"), operation.fetch("runner")[-3]
+    assert_equal ["--operation", operation.fetch("operation")], operation.fetch("runner").last(2)
     output, error, status = Open3.capture3(
-      { "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex },
-      installed_runner, operation_flag, handle, "pr-merge-submit", "--", "--probe"
+      { "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex }, *operation.fetch("runner"),
+      "pr-merge-submit", "--", "--probe"
     )
 
     assert status.success?, "#{output}#{error}"
@@ -425,21 +428,43 @@ class AgentWorkflowsOperationTest < Minitest::Test
     File.write(injection, "File.write(#{sentinel.dump}, 'injected')\n")
     FileUtils.chmod(0o755, ruby_probe)
     FileUtils.chmod(0o755, gh_probe)
-    installed_runner, operation_flag, handle = operation.fetch("runner")
-    wrapper = <<~RUBY
-      ENV["PATH"] = ARGV.shift
-      ENV["RUBYOPT"] = "-r#{injection}"
-      ENV["RUBYLIB"] = #{File.dirname(injection).dump}
-      load ARGV.shift
-    RUBY
     output, error, status = Open3.capture3(
-      RbConfig.ruby, "--disable=gems", "-e", wrapper,
-      hostile, installed_runner, operation_flag, handle, "pr-merge-submit", "--", "--probe"
+      {
+        "PATH" => hostile,
+        "RUBYOPT" => "-r#{injection}",
+        "RUBYLIB" => File.dirname(injection),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => gh_probe
+      },
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--probe"
     )
 
     assert status.success?, "#{output}#{error}"
     assert_equal "fixture-helper --probe\n", output
     refute_path_exists sentinel
+  end
+
+  def test_gh_binding_comes_only_from_explicit_install_metadata
+    hostile_gh = File.join(@tmp, "hostile-gh")
+    File.write(hostile_gh, "#!/bin/sh\nexit 93\n")
+    FileUtils.chmod(0o755, hostile_gh)
+    ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"] = hostile_gh
+
+    operation = begin_current_operation
+    _root, metadata = AgentWorkflowsOperation::State.new(target: @target).load_operation!(
+      operation.fetch("operation")
+    )
+
+    assert_equal File.realpath(@fake_gh), metadata.dig("tools", "gh", "path")
+  end
+
+  def test_managed_begin_rejects_missing_explicit_gh_install_binding
+    metadata = read_metadata
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { begin_current_operation }
+    assert_includes error.message, "explicit absolute gh"
+    assert_empty operation_directories
   end
 
   def test_snapshot_paths_are_operation_owned_and_do_not_fall_back_to_live_repo_files
@@ -478,10 +503,9 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_equal "managed", operation.fetch("provider_profile")
     assert_equal @revision, operation.fetch("revision")
     assert_equal BOUND_SKILLS, operation.dig("assets", "skills").keys.sort
-    assert_equal File.join(claude_target, "bin/agent-workflows-run"), operation.fetch("runner").first
+    assert_equal File.join(claude_target, "bin/agent-workflows-run"), operation.fetch("runner")[-3]
     output, error, status = Open3.capture3(
-      RbConfig.ruby, "--disable=gems", *operation.fetch("runner"),
-      "pr-merge-submit", "--", "--claude-probe"
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--claude-probe"
     )
     assert status.success?, "#{output}#{error}"
     assert_equal "fixture-helper --claude-probe\n", output
@@ -769,12 +793,16 @@ class AgentWorkflowsOperationTest < Minitest::Test
       FileUtils.cp(File.join(@source, relative), File.join(@target, relative))
     end
     FileUtils.cp(File.join(@source, "LICENSE"), File.join(@target, "LICENSE"))
+    @fake_gh = File.join(@tmp, "fake-gh")
+    File.write(@fake_gh, "#!/bin/sh\nprintf 'fixture-gh\\n'\n")
+    FileUtils.chmod(0o755, @fake_gh)
     write_metadata(
       "host" => "codex",
       "mode" => "copy",
       "delivery_mode" => "plugin-companion",
       "provider_profile" => "managed",
-      "source_revision" => @revision
+      "source_revision" => @revision,
+      "gh_executable" => @fake_gh
     )
     @fake_codex = File.join(@tmp, "fake-codex")
     File.write(
@@ -784,9 +812,6 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "'scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git'\n"
     )
     FileUtils.chmod(0o755, @fake_codex)
-    @fake_gh = File.join(@tmp, "fake-gh")
-    File.write(@fake_gh, "#!/bin/sh\nprintf 'fixture-gh\\n'\n")
-    FileUtils.chmod(0o755, @fake_gh)
   end
 
   def install_claude_provider(target)
@@ -821,7 +846,8 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "mode" => "copy",
       "delivery_mode" => "plugin-companion",
       "provider_profile" => "managed",
-      "source_revision" => @revision
+      "source_revision" => @revision,
+      "gh_executable" => @fake_gh
     )
   end
 

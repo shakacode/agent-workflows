@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH]
 
 Installs this shared workflow pack into an agent home.
 
@@ -37,6 +37,7 @@ target=""
 mode="copy"
 delivery_mode=""
 provider_profile=""
+gh_executable=""
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
 doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
@@ -186,12 +187,14 @@ prepare_metadata() {
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   ruby -rjson -e '
-    path, host, mode, delivery_mode, provider_profile, source, version, revision, branch, remote, installed_at = ARGV
+    path, host, mode, delivery_mode, provider_profile, gh_executable,
+      source, version, revision, branch, remote, installed_at = ARGV
     metadata = {
       "host" => host,
       "mode" => mode,
       "delivery_mode" => delivery_mode,
       "provider_profile" => provider_profile,
+      "gh_executable" => gh_executable.empty? ? nil : gh_executable,
       "source" => File.expand_path(source),
       "version" => version,
       "source_revision" => revision,
@@ -200,7 +203,8 @@ prepare_metadata() {
       "installed_at" => installed_at
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$provider_profile" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$provider_profile" "$gh_executable" \
+    "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
 }
 
 commit_metadata() {
@@ -511,6 +515,10 @@ while [[ $# -gt 0 ]]; do
       provider_profile="${2:?--provider-profile requires pinned or managed}"
       shift 2
       ;;
+    --gh-executable)
+      gh_executable="${2:?--gh-executable requires an absolute path}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -551,6 +559,9 @@ fi
 if [[ -z "$provider_profile" ]]; then
   provider_profile="$(installed_metadata_value provider_profile 2>/dev/null || printf 'pinned\n')"
 fi
+if [[ -z "$gh_executable" ]]; then
+  gh_executable="$(installed_metadata_value gh_executable 2>/dev/null || true)"
+fi
 case "$provider_profile" in
   pinned|managed) ;;
   *)
@@ -561,6 +572,22 @@ esac
 if [[ "$provider_profile" = "managed" && ( "$delivery_mode" != "plugin-companion" || "$mode" != "copy" ) ]]; then
   echo "Managed provider profile requires copy mode with plugin-companion delivery." >&2
   exit 64
+fi
+if [[ "$provider_profile" = "managed" ]]; then
+  if [[ "$gh_executable" != /* ]]; then
+    echo "Managed provider profile requires --gh-executable with an explicit absolute path." >&2
+    exit 64
+  fi
+  if ! ruby -e '
+    path = File.realpath(ARGV.fetch(0))
+    stat = File.stat(path)
+    abort unless stat.file? && (stat.uid == Process.uid || stat.uid.zero?)
+    abort unless (stat.mode & 0o022).zero? && (stat.mode & 0o111).positive?
+  ' "$gh_executable"; then
+    echo "Managed provider profile requires a trusted executable --gh-executable path." >&2
+    exit 64
+  fi
+  gh_executable="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$gh_executable")"
 fi
 
 pending_migration_receipt="$target/.agent-workflows-migration-staging"

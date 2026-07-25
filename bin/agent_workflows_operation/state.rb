@@ -46,15 +46,18 @@ module AgentWorkflowsOperation
           copy_private_executable!(File.join(snapshot.tree, capability.executable), destination)
           [name, executable_identity(destination).merge("source" => capability.executable)]
         end
+        interpreter = external_executable_identity!(RbConfig.ruby, "Ruby interpreter")
+        environment = external_executable_identity!(trusted_env_executable!, "environment launcher")
         metadata = {
           "schema_version" => 1,
           "operation" => handle,
           "revision" => snapshot.revision,
           "freshness" => freshness,
           "provider" => provider,
-          "interpreter" => external_executable_identity!(RbConfig.ruby, "Ruby interpreter"),
+          "interpreter" => interpreter,
+          "environment" => environment,
           "tools" => {
-            "gh" => external_executable_identity!(resolve_gh!, "gh executable")
+            "gh" => external_executable_identity!(provider.fetch("gh_executable"), "gh executable")
           },
           "launcher" => executable_identity(launcher_path),
           "runtime" => runtime_state,
@@ -65,7 +68,10 @@ module AgentWorkflowsOperation
         File.rename(stage, destination)
         published = true
         load_operation!(handle)
-        operation_result(handle, snapshot, registry, freshness, provider.fetch("profile"))
+        operation_result(
+          handle, snapshot, registry, freshness, provider.fetch("profile"),
+          interpreter:, environment:
+        )
       ensure
         SecurePaths.cleanup_owned_directory!(stage, identity) unless published
       end
@@ -150,18 +156,9 @@ module AgentWorkflowsOperation
       }
     end
 
-    def resolve_gh!
-      configured = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
-      if configured.to_s.empty?
-        configured = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).find do |directory|
-          candidate = File.join(directory, "gh")
-          File.file?(candidate) && File.executable?(candidate)
-        end
-        configured = File.join(configured, "gh") if configured
-      end
-      raise ResolverError, "AGENT_WORKFLOWS_GH_EXECUTABLE must identify gh" if configured.to_s.empty?
-
-      configured
+    def trusted_env_executable!
+      %w[/usr/bin/env /bin/env].find { |path| File.file?(path) && File.executable?(path) } ||
+        raise(ResolverError, "trusted absolute env executable is unavailable")
     end
 
     def external_executable_identity!(path, label)
@@ -180,7 +177,7 @@ module AgentWorkflowsOperation
       raise ResolverError, "#{label} is unavailable: #{e.message}"
     end
 
-    def operation_result(handle, snapshot, registry, freshness, provider_profile)
+    def operation_result(handle, snapshot, registry, freshness, provider_profile, interpreter:, environment:)
       asset_root = File.realpath(snapshot.tree)
       {
         "operation" => handle,
@@ -200,8 +197,23 @@ module AgentWorkflowsOperation
           "docs" => registry.assets.fetch("docs").transform_values { |path| File.join(asset_root, path) }
         },
         "capabilities" => registry.capabilities.keys.sort,
-        "runner" => [File.join(target, "bin/agent-workflows-run"), "--operation", handle]
+        "runner" => startup_environment_command(environment.fetch("path")) + [
+          interpreter.fetch("path"),
+          "--disable=gems",
+          File.join(target, "bin/agent-workflows-run"),
+          "--operation",
+          handle
+        ]
       }
+    end
+
+    def startup_environment_command(environment)
+      %w[
+        RUBYOPT RUBYLIB BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH
+        GEM_HOME GEM_PATH
+      ].each_with_object([environment]) do |name, command|
+        command.concat(["-u", name])
+      end
     end
   end
 end

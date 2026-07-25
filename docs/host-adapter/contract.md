@@ -165,7 +165,7 @@ additional repo-owned binstubs, package managers, test runners, or CI parity
 commands named in its `AGENTS.md` seam. Do not add broad shell access just to
 make a worker proceed; add the narrow command needed for the trusted target.
 
-## Provider-Bound Rolling Operations
+## Provider-Bound Managed Operations
 
 A managed provider binds one consequential operation to one
 exact canonical commit. Each operation-bound entry skill uses only an operation
@@ -190,7 +190,10 @@ inherited operation state. The resolver:
    Claude `gitCommitSha` plus `installPath` receipt;
 6. publishes an opaque operation handle only after the private launcher,
    runtime, capability copies, registry, instruction assets, and provider
-   evidence all verify.
+   evidence all verify;
+7. binds `gh` only from the explicit absolute `gh_executable` recorded by the
+   trusted managed installation, never from runtime `PATH` or an environment
+   override.
 
 The JSON result retains the exact `revision`, operation handle, freshness,
 capabilities, and runner and exposes one read binding:
@@ -202,6 +205,10 @@ capabilities, and runner and exposes one read binding:
   PR-processing assets.
 - `assets.related_workflows` and `assets.docs` expose validated named
   supporting assets.
+- `runner` is the complete argv prefix for capability execution. Its absolute
+  environment launcher removes Ruby/Bundler injection state before starting the
+  bound absolute Ruby interpreter. Consumers preserve every element in order
+  and append only the capability and its arguments.
 
 Registry loading requires every named skill to be a regular non-symlink
 instruction file at its declared location beneath the verified tree. Missing,
@@ -217,7 +224,7 @@ required, and non-executable capability targets. The initial current-only
 mutation is `pr-merge-submit`, invoked as:
 
 ```bash
-"${AGENT_WORKFLOWS_RUNNER}" --operation "$AGENT_WORKFLOWS_OPERATION" pr-merge-submit -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-merge-submit -- ARGS...
 ```
 
 The runner revalidates the operation against its private canonical Git store,
@@ -258,9 +265,10 @@ Inside a provider-bound operation, there is no path-precedence chain. Use only
 the absolute skill, workflow, related-workflow, and doc paths returned by the
 resolver or paths beneath returned `assets.root`. Derive helper directories
 only from the applicable returned `assets.skills` entry. Bind
-`AGENT_WORKFLOWS_RUNNER` only from the absolute first element of the begin
-result's `runner` array. Registered semantic capabilities run only through that
-runner; an unavailable registered capability is a hard stop, not permission to
+`AGENT_WORKFLOWS_RUNNER` as a shell array containing every element of the begin
+result's `runner` array in order; the absolute environment/interpreter prefix is
+part of the security boundary. Registered semantic capabilities run only
+through that runner; an unavailable registered capability is a hard stop, not permission to
 execute its source helper.
 
 Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command wrappers

@@ -51,6 +51,12 @@ names the next desired action. For example:
 ```text
 Resume now from your restart handoff. Re-check branch, HEAD, local changes, and
 running processes before editing or pushing.
+
+Start a new provider operation from the active host home's absolute resolver and
+compare its returned revision with the handoff's
+`originating_provider_revision`. Continue under shared instructions only when
+they match. On mismatch, stop normal resume and require explicit
+cancellation/relaunch or state reconciliation before any work continues.
 ```
 
 If the original thread cannot be reopened, start a new chat and paste the
@@ -69,6 +75,12 @@ from the recorded next resume step after the live state matches the handoff.
 If live state does not match the handoff, report the mismatch and stop for
 operator direction before editing, pushing, polling, merging, or launching
 servers.
+
+Start a new provider operation from the active host home's absolute resolver and
+compare its returned revision with the handoff's
+`originating_provider_revision`. Continue under shared instructions only when
+they match. On mismatch, stop normal resume and require explicit
+cancellation/relaunch or state reconciliation before any work continues.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>
@@ -119,6 +131,12 @@ home's absolute resolver, re-read returned `assets.skills.pause` and
 `assets.workflow`, then run the bounded status recovery steps under "Pausing
 For An Agent-Runner Restart" before editing, pushing, polling, or starting any
 new target. Use only the newly returned snapshot.
+
+Start a new provider operation from the active host home's absolute resolver and
+compare its returned revision with the handoff's
+`originating_provider_revision`. Continue under shared instructions only when
+they match. On mismatch, stop normal resume and require explicit
+cancellation/relaunch or state reconciliation before any work continues.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
 state, and private claim or active public `codex-claim` fallback comments. If

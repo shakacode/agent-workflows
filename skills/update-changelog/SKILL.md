@@ -9,29 +9,32 @@ argument-hint: '[classification-sweep BASE_REF..TARGET_REF|release|rc|beta|versi
 ## Bound Provider Operation
 
 The persisted install metadata field `provider_profile` controls resolution. A
-missing legacy field is `pinned`. For `managed`, create a current operation with
-the absolute resolver below. For `pinned`, never fetch or claim current-provider
-mutation availability; use only the declared installed snapshot when the workflow
-supports it, otherwise stop. Any unknown profile is invalid and requires a stop.
+missing legacy field is `pinned`; any unknown profile is invalid and requires a
+stop.
 
-Use only a provider operation that the current invocation created locally and
-whose exact `begin --json` result it retained. For a managed profile without a
-retained result, identify the active host and run the active host home's absolute `bin/agent-workflows-resolve begin`
-path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
-codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
-begin --host claude --json`). Never bootstrap through `PATH`, and never trust
-inherited operation handles, runner paths, or asset variables.
+**Pinned profile:** never fetch or run the current-provider resolver. Do not
+expect `assets.*`. Continue only from Consumer `AGENTS.md`, this already-loaded
+entry, `.agents/agent-workflow.yml`, and `.agents/bin/*` policy/command seams. Do
+not load a shared sibling skill, workflow, or doc, and do not run a registered
+mutation. If the remaining task requires any of those shared assets,
+stop with a precise pinned-provider limitation. This preserves the declared
+installed snapshot without fetching or mixing another provider.
 
-Re-read this entry at the returned `assets.skills.update_changelog` path before
-proceeding. Read canonical PR processing only through `assets.workflow`.
-Resolve shared sibling skills, workflows, and docs through returned named
-assets or paths beneath `assets.root`; stop if any required asset is absent.
-Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
-the local policy and command seams.
+**Managed profile only:** for `managed`, use only a provider operation that the
+current invocation created locally and whose exact `begin --json` result it
+retained. Otherwise identify the active host and use the active host home's
+absolute `bin/agent-workflows-resolve begin` path:
+`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host codex
+--json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve begin
+--host claude --json`. Never bootstrap through `PATH`, and never trust an
+inherited operation handle, runner command, or asset variable.
 
-Reuse a handle only when this current invocation created and retained that exact
-result. Run registered provider mutation capabilities only through the returned
-runner; stop when a required registered capability is unavailable.
+Re-read this entry at returned `assets.skills.update_changelog`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Reuse a handle only when this current invocation
+created and retained that exact result. Run registered mutations only through
+the complete returned `runner` command; stop if the capability is unavailable.
 
 You are helping to add an entry to the repo's changelog. Resolve the changelog path and configured base branch from `.agents/agent-workflow.yml` (`changelog` and `base_branch`), then independently resolve the PR target and compare-link branches for the current mode from repo policy before fetching or editing.
 

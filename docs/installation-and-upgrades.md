@@ -117,8 +117,12 @@ Install metadata persists `provider_profile` as `pinned` or `managed`. New and
 legacy installs default to `pinned`; a missing legacy field is interpreted as
 `pinned`. Pinned installs never fetch a current snapshot and never expose
 current-provider mutations. Select `--provider-profile managed` only with
-`--mode copy --delivery-mode plugin-companion`; managed operations verify the
-native and companion copies before resolving current canonical content.
+`--mode copy --delivery-mode plugin-companion --gh-executable
+/absolute/path/to/gh`. Verify that absolute path explicitly; the installer
+resolves and validates it, then persists it as trusted install configuration.
+Managed operations never derive `gh` authority from runtime `PATH` or
+`AGENT_WORKFLOWS_GH_EXECUTABLE`. They verify the native and companion copies
+before resolving current canonical content.
 Status and upgrade surface and replay this profile. Unknown values fail closed.
 
 Native plugin installation does not install helper binaries on `PATH`, write
@@ -143,11 +147,12 @@ deeper shared workflows or running helpers:
 
 Do not look up this bootstrap resolver through `PATH`.
 The returned opaque handle binds the operation-provided skill, workflow, docs,
-and registered capability launcher. Invoke a registered mutation through the
-absolute runner returned by the same begin result:
-`RUNNER --operation HANDLE CAPABILITY -- ARGS`. Do not resolve the runner from
-`PATH` or run its snapshot executable directly. A degraded begin is read-only
-and cannot authorize current-provider mutations.
+and registered capability launcher. Its `runner` value is a complete argv
+prefix, including the trusted absolute environment sanitizer and Ruby
+interpreter. Preserve every element in order and append only
+`CAPABILITY -- ARGS`; do not execute only the installed runner-script element,
+resolve any prefix through `PATH`, or run a snapshot executable directly. A
+degraded begin is read-only and cannot authorize current-provider mutations.
 
 If alignment fails, follow the complete host-specific update/reinstall/reload
 action printed by the resolver. A provider update in a running session always

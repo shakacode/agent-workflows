@@ -171,6 +171,13 @@ Toolkit and the user accepts the tool behavior. If the review must be private,
 run Claude with tool restrictions instead of relying on this prompt.
 
 ```text
+This receiving invocation must bind its own provider before using shared assets.
+Read active-host install metadata; missing `provider_profile` means `pinned` and
+an unknown value stops. For `managed`, run the active host home's absolute
+`bin/agent-workflows-resolve begin` command and use only that invocation's newly
+returned assets. Never inherit a sender's handle or paths. Because this prompt
+requires shared assets, a `pinned` recipient must stop rather than mix providers.
+
 Review this PR with an adversarial release-risk posture:
 
 <PR_URL>

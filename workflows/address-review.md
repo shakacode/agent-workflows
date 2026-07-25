@@ -29,6 +29,13 @@ If the assistant has terminal access with `gh`, it should execute the workflow d
 ## Prompt
 
 ````text
+This receiving invocation must bind its own provider before using shared assets.
+Read active-host install metadata; missing `provider_profile` means `pinned` and
+an unknown value stops. For `managed`, run the active host home's absolute
+`bin/agent-workflows-resolve begin` command and use only that invocation's newly
+returned assets. Never inherit a sender's handle or paths. Because this prompt
+requires shared assets, a `pinned` recipient must stop rather than mix providers.
+
 Act as a pull request review triage assistant.
 
 I want the equivalent of Claude Code's `/address-review` command, using this prompt as the fallback when that command is unavailable, for this input: `{{PR_REFERENCE}}`.
@@ -781,7 +788,7 @@ before mutating GitHub or the branch.
    - Do not resolve anything still in progress or uncertain.
    - **Self-review gate**: After making all code changes but before committing, review the diff for issues introduced by the fixes themselves. Check for correctness bugs, style violations, and inconsistencies with surrounding code. Fix critical issues immediately. This prevents new review cycles caused by the fixes. If you have access to a code-review agent or tool, use it; otherwise, do a manual diff review.
    - **Git push confirmation**: For ordinary PR/review iteration, a validated commit should be pushed without a separate prompt so CI and online reviews can run on the next head. Ask before running `git push` only when the user requested local-only or inspect-before-push work, branch or remote ownership is unclear, the push is destructive or risky under `AGENTS.md` git safety boundaries, hosted-CI/review-churn policy requires a maintainer decision, or the next push would be optional/nit-only after the final-candidate gate. Action `a` must not push; it stops after staging files and returning the local summary. A rejected non-fast-forward push is a hard stop: fetch the remote branch, report the local and remote heads plus likely concurrent ownership conflict, and do not force-push, rebase-and-push over, or otherwise replace another agent's commits without explicit maintainer or coordinator direction. If a maintainer or coordinator directs the run to continue after reconciling the remote head, rerun step 4 review-data fetch, step 5 filtering, and step 6 triage from that new head before any further push, reply, thread resolution, or summary checkpoint.
-   - **Converge the review loop, don't chase it**: every push re-triggers the configured review bots on the new head and produces a fresh batch of comments. Batch all code fixes into a single push; resolve purely advisory threads (style, dead-code, "consider…", informational, positive) in-thread with a reply — **without a new commit**, since resolving a thread does not re-trigger reviews while a push does. Never resolve a confirmed blocker by reply alone. See [Review-Loop Convergence](pr-processing.md#review-loop-convergence-push-amplification).
+   - **Converge the review loop, don't chase it**: every push re-triggers the configured review bots on the new head and produces a fresh batch of comments. Batch all code fixes into a single push; resolve purely advisory threads (style, dead-code, "consider…", informational, positive) in-thread with a reply — **without a new commit**, since resolving a thread does not re-trigger reviews while a push does. Never resolve a confirmed blocker by reply alone. See the Review-Loop Convergence section of returned `assets.workflow`.
    - **Parallel fixes**: When there are 2+ items to fix that touch different files with no logical dependencies, process them in parallel if your environment supports concurrent execution (e.g., sub-agents, background tasks). Items in the same file or with cross-file dependencies must be fixed sequentially. Instruct each sub-agent **not to commit** — all changes must remain unstaged so the self-review gate can run on the combined diff. After parallel fixes complete, verify no conflicts exist between the changes by checking whether any sub-agents touched the same files (`git diff --name-only`).
 
 9. Deferred-work tracking (after `f+i`, `m`, or an explicit user request):

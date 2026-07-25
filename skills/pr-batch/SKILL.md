@@ -12,33 +12,36 @@ a batch of one, not a separate workflow.
 ## Bound Provider Operation
 
 The persisted install metadata field `provider_profile` controls resolution. A
-missing legacy field is `pinned`. For `managed`, create a current operation with
-the absolute resolver below. For `pinned`, never fetch or claim current-provider
-mutation availability; use only the declared installed snapshot when the workflow
-supports it, otherwise stop. Any unknown profile is invalid and requires a stop.
+missing legacy field is `pinned`; any unknown profile is invalid and requires a
+stop.
 
-Use only a provider operation that the current invocation created locally and
-whose exact `begin --json` result it retained. For a managed profile without a
-retained result, identify the active host and run the active host home's absolute `bin/agent-workflows-resolve begin`
-path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
-codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
-begin --host claude --json`). Never bootstrap through `PATH`, and never trust
-inherited operation handles, runner paths, or asset variables.
+**Pinned profile:** never fetch or run the current-provider resolver. Do not
+expect `assets.*`. Continue only from Consumer `AGENTS.md`, this already-loaded
+entry, `.agents/agent-workflow.yml`, and `.agents/bin/*` policy/command seams. Do
+not load a shared sibling skill, workflow, or doc, and do not run a registered
+mutation. If the remaining task requires any of those shared assets,
+stop with a precise pinned-provider limitation. This preserves the declared
+installed snapshot without fetching or mixing another provider.
 
-Re-read this entry at the returned `assets.skills.pr_batch` path before
-proceeding. Read canonical PR processing only through `assets.workflow`.
-Resolve shared sibling skills, workflows, and docs through returned named
-assets or paths beneath `assets.root`; stop if any required asset is absent.
-Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
-the local policy and command seams.
+**Managed profile only:** for `managed`, use only a provider operation that the
+current invocation created locally and whose exact `begin --json` result it
+retained. Otherwise identify the active host and use the active host home's
+absolute `bin/agent-workflows-resolve begin` path:
+`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host codex
+--json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve begin
+--host claude --json`. Never bootstrap through `PATH`, and never trust an
+inherited operation handle, runner command, or asset variable.
 
-Reuse a handle only when this current invocation created and retained that exact
-result. Run registered provider mutation capabilities only through the returned
-runner; stop when a required registered capability is unavailable.
+Re-read this entry at returned `assets.skills.pr_batch`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Reuse a handle only when this current invocation
+created and retained that exact result. Run registered mutations only through
+the complete returned `runner` command; stop if the capability is unavailable.
 Bind `PR_BATCH_SKILL_DIR` once to the parent of `assets.skills.pr_batch`, set
-`AGENT_WORKFLOWS_OPERATION` from the retained
-operation value, and set `AGENT_WORKFLOWS_RUNNER` from the absolute first
-`runner` element. Require `freshness: current` before any mutation. The model
+`AGENT_WORKFLOWS_OPERATION` from the retained operation value, and bind
+`AGENT_WORKFLOWS_RUNNER` as a shell array containing every returned `runner`
+element in order. Require `freshness: current` before any mutation. The model
 must actually read the returned instructions; machine verification cannot prove
 that consumption.
 
@@ -90,7 +93,7 @@ facts remain fail-closed and stop before mutation.
   subagents, disclose the inline single-worker fallback and apply every same
   gate; stop instead when the user explicitly required a subagent.
 - **Model/effort route**: use the canonical cost-aware staged routing from
-  `pr-processing.md`. Start on the fastest or balanced worker route justified by
+  returned `assets.workflow`. Start on the fastest or balanced worker route justified by
   ambiguity, risk, blast radius, reversibility, and verification difficulty—not
   merely the cheapest model—and require the canonical evidence before a stronger
   route or replacement.
@@ -703,7 +706,7 @@ for backend reconciliation. An issue/PR lane claim also mirrors to the seam's
 claim label (`agent_claimed_label`, default `agent-claimed`; apply on claim,
 remove on release for this lane's own claim; hint not lock; skip when backend
 n/a), and selection/triage skip claimed items — see the canonical rule in
-`pr-processing.md`.
+returned `assets.workflow`.
 
 ## Worker Rules
 
@@ -842,9 +845,8 @@ block, not the normal-handoff note) for the maintainer to merge. Do not merge
 without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
 When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
-then submit the reviewed host, base, and exact head through the canonical
-through `"${AGENT_WORKFLOWS_RUNNER}" --operation
-"$AGENT_WORKFLOWS_OPERATION" pr-merge-submit --` exactly as described by the
+then submit the reviewed host, base, and exact head through
+`"${AGENT_WORKFLOWS_RUNNER[@]}" pr-merge-submit --` exactly as described by the
 operation-provided workflow, passing that receipt unconditionally. Never execute
 the helper by filesystem path. It preserves read-only, idempotent observation of
 an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the base

@@ -69,11 +69,15 @@ class AgentWorkflowsStatusTest < Minitest::Test
     )
     managed = AgentWorkflowsStatus.status_payload(
       "UP_TO_DATE", target: "/tmp/target", source: "/tmp/source", host: "codex",
-                    metadata: { "provider_profile" => "managed" }
+                    metadata: {
+                      "provider_profile" => "managed",
+                      "gh_executable" => "/usr/bin/gh"
+                    }
     )
 
     assert_equal "pinned", legacy.fetch("provider_profile")
     assert_equal "managed", managed.fetch("provider_profile")
+    assert_equal "/usr/bin/gh", managed.fetch("gh_executable")
   end
 
   def test_unknown_provider_profile_is_check_failed
@@ -86,6 +90,19 @@ class AgentWorkflowsStatusTest < Minitest::Test
       payload = JSON.parse(out)
       assert_equal "CHECK_FAILED", payload.fetch("status")
       assert_includes payload.fetch("reason"), "unsupported provider profile"
+    end
+  end
+
+  def test_managed_profile_without_explicit_gh_binding_is_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_metadata(target, "provider_profile" => "managed", "source" => target)
+
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+
+      assert_equal 3, status.exitstatus, out
+      payload = JSON.parse(out)
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "explicit absolute gh"
     end
   end
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--consumer-root DIR] [--dry-run] [--no-fetch]
+Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--consumer-root DIR] [--dry-run] [--no-fetch]
 
 Updates the source clone, reinstalls this shared workflow pack into an agent
 home, and optionally validates one or more consumer repository seams.
@@ -22,6 +22,7 @@ source=""
 mode=""
 delivery_mode=""
 provider_profile=""
+gh_executable=""
 dry_run=false
 fetch=true
 consumer_roots=()
@@ -206,6 +207,10 @@ while [[ $# -gt 0 ]]; do
       provider_profile="${2:?--provider-profile requires pinned or managed}"
       shift 2
       ;;
+    --gh-executable)
+      gh_executable="${2:?--gh-executable requires an absolute path}"
+      shift 2
+      ;;
     --consumer-root)
       consumer_roots+=("${2:?--consumer-root requires a directory}")
       shift 2
@@ -277,6 +282,9 @@ fi
 if [[ -z "$provider_profile" ]]; then
   provider_profile="$(metadata_value "$metadata_path" provider_profile 2>/dev/null || printf 'pinned\n')"
 fi
+if [[ -z "$gh_executable" ]]; then
+  gh_executable="$(metadata_value "$metadata_path" gh_executable 2>/dev/null || true)"
+fi
 case "$provider_profile" in
   pinned|managed) ;;
   *)
@@ -325,8 +333,17 @@ backup_target
 completed=false
 trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
 
-"$install_script" --host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode" \
+install_args=(
+  --host "$host"
+  --target "$target"
+  --mode "$mode"
+  --delivery-mode "$delivery_mode"
   --provider-profile "$provider_profile"
+)
+if [[ -n "$gh_executable" ]]; then
+  install_args+=(--gh-executable "$gh_executable")
+fi
+"$install_script" "${install_args[@]}"
 
 if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
   for consumer_root in "${consumer_roots[@]}"; do

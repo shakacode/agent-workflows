@@ -292,8 +292,8 @@ regression, not a success.
 
 ## Dispatcher Capability Preflight
 
-Before dispatch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var,
-returned named asset chain, then call
+Before dispatch, bind `PR_BATCH_SKILL_DIR` to the parent of returned
+`assets.skills.pr_batch`, then call
 `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` with one JSON
 object on standard input. It writes one JSON result to standard output and does
 not launch a worker or mutate a coordination backend. The caller supplies the

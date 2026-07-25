@@ -31,14 +31,14 @@ module AgentWorkflowsOperation
       `codex plugin remove scw@agent-workflows` and
       `codex plugin add scw@agent-workflows`. Reinstall companion assets from
       that exact canonical main checkout with
-      `bin/install-agent-workflows --host codex --mode copy --delivery-mode plugin-companion --provider-profile managed`.
+      `bin/install-agent-workflows --host codex --mode copy --delivery-mode plugin-companion --provider-profile managed --gh-executable /absolute/path/to/gh`.
       Fully restart Codex and start a new session before retrying.
     GUIDANCE
     CLAUDE_UPDATE = <<~GUIDANCE.strip
       Run `/plugin marketplace update agent-workflows`, then
       `/plugin update scw@agent-workflows`. Reinstall companion assets from
       that exact canonical main checkout with
-      `bin/install-agent-workflows --host claude --mode copy --delivery-mode plugin-companion --provider-profile managed`.
+      `bin/install-agent-workflows --host claude --mode copy --delivery-mode plugin-companion --provider-profile managed --gh-executable /absolute/path/to/gh`.
       Run `/reload-plugins` and start a new session before retrying.
     GUIDANCE
 
@@ -82,13 +82,20 @@ module AgentWorkflowsOperation
       verify_native_tree!(native_root)
       verify_codex_clean!(native_root) if host == "codex"
       verify_companion_files!
+      gh_executable = metadata["gh_executable"]
+      unless gh_executable.is_a?(String) && gh_executable.start_with?("/")
+        raise ProviderError,
+              "MANAGED_TOOL_BINDING_REQUIRED: install metadata must declare an explicit absolute gh executable"
+      end
+
       {
         "profile" => profile,
         "host" => host,
         "target" => target,
         "native_root" => native_root,
         "native_revision" => native_revision,
-        "companion_revision" => companion_revision
+        "companion_revision" => companion_revision,
+        "gh_executable" => gh_executable
       }
     end
 

@@ -27,6 +27,7 @@ module AgentWorkflowsOperation
       launcher = File.join(operation_root, "launcher")
       verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
       verify_runtime!(operation_root, metadata, snapshot)
+      verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
       command = [
         verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter"),
         "--disable=gems",
@@ -74,6 +75,7 @@ module AgentWorkflowsOperation
       )
       verify_executable_identity!(executable, recorded, "canonical executable")
       ruby = verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter")
+      verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
       verify_external_executable!(metadata.fetch("tools").fetch("gh"), "bound gh executable")
       exec(sanitized_environment(metadata), ruby, "--disable=gems", executable, *arguments)
     rescue KeyError, RegistryError => e

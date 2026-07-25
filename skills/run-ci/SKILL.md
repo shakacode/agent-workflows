@@ -11,16 +11,32 @@ Analyze the current branch changes and run appropriate CI checks locally.
 ## Bound Provider Operation
 
 The persisted install metadata field `provider_profile` controls resolution. A
-missing legacy field is `pinned`. For `managed`, create a current operation with
-the absolute resolver below. For `pinned`, never fetch or claim current-provider
-mutation availability; use only the declared installed snapshot when the workflow
-supports it, otherwise stop. Any unknown profile is invalid and requires a stop.
+missing legacy field is `pinned`; any unknown profile is invalid and requires a
+stop.
 
-Use the active host home’s absolute `bin/agent-workflows-resolve begin` path for
-managed operations. Never bootstrap through `PATH`; retain only the current invocation's result and reject any inherited operation. Re-read this skill through `assets.skills.run_ci`, use
-`assets.workflow` for PR processing and `assets.root` for shared assets, while
-Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
-the local seams; stop when a required asset is unavailable.
+**Pinned profile:** never fetch or run the current-provider resolver. Do not
+expect `assets.*`. Continue only from Consumer `AGENTS.md`, this already-loaded
+entry, `.agents/agent-workflow.yml`, and `.agents/bin/*` policy/command seams. Do
+not load a shared sibling skill, workflow, or doc, and do not run a registered
+mutation. If the remaining task requires any of those shared assets,
+stop with a precise pinned-provider limitation. This preserves the declared
+installed snapshot without fetching or mixing another provider.
+
+**Managed profile only:** for `managed`, use only a provider operation that the
+current invocation created locally and whose exact `begin --json` result it
+retained. Otherwise identify the active host and use the active host home's
+absolute `bin/agent-workflows-resolve begin` path:
+`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host codex
+--json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve begin
+--host claude --json`. Never bootstrap through `PATH`, and never trust an
+inherited operation handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.run_ci`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Reuse a handle only when this current invocation
+created and retained that exact result. Run registered mutations only through
+the complete returned `runner` command; stop if the capability is unavailable.
 
 ## Base Handling
 

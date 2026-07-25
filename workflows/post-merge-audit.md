@@ -208,6 +208,13 @@ and the other run as an advisory auditor. Do not
 share one agent's output with the other until both are done.
 
 ```text
+This receiving invocation must bind its own provider before using shared assets.
+Read active-host install metadata; missing `provider_profile` means `pinned` and
+an unknown value stops. For `managed`, run the active host home's absolute
+`bin/agent-workflows-resolve begin` command and use only that invocation's newly
+returned assets. Never inherit a sender's handle or paths. Because this prompt
+requires shared assets, a `pinned` recipient must stop rather than mix providers.
+
 Run an independent post-merge audit of merged PRs (and, when a batch id is known, its worked-issue scope)
 for the requested audit mode.
 
@@ -621,6 +628,13 @@ After creation, return:
 Use this when Codex is coordinating a PR and the user wants an independent Claude review before final readiness.
 
 ```text
+This receiving invocation must bind its own provider before using shared assets.
+Read active-host install metadata; missing `provider_profile` means `pinned` and
+an unknown value stops. For `managed`, run the active host home's absolute
+`bin/agent-workflows-resolve begin` command and use only that invocation's newly
+returned assets. Never inherit a sender's handle or paths. Because this prompt
+requires shared assets, a `pinned` recipient must stop rather than mix providers.
+
 Please run an adversarial PR review before this PR is marked ready or merged:
 
 <PR_URL>

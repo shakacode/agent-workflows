@@ -319,18 +319,21 @@ test_native_plugin_plus_default_flat_install_fails_before_mutation() {
 }
 
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
-  local tmp target consumer host output
+  local tmp target consumer host output gh
 
   for host in codex claude; do
     tmp="$(mktemp -d)"
     target="$tmp/$host-home"
     consumer="$tmp/consumer"
+    gh="$tmp/gh"
+    printf '#!/bin/sh\nexit 0\n' >"$gh"
+    chmod 0755 "$gh"
     write_native_scw_state "$host" "$target"
     mkdir -p "$target/skills/personal"
     printf 'personal\n' > "$target/skills/personal/SKILL.md"
 
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
-      --provider-profile managed \
+      --provider-profile managed --gh-executable "$gh" \
       >"$tmp/install.out"
 
     [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
@@ -346,8 +349,9 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
       abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" &&
-                                    metadata["mode"] == "copy" && metadata["provider_profile"] == "managed"
-    ' "$target/.agent-workflows-install.json"
+                                    metadata["mode"] == "copy" && metadata["provider_profile"] == "managed" &&
+                                    metadata["gh_executable"] == ARGV.fetch(1)
+    ' "$target/.agent-workflows-install.json" "$gh"
 
     write_consumer_agents "$consumer"
     cat >> "$consumer/.agents/agent-workflow.yml" <<'YAML'
@@ -358,6 +362,23 @@ YAML
     output="$("$target/bin/agent-workflow-seam-doctor" --root "$consumer" 2>&1)"
     assert_contains "$output" "PASS agent workflow seam is complete"
   done
+}
+
+test_managed_profile_requires_explicit_absolute_gh_binding() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  write_native_scw_state codex "$target"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion --provider-profile managed 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 64 ]] || fail "managed install without explicit gh returned $status: $output"
+  assert_contains "$output" "requires --gh-executable with an explicit absolute path"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "failed managed install wrote metadata"
 }
 
 test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills() {
@@ -1728,17 +1749,20 @@ test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head() {
 }
 
 test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
-  local tmp source target
+  local tmp source target gh
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
+  gh="$tmp/gh"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
   mkdir -p "$source"
   new_source_repo "$source"
 
   "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
   write_native_scw_state codex "$target"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
-    --delivery-mode plugin-companion --provider-profile managed --no-fetch >"$tmp/upgrade-one.out"
+    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" --no-fetch >"$tmp/upgrade-one.out"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
     --no-fetch >"$tmp/upgrade-two.out"
 
@@ -1746,8 +1770,9 @@ test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" &&
-                                  metadata["provider_profile"] == "managed"
-  ' "$target/.agent-workflows-install.json"
+                                  metadata["provider_profile"] == "managed" &&
+                                  metadata["gh_executable"] == ARGV.fetch(1)
+  ' "$target/.agent-workflows-install.json" "$gh"
 }
 
 test_upgrade_dry_run_checks_requested_delivery_mode() {
@@ -1896,6 +1921,7 @@ main() {
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_managed_profile_requires_explicit_absolute_gh_binding
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode

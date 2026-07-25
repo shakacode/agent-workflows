@@ -9,17 +9,16 @@ host home's absolute `bin/agent-workflows-resolve begin` path. Never resolve thi
 `PATH`. Bind `PR_BATCH_SKILL_DIR` only to the parent of
 `assets.skills.pr_batch`. Set
 `AGENT_WORKFLOWS_OPERATION` only from the current begin result, never from
-inherited shell state. Set `AGENT_WORKFLOWS_RUNNER` only from the absolute first
-element of that result's `runner` array, never from `PATH` or inherited shell
-state.
+inherited shell state. Bind `AGENT_WORKFLOWS_RUNNER` as a shell array containing
+every element of that result's `runner` array in order; never omit its
+environment/interpreter prefix or reconstruct it from `PATH` or inherited state.
 
 Read supporting shared docs and workflows only through the operation's
 `assets.docs` and `assets.related_workflows` paths.
 Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command seams remain
 authoritative local policy, but are never substitutes for this provider
-snapshot. Registered semantic mutations run only through
-`"${AGENT_WORKFLOWS_RUNNER}" --operation "$AGENT_WORKFLOWS_OPERATION"
-CAPABILITY --`.
+snapshot. Registered semantic mutations run only by appending `CAPABILITY --`
+and its arguments to `"${AGENT_WORKFLOWS_RUNNER[@]}"`.
 The initial registry exposes `pr-merge-submit`; an unavailable capability is a
 hard stop, not permission to execute its underlying path.
 
@@ -2880,7 +2879,7 @@ host, base branch, and current head SHA that passed the gate for the final
 mutation. Use the handle returned by the bound operation:
 
 ```bash
-"${AGENT_WORKFLOWS_RUNNER}" --operation "${AGENT_WORKFLOWS_OPERATION}" pr-merge-submit -- <PR> \
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-merge-submit -- <PR> \
   --repo <OWNER/REPO> \
   --host <GITHUB_HOST[:PORT]> \
   --expected-head <FULL_HEAD_SHA> \
