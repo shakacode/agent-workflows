@@ -26,6 +26,8 @@ ADVERSARIAL_REVIEW_WORKFLOW_PATH = File.join(ROOT, "workflows/adversarial-pr-rev
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 POST_MERGE_AUDIT_SKILL_PATH = File.join(ROOT, "skills/post-merge-audit/SKILL.md")
+POST_MERGE_AUDIT_WORKFLOW_PATH = File.join(ROOT, "workflows/post-merge-audit.md")
+UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE = "Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action as an exact command, paste-ready prompt, URL, or question, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`."
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 
 TEXT_FENCE = "```text\n"
@@ -318,6 +320,7 @@ class GoalCompletionContractTest < Minitest::Test
     @pr_monitoring_skill = read_repo_file(PR_MONITORING_SKILL_PATH)
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
     @post_merge_audit_skill = read_repo_file(POST_MERGE_AUDIT_SKILL_PATH)
+    @post_merge_audit_workflow = read_repo_file(POST_MERGE_AUDIT_WORKFLOW_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
     @workflow_goal_prompt = extract_goal_prompt_template(
@@ -793,7 +796,8 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
-      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill
+      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill,
+      "workflows/post-merge-audit.md" => @post_merge_audit_workflow
     }.each do |label, text|
       assert_text_includes text, "Unblock Block", label
       assert_text_includes text, "#unblock-block", label
@@ -801,6 +805,31 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_squished_includes @plan_pr_batch_skill, PLAN_PR_BATCH_RESPONSE_ORDER, "skills/plan-pr-batch/SKILL.md"
     assert_squished_includes @triage_skill, TRIAGE_RESPONSE_ORDER, "skills/triage/SKILL.md"
+  end
+
+  def test_planning_surfaces_carry_a_standalone_unblock_emission_rule
+    {
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_squished_includes text, UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE, label
+    end
+  end
+
+  def test_post_merge_audit_surfaces_require_the_unblock_block_with_the_follow_ups_line
+    {
+      "workflows/post-merge-audit.md" => [@post_merge_audit_workflow, "pr-processing.md#unblock-block"],
+      "skills/post-merge-audit/SKILL.md" => [@post_merge_audit_skill, "../../workflows/pr-processing.md#unblock-block"]
+    }.each do |label, (text, link)|
+      assert_squished_includes text,
+                               "Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` " \
+                               "and emit the [Unblock Block](#{link}) immediately before it, with one entry per blocker in that same union.",
+                               label
+      assert_squished_includes text,
+                               "this compact receipt line opens the closing lines: it is followed by the [Unblock Block](#{link}) " \
+                               "whenever the status is not clean, and then by the exact `Conversation status` final line",
+                               label
+    end
   end
 
   def test_closeout_lane_requires_the_unblock_block_with_the_follow_ups_line

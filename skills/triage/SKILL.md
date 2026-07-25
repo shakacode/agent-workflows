@@ -350,6 +350,7 @@ Return:
   installed backend does not support queue state, omit this section and note that
   queue state is unavailable.
 - Residual risks and maintainer decisions needed.
+- Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action as an exact command, paste-ready prompt, URL, or question, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
 - Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
 
 ## Common Mistakes
