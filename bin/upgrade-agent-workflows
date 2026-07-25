@@ -28,6 +28,12 @@ fetch=true
 consumer_roots=()
 metadata_name=".agent-workflows-install.json"
 declared_git_source=false
+backup_dir=""
+backup_target_dir=""
+backup_identity=""
+backup_ready=false
+target_existed=false
+completed=false
 
 default_target_for_host() {
   case "$1" in
@@ -160,25 +166,99 @@ update_source_clone() {
   fi
 }
 
+read_directory_identity() {
+  ruby -e '
+    stat = File.lstat(ARGV.fetch(0))
+    exit 1 unless stat.directory? && stat.uid == Process.euid
+    puts [stat.dev, stat.ino, stat.uid].join(":")
+  ' "$1"
+}
+
+backup_identity_matches() {
+  local current_identity
+  [[ -n "$backup_dir" && -n "$backup_identity" ]] || return 1
+  current_identity="$(read_directory_identity "$backup_dir" 2>/dev/null)" || return 1
+  [[ "$current_identity" = "$backup_identity" ]]
+}
+
+cleanup_backup() {
+  [[ -n "$backup_dir" ]] || return 0
+  if ! backup_identity_matches; then
+    echo "CLEANUP_FAILED backup identity changed: $backup_dir" >&2
+    return 1
+  fi
+
+  rm -rf -- "$backup_dir"
+  if [[ -e "$backup_dir" || -L "$backup_dir" ]]; then
+    echo "CLEANUP_FAILED backup remains: $backup_dir" >&2
+    return 1
+  fi
+  backup_dir=""
+  backup_target_dir=""
+  backup_identity=""
+}
+
 backup_target() {
+  trap 'finish_upgrade "$?"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   backup_dir="$(mktemp -d)"
+  backup_identity="$(read_directory_identity "$backup_dir")"
   backup_target_dir="$backup_dir/target"
-  target_existed=false
+  mkdir -p "$backup_target_dir"
   if [[ -d "$target" ]]; then
     target_existed=true
-    mkdir -p "$backup_target_dir"
-    rsync -a "$target/" "$backup_target_dir/"
+    rsync -a --exclude='/.agent-workflows-operation-state' "$target/" "$backup_target_dir/"
   fi
+  backup_ready=true
 }
 
 restore_target() {
+  if [[ "$backup_ready" != "true" ]]; then
+    return 0
+  fi
+  if ! backup_identity_matches; then
+    echo "ROLLBACK_FAILED backup identity changed: $backup_dir" >&2
+    return 1
+  fi
+
   if [[ "${target_existed:-false}" = "true" ]]; then
     mkdir -p "$target"
-    rsync -a --delete "$backup_target_dir/" "$target/"
-  else
-    rm -rf "$target"
+  elif [[ ! -d "$target" ]]; then
+    if [[ -e "$target" || -L "$target" ]]; then
+      echo "ROLLBACK_FAILED target is not a directory: $target" >&2
+      return 1
+    fi
+    mkdir -p "$target"
+  fi
+  rsync -a --delete --exclude='/.agent-workflows-operation-state' "$backup_target_dir/" "$target/"
+  if [[ "$target_existed" != "true" ]]; then
+    rmdir "$target" 2>/dev/null || true
   fi
   echo "ROLLBACK_COMPLETE target=$target"
+}
+
+finish_upgrade() {
+  local original_status="$1"
+  local final_status="$original_status"
+  local restore_status cleanup_status
+
+  trap - EXIT HUP INT TERM
+  set +e
+  if [[ "$completed" != "true" ]]; then
+    restore_target
+    restore_status=$?
+    if [[ "$restore_status" -ne 0 && "$final_status" -eq 0 ]]; then
+      final_status="$restore_status"
+    fi
+  fi
+  cleanup_backup
+  cleanup_status=$?
+  if [[ "$cleanup_status" -ne 0 && "$final_status" -eq 0 ]]; then
+    final_status="$cleanup_status"
+  fi
+  exit "$final_status"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -330,8 +410,6 @@ if [[ "$fetch" = "true" && "$declared_git_source" = "true" ]]; then
 fi
 
 backup_target
-completed=false
-trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
 
 install_args=(
   --host "$host"
@@ -351,8 +429,8 @@ if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
   done
 fi
 
+cleanup_backup
 completed=true
-trap - ERR
 
 new_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
 echo "UPGRADE_COMPLETE $(short_revision "$old_revision") $(short_revision "$new_revision") target=$target source=$source"

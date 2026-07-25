@@ -54,6 +54,11 @@ assert_not_contains() {
   [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain '$needle', got: $haystack"
 }
 
+assert_dir_empty() {
+  local path="$1"
+  [[ -z "$(find "$path" -mindepth 1 -print -quit)" ]] || fail "expected empty directory: $path"
+}
+
 write_native_scw_state() {
   local host="$1"
   local target="$2"
@@ -1612,6 +1617,27 @@ test_upgrade_reinstalls_new_source_revision() {
   assert_contains "$output" "UP_TO_DATE"
 }
 
+test_successful_upgrade_removes_transaction_backup() {
+  local tmp source target backup_parent output
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  mkdir -p "$source" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  printf '0.1.1\n' >"$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+
+  output="$(TMPDIR="$backup_parent" "$source/bin/upgrade-agent-workflows" \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  assert_dir_empty "$backup_parent"
+}
+
 test_upgrade_fetches_linked_worktree_source() {
   local tmp source source_git publisher origin target output expected_revision installed_revision
   tmp="$(mktemp -d)"
@@ -1860,6 +1886,124 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
 }
 
+test_failed_upgrade_preserves_operation_state_and_removes_transaction_backup() {
+  local tmp source target consumer backup_parent state before after output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  backup_parent="$tmp/upgrade backups"
+  state="$target/.agent-workflows-operation-state"
+  mkdir -p "$source" "$consumer" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  before="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  mkdir -p "$state"
+  printf 'preserve-before\n' >"$state/preserve-before"
+  printf 'removed-before\n' >"$state/removed-before"
+  cat >"$source/bin/agent-workflow-seam-doctor" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${QA_OPERATION_STATE:?}"
+rm "$state/removed-before"
+printf 'created-after\n' >"$state/created-after"
+exit 19
+BASH
+  chmod +x "$source/bin/agent-workflow-seam-doctor"
+  git -C "$source" add bin/agent-workflow-seam-doctor
+  git -C "$source" commit --quiet -m "inject seam failure"
+
+  set +e
+  output="$(QA_OPERATION_STATE="$state" TMPDIR="$backup_parent" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 19 ]] || fail "expected seam failure exit 19, got $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  after="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$before" = "$after" ]] || fail "rollback did not restore ordinary installer-owned state"
+  [[ "$(cat "$state/preserve-before")" = "preserve-before" ]] ||
+    fail "rollback changed operation state that predated the backup"
+  [[ ! -e "$state/removed-before" ]] ||
+    fail "rollback restored operation state removed after the backup"
+  [[ "$(cat "$state/created-after")" = "created-after" ]] ||
+    fail "rollback removed operation state created after the backup"
+  assert_dir_empty "$backup_parent"
+}
+
+test_upgrade_refuses_substituted_backup_identity_without_deleting_it() {
+  local tmp source target backup_parent output status replacement original
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  mkdir -p "$source" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows.real"
+  cat >"$source/bin/install-agent-workflows" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+backup="$(find "${QA_BACKUP_PARENT:?}" -mindepth 1 -maxdepth 1 -type d \
+  -exec test -d '{}/target' ';' -print -quit)"
+[[ -n "$backup" ]]
+mv "$backup" "$backup.original"
+mkdir "$backup"
+printf 'replacement\n' >"$backup/replacement-sentinel"
+exit 23
+BASH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$(QA_BACKUP_PARENT="$backup_parent" TMPDIR="$backup_parent" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 23 ]] || fail "expected injected installer exit 23, got $status: $output"
+  assert_contains "$output" "ROLLBACK_FAILED backup identity changed"
+  replacement="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d ! -name '*.original' -print -quit)"
+  original="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d -name '*.original' -print -quit)"
+  [[ -f "$replacement/replacement-sentinel" ]] ||
+    fail "cleanup deleted the substituted backup directory"
+  [[ -d "$original/target" ]] || fail "cleanup deleted the original backup after substitution"
+}
+
+test_upgrade_signal_after_backup_creation_cleans_transaction_backup() {
+  local tmp source target backup_parent output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  mkdir -p "$source" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  cat >"$source/bin/install-agent-workflows" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+kill -TERM "$PPID"
+exit 0
+BASH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$(TMPDIR="$backup_parent" "$source/bin/upgrade-agent-workflows" \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 143 ]] || fail "expected TERM exit 143, got $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  assert_dir_empty "$backup_parent"
+}
+
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
   local tmp source target consumer output status
   tmp="$(mktemp -d)"
@@ -1969,6 +2113,7 @@ main() {
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
+    test_successful_upgrade_removes_transaction_backup
     test_upgrade_fetches_linked_worktree_source
     test_upgrade_rejects_a_declared_broken_git_checkout
     test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout
@@ -1980,6 +2125,9 @@ main() {
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
+    test_failed_upgrade_preserves_operation_state_and_removes_transaction_backup
+    test_upgrade_refuses_substituted_backup_identity_without_deleting_it
+    test_upgrade_signal_after_backup_creation_cleans_transaction_backup
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
   )
