@@ -52,6 +52,72 @@ class AutonomousMergeCalibrateTest < Minitest::Test
     end
   end
 
+  def test_reports_path_category_distribution_and_complete_proposed_threshold_classification_changes
+    dataset = {
+      "contract" => "autonomous-merge-calibration-dataset",
+      "version" => 1,
+      "scope" => {
+        "complete" => false,
+        "window" => "proposed-threshold comparison fixture",
+        "repositories" => ["example/one", "example/two"]
+      },
+      "prs" => [
+        pr(
+          "example/one", 1,
+          files: 29, lines: 999, commits: 9, reviewed_heads: 3,
+          path_categories: %w[app docs]
+        ),
+        pr(
+          "example/one", 2,
+          files: 30, lines: 1_000, commits: 10, reviewed_heads: 4,
+          path_categories: %w[app db]
+        ),
+        pr(
+          "example/two", 3,
+          files: 2, lines: 20, commits: 1, reviewed_heads: nil,
+          path_categories: %w[docs]
+        )
+      ]
+    }
+
+    Tempfile.create(["calibration", ".json"]) do |file|
+      file.write(JSON.generate(dataset))
+      file.flush
+      stdout, stderr, status = Open3.capture3(
+        "ruby", SCRIPT,
+        "--input", file.path,
+        "--sample", "1",
+        "--max-changed-files", "1"
+      )
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+
+      assert_equal(
+        { "app" => 2, "db" => 1, "docs" => 2 },
+        result.fetch("path_category_distribution")
+      )
+      assert_equal(
+        [
+          {
+            "repository" => "example/one",
+            "number" => 1,
+            "portable_default_triggered" => false,
+            "proposed_threshold_triggered" => true
+          },
+          {
+            "repository" => "example/two",
+            "number" => 3,
+            "portable_default_triggered" => false,
+            "proposed_threshold_triggered" => true
+          }
+        ],
+        result.fetch("proposed_threshold_classification_changes")
+      )
+      assert_equal 1, result.fetch("triggered_sample").length
+      assert_equal false, result.fetch("merge_decisions_emitted")
+    end
+  end
+
   def test_checked_calibration_decision_is_exactly_reproducible_and_emits_no_merge_decisions
     dataset = File.join(FIXTURE_DIR, "autonomous-merge-calibration-dataset.json")
     decision = File.join(FIXTURE_DIR, "autonomous-merge-reviewed-heads-calibration.json")
@@ -539,7 +605,7 @@ class AutonomousMergeCalibrateTest < Minitest::Test
     }
   end
 
-  def pr(repository, number, files:, lines:, commits:, reviewed_heads:)
+  def pr(repository, number, files:, lines:, commits:, reviewed_heads:, path_categories: [])
     {
       "repository" => repository,
       "number" => number,
@@ -549,7 +615,7 @@ class AutonomousMergeCalibrateTest < Minitest::Test
       "commits" => commits,
       "reviewed_heads" => reviewed_heads,
       "automation_reviewed_heads" => reviewed_heads.nil? ? nil : [reviewed_heads - 1, 0].max,
-      "path_categories" => []
+      "path_categories" => path_categories
     }
   end
 end

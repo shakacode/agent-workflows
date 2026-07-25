@@ -7,16 +7,18 @@ require "json"
 require "optparse"
 require_relative "../lib/autonomous_merge_calibration"
 
+PORTABLE_MAXIMA = {
+  "changed_files" => 29,
+  "changed_lines" => 999,
+  "commits" => 9,
+  "reviewed_heads" => 3
+}.freeze
+
 options = {
   repositories: [],
   sample: 5,
   format: "report",
-  maxima: {
-    "changed_files" => 29,
-    "changed_lines" => 999,
-    "commits" => 9,
-    "reviewed_heads" => 3
-  }
+  maxima: PORTABLE_MAXIMA.dup
 }
 OptionParser.new do |parser|
   parser.on("--input PATH", "Cached/checkpointed calibration dataset") { |value| options[:input] = value }
@@ -80,11 +82,37 @@ if options[:pr_count]
 end
 prs.sort_by! { |pr| [pr.fetch("repository"), pr.fetch("number")] }
 
+def threshold_triggered?(pr, maxima)
+  maxima.any? do |metric, maximum|
+    pr[metric].is_a?(Integer) && pr.fetch(metric) > maximum
+  end
+end
+
 maxima = options[:maxima]
 metrics = maxima.keys
-triggered = prs.select do |pr|
-  metrics.any? { |metric| pr[metric].is_a?(Integer) && pr.fetch(metric) > maxima.fetch(metric) }
+triggered = prs.select { |pr| threshold_triggered?(pr, maxima) }
+proposed_threshold_classification_changes = prs.filter_map do |pr|
+  portable_default_triggered = threshold_triggered?(pr, PORTABLE_MAXIMA)
+  proposed_threshold_triggered = threshold_triggered?(pr, maxima)
+  next if portable_default_triggered == proposed_threshold_triggered
+
+  {
+    "repository" => pr.fetch("repository"),
+    "number" => pr.fetch("number"),
+    "portable_default_triggered" => portable_default_triggered,
+    "proposed_threshold_triggered" => proposed_threshold_triggered
+  }
 end
+path_categories = prs.flat_map do |pr|
+  categories = pr["path_categories"]
+  unless categories.is_a?(Array) &&
+         categories.all? { |category| category.is_a?(String) && !category.strip.empty? }
+    abort "calibration PR path_categories must be a list of nonempty strings"
+  end
+
+  categories.uniq
+end
+path_category_distribution = path_categories.tally.sort.to_h
 near_misses = prs.reject { |pr| triggered.include?(pr) }.select do |pr|
   metrics.any? { |metric| pr[metric] == maxima.fetch(metric) }
 end
@@ -136,6 +164,8 @@ report = {
   "distributions" => metrics.to_h do |metric|
     [metric, distribution(prs.filter_map { |pr| pr[metric] if pr[metric].is_a?(Integer) })]
   end,
+  "path_category_distribution" => path_category_distribution,
+  "proposed_threshold_classification_changes" => proposed_threshold_classification_changes,
   "triggered_count" => triggered.length,
   "triggered_sample" => triggered.first(options[:sample]),
   "near_miss_sample" => near_misses.first(options[:sample]),
