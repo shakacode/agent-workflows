@@ -317,6 +317,7 @@ class GoalCompletionContractTest < Minitest::Test
     @adversarial_review_workflow = read_repo_file(ADVERSARIAL_REVIEW_WORKFLOW_PATH)
     @pr_monitoring_skill = read_repo_file(PR_MONITORING_SKILL_PATH)
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
+    @post_merge_audit_skill = read_repo_file(POST_MERGE_AUDIT_SKILL_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
     @workflow_goal_prompt = extract_goal_prompt_template(
@@ -769,7 +770,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
-      "skills/post-merge-audit/SKILL.md" => read_repo_file(POST_MERGE_AUDIT_SKILL_PATH)
+      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill
     }.each do |label, text|
       assert_text_includes text, "Unblock Block", label
       assert_text_includes text, "#unblock-block", label
