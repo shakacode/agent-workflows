@@ -1447,12 +1447,16 @@ module PushDownstream
       line_starts << offset
     end
 
-    mapping.children.each_slice(2).each_with_object({}) do |(key_node, value_node), entries|
+    pairs = mapping.children.each_slice(2).to_a
+    pairs.each_with_index.each_with_object({}) do |((key_node, value_node), index), entries|
       key = policy_top_level_string_key_value(key_node)
       return nil if key.nil? || entries.key?(key)
 
       start_offset = line_starts.fetch(key_node.start_line, content.bytesize)
-      end_offset = line_starts.fetch(value_node.end_line + 1, content.bytesize)
+      value_end_offset = line_starts.fetch(value_node.end_line + 1, content.bytesize)
+      next_key_node = pairs[index + 1]&.first
+      next_key_offset = next_key_node ? line_starts.fetch(next_key_node.start_line, content.bytesize) : content.bytesize
+      end_offset = [value_end_offset, next_key_offset].min
       entries[key] = {
         value_node: value_node,
         raw: content.byteslice(start_offset...end_offset),
