@@ -409,9 +409,12 @@ A marker has separate well-formed, archive-ready, and blocker-union outputs. Cle
 
 Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
 
-Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
+Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before it, with one entry per blocker in that same union.
 
-In final chat, this compact receipt line immediately precedes the exact `Conversation status` final line; never include the full wrapper:
+In final chat, this compact receipt line opens the closing lines: it is followed
+by the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever
+the status is not clean, and then by the exact `Conversation status` final line;
+never include the full wrapper:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 

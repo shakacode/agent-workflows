@@ -40,6 +40,8 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Make a blocked batch actionable at a glance: every conversation that stops on `Conversation status: Follow-ups remain` now ends with a canonical `Unblock:` block immediately before that line, carrying one numbered entry per blocker in the same union, an owner tag (`[you]`, `[agent]`, or `[external]`) so the operator can tell whether anything is owed from them, the smallest next action as an exact command, paste-ready prompt, URL, or question, and a `Help:` line offering a different route to clearing the same blocker.**
+- **Drop the trailing period from batch title lines in `pr-batch`, `plan-pr-batch`, `triage`, and the canonical goal and continuation prompt templates.**
 - **Emit a small managed PR-description summary for completed-batch audit status, keep its update separate from the comment-once receipt transaction, and reduce the durable comment to a concise replay-evidence header while retaining legacy receipt replay compatibility.**
 - **Allow consumer seams to set an optional validated `repo_prefix` for consistent batch titles and thread handles, while preserving a deterministic repository-name fallback for existing consumers.**
 - **Pin `<PROJECT>` in batch titles to a deterministic uppercase abbreviation of at most 6 characters (`agent-workflows` -> `AW`) instead of "a short abbreviation derived from the current repository name", which the full repository name satisfied, and derive the thread handle from its lowercased form.** [issue 233](https://github.com/shakacode/agent-workflows/issues/233).

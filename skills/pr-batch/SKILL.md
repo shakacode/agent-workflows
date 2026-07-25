@@ -170,6 +170,7 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
    prompt, and use that output for `MM-DD HH:MM`.
+   Do not end the batch title with a period; the line ends with the title text.
 <!-- host-branch: codex-only start -->
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
@@ -439,7 +440,7 @@ Use this template when creating Codex goal text:
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>
 Thread handle: <batch-short>-<lane>-<word>.
 Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN.
 
@@ -571,7 +572,26 @@ evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
 split final states from `.agents/workflows/pr-processing.md`.
 
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+End the final user-visible message carrying the batch handoff with the [Unblock Block](#unblock-block), required whenever the status is not clean, followed by the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive; a `Follow-ups remain` handoff without the Unblock Block is incomplete for the same reason, because the operator cannot tell which small action to take next.
+
+## Unblock Block
+
+<!-- Keep this summary in sync with `.agents/workflows/pr-processing.md` -> `### Unblock Block`. -->
+
+Use the canonical
+[Unblock Block](../../workflows/pr-processing.md#unblock-block).
+In short: whenever a batch stops non-clean, the closing lines are the optional
+compact `Completed-batch audit:` receipt, then the `Unblock:` block, then the
+exact `Conversation status:` line, and nothing else. The block carries one
+numbered entry per exact blocker in the same normalized union the status line
+renders — never dropped, added, or merged — each tagged `[you]`, `[agent]`, or
+`[external]` so the operator instantly knows whether anything is owed from them,
+each naming the smallest next step as an exact command, paste-ready prompt, URL,
+or question, and each followed by a `Help:` line offering a genuinely different
+route to clearing that same blocker (waive, rerun, reassign, cancel, escalate,
+or the exact skill or section that does it) or exactly `none — <reason>`. An
+`UNKNOWN` fact is a blocker and names the command that resolves it. Omit the
+block only when the status is `Conversation status: Ready for archiving.`
 
 ## Coordination State
 

@@ -213,7 +213,8 @@ omit the queue summary and note that queue state is unavailable.
    `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
    repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
    multiple prompts are produced, `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell, and a short title.
+   `date +'%m-%d %H:%M'` in the local shell, and a short title with no trailing
+   period.
    `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
@@ -323,3 +324,17 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+<!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Unblock Block`. -->
+
+Unblock Block: when a batch stops non-clean, the last thing before the exact
+`Conversation status: Follow-ups remain — <each exact action or blocker>.` line
+is an `Unblock:` block with one numbered entry per blocker in that same union.
+Each entry is tagged `[you]`, `[agent]`, or `[external]` so an operator can tell
+at a glance whether anything is owed from them, names the smallest next action
+as an exact command, paste-ready prompt, URL, or question, and carries a `Help:`
+line offering a different route to clearing the same blocker (waive, rerun,
+reassign, cancel, escalate) or exactly `none — <reason>`. A clean batch omits the
+block; `Conversation status: Ready for archiving.` already says the only
+remaining action is archiving. See
+[Unblock Block](../workflows/pr-processing.md#unblock-block).

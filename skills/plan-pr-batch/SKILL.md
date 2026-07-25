@@ -361,6 +361,7 @@ Plan a PR batch
      Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
+     Do not end the batch title with a period; the line ends with the title text.
    - Add `Thread handle:` as the first worker-specific line. Derive
      `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
@@ -423,7 +424,7 @@ Plan a PR batch
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
-   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
@@ -486,6 +487,7 @@ backend must say so in the declaration.
 - Once that launch succeeds, workers may start under the distinct batch coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only.
 - Prompt-only conversation-status/archive expectation: use exactly `Conversation status: Ready for archiving.` only when all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat; no unhanded-off question or planner-owned `UNKNOWN` remains; a durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
 - Parent-orchestrator conversation-status/archive expectation: clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then use exactly `Conversation status: Ready for archiving.` Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
+- Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action as an exact command, paste-ready prompt, URL, or question, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
 - Keep this lifecycle metadata in the Batch Plan, outside the generated goal prompt.
 - `merge_authority`:
 - Concurrent activity and dependency status:
@@ -508,7 +510,7 @@ Keep bulky evidence and long validation notes outside the prompt.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>
 Thread handle: <batch-short>-<lane>-<word>.
 Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN.
 
