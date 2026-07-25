@@ -215,6 +215,7 @@ backup_target() {
 }
 
 restore_target() {
+  local restore_status
   if [[ "$backup_ready" != "true" ]]; then
     return 0
   fi
@@ -232,7 +233,13 @@ restore_target() {
     fi
     mkdir -p "$target"
   fi
-  rsync -a --delete --exclude='/.agent-workflows-operation-state' "$backup_target_dir/" "$target/"
+  if rsync -a --delete --exclude='/.agent-workflows-operation-state' "$backup_target_dir/" "$target/"; then
+    :
+  else
+    restore_status=$?
+    echo "ROLLBACK_FAILED restore_status=$restore_status recovery_path=$backup_dir" >&2
+    return "$restore_status"
+  fi
   if [[ "$target_existed" != "true" ]]; then
     rmdir "$target" 2>/dev/null || true
   fi
@@ -243,6 +250,7 @@ finish_upgrade() {
   local original_status="$1"
   local final_status="$original_status"
   local restore_status cleanup_status
+  local restore_failed=false
 
   trap - EXIT HUP INT TERM
   set +e
@@ -252,11 +260,16 @@ finish_upgrade() {
     if [[ "$restore_status" -ne 0 && "$final_status" -eq 0 ]]; then
       final_status="$restore_status"
     fi
+    if [[ "$restore_status" -ne 0 ]]; then
+      restore_failed=true
+    fi
   fi
-  cleanup_backup
-  cleanup_status=$?
-  if [[ "$cleanup_status" -ne 0 && "$final_status" -eq 0 ]]; then
-    final_status="$cleanup_status"
+  if [[ "$restore_failed" != "true" ]]; then
+    cleanup_backup
+    cleanup_status=$?
+    if [[ "$cleanup_status" -ne 0 && "$final_status" -eq 0 ]]; then
+      final_status="$cleanup_status"
+    fi
   fi
   exit "$final_status"
 }

@@ -1936,6 +1936,57 @@ BASH
   assert_dir_empty "$backup_parent"
 }
 
+test_failed_restore_preserves_transaction_backup_for_manual_recovery() {
+  local tmp source target consumer backup_parent fake_bin real_rsync output status backup
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  backup_parent="$tmp/upgrade backups"
+  fake_bin="$tmp/fake bin"
+  real_rsync="$(command -v rsync)"
+  mkdir -p "$source" "$consumer" "$backup_parent" "$fake_bin"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  cat >"$source/bin/agent-workflow-seam-doctor" <<'BASH'
+#!/usr/bin/env bash
+exit 19
+BASH
+  chmod +x "$source/bin/agent-workflow-seam-doctor"
+  git -C "$source" add bin/agent-workflow-seam-doctor
+  git -C "$source" commit --quiet -m "inject seam failure"
+  cat >"$fake_bin/rsync" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${@: -2:1}"
+if [[ "$source_path" = "${QA_BACKUP_PARENT:?}/"*"/target/" ]]; then
+  printf 'partial restore\n' >"${QA_TARGET:?}/partial-restore-sentinel"
+  echo "injected restore failure" >&2
+  exit 41
+fi
+exec "${QA_REAL_RSYNC:?}" "$@"
+BASH
+  chmod +x "$fake_bin/rsync"
+
+  set +e
+  output="$(QA_BACKUP_PARENT="$backup_parent" QA_TARGET="$target" QA_REAL_RSYNC="$real_rsync" \
+    TMPDIR="$backup_parent" PATH="$fake_bin:$PATH" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 19 ]] || fail "restore failure replaced original exit 19 with $status: $output"
+  backup="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  [[ -n "$backup" ]] || fail "failed restore deleted its only recovery backup: $output"
+  assert_contains "$output" "ROLLBACK_FAILED restore_status=41 recovery_path=$backup"
+  [[ -f "$backup/target/.agent-workflows-install.json" ]] ||
+    fail "preserved recovery path does not contain the original installed target"
+  [[ -f "$target/partial-restore-sentinel" ]] ||
+    fail "restore failure fixture did not prove a partial restore"
+}
+
 test_upgrade_refuses_substituted_backup_identity_without_deleting_it() {
   local tmp source target backup_parent output status replacement original
   tmp="$(mktemp -d)"
@@ -2126,6 +2177,7 @@ main() {
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_preserves_operation_state_and_removes_transaction_backup
+    test_failed_restore_preserves_transaction_backup_for_manual_recovery
     test_upgrade_refuses_substituted_backup_identity_without_deleting_it
     test_upgrade_signal_after_backup_creation_cleans_transaction_backup
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
