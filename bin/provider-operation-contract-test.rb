@@ -17,6 +17,7 @@ class ProviderOperationContractTest < Minitest::Test
     post_merge_audit
     pr_batch
     pr_monitoring
+    run_ci
     spec
     tdd
     triage
@@ -41,7 +42,7 @@ class ProviderOperationContractTest < Minitest::Test
     "unbound shared asset path" => %r{`(?:\.\.?/)*(?:docs|skills|workflows)/[a-z]},
     "relative shared asset link" => %r{\]\(\.\.?/(?:\.\.?/)*(?:docs|skills|workflows)/},
     "installed/shared fallback" => %r{installed/shared}i,
-    "installed workflow fallback" => /installed `(?:pr-processing\.md|[^`]*workflow)|installed workflow/i,
+    "installed workflow fallback" => /installed `pr-processing\.md`|installed workflow/i,
     "installed/repo-local skill fallback" => /installed or repo-local `[^`]*skill|repo-local skill/i,
     "loaded-skill fallback" => /loaded[- ]skill/i,
     "repo-pinned fallback" => /repo[- ]pinned/i,
@@ -57,6 +58,20 @@ class ProviderOperationContractTest < Minitest::Test
 
     assert_instance_of Hash, declared
     assert_equal ENTRY_SKILLS, declared.keys.sort
+  end
+
+  def test_registry_covers_actual_outgoing_operation_bound_skill_routes
+    registry = JSON.parse(read("operation-capabilities.json"))
+    declared = registry.dig("assets", "skills").keys.map { |name| name.tr("_", "-") }
+    operation_bound_names = Dir.glob(File.join(ROOT, "skills/*/SKILL.md")).filter_map do |path|
+      File.basename(File.dirname(path)) if File.binread(path).include?("## Bound Provider Operation")
+    end
+    routed = ENTRY_SKILLS.flat_map do |name|
+      read("skills/#{name.tr('_', '-')}/SKILL.md").scan(%r{(?:\$|/)([a-z][a-z0-9-]+)}).flatten
+    end.uniq & operation_bound_names
+
+    assert_empty routed - declared, "unbound outgoing routes: #{(routed - declared).sort.join(', ')}"
+    assert_includes routed, "run-ci"
   end
 
   def test_every_operation_bound_entry_skill_carries_the_bootstrap_contract
@@ -84,8 +99,83 @@ class ProviderOperationContractTest < Minitest::Test
     assert_empty failures, failures.join("\n")
   end
 
+  def test_every_entry_documents_provider_profile_fail_closed_semantics
+    failures = ENTRY_SKILLS.flat_map do |name|
+      path = "skills/#{name.tr('_', '-')}/SKILL.md"
+      text = read(path)
+      %w[provider_profile managed pinned].filter_map do |fragment|
+        "#{path}: missing #{fragment}" unless text.include?(fragment)
+      end + [
+        ("#{path}: missing legacy pinned default" unless text.include?("missing legacy field is `pinned`")),
+        ("#{path}: pinned profile may fetch" unless text.include?("never fetch")),
+        ("#{path}: unknown profile does not stop" unless text.include?("unknown profile") && text.include?("stop"))
+      ].compact
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_restart_surfaces_fence_provider_revision_changes
+    %w[
+      skills/pause/SKILL.md
+      workflows/pr-processing.md
+      docs/agent-runner-restarts.md
+      skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+    ].each do |path|
+      text = read(path)
+      assert_includes text, "originating_provider_revision", path
+      assert_includes text, "On mismatch, stop normal resume", path
+      assert_includes text, "cancellation/relaunch or state reconciliation", path
+    end
+  end
+
+  def test_copy_paste_surfaces_require_recipient_local_binding
+    %w[
+      workflows/address-review.md
+      workflows/adversarial-pr-review.md
+      workflows/post-merge-audit.md
+    ].each do |path|
+      text = read(path)
+      assert_includes text, "Every recipient of a copied prompt must bind locally", path
+      assert_includes text, "absolute `bin/agent-workflows-resolve begin`", path
+      assert_includes text, "Never inherit a sender's handle or paths", path
+    end
+    triage = read("skills/plan-issue-triage/SKILL.md")
+    assert_includes triage, "This receiving invocation must bind its own provider"
+    assert_includes triage, "Never inherit operation handles"
+  end
+
+  def test_public_provider_docs_use_neutral_profile_terminology
+    paths = %w[
+      docs/installation-and-upgrades.md
+      docs/host-adapter/contract.md
+      docs/plans/2026-07-25-bound-provider-snapshot-design.md
+    ]
+    failures = paths.filter_map do |path|
+      "#{path}: contains organization-specific rolling terminology" if read(path).match?(/ShakaCode (?:rolling-main|rolling channel)/i)
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
   def test_operation_bound_surfaces_do_not_offer_mixed_provider_fallbacks
     failures = OPERATION_BOUND_SURFACES.flat_map do |path|
+      text = read(path)
+      FORBIDDEN_PROVIDER_FALLBACKS.filter_map do |label, pattern|
+        "#{path}: contains #{label}" if text.match?(pattern)
+      end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_transitive_registered_docs_and_references_use_named_assets
+    registry = JSON.parse(read("operation-capabilities.json"))
+    paths = registry.dig("assets", "docs").values +
+            Dir.glob(File.join(ROOT, "skills/address-review/references/*.{md,txt}")).map do |path|
+              path.delete_prefix("#{ROOT}/")
+            end
+    failures = paths.flat_map do |path|
       text = read(path)
       FORBIDDEN_PROVIDER_FALLBACKS.filter_map do |label, pattern|
         "#{path}: contains #{label}" if text.match?(pattern)
@@ -110,7 +200,7 @@ class ProviderOperationContractTest < Minitest::Test
     design = read(design_path)
 
     [contract, design].each do |text|
-      assert_includes text, "managed/connected rolling provider"
+      assert_includes text, "managed provider"
       assert_includes text, "explicit pinned or offline snapshot"
       assert_includes text, "`assets.root`"
       assert_includes text, "`assets.skills`"

@@ -21,6 +21,15 @@ For a verified Claude batch, preserve this provisional route profile
 - Independent adversarial QA: Opus 4.8/xhigh
 - Routine deterministic QA: Opus 4.8/high
 
+## Recipient Provider Binding
+
+Every recipient of a copied prompt must bind locally in that invocation. Read the
+active host install metadata: missing `provider_profile` means `pinned`, `managed`
+requires the active host home's absolute `bin/agent-workflows-resolve begin`, and
+unknown profiles stop. Never inherit a sender's handle or paths. A managed
+recipient must use only its newly returned `assets.*`; a pinned recipient uses
+only its declared snapshot and cannot claim current-provider mutations.
+
 ## Coordination Rules
 
 These prompts intentionally repeat the worked-issue scope state machine from

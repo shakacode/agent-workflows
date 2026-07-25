@@ -198,7 +198,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
-  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["provider_profile"] == "pinned" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
 }
 
 test_copy_mode_refuses_unsafe_bootstrap_directories() {
@@ -330,6 +330,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     printf 'personal\n' > "$target/skills/personal/SKILL.md"
 
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
+      --provider-profile managed \
       >"$tmp/install.out"
 
     [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
@@ -344,7 +345,8 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/bin/agent-workflows-delivery-state"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
-      abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
+      abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" &&
+                                    metadata["mode"] == "copy" && metadata["provider_profile"] == "managed"
     ' "$target/.agent-workflows-install.json"
 
     write_consumer_agents "$consumer"
@@ -1736,14 +1738,15 @@ test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
   "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
   write_native_scw_state codex "$target"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
-    --delivery-mode plugin-companion --no-fetch >"$tmp/upgrade-one.out"
+    --delivery-mode plugin-companion --provider-profile managed --no-fetch >"$tmp/upgrade-one.out"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
     --no-fetch >"$tmp/upgrade-two.out"
 
   [[ ! -e "$target/skills/pr-batch" ]] || fail "upgrade did not preserve companion delivery mode"
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
-    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" &&
+                                  metadata["provider_profile"] == "managed"
   ' "$target/.agent-workflows-install.json"
 }
 

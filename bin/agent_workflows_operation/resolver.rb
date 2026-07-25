@@ -18,6 +18,11 @@ module AgentWorkflowsOperation
     end
 
     def begin!(degraded: false)
+      profile = installed_profile
+      if profile == "pinned"
+        raise ProviderError, "PINNED_PROVIDER_OPERATION_UNAVAILABLE: pinned providers do not resolve operations"
+      end
+
       snapshot = if degraded
                    revision = installed_revision
                    store.open!(revision)
@@ -48,6 +53,11 @@ module AgentWorkflowsOperation
     def installed_revision
       placeholder = StoreSnapshot.new(revision: "0" * 40, root: "", repository: "", tree: "")
       Provider.new(host: host, target: target, snapshot: placeholder).installed_revision!
+    end
+
+    def installed_profile
+      placeholder = StoreSnapshot.new(revision: "0" * 40, root: "", repository: "", tree: "")
+      Provider.new(host: host, target: target, snapshot: placeholder).profile!
     end
   end
 end

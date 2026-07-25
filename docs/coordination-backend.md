@@ -16,7 +16,7 @@ operating details unless they need an exact command snippet.
   and cancellation state.
 - **Public claim-comment fallback**: use GitHub issue/PR comments with the
   structured `codex-claim` marker described in
-  [workflows/pr-processing.md](../workflows/pr-processing.md#coordination-state)
+  Coordination State section of `assets.workflow`
   when no private backend is available.
 - **No coordination backend**: acceptable for single-agent work; write `n/a` in
   `coordination_backend` and keep batch guidance serial or explicitly low
@@ -32,7 +32,7 @@ operating details unless they need an exact command snippet.
 - Preserve `UNKNOWN` when coordination facts cannot be verified. A missing or
   degraded backend is not evidence that no one owns a target.
 
-<!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+<!-- Keep this rule in sync with `assets.workflow` -> `### Batch Handoff Format`. -->
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
@@ -85,7 +85,7 @@ Backend `depends_on` and `blocked_on` values describe coordination state; they
 do not by themselves say which lifecycle action is safe. Planners and triage
 persist an immutable `stage-dependency-plan` v1 file separately from the
 portable `stage-dependency-gate` v1 live replay defined in
-[workflows/pr-processing.md](../workflows/pr-processing.md#stage-typed-dependency-gate).
+the Stage-Typed Dependency Gate section of `assets.workflow`.
 The only edge types are `edit`, `validation_open`, and `merge_order`, and the
 only edge states are `pending` and `satisfied`. Missing, unsupported, or
 `UNKNOWN` type/state remains `UNKNOWN`/blocked rather than being inferred from
@@ -107,8 +107,7 @@ backend metadata may persist the record but cannot waive it.
 A backend may store the trusted plan, but it is not required: backend `n/a`
 uses the same durable coordinator-owned local plan file, and storage remains a
 consumer/coordinator seam rather than helper state. Resolve `PR_BATCH_SKILL_DIR`
-through the explicit environment variable, loaded skill base, repo-local
-`.agents/skills/pr-batch`, or precise stop chain, then run
+through the operation-returned `assets.skills.pr_batch` path or precise stop chain, then run
 `"${PR_BATCH_SKILL_DIR}/bin/stage-dependency-gate"`
 `--trusted-plan "${STAGE_DEPENDENCY_PLAN_PATH}"`
 `--trusted-plan-id "${STAGE_DEPENDENCY_PLAN_ID}"` with live JSON on stdin.

@@ -7,9 +7,15 @@ description: Use when preparing a ready prompt for Claude, Codex, or another age
 
 ## Bound Provider Operation
 
+The persisted install metadata field `provider_profile` controls resolution. A
+missing legacy field is `pinned`. For `managed`, create a current operation with
+the absolute resolver below. For `pinned`, never fetch or claim current-provider
+mutation availability; use only the declared installed snapshot when the workflow
+supports it, otherwise stop. Any unknown profile is invalid and requires a stop.
+
 Use only a provider operation that the current invocation created locally and
-whose exact `begin --json` result it retained. Otherwise identify the active
-host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+whose exact `begin --json` result it retained. For a managed profile without a
+retained result, identify the active host and run the active host home's absolute `bin/agent-workflows-resolve begin`
 path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
 codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
 begin --host claude --json`). Never bootstrap through `PATH`, and never trust
@@ -81,6 +87,12 @@ Plan an issue triage
 Return the prompt in a fenced `text` block. Adapt bracketed parts and omit irrelevant clauses.
 
 ```text
+This receiving invocation must bind its own provider. Read active-host install
+metadata (missing `provider_profile` means `pinned`; unknown stops). For
+`managed`, run the active host home's absolute `bin/agent-workflows-resolve
+begin` and use only newly returned assets. Never inherit operation handles or
+paths from the sender.
+
 Use the operation-bound $evaluate-issue and $plan-pr-batch guidance to run a review-only triage of [scope] in [OWNER/REPO].
 
 Definition of review-only for this task:

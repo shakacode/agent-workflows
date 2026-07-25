@@ -178,6 +178,7 @@ module AgentWorkflowsStatus
       "reason" => reason,
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
+      "provider_profile" => metadata.fetch("provider_profile", "pinned"),
       "native" => delivery_state&.fetch("native", nil),
       "flat" => delivery_state&.fetch("flat", nil)
     }
@@ -186,11 +187,11 @@ module AgentWorkflowsStatus
   def text_for(payload)
     case payload.fetch("status")
     when "UP_TO_DATE"
-      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
+      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} provider_profile=#{payload['provider_profile']} target=#{payload['target']}\n"
     when "UPGRADE_AVAILABLE"
       installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
       available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
-      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
+      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} provider_profile=#{payload['provider_profile']} target=#{payload['target']}\n"
     when "NOT_INSTALLED"
       "NOT_INSTALLED target=#{payload['target']}\n"
     when "CHECK_FAILED"
@@ -211,6 +212,14 @@ module AgentWorkflowsStatus
     metadata = read_metadata(target)
     unless metadata
       return status_payload("NOT_INSTALLED", target:, source: options[:source], host:)
+    end
+
+    profile = metadata.fetch("provider_profile", "pinned")
+    unless %w[pinned managed].include?(profile)
+      return status_payload(
+        "CHECK_FAILED", target:, source: options[:source], host:, metadata:,
+                        reason: "unsupported provider profile: #{profile.inspect}"
+      )
     end
 
     source = File.expand_path(options[:source] || metadata["source"].to_s)

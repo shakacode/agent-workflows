@@ -3,10 +3,10 @@
 Read this reference after choosing an action in `SKILL.md` Step 8. Follow only
 the selected action path, plus `### General rules for all actions`.
 Keep this file host-neutral: host-adapter marker blocks and available-tool
-syntax stay in `SKILL.md` or `workflows/address-review.md`, which are covered by
+syntax stay in `assets.skills.address_review` or `assets.related_workflows.address_review`, which are covered by
 `bin/validate-host-adapter-syntax`.
 
-<!-- Keep this action-routing section in sync with .agents/workflows/address-review.md Step 8. -->
+<!-- Keep this action-routing section aligned with the returned `assets.related_workflows.address_review` Step 8. -->
 
 ### Action `a` — Apply, stage, and recommend
 
@@ -256,7 +256,7 @@ coordinator directs the run to continue after reconciling the remote head, rerun
 Step 4 review-data fetch, Step 5 filtering, and Step 6 triage from that new head
 before any further push, reply, thread resolution, or summary checkpoint.
 
-Converge the review loop, don't chase it: every push re-triggers the configured review bots on the new head and produces a fresh batch of comments. Batch all code fixes into a single push; resolve purely advisory threads (style, dead-code, "consider…", informational, positive) in-thread with a reply — **without a new commit**, since resolving a thread does not re-trigger reviews while a push does. Never resolve a confirmed blocker by reply alone. See [Review-Loop Convergence](../../../workflows/pr-processing.md#review-loop-convergence-push-amplification).
+Converge the review loop, don't chase it: every push re-triggers the configured review bots on the new head and produces a fresh batch of comments. Batch all code fixes into a single push; resolve purely advisory threads (style, dead-code, "consider…", informational, positive) in-thread with a reply — **without a new commit**, since resolving a thread does not re-trigger reviews while a push does. Never resolve a confirmed blocker by reply alone. See the Review-Loop Convergence section of `assets.workflow`.
 
 When 2+ selected fixes touch different files with no logical dependency, process them in parallel if the environment supports it. Instruct parallel helpers not to commit; keep all changes unstaged until the combined diff passes the self-review gate.
 After parallel fixes complete, verify no conflicts exist between the changes by checking whether any helpers touched the same files (`git diff --name-only`).

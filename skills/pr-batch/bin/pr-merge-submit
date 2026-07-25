@@ -700,8 +700,10 @@ module PrMergeSubmit
       stdout_file = Tempfile.new("pr-merge-submit-stdout")
       stderr_file = Tempfile.new("pr-merge-submit-stderr")
       interrupted_signal = nil
+      gh = ENV.fetch("AGENT_WORKFLOWS_GH_EXECUTABLE")
+      abort "AGENT_WORKFLOWS_GH_EXECUTABLE must be absolute" unless gh.start_with?("/")
       pid = Process.spawn(
-        { "GH_HOST" => host }, "gh", *args,
+        { "GH_HOST" => host }, gh, *args,
         out: stdout_file.path, err: stderr_file.path, pgroup: true
       )
       deadline = monotonic_time + timeout_seconds

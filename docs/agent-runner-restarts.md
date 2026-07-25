@@ -38,8 +38,9 @@ only the minimal read-only status checks needed for a handoff.
 
 Reply with: current status, repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, running
-commands/servers/PIDs, last completed step, next resume step, and whether it is
-safe to quit.
+commands/servers/PIDs, last completed step, next resume step,
+`originating_provider_revision` from the retained operation (when present), and
+whether it is safe to quit.
 
 After the handoff, do not run more tools until I explicitly resume.
 ```
@@ -94,8 +95,10 @@ Resume batch processing now.
 Start a new provider operation from the active host home's absolute resolver,
 re-read returned `assets.skills.pause` and `assets.workflow`, then run the
 bounded status recovery steps under "Pausing For An Agent-Runner Restart"
-before editing, pushing, polling, or starting any new target. Use only the newly
-returned snapshot.
+before editing, pushing, polling, or starting any new target. Compare the returned
+revision with the handoff's `originating_provider_revision`. Use the new snapshot
+only when they match. On mismatch, stop normal resume and require explicit
+cancellation/relaunch or state reconciliation before any work continues.
 ```
 
 This is a resume instruction for the same lanes, not a cancellation or relaunch

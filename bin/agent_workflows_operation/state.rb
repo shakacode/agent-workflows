@@ -3,6 +3,7 @@
 require "digest"
 require "fileutils"
 require "json"
+require "rbconfig"
 require "securerandom"
 
 require_relative "errors"
@@ -51,6 +52,10 @@ module AgentWorkflowsOperation
           "revision" => snapshot.revision,
           "freshness" => freshness,
           "provider" => provider,
+          "interpreter" => external_executable_identity!(RbConfig.ruby, "Ruby interpreter"),
+          "tools" => {
+            "gh" => external_executable_identity!(resolve_gh!, "gh executable")
+          },
           "launcher" => executable_identity(launcher_path),
           "runtime" => runtime_state,
           "capabilities" => capability_state
@@ -60,7 +65,7 @@ module AgentWorkflowsOperation
         File.rename(stage, destination)
         published = true
         load_operation!(handle)
-        operation_result(handle, snapshot, registry, freshness)
+        operation_result(handle, snapshot, registry, freshness, provider.fetch("profile"))
       ensure
         SecurePaths.cleanup_owned_directory!(stage, identity) unless published
       end
@@ -145,12 +150,43 @@ module AgentWorkflowsOperation
       }
     end
 
-    def operation_result(handle, snapshot, registry, freshness)
+    def resolve_gh!
+      configured = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
+      if configured.to_s.empty?
+        configured = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).find do |directory|
+          candidate = File.join(directory, "gh")
+          File.file?(candidate) && File.executable?(candidate)
+        end
+        configured = File.join(configured, "gh") if configured
+      end
+      raise ResolverError, "AGENT_WORKFLOWS_GH_EXECUTABLE must identify gh" if configured.to_s.empty?
+
+      configured
+    end
+
+    def external_executable_identity!(path, label)
+      raise ResolverError, "#{label} path must be absolute" unless path.start_with?("/")
+
+      resolved = File.realpath(path)
+      stat = File.stat(resolved)
+      unless stat.file? && (stat.uid == Process.uid || stat.uid.zero?)
+        raise ResolverError, "#{label} must be a trusted regular file"
+      end
+      raise ResolverError, "#{label} must not be group/world writable" unless (stat.mode & 0o022).zero?
+      raise ResolverError, "#{label} is not executable" unless (stat.mode & 0o111).positive?
+
+      identity_payload(stat, resolved).merge("path" => resolved)
+    rescue SystemCallError => e
+      raise ResolverError, "#{label} is unavailable: #{e.message}"
+    end
+
+    def operation_result(handle, snapshot, registry, freshness, provider_profile)
       asset_root = File.realpath(snapshot.tree)
       {
         "operation" => handle,
         "revision" => snapshot.revision,
         "freshness" => freshness,
+        "provider_profile" => provider_profile,
         "assets" => {
           "root" => asset_root,
           "skill" => File.join(asset_root, registry.assets.fetch("skill")),

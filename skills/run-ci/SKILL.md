@@ -8,6 +8,20 @@ argument-hint: ''
 
 Analyze the current branch changes and run appropriate CI checks locally.
 
+## Bound Provider Operation
+
+The persisted install metadata field `provider_profile` controls resolution. A
+missing legacy field is `pinned`. For `managed`, create a current operation with
+the absolute resolver below. For `pinned`, never fetch or claim current-provider
+mutation availability; use only the declared installed snapshot when the workflow
+supports it, otherwise stop. Any unknown profile is invalid and requires a stop.
+
+Use the active host home’s absolute `bin/agent-workflows-resolve begin` path for
+managed operations. Never bootstrap through `PATH`; retain only the current invocation's result and reject any inherited operation. Re-read this skill through `assets.skills.run_ci`, use
+`assets.workflow` for PR processing and `assets.root` for shared assets, while
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and `.agents/bin/*` remain
+the local seams; stop when a required asset is unavailable.
+
 ## Base Handling
 
 The repo's pre-push local validation command is `.agents/bin/validate`. It should

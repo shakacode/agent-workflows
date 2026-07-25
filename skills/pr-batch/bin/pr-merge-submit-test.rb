@@ -755,6 +755,7 @@ class PrMergeSubmitTest < Minitest::Test
   def cli_environment(dir, log_path, mode)
     {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
+      "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.join(dir, "gh"),
       "GH_LOG" => log_path,
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }

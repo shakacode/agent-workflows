@@ -40,7 +40,7 @@ adapter maps those verbs to the current host's mechanisms at runtime.
 | Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check |
 | Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source |
 
-A managed/connected rolling provider binds each operation to one verified
+A managed provider binds each operation to one verified
 snapshot and fails closed when that binding is unavailable. An explicit pinned
 or offline snapshot retains its declared provider contract; it does not
 silently enter rolling resolution or mix assets with a rolling operation.
@@ -167,7 +167,7 @@ make a worker proceed; add the narrow command needed for the trusted target.
 
 ## Provider-Bound Rolling Operations
 
-A managed/connected rolling provider binds one consequential operation to one
+A managed provider binds one consequential operation to one
 exact canonical commit. Each operation-bound entry skill uses only an operation
 that the current invocation created locally and whose exact begin result it
 retained. Otherwise it runs the active host home's absolute
@@ -207,7 +207,7 @@ Registry loading requires every named skill to be a regular non-symlink
 instruction file at its declared location beneath the verified tree. Missing,
 malformed, traversing, or symlinked entries fail before operation publication.
 The resolver never accepts `assets.root` from the environment, consumer
-repository, inherited state, `PATH`, a host cache, or another checkout.
+repository, inherited state, `PATH`, a host cache, or any unbound provider root.
 
 The production fetch URL is not configurable. Tests use a test-defined
 resolver subclass and local HTTP transport; neither the CLI nor installed
@@ -268,7 +268,7 @@ remain authoritative local policy. They do not replace bound shared files.
 
 An explicit pinned or offline snapshot that does not opt into a bound rolling
 operation retains its declared provider's own resolution contract. It must not
-mix its assets with a managed/connected rolling provider operation.
+mix its assets with a managed provider operation.
 
 ## Availability Checks
 

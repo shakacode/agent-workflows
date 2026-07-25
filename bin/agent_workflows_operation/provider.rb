@@ -8,6 +8,7 @@ require_relative "tree"
 
 module AgentWorkflowsOperation
   class Provider
+    PROFILES = %w[managed pinned].freeze
     COMPANION_BIN_FILES = %w[
       bin/agent-workflow-seam-doctor
       bin/agent-workflows-delivery-state
@@ -30,14 +31,14 @@ module AgentWorkflowsOperation
       `codex plugin remove scw@agent-workflows` and
       `codex plugin add scw@agent-workflows`. Reinstall companion assets from
       that exact canonical main checkout with
-      `bin/install-agent-workflows --host codex --mode copy --delivery-mode plugin-companion`.
+      `bin/install-agent-workflows --host codex --mode copy --delivery-mode plugin-companion --provider-profile managed`.
       Fully restart Codex and start a new session before retrying.
     GUIDANCE
     CLAUDE_UPDATE = <<~GUIDANCE.strip
       Run `/plugin marketplace update agent-workflows`, then
       `/plugin update scw@agent-workflows`. Reinstall companion assets from
       that exact canonical main checkout with
-      `bin/install-agent-workflows --host claude --mode copy --delivery-mode plugin-companion`.
+      `bin/install-agent-workflows --host claude --mode copy --delivery-mode plugin-companion --provider-profile managed`.
       Run `/reload-plugins` and start a new session before retrying.
     GUIDANCE
 
@@ -52,6 +53,11 @@ module AgentWorkflowsOperation
 
     def verify!(expected_revision: snapshot.revision)
       metadata = companion_metadata!
+      profile = profile_from!(metadata)
+      if profile == "pinned"
+        raise ProviderError, "PINNED_PROVIDER_OPERATION_UNAVAILABLE: pinned providers do not resolve current operations"
+      end
+
       companion_revision = metadata["source_revision"]
       native = native_state!
       roots = Array(native["roots"])
@@ -77,6 +83,7 @@ module AgentWorkflowsOperation
       verify_codex_clean!(native_root) if host == "codex"
       verify_companion_files!
       {
+        "profile" => profile,
         "host" => host,
         "target" => target,
         "native_root" => native_root,
@@ -95,21 +102,39 @@ module AgentWorkflowsOperation
       revision
     end
 
+    def profile!
+      profile_from!(install_metadata!)
+    end
+
     private
 
+    def profile_from!(metadata)
+      profile = metadata.fetch("provider_profile", "pinned")
+      return profile if PROFILES.include?(profile)
+
+      raise ProviderError, "unsupported provider profile: #{profile.inspect}"
+    end
+
     def companion_metadata!
+      metadata = install_metadata!
+      unless metadata["host"] == host &&
+             metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
+        fail_update!("companion metadata must record this host, mode copy, and plugin-companion delivery")
+      end
+      revision = metadata["source_revision"]
+      fail_update!("companion source_revision is invalid") unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+
+      metadata
+    end
+
+    def install_metadata!
       path = File.join(target, ".agent-workflows-install.json")
       stat = File.lstat(path)
       unless stat.file? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o022).zero?
         fail_update!("companion install metadata is missing, unsafe, or writable by another user")
       end
       metadata = JSON.parse(File.binread(path))
-      unless metadata.is_a?(Hash) && metadata["host"] == host &&
-             metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
-        fail_update!("companion metadata must record this host, mode copy, and plugin-companion delivery")
-      end
-      revision = metadata["source_revision"]
-      fail_update!("companion source_revision is invalid") unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+      fail_update!("install metadata root must be an object") unless metadata.is_a?(Hash)
 
       metadata
     rescue Errno::ENOENT, JSON::ParserError => e

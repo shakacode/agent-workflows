@@ -2,6 +2,15 @@
 
 Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow and that command is unavailable.
 
+## Recipient Provider Binding
+
+Every recipient of a copied prompt must bind locally in that invocation. Read the
+active host install metadata: missing `provider_profile` means `pinned`, `managed`
+requires the active host home's absolute `bin/agent-workflows-resolve begin`, and
+unknown profiles stop. Never inherit a sender's handle or paths. A managed
+recipient must use only its newly returned `assets.*`; a pinned recipient uses
+only its declared snapshot and cannot claim current-provider mutations.
+
 ## How to Use
 
 Paste the prompt below into your coding assistant and replace `{{PR_REFERENCE}}` with one of:

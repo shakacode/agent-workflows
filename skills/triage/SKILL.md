@@ -8,9 +8,15 @@ argument-hint: '[repo, scope, or batch objective]'
 
 ## Bound Provider Operation
 
+The persisted install metadata field `provider_profile` controls resolution. A
+missing legacy field is `pinned`. For `managed`, create a current operation with
+the absolute resolver below. For `pinned`, never fetch or claim current-provider
+mutation availability; use only the declared installed snapshot when the workflow
+supports it, otherwise stop. Any unknown profile is invalid and requires a stop.
+
 Use only a provider operation that the current invocation created locally and
-whose exact `begin --json` result it retained. Otherwise identify the active
-host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+whose exact `begin --json` result it retained. For a managed profile without a
+retained result, identify the active host and run the active host home's absolute `bin/agent-workflows-resolve begin`
 path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
 codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
 begin --host claude --json`). Never bootstrap through `PATH`, and never trust

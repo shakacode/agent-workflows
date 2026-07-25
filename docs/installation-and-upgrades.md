@@ -73,8 +73,7 @@ Install the Claude Code plugin from the repository marketplace:
 The Claude plugin deliberately omits an explicit `version`. Claude therefore
 uses the Git commit SHA as the plugin version, so every commit on the
 marketplace's tracked branch is updateable without maintaining duplicate
-release numbers. This is the rolling-main channel intended for ShakaCode-owned
-repositories. Enable auto-update for the `agent-workflows` marketplace in
+release numbers. Enable auto-update for the `agent-workflows` marketplace in
 Claude's **Plugins → Marketplaces** UI; third-party marketplace auto-update is
 disabled by default. A running session keeps the version it loaded until
 `/reload-plugins` or the next launch.
@@ -114,6 +113,14 @@ bin/install-agent-workflows --host claude --delivery-mode plugin-companion
 bin/install-agent-workflows --host codex --delivery-mode plugin-companion
 ```
 
+Install metadata persists `provider_profile` as `pinned` or `managed`. New and
+legacy installs default to `pinned`; a missing legacy field is interpreted as
+`pinned`. Pinned installs never fetch a current snapshot and never expose
+current-provider mutations. Select `--provider-profile managed` only with
+`--mode copy --delivery-mode plugin-companion`; managed operations verify the
+native and companion copies before resolving current canonical content.
+Status and upgrade surface and replay this profile. Unknown values fail closed.
+
 Native plugin installation does not install helper binaries on `PATH`, write
 `<target>/.agent-workflows-install.json`, or participate in status and upgrade
 behavior by itself. Companion mode supplies those pieces while leaving native
@@ -124,7 +131,7 @@ from cached-but-disabled plugin files. They fail closed when native state is
 enabled but its install receipt/cache cannot be verified, or when native and
 installer-managed flat skills would coexist.
 
-For a ShakaCode rolling-main PR operation, the native plugin and copied
+For a managed current-provider operation, the native plugin and copied
 companion install must be at the same canonical `main` SHA. Begin before reading
 deeper shared workflows or running helpers:
 

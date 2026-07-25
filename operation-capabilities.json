@@ -14,6 +14,7 @@
       "post_merge_audit": "skills/post-merge-audit/SKILL.md",
       "pr_batch": "skills/pr-batch/SKILL.md",
       "pr_monitoring": "skills/pr-monitoring/SKILL.md",
+      "run_ci": "skills/run-ci/SKILL.md",
       "spec": "skills/spec/SKILL.md",
       "tdd": "skills/tdd/SKILL.md",
       "triage": "skills/triage/SKILL.md",

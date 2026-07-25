@@ -94,7 +94,13 @@ module AgentWorkflowsOperation
       repository = File.join(root, "repo.git")
       tree = File.join(root, "tree")
       private_home = File.join(root, "home")
-      [repository, tree, private_home].each { |path| SecurePaths.verify_private_directory!(path) }
+      [repository, private_home].each { |path| SecurePaths.verify_private_directory!(path) }
+      tree_stat = File.lstat(tree)
+      unless tree_stat.directory? && !tree_stat.symlink? && tree_stat.uid == Process.uid &&
+             (tree_stat.mode & 0o777) == 0o500
+        raise StoreError, "canonical instruction snapshot root must have mode 0500"
+      end
+
       verify_state_tree_permissions!(root)
       alternates = File.join(repository, "objects/info/alternates")
       raise StoreError, "canonical content store must not use Git alternates" if File.exist?(alternates) || File.symlink?(alternates)
@@ -119,7 +125,16 @@ module AgentWorkflowsOperation
         stat = File.lstat(path)
         next if stat.symlink?
 
-        File.chmod(stat.directory? ? 0o700 : stat.mode & 0o755, path)
+        in_instruction_tree = path == File.join(root, "tree") ||
+                              path.start_with?("#{File.join(root, 'tree')}/")
+        mode = if stat.directory?
+                 in_instruction_tree ? 0o500 : 0o700
+               elsif in_instruction_tree
+                 (stat.mode & 0o111).positive? ? 0o500 : 0o400
+               else
+                 stat.mode & 0o755
+               end
+        File.chmod(mode, path)
       end
     end
 
@@ -127,8 +142,15 @@ module AgentWorkflowsOperation
       Find.find(root) do |path|
         stat = File.lstat(path)
         raise StoreError, "canonical content store path has wrong owner: #{path}" unless stat.uid == Process.uid
-        if stat.directory? && (stat.mode & 0o777) != 0o700
-          raise StoreError, "canonical content store directory must have mode 0700: #{path}"
+
+        in_instruction_tree = path == File.join(root, "tree") ||
+                              path.start_with?("#{File.join(root, 'tree')}/")
+        expected_directory_mode = in_instruction_tree ? 0o500 : 0o700
+        if stat.directory? && (stat.mode & 0o777) != expected_directory_mode
+          raise StoreError, "canonical content store directory has unsafe mode: #{path}"
+        end
+        if in_instruction_tree && stat.file? && (stat.mode & 0o200).positive?
+          raise StoreError, "canonical instruction snapshot is owner-writable: #{path}"
         end
         if !stat.symlink? && (stat.mode & 0o022).positive?
           raise StoreError, "canonical content store path is group/world writable: #{path}"

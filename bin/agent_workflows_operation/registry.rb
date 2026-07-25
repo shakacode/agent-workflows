@@ -143,6 +143,13 @@ module AgentWorkflowsOperation
     def validate_regular_file!(relative, label)
       SecurePaths.safe_relative_path!(relative, label: label)
       path = File.join(@tree, relative)
+      current = @tree
+      relative.split("/")[0...-1].each do |component|
+        current = File.join(current, component)
+        stat = File.lstat(current)
+        raise RegistryError, "#{label} has a symlink ancestor: #{current}" if stat.symlink?
+        raise RegistryError, "#{label} ancestor is not a directory: #{current}" unless stat.directory?
+      end
       stat = File.lstat(path)
       raise RegistryError, "#{label} must resolve to a regular non-symlink file" unless stat.file? && !stat.symlink?
 

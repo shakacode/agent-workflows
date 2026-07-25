@@ -7,9 +7,15 @@ description: Print restart-safe copy-paste prompts for pausing an agent thread b
 
 ## Bound Provider Operation
 
+The persisted install metadata field `provider_profile` controls resolution. A
+missing legacy field is `pinned`. For `managed`, create a current operation with
+the absolute resolver below. For `pinned`, never fetch or claim current-provider
+mutation availability; use only the declared installed snapshot when the workflow
+supports it, otherwise stop. Any unknown profile is invalid and requires a stop.
+
 Use only a provider operation that the current invocation created locally and
-whose exact `begin --json` result it retained. Otherwise identify the active
-host and run the active host home's absolute `bin/agent-workflows-resolve begin`
+whose exact `begin --json` result it retained. For a managed profile without a
+retained result, identify the active host and run the active host home's absolute `bin/agent-workflows-resolve begin`
 path (`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
 codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
 begin --host claude --json`). Never bootstrap through `PATH`, and never trust
@@ -59,8 +65,9 @@ only the minimal read-only status checks needed for a handoff.
 
 Reply with: current status, repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, running
-commands/servers/PIDs, last completed step, next resume step, and whether it is
-safe to quit.
+commands/servers/PIDs, last completed step, next resume step,
+`originating_provider_revision` from the retained operation (when present), and
+whether it is safe to quit.
 
 After the handoff, do not run more tools until I explicitly resume.
 ```
@@ -135,6 +142,8 @@ pause flow.
 Reply with a restart handoff:
 - Role and lane: coordinator, worker, or QA; batch id; target(s); stable
   agent/thread id.
+- Provider: `originating_provider_revision`, copied from the retained operation's
+  exact 40-hex `revision`.
 - Repo state: repo path, worktree path, branch, upstream, HEAD SHA, PR/issue
   URLs.
 - Local changes: staged, unstaged, and untracked files; unpushed commits;
@@ -165,8 +174,10 @@ Resume batch processing now.
 Start a new provider operation from the active host home's absolute resolver,
 re-read returned `assets.skills.pause` and `assets.workflow`, then run the
 bounded status recovery steps under "Pausing For An Agent-Runner Restart"
-before editing, pushing, polling, or starting any new target. Use only the newly
-returned snapshot.
+before editing, pushing, polling, or starting any new target. Compare the returned
+revision with the handoff's `originating_provider_revision`. Use the new snapshot
+only when they match. On mismatch, stop normal resume and require explicit
+cancellation/relaunch or state reconciliation before any work continues.
 ```
 
 ## PR-Batch New-Chat Restart Prompt

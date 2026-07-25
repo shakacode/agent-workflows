@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--consumer-root DIR] [--dry-run] [--no-fetch]
+Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--consumer-root DIR] [--dry-run] [--no-fetch]
 
 Updates the source clone, reinstalls this shared workflow pack into an agent
 home, and optionally validates one or more consumer repository seams.
@@ -21,6 +21,7 @@ target=""
 source=""
 mode=""
 delivery_mode=""
+provider_profile=""
 dry_run=false
 fetch=true
 consumer_roots=()
@@ -201,6 +202,10 @@ while [[ $# -gt 0 ]]; do
       delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
       shift 2
       ;;
+    --provider-profile)
+      provider_profile="${2:?--provider-profile requires pinned or managed}"
+      shift 2
+      ;;
     --consumer-root)
       consumer_roots+=("${2:?--consumer-root requires a directory}")
       shift 2
@@ -269,6 +274,16 @@ fi
 if [[ -z "$delivery_mode" ]]; then
   delivery_mode="$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')"
 fi
+if [[ -z "$provider_profile" ]]; then
+  provider_profile="$(metadata_value "$metadata_path" provider_profile 2>/dev/null || printf 'pinned\n')"
+fi
+case "$provider_profile" in
+  pinned|managed) ;;
+  *)
+    echo "--provider-profile must be pinned or managed, got: $provider_profile" >&2
+    exit 64
+    ;;
+esac
 
 status_script="$source/bin/agent-workflows-status"
 install_script="$source/bin/install-agent-workflows"
@@ -310,7 +325,8 @@ backup_target
 completed=false
 trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
 
-"$install_script" --host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode"
+"$install_script" --host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode" \
+  --provider-profile "$provider_profile"
 
 if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
   for consumer_root in "${consumer_roots[@]}"; do

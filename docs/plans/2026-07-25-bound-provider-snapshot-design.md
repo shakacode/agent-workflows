@@ -7,7 +7,7 @@ Status: accepted
 
 Keep every shared instruction read for one operation inside one verified,
 immutable provider snapshot. Provider modes distinguish a
-managed/connected rolling provider, which resolves its current canonical
+managed provider, which resolves its current canonical
 revision before work, from an explicit pinned or offline snapshot, which keeps
 its own declared contract and never mixes assets with a rolling operation.
 

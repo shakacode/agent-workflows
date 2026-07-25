@@ -28,6 +28,8 @@ module AgentWorkflowsOperation
       verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
       verify_runtime!(operation_root, metadata, snapshot)
       command = [
+        verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter"),
+        "--disable=gems",
         launcher,
         "--target", target,
         "--operation", handle,
@@ -37,7 +39,7 @@ module AgentWorkflowsOperation
       ]
       verify_runtime!(operation_root, metadata, snapshot)
       verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
-      exec(*command)
+      exec(sanitized_environment(metadata), *command)
     rescue KeyError => e
       raise RunnerError, "operation metadata is incomplete: #{e.message}"
     end
@@ -71,7 +73,9 @@ module AgentWorkflowsOperation
         private_home: File.join(snapshot.root, "home")
       )
       verify_executable_identity!(executable, recorded, "canonical executable")
-      exec(executable, *arguments)
+      ruby = verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter")
+      verify_external_executable!(metadata.fetch("tools").fetch("gh"), "bound gh executable")
+      exec(sanitized_environment(metadata), ruby, "--disable=gems", executable, *arguments)
     rescue KeyError, RegistryError => e
       raise RunnerError, "operation capability binding is invalid: #{e.message}"
     rescue StoreError => e
@@ -79,6 +83,36 @@ module AgentWorkflowsOperation
     end
 
     private
+
+    def sanitized_environment(metadata)
+      {
+        "RUBYOPT" => nil,
+        "RUBYLIB" => nil,
+        "BUNDLE_GEMFILE" => nil,
+        "BUNDLE_BIN_PATH" => nil,
+        "BUNDLE_PATH" => nil,
+        "GEM_HOME" => nil,
+        "GEM_PATH" => nil,
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.fetch("tools").fetch("gh").fetch("path")
+      }
+    end
+
+    def verify_external_executable!(recorded, label)
+      path = recorded.fetch("path")
+      stat = File.stat(path)
+      unless stat.file? && (stat.uid == Process.uid || stat.uid.zero?) && (stat.mode & 0o022).zero? &&
+             (stat.mode & 0o111).positive?
+        raise RunnerError, "#{label} is no longer a trusted executable"
+      end
+
+      identity = [stat.dev, stat.ino, stat.size, Digest::SHA256.file(path).hexdigest]
+      expected = [recorded["device"], recorded["inode"], recorded["size"], recorded["sha256"]]
+      raise RunnerError, "#{label} inode or hash changed after operation begin" unless identity == expected
+
+      path
+    rescue SystemCallError, KeyError => e
+      raise RunnerError, "#{label} is unavailable: #{e.message}"
+    end
 
     def validated_operation!(handle, capability)
       operation_root, metadata = state.load_operation!(handle)

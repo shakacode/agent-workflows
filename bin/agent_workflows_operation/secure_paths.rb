@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "find"
 require "json"
 require "securerandom"
 
@@ -133,6 +134,12 @@ module AgentWorkflowsOperation
         raise CleanupError, "refusing cleanup because staging identity changed: #{path}"
       end
 
+      Find.find(path) do |entry|
+        stat = File.lstat(entry)
+        next if stat.symlink?
+
+        File.chmod(stat.directory? ? 0o700 : 0o600, entry)
+      end
       FileUtils.remove_entry_secure(path)
     rescue Errno::ENOENT
       nil

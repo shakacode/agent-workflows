@@ -2,9 +2,11 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "find"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "socket"
 require "tmpdir"
 
@@ -24,6 +26,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     post_merge_audit
     pr_batch
     pr_monitoring
+    run_ci
     spec
     tdd
     triage
@@ -38,9 +41,11 @@ class AgentWorkflowsOperationTest < Minitest::Test
     @target = File.join(@tmp, "codex")
     @server_pid = nil
     @old_codex_executable = ENV["AGENT_WORKFLOWS_CODEX_EXECUTABLE"]
+    @old_gh_executable = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
     create_source_repository
     install_provider
     ENV["AGENT_WORKFLOWS_CODEX_EXECUTABLE"] = @fake_codex
+    ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"] = @fake_gh
   end
 
   def teardown
@@ -54,7 +59,40 @@ class AgentWorkflowsOperationTest < Minitest::Test
     else
       ENV.delete("AGENT_WORKFLOWS_CODEX_EXECUTABLE")
     end
-    FileUtils.remove_entry(@tmp) if File.exist?(@tmp)
+    if @old_gh_executable
+      ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"] = @old_gh_executable
+    else
+      ENV.delete("AGENT_WORKFLOWS_GH_EXECUTABLE")
+    end
+    if File.exist?(@tmp)
+      Find.find(@tmp) do |path|
+        stat = File.lstat(path)
+        File.chmod(stat.directory? ? 0o700 : 0o600, path) unless stat.symlink?
+      end
+      FileUtils.remove_entry(@tmp)
+    end
+  end
+
+  def test_legacy_and_explicit_pinned_profiles_never_begin_a_rolling_operation
+    [nil, "pinned"].each do |profile|
+      metadata = read_metadata
+      profile ? metadata["provider_profile"] = profile : metadata.delete("provider_profile")
+      write_metadata(metadata)
+
+      error = assert_raises(AgentWorkflowsOperation::ProviderError) { begin_current_operation }
+      assert_includes error.message, "PINNED_PROVIDER_OPERATION_UNAVAILABLE"
+      assert_empty operation_directories
+    end
+  end
+
+  def test_unknown_provider_profile_fails_before_fetch_or_publication
+    metadata = read_metadata
+    metadata["provider_profile"] = "surprise"
+    write_metadata(metadata)
+
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { begin_current_operation }
+    assert_includes error.message, "unsupported provider profile"
+    assert_empty operation_directories
   end
 
   def test_fetch_ignores_url_rewrites_custom_refspecs_alternates_hooks_and_replacements
@@ -346,6 +384,20 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_includes error.message, "provider moved after operation begin"
   end
 
+  def test_changed_bound_gh_executable_blocks_capability_execution
+    operation = begin_current_operation
+    File.write(@fake_gh, "#!/bin/sh\nexit 99\n")
+    FileUtils.chmod(0o755, @fake_gh)
+    installed_runner, operation_flag, handle = operation.fetch("runner")
+    _output, error, status = Open3.capture3(
+      installed_runner, operation_flag, handle, "pr-merge-submit", "--", "--probe"
+    )
+
+    refute status.success?
+    assert_includes error, "bound gh executable"
+    assert_match(/inode|hash/, error)
+  end
+
   def test_installed_runner_executes_the_operation_copy
     operation = begin_current_operation
     installed_runner, operation_flag, handle = operation.fetch("runner")
@@ -358,6 +410,36 @@ class AgentWorkflowsOperationTest < Minitest::Test
 
     assert status.success?, "#{output}#{error}"
     assert_equal "fixture-helper --probe\n", output
+  end
+
+  def test_copied_ruby_entrypoints_ignore_hostile_path_and_ruby_injection
+    operation = begin_current_operation
+    hostile = File.join(@tmp, "hostile-bin")
+    FileUtils.mkdir_p(hostile)
+    ruby_probe = File.join(hostile, "ruby")
+    gh_probe = File.join(hostile, "gh")
+    sentinel = File.join(@tmp, "ruby-injection-ran")
+    injection = File.join(@tmp, "injection.rb")
+    File.write(ruby_probe, "#!/bin/sh\nprintf 'hostile ruby\\n' >&2\nexit 91\n")
+    File.write(gh_probe, "#!/bin/sh\nprintf 'hostile gh\\n' >&2\nexit 92\n")
+    File.write(injection, "File.write(#{sentinel.dump}, 'injected')\n")
+    FileUtils.chmod(0o755, ruby_probe)
+    FileUtils.chmod(0o755, gh_probe)
+    installed_runner, operation_flag, handle = operation.fetch("runner")
+    wrapper = <<~RUBY
+      ENV["PATH"] = ARGV.shift
+      ENV["RUBYOPT"] = "-r#{injection}"
+      ENV["RUBYLIB"] = #{File.dirname(injection).dump}
+      load ARGV.shift
+    RUBY
+    output, error, status = Open3.capture3(
+      RbConfig.ruby, "--disable=gems", "-e", wrapper,
+      hostile, installed_runner, operation_flag, handle, "pr-merge-submit", "--", "--probe"
+    )
+
+    assert status.success?, "#{output}#{error}"
+    assert_equal "fixture-helper --probe\n", output
+    refute_path_exists sentinel
   end
 
   def test_snapshot_paths_are_operation_owned_and_do_not_fall_back_to_live_repo_files
@@ -375,6 +457,34 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assets.fetch("docs").each_value { |path| assert path.start_with?("#{expected_root}/") }
     refute_includes File.read(assets.fetch("skill")), ".agents/workflows"
     refute_includes File.read(assets.fetch("workflow")), "PR_BATCH_SKILL_DIR"
+  end
+
+  def test_published_instruction_snapshot_rejects_ordinary_overwrite_and_rename
+    operation = begin_current_operation
+    skill = operation.dig("assets", "skills", "pr_batch")
+    original = File.binread(skill)
+
+    assert_raises(Errno::EACCES) { File.write(skill, "mutated\n") }
+    assert_raises(Errno::EACCES) { File.rename(skill, "#{skill}.moved") }
+    assert_equal original, File.binread(skill)
+    assert_equal "current", operation.fetch("freshness")
+  end
+
+  def test_claude_begin_returns_bound_assets_and_executes_through_its_installed_runner
+    claude_target = File.join(@tmp, "claude")
+    install_claude_provider(claude_target)
+    operation = TestResolver.new(host: "claude", target: claude_target, fixture_url: @fixture_url).begin!
+
+    assert_equal "managed", operation.fetch("provider_profile")
+    assert_equal @revision, operation.fetch("revision")
+    assert_equal BOUND_SKILLS, operation.dig("assets", "skills").keys.sort
+    assert_equal File.join(claude_target, "bin/agent-workflows-run"), operation.fetch("runner").first
+    output, error, status = Open3.capture3(
+      RbConfig.ruby, "--disable=gems", *operation.fetch("runner"),
+      "pr-merge-submit", "--", "--claude-probe"
+    )
+    assert status.success?, "#{output}#{error}"
+    assert_equal "fixture-helper --claude-probe\n", output
   end
 
   def test_source_instructions_require_resolver_first_and_operation_only_paths
@@ -478,6 +588,28 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_includes error.message, "regular non-symlink"
   end
 
+  def test_registry_rejects_symlinked_named_skill_ancestor
+    File.symlink("pr-batch", File.join(@source, "skills/aliased"))
+    payload = registry_with_skills("aliased" => "skills/aliased/SKILL.md")
+
+    error = assert_raises(AgentWorkflowsOperation::RegistryError) do
+      AgentWorkflowsOperation::Registry.new(payload, @source)
+    end
+    assert_includes error.message, "symlink ancestor"
+  end
+
+  def test_registry_rejects_symlinked_nested_document_ancestor
+    FileUtils.mkdir_p(File.join(@source, "docs/nested"))
+    File.symlink("..", File.join(@source, "docs/nested/aliased"))
+    payload = JSON.parse(File.binread(File.join(@source, "operation-capabilities.json")))
+    payload.fetch("assets").fetch("docs")["nested_alias"] = "docs/nested/aliased/coordination-backend.md"
+
+    error = assert_raises(AgentWorkflowsOperation::RegistryError) do
+      AgentWorkflowsOperation::Registry.new(payload, @source)
+    end
+    assert_includes error.message, "symlink ancestor"
+  end
+
   private
 
   def stub_singleton_method(object, name, replacement)
@@ -551,7 +683,12 @@ class AgentWorkflowsOperationTest < Minitest::Test
         "skills" => "./skills/"
       ),
       ".claude-plugin/plugin.json" => JSON.generate("name" => "scw", "skills" => "./skills/"),
-      "skills/pr-batch/bin/pr-merge-submit" => "#!/bin/sh\nprintf 'fixture-helper'; printf ' %s' \"$@\"; printf '\\n'\n",
+      "skills/pr-batch/bin/pr-merge-submit" => <<~RUBY,
+        #!/usr/bin/env ruby
+        # frozen_string_literal: true
+
+        puts(["fixture-helper", *ARGV].join(" "))
+      RUBY
       "workflows/pr-processing.md" => "operation snapshot workflow\n",
       "workflows/address-review.md" => "address review\n",
       "workflows/adversarial-pr-review.md" => "adversarial review\n",
@@ -636,6 +773,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "host" => "codex",
       "mode" => "copy",
       "delivery_mode" => "plugin-companion",
+      "provider_profile" => "managed",
       "source_revision" => @revision
     )
     @fake_codex = File.join(@tmp, "fake-codex")
@@ -646,6 +784,68 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "'scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git'\n"
     )
     FileUtils.chmod(0o755, @fake_codex)
+    @fake_gh = File.join(@tmp, "fake-gh")
+    File.write(@fake_gh, "#!/bin/sh\nprintf 'fixture-gh\\n'\n")
+    FileUtils.chmod(0o755, @fake_gh)
+  end
+
+  def install_claude_provider(target)
+    native_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+    FileUtils.mkdir_p(File.dirname(native_root))
+    system("git", "clone", "--quiet", @source, native_root, exception: true)
+    system("git", "-C", native_root, "checkout", "--quiet", @revision, exception: true)
+    FileUtils.rm_rf(File.join(native_root, ".git"))
+    FileUtils.mkdir_p(File.join(target, "plugins"))
+    File.write(
+      File.join(target, "settings.json"),
+      "#{JSON.pretty_generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n"
+    )
+    File.write(
+      File.join(target, "plugins/installed_plugins.json"),
+      "#{JSON.pretty_generate(
+        'version' => 2,
+        'plugins' => {
+          'scw@agent-workflows' => [{
+            'scope' => 'user',
+            'installPath' => native_root,
+            'version' => 'unknown',
+            'gitCommitSha' => @revision
+          }]
+        }
+      )}\n"
+    )
+    install_companion_files(target)
+    write_metadata_at(
+      target,
+      "host" => "claude",
+      "mode" => "copy",
+      "delivery_mode" => "plugin-companion",
+      "provider_profile" => "managed",
+      "source_revision" => @revision
+    )
+  end
+
+  def install_companion_files(target)
+    FileUtils.mkdir_p(File.join(target, "bin"))
+    AgentWorkflowsOperation::Provider::COMPANION_BIN_FILES.each do |relative|
+      FileUtils.cp(File.join(@source, relative), File.join(target, "bin", File.basename(relative)), preserve: true)
+    end
+    FileUtils.cp_r(
+      File.join(@source, "bin/agent_workflows_operation"),
+      File.join(target, "bin/agent_workflows_operation"),
+      preserve: true
+    )
+    FileUtils.mkdir_p(File.join(target, "bin/agent_doctor"))
+    FileUtils.cp(
+      File.join(@source, "bin/agent_doctor/timeout_budget.rb"),
+      File.join(target, "bin/agent_doctor/timeout_budget.rb")
+    )
+    FileUtils.cp_r(File.join(@source, "workflows"), File.join(target, "workflows"))
+    FileUtils.mkdir_p(File.join(target, "docs"))
+    AgentWorkflowsOperation::Provider::COMPANION_DOC_FILES.each do |relative|
+      FileUtils.cp(File.join(@source, relative), File.join(target, relative))
+    end
+    FileUtils.cp(File.join(@source, "LICENSE"), File.join(target, "LICENSE"))
   end
 
   def reset_native_provider
@@ -662,7 +862,11 @@ class AgentWorkflowsOperationTest < Minitest::Test
   end
 
   def write_metadata(metadata)
-    File.write(File.join(@target, ".agent-workflows-install.json"), "#{JSON.pretty_generate(metadata)}\n")
+    write_metadata_at(@target, metadata)
+  end
+
+  def write_metadata_at(target, metadata)
+    File.write(File.join(target, ".agent-workflows-install.json"), "#{JSON.pretty_generate(metadata)}\n")
   end
 
   def commit_all(message)

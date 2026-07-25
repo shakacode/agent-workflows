@@ -3,7 +3,7 @@
 Read this reference before preparing deferred-work tracking or posting a PR
 summary/status checkpoint from the address-review workflow.
 Keep this file host-neutral: host-adapter marker blocks and available-tool
-syntax stay in `SKILL.md` or `workflows/address-review.md`, which are covered by
+syntax stay in `assets.skills.address_review` or `assets.related_workflows.address_review`, which are covered by
 `bin/validate-host-adapter-syntax`.
 
 ## Step 9: Deferred-Work Tracking (when requested)

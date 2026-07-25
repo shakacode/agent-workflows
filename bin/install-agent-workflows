@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed]
 
 Installs this shared workflow pack into an agent home.
 
@@ -36,6 +36,7 @@ host="codex"
 target=""
 mode="copy"
 delivery_mode=""
+provider_profile=""
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
 doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
@@ -185,11 +186,12 @@ prepare_metadata() {
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   ruby -rjson -e '
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at = ARGV
+    path, host, mode, delivery_mode, provider_profile, source, version, revision, branch, remote, installed_at = ARGV
     metadata = {
       "host" => host,
       "mode" => mode,
       "delivery_mode" => delivery_mode,
+      "provider_profile" => provider_profile,
       "source" => File.expand_path(source),
       "version" => version,
       "source_revision" => revision,
@@ -198,7 +200,7 @@ prepare_metadata() {
       "installed_at" => installed_at
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$provider_profile" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
 }
 
 commit_metadata() {
@@ -505,6 +507,10 @@ while [[ $# -gt 0 ]]; do
       delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
       shift 2
       ;;
+    --provider-profile)
+      provider_profile="${2:?--provider-profile requires pinned or managed}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -541,6 +547,20 @@ target="${resolved#*:}"
 if [[ -z "$delivery_mode" ]]; then
   delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
   validate_delivery_mode "Installed metadata delivery_mode"
+fi
+if [[ -z "$provider_profile" ]]; then
+  provider_profile="$(installed_metadata_value provider_profile 2>/dev/null || printf 'pinned\n')"
+fi
+case "$provider_profile" in
+  pinned|managed) ;;
+  *)
+    echo "--provider-profile must be pinned or managed, got: $provider_profile" >&2
+    exit 64
+    ;;
+esac
+if [[ "$provider_profile" = "managed" && ( "$delivery_mode" != "plugin-companion" || "$mode" != "copy" ) ]]; then
+  echo "Managed provider profile requires copy mode with plugin-companion delivery." >&2
+  exit 64
 fi
 
 pending_migration_receipt="$target/.agent-workflows-migration-staging"

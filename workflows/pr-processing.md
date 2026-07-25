@@ -1690,6 +1690,8 @@ pause flow.
 Reply with a restart handoff:
 - Role and lane: coordinator, worker, or QA; batch id; target(s); stable
   agent/thread id.
+- Provider: `originating_provider_revision`, copied from the retained operation's
+  exact 40-hex `revision`.
 - Repo state: repo path, worktree path, branch, upstream, HEAD SHA, PR/issue
   URLs.
 - Local changes: staged, unstaged, and untracked files; unpushed commits;
@@ -1728,8 +1730,10 @@ Resume batch processing now.
 Start a new provider operation from the active host home's absolute resolver,
 re-read returned `assets.skills.pause` and `assets.workflow`, then run the
 bounded status recovery steps under "Pausing For An Agent-Runner Restart"
-before editing, pushing, polling, or starting any new target. Use only the newly
-returned snapshot.
+before editing, pushing, polling, or starting any new target. Compare the returned
+revision with the handoff's `originating_provider_revision`. Use the new snapshot
+only when they match. On mismatch, stop normal resume and require explicit
+cancellation/relaunch or state reconciliation before any work continues.
 ```
 
 After relaunch, reopen each paused persistent thread and resume from its

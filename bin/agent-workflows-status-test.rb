@@ -63,6 +63,32 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_status_payload_surfaces_explicit_and_legacy_provider_profiles
+    legacy = AgentWorkflowsStatus.status_payload(
+      "UP_TO_DATE", target: "/tmp/target", source: "/tmp/source", host: "codex"
+    )
+    managed = AgentWorkflowsStatus.status_payload(
+      "UP_TO_DATE", target: "/tmp/target", source: "/tmp/source", host: "codex",
+                    metadata: { "provider_profile" => "managed" }
+    )
+
+    assert_equal "pinned", legacy.fetch("provider_profile")
+    assert_equal "managed", managed.fetch("provider_profile")
+  end
+
+  def test_unknown_provider_profile_is_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_metadata(target, "provider_profile" => "surprise", "source" => target)
+
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+
+      assert_equal 3, status.exitstatus, out
+      payload = JSON.parse(out)
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "unsupported provider profile"
+    end
+  end
+
   def test_up_to_date_with_non_git_source
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|

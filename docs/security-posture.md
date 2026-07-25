@@ -54,7 +54,7 @@ should block worker launch.
 The helper resolves trusted GitHub actors from `--trust-config`, repo-local
 `.agents/trusted-github-actors.yml`, `$AGENT_WORKFLOWS_TRUST_CONFIG`,
 `~/.agents/trusted-github-actors.yml`, then the packaged
-`skills/pr-batch/trusted-github-actors.yml` fallback. A present empty file is an
+`trusted-github-actors.yml` beneath the parent of `assets.skills.pr_batch` fallback. A present empty file is an
 intentional policy, while an absent file falls through to the next layer, except
 a missing `$AGENT_WORKFLOWS_TRUST_CONFIG` path aborts fail-closed. The
 packaged fallback trusts only `github-actions[bot]` as metadata-only by default;

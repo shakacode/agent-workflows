@@ -17,6 +17,15 @@ For a verified Claude route profile (`claude-profile v0`, provisional):
 Opus 4.8/high remains the route for routine deterministic QA, not this
 qualifying adversarial verdict.
 
+## Recipient Provider Binding
+
+Every recipient of a copied prompt must bind locally in that invocation. Read the
+active host install metadata: missing `provider_profile` means `pinned`, `managed`
+requires the active host home's absolute `bin/agent-workflows-resolve begin`, and
+unknown profiles stop. Never inherit a sender's handle or paths. A managed
+recipient must use only its newly returned `assets.*`; a pinned recipient uses
+only its declared snapshot and cannot claim current-provider mutations.
+
 ## Safety Rules
 
 - Report only by default. Do not create commits, comments, labels, issues, review approvals, thread resolutions, pushes, merges, or changelog edits without explicit user approval.

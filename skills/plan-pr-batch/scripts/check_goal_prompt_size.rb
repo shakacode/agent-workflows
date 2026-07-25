@@ -127,8 +127,10 @@ CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Start a new provider operation from the active host home's absolute resolver,
   re-read returned `assets.skills.pause` and `assets.workflow`, then run the
   bounded status recovery steps under "Pausing For An Agent-Runner Restart"
-  before editing, pushing, polling, or starting any new target. Use only the newly
-  returned snapshot.
+  before editing, pushing, polling, or starting any new target. Compare the returned
+  revision with the handoff's `originating_provider_revision`. Use the new snapshot
+  only when they match. On mismatch, stop normal resume and require explicit
+  cancellation/relaunch or state reconciliation before any work continues.
 TEXT
 
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
