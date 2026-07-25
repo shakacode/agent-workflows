@@ -1213,7 +1213,9 @@ Rules:
 - Carry only blockers. Decisions, evidence, and FYI items stay in the handoff body above.
 - When every entry is `[agent]` or `[external]`, still emit the block and say that waiting is the correct action, so the operator can tell that nothing is owed from them.
 
-Worked example:
+Worked example. The status line renders PR #124 first, but answering PR #123 with
+`migrate` forces a re-push that restarts PR #124's checks, so the operator-owned
+entry leads instead:
 
 ```text
 Unblock:
@@ -1221,7 +1223,7 @@ Unblock:
    Help: reply `defer` to waive it for this batch; that lane then closes as `no-pr-evidence` with your rationale recorded.
 2. [external] Hosted CI `build` on PR #124 is queued and clears when the run finishes; no action needed from you
    Help: force a rerun with `gh run rerun --failed --repo OWNER/REPO <run-id>` if it is still queued at the next monitor wake.
-Conversation status: Follow-ups remain — PR #123 (open): answer storage-format question; PR #124 (pending): hosted CI `build`.
+Conversation status: Follow-ups remain — PR #124 (pending): hosted CI `build`; PR #123 (open): answer storage-format question.
 ```
 
 ### Goal Mode Completion Contract

@@ -765,6 +765,29 @@ class GoalCompletionContractTest < Minitest::Test
     assert_operator unblock_index, :<, status_index
   end
 
+  def test_unblock_block_example_exercises_the_operator_first_ordering_rule
+    canonical = extract_markdown_section(@workflow, "### Unblock Block", end_heading: /^###\s+/)
+
+    assert_squished_includes canonical,
+                             "Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order.",
+                             "workflows/pr-processing.md Unblock Block"
+
+    example = canonical.split("Worked example").last
+    first_entry = example.lines.grep(/^1\. \[/).first
+    status_line = example.lines.grep(/^Conversation status: Follow-ups remain/).first
+
+    refute_nil first_entry, "the worked example must number its first unblock entry"
+    refute_nil status_line, "the worked example must end on a Follow-ups status line"
+    assert_match(/^1\. \[you\]/, first_entry, "the worked example must lead with the operator-owned entry")
+
+    leading_entry_ref = first_entry[/#\d+/]
+    leading_status_ref = status_line[/#\d+/]
+    refute_nil leading_entry_ref
+    refute_nil leading_status_ref
+    refute_equal leading_status_ref, leading_entry_ref,
+                 "the worked example must reorder against the status line, or it does not exercise the ordering rule"
+  end
+
   def test_every_stopping_surface_routes_to_the_canonical_unblock_block
     {
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
