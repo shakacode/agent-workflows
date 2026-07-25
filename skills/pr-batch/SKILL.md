@@ -714,7 +714,7 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-Immediately before the exact final `Conversation status` line, emit only:
+Immediately before the closing lines — the [Unblock Block](#unblock-block) when the status is not clean, then the exact final `Conversation status` line — emit only:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 

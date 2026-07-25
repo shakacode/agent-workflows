@@ -151,7 +151,7 @@ LEGACY_PROJECT_ABBREVIATION_PHRASES = [
 ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying the batch handoff with the [Unblock Block](#unblock-block), required whenever the status is not clean, followed by the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive; a `Follow-ups remain` handoff without the Unblock Block is incomplete for the same reason, because the operator cannot tell which small action to take next."
 UNBLOCK_BLOCK_SCOPE_RULE = "Any conversation that stops non-clean — every final `Conversation status: Follow-ups remain — <each exact action or blocker>.` — must let the operator act without reading anything above the closing lines. Emit exactly one `Unblock:` block as the last thing before that status line."
 UNBLOCK_BLOCK_COVERAGE_RULE = "One numbered entry per exact blocker in the same normalized blocker union rendered in the `Conversation status` line. Never drop a blocker, never add one that is missing from that union, and never merge two blockers into one entry."
-UNBLOCK_BLOCK_OWNER_RULE = "`[you]` means the operator must act before anything else moves. `[agent]` means this thread resumes on its own — name the exact trigger, such as the 15-minute monitor wake, the watch window, or the exact resume prompt when a restart is needed. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required."
+UNBLOCK_BLOCK_OWNER_RULE = "`[you]` means the operator must act before anything else moves, including any manual resume prompt they have to paste after a runner restart. `[agent]` means this thread resumes on its own through a real trigger — name it, such as the 15-minute monitor wake or the bounded watch window. Never tag work `[agent]` when it cannot continue without the operator; manual resume instructions are always `[you]`. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required."
 UNBLOCK_BLOCK_SMALLEST_ACTION_RULE = "Each action is the smallest next step, not the remaining plan, and is executable as written: an exact shell command, an exact prompt to paste, an exact URL, or the exact question with its allowed answers."
 UNBLOCK_BLOCK_HELP_RULE = "Each `Help:` line offers one genuinely different route to clearing that same blocker — waive, rerun, reassign, cancel the lane or batch, escalate to a named owner, or the exact skill or workflow section that performs it — or exactly `none — <reason>` when no alternative exists. Do not restate the primary action as its own help."
 UNBLOCK_BLOCK_WAITING_RULE = "When every entry is `[agent]` or `[external]`, still emit the block and say that waiting is the correct action, so the operator can tell that nothing is owed from them."
@@ -772,7 +772,9 @@ class GoalCompletionContractTest < Minitest::Test
     canonical = extract_markdown_section(@workflow, "### Unblock Block", end_heading: /^###\s+/)
 
     assert_squished_includes canonical,
-                             "Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order.",
+                             "Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. " \
+                             "Mark any entry whose position differs from its status-line position with `(reordered)` after the owner tag, " \
+                             "so a skimming operator reads the divergence as deliberate rather than as a mismatch.",
                              "workflows/pr-processing.md Unblock Block"
 
     example = canonical.split("Worked example").last
@@ -782,6 +784,8 @@ class GoalCompletionContractTest < Minitest::Test
     refute_nil first_entry, "the worked example must number its first unblock entry"
     refute_nil status_line, "the worked example must end on a Follow-ups status line"
     assert_match(/^1\. \[you\]/, first_entry, "the worked example must lead with the operator-owned entry")
+    assert_match(/^1\. \[you\] \(reordered\)/, first_entry,
+                 "a reordered worked-example entry must carry the (reordered) marker")
 
     leading_entry_ref = first_entry[/#\d+/]
     leading_status_ref = status_line[/#\d+/]
@@ -805,6 +809,40 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_squished_includes @plan_pr_batch_skill, PLAN_PR_BATCH_RESPONSE_ORDER, "skills/plan-pr-batch/SKILL.md"
     assert_squished_includes @triage_skill, TRIAGE_RESPONSE_ORDER, "skills/triage/SKILL.md"
+  end
+
+  # A closing-lines rule that says "emit only" without naming the Unblock Block forbids it outright,
+  # and the more specific instruction wins over the general requirement.
+  def test_no_closing_lines_rule_excludes_the_unblock_block
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "workflows/post-merge-audit.md" => @post_merge_audit_workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill
+    }.each do |label, text|
+      offenders = text.lines.select do |line|
+        line.match?(/emits? only/) &&
+          line.match?(/Conversation status|closing lines/) &&
+          !line.include?("Unblock Block")
+      end
+
+      assert_empty offenders.map(&:strip),
+                   "#{label} constrains the closing lines with an \"emit only\" rule that omits the Unblock Block"
+    end
+  end
+
+  def test_operator_docs_summary_stays_aligned_with_the_canonical_unblock_block
+    [
+      "the last thing before the exact",
+      "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line",
+      "one numbered entry per blocker in that same union",
+      "tagged `[you]`, `[agent]`, or `[external]`",
+      "names the smallest next action as an exact command, paste-ready prompt, URL, or question",
+      "a `Help:` line offering a different route to clearing the same blocker",
+      "or exactly `none — <reason>`",
+      "A clean batch omits the block",
+      "[Unblock Block](../workflows/pr-processing.md#unblock-block)"
+    ].each { |phrase| assert_squished_includes @pr_batch_docs, phrase, "docs/pr-batch-skills.md Unblock Block summary" }
   end
 
   def test_planning_surfaces_carry_a_standalone_unblock_emission_rule

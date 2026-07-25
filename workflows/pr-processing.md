@@ -1205,8 +1205,8 @@ Unblock:
 Rules:
 
 - One numbered entry per exact blocker in the same normalized blocker union rendered in the `Conversation status` line. Never drop a blocker, never add one that is missing from that union, and never merge two blockers into one entry.
-- Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order.
-- `[you]` means the operator must act before anything else moves. `[agent]` means this thread resumes on its own — name the exact trigger, such as the 15-minute monitor wake, the watch window, or the exact resume prompt when a restart is needed. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required.
+- Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark any entry whose position differs from its status-line position with `(reordered)` after the owner tag, so a skimming operator reads the divergence as deliberate rather than as a mismatch.
+- `[you]` means the operator must act before anything else moves, including any manual resume prompt they have to paste after a runner restart. `[agent]` means this thread resumes on its own through a real trigger — name it, such as the 15-minute monitor wake or the bounded watch window. Never tag work `[agent]` when it cannot continue without the operator; manual resume instructions are always `[you]`. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required.
 - Each action is the smallest next step, not the remaining plan, and is executable as written: an exact shell command, an exact prompt to paste, an exact URL, or the exact question with its allowed answers.
 - Each `Help:` line offers one genuinely different route to clearing that same blocker — waive, rerun, reassign, cancel the lane or batch, escalate to a named owner, or the exact skill or workflow section that performs it — or exactly `none — <reason>` when no alternative exists. Do not restate the primary action as its own help.
 - An `UNKNOWN` fact is a blocker; its entry names the exact command or check that resolves it.
@@ -1215,14 +1215,15 @@ Rules:
 
 Worked example. The status line renders PR #124 first, but answering PR #123 with
 `migrate` forces a re-push that restarts PR #124's checks, so the operator-owned
-entry leads instead:
+entry leads instead. The `(reordered)` marker tells a skimming operator that the
+divergence from the status line is deliberate:
 
 ```text
 Unblock:
-1. [you] Answer the storage-format question on PR #123 — https://github.com/OWNER/REPO/pull/123#discussion_r1 — reply `keep` or `migrate`
-   Help: reply `defer` to waive it for this batch; that lane then closes as `no-pr-evidence` with your rationale recorded.
+1. [you] (reordered) Answer the storage-format question on PR #123 — https://github.com/OWNER/REPO/pull/123#discussion_r1 — reply `keep` or `migrate`
+   Help: reply `defer` to record it as an accepted-deferral against PR #123 and keep that lane open on its existing PR; the question moves to a follow-up instead of blocking this batch.
 2. [external] Hosted CI `build` on PR #124 is queued and clears when the run finishes; no action needed from you
-   Help: force a rerun with `gh run rerun --failed --repo OWNER/REPO <run-id>` if it is still queued at the next monitor wake.
+   Help: if it is still queued at the next monitor wake, cancel and retrigger with `gh run cancel --repo OWNER/REPO <run-id>` then `gh run rerun --repo OWNER/REPO <run-id>`; `--failed` does not apply while a run is queued.
 Conversation status: Follow-ups remain — PR #124 (pending): hosted CI `build`; PR #123 (open): answer storage-format question.
 ```
 
