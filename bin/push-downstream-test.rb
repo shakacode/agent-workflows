@@ -1166,7 +1166,6 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
 
   def test_policy_reconcile_rejects_symlinked_parent_without_following_or_rewriting_target
     Dir.mktmpdir("push-downstream-policy-reconcile") do |root|
-      policy_path = File.join(root, ".agents/agent-workflow.yml")
       external_agents = File.join(root, "external-agents")
       external_target = File.join(external_agents, "agent-workflow.yml")
       FileUtils.mkdir_p(external_agents)
@@ -1182,7 +1181,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       assert File.symlink?(File.join(root, ".agents"))
       assert_equal external_agents, File.readlink(File.join(root, ".agents"))
       assert_equal original_target_bytes, File.binread(external_target)
-      refute File.exist?(policy_path) && !File.symlink?(File.join(root, ".agents"))
+      assert_equal ["agent-workflow.yml"], Dir.children(external_agents)
     end
   end
 
