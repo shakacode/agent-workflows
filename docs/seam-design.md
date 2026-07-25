@@ -106,6 +106,10 @@ present, it may tighten or explicitly justify relaxing the four thresholds,
 add reason-tagged human-review paths and policy paths, define bounded
 documentation/test safe groups, and identify generated paths for reporting:
 
+ADR 0003 is the source of truth for these copied portable defaults. File, line,
+and commit maxima are enforced; `max_reviewed_heads` is shadow-only until a
+checked calibration artifact explicitly graduates it to enforcement.
+
 ```yaml
 autonomous_merge:
   thresholds:

@@ -32,8 +32,10 @@ module AutonomousMergePolicy
   ].freeze
   SAFE_PATH_GROUP_KEYS = %w[include exclude].freeze
 
-  Result = Data.define(:thresholds, :human_review_paths, :policy_paths, :safe_path_groups,
-                       :generated_paths, :errors)
+  Result = Struct.new(
+    :thresholds, :human_review_paths, :policy_paths, :safe_path_groups, :generated_paths, :errors,
+    keyword_init: true
+  )
 end
 
 require_relative "autonomous_merge_policy_globs"

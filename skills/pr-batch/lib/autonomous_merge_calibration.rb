@@ -7,6 +7,10 @@ require "tempfile"
 
 module AutonomousMergeCalibration
   SUBMITTED_REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED COMMENTED DISMISSED].freeze
+  REVIEW_STATES = (SUBMITTED_REVIEW_STATES + ["PENDING"]).freeze
+  FILE_STATUSES = %w[added removed modified renamed copied changed unchanged].freeze
+  RENAME_STATUSES = %w[renamed copied].freeze
+  COMMITS_API_CAP = 250
 
   class CollectionError < StandardError
     attr_reader :kind
@@ -22,6 +26,8 @@ module AutonomousMergeCalibration
       super(message, kind: "rate-limit")
     end
   end
+
+  class TerminalPrError < CollectionError; end
 
   class GitHubClient
     def initialize(command: ENV.fetch("AUTONOMOUS_MERGE_GH", "gh"))
@@ -75,7 +81,7 @@ module AutonomousMergeCalibration
       dataset.fetch("scope")["complete"] = dataset.dig("scope", "repository_progress").all? do |_repo, progress|
         progress["discovery_complete"] == true &&
           progress.fetch("selected_pr_numbers").sort == progress.fetch("completed_pr_numbers").sort
-      end
+      end && dataset.dig("scope", "terminal_pr_failures").empty?
       dataset.fetch("scope").delete("last_error")
       normalize_dataset!(dataset)
       write_checkpoint(checkpoint_path, dataset)
@@ -122,6 +128,9 @@ module AutonomousMergeCalibration
   def load_or_initialize_checkpoint(path, request)
     if File.exist?(path)
       dataset = JSON.parse(File.read(path, encoding: "UTF-8"))
+      if dataset["scope"].is_a?(Hash)
+        dataset.fetch("scope")["terminal_pr_failures"] ||= []
+      end
       validate_checkpoint!(dataset, request)
       dataset.dig("scope", "repository_progress").each_value do |progress|
         reset_discovery_progress!(progress) unless progress.fetch("discovery_complete")
@@ -137,6 +146,7 @@ module AutonomousMergeCalibration
         "window" => window_description(request),
         "repositories" => request.fetch("repositories"),
         "request" => request,
+        "terminal_pr_failures" => [],
         "repository_progress" => request.fetch("repositories").to_h do |repository|
           [
             repository,
@@ -166,6 +176,7 @@ module AutonomousMergeCalibration
             [true, false].include?(dataset.dig("scope", "complete")) &&
             dataset.dig("scope", "request") == request &&
             dataset.dig("scope", "repositories") == request.fetch("repositories") &&
+            dataset.dig("scope", "terminal_pr_failures").is_a?(Array) &&
             dataset.dig("scope", "repository_progress").is_a?(Hash) &&
             dataset["prs"].is_a?(Array)
     unless valid
@@ -212,12 +223,29 @@ module AutonomousMergeCalibration
       raise CollectionError.new("checkpoint completed PR detail is missing for #{label}", kind: "checkpoint")
     end
 
+    terminal_failures = dataset.dig("scope", "terminal_pr_failures")
+    valid_terminal_failures = terminal_failures.all? do |failure|
+      failure.is_a?(Hash) &&
+        failure.keys.sort == %w[kind number reason repository] &&
+        request.fetch("repositories").include?(failure["repository"]) &&
+        failure["number"].is_a?(Integer) && failure["number"].positive? &&
+        failure["kind"].is_a?(String) && !failure["kind"].strip.empty? &&
+        failure["reason"].is_a?(String) && !failure["reason"].strip.empty?
+    end
+    terminal_keys = terminal_failures.filter_map do |failure|
+      [failure["repository"], failure["number"]] if failure.is_a?(Hash)
+    end
+    unless valid_terminal_failures && terminal_keys.uniq.length == terminal_keys.length &&
+           (terminal_keys & completed_keys).empty?
+      raise CollectionError.new("checkpoint terminal PR failures are malformed", kind: "checkpoint")
+    end
+
     claimed_complete = dataset.dig("scope", "complete")
     computed_complete = request.fetch("repositories").all? do |repository|
       progress = dataset.dig("scope", "repository_progress", repository)
       progress.fetch("discovery_complete") &&
         progress.fetch("selected_pr_numbers").sort == progress.fetch("completed_pr_numbers").sort
-    end
+    end && terminal_failures.empty?
     return unless claimed_complete && !computed_complete
 
     raise CollectionError.new("checkpoint scope.complete claim is inconsistent", kind: "checkpoint")
@@ -358,8 +386,16 @@ module AutonomousMergeCalibration
     progress = dataset.dig("scope", "repository_progress", repository)
     progress.fetch("selected_pr_numbers").each do |number|
       next if progress.fetch("completed_pr_numbers").include?(number)
+      next if terminal_pr_failed?(dataset, repository, number)
 
-      collected = collect_pr(repository, number, request.fetch("page_size"), api)
+      begin
+        collected = collect_pr(repository, number, request.fetch("page_size"), api)
+      rescue TerminalPrError => e
+        record_terminal_pr_failure!(dataset, repository, number, e)
+        normalize_dataset!(dataset)
+        write_checkpoint(checkpoint_path, dataset)
+        next
+      end
       dataset.fetch("prs").reject! do |entry|
         entry["repository"] == repository && entry["number"] == number
       end
@@ -372,43 +408,70 @@ module AutonomousMergeCalibration
 
   def collect_pr(repository, number, page_size, api)
     detail_path = "repos/#{repository}/pulls/#{number}"
-    detail = api.call(detail_path)
-    unless detail.is_a?(Hash) && detail["number"] == number && detail["merged_at"].is_a?(String)
-      raise CollectionError.new("GitHub PR detail is malformed for #{repository}##{number}", kind: "api")
+    detail = normalize_pr_detail(api.call(detail_path), repository, number)
+    files = stable_paginated_collection(
+      api, "#{detail_path}/files", page_size, "files", repository, number,
+      identity: ->(file) { file.fetch("path") },
+      normalize: method(:normalize_file)
+    )
+    commits = stable_paginated_collection(
+      api, "#{detail_path}/commits", page_size, "commits", repository, number,
+      identity: ->(commit) { commit.fetch("sha") },
+      normalize: method(:normalize_commit)
+    )
+    reviews = stable_paginated_collection(
+      api, "#{detail_path}/reviews", page_size, "reviews", repository, number,
+      identity: ->(review) { review.fetch("id") },
+      normalize: method(:normalize_review)
+    )
+    verified_detail = normalize_pr_detail(api.call(detail_path), repository, number)
+    unless verified_detail == detail
+      raise TerminalPrError.new(
+        "GitHub PR detail changed while paginating #{repository}##{number}",
+        kind: "pagination"
+      )
+    end
+    unless files.length == detail.fetch("changed_files")
+      raise TerminalPrError.new(
+        "GitHub files pagination count #{files.length} does not match changed_files " \
+        "#{detail.fetch('changed_files')} for #{repository}##{number}",
+        kind: "file-evidence"
+      )
+    end
+    unless commits.length == detail.fetch("commits")
+      raise TerminalPrError.new(
+        "GitHub commits pagination count #{commits.length} does not match PR commits " \
+        "#{detail.fetch('commits')} for #{repository}##{number}",
+        kind: "commit-evidence"
+      )
     end
 
-    begin
-      DateTime.iso8601(detail.fetch("merged_at"))
-    rescue Date::Error
-      raise CollectionError.new("GitHub PR merged_at is malformed for #{repository}##{number}", kind: "api")
-    end
-
-    files = paginate(api, "#{detail_path}/files", page_size).map { |file| normalize_file(file) }
-    commits = paginate(api, "#{detail_path}/commits", page_size).map { |commit| normalize_commit(commit) }
-    reviews = paginate(api, "#{detail_path}/reviews", page_size).map { |review| normalize_review(review) }
     submitted = reviews.select { |review| SUBMITTED_REVIEW_STATES.include?(review.fetch("state")) }
     reviewed_head_shas = submitted.filter_map { |review| review["commit_id"] }.uniq.sort
     review_history_complete = submitted.none? { |review| review["commit_id"].nil? }
     automated = submitted.select { |review| automated_reviewer?(review) }
     automated_history_complete = automated.none? { |review| review["commit_id"].nil? }
+    file_paths = files.flat_map do |file|
+      [file.fetch("path"), file["previous_path"]]
+    end.compact.uniq
 
     {
       "repository" => repository,
       "number" => number,
       "merged_at" => detail.fetch("merged_at"),
-      "changed_files" => files.length,
+      "changed_files" => detail.fetch("changed_files"),
       "changed_lines" => files.sum { |file| file.fetch("additions") + file.fetch("deletions") },
-      "commits" => commits.length,
+      "commits" => detail.fetch("commits"),
       "reviewed_heads" => review_history_complete ? reviewed_head_shas.length : nil,
       "automation_reviewed_heads" => if automated_history_complete
                                        automated.filter_map { |review| review["commit_id"] }.uniq.length
                                      end,
       "review_head_history_complete" => review_history_complete,
       "reviewed_head_shas" => reviewed_head_shas,
-      "file_paths" => files.map { |file| file.fetch("path") },
+      "file_paths" => file_paths,
       "commit_shas" => commits.map { |commit| commit.fetch("sha") },
       "reviews" => reviews,
-      "path_categories" => files.map { |file| file.fetch("path").split("/").first }.uniq.sort,
+      "path_categories" => file_paths.map { |path| path.split("/").first }.uniq.sort,
       "semantic_inspection" => nil
     }
   end
@@ -420,7 +483,10 @@ module AutonomousMergeCalibration
       request_path = "#{path}?per_page=#{page_size}&page=#{page}"
       response = api.call(request_path)
       unless response.is_a?(Array)
-        raise CollectionError.new("pagination response is not a list for #{request_path}", kind: "pagination")
+        raise TerminalPrError.new(
+          "pagination response is not a list for #{request_path}",
+          kind: "pagination"
+        )
       end
 
       values.concat(response)
@@ -431,46 +497,157 @@ module AutonomousMergeCalibration
     values
   end
 
-  def normalize_file(file)
-    unless file.is_a?(Hash) && file["filename"].is_a?(String) && !file["filename"].empty? &&
-           file["additions"].is_a?(Integer) && file["additions"] >= 0 &&
-           file["deletions"].is_a?(Integer) && file["deletions"] >= 0
-      raise CollectionError.new("GitHub file evidence is malformed", kind: "api")
+  def stable_paginated_collection(api, path, page_size, label, repository, number,
+                                  identity:, normalize:)
+    initial = normalized_paginated_collection(api, path, page_size, label, repository, number, identity, normalize)
+    verified = normalized_paginated_collection(api, path, page_size, label, repository, number, identity, normalize)
+    return initial if verified == initial
+
+    raise TerminalPrError.new(
+      "#{label} changed while paginating #{repository}##{number}",
+      kind: "pagination"
+    )
+  end
+
+  def normalized_paginated_collection(api, path, page_size, label, repository, number, identity, normalize)
+    values = paginate(api, path, page_size).map { |value| normalize.call(value) }
+    identities = values.map { |value| identity.call(value) }
+    return values if identities.uniq.length == identities.length
+
+    raise TerminalPrError.new(
+      "GitHub pagination repeated #{label} identity for #{repository}##{number}",
+      kind: "pagination"
+    )
+  end
+
+  def normalize_pr_detail(detail, repository, number)
+    unless detail.is_a?(Hash) && detail["number"] == number && detail["merged_at"].is_a?(String)
+      raise TerminalPrError.new(
+        "GitHub PR detail is malformed for #{repository}##{number}",
+        kind: "file-evidence"
+      )
+    end
+    unless detail["changed_files"].is_a?(Integer) && detail["changed_files"] >= 0
+      raise TerminalPrError.new(
+        "GitHub PR changed_files detail is malformed for #{repository}##{number}",
+        kind: "file-evidence"
+      )
+    end
+    if detail.fetch("changed_files") >= 3_000
+      raise TerminalPrError.new(
+        "GitHub changed_files reaches the 3,000-file API cap for #{repository}##{number}",
+        kind: "file-evidence"
+      )
+    end
+    unless detail["commits"].is_a?(Integer) && detail["commits"] >= 0
+      raise TerminalPrError.new(
+        "GitHub PR commits detail is malformed for #{repository}##{number}",
+        kind: "commit-evidence"
+      )
+    end
+    if detail.fetch("commits") >= COMMITS_API_CAP
+      raise TerminalPrError.new(
+        "GitHub PR commits reaches the #{COMMITS_API_CAP}-commit API cap for #{repository}##{number}",
+        kind: "commit-evidence"
+      )
+    end
+
+    begin
+      DateTime.iso8601(detail.fetch("merged_at"))
+    rescue Date::Error
+      raise TerminalPrError.new(
+        "GitHub PR merged_at is malformed for #{repository}##{number}",
+        kind: "file-evidence"
+      )
     end
 
     {
-      "path" => file.fetch("filename"),
-      "additions" => file.fetch("additions"),
-      "deletions" => file.fetch("deletions")
+      "number" => detail.fetch("number"),
+      "merged_at" => detail.fetch("merged_at"),
+      "changed_files" => detail.fetch("changed_files"),
+      "commits" => detail.fetch("commits")
     }
+  end
+
+  def normalize_file(file)
+    unless file.is_a?(Hash)
+      raise TerminalPrError.new("GitHub file evidence is malformed", kind: "file-evidence")
+    end
+
+    filename = file["filename"]
+    unless filename.is_a?(String) && !filename.strip.empty?
+      raise TerminalPrError.new("GitHub file filename must be a nonempty string", kind: "file-evidence")
+    end
+
+    status = file["status"]
+    unless status.is_a?(String) && FILE_STATUSES.include?(status)
+      raise TerminalPrError.new("GitHub file status is unrecognized", kind: "file-evidence")
+    end
+
+    additions = file["additions"]
+    deletions = file["deletions"]
+    unless additions.is_a?(Integer) && additions >= 0 && deletions.is_a?(Integer) && deletions >= 0
+      raise TerminalPrError.new("GitHub file line counts must be nonnegative integers", kind: "file-evidence")
+    end
+
+    normalized = {
+      "path" => filename,
+      "status" => status,
+      "additions" => additions,
+      "deletions" => deletions
+    }
+    if RENAME_STATUSES.include?(status)
+      previous_path = file["previous_filename"]
+      unless previous_path.is_a?(String) && !previous_path.strip.empty?
+        raise TerminalPrError.new(
+          "GitHub #{status} file previous_filename must be a nonempty string",
+          kind: "file-evidence"
+        )
+      end
+
+      normalized["previous_path"] = previous_path
+    elsif !file["previous_filename"].nil?
+      raise TerminalPrError.new(
+        "GitHub file previous_filename requires renamed or copied status",
+        kind: "file-evidence"
+      )
+    end
+    normalized
   end
 
   def normalize_commit(commit)
     sha = commit["sha"] if commit.is_a?(Hash)
     unless full_sha?(sha)
-      raise CollectionError.new("GitHub commit requires a full hexadecimal SHA", kind: "api")
+      raise TerminalPrError.new(
+        "GitHub commit requires a full hexadecimal SHA",
+        kind: "commit-evidence"
+      )
     end
 
     { "sha" => sha }
   end
 
   def normalize_review(review)
-    unless review.is_a?(Hash) && review["state"].is_a?(String) &&
+    unless review.is_a?(Hash) && review["id"].is_a?(Integer) && review["id"].positive? &&
+           review["state"].is_a?(String) &&
            (review["commit_id"].nil? || review["commit_id"].is_a?(String))
-      raise CollectionError.new("GitHub review evidence is malformed", kind: "api")
+      raise TerminalPrError.new("GitHub review evidence is malformed", kind: "review-evidence")
     end
 
     state = review.fetch("state")
     commit_id = review["commit_id"]
+    unless REVIEW_STATES.include?(state)
+      raise TerminalPrError.new("GitHub review state is unrecognized", kind: "review-evidence")
+    end
     if SUBMITTED_REVIEW_STATES.include?(state) && !commit_id.nil? && !full_sha?(commit_id)
-      raise CollectionError.new(
+      raise TerminalPrError.new(
         "GitHub submitted-review commit_id requires a full hexadecimal SHA",
-        kind: "api"
+        kind: "review-evidence"
       )
     end
     user = review["user"]
     unless user.is_a?(Hash) && user["login"].is_a?(String) && user["type"].is_a?(String)
-      raise CollectionError.new("GitHub review author evidence is malformed", kind: "api")
+      raise TerminalPrError.new("GitHub review author evidence is malformed", kind: "review-evidence")
     end
 
     {
@@ -502,8 +679,32 @@ module AutonomousMergeCalibration
     write_checkpoint(path, dataset)
   end
 
+  def terminal_pr_failed?(dataset, repository, number)
+    dataset.dig("scope", "terminal_pr_failures").any? do |failure|
+      failure.fetch("repository") == repository && failure.fetch("number") == number
+    end
+  end
+
+  def record_terminal_pr_failure!(dataset, repository, number, error)
+    failures = dataset.dig("scope", "terminal_pr_failures")
+    failures.reject! do |failure|
+      failure["repository"] == repository && failure["number"] == number
+    end
+    failures << {
+      "repository" => repository,
+      "number" => number,
+      "kind" => error.kind,
+      "reason" => error.message
+    }
+    dataset.fetch("scope")["complete"] = false
+    dataset["merge_decisions_emitted"] = false
+  end
+
   def normalize_dataset!(dataset)
     dataset.fetch("prs").sort_by! { |entry| [entry.fetch("repository"), entry.fetch("number")] }
+    dataset.dig("scope", "terminal_pr_failures").sort_by! do |failure|
+      [failure.fetch("repository"), failure.fetch("number")]
+    end
     dataset.dig("scope", "repository_progress").each_value do |progress|
       progress.fetch("discovered_merged_prs").sort_by! { |pull| pull.fetch("number") }
       progress.fetch("completed_pr_numbers").uniq!
@@ -515,9 +716,7 @@ module AutonomousMergeCalibration
   def write_checkpoint(path, dataset)
     expanded = File.expand_path(path)
     directory = File.dirname(expanded)
-    unless Dir.exist?(directory)
-      raise CollectionError.new("checkpoint parent directory does not exist: #{directory}", kind: "checkpoint")
-    end
+    ensure_checkpoint_directory!(directory)
 
     Tempfile.create([".autonomous-merge-calibration", ".tmp"], directory, encoding: "UTF-8") do |file|
       file.chmod(0o600)
@@ -530,5 +729,40 @@ module AutonomousMergeCalibration
     end
   rescue SystemCallError => e
     raise CollectionError.new("cannot write calibration checkpoint: #{e.message}", kind: "checkpoint")
+  end
+
+  def ensure_checkpoint_directory!(directory)
+    missing = []
+    cursor = directory
+    until File.exist?(cursor)
+      missing << cursor
+      parent = File.dirname(cursor)
+      if parent == cursor
+        raise CollectionError.new(
+          "cannot resolve checkpoint parent directory: #{directory}",
+          kind: "checkpoint"
+        )
+      end
+      cursor = parent
+    end
+
+    existing = File.lstat(cursor)
+    unless existing.directory? && !existing.symlink?
+      raise CollectionError.new(
+        "checkpoint parent path is not a secure directory: #{cursor}",
+        kind: "checkpoint"
+      )
+    end
+
+    missing.reverse_each do |path|
+      Dir.mkdir(path, 0o700)
+      created = File.lstat(path)
+      next if created.directory? && !created.symlink? && (created.mode & 0o077).zero?
+
+      raise CollectionError.new(
+        "checkpoint parent directory was not created securely: #{path}",
+        kind: "checkpoint"
+      )
+    end
   end
 end

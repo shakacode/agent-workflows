@@ -23,6 +23,9 @@ ci_change_detector: "n/a"
 # thresholds without a nonempty threshold_relaxation.rationale. A complete
 # `**` component crosses zero or more path components; `*`, `?`, and bracket
 # classes stay within one component.
+# ADR 0003 is the source of truth for these copied portable defaults. File,
+# line, and commit maxima are enforced; max_reviewed_heads is shadow-only until
+# a checked calibration artifact explicitly graduates it to enforcement.
 # autonomous_merge:
 #   thresholds:
 #     max_changed_files: 29

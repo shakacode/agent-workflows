@@ -4,7 +4,7 @@ require "digest"
 require "open3"
 
 module AutonomousMergeRuntimeTrust
-  Result = Data.define(:accepted, :provenance, :errors, :manifest)
+  Result = Struct.new(:accepted, :provenance, :errors, :manifest, keyword_init: true)
 
   RUNTIME_SOURCES = {
     "helper" => {

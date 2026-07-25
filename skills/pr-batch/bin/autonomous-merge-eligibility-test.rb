@@ -135,6 +135,71 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "UNKNOWN", enforced.fetch("verdict")
   end
 
+  def test_unknown_review_state_is_rejected_by_direct_evidence_validation
+    helper = File.read(SCRIPT, encoding: "UTF-8")
+
+    assert_includes helper, 'recognized_review_states.include?(review["state"])'
+
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(1),
+        reviews: [review("FUTURE_SUBMITTED_STATE", "f" * 40)]
+      )
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_includes result.fetch("evidence_failures"), "GitHub review state is unrecognized"
+    assert_match(/\Atrusted-base:[0-9a-f]{40}\z/, result.fetch("helper_provenance"))
+    assert_equal "mechanically-verified", result.dig("helper_trust", "status")
+  end
+
+  def test_final_output_never_reports_a_malformed_head_sha
+    Dir.mktmpdir("autonomous-merge-invalid-head-output-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      objective = evidence(base_sha:, files: files(1)).fetch("objective")
+      objective["head_sha"] = "not-a-full-sha"
+
+      Dir.mktmpdir("autonomous-merge-invalid-head-input") do |input_root|
+        objective_path = File.join(input_root, "objective.json")
+        semantic_path = File.join(input_root, "semantic.json")
+        harness_path = File.join(input_root, "harness.rb")
+        File.write(objective_path, JSON.generate(objective))
+        File.write(semantic_path, JSON.generate(semantic_assessment))
+        File.write(harness_path, <<~RUBY)
+          require "json"
+          require #{File.expand_path('../lib/autonomous_merge_evidence', __dir__).inspect}
+
+          objective = JSON.parse(File.read(ENV.fetch("TEST_OBJECTIVE")))
+          AutonomousMergeEvidence.define_singleton_method(:collect) { |**| objective }
+          ARGV.replace(JSON.parse(ENV.fetch("TEST_ARGV")))
+          load #{SCRIPT.inspect}
+        RUBY
+        arguments = [
+          "--repo-root", root,
+          "--trusted-base", "trusted-base",
+          "--trusted-helper-provenance", "trusted-base:#{base_sha}",
+          "--calibration-decision", calibration_path,
+          "--repo", "example/repo",
+          "--pr", "1",
+          "--semantic-assessment", semantic_path
+        ]
+
+        stdout, stderr, status = Open3.capture3(
+          { "TEST_OBJECTIVE" => objective_path, "TEST_ARGV" => JSON.generate(arguments) },
+          "ruby", harness_path
+        )
+        assert status.success?, stderr
+        result = JSON.parse(stdout)
+
+        assert_equal "UNKNOWN", result.fetch("verdict")
+        assert_equal "UNKNOWN", result.fetch("head_sha")
+        assert_includes result.fetch("evidence_failures"), "head_sha must be a full hexadecimal SHA"
+      end
+    end
+  end
+
   def test_trusted_base_threshold_seam_tightens_defaults_and_requires_rationale_to_relax
     strict = evaluate(policy_yaml: <<~YAML) do |base_sha|
       autonomous_merge:
@@ -257,6 +322,50 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     }
   end
 
+  def test_renamed_protected_source_path_adds_human_gates_without_double_counting_metrics
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        human_review_paths:
+          - id: protected-source
+            pattern: protected/**
+            reason: policy
+        policy_paths:
+          - protected/**
+    YAML
+    result = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [
+          file(
+            "lib/unprotected.rb",
+            additions: 5,
+            deletions: 3,
+            status: "renamed",
+            previous_path: "protected/source.rb"
+          )
+        ]
+      )
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal(
+      ["autonomous-merge-policy-change", "repo-path:protected-source"],
+      result.fetch("triggered_gates")
+    )
+    assert_equal 1, result.dig("metrics", "changed_files")
+    assert_equal 8, result.dig("metrics", "changed_lines")
+    assert_includes result.fetch("path_matches"), {
+      "path" => "protected/source.rb",
+      "gate" => "repo-path:protected-source",
+      "reason" => "policy"
+    }
+    assert_includes result.fetch("path_matches"), {
+      "path" => "protected/source.rb",
+      "gate" => "autonomous-merge-policy-change",
+      "reason" => "policy"
+    }
+  end
+
   def test_evaluator_calibrator_libraries_and_checked_decisions_are_builtin_policy_sources
     fixture = JSON.parse(
       File.read(File.join(FIXTURE_DIR, "autonomous-merge-policy-sources.json"), encoding: "UTF-8")
@@ -290,6 +399,23 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
     assert_equal "UNKNOWN", result.fetch("verdict")
     assert(result.fetch("evidence_failures").any? { |failure| failure.include?("invalid glob") })
+  end
+
+  def test_missing_human_review_path_reason_fails_closed_with_policy_error
+    result = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        human_review_paths:
+          - id: protected-path
+            pattern: lib/**
+    YAML
+      evidence(base_sha:, files: [file("lib/protected.rb")])
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_includes(
+      result.fetch("evidence_failures").join("; "),
+      "autonomous_merge.human_review_paths[0].reason is invalid"
+    )
   end
 
   def test_portable_globs_cross_zero_or_many_components_and_honor_bracket_classes
@@ -596,6 +722,30 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_includes result.fetch("evidence_failures"), "GitHub comment author must contain a nonempty login"
   end
 
+  def test_live_capped_or_mismatched_file_lists_return_structured_unknown
+    mismatch = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1)).tap do |input|
+        input.fetch("objective")["github_changed_files"] = 2
+      end
+    end
+    capped = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1)).tap do |input|
+        input.fetch("objective")["github_changed_files"] = 3_000
+      end
+    end
+
+    assert_equal "UNKNOWN", mismatch.fetch("verdict")
+    assert_empty mismatch.fetch("metrics")
+    assert(
+      mismatch.fetch("evidence_failures").any? { |failure| failure.include?("listed file count") }
+    )
+    assert_equal "UNKNOWN", capped.fetch("verdict")
+    assert_empty capped.fetch("metrics")
+    assert(
+      capped.fetch("evidence_failures").any? { |failure| failure.include?("Files API cap") }
+    )
+  end
+
   def test_commit_and_nonnull_submitted_review_heads_require_full_shas
     malformed_commit = evaluate do |base_sha|
       evidence(base_sha:, files: files(1), commits: [{ "sha" => "abc123" }])
@@ -705,6 +855,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
       assert_equal "UNKNOWN", result.fetch("verdict")
       assert_includes result.fetch("evidence_failures").first, "runtime digest mismatch"
+      assert_equal "UNKNOWN", result.fetch("helper_provenance")
+      assert_equal "unverified", result.dig("helper_trust", "status")
     end
   end
 
@@ -720,6 +872,53 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       assert_equal "UNKNOWN", result.fetch("verdict")
       assert_includes result.fetch("evidence_failures").first, "outside the evaluated repository"
     end
+  end
+
+  def test_unavailable_or_unreadable_semantic_assessment_returns_structured_unknown
+    Dir.mktmpdir("autonomous-merge-unreadable-semantic-test") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      evaluation = evidence(base_sha:, files: files(1))
+
+      Dir.mktmpdir("autonomous-merge-semantic-inputs") do |input_root|
+        directory_path = File.join(input_root, "assessment-directory")
+        missing_path = File.join(input_root, "missing-assessment.json")
+        unreadable_path = File.join(input_root, "unreadable-assessment.json")
+        Dir.mkdir(directory_path)
+        File.write(unreadable_path, JSON.generate(evaluation.fetch("semantic_assessment")))
+        File.chmod(0o000, unreadable_path)
+        unavailable_paths = [directory_path, missing_path]
+        begin
+          File.read(unreadable_path, encoding: "UTF-8")
+        rescue Errno::EACCES
+          unavailable_paths << unreadable_path
+        end
+
+        unavailable_paths.each do |semantic_path|
+          result = invoke(root:, calibration_path:, evaluation:, semantic_path:)
+
+          assert_equal "UNKNOWN", result.fetch("verdict"), semantic_path
+          assert_equal(
+            "semantic assessment path is unavailable or unreadable",
+            result.fetch("evidence_failures").first,
+            semantic_path
+          )
+        end
+      ensure
+        File.chmod(0o600, unreadable_path) if unreadable_path && File.exist?(unreadable_path)
+      end
+    end
+  end
+
+  def test_live_cli_rejects_the_github_commits_api_cap
+    result = evaluate do |base_sha|
+      evidence(base_sha:, files: files(1)).tap do |evaluation|
+        evaluation.fetch("objective")["github_commits"] = 250
+      end
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_includes result.fetch("evidence_failures").first, "Commits API cap"
   end
 
   def test_malformed_evaluation_and_calibration_inputs_return_structured_unknown
@@ -745,6 +944,11 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       assert_includes malformed_shape.fetch("evidence_failures").first, "stdin objective evidence is unverified"
       assert_equal "UNKNOWN", malformed_calibration.fetch("verdict")
       assert_includes malformed_calibration.fetch("evidence_failures").first, "calibration"
+      assert_match(
+        /\Averified-installed-pack:[0-9a-f]{64}\z/,
+        malformed_calibration.fetch("helper_provenance")
+      )
+      assert_equal "mechanically-verified", malformed_calibration.dig("helper_trust", "status")
     end
   end
 
@@ -994,17 +1198,22 @@ class AutonomousMergeEligibilityTest < Minitest::Test
                    {
                      "head" => { "sha" => objective.fetch("head_sha") },
                      "base" => { "sha" => objective.fetch("base_sha") },
-                     "updated_at" => "2026-07-25T12:00:00Z"
+                     "updated_at" => "2026-07-25T12:00:00Z",
+                     "changed_files" => objective.fetch("github_changed_files", objective.fetch("files").length),
+                     "commits" => objective.fetch("github_commits", objective.fetch("commits").length)
                    }
                  when "repos/example/repo/issues/1/timeline?per_page=100&page=1"
                    []
                  when "repos/example/repo/pulls/1/files?per_page=100&page=1"
                    objective.fetch("files").map do |file|
-                     {
+                     raw_file = {
                        "filename" => file.fetch("path"),
+                       "status" => file.fetch("status", "modified"),
                        "additions" => file.fetch("additions"),
                        "deletions" => file.fetch("deletions")
                      }
+                     raw_file["previous_filename"] = file.fetch("previous_path") if file.key?("previous_path")
+                     raw_file
                    end
                  when "repos/example/repo/pulls/1/commits?per_page=100&page=1"
                    objective.fetch("commits")
@@ -1083,8 +1292,11 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
-  def file(path, additions: 1, deletions: 0)
-    { "path" => path, "additions" => additions, "deletions" => deletions }
+  def file(path, additions: 1, deletions: 0, status: nil, previous_path: nil)
+    result = { "path" => path, "additions" => additions, "deletions" => deletions }
+    result["status"] = status if status
+    result["previous_path"] = previous_path if previous_path
+    result
   end
 
   def review(state, commit_id)

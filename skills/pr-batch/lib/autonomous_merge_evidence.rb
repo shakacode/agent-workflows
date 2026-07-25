@@ -7,6 +7,13 @@ require "time"
 module AutonomousMergeEvidence
   class CollectionError < StandardError; end
 
+  SUBMITTED_REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED COMMENTED DISMISSED].freeze
+  REVIEW_STATES = (SUBMITTED_REVIEW_STATES + ["PENDING"]).freeze
+  FILE_STATUSES = %w[added removed modified renamed copied changed unchanged].freeze
+  RENAME_STATUSES = %w[renamed copied].freeze
+  FILES_API_CAP = 3_000
+  COMMITS_API_CAP = 250
+
   module_function
 
   def collect(repo:, pr_number:, api: method(:gh_api))
@@ -17,6 +24,10 @@ module AutonomousMergeEvidence
 
     prefix = "repos/#{repo}"
     initial = api.call("#{prefix}/pulls/#{pr_number}")
+    raise CollectionError, "malformed GitHub PR detail" unless initial.is_a?(Hash)
+
+    initial_changed_files = validate_changed_files!(initial, phase: "initial")
+    initial_commits = validate_commits!(initial, phase: "initial")
     initial_force_push_watermark = force_push_watermark(
       paginate(api, "#{prefix}/issues/#{pr_number}/timeline")
     )
@@ -28,10 +39,10 @@ module AutonomousMergeEvidence
       paginate(api, "#{prefix}/issues/#{pr_number}/timeline")
     )
     final = api.call("#{prefix}/pulls/#{pr_number}")
-    unless initial.is_a?(Hash) && final.is_a?(Hash)
-      raise CollectionError, "malformed GitHub PR detail"
-    end
+    raise CollectionError, "malformed GitHub PR detail" unless final.is_a?(Hash)
 
+    final_changed_files = validate_changed_files!(final, phase: "final")
+    final_commits = validate_commits!(final, phase: "final")
     initial_updated_at = initial["updated_at"]
     final_updated_at = final["updated_at"]
     unless github_timestamp?(initial_updated_at) && github_timestamp?(final_updated_at)
@@ -51,6 +62,25 @@ module AutonomousMergeEvidence
     unless final_force_push_watermark == initial_force_push_watermark
       raise CollectionError, "force-push watermark changed during evidence collection"
     end
+    unless final_changed_files == initial_changed_files
+      raise CollectionError, "PR changed_files changed during evidence collection"
+    end
+    unless final_commits == initial_commits
+      raise CollectionError, "PR commits changed during evidence collection"
+    end
+    unless files.length == final_changed_files
+      raise CollectionError,
+            "listed file count (#{files.length}) does not match PR changed_files (#{final_changed_files})"
+    end
+    normalized_commits = commits.map { |commit| normalize_commit(commit) }
+    commit_shas = normalized_commits.map { |commit| commit.fetch("sha") }
+    unless commit_shas.uniq.length == commit_shas.length
+      raise CollectionError, "GitHub commit SHAs must be unique"
+    end
+    unless normalized_commits.length == final_commits
+      raise CollectionError,
+            "listed commit count (#{normalized_commits.length}) does not match PR commits (#{final_commits})"
+    end
 
     {
       "head_sha" => initial_head,
@@ -58,7 +88,7 @@ module AutonomousMergeEvidence
       "files_complete" => true,
       "files" => files.map { |file| normalize_file(file) },
       "commits_complete" => true,
-      "commits" => commits.map { |commit| normalize_commit(commit) },
+      "commits" => normalized_commits,
       "reviews_complete" => true,
       "reviews" => reviews.map { |review| normalize_review(review) },
       "decision_comments_complete" => true,
@@ -101,17 +131,65 @@ module AutonomousMergeEvidence
   def normalize_file(file)
     raise CollectionError, "malformed GitHub file evidence" unless file.is_a?(Hash)
 
+    filename = file.fetch("filename")
+    unless filename.is_a?(String) && !filename.strip.empty?
+      raise CollectionError, "GitHub file filename must be a nonempty string"
+    end
+
+    status = file.fetch("status")
+    unless status.is_a?(String) && FILE_STATUSES.include?(status)
+      raise CollectionError, "GitHub file status is unrecognized"
+    end
+
     additions = file.fetch("additions")
     deletions = file.fetch("deletions")
     unless additions.is_a?(Integer) && additions >= 0 && deletions.is_a?(Integer) && deletions >= 0
       raise CollectionError, "GitHub file line counts must be nonnegative integers"
     end
 
-    {
-      "path" => file.fetch("filename"),
+    normalized = {
+      "path" => filename,
+      "status" => status,
       "additions" => additions,
       "deletions" => deletions
     }
+    if RENAME_STATUSES.include?(status)
+      previous_path = file.fetch("previous_filename")
+      unless previous_path.is_a?(String) && !previous_path.strip.empty?
+        raise CollectionError, "GitHub #{status} file previous_filename must be a nonempty string"
+      end
+
+      normalized["previous_path"] = previous_path
+    elsif !file["previous_filename"].nil?
+      raise CollectionError, "GitHub file previous_filename requires renamed or copied status"
+    end
+    normalized
+  end
+
+  def validate_changed_files!(detail, phase:)
+    changed_files = detail["changed_files"]
+    unless changed_files.is_a?(Integer) && changed_files >= 0
+      raise CollectionError, "GitHub PR #{phase} changed_files must be a nonnegative integer"
+    end
+    if changed_files >= FILES_API_CAP
+      raise CollectionError,
+            "GitHub PR #{phase} changed_files is at or above the Files API cap (#{FILES_API_CAP})"
+    end
+
+    changed_files
+  end
+
+  def validate_commits!(detail, phase:)
+    commits = detail["commits"]
+    unless commits.is_a?(Integer) && commits >= 0
+      raise CollectionError, "GitHub PR #{phase} commits must be a nonnegative integer"
+    end
+    if commits >= COMMITS_API_CAP
+      raise CollectionError,
+            "GitHub PR #{phase} commits is at or above the Commits API cap (#{COMMITS_API_CAP})"
+    end
+
+    commits
   end
 
   def force_push_watermark(events)
@@ -169,10 +247,13 @@ module AutonomousMergeEvidence
     state = review.fetch("state")
     commit_id = review["commit_id"]
     raise CollectionError, "GitHub review state must be a string" unless state.is_a?(String)
+    unless REVIEW_STATES.include?(state)
+      raise CollectionError, "GitHub review state is unrecognized"
+    end
     unless commit_id.nil? || commit_id.is_a?(String)
       raise CollectionError, "GitHub review commit_id must be a string or null"
     end
-    if %w[APPROVED CHANGES_REQUESTED COMMENTED DISMISSED].include?(state) &&
+    if SUBMITTED_REVIEW_STATES.include?(state) &&
        !commit_id.nil? && !full_sha?(commit_id)
       raise CollectionError, "GitHub submitted-review commit_id requires a full hexadecimal SHA"
     end

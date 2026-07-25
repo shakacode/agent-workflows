@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
+require_relative "../lib/autonomous_merge_runtime_trust"
 
 ROOT = File.expand_path("../../..", __dir__)
 PARITY_PATHS = %w[
@@ -21,8 +23,34 @@ UNKNOWN_STATE = "`autonomous-merge-evidence-unknown` carries the exact current h
 GMCC_HUMAN_DECISION_BINDING = "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
                               "autonomous-merge-eligible OR human-approved-for-current-head+" \
                               "durable-decision(proven-human+merge-authority)"
+THRESHOLD_DOCUMENTATION_PARITY = "ADR 0003 is the source of truth for these copied portable defaults. " \
+                                 "File, line, and commit maxima are enforced; max_reviewed_heads is " \
+                                 "shadow-only until a checked calibration artifact explicitly graduates " \
+                                 "it to enforcement."
 
 class AutonomousMergeContractTest < Minitest::Test
+  def test_runtime_records_are_keyword_structs_compatible_with_ruby_three_one
+    records = [
+      AutonomousMergePolicy::Result,
+      AutonomousMergeRuntimeTrust::Result
+    ]
+
+    records.each do |record|
+      assert_operator record, :<, Struct
+      assert_equal true, record.keyword_init?
+    end
+
+    assert_equal(
+      { accepted: true, provenance: "test", errors: [], manifest: {} },
+      AutonomousMergeRuntimeTrust::Result.new(
+        accepted: true,
+        provenance: "test",
+        errors: [],
+        manifest: {}
+      ).to_h
+    )
+  end
+
   def test_all_entry_points_preserve_eligibility_and_distinct_terminal_states
     PARITY_PATHS.each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ")
@@ -64,6 +92,19 @@ class AutonomousMergeContractTest < Minitest::Test
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
       assert_includes text, GMCC_HUMAN_DECISION_BINDING
+    end
+  end
+
+  def test_copied_threshold_defaults_document_reviewed_heads_as_shadow_only
+    %w[docs/seam-design.md examples/agent-workflow.yml].each do |path|
+      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+                 .lines
+                 .map { |line| line.sub(/\A# ?/, "") }
+                 .join
+                 .delete("`")
+                 .gsub(/\s+/, " ")
+
+      assert_includes text, THRESHOLD_DOCUMENTATION_PARITY, path
     end
   end
 end

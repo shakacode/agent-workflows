@@ -15,7 +15,7 @@ class AutonomousMergeEvidenceTest < Minitest::Test
       calls << path
       case path
       when "repos/example/repo/pulls/7"
-        pull_detail
+        pull_detail(changed_files: 101)
       when "repos/example/repo/issues/7/timeline?per_page=100&page=1"
         Array.new(100) { { "event" => "labeled" } }
       when "repos/example/repo/issues/7/timeline?per_page=100&page=2"
@@ -77,7 +77,9 @@ class AutonomousMergeEvidenceTest < Minitest::Test
         {
           "head" => { "sha" => HEAD_SHA },
           "base" => { "sha" => BASE_SHA },
-          "updated_at" => "2026-07-25T12:00:00Z"
+          "updated_at" => "2026-07-25T12:00:00Z",
+          "changed_files" => 1,
+          "commits" => 0
         }
       when "repos/example/repo/issues/7/timeline?per_page=100&page=1"
         timeline_reads += 1
@@ -106,7 +108,9 @@ class AutonomousMergeEvidenceTest < Minitest::Test
         {
           "head" => { "sha" => HEAD_SHA },
           "base" => { "sha" => BASE_SHA },
-          "updated_at" => detail_reads == 1 ? "2026-07-25T12:00:00Z" : "2026-07-25T12:00:01Z"
+          "updated_at" => detail_reads == 1 ? "2026-07-25T12:00:00Z" : "2026-07-25T12:00:01Z",
+          "changed_files" => 1,
+          "commits" => 0
         }
       when "repos/example/repo/issues/7/timeline?per_page=100&page=1"
         []
@@ -168,6 +172,107 @@ class AutonomousMergeEvidenceTest < Minitest::Test
     assert_includes error.message, "paginated GitHub response is not a list"
   end
 
+  def test_collection_rejects_untrustworthy_file_list_completeness
+    mismatch = complete_api(commits: [], reviews: []).then do |complete|
+      lambda do |path|
+        path == "repos/example/repo/pulls/7" ? pull_detail(changed_files: 2) : complete.call(path)
+      end
+    end
+    mismatch_error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: mismatch)
+    end
+    assert_includes mismatch_error.message, "listed file count"
+
+    cap = ->(path) { path == "repos/example/repo/pulls/7" ? pull_detail(changed_files: 3_000) : [] }
+    cap_error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: cap)
+    end
+    assert_includes cap_error.message, "Files API cap"
+
+    [nil, -1, "1"].each do |changed_files|
+      malformed = lambda do |path|
+        path == "repos/example/repo/pulls/7" ? pull_detail(changed_files:) : []
+      end
+      error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+        AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: malformed)
+      end
+      assert_includes error.message, "nonnegative integer"
+    end
+
+    detail_reads = 0
+    changed_during_collection = complete_api(commits: [], reviews: []).then do |complete|
+      lambda do |path|
+        if path == "repos/example/repo/pulls/7"
+          detail_reads += 1
+          pull_detail(changed_files: detail_reads == 1 ? 1 : 2)
+        else
+          complete.call(path)
+        end
+      end
+    end
+    changed_error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: changed_during_collection)
+    end
+    assert_includes changed_error.message, "changed_files changed during evidence collection"
+  end
+
+  def test_collection_rejects_untrustworthy_commit_list_completeness
+    mismatch = complete_api(commits: [{ "sha" => "c" * 40 }], reviews: []).then do |complete|
+      lambda do |path|
+        path == "repos/example/repo/pulls/7" ? pull_detail(commits: 2) : complete.call(path)
+      end
+    end
+    mismatch_error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: mismatch)
+    end
+    assert_includes mismatch_error.message, "listed commit count"
+
+    cap = ->(path) { path == "repos/example/repo/pulls/7" ? pull_detail(commits: 250) : [] }
+    cap_error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: cap)
+    end
+    assert_includes cap_error.message, "Commits API cap"
+
+    [nil, -1, "1"].each do |commits|
+      malformed = lambda do |path|
+        path == "repos/example/repo/pulls/7" ? pull_detail(commits:) : []
+      end
+      error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+        AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: malformed)
+      end
+      assert_includes error.message, "nonnegative integer"
+    end
+
+    duplicate = complete_api(
+      commits: [{ "sha" => "c" * 40 }, { "sha" => "c" * 40 }],
+      reviews: []
+    ).then do |complete|
+      lambda do |path|
+        path == "repos/example/repo/pulls/7" ? pull_detail(commits: 2) : complete.call(path)
+      end
+    end
+    duplicate_error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: duplicate)
+    end
+    assert_includes duplicate_error.message, "commit SHAs must be unique"
+
+    detail_reads = 0
+    changed_during_collection = complete_api(commits: [{ "sha" => "c" * 40 }], reviews: []).then do |complete|
+      lambda do |path|
+        if path == "repos/example/repo/pulls/7"
+          detail_reads += 1
+          pull_detail(commits: detail_reads == 1 ? 1 : 2)
+        else
+          complete.call(path)
+        end
+      end
+    end
+    changed_error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api: changed_during_collection)
+    end
+    assert_includes changed_error.message, "commits changed during evidence collection"
+  end
+
   def test_collection_rejects_duplicate_force_push_ids_from_unstable_pagination
     complete = complete_api(commits: [], reviews: [])
     api = lambda do |path|
@@ -224,6 +329,19 @@ class AutonomousMergeEvidenceTest < Minitest::Test
     assert_includes review_error.message, "full hexadecimal SHA"
   end
 
+  def test_collection_rejects_unknown_review_states
+    api = complete_api(
+      commits: [{ "sha" => "c" * 40 }],
+      reviews: [{ "state" => "FUTURE_SUBMITTED_STATE", "commit_id" => HEAD_SHA }]
+    )
+
+    error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api:)
+    end
+
+    assert_includes error.message, "GitHub review state is unrecognized"
+  end
+
   def test_collection_preserves_null_submitted_heads_and_ignores_pending_head_shape
     api = complete_api(
       commits: [{ "sha" => "c" * 40 }],
@@ -237,6 +355,81 @@ class AutonomousMergeEvidenceTest < Minitest::Test
 
     assert_nil objective.fetch("reviews").first.fetch("commit_id")
     assert_equal "viewer-local-draft", objective.fetch("reviews").last.fetch("commit_id")
+  end
+
+  def test_collection_preserves_previous_paths_for_renamed_and_copied_files
+    changed_files = [
+      {
+        "filename" => "lib/new.rb",
+        "previous_filename" => ".agents/agent-workflow.yml",
+        "status" => "renamed",
+        "additions" => 1,
+        "deletions" => 1
+      },
+      {
+        "filename" => "lib/copy.rb",
+        "previous_filename" => "skills/pr-batch/SKILL.md",
+        "status" => "copied",
+        "additions" => 2,
+        "deletions" => 0
+      }
+    ]
+    complete = complete_api(commits: [], reviews: [])
+    api = lambda do |path|
+      case path
+      when "repos/example/repo/pulls/7"
+        pull_detail(changed_files: 2, commits: 0)
+      when "repos/example/repo/pulls/7/files?per_page=100&page=1"
+        changed_files
+      else
+        complete.call(path)
+      end
+    end
+
+    objective = AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api:)
+
+    assert_equal(
+      [
+        {
+          "path" => "lib/new.rb",
+          "previous_path" => ".agents/agent-workflow.yml",
+          "status" => "renamed",
+          "additions" => 1,
+          "deletions" => 1
+        },
+        {
+          "path" => "lib/copy.rb",
+          "previous_path" => "skills/pr-batch/SKILL.md",
+          "status" => "copied",
+          "additions" => 2,
+          "deletions" => 0
+        }
+      ],
+      objective.fetch("files")
+    )
+  end
+
+  def test_collection_rejects_malformed_file_status_and_previous_path_states
+    malformed_files = [
+      { "filename" => "lib/service.rb", "additions" => 1, "deletions" => 0 },
+      file("lib/service.rb").merge("status" => "future-status"),
+      file("lib/new.rb").merge("status" => "renamed"),
+      file("lib/copy.rb").merge("status" => "copied", "previous_filename" => ""),
+      file("lib/service.rb").merge("previous_filename" => "lib/old.rb")
+    ]
+
+    malformed_files.each do |malformed_file|
+      complete = complete_api(commits: [], reviews: [])
+      api = lambda do |path|
+        path == "repos/example/repo/pulls/7/files?per_page=100&page=1" ? [malformed_file] : complete.call(path)
+      end
+
+      error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+        AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api:)
+      end
+
+      assert_match(/status|previous/i, error.message)
+    end
   end
 
   def test_collection_wraps_malformed_array_elements_as_collection_error
@@ -303,7 +496,7 @@ class AutonomousMergeEvidenceTest < Minitest::Test
     lambda do |path|
       case path
       when "repos/example/repo/pulls/7"
-        pull_detail
+        pull_detail(commits: commits.length)
       when "repos/example/repo/issues/7/timeline?per_page=100&page=1"
         []
       when "repos/example/repo/pulls/7/files?per_page=100&page=1"
@@ -321,14 +514,16 @@ class AutonomousMergeEvidenceTest < Minitest::Test
   end
 
   def file(path)
-    { "filename" => path, "additions" => 1, "deletions" => 0 }
+    { "filename" => path, "status" => "modified", "additions" => 1, "deletions" => 0 }
   end
 
-  def pull_detail(head_sha: HEAD_SHA, updated_at: UPDATED_AT)
+  def pull_detail(head_sha: HEAD_SHA, updated_at: UPDATED_AT, changed_files: 1, commits: 1)
     {
       "head" => { "sha" => head_sha },
       "base" => { "sha" => BASE_SHA },
-      "updated_at" => updated_at
+      "updated_at" => updated_at,
+      "changed_files" => changed_files,
+      "commits" => commits
     }
   end
 end

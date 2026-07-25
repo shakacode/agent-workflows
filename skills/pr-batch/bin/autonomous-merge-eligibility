@@ -20,13 +20,22 @@ OptionParser.new do |parser|
   parser.on("--semantic-assessment PATH") { |value| options[:semantic_assessment] = value }
 end.parse!
 
-def emit_unknown(failure, head_sha: "UNKNOWN", policy_provenance: "UNKNOWN", helper_provenance: "UNKNOWN")
+@verified_runtime_trust = nil
+
+def emit_unknown(failure, head_sha: "UNKNOWN", policy_provenance: "UNKNOWN")
+  runtime_trust = @verified_runtime_trust
+  helper_provenance = runtime_trust&.accepted ? runtime_trust.provenance : "UNKNOWN"
+  helper_trust = if runtime_trust&.accepted
+                   { "status" => "mechanically-verified", "manifest" => runtime_trust.manifest }
+                 else
+                   { "status" => "unverified", "manifest" => {} }
+                 end
   puts JSON.generate(
     "verdict" => "UNKNOWN",
     "head_sha" => head_sha,
     "policy_provenance" => policy_provenance,
     "helper_provenance" => helper_provenance,
-    "helper_trust" => { "status" => "unverified", "manifest" => {} },
+    "helper_trust" => helper_trust,
     "metrics" => {},
     "path_matches" => [],
     "safe_class" => "UNKNOWN",
@@ -49,19 +58,17 @@ base_sha, base_status = Open3.capture2(
   "git", "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
 )
 emit_unknown("trusted base is unavailable: #{trusted_base}") unless base_status.success?
-trusted_helper_provenance = options[:trusted_helper_provenance]
+trusted_helper_claim = options[:trusted_helper_provenance]
 runtime_trust = AutonomousMergeRuntimeTrust.verify(
   repo_root:,
   base_sha: base_sha.strip,
-  claim: trusted_helper_provenance,
+  claim: trusted_helper_claim,
   calibration_path: options.fetch(:calibration_decision)
 )
 unless runtime_trust.accepted
-  emit_unknown(
-    runtime_trust.errors.join("; "),
-    helper_provenance: runtime_trust.provenance
-  )
+  emit_unknown(runtime_trust.errors.join("; "))
 end
+@verified_runtime_trust = runtime_trust
 
 input = if options[:repo] || options[:pr] || options[:semantic_assessment]
           unless options[:repo] && options[:pr] && options[:semantic_assessment]
@@ -71,27 +78,29 @@ input = if options[:repo] || options[:pr] || options[:semantic_assessment]
           repo_path = File.expand_path(repo_root)
           contained_lexically = semantic_path == repo_path || semantic_path.start_with?("#{repo_path}/")
           begin
-            contained_physically = File.realpath(semantic_path) == File.realpath(repo_path) ||
-                                   File.realpath(semantic_path).start_with?("#{File.realpath(repo_path)}/")
-          rescue Errno::ENOENT
-            contained_physically = false
+            semantic_realpath = File.realpath(semantic_path)
+            repo_realpath = File.realpath(repo_path)
+            contained_physically = semantic_realpath == repo_realpath ||
+                                   semantic_realpath.start_with?("#{repo_realpath}/")
+          rescue SystemCallError
+            emit_unknown("semantic assessment path is unavailable or unreadable")
           end
           if contained_lexically || contained_physically
-            emit_unknown(
-              "semantic assessment must be supplied from outside the evaluated repository",
-              helper_provenance: runtime_trust.provenance
-            )
+            emit_unknown("semantic assessment must be supplied from outside the evaluated repository")
+          end
+          begin
+            semantic_json = File.read(semantic_path, encoding: "UTF-8")
+          rescue SystemCallError
+            emit_unknown("semantic assessment path is unavailable or unreadable")
           end
           begin
             {
               "contract" => "autonomous-merge-evaluation",
               "version" => 1,
               "objective" => AutonomousMergeEvidence.collect(repo: options[:repo], pr_number: options[:pr]),
-              "semantic_assessment" => JSON.parse(
-                File.read(options[:semantic_assessment], encoding: "UTF-8")
-              )
+              "semantic_assessment" => JSON.parse(semantic_json)
             }
-          rescue AutonomousMergeEvidence::CollectionError, Errno::ENOENT, JSON::ParserError => e
+          rescue AutonomousMergeEvidence::CollectionError, JSON::ParserError => e
             emit_unknown(e.message)
           end
         else
@@ -100,10 +109,7 @@ input = if options[:repo] || options[:pr] || options[:semantic_assessment]
           rescue JSON::ParserError => e
             emit_unknown("malformed autonomous-merge evaluation JSON: #{e.message.lines.first.to_s.strip}")
           end
-          emit_unknown(
-            "stdin objective evidence is unverified and cannot establish a passing verdict",
-            helper_provenance: runtime_trust.provenance
-          )
+          emit_unknown("stdin objective evidence is unverified and cannot establish a passing verdict")
         end
 unless input.is_a?(Hash) && input["contract"] == "autonomous-merge-evaluation" && input["version"] == 1
   emit_unknown("invalid autonomous-merge-evaluation contract or version")
@@ -157,20 +163,20 @@ end
   emit_unknown(
     "each commit requires a full hexadecimal SHA",
     head_sha: reported_head_sha,
-    policy_provenance: "git:#{base_sha.strip}",
-    helper_provenance: trusted_helper_provenance
+    policy_provenance: "git:#{base_sha.strip}"
   )
 end
+recognized_review_states = AutonomousMergeEvidence::REVIEW_STATES
 valid_reviews = objective.fetch("reviews").all? do |review|
   review.is_a?(Hash) && review["state"].is_a?(String) &&
+    recognized_review_states.include?(review["state"]) &&
     (review["commit_id"].nil? || review["commit_id"].is_a?(String))
 end
 unless valid_reviews
-  emit_unknown("each review requires a string state and string or null commit_id",
-               head_sha: reported_head_sha, policy_provenance: "git:#{base_sha.strip}",
-               helper_provenance: trusted_helper_provenance)
+  emit_unknown("each review requires a recognized state and string or null commit_id",
+               head_sha: reported_head_sha, policy_provenance: "git:#{base_sha.strip}")
 end
-submitted_review_states = %w[APPROVED CHANGES_REQUESTED COMMENTED DISMISSED].freeze
+submitted_review_states = AutonomousMergeEvidence::SUBMITTED_REVIEW_STATES
 malformed_submitted_review_head = objective.fetch("reviews").any? do |review|
   submitted_review_states.include?(review.fetch("state")) &&
     !review["commit_id"].nil? &&
@@ -178,8 +184,7 @@ malformed_submitted_review_head = objective.fetch("reviews").any? do |review|
 end
 if malformed_submitted_review_head
   emit_unknown("nonnull submitted-review commit_id must be a full hexadecimal SHA",
-               head_sha: reported_head_sha, policy_provenance: "git:#{base_sha.strip}",
-               helper_provenance: trusted_helper_provenance)
+               head_sha: reported_head_sha, policy_provenance: "git:#{base_sha.strip}")
 end
 unless objective.fetch("decision_comments").all? { |comment| comment.is_a?(Hash) }
   emit_unknown("each decision comment must be a mapping", head_sha: reported_head_sha,
@@ -219,6 +224,13 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
 else
   policy = AutonomousMergePolicy.parse("{}")
   policy_provenance = "git:#{base_sha.strip}:#{policy_path}(absent; portable-defaults)"
+end
+unless policy.errors.empty?
+  emit_unknown(
+    policy.errors.join("; "),
+    head_sha: reported_head_sha,
+    policy_provenance:
+  )
 end
 begin
   calibration = JSON.parse(File.read(options.fetch(:calibration_decision), encoding: "UTF-8"))
@@ -284,7 +296,9 @@ semantic_gates.each do |fact, gate|
   end
 end
 path_matches = []
-paths = objective.fetch("files").map { |file| file.fetch("path") }
+paths = objective.fetch("files").flat_map do |file|
+  [file.fetch("path"), file["previous_path"]]
+end.compact.uniq
 policy.human_review_paths.each do |rule|
   paths.grep(proc { |path| AutonomousMergePolicy.match?(rule.fetch("pattern"), path) }).each do |path|
     gate = "repo-path:#{rule.fetch('id')}"
@@ -430,7 +444,7 @@ verdict = if !evidence_failures.empty? || policy_provenance == "UNKNOWN"
 
 puts JSON.generate(
   "verdict" => verdict,
-  "head_sha" => head_sha,
+  "head_sha" => reported_head_sha,
   "policy_provenance" => policy_provenance,
   "helper_provenance" => runtime_trust.provenance,
   "helper_trust" => {
