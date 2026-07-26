@@ -455,6 +455,16 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
   end
 
+  def test_v2_allows_documented_and_common_slash_separated_labels
+    %w[before/after baseline/candidate pass/fail on/off yes/no].each do |label|
+      evidence = "durable: before and after #{label} composite https://github.com/example/repo/pull/123#visual"
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), label
+      refute_includes qa.fetch("missing"), "visual_evidence.local_reference", label
+    end
+  end
+
   def test_v2_github_destination_requires_a_github_url
     data = run_replay(
       v2_marker(
@@ -639,6 +649,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_negative_control_allows_historical_pass_word_when_outcome_failed
+    evidence = "observed_failure: the control that used to pass validation now fails the assertion"
+    qa = run_replay(
+      v2_marker(
+        "visual_fix" => "yes",
+        "negative_control" => evidence
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
   def test_v2_reasoned_not_applicable_rejects_unresolved_placeholders
     invalid_reasons = [
       "not applicable: UNKNOWN",
@@ -727,6 +749,25 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
       assert_includes qa.fetch("missing"), "performance_evidence", evidence
     end
+  end
+
+  def test_v2_measured_metric_allows_byte_valued_memory_but_not_byte_valued_timing
+    memory = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=memory; baseline_value=100MB; candidate_value=90MB"
+      )
+    ).fetch("qa_evidence")
+    timing = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=LCP; baseline_value=100MB; candidate_value=90MB"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", memory.fetch("verdict")
+    assert_equal "UNKNOWN", timing.fetch("verdict")
+    assert_includes timing.fetch("missing"), "performance_evidence"
   end
 
   def test_v2_bundle_hygiene_does_not_require_metric_name

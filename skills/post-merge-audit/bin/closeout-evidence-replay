@@ -357,7 +357,7 @@ module CloseoutEvidenceReplay
     when "yes"
       payload = evidence.delete_prefix("observed_failure:").strip
       observed_failure = evidence.start_with?("observed_failure:") &&
-                         payload.match?(/\b(?:fail(?:ed|ure)?|error|assert|mismatch)\b/i) &&
+                         payload.match?(/\b(?:fail(?:ed|s|ing|ure)?|error|assert|mismatch)\b/i) &&
                          !negated_or_passing_failure_claim?(payload)
       missing << "negative_control" unless observed_failure
     when "no"
@@ -418,9 +418,10 @@ module CloseoutEvidenceReplay
 
   def disallowed_durable_reference?(value)
     non_url_text = without_https_urls(value)
+    path_candidate_text = without_schema_slash_labels(non_url_text)
     local_path = absolute_local_path?(non_url_text) ||
-                 non_url_text.match?(%r{(?:\A|[\s("'=;])(?:\./|\.\./|~[/\\]|[A-Za-z]:[^/\\\s]++|[^/\s]++/)\S++}) ||
-                 non_url_text.match?(
+                 path_candidate_text.match?(%r{(?:\A|[\s("'=;])(?:\./|\.\./|~[/\\]|[A-Za-z]:[^/\\\s]++|[^/\s]++/)\S++}) ||
+                 path_candidate_text.match?(
                    /(?:\A|[\s("'=;])(?:\\\\[^\\\s]++\\[^\\\s]++|(?:[^\\\s]++\\)++[^\\\s]++)/
                  ) ||
                  non_url_text.match?(LOCAL_MEDIA_EXTENSION)
@@ -428,6 +429,10 @@ module CloseoutEvidenceReplay
       non_url_text.match?(EPHEMERAL_ARTIFACT_SCHEME) ||
       non_url_text.match?(/\bcaptured locally\b/i) ||
       failed_visual_artifact_claim?(non_url_text)
+  end
+
+  def without_schema_slash_labels(value)
+    value.gsub(%r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i, "")
   end
 
   def failed_visual_artifact_claim?(value)
@@ -516,7 +521,8 @@ module CloseoutEvidenceReplay
 
   def negated_or_passing_failure_claim?(value)
     value.match?(/\b(?:(?:did\s+not|didn['’]t|never)\s+(?:fail(?:ed)?|error|assert|mismatch)|not\s+fail(?:ed|ing)?|no\s+(?:failure|error|mismatch)|without\s+(?:failure|error|mismatch))\b/i) ||
-      value.match?(/\b(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i)
+      value.match?(/\b(?:assert(?:ion)?|control|negative\s+control|run|test|check)\s+(?:now\s+)?(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i) ||
+      value.match?(/\A(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i)
   end
 
   def valid_bundle_hygiene?(value)
@@ -553,9 +559,11 @@ module CloseoutEvidenceReplay
     return false unless metric_tokens.any? { |token| runtime_tokens.include?(token) }
 
     measurement_units = %w[baseline_value candidate_value].flat_map do |key|
-      labeled_measurements(non_url_text, key).map { |measurement| measurement.fetch(1).downcase }
+      labeled_measurements(non_url_text, key).map { |measurement| measurement.fetch(1) }
     end
-    return false if measurement_units.any? { |unit| unit.match?(/\A(?:[kmgt]i?)?b(?:ytes?)?\z/i) }
+    byte_valued = measurement_units.any? { |unit| unit.match?(/\A(?:[kmgt]i?)?b(?:ytes?)?\z/i) }
+    memory_metric = metric_tokens.any? { |token| %w[heap memory ram resident rss].include?(token) }
+    return false if byte_valued && !memory_metric
 
     true
   end
