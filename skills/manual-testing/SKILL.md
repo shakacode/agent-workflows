@@ -82,9 +82,12 @@ blocker. Do not fake a manual pass from static inspection.
      that is part of the actual HTTPS URL path.
    - The replay helper validates URL and destination shape; it does not fetch
      evidence URLs or prove their authorization, retention, or liveness. Before
-     reporting readiness, an intended reviewer must open every evidence URL
-     using intended reviewer access and reject dead, inaccessible, private-only,
-     or expiring evidence.
+   reporting readiness, an intended reviewer must open every evidence URL
+   using intended reviewer access and reject dead, inaccessible, private-only,
+   or expiring evidence.
+   Paint, interaction, and negative-control checks likewise validate a strict
+   text contract, not the semantic truth of the claim; a reviewer must inspect
+   the linked evidence and confirm the stated observation.
    - For hover, focus, drag, transition, loading, animation, or another
      interaction change, link a short durable clip. If recording is unavailable,
      use exact labeled evidence such as `measured_substitute:

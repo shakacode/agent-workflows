@@ -517,7 +517,14 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_rejects_https_evidence_without_a_valid_host
-    %w[https://; https://example.test:bad/path].each do |url|
+    %w[
+      https://;
+      https://example.test:bad/path
+      https://localhost/artifact
+      https://127.0.0.1/artifact
+      https://0.0.0.0/artifact
+      https://private-user-images.githubusercontent.com/1/clip.mp4?jwt=signed
+    ].each do |url|
       %w[linked_tracker repo_artifact_store].each do |destination|
         qa = run_replay(
           v2_marker(
@@ -693,6 +700,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
   def test_v2_negative_control_allows_historical_pass_word_when_outcome_failed
     evidence = "observed_failure: the control that used to pass validation now fails the assertion"
+    qa = run_replay(
+      v2_marker(
+        "visual_fix" => "yes",
+        "negative_control" => evidence
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_v2_negative_control_accepts_assertion_failure_description
+    evidence = "observed_failure: assertion expected 1 but got 2"
     qa = run_replay(
       v2_marker(
         "visual_fix" => "yes",
