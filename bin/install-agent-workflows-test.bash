@@ -285,11 +285,12 @@ test_native_plugin_plus_default_flat_install_fails_before_mutation() {
 }
 
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
-  local tmp target host
+  local tmp target consumer host output
 
   for host in codex claude; do
     tmp="$(mktemp -d)"
     target="$tmp/$host-home"
+    consumer="$tmp/consumer"
     write_native_scw_state "$host" "$target"
 
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
@@ -308,6 +309,15 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
       abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
     ' "$target/.agent-workflows-install.json"
+
+    write_consumer_agents "$consumer"
+    cat >> "$consumer/.agents/agent-workflow.yml" <<'YAML'
+autonomous_merge:
+  thresholds:
+    max_changed_files: 20
+YAML
+    output="$("$target/bin/agent-workflow-seam-doctor" --root "$consumer" 2>&1)"
+    assert_contains "$output" "PASS agent workflow seam is complete"
   done
 }
 
@@ -437,6 +447,18 @@ test_final_verification_race_rolls_back_before_metadata_commit() {
   write_native_scw_state codex "$target"
   cat > "$injection" <<'RUBY'
 require "fileutils"
+require "json"
+
+# Force delivery-state JSON beyond a typical shell pipe buffer so the installer
+# regression covers its large command-substitution-to-parser pipe transport.
+class << JSON
+  alias qa_original_pretty_generate pretty_generate
+
+  def pretty_generate(value, *arguments)
+    qa_original_pretty_generate(value, *arguments) + (" " * 65_536)
+  end
+end
+
 if ARGV.first == "check" && ENV["QA_CHECK_COUNTER"]
   counter = ENV.fetch("QA_CHECK_COUNTER")
   count = File.file?(counter) ? File.read(counter).to_i + 1 : 1

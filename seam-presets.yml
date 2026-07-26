@@ -22,6 +22,7 @@ defaults:
     hosted_ci_trigger: "n/a — CI runs on every PR if configured"
     ci_change_detector: "n/a"
     changelog: "n/a"
+    autonomous_merge: {}
 
 presets:
   ruby-gem:

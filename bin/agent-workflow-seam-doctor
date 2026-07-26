@@ -9,6 +9,7 @@ require "open3"
 require "optparse"
 require "shellwords"
 require "yaml"
+require_relative "agent_doctor/autonomous_merge_policy"
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
@@ -1679,6 +1680,12 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(untrusted_contributor_intake_policy_issues(config))
+    if config.key?("autonomous_merge")
+      autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
+      autonomous_policy.errors.each do |error|
+        issues << "invalid autonomous_merge policy: #{error}"
+      end
+    end
 
     issues
   rescue Psych::Exception

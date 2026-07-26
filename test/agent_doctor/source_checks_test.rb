@@ -174,8 +174,9 @@ class AgentDoctorSourceChecksTest < Minitest::Test
       SH
       FileUtils.chmod(0o755, hook)
       system("git", "-C", checkout, "config", "filter.doctor-test.clean", hook, exception: true)
+      File.write(File.join(checkout, "README.md"), "ordinary status must inspect this changed content\n")
 
-      probe = @runner.capture(["git", "-C", checkout, "status", "--porcelain"])
+      probe = @runner.capture(["git", "-C", checkout, "diff", "--", "README.md"])
       assert_equal 0, probe[:exit]
       assert_path_exists sentinel
       FileUtils.rm_f(sentinel)

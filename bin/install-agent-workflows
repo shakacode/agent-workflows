@@ -530,11 +530,11 @@ if [[ ! -f "$pending_migration_receipt" ]]; then
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
-    ruby -rjson -e '
+    printf '%s' "$delivery_state" | ruby -rjson -e '
       payload = JSON.parse(STDIN.read)
       warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
       warn payload.fetch("guidance")
-    ' <<< "$delivery_state"
+    '
     exit 1
   fi
 fi
@@ -610,11 +610,11 @@ delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$
 delivery_status=$?
 set -e
 if [[ "$delivery_status" -ne 0 ]]; then
-  ruby -rjson -e '
+  printf '%s' "$delivery_state" | ruby -rjson -e '
     payload = JSON.parse(STDIN.read)
     warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
     warn payload.fetch("guidance")
-  ' <<< "$delivery_state"
+  '
   exit 1
 fi
 prepare_metadata
@@ -695,25 +695,28 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
-    ruby -rjson -e '
+    printf '%s' "$delivery_state" | ruby -rjson -e '
       payload = JSON.parse(STDIN.read)
       warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
       warn payload.fetch("guidance")
-    ' <<< "$delivery_state"
+    '
     exit 1
   fi
-  migration_staging="$(ruby -rjson -e 'payload = JSON.parse(STDIN.read); puts payload.dig("flat", "staging")' <<< "$delivery_state")"
+  migration_staging="$(
+    printf '%s' "$delivery_state" |
+      ruby -rjson -e 'payload = JSON.parse(STDIN.read); puts payload.dig("flat", "staging")'
+  )"
 
   set +e
   delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
-    ruby -rjson -e '
+    printf '%s' "$delivery_state" | ruby -rjson -e '
       payload = JSON.parse(STDIN.read)
       warn "DELIVERY_MODE_CONFLICT: final delivery verification failed: #{payload.fetch("reason")}"
       warn payload.fetch("guidance")
-    ' <<< "$delivery_state"
+    '
     exit 1
   fi
 fi
