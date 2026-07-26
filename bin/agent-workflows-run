@@ -3,7 +3,7 @@
 
 require "optparse"
 
-require_relative "agent_workflows_operation/runner"
+require_relative "agent_workflows_entry_lease"
 
 options = {}
 parser = OptionParser.new do |opts|
@@ -19,12 +19,21 @@ abort "CAPABILITY is required" unless capability
 
 target = File.expand_path("..", __dir__)
 begin
-  AgentWorkflowsOperation::Runner.new(target: target).launch!(
-    handle: options.fetch(:operation),
-    capability: capability,
-    arguments: ARGV
-  )
-rescue AgentWorkflowsOperation::Error => e
+  status = AgentWorkflowsEntryLease.with(target:, mode: :shared) do |lease|
+    require_relative "agent_workflows_operation/runner"
+    AgentWorkflowsOperation::Runner.new(target:, lease:).launch!(
+      handle: options.fetch(:operation),
+      capability: capability,
+      arguments: ARGV
+    )
+  end
+  exit(status.exitstatus || 128 + status.termsig)
+rescue AgentWorkflowsEntryLease::Error => e
+  warn e.message
+  exit 1
+rescue StandardError => e
+  raise unless defined?(AgentWorkflowsOperation::Error) && e.is_a?(AgentWorkflowsOperation::Error)
+
   warn e.message
   exit 1
 end

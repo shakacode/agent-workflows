@@ -81,6 +81,16 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
 Copy usage counters without guessing or recalculation, and do not store raw
 prompt, response, or transcript data in the receipt.
 
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 ## Scope Gate
 
 Start by resolving the exact audit range and, when auditing a named agent

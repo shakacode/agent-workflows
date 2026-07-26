@@ -73,6 +73,12 @@ another shared instruction or a registered mutation, stop before it and report
 the pinned/offline limitation.
 
 After provider branch selection:
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
 Continue only after the applicable branch's checks pass.
 ```
 
@@ -114,6 +120,12 @@ another shared instruction or a registered mutation, stop before it and report
 the pinned/offline limitation.
 
 After provider branch selection:
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
 Continue only after the applicable branch's checks pass.
 
 Pasted restart handoff:
@@ -161,6 +173,12 @@ a claim, or starting a target. Report the pinned/offline limitation and require
 a managed-provider resume or explicit coordinator cancellation.
 
 After provider branch selection:
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
 Continue only after the applicable branch's checks pass.
 ```
 
@@ -201,6 +219,12 @@ limitation and require a managed-provider replacement or explicit coordinator
 cancellation.
 
 After provider branch selection:
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
 Continue only after the applicable branch's checks pass.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check

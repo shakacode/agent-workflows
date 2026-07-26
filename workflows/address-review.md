@@ -1,5 +1,15 @@
 # Address Review Prompt
 
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow and that command is unavailable.
 
 ## Recipient Provider Binding
@@ -35,6 +45,12 @@ an unknown value stops. For `managed`, run the active host home's absolute
 `bin/agent-workflows-resolve begin` command and use only that invocation's newly
 returned assets. Never inherit a sender's handle or paths. Because this prompt
 requires shared assets, a `pinned` recipient must stop rather than mix providers.
+Retain the managed begin result's complete `release` argv. Invoke it only after
+this recipient's final shared-instruction read and final helper/capability use;
+that release invalidates every returned `assets.*` path even if files remain.
+A restart or follow-up must begin a new operation and release the old operation
+when safely finished. Recover an orphan only through `list --json` and named
+`release`; never TTL or PID inference.
 
 Act as a pull request review triage assistant.
 

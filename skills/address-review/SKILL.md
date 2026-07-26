@@ -48,6 +48,16 @@ backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
 # Instructions
 
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 ## Maintainer Attention Contract
 
 Apply the Maintainer Attention Contract from `AGENTS.md` for all broad

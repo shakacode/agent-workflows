@@ -3,6 +3,8 @@
 require "digest"
 
 require_relative "errors"
+require_relative "lifecycle_lease"
+require_relative "process_supervisor"
 require_relative "provider"
 require_relative "registry"
 require_relative "secure_paths"
@@ -12,72 +14,77 @@ require_relative "tree"
 
 module AgentWorkflowsOperation
   class Runner
-    attr_reader :target, :state, :store
+    attr_reader :target, :state, :store, :lease
 
-    def initialize(target:)
+    def initialize(target:, lease: nil)
       @target = File.expand_path(target)
       @state = State.new(target: @target)
       @store = Store.new(state_root: state.root)
+      @lease = lease || LifecycleLease.new(target: @target, root: state.root)
     rescue PathError => e
       raise RunnerError, e.message
     end
 
     def launch!(handle:, capability:, arguments:)
-      operation_root, metadata, snapshot, = validated_operation!(handle, capability)
-      launcher = File.join(operation_root, "launcher")
-      verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
-      verify_runtime!(operation_root, metadata, snapshot)
-      verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
-      command = [
-        verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter"),
-        "--disable=gems",
-        launcher,
-        "--target", target,
-        "--operation", handle,
-        capability,
-        "--",
-        *arguments
-      ]
-      verify_runtime!(operation_root, metadata, snapshot)
-      verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
-      exec(sanitized_environment(metadata), *command)
+      lease.with_shared do
+        operation_root, metadata, snapshot, = validated_operation!(handle, capability)
+        launcher = File.join(operation_root, "launcher")
+        verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
+        verify_runtime!(operation_root, metadata, snapshot)
+        verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
+        command = [
+          verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter"),
+          "--disable=gems",
+          launcher,
+          "--target", target,
+          "--operation", handle,
+          capability,
+          "--",
+          *arguments
+        ]
+        verify_runtime!(operation_root, metadata, snapshot)
+        verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
+        wait_for_command!(sanitized_environment(metadata), command)
+      end
     rescue KeyError => e
       raise RunnerError, "operation metadata is incomplete: #{e.message}"
     end
 
     def run!(handle:, capability:, arguments:)
-      operation_root, metadata, snapshot, registry = validated_operation!(handle, capability)
-      definition = registry.capability!(capability)
-      if definition.requires_current_provider && metadata["freshness"] != "current"
-        raise RunnerError, "CURRENT_PROVIDER_REQUIRED: #{capability} is unavailable in degraded/offline operations"
-      end
+      lease.with_shared do
+        operation_root, metadata, snapshot, registry = validated_operation!(handle, capability)
+        definition = registry.capability!(capability)
+        if definition.requires_current_provider && metadata["freshness"] != "current"
+          raise RunnerError, "CURRENT_PROVIDER_REQUIRED: #{capability} is unavailable in degraded/offline operations"
+        end
 
-      begin
-        Provider.new(
-          host: metadata.dig("provider", "host"),
-          target: target,
-          snapshot: snapshot
-        ).verify!(expected_revision: metadata.fetch("revision"))
-      rescue ProviderError => e
-        raise RunnerError, "provider moved after operation begin: #{e.message}"
-      end
+        begin
+          Provider.new(
+            host: metadata.dig("provider", "host"),
+            target: target,
+            snapshot: snapshot
+          ).verify!(expected_revision: metadata.fetch("revision"))
+        rescue ProviderError => e
+          raise RunnerError, "provider moved after operation begin: #{e.message}"
+        end
 
-      executable = File.join(operation_root, "capabilities", capability)
-      recorded = metadata.fetch("capabilities").fetch(capability)
-      verify_executable_identity!(executable, recorded, "capability inode")
-      Tree.verify_path_against_git!(
-        git: store.git,
-        repository: snapshot.repository,
-        revision: snapshot.revision,
-        path: executable,
-        source_relative: recorded.fetch("source"),
-        private_home: File.join(snapshot.root, "home")
-      )
-      verify_executable_identity!(executable, recorded, "canonical executable")
-      ruby = verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter")
-      verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
-      verify_external_executable!(metadata.fetch("tools").fetch("gh"), "bound gh executable")
-      exec(sanitized_environment(metadata), ruby, "--disable=gems", executable, *arguments)
+        executable = File.join(operation_root, "capabilities", capability)
+        recorded = metadata.fetch("capabilities").fetch(capability)
+        verify_executable_identity!(executable, recorded, "capability inode")
+        Tree.verify_path_against_git!(
+          git: store.git,
+          repository: snapshot.repository,
+          revision: snapshot.revision,
+          path: executable,
+          source_relative: recorded.fetch("source"),
+          private_home: File.join(snapshot.root, "home")
+        )
+        verify_executable_identity!(executable, recorded, "canonical executable")
+        ruby = verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter")
+        verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
+        verify_external_executable!(metadata.fetch("tools").fetch("gh"), "bound gh executable")
+        wait_for_command!(sanitized_environment(metadata), [ruby, "--disable=gems", executable, *arguments])
+      end
     rescue KeyError, RegistryError => e
       raise RunnerError, "operation capability binding is invalid: #{e.message}"
     rescue StoreError => e
@@ -85,6 +92,12 @@ module AgentWorkflowsOperation
     end
 
     private
+
+    def wait_for_command!(environment, command)
+      ProcessSupervisor.wait!(environment:, command:)
+    rescue SystemCallError => e
+      raise RunnerError, "operation capability could not be started: #{e.message}"
+    end
 
     def sanitized_environment(metadata)
       {

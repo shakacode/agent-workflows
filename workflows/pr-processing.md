@@ -1,5 +1,15 @@
 # PR Processing Workflow
 
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 ## Required Provider Operation
 
 This workflow is valid only at the absolute `assets.workflow` path returned by
@@ -1749,6 +1759,12 @@ a claim, or starting a target. Report the pinned/offline limitation and require
 a managed-provider resume or explicit coordinator cancellation.
 
 After provider branch selection:
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
 Continue only after the applicable branch's checks pass.
 ```
 

@@ -1,5 +1,15 @@
 # Issue Evaluation Workflow
 
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 Use this workflow before fixing, batching, or assigning a GitHub issue when value is uncertain, especially when the issue was found by AI/code analysis rather than by real users.
 
 The authoritative rubric lives in returned `assets.skills.evaluate_issue`. Read and follow that file first; this workflow exists for agents that prefer workflow-file entry points over skill invocation syntax.

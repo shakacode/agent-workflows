@@ -58,6 +58,7 @@ ruby bin/codex-plugin-manifest-check-test.rb
 ruby bin/validate-openai-agent-metadata-test.rb
 ruby bin/host-adapter-syntax-test.rb
 ruby bin/agent-workflows-operation-test.rb
+ruby bin/agent-workflows-lifecycle-test.rb
 ruby bin/provider-operation-contract-test.rb
 
 echo "== status unit tests =="

@@ -104,6 +104,24 @@ class ProviderOperationContractTest < Minitest::Test
     assert_empty failures, failures.join("\n")
   end
 
+  def test_every_operation_bound_surface_carries_the_explicit_closeout_contract
+    failures = OPERATION_BOUND_SURFACES.flat_map do |path|
+      text = read(path)
+      [
+        "final shared-instruction read",
+        "final helper/capability use",
+        "invalidates every returned `assets.*` path",
+        "begin a new operation",
+        "release the old operation",
+        "`list --json`",
+        "named `release`",
+        "never TTL or PID inference"
+      ].filter_map { |fragment| "#{path}: missing #{fragment.inspect}" unless text.include?(fragment) }
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
   def test_every_entry_documents_provider_profile_fail_closed_semantics
     failures = ENTRY_SKILLS.flat_map do |name|
       path = "skills/#{name.tr('_', '-')}/SKILL.md"
@@ -173,11 +191,22 @@ class ProviderOperationContractTest < Minitest::Test
       workflows/post-merge-audit.md
     ]
     failures = paths.flat_map do |path|
-      fenced_text_blocks(read(path)).filter_map.with_index do |body, index|
-        next unless body.include?("assets.")
-        next if body.include?("This receiving invocation must bind its own provider")
+      fenced_text_blocks(read(path)).flat_map.with_index do |body, index|
+        next [] unless body.include?("assets.")
 
-        "#{path}: fenced prompt #{index + 1} consumes assets without recipient-local binding"
+        required = [
+          "This receiving invocation must bind its own provider",
+          "final shared-instruction read",
+          "final helper/capability use",
+          "invalidates every returned `assets.*` path",
+          "release the old operation",
+          "`list --json`",
+          "named\n`release`",
+          "never TTL or PID inference"
+        ]
+        required.filter_map do |fragment|
+          "#{path}: fenced prompt #{index + 1} missing #{fragment.inspect}" unless body.include?(fragment)
+        end
       end
     end
 
@@ -193,6 +222,8 @@ class ProviderOperationContractTest < Minitest::Test
       refute_empty prompts, path
       prompts.each.with_index(1) do |body, index|
         assert_restart_provider_contract(body, "#{path}: restart prompt #{index}")
+        assert_includes body, "release the old operation", "#{path}: restart prompt #{index}"
+        assert_includes body, "`list --json`", "#{path}: restart prompt #{index}"
       end
     end
   end
@@ -264,6 +295,28 @@ class ProviderOperationContractTest < Minitest::Test
     end
     refute_match(/professional consumer/i, contract)
     refute_match(/professional consumer/i, design)
+  end
+
+  def test_public_contract_documents_bounded_explicit_lifecycle
+    paths = %w[
+      docs/host-adapter/contract.md
+      docs/installation-and-upgrades.md
+      docs/plans/2026-07-25-bound-provider-snapshot-design.md
+    ]
+    failures = paths.flat_map do |path|
+      text = read(path)
+      [
+        "`release --host HOST --target TARGET --operation HANDLE --json`",
+        "`list --host HOST --target TARGET --json`",
+        "32",
+        "8",
+        "healthy quiescent state",
+        "never evicts a live operation",
+        "lifecycle lease"
+      ].filter_map { |fragment| "#{path}: missing #{fragment}" unless text.include?(fragment) }
+    end
+
+    assert_empty failures, failures.join("\n")
   end
 
   private

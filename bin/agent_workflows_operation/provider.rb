@@ -13,6 +13,8 @@ module AgentWorkflowsOperation
       bin/agent-workflow-seam-doctor
       bin/agent-workflows-delivery-state
       bin/agent-workflows-doctor
+      bin/agent_workflows_entry_lease.rb
+      bin/agent-workflows-lifecycle
       bin/agent-workflows-resolve
       bin/agent-workflows-run
       bin/agent-workflows-status

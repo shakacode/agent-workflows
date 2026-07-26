@@ -38,6 +38,16 @@ the complete returned `runner` command; stop if the capability is unavailable.
 
 You are helping to add an entry to the repo's changelog. Resolve the changelog path and configured base branch from `.agents/agent-workflow.yml` (`changelog` and `base_branch`), then independently resolve the PR target and compare-link branches for the current mode from repo policy before fetching or editing.
 
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 ## Arguments
 
 This skill accepts an optional mode argument from the invocation text:

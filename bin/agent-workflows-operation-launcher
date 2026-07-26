@@ -18,11 +18,12 @@ abort "--target and --operation are required" unless options[:target] && options
 abort "CAPABILITY is required" unless capability
 
 begin
-  AgentWorkflowsOperation::Runner.new(target: options.fetch(:target)).run!(
+  status = AgentWorkflowsOperation::Runner.new(target: options.fetch(:target)).run!(
     handle: options.fetch(:operation),
     capability: capability,
     arguments: ARGV
   )
+  exit(status.exitstatus || 128 + status.termsig)
 rescue AgentWorkflowsOperation::Error => e
   warn e.message
   exit 1

@@ -295,3 +295,28 @@ Host-specific tools must be checked before use:
 
 If the tool is unavailable, record the fallback or the blocker. Do not turn an
 unavailable host tool into a portable requirement for all users.
+
+## Explicit Provider Operation Lifecycle
+
+Managed operation state is bounded by explicit references, not age or process
+heuristics. The resolver exposes
+`release --host HOST --target TARGET --operation HANDLE --json` and
+`list --host HOST --target TARGET --json`. `begin --json` returns the complete
+absolute release argv for its target and opaque handle. Release it only after
+the invocation's final shared-instruction read and helper/capability use; the
+release invalidates all returned asset paths even when files remain. Recover a
+crashed or orphaned handle by inspecting `list` and naming that exact handle in
+`release`, never by TTL or PID inference.
+
+The fixed admission limits are 32 live operation records and 8 retained
+revision snapshots. Reference-derived GC never evicts a live operation or the
+installed managed revision. Thus the honest bound is 32 published operations
+and 8 retained revisions in healthy quiescent state, not a strict byte quota.
+Malformed operation, store, or installation state blocks deletion rather than
+broadening cleanup.
+
+Resolver begin/release, capability runners, installation, upgrade, rollback,
+and GC share one bounded POSIX `flock` lifecycle lease at a stable private inode.
+Runners hold a shared lease through capability process completion. Mutations and
+GC hold the exclusive lease. Installer migration locking remains an inner,
+secondary defense.

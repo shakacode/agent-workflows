@@ -22,6 +22,8 @@ Installed paths:
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
+  <target>/bin/agent_workflows_entry_lease.rb
+  <target>/bin/agent-workflows-lifecycle
   <target>/bin/agent-workflows-resolve
   <target>/bin/agent-workflows-run
   <target>/bin/agent_doctor/*
@@ -32,6 +34,7 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+original_args=("$@")
 host="codex"
 target=""
 mode="copy"
@@ -46,12 +49,17 @@ bin_helpers=(
   agent-workflow-seam-doctor
   agent-workflows-delivery-state
   agent-workflows-doctor
+  agent-workflows-lifecycle
   agent-workflows-resolve
   agent-workflows-run
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows
   upgrade-agent-workflows
+)
+entry_lease_helpers=(
+  agent-workflows-resolve
+  agent-workflows-run
 )
 
 default_target_for_host() {
@@ -590,6 +598,30 @@ if [[ "$provider_profile" = "managed" ]]; then
   gh_executable="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$gh_executable")"
 fi
 
+lifecycle_wrapper="$repo_root/bin/agent-workflows-lifecycle"
+lifecycle_environment="/usr/bin/env"
+[[ -x "$lifecycle_environment" ]] || lifecycle_environment="/bin/env"
+lifecycle_ruby=(
+  "$lifecycle_environment"
+  -u RUBYOPT -u RUBYLIB -u BUNDLE_GEMFILE -u BUNDLE_BIN_PATH
+  -u BUNDLE_PATH -u GEM_HOME -u GEM_PATH
+  ruby --disable=gems
+)
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYOPT="${RUBYOPT:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYLIB="${RUBYLIB:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_GEMFILE="${BUNDLE_GEMFILE:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_BIN_PATH="${BUNDLE_BIN_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_PATH="${BUNDLE_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_HOME="${GEM_HOME:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_PATH="${GEM_PATH:-}"
+if [[ -n "${AGENT_WORKFLOWS_LIFECYCLE_FD:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TOKEN:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TARGET:-}" ]]; then
+  "${lifecycle_ruby[@]}" "$lifecycle_wrapper" validate-exclusive --target "$target" >/dev/null
+else
+  exec "${lifecycle_ruby[@]}" "$lifecycle_wrapper" \
+    exec-exclusive --target "$target" -- "$0" "${original_args[@]}"
+fi
 pending_migration_receipt="$target/.agent-workflows-migration-staging"
 if [[ ! -f "$pending_migration_receipt" ]]; then
   set +e
@@ -605,7 +637,6 @@ if [[ ! -f "$pending_migration_receipt" ]]; then
     exit 1
   fi
 fi
-
 mkdir -p "$target"
 install_lock="$target/.agent-workflows-install.lock"
 if ! mkdir "$install_lock" 2>/dev/null; then
@@ -705,8 +736,21 @@ if [[ "$mode" = "copy" ]]; then
     "$repo_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
   ruby -e 'File.chmod(File.stat(ARGV.fetch(0)).mode & 0o7777, ARGV.fetch(1))' "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
   write_workflow_doctor_managed_marker
+  install -m 0644 "$repo_root/bin/agent_workflows_entry_lease.rb" "$target/bin/agent_workflows_entry_lease.rb"
+  for helper in "${entry_lease_helpers[@]}"; do
+    destination="$target/bin/$helper"
+    if [[ -L "$destination" ]]; then
+      rm -f "$destination"
+    fi
+    if [[ -e "$destination" && ! -f "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
+    install -m 0755 "$repo_root/bin/$helper" "$destination"
+  done
   rsync -a --delete "$repo_root/bin/agent_workflows_operation/" "$target/bin/agent_workflows_operation/"
   for helper in "${bin_helpers[@]}"; do
+    [[ " ${entry_lease_helpers[*]} " != *" $helper "* ]] || continue
     destination="$target/bin/$helper"
     if [[ -L "$destination" ]]; then
       rm -f "$destination"
@@ -755,6 +799,7 @@ else
   link_pack_docs "$target/docs"
   ln -sfn "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
   ln -sfn "$repo_root/bin/agent_workflows_operation" "$target/bin/agent_workflows_operation"
+  ln -sfn "$repo_root/bin/agent_workflows_entry_lease.rb" "$target/bin/agent_workflows_entry_lease.rb"
   for helper in "${bin_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -e "$destination" && ! -L "$destination" ]]; then

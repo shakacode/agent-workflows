@@ -4,6 +4,7 @@
 require "fileutils"
 require "find"
 require "json"
+require "json_schemer"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
@@ -228,6 +229,412 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_includes error.message, "mode 0700"
   end
 
+  def test_begin_returns_bound_release_command_and_release_is_idempotent
+    operation = begin_current_operation
+    handle = operation.fetch("operation")
+    release = operation.fetch("release")
+
+    assert_equal [
+      File.join(@target, "bin/agent-workflows-resolve"),
+      "release",
+      "--host", "codex",
+      "--target", @target,
+      "--operation", handle,
+      "--json"
+    ], release
+
+    resolver = fixture_resolver
+    released = resolver.release!(handle: handle)
+    assert_equal "released", released.fetch("status")
+    refute_path_exists operation_root(handle)
+    assert_equal "already_released", resolver.release!(handle: handle).fetch("status")
+  end
+
+  def test_list_reports_limits_live_handles_and_retained_revisions
+    first = begin_current_operation
+    second = begin_current_operation
+
+    inventory = fixture_resolver.list!
+    assert_equal 32, inventory.dig("limits", "live_operations")
+    assert_equal 8, inventory.dig("limits", "retained_revisions")
+    assert_equal 2, inventory.dig("counts", "live_operations")
+    assert_equal 1, inventory.dig("counts", "retained_revisions")
+    assert_equal [first.fetch("operation"), second.fetch("operation")].sort,
+                 inventory.fetch("operations").map { |item| item.fetch("handle") }.sort
+    assert_equal [@revision], inventory.fetch("retained_revisions")
+    assert_equal @revision, inventory.fetch("installed_revision")
+  end
+
+  def test_two_operations_keep_the_shared_revision_until_final_release
+    first = begin_current_operation
+    second = begin_current_operation
+    store_root = File.join(state_root, "store", @revision)
+
+    fixture_resolver.release!(handle: first.fetch("operation"))
+    assert_path_exists store_root
+    fixture_resolver.release!(handle: second.fetch("operation"))
+    assert_path_exists store_root, "the installed managed provider revision must remain protected"
+
+    degraded = fixture_resolver.begin!(degraded: true)
+    assert_equal @revision, degraded.fetch("revision")
+  end
+
+  def test_releasing_one_of_two_revisions_collects_only_the_unreferenced_snapshot
+    first = begin_current_operation
+    first_revision = @revision
+    advance_source("second-revision")
+    reset_native_provider
+    metadata = read_metadata
+    metadata["source_revision"] = @revision
+    write_metadata(metadata)
+    second = begin_current_operation
+
+    first_store = File.join(state_root, "store", first_revision)
+    second_store = File.join(state_root, "store", @revision)
+    assert_path_exists first_store
+    assert_path_exists second_store
+
+    fixture_resolver.release!(handle: first.fetch("operation"))
+    refute_path_exists first_store
+    assert_path_exists second_store
+    assert_path_exists operation_root(second.fetch("operation"))
+  end
+
+  def test_malformed_operation_blocks_release_gc_without_deleting_other_state
+    first = begin_current_operation
+    malformed = "a" * 64
+    malformed_root = operation_root(malformed)
+    FileUtils.mkdir_p(malformed_root, mode: 0o700)
+    File.write(File.join(malformed_root, "operation.json"), "{not json\n")
+    FileUtils.chmod(0o600, File.join(malformed_root, "operation.json"))
+
+    error = assert_raises(AgentWorkflowsOperation::LifecycleError) do
+      fixture_resolver.release!(handle: first.fetch("operation"))
+    end
+    assert_includes error.message, "AMBIGUOUS_LIFECYCLE_STATE"
+    assert_path_exists operation_root(first.fetch("operation"))
+    assert_path_exists malformed_root
+    assert_path_exists File.join(state_root, "store", @revision)
+  end
+
+  def test_begin_refuses_the_thirty_third_operation_before_fetch
+    seed = begin_current_operation
+    resolver = fixture_resolver
+    _root, metadata = resolver.state.load_operation!(seed.fetch("operation"))
+    snapshot = resolver.store.open!(@revision)
+    registry = AgentWorkflowsOperation::Registry.load!(snapshot)
+    31.times do
+      resolver.state.publish_operation!(
+        snapshot: snapshot,
+        registry: registry,
+        provider: metadata.fetch("provider"),
+        freshness: "current"
+      )
+    end
+    fetch_called = false
+    resolver.store.define_singleton_method(:fetch_current!) do
+      fetch_called = true
+      raise "fetch must not run"
+    end
+
+    error = assert_raises(AgentWorkflowsOperation::CapacityError) { resolver.begin! }
+    assert_includes error.message, "STATE_CAPACITY_REACHED"
+    refute fetch_called
+    assert_equal 32, operation_directories.length
+  end
+
+  def test_release_waits_for_the_capability_process_lifetime
+    operation = begin_current_operation
+    ready = File.join(@tmp, "runner-ready")
+    finish = File.join(@tmp, "runner-finish")
+    runner_pid = Process.spawn(
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--hold", ready, finish,
+      out: File::NULL, err: File::NULL
+    )
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    sleep 0.01 until File.exist?(ready) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    assert_path_exists ready
+
+    result = nil
+    releaser = Thread.new { result = fixture_resolver.release!(handle: operation.fetch("operation")) }
+    sleep 0.15
+    assert releaser.alive?, "release must wait while the runner holds a shared lifecycle lease"
+    assert_path_exists operation_root(operation.fetch("operation"))
+
+    File.write(finish, "done\n")
+    Process.wait(runner_pid)
+    releaser.join(5)
+    refute releaser.alive?
+    assert_equal "released", result.fetch("status")
+  ensure
+    File.write(finish, "done\n") if finish && !File.exist?(finish)
+    Process.kill("TERM", runner_pid) if runner_pid && process_alive?(runner_pid)
+    Process.wait(runner_pid) if runner_pid && process_alive?(runner_pid)
+  end
+
+  def test_runner_signal_forwards_to_capability_before_releasing_shared_lease
+    operation = begin_current_operation
+    ready = File.join(@tmp, "signal-runner-ready")
+    finish = File.join(@tmp, "signal-runner-finish")
+    runner_pid = Process.spawn(
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--hold", ready, finish,
+      out: File::NULL, err: File::NULL
+    )
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    sleep 0.01 until File.exist?(ready) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    assert_path_exists ready
+
+    Process.kill("TERM", runner_pid)
+    Process.wait(runner_pid)
+    terminated = "#{finish}.terminated"
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+    sleep 0.01 until File.exist?(terminated) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    assert_path_exists terminated
+    assert_equal "released", fixture_resolver.release!(handle: operation.fetch("operation")).fetch("status")
+  ensure
+    File.write(finish, "done\n") if finish && !File.exist?(finish)
+    Process.kill("KILL", runner_pid) if runner_pid && process_alive?(runner_pid)
+  end
+
+  def test_runner_crash_keeps_inherited_shared_lease_until_capability_finishes
+    operation = begin_current_operation
+    ready = File.join(@tmp, "crash-runner-ready")
+    finish = File.join(@tmp, "crash-runner-finish")
+    runner_pid = Process.spawn(
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--hold", ready, finish,
+      out: File::NULL, err: File::NULL
+    )
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    sleep 0.01 until File.exist?(ready) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    assert_path_exists ready
+
+    Process.kill("KILL", runner_pid)
+    Process.wait(runner_pid)
+    result = nil
+    releaser = Thread.new { result = fixture_resolver.release!(handle: operation.fetch("operation")) }
+    sleep 0.15
+    assert releaser.alive?, "the live capability must retain the inherited shared lease after runner crash"
+    File.write(finish, "done\n")
+    releaser.join(5)
+    refute releaser.alive?
+    assert_equal "released", result.fetch("status")
+  ensure
+    File.write(finish, "done\n") if finish && !File.exist?(finish)
+    Process.kill("KILL", runner_pid) if runner_pid && process_alive?(runner_pid)
+  end
+
+  def test_installed_entrypoints_acquire_the_lease_before_loading_mutable_runtime
+    operation = begin_current_operation
+    state = AgentWorkflowsOperation::State.new(target: @target)
+    lease = AgentWorkflowsOperation::LifecycleLease.new(target: @target, root: state.root)
+    cases = [
+      [
+        "runner",
+        File.join(@target, "bin/agent_workflows_operation/runner.rb"),
+        [
+          File.join(@target, "bin/agent-workflows-run"),
+          "--operation", operation.fetch("operation"),
+          "pr-merge-submit"
+        ]
+      ],
+      [
+        "resolver",
+        File.join(@target, "bin/agent_workflows_operation/resolver.rb"),
+        [
+          File.join(@target, "bin/agent-workflows-resolve"),
+          "list", "--host", "codex", "--target", @target, "--json"
+        ]
+      ]
+    ]
+
+    cases.each do |label, runtime, command|
+      moved = "#{runtime}.held"
+      output = File.join(@tmp, "#{label}.out")
+      pid = nil
+      lease.with_exclusive do
+        File.rename(runtime, moved)
+        pid = Process.spawn(*command, out: output, err: output)
+        sleep 0.2
+        assert process_alive?(pid), "#{label} loaded mutable runtime before waiting for the lifecycle lease"
+        File.rename(moved, runtime)
+      end
+      _pid, status = Process.wait2(pid)
+      assert status.success?, File.binread(output)
+    ensure
+      File.rename(moved, runtime) if File.exist?(moved)
+      Process.kill("KILL", pid) if pid && process_alive?(pid)
+    end
+  end
+
+  def test_begin_publication_and_release_are_serialized_by_the_exclusive_lease
+    existing = begin_current_operation
+    resolver = fixture_resolver
+    entered = Queue.new
+    proceed = Queue.new
+    original_publish = resolver.state.method(:publish_operation!)
+    resolver.state.define_singleton_method(:publish_operation!) do |**arguments|
+      entered << true
+      proceed.pop
+      original_publish.call(**arguments)
+    end
+
+    begun = nil
+    begin_thread = Thread.new { begun = resolver.begin! }
+    entered.pop
+    released = nil
+    release_thread = Thread.new do
+      released = fixture_resolver.release!(handle: existing.fetch("operation"))
+    end
+    sleep 0.15
+    assert release_thread.alive?, "release must not overlap operation publication"
+    assert_path_exists operation_root(existing.fetch("operation"))
+
+    proceed << true
+    begin_thread.join(5)
+    release_thread.join(5)
+    refute begin_thread.alive?
+    refute release_thread.alive?
+    assert_equal "released", released.fetch("status")
+    assert_path_exists operation_root(begun.fetch("operation"))
+  ensure
+    proceed << true if proceed && begin_thread&.alive?
+  end
+
+  def test_list_and_release_cli_json_schemas
+    operation = begin_current_operation
+    resolver_path = File.join(@target, "bin/agent-workflows-resolve")
+    assert_path_exists File.join(@target, "bin/agent_workflows_entry_lease.rb")
+    list_output, list_error, list_status = Open3.capture3(
+      resolver_path, "list", "--host", "codex", "--target", @target, "--json"
+    )
+    assert list_status.success?, list_error
+    listed = JSON.parse(list_output)
+    assert_equal 1, listed.fetch("schema_version")
+    assert_equal operation.fetch("operation"), listed.fetch("operations").fetch(0).fetch("handle")
+
+    release_output, release_error, release_status = Open3.capture3(
+      resolver_path, "release", "--host", "codex", "--target", @target,
+      "--operation", operation.fetch("operation"), "--json"
+    )
+    assert release_status.success?, release_error
+    released = JSON.parse(release_output)
+    assert_equal 1, released.fetch("schema_version")
+    assert_equal "released", released.fetch("status")
+    assert_equal operation.fetch("operation"), released.fetch("operation")
+  end
+
+  def test_committed_json_schemas_cover_each_public_result
+    operation = begin_current_operation
+    results = {
+      "begin" => operation,
+      "list" => fixture_resolver.list!,
+      "release" => fixture_resolver.release!(handle: operation.fetch("operation"))
+    }
+
+    results.each do |action, result|
+      schema = JSON.parse(
+        File.binread(File.join(ROOT, "schemas/provider-operation-#{action}-v1.schema.json"))
+      )
+      schemer = JSONSchemer.schema(schema)
+      errors = schemer.validate(result).to_a
+      assert_empty errors, "#{action} result failed its committed schema: #{errors}"
+    end
+
+    list_schema = JSONSchemer.schema(
+      JSON.parse(File.binread(File.join(ROOT, "schemas/provider-operation-list-v1.schema.json")))
+    )
+    invalid_list = {
+      "schema_version" => 1,
+      "host" => "codex",
+      "target" => "/tmp/codex",
+      "limits" => {},
+      "counts" => {},
+      "installed_revision" => nil,
+      "operations" => [false],
+      "retained_revisions" => []
+    }
+    refute list_schema.valid?(invalid_list)
+  end
+
+  def test_release_reports_released_gc_failed_and_retry_reruns_gc
+    operation = begin_current_operation
+    resolver = fixture_resolver
+    original_gc = resolver.lifecycle.method(:gc!)
+    failed = false
+    resolver.lifecycle.define_singleton_method(:gc!) do |**options|
+      unless failed
+        failed = true
+        raise AgentWorkflowsOperation::LifecycleError, "forced GC failure"
+      end
+
+      original_gc.call(**options)
+    end
+
+    error = assert_raises(AgentWorkflowsOperation::ReleasedGcError) do
+      resolver.release!(handle: operation.fetch("operation"))
+    end
+    assert_includes error.message, "RELEASED_GC_FAILED"
+    refute_path_exists operation_root(operation.fetch("operation"))
+    assert_equal "already_released", resolver.release!(handle: operation.fetch("operation")).fetch("status")
+  end
+
+  def test_gc_collects_an_unreferenced_verified_revision
+    operation = begin_current_operation
+    installed_revision = @revision
+    advance_source("unreferenced")
+    resolver = fixture_resolver
+    snapshot = resolver.store.send(:fetch_url!, @fixture_url)
+    assert_path_exists snapshot.root
+
+    resolver.release!(handle: operation.fetch("operation"))
+    refute_path_exists snapshot.root
+    assert_path_exists File.join(state_root, "store", installed_revision)
+  end
+
+  def test_ambiguous_debris_blocks_gc_before_an_unreferenced_store_is_deleted
+    advance_source("collectable")
+    resolver = fixture_resolver
+    snapshot = resolver.store.send(:fetch_url!, @fixture_url)
+    ambiguous = File.join(state_root, "staging", "ambiguous")
+    File.symlink(@tmp, ambiguous)
+
+    error = assert_raises(AgentWorkflowsOperation::LifecycleError) { resolver.lifecycle.gc! }
+    assert_includes error.message, "AMBIGUOUS_LIFECYCLE_STATE"
+    assert_path_exists snapshot.root
+    assert_path_exists ambiguous
+  end
+
+  def test_malformed_store_blocks_exact_release_without_deleting_anything
+    operation = begin_current_operation
+    malformed = File.join(state_root, "store", "f" * 40)
+    FileUtils.mkdir_p(malformed, mode: 0o700)
+    File.write(File.join(malformed, "unknown"), "unsafe\n")
+
+    error = assert_raises(AgentWorkflowsOperation::LifecycleError) do
+      fixture_resolver.release!(handle: operation.fetch("operation"))
+    end
+    assert_includes error.message, "AMBIGUOUS_LIFECYCLE_STATE"
+    assert_path_exists operation_root(operation.fetch("operation"))
+    assert_path_exists malformed
+    assert_path_exists File.join(state_root, "store", @revision)
+  end
+
+  def test_operation_referencing_a_missing_store_blocks_all_gc
+    operation = begin_current_operation
+    metadata_path = File.join(operation_root(operation.fetch("operation")), "operation.json")
+    metadata = JSON.parse(File.binread(metadata_path))
+    metadata["revision"] = "e" * 40
+    File.write(metadata_path, "#{JSON.pretty_generate(metadata)}\n")
+    FileUtils.chmod(0o600, metadata_path)
+
+    error = assert_raises(AgentWorkflowsOperation::LifecycleError) do
+      fixture_resolver.release!(handle: operation.fetch("operation"))
+    end
+    assert_includes error.message, "AMBIGUOUS_LIFECYCLE_STATE"
+    assert_path_exists operation_root(operation.fetch("operation"))
+    assert_path_exists File.join(state_root, "store", @revision)
+  end
+
   def test_operation_metadata_tampering_is_rejected_against_canonical_store
     operation = begin_current_operation
     metadata_path = File.join(operation_root(operation.fetch("operation")), "operation.json")
@@ -346,6 +753,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     error = run_error(operation)
     assert_includes error.message, "inode"
 
+    FileUtils.rm_rf(operation_root(operation.fetch("operation")))
     operation = begin_current_operation
     executable = File.join(operation_root(operation.fetch("operation")), "capabilities", "pr-merge-submit")
     content = File.binread(executable)
@@ -682,6 +1090,13 @@ class AgentWorkflowsOperationTest < Minitest::Test
     Dir.glob(File.join(state_root, "operations", "*"))
   end
 
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  end
+
   def native_provider_root
     File.join(@target, "plugins/cache/agent-workflows/scw/0.1.0")
   end
@@ -711,6 +1126,16 @@ class AgentWorkflowsOperationTest < Minitest::Test
         #!/usr/bin/env ruby
         # frozen_string_literal: true
 
+        if ARGV.first == "--hold"
+          ready, finish = ARGV.drop(1)
+          Signal.trap("TERM") do
+            File.write("\#{finish}.terminated", "terminated\\n")
+            exit 143
+          end
+          File.write(ready, "ready\n")
+          sleep 0.01 until File.exist?(finish)
+          exit 0
+        end
         puts(["fixture-helper", *ARGV].join(" "))
       RUBY
       "workflows/pr-processing.md" => "operation snapshot workflow\n",
@@ -732,6 +1157,8 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "bin/agent-workflow-seam-doctor" => "#!/bin/sh\n",
       "bin/agent-workflows-delivery-state" => File.binread(File.join(ROOT, "bin/agent-workflows-delivery-state")),
       "bin/agent-workflows-doctor" => "#!/bin/sh\n",
+      "bin/agent_workflows_entry_lease.rb" => File.binread(File.join(ROOT, "bin/agent_workflows_entry_lease.rb")),
+      "bin/agent-workflows-lifecycle" => File.binread(File.join(ROOT, "bin/agent-workflows-lifecycle")),
       "bin/agent-workflows-status" => "#!/bin/sh\n",
       "bin/agent-workflows-trust-audit" => "#!/bin/sh\n",
       "bin/agent_doctor/timeout_budget.rb" => File.binread(File.join(ROOT, "bin/agent_doctor/timeout_budget.rb")),
@@ -758,6 +1185,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
       agent-workflow-seam-doctor
       agent-workflows-delivery-state
       agent-workflows-doctor
+      agent-workflows-lifecycle
       agent-workflows-resolve
       agent-workflows-run
       agent-workflows-status

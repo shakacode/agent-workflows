@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shakacode/agent-workflows/schemas/provider-operation-release-v1.schema.json",
+  "title": "Agent Workflows provider operation release result",
+  "type": "object",
+  "required": ["schema_version", "operation", "status"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "operation": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "status": { "enum": ["released", "already_released"] }
+  },
+  "additionalProperties": false
+}

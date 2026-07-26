@@ -147,6 +147,12 @@ CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   a managed-provider resume or explicit coordinator cancellation.
 
   After provider branch selection:
+  After the invocation's final shared-instruction read and final helper/capability
+  use, invoke `resume_operation.release` to release the old operation. Release
+  invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+  or follow-up must begin a new operation. Recover crashed or orphaned handles only
+  with the active resolver's `list --json` and named `release`;
+  never TTL or PID inference.
   Continue only after the applicable branch's checks pass.
 TEXT
 

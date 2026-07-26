@@ -69,7 +69,7 @@ module AgentWorkflowsOperation
         published = true
         load_operation!(handle)
         operation_result(
-          handle, snapshot, registry, freshness, provider.fetch("profile"),
+          handle, snapshot, registry, freshness, provider.fetch("profile"), provider.fetch("host"),
           interpreter:, environment:
         )
       ensure
@@ -177,9 +177,10 @@ module AgentWorkflowsOperation
       raise ResolverError, "#{label} is unavailable: #{e.message}"
     end
 
-    def operation_result(handle, snapshot, registry, freshness, provider_profile, interpreter:, environment:)
+    def operation_result(handle, snapshot, registry, freshness, provider_profile, provider_host, interpreter:, environment:)
       asset_root = File.realpath(snapshot.tree)
       {
+        "schema_version" => 1,
         "operation" => handle,
         "revision" => snapshot.revision,
         "freshness" => freshness,
@@ -203,6 +204,14 @@ module AgentWorkflowsOperation
           File.join(target, "bin/agent-workflows-run"),
           "--operation",
           handle
+        ],
+        "release" => [
+          File.join(target, "bin/agent-workflows-resolve"),
+          "release",
+          "--host", provider_host,
+          "--target", target,
+          "--operation", handle,
+          "--json"
         ]
       }
     end

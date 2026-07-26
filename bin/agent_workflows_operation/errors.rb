@@ -10,4 +10,8 @@ module AgentWorkflowsOperation
   class ProviderError < Error; end
   class ResolverError < Error; end
   class RunnerError < Error; end
+  class LifecycleError < Error; end
+  class LifecycleBusyError < LifecycleError; end
+  class CapacityError < LifecycleError; end
+  class ReleasedGcError < LifecycleError; end
 end

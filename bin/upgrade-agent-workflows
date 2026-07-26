@@ -16,6 +16,7 @@ USAGE
 }
 
 script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+original_args=("$@")
 host="codex"
 target=""
 source=""
@@ -415,6 +416,30 @@ fi
 
 old_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
 
+lifecycle_wrapper="$script_root/bin/agent-workflows-lifecycle"
+lifecycle_environment="/usr/bin/env"
+[[ -x "$lifecycle_environment" ]] || lifecycle_environment="/bin/env"
+lifecycle_ruby=(
+  "$lifecycle_environment"
+  -u RUBYOPT -u RUBYLIB -u BUNDLE_GEMFILE -u BUNDLE_BIN_PATH
+  -u BUNDLE_PATH -u GEM_HOME -u GEM_PATH
+  ruby --disable=gems
+)
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYOPT="${RUBYOPT:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYLIB="${RUBYLIB:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_GEMFILE="${BUNDLE_GEMFILE:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_BIN_PATH="${BUNDLE_BIN_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_PATH="${BUNDLE_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_HOME="${GEM_HOME:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_PATH="${GEM_PATH:-}"
+if [[ -n "${AGENT_WORKFLOWS_LIFECYCLE_FD:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TOKEN:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TARGET:-}" ]]; then
+  "${lifecycle_ruby[@]}" "$lifecycle_wrapper" validate-exclusive --target "$target" >/dev/null
+else
+  exec "${lifecycle_ruby[@]}" "$lifecycle_wrapper" \
+    exec-exclusive --target "$target" -- "$0" "${original_args[@]}"
+fi
 if [[ "$fetch" = "true" && "$declared_git_source" = "true" ]]; then
   update_source_clone
   if ! validate_declared_git_source; then

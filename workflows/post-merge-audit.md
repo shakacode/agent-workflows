@@ -1,5 +1,15 @@
 # Post-Merge Audit Prompts
 
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 Use these prompts with returned `assets.skills.post_merge_audit` when auditing merged agent batch work, comparing Codex and Claude findings, or turning audit findings into GitHub issues.
 
 For a verified Codex GPT-5.6 batch, preserve this route profile:
@@ -214,6 +224,12 @@ an unknown value stops. For `managed`, run the active host home's absolute
 `bin/agent-workflows-resolve begin` command and use only that invocation's newly
 returned assets. Never inherit a sender's handle or paths. Because this prompt
 requires shared assets, a `pinned` recipient must stop rather than mix providers.
+Retain the managed begin result's complete `release` argv. Invoke it only after
+this recipient's final shared-instruction read and final helper/capability use;
+that release invalidates every returned `assets.*` path even if files remain.
+A restart or follow-up must begin a new operation and release the old operation
+when safely finished. Recover an orphan only through `list --json` and named
+`release`; never TTL or PID inference.
 
 Run an independent post-merge audit of merged PRs (and, when a batch id is known, its worked-issue scope)
 for the requested audit mode.
@@ -634,6 +650,12 @@ an unknown value stops. For `managed`, run the active host home's absolute
 `bin/agent-workflows-resolve begin` command and use only that invocation's newly
 returned assets. Never inherit a sender's handle or paths. Because this prompt
 requires shared assets, a `pinned` recipient must stop rather than mix providers.
+Retain the managed begin result's complete `release` argv. Invoke it only after
+this recipient's final shared-instruction read and final helper/capability use;
+that release invalidates every returned `assets.*` path even if files remain.
+A restart or follow-up must begin a new operation and release the old operation
+when safely finished. Recover an orphan only through `list --json` and named
+`release`; never TTL or PID inference.
 
 Please run an adversarial PR review before this PR is marked ready or merged:
 

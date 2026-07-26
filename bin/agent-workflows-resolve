@@ -4,21 +4,23 @@
 require "json"
 require "optparse"
 
-require_relative "agent_workflows_operation/resolver"
+require_relative "agent_workflows_entry_lease"
 
 action = ARGV.shift
 options = { degraded: false }
 parser = OptionParser.new do |opts|
-  opts.banner = "Usage: agent-workflows-resolve begin --host codex|claude [--target DIR] [--degraded] [--json]"
+  opts.banner = "Usage: agent-workflows-resolve begin|list|release --host codex|claude [--target DIR] [--operation HANDLE] [--degraded] [--json]"
   opts.on("--host HOST") { |value| options[:host] = value }
   opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
+  opts.on("--operation HANDLE") { |value| options[:operation] = value }
   opts.on("--degraded") { options[:degraded] = true }
   opts.on("--json") { options[:json] = true }
 end
 parser.parse!
 
-abort "action must be begin" unless action == "begin"
+abort "action must be begin, list, or release" unless %w[begin list release].include?(action)
 abort "--host must be codex or claude" unless %w[codex claude].include?(options[:host])
+abort "--operation is required for release" if action == "release" && !options[:operation]
 options[:target] ||= if options[:host] == "codex"
                        ENV.fetch("CODEX_HOME", File.join(Dir.home, ".codex"))
                      else
@@ -26,12 +28,31 @@ options[:target] ||= if options[:host] == "codex"
                      end
 
 begin
-  result = AgentWorkflowsOperation::Resolver.new(
-    host: options.fetch(:host),
-    target: options.fetch(:target)
-  ).begin!(degraded: options.fetch(:degraded))
-  puts(options[:json] ? JSON.pretty_generate(result) : result.fetch("operation"))
-rescue AgentWorkflowsOperation::Error => e
+  mode = action == "list" ? :shared : :exclusive
+  result = AgentWorkflowsEntryLease.with(target: options.fetch(:target), mode:) do |lease|
+    require_relative "agent_workflows_operation/resolver"
+    resolver = AgentWorkflowsOperation::Resolver.new(
+      host: options.fetch(:host),
+      target: options.fetch(:target),
+      lease:
+    )
+    case action
+    when "begin"
+      resolver.begin!(degraded: options.fetch(:degraded))
+    when "list"
+      resolver.list!
+    when "release"
+      resolver.release!(handle: options.fetch(:operation))
+    end
+  end
+  plain = action == "begin" ? result.fetch("operation") : result.fetch("status", JSON.generate(result))
+  puts(options[:json] ? JSON.pretty_generate(result) : plain)
+rescue AgentWorkflowsEntryLease::Error => e
+  warn e.message
+  exit 1
+rescue StandardError => e
+  raise unless defined?(AgentWorkflowsOperation::Error) && e.is_a?(AgentWorkflowsOperation::Error)
+
   warn e.message
   exit 1
 end

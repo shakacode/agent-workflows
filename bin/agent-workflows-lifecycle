@@ -1,0 +1,124 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require "optparse"
+require "securerandom"
+
+require_relative "agent_workflows_operation/lifecycle_lease"
+require_relative "agent_workflows_operation/process_supervisor"
+require_relative "agent_workflows_operation/secure_paths"
+require_relative "agent_workflows_operation/state"
+
+FD_ENV = "AGENT_WORKFLOWS_LIFECYCLE_FD"
+TOKEN_ENV = "AGENT_WORKFLOWS_LIFECYCLE_TOKEN"
+TARGET_ENV = "AGENT_WORKFLOWS_LIFECYCLE_TARGET"
+CHILD_ENVIRONMENT = %w[
+  RUBYOPT RUBYLIB BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH GEM_HOME GEM_PATH
+].to_h { |name| [name, "AGENT_WORKFLOWS_LIFECYCLE_CHILD_#{name}"] }.freeze
+
+def validate_reentry!(target)
+  fd_text = ENV[FD_ENV]
+  token = ENV[TOKEN_ENV]
+  recorded_target = ENV[TARGET_ENV]
+  unless fd_text.to_s.match?(/\A[3-9][0-9]*\z/) &&
+         token.to_s.match?(/\A[0-9a-f]{64}\z/) &&
+         recorded_target == target
+    raise AgentWorkflowsOperation::LifecycleError,
+          "LIFECYCLE_REENTRY_REJECTED: inherited lifecycle token is missing or does not bind this target"
+  end
+
+  state = AgentWorkflowsOperation::State.new(target:)
+  lock_path = File.join(state.root, AgentWorkflowsOperation::LifecycleLease::LOCK_NAME)
+  lock_stat = AgentWorkflowsOperation::SecurePaths.verify_private_file!(lock_path, mode: 0o600)
+  descriptor = File.for_fd(Integer(fd_text, 10), autoclose: false)
+  descriptor_stat = descriptor.stat
+  unless [lock_stat.dev, lock_stat.ino, lock_stat.uid, lock_stat.ftype] ==
+         [descriptor_stat.dev, descriptor_stat.ino, descriptor_stat.uid, descriptor_stat.ftype]
+    raise AgentWorkflowsOperation::LifecycleError,
+          "LIFECYCLE_REENTRY_REJECTED: inherited descriptor does not name the target lifecycle lock"
+  end
+  unless descriptor.flock(File::LOCK_EX | File::LOCK_NB)
+    raise AgentWorkflowsOperation::LifecycleError,
+          "LIFECYCLE_REENTRY_REJECTED: inherited descriptor does not hold the exclusive lifecycle lease"
+  end
+
+  descriptor.rewind
+  record = JSON.parse(descriptor.read)
+  unless record == { "schema_version" => 1, "target" => target, "token" => token }
+    raise AgentWorkflowsOperation::LifecycleError,
+          "LIFECYCLE_REENTRY_REJECTED: inherited lifecycle token is stale or forged"
+  end
+  true
+rescue Errno::EBADF, ArgumentError, JSON::ParserError, AgentWorkflowsOperation::PathError => e
+  raise AgentWorkflowsOperation::LifecycleError, "LIFECYCLE_REENTRY_REJECTED: #{e.message}"
+end
+
+def prepare_target!(target)
+  return if File.directory?(target)
+  raise AgentWorkflowsOperation::LifecycleError, "provider target is an unsafe existing path" if File.exist?(target) || File.symlink?(target)
+
+  parent = File.dirname(target)
+  FileUtils.mkdir_p(parent, mode: 0o700)
+  AgentWorkflowsOperation::SecurePaths.verify_target_ancestors!(parent)
+  Dir.mkdir(target, 0o700)
+end
+
+def restored_child_environment
+  CHILD_ENVIRONMENT.each_with_object({}) do |(name, transport), environment|
+    environment[name] = ENV.fetch(transport, "")
+    environment[transport] = nil
+  end
+end
+
+action = ARGV.shift
+options = {}
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: agent-workflows-lifecycle exec-exclusive|validate-exclusive --target DIR [-- COMMAND...]"
+  opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
+end
+parser.order!
+ARGV.shift if ARGV.first == "--"
+abort "action must be exec-exclusive or validate-exclusive" unless %w[exec-exclusive validate-exclusive].include?(action)
+abort "--target is required" unless options[:target]
+
+target = options.fetch(:target)
+begin
+  if action == "validate-exclusive"
+    validate_reentry!(target)
+    puts "LIFECYCLE_REENTRY_OK"
+    exit 0
+  end
+  abort "COMMAND is required" if ARGV.empty?
+
+  if ENV[FD_ENV] || ENV[TOKEN_ENV] || ENV[TARGET_ENV]
+    validate_reentry!(target)
+    exec(*ARGV)
+  end
+
+  prepare_target!(target)
+  state = AgentWorkflowsOperation::State.new(target:)
+  lease = AgentWorkflowsOperation::LifecycleLease.new(target:, root: state.root)
+  status = lease.with_exclusive do |file|
+    token = SecureRandom.hex(32)
+    record = { "schema_version" => 1, "target" => target, "token" => token }
+    file.rewind
+    file.truncate(0)
+    file.write("#{JSON.generate(record)}\n")
+    file.flush
+    file.fsync
+    file.close_on_exec = false
+    ENV[FD_ENV] = file.fileno.to_s
+    ENV[TOKEN_ENV] = token
+    ENV[TARGET_ENV] = target
+    AgentWorkflowsOperation::ProcessSupervisor.wait!(
+      environment: restored_child_environment,
+      command: ARGV
+    )
+  end
+  exit(status.exitstatus || 128 + status.termsig)
+rescue AgentWorkflowsOperation::Error, SystemCallError => e
+  warn e.message
+  exit 1
+end
