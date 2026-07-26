@@ -572,6 +572,10 @@ Replay current UI evidence with `--expected-head-sha <full-final-head-SHA>
 --require-visual-evidence-v2`; the strict v2 flag is invalid without the
 expected head. GitHub-only prepared local artifacts keep readiness blocked until
 a human attachment produces durable GitHub URLs.
+Replay validates URL and destination shape, not authorization, retention, or
+liveness; before readiness, an intended reviewer must open every evidence URL
+using intended reviewer access and reject dead, inaccessible, private-only, or
+expiring evidence.
 Do not call a target `complete` while its ledger has `UNKNOWN` fields or
 `complete_allowed: false`.
 Do not report a batch that requires QA as ready while required QA

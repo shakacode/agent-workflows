@@ -872,6 +872,11 @@ For each user-visible UI change:
    blank/unpainted capture token never satisfies a durable visual-evidence
    value, even when that value also contains an unrelated HTTPS URL. A media
    filename inside the path component of the actual HTTPS URL is allowed.
+   The replay helper validates URL and destination shape; it does not fetch
+   evidence URLs or prove their authorization, retention, or liveness. Before
+   reporting readiness, an intended reviewer must open every evidence URL using
+   intended reviewer access and reject dead, inaccessible, private-only, or
+   expiring evidence.
 4. For hover, focus, drag, transition, loading, animation, or another
    interaction change, link a short durable clip. When recording is unavailable,
    use the exact labeled substitute

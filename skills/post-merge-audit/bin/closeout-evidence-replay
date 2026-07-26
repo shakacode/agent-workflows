@@ -396,7 +396,9 @@ module CloseoutEvidenceReplay
     non_url_text = without_https_urls(value)
     local_path = absolute_local_path?(non_url_text) ||
                  non_url_text.match?(%r{(?:\A|[\s("'=;])(?:\./|\.\./|~[/\\]|[A-Za-z]:[^/\\\s]|[^/\s]+/)\S+}) ||
-                 non_url_text.match?(/(?:\A|[\s("'=;])(?:[^\\\s]+\\)+[^\\\s]+/) ||
+                 non_url_text.match?(
+                   /(?:\A|[\s("'=;])(?:\\\\[^\\\s]+\\[^\\\s]+|(?:[^\\\s]+\\)+[^\\\s]+)/
+                 ) ||
                  non_url_text.match?(LOCAL_MEDIA_EXTENSION)
     local_path ||
       non_url_text.match?(/\bfile:/i) ||

@@ -345,7 +345,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "..\\before.png",
       "C:before.png",
       "assets/before.png",
-      "before.png"
+      "before.png",
+      "\\\\server\\share\\before"
     ]
 
     bad_tokens.each do |token|

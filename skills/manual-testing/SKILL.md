@@ -81,6 +81,11 @@ blocker. Do not fake a manual pass from static inspection.
      `./`, `../`, `~/`, Windows-relative/backslash paths, plain local media
      filenames, and blank or unpainted captures. Do not reject a media filename
      that is part of the actual HTTPS URL path.
+   - The replay helper validates URL and destination shape; it does not fetch
+     evidence URLs or prove their authorization, retention, or liveness. Before
+     reporting readiness, an intended reviewer must open every evidence URL
+     using intended reviewer access and reject dead, inaccessible, private-only,
+     or expiring evidence.
    - For hover, focus, drag, transition, loading, animation, or another
      interaction change, link a short durable clip. If recording is unavailable,
      use exact labeled evidence such as `measured_substitute:
