@@ -365,8 +365,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "Windows path" => "durable: before C:\\tmp\\before.png and after https://github.com/example/repo/pull/123#visual",
       "file URL" => "durable: before file:///tmp/before.png and after https://github.com/example/repo/pull/123#visual",
       "captured locally" => "durable: before captured locally and after https://github.com/example/repo/pull/123#visual",
-      "blank" => "durable: before blank and after rendered https://github.com/example/repo/pull/123#visual",
-      "unpainted" => "durable: before unpainted and after rendered https://github.com/example/repo/pull/123#visual"
+      "blank screenshot" => "durable: before screenshot was blank and after rendered https://github.com/example/repo/pull/123#visual",
+      "unpainted page" => "durable: before page was unpainted and after rendered https://github.com/example/repo/pull/123#visual"
     }
 
     bad_evidence.each do |label, evidence|
@@ -376,6 +376,14 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", qa.fetch("verdict"), label
       assert_includes qa.fetch("missing"), "visual_evidence.local_reference", label
     end
+  end
+
+  def test_v2_allows_blank_as_a_legitimate_before_state_description
+    evidence = "durable: before blank search results and after populated results https://github.com/example/repo/pull/123#visual"
+    qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
   end
 
   def test_v2_rejects_ephemeral_non_https_artifact_schemes_even_with_https

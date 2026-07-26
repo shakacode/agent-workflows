@@ -427,7 +427,13 @@ module CloseoutEvidenceReplay
     local_path ||
       non_url_text.match?(EPHEMERAL_ARTIFACT_SCHEME) ||
       non_url_text.match?(/\bcaptured locally\b/i) ||
-      non_url_text.match?(/\b(?:blank|unpainted)\b/i)
+      failed_visual_artifact_claim?(non_url_text)
+  end
+
+  def failed_visual_artifact_claim?(value)
+    value.match?(
+      /\b(?:(?:blank|unpainted)\s+(?:capture|frame|image|page|screenshot)|(?:capture|frame|image|page|screenshot)\s+(?:(?:is|was|remained|looks?|appears?)\s+)?(?:blank|unpainted))\b/i
+    )
   end
 
   def valid_paint_check?(value)
