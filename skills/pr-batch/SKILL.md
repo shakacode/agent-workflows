@@ -197,7 +197,10 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 10. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
 11. **Permissions**: confirm the current session can run without blocking worker approval prompts.
 12. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
-13. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
+13. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`,
+    `ready-human-review-required`, `autonomous-merge-evidence-unknown`,
+    `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`,
+    or `no-pr-evidence`.
 
 ## Canonical Readiness Vocabulary
 

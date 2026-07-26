@@ -413,6 +413,54 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_optional_autonomous_merge_policy_accepts_an_exact_empty_mapping_seed
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("autonomous_merge" => {}))
+      write_skill(root, "No commands here.\n")
+
+      policy_text = File.read(File.join(root, ".agents/agent-workflow.yml"), encoding: "UTF-8")
+      out, status = run_doctor(root)
+
+      assert_includes policy_text, "autonomous_merge: {}\n"
+      assert status.success?, out
+    end
+  end
+
+  def test_optional_autonomous_merge_policy_accepts_runtime_valid_empty_arrays
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "autonomous_merge" => {
+            "human_review_paths" => [],
+            "policy_paths" => [],
+            "generated_paths" => []
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_empty_arrays_outside_autonomous_merge_remain_unresolved
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("custom_runtime_paths" => []))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "unresolved policy value for key: custom_runtime_paths"
+    end
+  end
+
   def test_invalid_autonomous_merge_policy_is_reported_by_the_seam_doctor
     with_repo do |root|
       write_valid_binstub_contract(root)

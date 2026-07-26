@@ -154,6 +154,8 @@ CANONICAL_READINESS_STATES = %w[
   merged
   ready-gates-clean
   ready-no-merge-authority
+  ready-human-review-required
+  autonomous-merge-evidence-unknown
   waiting-on-checks-or-review
   external-gate-failing
   blocked-user-input
@@ -567,6 +569,22 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes workflow_text, "`#{state}`", "workflows/pr-processing.md"
     end
     assert_text_includes workflow_text, "UNKNOWN", "workflows/pr-processing.md"
+  end
+
+  def test_completion_state_checklists_match_canonical_readiness_vocabulary
+    surfaces = {
+      "skills/pr-batch/SKILL.md Completion states" => @pr_batch_skill,
+      "workflows/pr-processing.md Completion states" => @workflow
+    }
+    mismatches = surfaces.filter_map do |label, text|
+      paragraph = text.match(/(?:\*\*)?Completion states(?:\*\*)?:.*?(?=\n\n)/m)&.[](0)
+      actual = paragraph&.scan(/`([^`]+)`/)&.flatten
+      next if actual == CANONICAL_READINESS_STATES
+
+      "#{label}: expected #{CANONICAL_READINESS_STATES.inspect}, got #{actual.inspect}"
+    end
+
+    assert_empty mismatches, mismatches.join("\n")
   end
 
   def test_planning_skills_link_to_canonical_readiness_vocabulary

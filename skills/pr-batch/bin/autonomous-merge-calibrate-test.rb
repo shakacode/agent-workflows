@@ -387,6 +387,60 @@ class AutonomousMergeCalibrateTest < Minitest::Test
     assert_includes stderr, "calibration PR identities must be unique"
   end
 
+  def test_every_pr_repository_shape_is_validated_before_repository_filtering
+    selected = pr(
+      "example/one", 1,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["app"]
+    )
+    selected["semantic_inspection"] = "reviewed"
+    base_dataset = {
+      "contract" => "autonomous-merge-calibration-dataset",
+      "version" => 1,
+      "scope" => {
+        "complete" => true,
+        "window" => "pre-filter validation fixture",
+        "repositories" => ["example/one"],
+        "reviewed_heads_decision" => {
+          "disposition" => "enforced",
+          "rationale" => "Every dataset entry must be structurally valid before filtering."
+        }
+      }
+    }
+    malformed_repository = selected.merge("repository" => "not-owner-repo", "number" => 2)
+    cases = {
+      "--repo filtering" => [
+        base_dataset.merge("prs" => [selected, "not-a-mapping"]),
+        ["--repo", "example/one"],
+        "calibration PR must be a mapping"
+      ],
+      "dataset-scope filtering" => [
+        base_dataset.merge("prs" => [selected, malformed_repository]),
+        [],
+        "calibration PR repository must use OWNER/REPO form"
+      ]
+    }
+
+    results = cases.transform_values do |dataset, arguments, expected_error|
+      stdout, stderr, status = run_calibrator(dataset, *arguments)
+      {
+        "stdout" => stdout,
+        "stderr" => stderr,
+        "status" => status,
+        "expected_error" => expected_error
+      }
+    end
+    failures = results.filter_map do |label, result|
+      next unless result.fetch("status").success? || !result.fetch("stdout").empty? ||
+                  !result.fetch("stderr").include?(result.fetch("expected_error"))
+
+      "#{label}: status=#{result.fetch('status').exitstatus}, stdout=#{result.fetch('stdout').inspect}, " \
+        "stderr=#{result.fetch('stderr').inspect}"
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
   def test_filtered_malformed_metrics_do_not_contaminate_zero_and_null_boundaries
     selected = pr(
       "example/one", 1,

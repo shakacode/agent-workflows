@@ -1666,6 +1666,7 @@ module AgentWorkflowSeamDoctor
 
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
+      next if key == "autonomous_merge"
       next unless unresolved_policy_value?(value)
 
       issues << "unresolved policy value for key: #{key}"

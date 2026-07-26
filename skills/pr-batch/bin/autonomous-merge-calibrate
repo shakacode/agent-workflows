@@ -79,13 +79,18 @@ rescue Date::Error, KeyError, TypeError
   abort "calibration PR merged_at must be an ISO 8601 timestamp"
 end
 
-def validate_calibration_pr_identity!(pull_request)
+def validate_calibration_pr_repository!(pull_request)
   abort "calibration PR must be a mapping" unless pull_request.is_a?(Hash)
 
   repository = pull_request["repository"]
   unless repository.is_a?(String) && repository.match?(%r{\A[^/\s]+/[^/\s]+\z})
     abort "calibration PR repository must use OWNER/REPO form"
   end
+  repository
+end
+
+def validate_calibration_pr_identity!(pull_request)
+  repository = validate_calibration_pr_repository!(pull_request)
   unless pull_request["number"].is_a?(Integer) && pull_request["number"].positive?
     abort "calibration PR number must be a positive integer"
   end
@@ -128,13 +133,8 @@ window_covered = requested_window_covered?(scope, options)
 effective_scope_complete = scope["complete"] == true && window_covered
 
 repositories = options[:repositories].empty? ? scope.fetch("repositories") : options[:repositories]
-unless options[:repositories].any?
-  abort "calibration PR must be a mapping" unless prs.all? { |pr| pr.is_a?(Hash) }
-  unless prs.all? { |pr| pr["repository"].is_a?(String) }
-    abort "calibration PR repository must use OWNER/REPO form"
-  end
-end
-prs = prs.select { |pr| pr.is_a?(Hash) && repositories.include?(pr["repository"]) }
+prs.each { |pr| validate_calibration_pr_repository!(pr) }
+prs = prs.select { |pr| repositories.include?(pr.fetch("repository")) }
 candidate_identities = {}
 merged_at_instants = {}.compare_by_identity
 prs.each do |pr|
