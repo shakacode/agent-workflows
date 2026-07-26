@@ -480,16 +480,18 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_empty failures, failures.join("\n")
   end
 
-  def test_empty_arrays_outside_autonomous_merge_remain_unresolved
-    with_repo do |root|
-      write_valid_binstub_contract(root)
-      write_policy(root, POLICY.merge("custom_runtime_paths" => []))
-      write_skill(root, "No commands here.\n")
+  def test_empty_collections_outside_autonomous_merge_remain_unresolved
+    [[], {}].each do |empty_collection|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("custom_runtime_paths" => empty_collection))
+        write_skill(root, "No commands here.\n")
 
-      out, status = run_doctor(root)
+        out, status = run_doctor(root)
 
-      refute status.success?
-      assert_includes out, "unresolved policy value for key: custom_runtime_paths"
+        refute status.success?, empty_collection.class.name
+        assert_includes out, "unresolved policy value for key: custom_runtime_paths", empty_collection.class.name
+      end
     end
   end
 
