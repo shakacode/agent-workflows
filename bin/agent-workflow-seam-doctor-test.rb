@@ -336,6 +336,48 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_required_policy_values_reject_embedded_legacy_placeholders
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "base_branch" => "Use <base branch>",
+          "ci_parity_environment" => "Run in <runner image>"
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "unresolved policy value for key: base_branch"
+      assert_includes out, "unresolved policy value for key: ci_parity_environment"
+    end
+  end
+
+  def test_optional_policy_values_recursively_reject_embedded_legacy_placeholders
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "custom_scalar" => "Use <base branch>",
+          "custom_array" => ["Run in <runner image>"],
+          "custom_mapping" => { "nested" => "Use <main branch>" }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      %w[custom_scalar custom_array custom_mapping].each do |key|
+        assert_includes out, "unresolved policy value for key: #{key}"
+      end
+    end
+  end
+
   def test_optional_repo_prefix_accepts_valid_value_and_remains_optional
     with_repo do |root|
       write_valid_binstub_contract(root)
