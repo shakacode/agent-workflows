@@ -558,9 +558,20 @@ Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
 
 When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
-ready/merge claim, include replayable `qa-evidence v1` and
+ready/merge claim, include replayable `qa-evidence v2` and
 `priority-finding-dispositions v1` markers as defined in
 `.agents/workflows/pr-processing.md`, or state why replay is not applicable.
+Historical `qa-evidence v1` remains replayable but must not be emitted for new
+closeout evidence. Every current user-visible UI change requires durable
+before/after evidence, explicit `interaction_change` and `visual_fix`
+classifications, an interaction clip or measured substitute when applicable, an
+unfixed negative control for a visual fix, and repository performance-seam
+`baseline_value=<number><unit>` / `candidate_value=<number><unit>` evidence for
+rendered-page/asset/bundle impact.
+Replay current UI evidence with `--expected-head-sha <full-final-head-SHA>
+--require-visual-evidence-v2`; the strict v2 flag is invalid without the
+expected head. GitHub-only prepared local artifacts keep readiness blocked until
+a human attachment produces durable GitHub URLs.
 Do not call a target `complete` while its ledger has `UNKNOWN` fields or
 `complete_allowed: false`.
 Do not report a batch that requires QA as ready while required QA

@@ -335,14 +335,29 @@ states, not verified batch subsets.
 After the scope algorithm identifies the batch or reports an `UNKNOWN` scope,
 collect any QA lane and QA Evidence block for that batch. Do not use missing QA
 state to shrink the worked-issue scope; report it as a QA coverage finding or
-`UNKNOWN` fact instead. When the handoff includes `qa-evidence v1` or
+`UNKNOWN` fact instead. When the handoff includes `qa-evidence v1`,
+`qa-evidence v2`, or
 `priority-finding-dispositions v1` markers, resolve
 `POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill / repo-local chain,
 then run `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` separately
 for each PR body, handoff comment, or saved evidence file with
 `--expected-head-sha <full-merged-head-SHA>`. Add
 `--require-priority-dispositions` when the audit relies on fixed, waived, or
-deferred priority findings. Carry `BLOCKED` / `UNKNOWN` replay as a QA or
+deferred priority findings. For every current user-visible UI change, run the
+combined gate `--expected-head-sha <full-merged-head-SHA>
+--require-visual-evidence-v2`; the strict v2 flag is invalid without the
+expected head. Verify durable reviewer-visible before/after
+URLs, a non-blank paint check, interaction clip or measured substitute when
+applicable, an unfixed negative control for a visual fix, and repository
+performance-seam evidence with an honest `bundle_hygiene` or `measured_metric`
+classification plus same-unit `baseline_value=<number><unit>` and
+`candidate_value=<number><unit>` fields; incidental CI URL IDs do not count.
+Local/file paths and “captured locally” do not qualify; a
+GitHub-only human-attachment handoff remains blocked until the receipt contains
+the resulting durable GitHub URL. Historical `qa-evidence v1` remains
+replayable when the v2 forward gate is not required. Explicit v2 presence
+supersedes v1 history, so stale or malformed v2 cannot be rescued by a current
+v1. Carry `BLOCKED` / `UNKNOWN` replay as a QA or
 priority-disposition finding.
 
 Show the included/excluded worked issues, collected QA lanes and QA Evidence

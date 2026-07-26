@@ -14,9 +14,17 @@ module CloseoutEvidenceReplay
   VALID_QA_STATUSES = %w[satisfied blocked waived in_progress unknown not_applicable].freeze
   VALID_QA_REQUIRED = %w[yes no].freeze
   VALID_RELEASE_BLOCKING = %w[clear blocked waived not_applicable].freeze
-  VALID_PROCESS_GAP_DISPOSITIONS = ["script", "schema", "checklist+replay", "park", "not applicable", "not_applicable"].freeze
+  VALID_PROCESS_GAP_DISPOSITIONS = [
+    "script", "schema", "checklist+replay", "park", "not applicable", "not_applicable"
+  ].freeze
+  VALID_VISUAL_DESTINATIONS = %w[
+    github_pr linked_tracker repo_artifact_store human_attachment_pending not_applicable
+  ].freeze
+  VALID_PERFORMANCE_IMPACTS = %w[not_applicable bundle_hygiene measured_metric].freeze
   VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
+  LOCAL_MEDIA_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm)\b/i
+  MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -38,7 +46,8 @@ module CloseoutEvidenceReplay
       replay(
         text,
         expected_head_sha: options[:expected_head_sha],
-        require_priority_dispositions: options.fetch(:require_priority_dispositions, false)
+        require_priority_dispositions: options.fetch(:require_priority_dispositions, false),
+        require_visual_evidence_v2: options.fetch(:require_visual_evidence_v2, false)
       )
     )
     0
@@ -53,9 +62,9 @@ module CloseoutEvidenceReplay
   def parse_options(argv)
     options = {}
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] [--require-priority-dispositions] <path|->"
+      opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] [--require-priority-dispositions] [--require-visual-evidence-v2] <path|->"
       opts.separator ""
-      opts.separator "Parse `qa-evidence v1` and `priority-finding-dispositions v1` markers from"
+      opts.separator "Parse `qa-evidence v1|v2` and `priority-finding-dispositions v1` markers from"
       opts.separator "a PR body, issue comment, handoff, or stdin and emit replay JSON."
       opts.separator ""
       opts.on("--expected-head-sha SHA", "Require QA and priority evidence for this full final-head SHA") do |sha|
@@ -68,14 +77,32 @@ module CloseoutEvidenceReplay
       opts.on("--require-priority-dispositions", "Fail when priority evidence is missing or explicitly not_applicable") do
         options[:require_priority_dispositions] = true
       end
+      opts.on("--require-visual-evidence-v2", "Fail when current UI evidence lacks the durable visual-evidence v2 contract") do
+        options[:require_visual_evidence_v2] = true
+      end
       opts.on("-h", "--help", "Show this help") { options[:help] = true }
     end
     parser.parse!(argv)
+    if options[:require_visual_evidence_v2] && !options[:expected_head_sha]
+      raise OptionParser::MissingArgument,
+            "--require-visual-evidence-v2 requires --expected-head-sha"
+    end
+
     [options, parser]
   end
 
-  def replay(text, expected_head_sha: nil, require_priority_dispositions: false)
-    qa = replay_qa_markers(marker_bodies(text, "qa-evidence v1"), expected_head_sha: expected_head_sha)
+  def replay(text, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
+    qa_v2_markers = marker_bodies(text, "qa-evidence v2")
+    qa =
+      if require_visual_evidence_v2 && expected_head_sha.nil?
+        unknown("--require-visual-evidence-v2 requires expected_head_sha")
+      elsif qa_v2_markers.any?
+        replay_qa_markers(qa_v2_markers, expected_head_sha: expected_head_sha, version: 2)
+      elsif require_visual_evidence_v2
+        unknown("qa-evidence v2 marker required for current user-visible UI evidence")
+      else
+        replay_qa_markers(marker_bodies(text, "qa-evidence v1"), expected_head_sha: expected_head_sha, version: 1)
+      end
     priority = replay_priority_markers(
       marker_bodies(text, "priority-finding-dispositions v1"),
       expected_head_sha:,
@@ -92,11 +119,19 @@ module CloseoutEvidenceReplay
     text.scan(/<!--\s*#{Regexp.escape(name)}\s*(.*?)-->/m).map(&:first)
   end
 
-  def replay_qa_markers(markers, expected_head_sha: nil)
+  def replay_qa_markers(markers, expected_head_sha: nil, version: 1)
     return unknown("qa-evidence marker missing") if markers.empty?
 
     markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
-    aggregate_marker_results(markers.map { |marker| replay_qa(marker, expected_head_sha: expected_head_sha) })
+    aggregate_marker_results(
+      markers.map do |marker|
+        if version == 2
+          replay_qa_v2(marker, expected_head_sha: expected_head_sha)
+        else
+          replay_qa(marker, expected_head_sha: expected_head_sha).merge("marker_version" => 1)
+        end
+      end
+    )
   end
 
   def replay_priority_markers(markers, expected_head_sha: nil, required: false)
@@ -174,6 +209,255 @@ module CloseoutEvidenceReplay
     }
     result["expected_head_sha"] = expected_head_sha if expected_head_sha
     result
+  end
+
+  def replay_qa_v2(marker, expected_head_sha: nil)
+    result = replay_qa(marker, expected_head_sha: expected_head_sha)
+    fields = result.fetch("fields")
+    errors = result.fetch("errors")
+    missing = result.fetch("missing")
+    visual_fields = %w[
+      user_visible_ui_change
+      visual_evidence_destination
+      visual_evidence
+      paint_check
+      interaction_change
+      interaction_evidence
+      visual_fix
+      negative_control
+      performance_impact
+      performance_evidence
+    ]
+    missing.concat(missing_fields(fields, visual_fields))
+
+    ui_change = fields.fetch("user_visible_ui_change", "")
+    destination = fields.fetch("visual_evidence_destination", "")
+    visual_evidence = fields.fetch("visual_evidence", "")
+    paint_check = fields.fetch("paint_check", "")
+    interaction_change = fields.fetch("interaction_change", "")
+    interaction_evidence = fields.fetch("interaction_evidence", "")
+    visual_fix = fields.fetch("visual_fix", "")
+    negative_control = fields.fetch("negative_control", "")
+    performance_impact = fields.fetch("performance_impact", "")
+    performance_evidence = fields.fetch("performance_evidence", "")
+
+    missing << "user_visible_ui_change" unless ui_change.empty? || VALID_QA_REQUIRED.include?(ui_change)
+    unless destination.empty? || VALID_VISUAL_DESTINATIONS.include?(destination)
+      missing << "visual_evidence_destination"
+    end
+    missing << "interaction_change" unless interaction_change.empty? || VALID_QA_REQUIRED.include?(interaction_change)
+    missing << "visual_fix" unless visual_fix.empty? || VALID_QA_REQUIRED.include?(visual_fix)
+    missing << "performance_impact" unless performance_impact.empty? || VALID_PERFORMANCE_IMPACTS.include?(performance_impact)
+
+    if ui_change == "no"
+      missing << "visual_evidence_destination" unless destination == "not_applicable"
+      {
+        "visual_evidence" => visual_evidence,
+        "paint_check" => paint_check,
+        "interaction_evidence" => interaction_evidence,
+        "negative_control" => negative_control,
+        "performance_evidence" => performance_evidence
+      }.each do |field, value|
+        missing << field unless reasoned_not_applicable?(value)
+      end
+      missing << "interaction_change" unless interaction_change == "no"
+      missing << "visual_fix" unless visual_fix == "no"
+      missing << "performance_impact" unless performance_impact == "not_applicable"
+    elsif ui_change == "yes"
+      validate_visual_evidence_v2(
+        fields,
+        missing,
+        destination: destination,
+        visual_evidence: visual_evidence,
+        paint_check: paint_check,
+        interaction_change: interaction_change,
+        interaction_evidence: interaction_evidence,
+        visual_fix: visual_fix,
+        negative_control: negative_control,
+        performance_impact: performance_impact,
+        performance_evidence: performance_evidence
+      )
+    end
+
+    missing.uniq!
+    result["marker_version"] = 2
+    result["supersedes_marker_version"] = 1
+    result["verdict"] = "UNKNOWN" if errors.any? || missing.any?
+    result
+  end
+
+  def validate_visual_evidence_v2(
+    fields,
+    missing,
+    destination:,
+    visual_evidence:,
+    paint_check:,
+    interaction_change:,
+    interaction_evidence:,
+    visual_fix:,
+    negative_control:,
+    performance_impact:,
+    performance_evidence:
+  )
+    if visual_evidence.start_with?("durable:")
+      validate_durable_visual_evidence(visual_evidence, destination, missing)
+    elsif visual_evidence.start_with?("blocked:")
+      human_attachment = visual_evidence.match?(/\bhuman\b/i) &&
+                         visual_evidence.match?(/\battach(?:ment)?\b/i) &&
+                         absolute_local_path?(visual_evidence)
+      missing << "visual_evidence.human_attachment" unless human_attachment
+      missing << "visual_evidence_destination" unless destination == "human_attachment_pending"
+      missing << "status" unless fields.fetch("status", "") == "blocked"
+      missing << "release_blocking" unless fields.fetch("release_blocking", "") == "blocked"
+    else
+      missing << "visual_evidence"
+    end
+
+    missing << "paint_check" unless valid_paint_check?(paint_check)
+    validate_interaction_evidence(interaction_change, interaction_evidence, missing)
+    validate_negative_control(visual_fix, negative_control, missing)
+    validate_performance_evidence(performance_impact, performance_evidence, missing)
+  end
+
+  def validate_durable_visual_evidence(evidence, destination, missing)
+    missing << "visual_evidence.url" unless http_url?(evidence)
+    missing << "visual_evidence.before_after" unless baseline_and_candidate?(evidence)
+    missing << "visual_evidence.local_reference" if disallowed_durable_reference?(evidence)
+
+    case destination
+    when "github_pr"
+      missing << "visual_evidence.github_url" unless github_url?(evidence)
+    when "linked_tracker", "repo_artifact_store"
+      missing << "visual_evidence.url" unless http_url?(evidence)
+    else
+      missing << "visual_evidence_destination"
+    end
+  end
+
+  def validate_interaction_evidence(classification, evidence, missing)
+    case classification
+    when "yes"
+      missing << "interaction_evidence" unless durable_clip?(evidence) || measured_substitute?(evidence)
+    when "no"
+      missing << "interaction_evidence" unless reasoned_not_applicable?(evidence)
+    else
+      missing << "interaction_change"
+    end
+  end
+
+  def validate_negative_control(classification, evidence, missing)
+    case classification
+    when "yes"
+      observed_failure = evidence.start_with?("observed_failure:") &&
+                         evidence.match?(/\b(?:fail(?:ed|ure)?|error|expected|assert)\b/i)
+      missing << "negative_control" unless observed_failure
+    when "no"
+      missing << "negative_control" unless reasoned_not_applicable?(evidence)
+    else
+      missing << "visual_fix"
+    end
+  end
+
+  def validate_performance_evidence(classification, evidence, missing)
+    if classification == "not_applicable"
+      missing << "performance_evidence" unless reasoned_not_applicable?(evidence)
+      return
+    end
+
+    return unless %w[bundle_hygiene measured_metric].include?(classification)
+
+    measured = evidence.start_with?("repo_seam:") &&
+               labeled_measurement_pair?(evidence, "baseline_value", "candidate_value") &&
+               !evidence.match?(%r{\b(?:unavailable|missing|unknown|not[ _]measured|not[ _]applicable)\b|n/a}i)
+    missing << "performance_evidence" unless measured
+  end
+
+  def reasoned_not_applicable?(value)
+    value.match?(/\Anot[ _]applicable:\s*\S.+\z/i)
+  end
+
+  def baseline_and_candidate?(value)
+    value.match?(/\b(?:baseline|before)\b/i) && value.match?(/\b(?:candidate|after)\b/i)
+  end
+
+  def http_url?(value)
+    value.match?(%r{https://[^\s<>()]+})
+  end
+
+  def github_url?(value)
+    value.match?(%r{https://(?:www\.)?github\.com/[^\s<>()]+}i)
+  end
+
+  def absolute_local_path?(value)
+    value.match?(%r{(?:\A|[\s(;])(?:/[^/\s]\S*|[A-Za-z]:[\\/]\S+)})
+  end
+
+  def disallowed_durable_reference?(value)
+    non_url_text = without_https_urls(value)
+    local_path = absolute_local_path?(non_url_text) ||
+                 non_url_text.match?(%r{(?:\A|[\s("'=;])(?:\./|\.\./|~[/\\]|[A-Za-z]:[^/\\\s]|[^/\s]+/)\S+}) ||
+                 non_url_text.match?(/(?:\A|[\s("'=;])(?:[^\\\s]+\\)+[^\\\s]+/) ||
+                 non_url_text.match?(LOCAL_MEDIA_EXTENSION)
+    local_path ||
+      non_url_text.match?(/\bfile:/i) ||
+      non_url_text.match?(/\bcaptured locally\b/i) ||
+      non_url_text.match?(/\b(?:blank|unpainted)\b/i)
+  end
+
+  def valid_paint_check?(value)
+    value.start_with?("passed:") &&
+      value.match?(/\b(?:painted|rendered)\b/i) &&
+      !value.match?(/\b(?:blank|unpainted)\b/i)
+  end
+
+  def durable_clip?(value)
+    value.start_with?("clip:") &&
+      http_url?(value) &&
+      !disallowed_durable_reference?(value)
+  end
+
+  def measured_substitute?(value)
+    before_after = strict_measured_substitute_match(
+      value,
+      "before_value",
+      "after_value"
+    )
+    baseline_candidate = strict_measured_substitute_match(
+      value,
+      "baseline_value",
+      "candidate_value"
+    )
+    before_after || baseline_candidate
+  end
+
+  def strict_measured_substitute_match(value, first_key, second_key)
+    number_unit = "([-+]?\\d+(?:\\.\\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)"
+    tolerance = "(\\d+(?:\\.\\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)"
+    match = value.match(
+      /\Ameasured_substitute:\s*#{Regexp.escape(first_key)}=#{number_unit};\s*#{Regexp.escape(second_key)}=#{number_unit};\s*tolerance=#{tolerance}\z/i
+    )
+    return false unless match
+
+    [match[2], match[4], match[6]].map(&:downcase).uniq.length == 1
+  end
+
+  def labeled_measurement_pair?(value, first_key, second_key)
+    non_url_text = without_https_urls(value)
+    first = labeled_measurements(non_url_text, first_key)
+    second = labeled_measurements(non_url_text, second_key)
+    return false unless first.length == 1 && second.length == 1
+
+    first.first.fetch(1).casecmp?(second.first.fetch(1))
+  end
+
+  def labeled_measurements(value, key)
+    value.scan(
+      /(?:\A|[\s;])#{Regexp.escape(key)}\s*=\s*#{MEASUREMENT_VALUE}(?=\s*(?:;|\z))/i
+    )
+  end
+
+  def without_https_urls(value)
+    value.gsub(%r{https://[^\s<>()]+}i, "")
   end
 
   def replay_priority(marker, expected_head_sha: nil, required: false)
