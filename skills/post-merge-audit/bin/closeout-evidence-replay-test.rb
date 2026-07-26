@@ -517,16 +517,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_rejects_https_evidence_without_a_valid_host
-    %w[linked_tracker repo_artifact_store].each do |destination|
-      qa = run_replay(
-        v2_marker(
-          "visual_evidence_destination" => destination,
-          "visual_evidence" => "durable: before and after https://;"
-        )
-      ).fetch("qa_evidence")
+    %w[https://; https://example.test:bad/path].each do |url|
+      %w[linked_tracker repo_artifact_store].each do |destination|
+        qa = run_replay(
+          v2_marker(
+            "visual_evidence_destination" => destination,
+            "visual_evidence" => "durable: before and after #{url}"
+          )
+        ).fetch("qa_evidence")
 
-      assert_equal "UNKNOWN", qa.fetch("verdict"), destination
-      assert_includes qa.fetch("missing"), "visual_evidence.url", destination
+        assert_equal "UNKNOWN", qa.fetch("verdict"), "#{destination}: #{url}"
+        assert_includes qa.fetch("missing"), "visual_evidence.url", "#{destination}: #{url}"
+      end
     end
   end
 

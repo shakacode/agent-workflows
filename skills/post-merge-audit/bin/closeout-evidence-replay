@@ -21,6 +21,12 @@ module CloseoutEvidenceReplay
   VALID_VISUAL_DESTINATIONS = %w[
     github_pr linked_tracker repo_artifact_store human_attachment_pending not_applicable
   ].freeze
+  # private-user-images.githubusercontent.com is deliberately excluded because copied signed URLs expire.
+  DURABLE_GITHUB_EVIDENCE_HOSTS = %w[
+    github.com
+    www.github.com
+    user-images.githubusercontent.com
+  ].freeze
   VALID_PERFORMANCE_IMPACTS = %w[not_applicable bundle_hygiene measured_metric].freeze
   VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
@@ -401,12 +407,7 @@ module CloseoutEvidenceReplay
       uri = parse_https_url(url)
       next false unless uri
 
-      github_hosts = %w[
-        github.com
-        www.github.com
-        user-images.githubusercontent.com
-      ]
-      github_hosts.include?(uri.host.downcase) && uri.path && !uri.path.empty? && uri.path != "/"
+      DURABLE_GITHUB_EVIDENCE_HOSTS.include?(uri.host.downcase) && uri.path && !uri.path.empty? && uri.path != "/"
     end
   end
 
@@ -513,7 +514,7 @@ module CloseoutEvidenceReplay
     return if uri.host.split(".").any? { |label| label.empty? || label.length > 63 || label.start_with?("-") || label.end_with?("-") }
 
     uri
-  rescue URI::InvalidURIError
+  rescue URI::Error
     nil
   end
 
