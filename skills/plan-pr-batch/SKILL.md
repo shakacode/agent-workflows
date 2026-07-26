@@ -193,10 +193,12 @@ Plan a PR batch
      `priority-finding-dispositions v1` marker in the final evidence.
      For every current user-visible UI change, plan the durable before/after
      destination, explicit `interaction_change` and `visual_fix`
-     classifications, interaction clip or measured substitute, visual-fix
-     negative control, and exact repository performance-seam
+     classifications, interaction clip or measured substitute, and visual-fix
+     negative control. For rendered-page, asset-delivery, or bundle impact,
+     also plan exact repository performance-seam
      `baseline_value=<number><unit>` / `candidate_value=<number><unit>`
-     evidence. A GitHub-only plan may prepare local artifacts,
+     evidence and, for `measured_metric`, a
+     `metric_name=<runtime/user metric>` label. A GitHub-only plan may prepare local artifacts,
      but must plan an explicit blocked
      human-attachment handoff until durable GitHub URLs exist.
    - Decide whether the batch will schedule any parallel wave before doing path

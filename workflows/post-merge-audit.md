@@ -351,7 +351,9 @@ URLs, a non-blank paint check, interaction clip or measured substitute when
 applicable, an unfixed negative control for a visual fix, and repository
 performance-seam evidence with an honest `bundle_hygiene` or `measured_metric`
 classification plus same-unit `baseline_value=<number><unit>` and
-`candidate_value=<number><unit>` fields; incidental CI URL IDs do not count.
+`candidate_value=<number><unit>` fields. A `measured_metric` claim also names
+the runtime/user metric with `metric_name=<runtime/user metric>`; incidental CI
+URL IDs do not count.
 Local/file paths and “captured locally” do not qualify; a
 GitHub-only human-attachment handoff remains blocked until the receipt contains
 the resulting durable GitHub URL. Historical `qa-evidence v1` remains

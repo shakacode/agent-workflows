@@ -151,7 +151,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       visual_fix: yes
       negative_control: observed_failure: unfixed bundle failed assertion; expected 0 within 1 of 104
       performance_impact: measured_metric
-      performance_evidence: repo_seam: LCP runtime metric; baseline_value=2.4s; candidate_value=2.1s
+      performance_evidence: repo_seam: metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s
       findings: none
       release_blocking: clear
       process_gap_disposition: checklist+replay
@@ -335,6 +335,25 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_ephemeral_non_https_artifact_schemes_even_with_https
+    schemes = [
+      "blob:https://example.test/transient-id",
+      "data:image/png;base64,AAAA",
+      "filesystem:https://example.test/temporary/before.png",
+      "http://example.test/before.png",
+      "ftp://example.test/before.png",
+      "mediastream:transient-id"
+    ]
+
+    schemes.each do |artifact|
+      evidence = "durable: before #{artifact} and after https://github.com/example/repo/pull/123#visual"
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), artifact
+      assert_includes qa.fetch("missing"), "visual_evidence.local_reference", artifact
+    end
+  end
+
   def test_v2_rejects_relative_local_artifact_tokens_even_with_https
     bad_tokens = [
       "./before.png",
@@ -376,6 +395,31 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     qa = data.fetch("qa_evidence")
     assert_equal "UNKNOWN", qa.fetch("verdict")
     assert_includes qa.fetch("missing"), "visual_evidence.github_url"
+  end
+
+  def test_v2_github_destination_rejects_github_url_nested_in_tracker_query
+    nested = "https://tracker.example.test/artifact?next=https://github.com/example/repo/pull/123#visual"
+    evidence = "durable: before and after #{nested}"
+    qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.github_url"
+  end
+
+  def test_v2_rejects_negated_paint_claims
+    invalid_claims = [
+      "passed: target was not painted",
+      "passed: target did not render",
+      "passed: browser failed to paint target",
+      "passed: browser failed to render target"
+    ]
+
+    invalid_claims.each do |paint_check|
+      qa = run_replay(v2_marker("paint_check" => paint_check)).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), paint_check
+      assert_includes qa.fetch("missing"), "paint_check", paint_check
+    end
   end
 
   def test_v2_interaction_classifier_is_fail_closed
@@ -465,6 +509,61 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_negative_control_rejects_negated_failure_and_passing_claims
+    invalid_claims = [
+      "observed_failure: assertion did not fail",
+      "observed_failure: no failure was observed",
+      "observed_failure: no error occurred",
+      "observed_failure: assertion passed",
+      "observed_failure: negative control passes",
+      "observed_failure: run succeeded",
+      "observed_failure: expected output matched",
+      "observed_failure: everything was okay"
+    ]
+
+    invalid_claims.each do |negative_control|
+      qa = run_replay(
+        v2_marker(
+          "visual_fix" => "yes",
+          "negative_control" => negative_control
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), negative_control
+      assert_includes qa.fetch("missing"), "negative_control", negative_control
+    end
+  end
+
+  def test_v2_reasoned_not_applicable_rejects_unresolved_placeholders
+    invalid_reasons = [
+      "not applicable: UNKNOWN",
+      "not applicable: unavailable",
+      "not applicable: evidence missing",
+      "not applicable: N/A",
+      "not_applicable: not available"
+    ]
+
+    invalid_reasons.each do |reason|
+      interaction_qa = run_replay(
+        v2_marker(
+          "interaction_change" => "no",
+          "interaction_evidence" => reason
+        )
+      ).fetch("qa_evidence")
+      negative_qa = run_replay(
+        v2_marker(
+          "visual_fix" => "no",
+          "negative_control" => reason
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", interaction_qa.fetch("verdict"), reason
+      assert_includes interaction_qa.fetch("missing"), "interaction_evidence", reason
+      assert_equal "UNKNOWN", negative_qa.fetch("verdict"), reason
+      assert_includes negative_qa.fetch("missing"), "negative_control", reason
+    end
+  end
+
   def test_v2_performance_claim_requires_measured_baseline_and_candidate_values
     invalid_evidence = [
       "repo_seam: baseline unavailable; candidate 2.1s",
@@ -493,6 +592,40 @@ class CloseoutEvidenceReplayTest < Minitest::Test
         assert_includes qa.fetch("missing"), "performance_evidence", assertion_label
       end
     end
+  end
+
+  def test_v2_measured_metric_requires_named_non_size_runtime_or_user_metric
+    invalid_evidence = [
+      "repo_seam: baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: metric_name=bundle_size; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: metric_name=asset bytes; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: bundle size report; metric_name=score; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: metric_name=performance_score; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s"
+    ]
+
+    invalid_evidence.each do |evidence|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => evidence
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
+      assert_includes qa.fetch("missing"), "performance_evidence", evidence
+    end
+  end
+
+  def test_v2_bundle_hygiene_does_not_require_metric_name
+    qa = run_replay(
+      v2_marker(
+        "performance_impact" => "bundle_hygiene",
+        "performance_evidence" => "repo_seam: bundle report; baseline_value=120kB; candidate_value=121kB"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
   end
 
   def test_current_v2_supersedes_legacy_v1_including_same_head_blocked_v1

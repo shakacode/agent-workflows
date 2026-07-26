@@ -25,6 +25,8 @@ module CloseoutEvidenceReplay
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
   LOCAL_MEDIA_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm)\b/i
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
+  EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
+  UNRESOLVED_PLACEHOLDER = %r{\b(?:missing|unavailable|unknown|not[ _]available)\b|n/a}i
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -348,8 +350,10 @@ module CloseoutEvidenceReplay
   def validate_negative_control(classification, evidence, missing)
     case classification
     when "yes"
+      payload = evidence.delete_prefix("observed_failure:").strip
       observed_failure = evidence.start_with?("observed_failure:") &&
-                         evidence.match?(/\b(?:fail(?:ed|ure)?|error|expected|assert)\b/i)
+                         payload.match?(/\b(?:fail(?:ed|ure)?|error|assert|mismatch)\b/i) &&
+                         !negated_or_passing_failure_claim?(payload)
       missing << "negative_control" unless observed_failure
     when "no"
       missing << "negative_control" unless reasoned_not_applicable?(evidence)
@@ -369,11 +373,13 @@ module CloseoutEvidenceReplay
     measured = evidence.start_with?("repo_seam:") &&
                labeled_measurement_pair?(evidence, "baseline_value", "candidate_value") &&
                !evidence.match?(%r{\b(?:unavailable|missing|unknown|not[ _]measured|not[ _]applicable)\b|n/a}i)
+    measured &&= valid_measured_metric?(evidence) if classification == "measured_metric"
     missing << "performance_evidence" unless measured
   end
 
   def reasoned_not_applicable?(value)
-    value.match?(/\Anot[ _]applicable:\s*\S.+\z/i)
+    match = value.match(/\Anot[ _]applicable:\s*(\S.+)\z/i)
+    match && !match[1].match?(UNRESOLVED_PLACEHOLDER)
   end
 
   def baseline_and_candidate?(value)
@@ -381,11 +387,13 @@ module CloseoutEvidenceReplay
   end
 
   def http_url?(value)
-    value.match?(%r{https://[^\s<>()]+})
+    http_urls(value).any?
   end
 
   def github_url?(value)
-    value.match?(%r{https://(?:www\.)?github\.com/[^\s<>()]+}i)
+    http_urls(value).any? do |url|
+      url.match?(%r{\Ahttps://(?:www\.)?github\.com/[^\s<>()]+\z}i)
+    end
   end
 
   def absolute_local_path?(value)
@@ -401,7 +409,7 @@ module CloseoutEvidenceReplay
                  ) ||
                  non_url_text.match?(LOCAL_MEDIA_EXTENSION)
     local_path ||
-      non_url_text.match?(/\bfile:/i) ||
+      non_url_text.match?(EPHEMERAL_ARTIFACT_SCHEME) ||
       non_url_text.match?(/\bcaptured locally\b/i) ||
       non_url_text.match?(/\b(?:blank|unpainted)\b/i)
   end
@@ -409,7 +417,8 @@ module CloseoutEvidenceReplay
   def valid_paint_check?(value)
     value.start_with?("passed:") &&
       value.match?(/\b(?:painted|rendered)\b/i) &&
-      !value.match?(/\b(?:blank|unpainted)\b/i)
+      !value.match?(/\b(?:blank|unpainted)\b/i) &&
+      !value.match?(/\b(?:not\s+(?:painted|rendered)|did\s+not\s+(?:paint|render)|failed\s+to\s+(?:paint|render))\b/i)
   end
 
   def durable_clip?(value)
@@ -459,7 +468,41 @@ module CloseoutEvidenceReplay
   end
 
   def without_https_urls(value)
-    value.gsub(%r{https://[^\s<>()]+}i, "")
+    value.gsub(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i, "")
+  end
+
+  def http_urls(value)
+    value.scan(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i)
+  end
+
+  def negated_or_passing_failure_claim?(value)
+    value.match?(/\b(?:did\s+not\s+fail|not\s+fail(?:ed|ing)?|no\s+(?:failure|error|mismatch))\b/i) ||
+      value.match?(/\b(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i)
+  end
+
+  def valid_measured_metric?(value)
+    non_url_text = without_https_urls(value)
+    names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
+    return false unless names.length == 1
+
+    metric_name = names.first.first.strip
+    size_tokens = %w[asset bundle byte bytes size]
+    return false if text_tokens(metric_name).any? { |token| size_tokens.include?(token) }
+
+    measurement_units = %w[baseline_value candidate_value].flat_map do |key|
+      labeled_measurements(non_url_text, key).map { |measurement| measurement.fetch(1).downcase }
+    end
+    return false if measurement_units.any? { |unit| unit.match?(/\A(?:[kmgt]i?)?b(?:ytes?)?\z/i) }
+
+    runtime_tokens = %w[cls duration fcp fid fps inp latency lcp runtime timing ttfb user]
+    evidence_tokens = text_tokens(non_url_text)
+    size_terms = evidence_tokens.any? { |token| size_tokens.include?(token) }
+    runtime_terms = evidence_tokens.any? { |token| runtime_tokens.include?(token) }
+    !size_terms || runtime_terms
+  end
+
+  def text_tokens(value)
+    value.downcase.split(/[^a-z0-9]+/).reject(&:empty?)
   end
 
   def replay_priority(marker, expected_head_sha: nil, required: false)

@@ -238,7 +238,8 @@ For each included PR:
   Local/file paths and “captured locally” are not durable evidence; a
   GitHub-only human-attachment handoff stays blocked until the resulting GitHub
   URL is in the receipt. Distinguish `bundle_hygiene` from a genuinely
-  `measured_metric` claim, and require explicit same-unit
+  `measured_metric` claim; the latter must name its runtime/user metric with
+  `metric_name=<runtime/user metric>`. Require explicit same-unit
   `baseline_value=<number><unit>` and `candidate_value=<number><unit>` fields
   for either; incidental CI URL IDs do not count. If private coordination claim/heartbeat state is `UNKNOWN`, verify
   the documented fallback evidence is otherwise complete and names a concrete QA

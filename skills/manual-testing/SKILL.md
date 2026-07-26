@@ -66,11 +66,10 @@ blocker. Do not fake a manual pass from static inspection.
      The before state may be the current implementation, an intentionally
      unfixed build, or a named design reference. Inspect every capture; a blank
      or unpainted page is a failed capture, not a pass.
-   - Put the artifacts where every intended reviewer can open them. Prefer a
-     linked/configured tracker such as Linear, Shortcut, or Jira when its upload
-     capability is available, then a repo-configured artifact destination, then
-     human-attached GitHub PR description images. Link tracker/artifact evidence
-     from the PR.
+   - Put the artifacts where every intended reviewer can open them. Prefer the
+     repository's configured linked tracker when its upload capability is
+     available, then a repo-configured artifact destination, then human-attached
+     GitHub PR description images. Link tracker/artifact evidence from the PR.
    - GitHub documents no REST or GraphQL attachment-upload route; use a human
      GitHub UI attachment when GitHub is the destination. For GitHub-only work,
      prepare clearly named local files and report their absolute paths, but keep
@@ -100,8 +99,9 @@ blocker. Do not fake a manual pass from static inspection.
    - For rendered-page, asset-delivery, or bundle impact, follow the repository
      performance seam and use `$benchmark-verification` when it applies. Label
      size/shape-only evidence `bundle_hygiene`; claim `measured_metric` only
-     when a real runtime/user metric was measured. Either claim requires the
-     repo-seam command/report plus explicit
+     when a real runtime/user metric was measured, and name it with
+     `metric_name=<runtime/user metric>`. Either claim requires the repo-seam
+     command/report plus explicit
      `baseline_value=<number><unit>` and `candidate_value=<number><unit>` fields
      with the same unit; incidental CI URL IDs do not count. Unavailable,
      missing, `UNKNOWN`, unmeasured, or N/A evidence blocks.
@@ -111,10 +111,15 @@ blocker. Do not fake a manual pass from static inspection.
      checks, browser actions, and screenshot paths when relevant.
    - For current UI changes, classify `interaction_change` and `visual_fix`,
      fill the human QA Evidence fields and replayable `qa-evidence v2` marker
-     from `workflows/pr-processing.md`, then run
-     `closeout-evidence-replay --expected-head-sha <full-final-head-SHA>
-     --require-visual-evidence-v2` when the helper is available. The strict v2
-     flag is invalid without the expected final-head SHA.
+     from the repository-resolved workflow contract. Resolve
+     `POST_MERGE_AUDIT_SKILL_DIR` through the explicit env-var, loaded-skill, and
+     repo-local pinned-copy chain, then run
+     `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"
+     --expected-head-sha <full-final-head-SHA>
+     --require-visual-evidence-v2 <file-or->`. The strict v2 flag is invalid
+     without the expected final-head SHA. If the helper cannot be resolved or
+     run, report the evidence and readiness state as `blocked`; do not proceed
+     with a pass claim.
    - If anything fails or required evidence is still local-only, fix/rerun the
      affected path or report the explicit blocked state.
 
