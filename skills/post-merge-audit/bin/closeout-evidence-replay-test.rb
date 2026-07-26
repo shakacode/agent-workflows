@@ -534,7 +534,6 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     hosts = %w[
       github.com/example/repo/pull/123#visual
       user-images.githubusercontent.com/123/before.png
-      private-user-images.githubusercontent.com/123/after.png
     ]
 
     hosts.each do |host_and_path|
@@ -543,6 +542,14 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "SATISFIED", qa.fetch("verdict"), host_and_path
     end
+  end
+
+  def test_v2_github_destination_rejects_expiring_private_attachment_host
+    evidence = "durable: before and after https://private-user-images.githubusercontent.com/123/after.png?jwt=signed"
+    qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.github_url"
   end
 
   def test_v2_rejects_negated_paint_claims
@@ -659,6 +666,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "observed_failure: assert did not error",
       "observed_failure: assertion never failed",
       "observed_failure: completed without mismatch",
+      "observed_failure: assertion no longer fails",
+      "observed_failure: assertion stopped failing",
+      "observed_failure: assertion fails no more",
       "observed_failure: assertion passed",
       "observed_failure: negative control passes",
       "observed_failure: run succeeded",

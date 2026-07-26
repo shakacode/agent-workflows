@@ -405,7 +405,6 @@ module CloseoutEvidenceReplay
         github.com
         www.github.com
         user-images.githubusercontent.com
-        private-user-images.githubusercontent.com
       ]
       github_hosts.include?(uri.host.downcase) && uri.path && !uri.path.empty? && uri.path != "/"
     end
@@ -520,6 +519,7 @@ module CloseoutEvidenceReplay
 
   def negated_or_passing_failure_claim?(value)
     value.match?(/\b(?:(?:did\s+not|didn['’]t|never)\s+(?:fail(?:ed)?|error|assert|mismatch)|not\s+fail(?:ed|ing)?|no\s+(?:failure|error|mismatch)|without\s+(?:failure|error|mismatch))\b/i) ||
+      value.match?(/\b(?:no\s+longer\s+fail(?:ed|s|ing)?|stopp(?:ed|ing)\s+fail(?:ing)?|fail(?:ed|s)?\s+no\s+more)\b/i) ||
       value.match?(/\b(?:assert(?:ion)?|control|negative\s+control|run|test|check)\s+(?:now\s+)?(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i) ||
       value.match?(/\A(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i)
   end
