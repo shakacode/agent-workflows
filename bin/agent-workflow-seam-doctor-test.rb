@@ -450,14 +450,61 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
   def test_optional_autonomous_merge_policy_rejects_nested_unresolved_placeholders
     variants = {
-      "direct list scalar" => {
+      "legacy direct list scalar" => {
         "policy_paths" => ["<base branch>"]
       },
-      "nested mapping list scalar" => {
+      "legacy nested mapping list scalar" => {
         "safe_path_groups" => {
           "documentation" => {
             "include" => ["docs/**"],
             "exclude" => ["<base branch>"]
+          }
+        }
+      },
+      "threshold relaxation rationale" => {
+        "thresholds" => { "max_changed_files" => 30 },
+        "threshold_relaxation" => {
+          "rationale" => "<nonempty rationale covering all relaxed thresholds>"
+        }
+      },
+      "policy path" => {
+        "policy_paths" => ["<repo-owned glob>"]
+      },
+      "generated path" => {
+        "generated_paths" => ["<repo-owned generated glob>"]
+      },
+      "human-review pattern" => {
+        "human_review_paths" => [
+          {
+            "id" => "repo-owned-risk",
+            "pattern" => "<repo-owned glob>",
+            "reason" => "hot-path"
+          }
+        ]
+      },
+      "human-review other detail" => {
+        "human_review_paths" => [
+          {
+            "id" => "repo-owned-risk",
+            "pattern" => "app/**",
+            "reason" => "other",
+            "detail" => "<nonempty repo-owned reason>"
+          }
+        ]
+      },
+      "safe-path include" => {
+        "safe_path_groups" => {
+          "documentation" => {
+            "include" => ["<repo-owned glob>"],
+            "exclude" => []
+          }
+        }
+      },
+      "safe-path exclude" => {
+        "safe_path_groups" => {
+          "documentation" => {
+            "include" => ["docs/**"],
+            "exclude" => ["<repo-owned glob>"]
           }
         }
       }
@@ -478,6 +525,32 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
 
     assert_empty failures, failures.join("\n")
+  end
+
+  def test_optional_autonomous_merge_policy_allows_angle_bracket_text_inside_ordinary_prose
+    rationales = [
+      "Document <nonempty rationale covering all relaxed thresholds> after calibration.",
+      "Document <base branch> as historical context after calibration."
+    ]
+    rationales.each do |rationale|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge(
+            "autonomous_merge" => {
+              "thresholds" => { "max_changed_files" => 30 },
+              "threshold_relaxation" => { "rationale" => rationale }
+            }
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        assert status.success?, out
+      end
+    end
   end
 
   def test_empty_collections_outside_autonomous_merge_remain_unresolved
