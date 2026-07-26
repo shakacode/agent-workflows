@@ -262,14 +262,13 @@ module CloseoutEvidenceReplay
         "visual_evidence" => visual_evidence,
         "paint_check" => paint_check,
         "interaction_evidence" => interaction_evidence,
-        "negative_control" => negative_control,
-        "performance_evidence" => performance_evidence
+        "negative_control" => negative_control
       }.each do |field, value|
         missing << field unless reasoned_not_applicable?(value)
       end
       missing << "interaction_change" unless interaction_change == "no"
       missing << "visual_fix" unless visual_fix == "no"
-      missing << "performance_impact" unless performance_impact == "not_applicable"
+      validate_performance_evidence(performance_impact, performance_evidence, missing)
     elsif ui_change == "yes"
       validate_visual_evidence_v2(
         fields,
@@ -408,7 +407,7 @@ module CloseoutEvidenceReplay
         user-images.githubusercontent.com
         private-user-images.githubusercontent.com
       ]
-      github_hosts.include?(uri.host.downcase) && uri.path && uri.path != "/"
+      github_hosts.include?(uri.host.downcase) && uri.path && !uri.path.empty? && uri.path != "/"
     end
   end
 
@@ -576,8 +575,10 @@ module CloseoutEvidenceReplay
     return false if source.match?(UNRESOLVED_PLACEHOLDER)
     return false if source.match?(/\A(?:command|report|ref|source)\z/i)
 
-    source.match?(%r{\Ahttps://[^\s<>()]+\z}i) ||
-      source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})
+    return valid_https_url?(source) if source.match?(%r{\Ahttps?://}i)
+    return false if source.include?("://")
+
+    source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})
   end
 
   def text_tokens(value)

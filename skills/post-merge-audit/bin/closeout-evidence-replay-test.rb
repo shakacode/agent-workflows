@@ -333,6 +333,25 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "NOT_APPLICABLE", data.fetch("qa_evidence").fetch("verdict")
   end
 
+  def test_v2_non_ui_change_allows_required_bundle_performance_evidence
+    qa = run_replay(
+      v2_marker(
+        "user_visible_ui_change" => "no",
+        "visual_evidence_destination" => "not_applicable",
+        "visual_evidence" => "not applicable: no user-visible UI change",
+        "paint_check" => "not applicable: no rendered target",
+        "interaction_change" => "no",
+        "interaction_evidence" => "not applicable: no interaction change",
+        "visual_fix" => "no",
+        "negative_control" => "not applicable: no visual fix",
+        "performance_impact" => "bundle_hygiene",
+        "performance_evidence" => "repo_seam: source=bin/bundle-report; baseline_value=100KB; candidate_value=90KB"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
   def test_v2_non_ui_change_rejects_legacy_head_placeholder_without_expected_head
     body = v2_marker(
       "required" => "no",
@@ -473,6 +492,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     )
 
     qa = data.fetch("qa_evidence")
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.github_url"
+  end
+
+  def test_v2_github_destination_rejects_bare_github_host
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before and after https://github.com"
+      )
+    ).fetch("qa_evidence")
+
     assert_equal "UNKNOWN", qa.fetch("verdict")
     assert_includes qa.fetch("missing"), "visual_evidence.github_url"
   end
@@ -826,6 +856,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=report; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=UNKNOWN; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=https://; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=http://report.example.test/run; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: https://ci.example.test/run?a=1;source=fake/report; source missing; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s"
     ]
 
