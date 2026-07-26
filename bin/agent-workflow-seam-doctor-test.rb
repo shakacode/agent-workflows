@@ -448,6 +448,38 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_optional_autonomous_merge_policy_rejects_nested_unresolved_placeholders
+    variants = {
+      "direct list scalar" => {
+        "policy_paths" => ["<base branch>"]
+      },
+      "nested mapping list scalar" => {
+        "safe_path_groups" => {
+          "documentation" => {
+            "include" => ["docs/**"],
+            "exclude" => ["<base branch>"]
+          }
+        }
+      }
+    }
+    results = variants.transform_values do |autonomous_merge|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("autonomous_merge" => autonomous_merge))
+        write_skill(root, "No commands here.\n")
+
+        run_doctor(root)
+      end
+    end
+    failures = results.filter_map do |label, (out, status)|
+      next unless status.success? || !out.include?("unresolved policy value for key: autonomous_merge")
+
+      "#{label}: status=#{status.exitstatus}, output=#{out.inspect}"
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
   def test_empty_arrays_outside_autonomous_merge_remain_unresolved
     with_repo do |root|
       write_valid_binstub_contract(root)

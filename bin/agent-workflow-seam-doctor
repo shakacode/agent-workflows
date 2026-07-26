@@ -1666,8 +1666,10 @@ module AgentWorkflowSeamDoctor
 
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
-      next if key == "autonomous_merge"
-      next unless unresolved_policy_value?(value)
+      next unless unresolved_policy_value?(
+        value,
+        empty_collections_unresolved: key != "autonomous_merge"
+      )
 
       issues << "unresolved policy value for key: #{key}"
     end
@@ -1720,14 +1722,19 @@ module AgentWorkflowSeamDoctor
     YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false) || {}
   end
 
-  def unresolved_policy_value?(value)
+  def unresolved_policy_value?(value, empty_collections_unresolved: true)
     case value
     when String
       unresolved_template_value?(value)
     when Array
-      value.empty? || value.any? { |entry| unresolved_policy_value?(entry) }
+      (empty_collections_unresolved && value.empty?) || value.any? do |entry|
+        unresolved_policy_value?(entry, empty_collections_unresolved:)
+      end
     when Hash
-      value.empty? || value.any? { |key, entry| unresolved_policy_value?(key.to_s) || unresolved_policy_value?(entry) }
+      (empty_collections_unresolved && value.empty?) || value.any? do |key, entry|
+        unresolved_policy_value?(key.to_s, empty_collections_unresolved:) ||
+          unresolved_policy_value?(entry, empty_collections_unresolved:)
+      end
     else
       value.nil?
     end
