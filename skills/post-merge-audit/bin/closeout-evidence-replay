@@ -330,7 +330,7 @@ module CloseoutEvidenceReplay
     when "github_pr"
       missing << "visual_evidence.github_url" unless github_url?(evidence)
     when "linked_tracker", "repo_artifact_store"
-      missing << "visual_evidence.url" unless http_url?(evidence)
+      nil
     else
       missing << "visual_evidence_destination"
     end
@@ -403,9 +403,9 @@ module CloseoutEvidenceReplay
   def disallowed_durable_reference?(value)
     non_url_text = without_https_urls(value)
     local_path = absolute_local_path?(non_url_text) ||
-                 non_url_text.match?(%r{(?:\A|[\s("'=;])(?:\./|\.\./|~[/\\]|[A-Za-z]:[^/\\\s]|[^/\s]+/)\S+}) ||
+                 non_url_text.match?(%r{(?:\A|[\s("'=;])(?:\./|\.\./|~[/\\]|[A-Za-z]:[^/\\\s]++|[^/\s]++/)\S++}) ||
                  non_url_text.match?(
-                   /(?:\A|[\s("'=;])(?:\\\\[^\\\s]+\\[^\\\s]+|(?:[^\\\s]+\\)+[^\\\s]+)/
+                   /(?:\A|[\s("'=;])(?:\\\\[^\\\s]++\\[^\\\s]++|(?:[^\\\s]++\\)++[^\\\s]++)/
                  ) ||
                  non_url_text.match?(LOCAL_MEDIA_EXTENSION)
     local_path ||

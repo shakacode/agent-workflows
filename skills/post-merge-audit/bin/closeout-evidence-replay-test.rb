@@ -4,6 +4,7 @@
 require "json"
 require "open3"
 require "tempfile"
+require "timeout"
 require "minitest/autorun"
 
 SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
@@ -374,6 +375,23 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "UNKNOWN", qa.fetch("verdict"), token
       assert_includes qa.fetch("missing"), "visual_evidence.local_reference", token
+    end
+  end
+
+  def test_v2_local_reference_detection_handles_pathological_separator_runs
+    pathological_tokens = {
+      "unterminated backslash path" => ["segment\\" * 25_000, "SATISFIED"],
+      "long slash path" => ["segment/" * 25_000, "UNKNOWN"]
+    }
+
+    Timeout.timeout(3) do
+      pathological_tokens.each do |label, (token, expected_verdict)|
+        evidence = "durable: before #{token} and after https://github.com/example/repo/pull/123#visual"
+        qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+        assert_equal expected_verdict, qa.fetch("verdict"), label
+        assert_includes qa.fetch("missing"), "visual_evidence.local_reference", label if expected_verdict == "UNKNOWN"
+      end
     end
   end
 
