@@ -493,7 +493,7 @@ module CloseoutEvidenceReplay
 
     runtime_tokens = %w[
       cls cpu duration fcp fid fps inp interaction latency lcp load memory paint
-      runtime throughput time timing ttfb user
+      responsiveness runtime speed throughput time timing ttfb vital web
     ]
     return false unless metric_tokens.any? { |token| runtime_tokens.include?(token) }
 
@@ -506,7 +506,7 @@ module CloseoutEvidenceReplay
   end
 
   def valid_repo_seam_source?(value)
-    sources = value.scan(/(?:\A|[\s;])source\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
+    sources = value.scan(/(?:\Arepo_seam:\s*|;\s+)source\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
     return false unless sources.length == 1
 
     source = sources.first.first.strip

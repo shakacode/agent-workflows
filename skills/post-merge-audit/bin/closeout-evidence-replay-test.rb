@@ -624,7 +624,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=bin/perf-report; metric_name=test_count; baseline_value=100tests; candidate_value=110tests",
       "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
-      "repo_seam: source=bin/perf-report; metric_name=widgets_clicked; baseline_value=5x; candidate_value=3x"
+      "repo_seam: source=bin/perf-report; metric_name=widgets_clicked; baseline_value=5x; candidate_value=3x",
+      "repo_seam: source=bin/perf-report; metric_name=active_user_count; baseline_value=5users; candidate_value=3users",
+      "repo_seam: source=bin/perf-report; metric_name=power_user_score; baseline_value=5x; candidate_value=3x"
     ]
 
     invalid_evidence.each do |evidence|
@@ -655,7 +657,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     invalid_sources = [
       "repo_seam: metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=report; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
-      "repo_seam: source=UNKNOWN; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s"
+      "repo_seam: source=UNKNOWN; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: https://ci.example.test/run?a=1;source=fake/report; source missing; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s"
     ]
 
     invalid_sources.each do |evidence|

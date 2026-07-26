@@ -116,7 +116,8 @@ blocker. Do not fake a manual pass from static inspection.
      repo-local pinned-copy chain, then run
      `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"
      --expected-head-sha <full-final-head-SHA>
-     --require-visual-evidence-v2 <file-or->`. The strict v2 flag is invalid
+     --require-visual-evidence-v2
+     <file-or->`. The strict v2 flag is invalid
      without the expected final-head SHA. If the helper cannot be resolved or
      run, report the evidence and readiness state as `blocked`; do not proceed
      with a pass claim.
