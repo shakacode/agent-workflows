@@ -198,7 +198,8 @@ Plan a PR batch
      also plan exact repository performance-seam
      `source=<stable command/report/ref>` plus
      `baseline_value=<number><unit>` / `candidate_value=<number><unit>`
-     evidence and, for `measured_metric`, a
+     evidence; non-byte `bundle_hygiene` values require
+     `metric_name=<bundle/asset shape metric>`, and `measured_metric` requires a
      `metric_name=<runtime/user metric>` label. A GitHub-only plan may prepare local artifacts,
      but must plan an explicit blocked
      human-attachment handoff until durable GitHub URLs exist.

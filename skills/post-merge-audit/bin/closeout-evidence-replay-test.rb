@@ -132,6 +132,22 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes qa.fetch("missing"), "qa-evidence v2 marker required for current user-visible UI evidence"
   end
 
+  def test_strict_v2_gate_rejects_marker_name_suffixes
+    head_sha = "1111111111111111111111111111111111111111"
+
+    %w[v20 v2draft].each do |version|
+      body = v2_marker.sub("qa-evidence v2", "qa-evidence #{version}")
+      qa = run_replay(
+        body,
+        expected_head_sha: head_sha,
+        require_visual_evidence_v2: true
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), version
+      assert_includes qa.fetch("missing"), "qa-evidence v2 marker required for current user-visible UI evidence", version
+    end
+  end
+
   def test_v2_accepts_durable_tracker_visual_clip_negative_control_and_metric_evidence
     head_sha = "1111111111111111111111111111111111111111"
     data = run_replay(<<~MARKDOWN, expected_head_sha: head_sha, require_visual_evidence_v2: true)
@@ -366,6 +382,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "C:before.png",
       "assets/before.png",
       "before.png",
+      "local-screenshot.webp",
+      "local-screenshot.heic",
       "\\\\server\\share\\before"
     ]
 
@@ -429,7 +447,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "passed: target was not painted",
       "passed: target did not render",
       "passed: browser failed to paint target",
-      "passed: browser failed to render target"
+      "passed: browser failed to render target",
+      "passed: target was never rendered",
+      "passed: target rendered unsuccessfully",
+      "passed: target was unsuccessfully painted"
     ]
 
     invalid_claims.each do |paint_check|
@@ -532,6 +553,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "observed_failure: assertion did not fail",
       "observed_failure: no failure was observed",
       "observed_failure: no error occurred",
+      "observed_failure: assert did not error",
+      "observed_failure: assertion never failed",
+      "observed_failure: completed without mismatch",
       "observed_failure: assertion passed",
       "observed_failure: negative control passes",
       "observed_failure: run succeeded",
@@ -651,6 +675,25 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     ).fetch("qa_evidence")
 
     assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_v2_bundle_hygiene_rejects_unrelated_counts_and_accepts_labeled_shape
+    invalid = run_replay(
+      v2_marker(
+        "performance_impact" => "bundle_hygiene",
+        "performance_evidence" => "repo_seam: source=bin/test-report; baseline_value=100tests; candidate_value=110tests"
+      )
+    ).fetch("qa_evidence")
+    valid = run_replay(
+      v2_marker(
+        "performance_impact" => "bundle_hygiene",
+        "performance_evidence" => "repo_seam: source=bin/bundle-report; metric_name=asset_count; baseline_value=10files; candidate_value=11files"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", invalid.fetch("verdict")
+    assert_includes invalid.fetch("missing"), "performance_evidence"
+    assert_equal "SATISFIED", valid.fetch("verdict")
   end
 
   def test_v2_performance_evidence_requires_named_repo_seam_source

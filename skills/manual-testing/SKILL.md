@@ -98,7 +98,8 @@ blocker. Do not fake a manual pass from static inspection.
      process for fidelity rather than eyeballing it inside this skill.
    - For rendered-page, asset-delivery, or bundle impact, follow the repository
      performance seam and use `$benchmark-verification` when it applies. Label
-     size/shape-only evidence `bundle_hygiene`; claim `measured_metric` only
+     size/shape-only evidence `bundle_hygiene` and name any non-byte shape
+     measurement with `metric_name=<bundle/asset shape metric>`; claim `measured_metric` only
      when a real runtime/user metric was measured, and name it with
      `metric_name=<runtime/user metric>`. Either claim requires
      `source=<stable command/report/ref>` naming the repo-seam output plus explicit

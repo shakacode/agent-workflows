@@ -569,7 +569,8 @@ classifications, an interaction clip or measured substitute when applicable, an
 unfixed negative control for a visual fix, and repository performance-seam
 `source=<stable command/report/ref>` plus
 `baseline_value=<number><unit>` / `candidate_value=<number><unit>` evidence for
-rendered-page/asset/bundle impact; `measured_metric` also requires
+rendered-page/asset/bundle impact; non-byte `bundle_hygiene` values require
+`metric_name=<bundle/asset shape metric>`, while `measured_metric` requires
 `metric_name=<runtime/user metric>`.
 Replay current UI evidence with `--expected-head-sha <full-final-head-SHA>
 --require-visual-evidence-v2`; the strict v2 flag is invalid without the

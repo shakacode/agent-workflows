@@ -892,7 +892,8 @@ For each user-visible UI change:
    and use `$benchmark-verification` when it applies. Record the result as
    `bundle_hygiene` when it only constrains size/shape, or `measured_metric` only
    when a real runtime/user metric was measured; name that metric with
-   `metric_name=<runtime/user metric>`. Either classification requires
+   `metric_name=<runtime/user metric>`. Name non-byte hygiene values with
+   `metric_name=<bundle/asset shape metric>`. Either classification requires
    `source=<stable command/report/ref>` naming the repo-seam output plus explicit
    `baseline_value=<number><unit>` and `candidate_value=<number><unit>` fields
    using the same unit. Incidental CI/report URL IDs do not count. `UNKNOWN`,
@@ -966,7 +967,7 @@ includes this evidence block:
 - Interaction evidence: <durable clip URL, exact measured_substitute with labeled before/after/tolerance values and units, or reasoned "not applicable: ...">
 - Visual fix: <yes | no; yes requires observed unfixed failure, no requires reasoned not applicable>
 - Negative control: <observed unfixed failure, or reasoned "not applicable: no visual fix">
-- Performance evidence: <repo performance-seam result with source=<stable command/report/ref>, baseline_value=<number><unit>, and candidate_value=<number><unit> plus bundle_hygiene/measured_metric classification; measured_metric also names metric_name=<runtime/user metric>; or reasoned "not applicable: ...">
+- Performance evidence: <repo performance-seam result with source=<stable command/report/ref>, baseline_value=<number><unit>, and candidate_value=<number><unit> plus bundle_hygiene/measured_metric classification; non-byte bundle_hygiene names metric_name=<bundle/asset shape metric>; measured_metric names metric_name=<runtime/user metric>; or reasoned "not applicable: ...">
 - Findings: <none, fixed in PR(s), waived with link, or follow-up recommended with tracking outcome/link>
 - QA required: <yes | no>
 - QA required rationale: <one-line reason for the decision and selected QA depth>
@@ -996,7 +997,7 @@ interaction_evidence: <clip: durable https URL | measured_substitute: before_val
 visual_fix: <yes | no>
 negative_control: <observed_failure: failing unfixed assertion/mismatch | not applicable: reason>
 performance_impact: <not_applicable | bundle_hygiene | measured_metric>
-performance_evidence: <repo_seam: source=<stable command/report/ref>; metric_name=<runtime/user metric when measured_metric>; baseline_value=<number><unit>; candidate_value=<number><unit> | not applicable: reason>
+performance_evidence: <repo_seam: source=<stable command/report/ref>; metric_name=<runtime/user metric when measured_metric or bundle/asset shape metric for non-byte bundle_hygiene>; baseline_value=<number><unit>; candidate_value=<number><unit> | not applicable: reason>
 findings: <none, fixed, waived, blocked, or follow-up link>
 release_blocking: <clear | blocked | waived | not_applicable>
 process_gap_disposition: <script | schema | checklist+replay | park | not applicable>
