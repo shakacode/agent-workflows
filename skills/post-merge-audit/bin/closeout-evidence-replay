@@ -7,6 +7,7 @@
 
 require "json"
 require "optparse"
+require "uri"
 
 module CloseoutEvidenceReplay
   module_function
@@ -218,6 +219,10 @@ module CloseoutEvidenceReplay
     fields = result.fetch("fields")
     errors = result.fetch("errors")
     missing = result.fetch("missing")
+    head_sha = fields.fetch("head_sha", "").to_s.downcase
+    tested_at = fields.fetch("tested_at", "").to_s
+    missing << "head_sha" unless full_head_sha?(head_sha)
+    missing << "tested_at.head_sha" unless full_head_sha?(head_sha) && tested_at_matches_head?(tested_at, head_sha)
     visual_fields = %w[
       user_visible_ui_change
       visual_evidence_destination
@@ -389,12 +394,21 @@ module CloseoutEvidenceReplay
   end
 
   def http_url?(value)
-    http_urls(value).any?
+    http_urls(value).any? { |url| valid_https_url?(url) }
   end
 
   def github_url?(value)
     http_urls(value).any? do |url|
-      url.match?(%r{\Ahttps://(?:www\.)?github\.com/[^\s<>()]+\z}i)
+      uri = parse_https_url(url)
+      next false unless uri
+
+      github_hosts = %w[
+        github.com
+        www.github.com
+        user-images.githubusercontent.com
+        private-user-images.githubusercontent.com
+      ]
+      github_hosts.include?(uri.host.downcase) && uri.path && uri.path != "/"
     end
   end
 
@@ -453,7 +467,7 @@ module CloseoutEvidenceReplay
     )
     return false unless match
 
-    [match[2], match[4], match[6]].map(&:downcase).uniq.length == 1
+    [match[2], match[4], match[6]].uniq.length == 1
   end
 
   def labeled_measurement_pair?(value, first_key, second_key)
@@ -462,7 +476,7 @@ module CloseoutEvidenceReplay
     second = labeled_measurements(non_url_text, second_key)
     return false unless first.length == 1 && second.length == 1
 
-    first.first.fetch(1).casecmp?(second.first.fetch(1))
+    first.first.fetch(1) == second.first.fetch(1)
   end
 
   def labeled_measurements(value, key)
@@ -477,6 +491,21 @@ module CloseoutEvidenceReplay
 
   def http_urls(value)
     value.scan(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i)
+  end
+
+  def valid_https_url?(value)
+    !parse_https_url(value).nil?
+  end
+
+  def parse_https_url(value)
+    uri = URI.parse(value)
+    return unless uri.is_a?(URI::HTTPS) && uri.host
+    return unless uri.host.match?(/\A[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\z/)
+    return if uri.host.split(".").any? { |label| label.empty? || label.length > 63 || label.start_with?("-") || label.end_with?("-") }
+
+    uri
+  rescue URI::InvalidURIError
+    nil
   end
 
   def negated_or_passing_failure_claim?(value)

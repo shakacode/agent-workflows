@@ -333,6 +333,32 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "NOT_APPLICABLE", data.fetch("qa_evidence").fetch("verdict")
   end
 
+  def test_v2_non_ui_change_rejects_legacy_head_placeholder_without_expected_head
+    body = v2_marker(
+      "required" => "no",
+      "status" => "not_applicable",
+      "head_sha" => "not_applicable",
+      "tested_at" => "no PR created",
+      "user_visible_ui_change" => "no",
+      "visual_evidence_destination" => "not_applicable",
+      "visual_evidence" => "not applicable: no user-visible UI change",
+      "paint_check" => "not applicable: no rendered target",
+      "interaction_change" => "no",
+      "interaction_evidence" => "not applicable: no interaction change",
+      "visual_fix" => "no",
+      "negative_control" => "not applicable: no visual fix",
+      "performance_impact" => "not_applicable",
+      "performance_evidence" => "not applicable: no rendered-page impact",
+      "release_blocking" => "not_applicable"
+    )
+
+    qa = run_replay(body).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "head_sha"
+    assert_includes qa.fetch("missing"), "tested_at.head_sha"
+  end
+
   def test_v2_rejects_disallowed_local_and_failed_capture_tokens_even_with_https
     bad_evidence = {
       "absolute path" => "durable: before /tmp/before.png and after https://github.com/example/repo/pull/123#visual",
@@ -440,6 +466,35 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "UNKNOWN", qa.fetch("verdict")
     assert_includes qa.fetch("missing"), "visual_evidence.github_url"
+  end
+
+  def test_v2_rejects_https_evidence_without_a_valid_host
+    %w[linked_tracker repo_artifact_store].each do |destination|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence_destination" => destination,
+          "visual_evidence" => "durable: before and after https://;"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), destination
+      assert_includes qa.fetch("missing"), "visual_evidence.url", destination
+    end
+  end
+
+  def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
+    hosts = %w[
+      github.com/example/repo/pull/123#visual
+      user-images.githubusercontent.com/123/before.png
+      private-user-images.githubusercontent.com/123/after.png
+    ]
+
+    hosts.each do |host_and_path|
+      evidence = "durable: before and after https://#{host_and_path}"
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), host_and_path
+    end
   end
 
   def test_v2_rejects_negated_paint_claims
@@ -675,6 +730,27 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     ).fetch("qa_evidence")
 
     assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_v2_measurements_require_exact_unit_case
+    evidence = "repo_seam: source=bin/bundle-report; baseline_value=100Kb; candidate_value=90KB"
+    qa = run_replay(
+      v2_marker(
+        "performance_impact" => "bundle_hygiene",
+        "performance_evidence" => evidence
+      )
+    ).fetch("qa_evidence")
+    substitute = run_replay(
+      v2_marker(
+        "interaction_change" => "yes",
+        "interaction_evidence" => "measured_substitute: before_value=1ms; after_value=2MS; tolerance=1ms"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "performance_evidence"
+    assert_equal "UNKNOWN", substitute.fetch("verdict")
+    assert_includes substitute.fetch("missing"), "interaction_evidence"
   end
 
   def test_v2_bundle_hygiene_rejects_unrelated_counts_and_accepts_labeled_shape
