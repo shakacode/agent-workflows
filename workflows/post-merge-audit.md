@@ -350,7 +350,7 @@ expected head. Verify durable reviewer-visible before/after
 URLs, a non-blank paint check, interaction clip or measured substitute when
 applicable, an unfixed negative control for a visual fix, and repository
 performance-seam evidence with an honest `bundle_hygiene` or `measured_metric`
-classification plus same-unit `baseline_value=<number><unit>` and
+classification, `source=<stable command/report/ref>`, and same-unit `baseline_value=<number><unit>` and
 `candidate_value=<number><unit>` fields. A `measured_metric` claim also names
 the runtime/user metric with `metric_name=<runtime/user metric>`; incidental CI
 URL IDs do not count.

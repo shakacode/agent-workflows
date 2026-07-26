@@ -567,6 +567,7 @@ closeout evidence. Every current user-visible UI change requires durable
 before/after evidence, explicit `interaction_change` and `visual_fix`
 classifications, an interaction clip or measured substitute when applicable, an
 unfixed negative control for a visual fix, and repository performance-seam
+`source=<stable command/report/ref>` plus
 `baseline_value=<number><unit>` / `candidate_value=<number><unit>` evidence for
 rendered-page/asset/bundle impact; `measured_metric` also requires
 `metric_name=<runtime/user metric>`.

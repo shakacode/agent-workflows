@@ -26,7 +26,7 @@ module CloseoutEvidenceReplay
   LOCAL_MEDIA_EXTENSION = /\.(?:avif|bmp|gif|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm)\b/i
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
   EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
-  UNRESOLVED_PLACEHOLDER = %r{\b(?:missing|unavailable|unknown|not[ _]available)\b|n/a}i
+  UNRESOLVED_PLACEHOLDER = %r{\b(?:missing|unavailable|unmeasured|unknown|not[ _](?:available|measured))\b|n/a}i
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -371,6 +371,7 @@ module CloseoutEvidenceReplay
     return unless %w[bundle_hygiene measured_metric].include?(classification)
 
     measured = evidence.start_with?("repo_seam:") &&
+               valid_repo_seam_source?(evidence) &&
                labeled_measurement_pair?(evidence, "baseline_value", "candidate_value") &&
                !evidence.match?(%r{\b(?:unavailable|missing|unknown|not[ _]measured|not[ _]applicable)\b|n/a}i)
     measured &&= valid_measured_metric?(evidence) if classification == "measured_metric"
@@ -487,18 +488,33 @@ module CloseoutEvidenceReplay
 
     metric_name = names.first.first.strip
     size_tokens = %w[asset bundle byte bytes size]
-    return false if text_tokens(metric_name).any? { |token| size_tokens.include?(token) }
+    metric_tokens = text_tokens(metric_name)
+    return false if metric_tokens.any? { |token| size_tokens.include?(token) }
+
+    runtime_tokens = %w[
+      cls cpu duration fcp fid fps inp interaction latency lcp load memory paint
+      runtime throughput time timing ttfb user
+    ]
+    return false unless metric_tokens.any? { |token| runtime_tokens.include?(token) }
 
     measurement_units = %w[baseline_value candidate_value].flat_map do |key|
       labeled_measurements(non_url_text, key).map { |measurement| measurement.fetch(1).downcase }
     end
     return false if measurement_units.any? { |unit| unit.match?(/\A(?:[kmgt]i?)?b(?:ytes?)?\z/i) }
 
-    runtime_tokens = %w[cls duration fcp fid fps inp latency lcp runtime timing ttfb user]
-    evidence_tokens = text_tokens(non_url_text)
-    size_terms = evidence_tokens.any? { |token| size_tokens.include?(token) }
-    runtime_terms = evidence_tokens.any? { |token| runtime_tokens.include?(token) }
-    !size_terms || runtime_terms
+    true
+  end
+
+  def valid_repo_seam_source?(value)
+    sources = value.scan(/(?:\A|[\s;])source\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
+    return false unless sources.length == 1
+
+    source = sources.first.first.strip
+    return false if source.match?(UNRESOLVED_PLACEHOLDER)
+    return false if source.match?(/\A(?:command|report|ref|source)\z/i)
+
+    source.match?(%r{\Ahttps://[^\s<>()]+\z}i) ||
+      source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})
   end
 
   def text_tokens(value)

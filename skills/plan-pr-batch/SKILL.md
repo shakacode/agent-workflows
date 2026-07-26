@@ -196,6 +196,7 @@ Plan a PR batch
      classifications, interaction clip or measured substitute, and visual-fix
      negative control. For rendered-page, asset-delivery, or bundle impact,
      also plan exact repository performance-seam
+     `source=<stable command/report/ref>` plus
      `baseline_value=<number><unit>` / `candidate_value=<number><unit>`
      evidence and, for `measured_metric`, a
      `metric_name=<runtime/user metric>` label. A GitHub-only plan may prepare local artifacts,

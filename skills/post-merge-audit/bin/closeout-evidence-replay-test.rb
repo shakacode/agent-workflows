@@ -152,7 +152,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       visual_fix: yes
       negative_control: observed_failure: unfixed bundle failed assertion; expected 0 within 1 of 104
       performance_impact: measured_metric
-      performance_evidence: repo_seam: metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s
+      performance_evidence: repo_seam: source=bin/perf-report; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s
       findings: none
       release_blocking: clear
       process_gap_disposition: checklist+replay
@@ -184,7 +184,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       visual_fix: yes
       negative_control: observed_failure: unfixed bundle failed the geometry assertion
       performance_impact: bundle_hygiene
-      performance_evidence: repo_seam: bundle report; baseline_value=120kB; candidate_value=121kB
+      performance_evidence: repo_seam: source=bin/bundle-report; baseline_value=120kB; candidate_value=121kB
       findings: none
       release_blocking: clear
       process_gap_disposition: checklist+replay
@@ -558,6 +558,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "not applicable: unavailable",
       "not applicable: evidence missing",
       "not applicable: N/A",
+      "not applicable: unmeasured",
+      "not applicable: not measured",
       "not_applicable: not available"
     ]
 
@@ -614,12 +616,15 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
   def test_v2_measured_metric_requires_named_non_size_runtime_or_user_metric
     invalid_evidence = [
-      "repo_seam: baseline_value=2.4s; candidate_value=2.1s",
-      "repo_seam: metric_name=bundle_size; baseline_value=120kB; candidate_value=121kB",
-      "repo_seam: metric_name=asset bytes; baseline_value=120kB; candidate_value=121kB",
-      "repo_seam: bundle size report; metric_name=score; baseline_value=120kB; candidate_value=121kB",
-      "repo_seam: metric_name=performance_score; baseline_value=120kB; candidate_value=121kB",
-      "repo_seam: metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s"
+      "repo_seam: source=bin/perf-report; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=bin/perf-report; metric_name=bundle_size; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: source=bin/perf-report; metric_name=asset bytes; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: source=bin/perf-report; metric_name=score; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: source=bin/perf-report; metric_name=performance_score; baseline_value=120kB; candidate_value=121kB",
+      "repo_seam: source=bin/perf-report; metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=bin/perf-report; metric_name=test_count; baseline_value=100tests; candidate_value=110tests",
+      "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=widgets_clicked; baseline_value=5x; candidate_value=3x"
     ]
 
     invalid_evidence.each do |evidence|
@@ -639,11 +644,43 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     qa = run_replay(
       v2_marker(
         "performance_impact" => "bundle_hygiene",
-        "performance_evidence" => "repo_seam: bundle report; baseline_value=120kB; candidate_value=121kB"
+        "performance_evidence" => "repo_seam: source=bin/bundle-report; baseline_value=120kB; candidate_value=121kB"
       )
     ).fetch("qa_evidence")
 
     assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_v2_performance_evidence_requires_named_repo_seam_source
+    invalid_sources = [
+      "repo_seam: metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=report; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=UNKNOWN; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s"
+    ]
+
+    invalid_sources.each do |evidence|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => evidence
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
+      assert_includes qa.fetch("missing"), "performance_evidence", evidence
+    end
+  end
+
+  def test_v2_not_applicable_performance_rejects_unmeasured_placeholder
+    qa = run_replay(
+      v2_marker(
+        "performance_impact" => "not_applicable",
+        "performance_evidence" => "not applicable: performance was unmeasured"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "performance_evidence"
   end
 
   def test_current_v2_supersedes_legacy_v1_including_same_head_blocked_v1

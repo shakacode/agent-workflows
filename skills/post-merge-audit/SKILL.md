@@ -234,7 +234,8 @@ For each included PR:
   untriaged. For a user-visible UI change, also verify durable reviewer-visible
   before/after URLs, a non-blank paint check, interaction clip or measured
   substitute when applicable, an unfixed negative control for a visual fix, and
-  repository performance-seam evidence for rendered-page/asset/bundle impact.
+  repository performance-seam evidence for rendered-page/asset/bundle impact,
+  named with `source=<stable command/report/ref>`.
   Local/file paths and “captured locally” are not durable evidence; a
   GitHub-only human-attachment handoff stays blocked until the resulting GitHub
   URL is in the receipt. Distinguish `bundle_hygiene` from a genuinely

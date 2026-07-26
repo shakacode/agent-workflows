@@ -100,8 +100,8 @@ blocker. Do not fake a manual pass from static inspection.
      performance seam and use `$benchmark-verification` when it applies. Label
      size/shape-only evidence `bundle_hygiene`; claim `measured_metric` only
      when a real runtime/user metric was measured, and name it with
-     `metric_name=<runtime/user metric>`. Either claim requires the repo-seam
-     command/report plus explicit
+     `metric_name=<runtime/user metric>`. Either claim requires
+     `source=<stable command/report/ref>` naming the repo-seam output plus explicit
      `baseline_value=<number><unit>` and `candidate_value=<number><unit>` fields
      with the same unit; incidental CI URL IDs do not count. Unavailable,
      missing, `UNKNOWN`, unmeasured, or N/A evidence blocks.
