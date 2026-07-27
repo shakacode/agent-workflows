@@ -561,6 +561,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes interaction.fetch("missing"), "interaction_evidence"
   end
 
+  def test_v2_rejects_malformed_https_reference_beside_a_valid_url
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before https:broken after https://github.com/example/repo/pull/123#after"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.url"
+  end
+
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual
@@ -808,7 +819,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_v2_measured_metric_requires_named_non_size_runtime_or_user_metric
+  def test_v2_measured_metric_requires_a_named_non_size_non_placeholder_metric
     invalid_evidence = [
       "repo_seam: source=bin/perf-report; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=bin/perf-report; metric_name=bundle_size; baseline_value=120kB; candidate_value=121kB",
@@ -816,11 +827,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=performance_score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s",
-      "repo_seam: source=bin/perf-report; metric_name=test_count; baseline_value=100tests; candidate_value=110tests",
-      "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
-      "repo_seam: source=bin/perf-report; metric_name=widgets_clicked; baseline_value=5x; candidate_value=3x",
-      "repo_seam: source=bin/perf-report; metric_name=active_user_count; baseline_value=5users; candidate_value=3users",
-      "repo_seam: source=bin/perf-report; metric_name=power_user_score; baseline_value=5x; candidate_value=3x"
+      "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms"
     ]
 
     invalid_evidence.each do |evidence|
@@ -834,6 +841,30 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
       assert_includes qa.fetch("missing"), "performance_evidence", evidence
     end
+  end
+
+  def test_v2_measured_metric_accepts_consumer_defined_duration_metric_name
+    qa = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=checkout_ready; baseline_value=3s; candidate_value=2s"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    assert_empty qa.fetch("missing")
+  end
+
+  def test_v2_measured_metric_accepts_consumer_defined_count_metric_unit
+    qa = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=checkout_error_count; baseline_value=12errors; candidate_value=3errors"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    assert_empty qa.fetch("missing")
   end
 
   def test_v2_measured_metric_allows_byte_valued_memory_but_not_byte_valued_timing

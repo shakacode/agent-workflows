@@ -515,7 +515,7 @@ module CloseoutEvidenceReplay
   end
 
   def http_urls(value)
-    value.scan(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i)
+    value.scan(/(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i)
   end
 
   def valid_https_url?(value)
@@ -568,15 +568,11 @@ module CloseoutEvidenceReplay
     return false unless names.length == 1
 
     metric_name = names.first.first.strip
+    return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\A(?:metric|placeholder|tbd|todo)\z/i)
+
     size_tokens = %w[asset bundle byte bytes size]
     metric_tokens = text_tokens(metric_name)
     return false if metric_tokens.any? { |token| size_tokens.include?(token) }
-
-    runtime_tokens = %w[
-      cls cpu duration fcp fid fps inp interaction latency lcp load memory paint
-      responsiveness runtime speed throughput time timing ttfb vital web
-    ]
-    return false unless metric_tokens.any? { |token| runtime_tokens.include?(token) }
 
     measurement_units = %w[baseline_value candidate_value].flat_map do |key|
       labeled_measurements(non_url_text, key).map { |measurement| measurement.fetch(1) }
