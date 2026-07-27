@@ -231,7 +231,20 @@ For each included PR:
 - QA evidence: verify required QA Evidence exists, records `Tested at` with the
   PR/head SHA or audited range it applies to, is current for that head/range,
   covers the changed surfaces, and does not leave release-blocking findings
-  untriaged. If private coordination claim/heartbeat state is `UNKNOWN`, verify
+  untriaged. For a user-visible UI change, also verify durable reviewer-visible
+  before/after URLs, a non-blank paint check, interaction clip or measured
+  substitute when applicable, an unfixed negative control for a visual fix, and
+  repository performance-seam evidence for rendered-page/asset/bundle impact,
+  named with `source=<stable command/report/ref>`.
+  Local/file paths and “captured locally” are not durable evidence; a
+  GitHub-only handoff stays blocked until an authenticated UI upload or human
+  attachment puts the resulting durable GitHub URL in the receipt. Distinguish
+  `bundle_hygiene` from a genuinely
+  `measured_metric` claim; non-byte hygiene values name a bundle/asset shape
+  metric, while the latter must name its runtime/user metric with
+  `metric_name=<runtime/user metric>`. Require explicit same-unit
+  `baseline_value=<number><unit>` and `candidate_value=<number><unit>` fields
+  for either; incidental CI URL IDs do not count. If private coordination claim/heartbeat state is `UNKNOWN`, verify
   the documented fallback evidence is otherwise complete and names a concrete QA
   owner and branch/worktree before treating QA coverage as satisfied. Use the
   resolved `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` helper
@@ -240,7 +253,15 @@ For each included PR:
   `--expected-head-sha <full-merged-head-SHA>` and replay each PR or per-PR
   evidence file separately; do not feed a combined multi-PR handoff to one
   expected SHA. Add `--require-priority-dispositions` when the audit depends on
-  fixed, waived, or deferred priority findings. Missing or `UNKNOWN` replay is
+  fixed, waived, or deferred priority findings. For every current user-visible
+  UI change, run the combined current-head gate
+  `--expected-head-sha <full-merged-head-SHA>
+  --require-visual-evidence-v2`; the strict v2 flag is invalid without the
+  expected head. Under that strict forward gate, explicit v2 presence
+  supersedes v1 history, so stale or malformed v2 cannot be rescued by a
+  current v1;
+  historical `qa-evidence v1` remains replayable when that forward gate is not
+  required. Missing or `UNKNOWN` replay is
   a process finding unless a maintainer explicitly waived replay for that
   scope.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.

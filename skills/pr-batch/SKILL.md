@@ -587,9 +587,29 @@ Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
 
 When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
-ready/merge claim, include replayable `qa-evidence v1` and
-`priority-finding-dispositions v1` markers as defined in
-`.agents/workflows/pr-processing.md`, or state why replay is not applicable.
+ready/merge claim, include replayable `qa-evidence v2` and
+`priority-finding-dispositions v1` markers as defined by the repository-resolved
+workflow contract selected through its `AGENTS.md` seam, or state why replay is
+not applicable.
+Historical `qa-evidence v1` remains replayable but must not be emitted for new
+closeout evidence. Every current user-visible UI change requires durable
+before/after evidence, explicit `interaction_change` and `visual_fix`
+classifications, an interaction clip or measured substitute when applicable, an
+unfixed negative control for a visual fix, and repository performance-seam
+`source=<stable command/report/ref>` plus
+`baseline_value=<number><unit>` / `candidate_value=<number><unit>` evidence for
+rendered-page/asset/bundle impact; non-byte `bundle_hygiene` values require
+`metric_name=<bundle/asset shape metric>`, while `measured_metric` requires
+`metric_name=<runtime/user metric>`.
+Replay current UI evidence with `--expected-head-sha <full-final-head-SHA>
+--require-visual-evidence-v2`; the strict v2 flag is invalid without the
+expected head. GitHub-only work should use an authenticated GitHub UI uploader
+when available. Prepared local artifacts keep readiness blocked until either
+that flow or a human attachment produces durable GitHub URLs.
+Replay validates URL and destination shape, not authorization, retention, or
+liveness; before readiness, an intended reviewer must open every evidence URL
+using intended reviewer access and reject dead, inaccessible, private-only, or
+expiring evidence.
 Do not call a target `complete` while its ledger has `UNKNOWN` fields or
 `complete_allowed: false`.
 Do not report a batch that requires QA as ready while required QA

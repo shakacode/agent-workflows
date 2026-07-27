@@ -189,8 +189,21 @@ Plan a PR batch
      whether QA is required, which subset qualifies, the planned owner/lane, and
      final QA Evidence expectations. If QA is omitted for low-risk work, record
      `not required` plus the rationale. For batches that need post-merge replay,
-     require the `qa-evidence v1` marker and any needed
+     require the `qa-evidence v2` marker and any needed
      `priority-finding-dispositions v1` marker in the final evidence.
+     For every current user-visible UI change, plan the durable before/after
+     destination, explicit `interaction_change` and `visual_fix`
+     classifications, interaction clip or measured substitute, and visual-fix
+     negative control. For rendered-page, asset-delivery, or bundle impact,
+     also plan exact repository performance-seam
+     `source=<stable command/report/ref>` plus
+     `baseline_value=<number><unit>` / `candidate_value=<number><unit>`
+     evidence; non-byte `bundle_hygiene` values require
+     `metric_name=<bundle/asset shape metric>`, and `measured_metric` requires a
+     `metric_name=<runtime/user metric>` label. A GitHub-only plan should use an
+     authenticated GitHub UI uploader when available; otherwise it may prepare
+     local artifacts, but must plan an explicit blocked human-attachment
+     handoff until durable GitHub URLs exist.
    - Decide whether the batch will schedule any parallel wave before doing path
      discovery. The File-touch map exists only to keep same-path items out of the
      same parallel worktree wave; a serial schedule cannot collide, so the map
