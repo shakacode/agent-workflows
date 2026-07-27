@@ -66,15 +66,20 @@ blocker. Do not fake a manual pass from static inspection.
      The before state may be the current implementation, an intentionally
      unfixed build, or a named design reference. Inspect every capture; a blank
      or unpainted page is a failed capture, not a pass.
-   - Put the artifacts where every intended reviewer can open them. Prefer the
-     repository's configured linked tracker when its upload capability is
-     available, then a repo-configured artifact destination, then human-attached
-     GitHub PR description images. Link tracker/artifact evidence from the PR.
-   - GitHub documents no REST or GraphQL attachment-upload route; use a human
-     GitHub UI attachment when GitHub is the destination. For GitHub-only work,
-     prepare clearly named local files and report their absolute paths, but keep
-     the QA evidence and readiness status `blocked` until a human attaches them
-     and the PR contains the resulting durable GitHub URL. Local paths, `file:`
+   - Put the artifacts where every intended reviewer can open them. For
+     GitHub-only or public work, prefer GitHub PR attachments. When an
+     authenticated browser/file-upload capability is available, use GitHub's UI
+     upload flow and retain its stable `github.com/user-attachments/assets/...`
+     URL; no comment submission is required merely to obtain the URL. A
+     configured linked tracker or artifact store is also valid when every
+     intended reviewer has access; link that evidence from the PR.
+   - GitHub documents no public REST or GraphQL attachment-upload route. Do not
+     depend on an undocumented direct-upload endpoint unless the repository has
+     explicitly configured and verified that integration. If no authenticated
+     UI uploader or configured integration is available, prepare clearly named
+     local files and report their absolute paths, but keep the QA evidence and
+     readiness status `blocked` until a human attaches them and the PR contains
+     the resulting durable GitHub URL. Local paths, `file:`
      URLs, inaccessible private blob/camo URLs, and “captured locally” are not
      durable reviewer evidence, even alongside an unrelated HTTPS URL. Reject
      `./`, `../`, `~/`, Windows-relative/backslash paths, plain local media
@@ -82,12 +87,12 @@ blocker. Do not fake a manual pass from static inspection.
      that is part of the actual HTTPS URL path.
    - The replay helper validates URL and destination shape; it does not fetch
      evidence URLs or prove their authorization, retention, or liveness. Before
-   reporting readiness, an intended reviewer must open every evidence URL
-   using intended reviewer access and reject dead, inaccessible, private-only,
-   or expiring evidence.
-   Paint, interaction, and negative-control checks likewise validate a strict
-   text contract, not the semantic truth of the claim; a reviewer must inspect
-   the linked evidence and confirm the stated observation.
+     reporting readiness, an intended reviewer must open every evidence URL
+     using intended reviewer access and reject dead, inaccessible, private-only,
+     or expiring evidence.
+     Paint, interaction, and negative-control checks likewise validate a strict
+     text contract, not the semantic truth of the claim; a reviewer must inspect
+     the linked evidence and confirm the stated observation.
    - For hover, focus, drag, transition, loading, animation, or another
      interaction change, link a short durable clip. If recording is unavailable,
      use exact labeled evidence such as `measured_substitute:

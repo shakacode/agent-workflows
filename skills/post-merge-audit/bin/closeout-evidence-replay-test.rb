@@ -539,6 +539,27 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_invalid_artifact_urls_even_beside_a_valid_url
+    expiring_url = "https://private-user-images.githubusercontent.com/1/before.png?jwt=signed"
+    valid_url = "https://github.com/example/repo/pull/123#after"
+    visual = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before #{expiring_url} after #{valid_url}"
+      )
+    ).fetch("qa_evidence")
+    interaction = run_replay(
+      v2_marker(
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: #{expiring_url} #{valid_url}"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", visual.fetch("verdict")
+    assert_includes visual.fetch("missing"), "visual_evidence.url"
+    assert_equal "UNKNOWN", interaction.fetch("verdict")
+    assert_includes interaction.fetch("missing"), "interaction_evidence"
+  end
+
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual
@@ -569,7 +590,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "passed: browser failed to render target",
       "passed: target was never rendered",
       "passed: target rendered unsuccessfully",
-      "passed: target was unsuccessfully painted"
+      "passed: target was unsuccessfully painted",
+      "passed: target rendered but paint failed"
     ]
 
     invalid_claims.each do |paint_check|
@@ -681,6 +703,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "observed_failure: assertion passed",
       "observed_failure: negative control passes",
       "observed_failure: run succeeded",
+      "observed_failure: assertion was successful",
       "observed_failure: expected output matched",
       "observed_failure: everything was okay"
     ]
@@ -934,6 +957,21 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal 2, qa.fetch("marker_version")
     assert_equal 1, qa.fetch("supersedes_marker_version")
     assert_equal 1, qa.fetch("marker_count")
+  end
+
+  def test_default_replay_ignores_quoted_v2_template_beside_current_v1_evidence
+    head_sha = "1111111111111111111111111111111111111111"
+    quoted_v2 = v2_marker(
+      "head_sha" => "<full commit SHA>",
+      "tested_at" => "PR head <full commit SHA>"
+    )
+    qa = run_replay(
+      "#{v1_marker(head_sha: head_sha)}\n#{quoted_v2}",
+      expected_head_sha: head_sha
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    assert_equal 1, qa.fetch("marker_version")
   end
 
   def test_stale_v2_cannot_be_rescued_by_current_v1

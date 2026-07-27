@@ -850,20 +850,21 @@ For each user-visible UI change:
    current implementation, an intentionally unfixed build, or a named design
    reference. Inspect each capture: a blank or unpainted page is a failed
    capture, not passing evidence.
-2. Put the artifacts where every intended reviewer can open them, using this
-   order:
-   - a linked or configured task tracker, including Linear, Shortcut, or Jira,
-     when its upload capability is available; upload there and link the durable
-     artifact from the PR;
-   - a repo-configured artifact destination, when present; or
-   - human-attached GitHub PR description images.
+2. Put the artifacts where every intended reviewer can open them. For a public
+   or GitHub-only project, prefer GitHub PR attachments. When an authenticated
+   browser/file-upload capability is available, use GitHub's UI upload flow and
+   retain the stable `github.com/user-attachments/assets/...` URL; obtaining the
+   URL does not require submitting a comment. A configured linked tracker or
+   repo artifact destination is also valid when every intended reviewer has
+   access; link that evidence from the PR.
    A `github_pr` destination must contain a reviewer-visible `github.com` URL.
    A `linked_tracker` or `repo_artifact_store` destination must name that
    destination and contain its reviewer-visible HTTPS URL.
-3. GitHub documents no REST or GraphQL attachment-upload route; use a human
-   GitHub UI attachment when GitHub is the destination.
-   In a GitHub-only repository, prepare clearly named local before/after
-   artifacts and report their absolute paths, but record
+3. GitHub documents no public REST or GraphQL attachment-upload route. Do not
+   depend on an undocumented direct-upload endpoint unless the repository has
+   explicitly configured and verified that integration. If no authenticated UI
+   uploader or configured integration is available, prepare clearly named local
+   before/after artifacts and report their absolute paths, but record
    `human_attachment_pending` and keep QA/release readiness `blocked` until a
    human attaches them and the receipt contains the resulting durable GitHub
    URL. A local absolute or relative path (`./`, `../`, `~/`, Windows

@@ -200,9 +200,10 @@ Plan a PR batch
      `baseline_value=<number><unit>` / `candidate_value=<number><unit>`
      evidence; non-byte `bundle_hygiene` values require
      `metric_name=<bundle/asset shape metric>`, and `measured_metric` requires a
-     `metric_name=<runtime/user metric>` label. A GitHub-only plan may prepare local artifacts,
-     but must plan an explicit blocked
-     human-attachment handoff until durable GitHub URLs exist.
+     `metric_name=<runtime/user metric>` label. A GitHub-only plan should use an
+     authenticated GitHub UI uploader when available; otherwise it may prepare
+     local artifacts, but must plan an explicit blocked human-attachment
+     handoff until durable GitHub URLs exist.
    - Decide whether the batch will schedule any parallel wave before doing path
      discovery. The File-touch map exists only to keep same-path items out of the
      same parallel worktree wave; a serial schedule cannot collide, so the map

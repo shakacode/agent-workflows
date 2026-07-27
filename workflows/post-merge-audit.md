@@ -355,12 +355,12 @@ classification, `source=<stable command/report/ref>`, and same-unit `baseline_va
 the runtime/user metric with `metric_name=<runtime/user metric>`; non-byte
 `bundle_hygiene` values name a `metric_name=<bundle/asset shape metric>`; incidental CI
 URL IDs do not count.
-Local/file paths and “captured locally” do not qualify; a
-GitHub-only human-attachment handoff remains blocked until the receipt contains
-the resulting durable GitHub URL. Historical `qa-evidence v1` remains
-replayable when the v2 forward gate is not required. Explicit v2 presence
-supersedes v1 history, so stale or malformed v2 cannot be rescued by a current
-v1. Carry `BLOCKED` / `UNKNOWN` replay as a QA or
+Local/file paths and “captured locally” do not qualify; a GitHub-only handoff
+remains blocked until an authenticated UI upload or human attachment puts the
+resulting durable GitHub URL in the receipt. Historical `qa-evidence v1` remains
+replayable when the v2 forward gate is not required. Under the strict v2
+forward gate, explicit v2 presence supersedes v1 history, so stale or malformed
+v2 cannot be rescued by a current v1. Carry `BLOCKED` / `UNKNOWN` replay as a QA or
 priority-disposition finding.
 
 Show the included/excluded worked issues, collected QA lanes and QA Evidence

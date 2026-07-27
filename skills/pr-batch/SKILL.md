@@ -574,8 +574,9 @@ rendered-page/asset/bundle impact; non-byte `bundle_hygiene` values require
 `metric_name=<runtime/user metric>`.
 Replay current UI evidence with `--expected-head-sha <full-final-head-SHA>
 --require-visual-evidence-v2`; the strict v2 flag is invalid without the
-expected head. GitHub-only prepared local artifacts keep readiness blocked until
-a human attachment produces durable GitHub URLs.
+expected head. GitHub-only work should use an authenticated GitHub UI uploader
+when available. Prepared local artifacts keep readiness blocked until either
+that flow or a human attachment produces durable GitHub URLs.
 Replay validates URL and destination shape, not authorization, retention, or
 liveness; before readiness, an intended reviewer must open every evidence URL
 using intended reviewer access and reject dead, inaccessible, private-only, or

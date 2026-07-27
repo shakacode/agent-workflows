@@ -237,8 +237,9 @@ For each included PR:
   repository performance-seam evidence for rendered-page/asset/bundle impact,
   named with `source=<stable command/report/ref>`.
   Local/file paths and “captured locally” are not durable evidence; a
-  GitHub-only human-attachment handoff stays blocked until the resulting GitHub
-  URL is in the receipt. Distinguish `bundle_hygiene` from a genuinely
+  GitHub-only handoff stays blocked until an authenticated UI upload or human
+  attachment puts the resulting durable GitHub URL in the receipt. Distinguish
+  `bundle_hygiene` from a genuinely
   `measured_metric` claim; non-byte hygiene values name a bundle/asset shape
   metric, while the latter must name its runtime/user metric with
   `metric_name=<runtime/user metric>`. Require explicit same-unit
@@ -256,8 +257,9 @@ For each included PR:
   UI change, run the combined current-head gate
   `--expected-head-sha <full-merged-head-SHA>
   --require-visual-evidence-v2`; the strict v2 flag is invalid without the
-  expected head. Explicit v2 presence supersedes v1 history, so stale or
-  malformed v2 cannot be rescued by a current v1;
+  expected head. Under that strict forward gate, explicit v2 presence
+  supersedes v1 history, so stale or malformed v2 cannot be rescued by a
+  current v1;
   historical `qa-evidence v1` remains replayable when that forward gate is not
   required. Missing or `UNKNOWN` replay is
   a process finding unless a maintainer explicitly waived replay for that

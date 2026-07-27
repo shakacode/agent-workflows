@@ -101,16 +101,28 @@ module CloseoutEvidenceReplay
   end
 
   def replay(text, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
+    qa_v1_markers = marker_bodies(text, "qa-evidence v1")
     qa_v2_markers = marker_bodies(text, "qa-evidence v2")
+    applicable_v2_markers = qa_v2_markers.select do |marker|
+      fields, = parse_fields(marker)
+      head_sha = fields.fetch("head_sha", "").to_s.downcase
+      full_head_sha?(head_sha) && (!expected_head_sha || head_sha == expected_head_sha)
+    end
     qa =
       if require_visual_evidence_v2 && expected_head_sha.nil?
         unknown("--require-visual-evidence-v2 requires expected_head_sha")
-      elsif qa_v2_markers.any?
+      elsif require_visual_evidence_v2 && qa_v2_markers.any?
         replay_qa_markers(qa_v2_markers, expected_head_sha: expected_head_sha, version: 2)
       elsif require_visual_evidence_v2
         unknown("qa-evidence v2 marker required for current user-visible UI evidence")
+      elsif applicable_v2_markers.any?
+        replay_qa_markers(applicable_v2_markers, expected_head_sha: expected_head_sha, version: 2)
+      elsif qa_v1_markers.any?
+        replay_qa_markers(qa_v1_markers, expected_head_sha: expected_head_sha, version: 1)
+      elsif qa_v2_markers.any?
+        replay_qa_markers(qa_v2_markers, expected_head_sha: expected_head_sha, version: 2)
       else
-        replay_qa_markers(marker_bodies(text, "qa-evidence v1"), expected_head_sha: expected_head_sha, version: 1)
+        replay_qa_markers(qa_v1_markers, expected_head_sha: expected_head_sha, version: 1)
       end
     priority = replay_priority_markers(
       marker_bodies(text, "priority-finding-dispositions v1"),
@@ -399,7 +411,8 @@ module CloseoutEvidenceReplay
   end
 
   def http_url?(value)
-    http_urls(value).any? { |url| valid_https_url?(url) }
+    urls = http_urls(value)
+    urls.any? && urls.all? { |url| valid_https_url?(url) }
   end
 
   def github_url?(value)
@@ -445,7 +458,7 @@ module CloseoutEvidenceReplay
       value.match?(/\b(?:painted|rendered)\b/i) &&
       !value.match?(/\b(?:blank|unpainted)\b/i) &&
       !value.match?(
-        /\b(?:not\s+(?:painted|rendered)|(?:did\s+not|never)\s+(?:paint|render)(?:ed)?|failed\s+to\s+(?:paint|render)|(?:painted|rendered)\s+unsuccessfully|unsuccessfully\s+(?:painted|rendered))\b/i
+        /\b(?:not\s+(?:painted|rendered)|(?:did\s+not|never)\s+(?:paint|render)(?:ed)?|failed\s+to\s+(?:paint|render)|(?:paint|render)(?:ing)?\s+fail(?:ed|s|ure)?|(?:painted|rendered)\s+unsuccessfully|unsuccessfully\s+(?:painted|rendered))\b/i
       )
   end
 
@@ -526,7 +539,7 @@ module CloseoutEvidenceReplay
   def negated_or_passing_failure_claim?(value)
     value.match?(/\b(?:(?:did\s+not|didn['’]t|never)\s+(?:fail(?:ed)?|error|assert|mismatch)|not\s+fail(?:ed|ing)?|no\s+(?:failure|error|mismatch)|without\s+(?:failure|error|mismatch))\b/i) ||
       value.match?(/\b(?:no\s+longer\s+fail(?:ed|s|ing)?|stopp(?:ed|ing)\s+fail(?:ing)?|fail(?:ed|s)?\s+no\s+more)\b/i) ||
-      value.match?(/\b(?:assert(?:ion)?|control|negative\s+control|run|test|check)\s+(?:now\s+)?(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i) ||
+      value.match?(/\b(?:assert(?:ion)?|control|negative\s+control|run|test|check)\s+(?:(?:is|was|were|been)\s+)?(?:now\s+)?(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i) ||
       value.match?(/\A(?:pass(?:ed|es)?|succeed(?:ed|s)?|successful)\b/i)
   end
 
