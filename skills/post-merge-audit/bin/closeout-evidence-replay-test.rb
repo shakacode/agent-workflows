@@ -433,6 +433,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       ".\\before.png",
       "..\\before.png",
       "C:before.png",
+      "C:before",
       "assets/before.png",
       "before.png",
       "local-screenshot.webp",

@@ -432,7 +432,9 @@ module CloseoutEvidenceReplay
     non_url_text = without_https_urls(value)
     path_candidate_text = without_schema_slash_labels(non_url_text)
     local_path = absolute_local_path?(non_url_text) ||
-                 path_candidate_text.match?(%r{(?:\A|[\s("'=;])(?:\./|\.\./|~[/\\]|[A-Za-z]:[^/\\\s]++|[^/\s]++/)\S++}) ||
+                 path_candidate_text.match?(
+                   %r{(?:\A|[\s("'=;])(?:\./\S++|\.\./\S++|~[/\\]\S++|[A-Za-z]:[^/\\\s]++|[^/\s]++/\S++)}
+                 ) ||
                  path_candidate_text.match?(
                    /(?:\A|[\s("'=;])(?:\\\\[^\\\s]++\\[^\\\s]++|(?:[^\\\s]++\\)++[^\\\s]++)/
                  ) ||
