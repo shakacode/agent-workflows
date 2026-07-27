@@ -8,6 +8,7 @@ require "timeout"
 require "minitest/autorun"
 
 SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
+load SCRIPT
 
 class CloseoutEvidenceReplayTest < Minitest::Test
   def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
@@ -864,7 +865,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=performance_score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s",
-      "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms"
+      "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=n/a; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x"
     ]
 
     invalid_evidence.each do |evidence|
@@ -880,8 +883,19 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_v2_measured_metric_rejects_placeholder_tokens_anywhere_in_metric_name
-    %w[placeholder_metric tbd_checkout todo_latency].each do |metric_name|
+  def test_measured_metric_rejects_n_a_metric_name_directly
+    refute CloseoutEvidenceReplay.valid_measured_metric?(
+      "repo_seam: source=bin/perf-report; metric_name=n/a; baseline_value=1ms; candidate_value=2ms"
+    )
+  end
+
+  def test_v2_measured_metric_rejects_unresolved_tokens_in_delimited_and_camel_case_names
+    %w[
+      placeholder_metric tbd_checkout todo_latency unknown_duration missing_latency
+      unavailable_metric unmeasured_metric not_available_metric not_measured_metric
+      todoLatency placeholderMetric tbdCheckout unknownDuration missingLatency
+      unavailableMetric unmeasuredMetric notAvailableMetric notMeasuredMetric
+    ].each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
@@ -895,15 +909,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_measured_metric_accepts_consumer_defined_duration_metric_name
-    qa = run_replay(
-      v2_marker(
-        "performance_impact" => "measured_metric",
-        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=checkout_ready; baseline_value=3s; candidate_value=2s"
-      )
-    ).fetch("qa_evidence")
+    %w[checkout_ready file_upload_latency availability_latency rateUnknownness].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
 
-    assert_equal "SATISFIED", qa.fetch("verdict")
-    assert_empty qa.fetch("missing")
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
   end
 
   def test_v2_measured_metric_accepts_consumer_defined_count_metric_unit
@@ -919,20 +935,13 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_measured_metric_rejects_structural_counts_without_rejecting_runtime_name_tokens
-    {
-      "chunk_count" => "chunks",
-      "chunks_count" => "chunks",
-      "file_count" => "files",
-      "files_count" => "files",
-      "module_count" => "modules",
-      "modules_count" => "modules",
-      "test_count" => "tests",
-      "tests_count" => "tests"
-    }.each do |metric_name, unit|
+    %w[
+      chunk_count chunks_count file_count files_count module_count modules_count test_count tests_count
+    ].each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
-          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12#{unit}; candidate_value=3#{unit}"
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
         )
       ).fetch("qa_evidence")
 
@@ -949,6 +958,20 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", runtime.fetch("verdict")
     assert_empty runtime.fetch("missing")
+  end
+
+  def test_v2_measured_metric_rejects_singular_and_plural_size_tokens
+    %w[asset assets bundle bundles byte bytes size sizes].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}_count; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
   end
 
   def test_v2_measured_metric_allows_byte_valued_memory_but_not_byte_valued_timing
