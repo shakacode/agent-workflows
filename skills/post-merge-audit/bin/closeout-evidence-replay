@@ -592,11 +592,12 @@ module CloseoutEvidenceReplay
 
   def unresolved_metric_tokens?(tokens)
     tokens.any? { |token| UNRESOLVED_METRIC_TOKENS.include?(token) } ||
-      tokens.each_cons(2).any? { |first, second| first == "not" && %w[available measured].include?(second) }
+      tokens.each_cons(2).any? { |first, second| first == "not" && %w[applicable available measured].include?(second) }
   end
 
   def structural_metric_count?(tokens)
-    tokens.include?("count") && tokens.any? { |token| STRUCTURAL_COUNT_TOKENS.include?(token) }
+    tokens.any? { |token| %w[count counts].include?(token) } &&
+      tokens.any? { |token| STRUCTURAL_COUNT_TOKENS.include?(token) }
   end
 
   def valid_repo_seam_source?(value)

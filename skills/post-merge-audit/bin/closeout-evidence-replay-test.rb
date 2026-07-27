@@ -892,9 +892,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_v2_measured_metric_rejects_unresolved_tokens_in_delimited_and_camel_case_names
     %w[
       placeholder_metric tbd_checkout todo_latency unknown_duration missing_latency
-      unavailable_metric unmeasured_metric not_available_metric not_measured_metric
+      unavailable_metric unmeasured_metric not_available_metric not_measured_metric not_applicable
       todoLatency placeholderMetric tbdCheckout unknownDuration missingLatency
-      unavailableMetric unmeasuredMetric notAvailableMetric notMeasuredMetric
+      unavailableMetric unmeasuredMetric notAvailableMetric notMeasuredMetric notApplicable
     ].each do |metric_name|
       qa = run_replay(
         v2_marker(
@@ -937,6 +937,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_v2_measured_metric_rejects_structural_counts_without_rejecting_runtime_name_tokens
     %w[
       chunk_count chunks_count file_count files_count module_count modules_count test_count tests_count
+      chunk_counts chunksCounts file_counts filesCounts module_counts modulesCounts test_counts testsCounts
     ].each do |metric_name|
       qa = run_replay(
         v2_marker(
