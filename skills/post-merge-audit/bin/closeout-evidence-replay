@@ -31,10 +31,10 @@ module CloseoutEvidenceReplay
   VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
   STRUCTURAL_METRIC_UNITS = {
-    "chunk" => %w[chunk chunks],
-    "file" => %w[file files],
-    "module" => %w[module modules],
-    "test" => %w[test tests]
+    %w[chunk chunks] => %w[chunk chunks],
+    %w[file files] => %w[file files],
+    %w[module modules] => %w[module modules],
+    %w[test tests] => %w[test tests]
   }.freeze
   HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
   LOCAL_MEDIA_EXTENSION = /\.(?:avi|avif|bmp|gif|heic|heif|ico|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm|webp)\b/i
@@ -595,8 +595,9 @@ module CloseoutEvidenceReplay
   end
 
   def structural_metric_units?(metric_tokens, measurement_units)
-    STRUCTURAL_METRIC_UNITS.any? do |token, units|
-      metric_tokens.include?(token) && measurement_units.all? { |unit| units.include?(unit.downcase) }
+    STRUCTURAL_METRIC_UNITS.any? do |tokens, units|
+      metric_tokens.any? { |token| tokens.include?(token) } &&
+        measurement_units.all? { |unit| units.include?(unit.downcase) }
     end
   end
 

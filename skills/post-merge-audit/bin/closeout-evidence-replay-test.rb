@@ -921,9 +921,13 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_v2_measured_metric_rejects_structural_counts_without_rejecting_runtime_name_tokens
     {
       "chunk_count" => "chunks",
+      "chunks_count" => "chunks",
       "file_count" => "files",
+      "files_count" => "files",
       "module_count" => "modules",
-      "test_count" => "tests"
+      "modules_count" => "modules",
+      "test_count" => "tests",
+      "tests_count" => "tests"
     }.each do |metric_name, unit|
       qa = run_replay(
         v2_marker(
