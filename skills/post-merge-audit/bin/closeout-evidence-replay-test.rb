@@ -572,6 +572,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes qa.fetch("missing"), "visual_evidence.url"
   end
 
+  def test_v2_malformed_media_looking_https_reference_does_not_add_local_reference_diagnostic
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before https:broken.png after https://github.com/example/repo/pull/123#after"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.url"
+    refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
+  end
+
   def test_v2_interaction_evidence_rejects_malformed_https_and_accepts_uppercase_https
     valid_url = "https://github.com/example/repo/pull/123#clip"
     %w[https:broken https:].each do |malformed_url|
