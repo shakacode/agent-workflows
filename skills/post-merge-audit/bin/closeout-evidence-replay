@@ -33,7 +33,9 @@ module CloseoutEvidenceReplay
   STRUCTURAL_COUNT_TOKENS = %w[chunk chunks file files module modules test tests].freeze
   SIZE_METRIC_TOKENS = %w[asset assets bundle bundles byte bytes size sizes].freeze
   UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
-  HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*?(?=;\s*(?:source|metric_name|baseline_value|candidate_value)\s*=|[\s<>()]|\z)/i
+  PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
+  # Keep URL extraction aligned with semicolon-delimited performance evidence fields.
+  HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*?(?=;\s*(?:#{PERFORMANCE_EVIDENCE_FIELD_NAMES.join('|')})\s*=|[\s<>()]|\z)/i
   LOCAL_MEDIA_EXTENSION = /\.(?:avi|avif|bmp|gif|heic|heif|ico|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm|webp)\b/i
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
   EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
@@ -573,6 +575,7 @@ module CloseoutEvidenceReplay
 
     metric_name = names.first.first.strip
     metric_tokens = text_tokens(metric_name)
+    return false if metric_tokens.empty?
     return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\A(?:metric|metrics|na|notapplicable)\z/i)
     return false if unresolved_metric_tokens?(metric_tokens)
 
@@ -606,7 +609,7 @@ module CloseoutEvidenceReplay
     return true if tokens.length == 1 && SIZE_METRIC_TOKENS.include?(tokens.first)
 
     terminal_size = %w[byte bytes size sizes].include?(tokens.last)
-    return true if tokens.length.between?(2, 3) && terminal_size &&
+    return true if tokens.length >= 2 && terminal_size &&
                    tokens.first(tokens.length - 1).any? { |token| SIZE_METRIC_TOKENS.include?(token) }
 
     tokens.length >= 2 && %w[count counts].include?(tokens.last) &&

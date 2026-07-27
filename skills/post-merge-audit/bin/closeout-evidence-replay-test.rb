@@ -873,7 +873,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=NotApplicable; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=NOTAPPLICABLE; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x",
-      "repo_seam: source=bin/perf-report; metric_name=metrics; baseline_value=1x; candidate_value=2x"
+      "repo_seam: source=bin/perf-report; metric_name=metrics; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=---; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=測定; baseline_value=1ms; candidate_value=2ms"
     ]
 
     invalid_evidence.each do |evidence|
@@ -1027,8 +1029,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_v2_measured_metric_classifies_size_and_count_shapes_by_terminal_position
     {
       "bundle_compressed_size" => %w[12items 3items UNKNOWN],
+      "total_uncompressed_bundle_size" => %w[12items 3items UNKNOWN],
       "total_assets_count" => %w[12items 3items UNKNOWN],
-      "assets_count_query_time" => %w[3ms 2ms SATISFIED]
+      "assets_count_query_time" => %w[3ms 2ms SATISFIED],
+      "total_uncompressed_bundle_latency" => %w[3ms 2ms SATISFIED]
     }.each do |metric_name, (baseline, candidate, verdict)|
       qa = run_replay(
         v2_marker(
