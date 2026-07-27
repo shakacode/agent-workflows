@@ -867,7 +867,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=n/a; baseline_value=1ms; candidate_value=2ms",
-      "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x"
+      "repo_seam: source=bin/perf-report; metric_name=NA; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=metrics; baseline_value=1x; candidate_value=2x"
     ]
 
     invalid_evidence.each do |evidence|
@@ -908,8 +910,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_v2_measured_metric_accepts_consumer_defined_duration_metric_name
-    %w[checkout_ready file_upload_latency availability_latency rateUnknownness].each do |metric_name|
+  def test_v2_measured_metric_accepts_consumer_defined_metric_names
+    %w[checkout_ready file_upload_latency availability_latency rateUnknownness score x result].each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
@@ -959,6 +961,16 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", runtime.fetch("verdict")
     assert_empty runtime.fetch("missing")
+
+    compound_runtime = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=module_load_count; baseline_value=3ms; candidate_value=2ms"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", compound_runtime.fetch("verdict")
+    assert_empty compound_runtime.fetch("missing")
   end
 
   def test_v2_measured_metric_rejects_singular_and_plural_size_tokens

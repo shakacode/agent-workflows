@@ -573,7 +573,7 @@ module CloseoutEvidenceReplay
 
     metric_name = names.first.first.strip
     metric_tokens = text_tokens(metric_name)
-    return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\Ametric\z/i)
+    return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\A(?:metric|metrics|na)\z/i)
     return false if unresolved_metric_tokens?(metric_tokens)
 
     return false if metric_tokens.any? { |token| SIZE_METRIC_TOKENS.include?(token) }
@@ -596,7 +596,8 @@ module CloseoutEvidenceReplay
   end
 
   def structural_metric_count?(tokens)
-    tokens.any? { |token| %w[count counts].include?(token) } &&
+    tokens.length == 2 &&
+      tokens.any? { |token| %w[count counts].include?(token) } &&
       tokens.any? { |token| STRUCTURAL_COUNT_TOKENS.include?(token) }
   end
 
