@@ -572,6 +572,31 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes qa.fetch("missing"), "visual_evidence.url"
   end
 
+  def test_v2_interaction_evidence_rejects_malformed_https_and_accepts_uppercase_https
+    valid_url = "https://github.com/example/repo/pull/123#clip"
+    %w[https:broken https:].each do |malformed_url|
+      qa = run_replay(
+        v2_marker(
+          "interaction_change" => "yes",
+          "interaction_evidence" => "clip: #{malformed_url} #{valid_url}"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), malformed_url
+      assert_includes qa.fetch("missing"), "interaction_evidence", malformed_url
+    end
+
+    uppercase = run_replay(
+      v2_marker(
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: HTTPS://github.com/example/repo/pull/123#clip"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", uppercase.fetch("verdict")
+    assert_empty uppercase.fetch("missing")
+  end
+
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual
@@ -843,6 +868,20 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_measured_metric_rejects_placeholder_tokens_anywhere_in_metric_name
+    %w[placeholder_metric tbd_checkout todo_latency].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
   def test_v2_measured_metric_accepts_consumer_defined_duration_metric_name
     qa = run_replay(
       v2_marker(
@@ -865,6 +904,35 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", qa.fetch("verdict")
     assert_empty qa.fetch("missing")
+  end
+
+  def test_v2_measured_metric_rejects_structural_counts_without_rejecting_runtime_name_tokens
+    {
+      "chunk_count" => "chunks",
+      "file_count" => "files",
+      "module_count" => "modules",
+      "test_count" => "tests"
+    }.each do |metric_name, unit|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12#{unit}; candidate_value=3#{unit}"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    runtime = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=file_upload_latency; baseline_value=3ms; candidate_value=2ms"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", runtime.fetch("verdict")
+    assert_empty runtime.fetch("missing")
   end
 
   def test_v2_measured_metric_allows_byte_valued_memory_but_not_byte_valued_timing
