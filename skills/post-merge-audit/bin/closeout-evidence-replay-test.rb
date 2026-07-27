@@ -8,7 +8,6 @@ require "timeout"
 require "minitest/autorun"
 
 SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
-load SCRIPT
 
 class CloseoutEvidenceReplayTest < Minitest::Test
   def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
@@ -868,6 +867,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=n/a; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=NA; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=N.A.; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=N-A; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=metrics; baseline_value=1x; candidate_value=2x"
     ]
@@ -883,12 +884,6 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
       assert_includes qa.fetch("missing"), "performance_evidence", evidence
     end
-  end
-
-  def test_measured_metric_rejects_n_a_metric_name_directly
-    refute CloseoutEvidenceReplay.valid_measured_metric?(
-      "repo_seam: source=bin/perf-report; metric_name=n/a; baseline_value=1ms; candidate_value=2ms"
-    )
   end
 
   def test_v2_measured_metric_rejects_unresolved_tokens_in_delimited_and_camel_case_names
@@ -911,7 +906,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_measured_metric_accepts_consumer_defined_metric_names
-    %w[checkout_ready file_upload_latency availability_latency rateUnknownness score x result].each do |metric_name|
+    %w[checkout_ready file_upload_latency availability_latency rateUnknownness n_a_latency score x result].each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
@@ -940,6 +935,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     %w[
       chunk_count chunks_count file_count files_count module_count modules_count test_count tests_count
       chunk_counts chunksCounts file_counts filesCounts module_counts modulesCounts test_counts testsCounts
+      total_file_count totalFilesCount
     ].each do |metric_name|
       qa = run_replay(
         v2_marker(
@@ -974,16 +970,30 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_measured_metric_rejects_singular_and_plural_size_tokens
-    %w[asset assets bundle bundles byte bytes size sizes].each do |metric_name|
+    %w[asset assets bundle bundles byte bytes size sizes].flat_map { |name| [name, "#{name}_count"] }.each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
-          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}_count; baseline_value=12items; candidate_value=3items"
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
         )
       ).fetch("qa_evidence")
 
       assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
       assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_runtime_names_containing_plural_size_tokens
+    %w[assets_load_latency bundles_parse_time].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
     end
   end
 
