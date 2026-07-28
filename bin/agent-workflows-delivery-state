@@ -173,7 +173,7 @@ module AgentWorkflowsDeliveryState
   end
 
   def codex_plugin_cli_state(target, codex_executable:, codex_resolved: nil, timeout_seconds: DEFAULT_CODEX_TIMEOUT)
-    _invocation, executable = validate_executable(codex_executable, expected_resolved: codex_resolved)
+    invocation, executable = validate_executable(codex_executable, expected_resolved: codex_resolved)
     timeout_seconds = Float(timeout_seconds)
     unless timeout_seconds.positive? && timeout_seconds <= MAX_CODEX_TIMEOUT
       return { "state" => "unknown", "reason" => "invalid Codex plugin state timeout" }
@@ -184,7 +184,7 @@ module AgentWorkflowsDeliveryState
     environment = {
       "CODEX_HOME" => target,
       "HOME" => home,
-      "PATH" => ([File.dirname(executable)] + %w[/usr/local/bin /usr/bin /bin /usr/sbin /sbin]).uniq.join(":"),
+      "PATH" => ([File.dirname(invocation)] + %w[/usr/local/bin /usr/bin /bin /usr/sbin /sbin]).uniq.join(":"),
       "LANG" => "C.UTF-8",
       "LC_ALL" => "C.UTF-8"
     }
@@ -682,7 +682,12 @@ if $PROGRAM_NAME == __FILE__
   end
   if ARGV.first == "--validate-executable"
     ARGV.shift
-    invocation, resolved = AgentWorkflowsDeliveryState.validate_executable(ARGV.fetch(0))
+    expected_resolved = ARGV[1]
+    expected_resolved = nil if expected_resolved.to_s.empty?
+    invocation, resolved = AgentWorkflowsDeliveryState.validate_executable(
+      ARGV.fetch(0),
+      expected_resolved:
+    )
     puts "#{invocation}\t#{resolved}"
     exit 0
   end

@@ -140,7 +140,10 @@ Managed operations never derive `gh` authority from runtime `PATH` or
 executable or timeout from `AGENT_WORKFLOWS_CODEX_*`. The recorded Codex
 invocation and resolved target must still agree, remain executable, and have
 safe ownership, modes, and ancestors. Native inspection runs with a minimal
-child environment. Managed installs also require an exact clean canonical
+child environment whose `PATH` begins with the recorded invocation directory
+while the validated resolved target is executed. Upgrades replay both recorded
+paths and stop with reinstall/rebind guidance if resolution changes.
+Managed installs also require an exact clean canonical
 `shakacode/agent-workflows` `main` checkout whose `HEAD` equals cached
 `origin/main`; feature, detached, dirty, ahead, behind, fork, and local-origin
 sources fail before target mutation.
@@ -152,6 +155,9 @@ Use `--no-fetch` only for an intentionally offline install after independently
 establishing that cached `origin/main` is current; this explicit mode cannot
 prove where a locally mutable cached ref originated.
 Status and upgrade surface and replay this profile. Unknown values fail closed.
+Managed status reads both the available revision and `VERSION` from the same
+canonical commit rather than mixing canonical revision state with the live
+checkout.
 
 Native plugin installation does not install helper binaries on `PATH`, write
 `<target>/.agent-workflows-install.json`, or participate in status and upgrade

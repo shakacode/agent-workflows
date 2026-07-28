@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH] [--no-fetch]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH] [--codex-executable-resolved ABSOLUTE_PATH] [--no-fetch]
 
 Installs this shared workflow pack into an agent home.
 
@@ -43,6 +43,7 @@ provider_profile=""
 gh_executable=""
 codex_executable=""
 codex_executable_resolved=""
+expected_codex_executable_resolved=""
 managed_fetch=true
 pinned_source_revision=""
 copy_chmod="Du+rwx,Dgo+rx,Fu+rw,Fgo+r,a+X"
@@ -631,6 +632,10 @@ while [[ $# -gt 0 ]]; do
       codex_executable="${2:?--codex-executable requires an absolute path}"
       shift 2
       ;;
+    --codex-executable-resolved)
+      expected_codex_executable_resolved="${2:?--codex-executable-resolved requires an absolute path}"
+      shift 2
+      ;;
     --no-fetch)
       managed_fetch=false
       shift
@@ -720,8 +725,18 @@ if [[ "$host" = "codex" ]]; then
     codex_executable="$(command -v codex 2>/dev/null || true)"
   fi
   if [[ -n "$codex_executable" ]]; then
-    codex_binding="$(ruby "$delivery_state_script" --validate-executable "$codex_executable" 2>/dev/null || true)"
-    if [[ -z "$codex_binding" ]]; then
+    set +e
+    codex_binding="$(
+      ruby "$delivery_state_script" --validate-executable \
+        "$codex_executable" "$expected_codex_executable_resolved" 2>&1
+    )"
+    codex_binding_status=$?
+    set -e
+    if [[ "$codex_binding_status" -ne 0 || -z "$codex_binding" ]]; then
+      if [[ -n "$expected_codex_executable_resolved" ]]; then
+        echo "Codex executable resolution changed; reinstall or explicitly rebind it: $codex_executable" >&2
+        exit 64
+      fi
       echo "Codex executable binding is unsafe or unavailable: $codex_executable" >&2
       exit 64
     fi

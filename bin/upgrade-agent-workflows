@@ -25,6 +25,9 @@ delivery_mode=""
 provider_profile=""
 gh_executable=""
 codex_executable=""
+codex_executable_explicit=false
+recorded_codex_executable=""
+recorded_codex_executable_resolved=""
 dry_run=false
 fetch=true
 consumer_roots=()
@@ -308,6 +311,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --codex-executable)
       codex_executable="${2:?--codex-executable requires an absolute path}"
+      codex_executable_explicit=true
       shift 2
       ;;
     --consumer-root)
@@ -384,8 +388,12 @@ fi
 if [[ -z "$gh_executable" ]]; then
   gh_executable="$(metadata_value "$metadata_path" gh_executable 2>/dev/null || true)"
 fi
+recorded_codex_executable="$(metadata_value "$metadata_path" codex_executable 2>/dev/null || true)"
+recorded_codex_executable_resolved="$(
+  metadata_value "$metadata_path" codex_executable_resolved 2>/dev/null || true
+)"
 if [[ -z "$codex_executable" ]]; then
-  codex_executable="$(metadata_value "$metadata_path" codex_executable 2>/dev/null || true)"
+  codex_executable="$recorded_codex_executable"
 fi
 case "$provider_profile" in
   pinned|managed) ;;
@@ -401,6 +409,25 @@ install_script="$source/bin/install-agent-workflows"
 if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
   echo "CHECK_FAILED missing agent-workflows scripts in source: $source" >&2
   exit 3
+fi
+
+if [[ "$host" = "codex" ]]; then
+  if { [[ -n "$recorded_codex_executable" ]] && [[ -z "$recorded_codex_executable_resolved" ]]; } ||
+     { [[ -z "$recorded_codex_executable" ]] && [[ -n "$recorded_codex_executable_resolved" ]]; }; then
+    echo "CHECK_FAILED recorded Codex executable binding is incomplete; reinstall or explicitly rebind it." >&2
+    exit 3
+  fi
+  if [[ "$codex_executable_explicit" = "true" && -n "$recorded_codex_executable" &&
+        "$codex_executable" != "$recorded_codex_executable" ]]; then
+    echo "CHECK_FAILED requested Codex executable differs from the recorded binding; reinstall or explicitly rebind it." >&2
+    exit 3
+  fi
+  if [[ -n "$recorded_codex_executable" ]] &&
+     ! ruby "$source/bin/agent-workflows-delivery-state" --validate-executable \
+       "$recorded_codex_executable" "$recorded_codex_executable_resolved" >/dev/null; then
+    echo "CHECK_FAILED recorded Codex executable resolution changed; reinstall or explicitly rebind it." >&2
+    exit 3
+  fi
 fi
 
 if ! validate_declared_git_source; then
@@ -481,6 +508,9 @@ if [[ -n "$gh_executable" ]]; then
 fi
 if [[ -n "$codex_executable" ]]; then
   install_args+=(--codex-executable "$codex_executable")
+fi
+if [[ -n "$recorded_codex_executable_resolved" ]]; then
+  install_args+=(--codex-executable-resolved "$recorded_codex_executable_resolved")
 fi
 if [[ "$provider_profile" = "managed" || "$fetch" != "true" ]]; then
   install_args+=(--no-fetch)

@@ -83,6 +83,12 @@ module AgentWorkflowsSourceContract
     revision
   end
 
+  def version_at_revision!(source, revision)
+    raise "canonical revision is not a full commit SHA" unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+
+    git(source, "cat-file", "blob", "#{revision}:VERSION")
+  end
+
   def fetch!(source)
     revision = nil
     Dir.mktmpdir("agent-workflows-canonical-fetch") do |staging|

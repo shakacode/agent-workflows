@@ -2111,6 +2111,49 @@ test_managed_upgrade_fetches_once_before_reinstalling_the_established_revision()
     fail "managed upgrade fetched more than once: $(cat "$fetch_log")"
 }
 
+test_upgrade_rejects_a_changed_recorded_codex_resolution() {
+  local tmp source target gh invocation first second output status recorded
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  gh="$tmp/gh"
+  invocation="$tmp/bin/codex"
+  first="$tmp/first/codex"
+  second="$tmp/second/codex"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
+  mkdir -p "$source" "$(dirname "$invocation")" "$(dirname "$first")" "$(dirname "$second")"
+  new_source_repo "$source"
+  cp "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" "$first"
+  cp "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" "$second"
+  chmod 0755 "$first" "$second"
+  ln -s "$first" "$invocation"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+    --codex-executable "$invocation" --no-fetch >"$tmp/managed.out"
+  recorded="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("codex_executable_resolved")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "$first" ]] || fail "managed install did not record the first Codex target"
+  unlink "$invocation"
+  ln -s "$second" "$invocation"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "upgrade silently rebound the recorded Codex executable"
+  assert_contains "$output" "resolution changed"
+  assert_contains "$output" "reinstall"
+  recorded="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("codex_executable_resolved")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "$first" ]] || fail "failed upgrade rewrote the recorded Codex target"
+}
+
 test_upgrade_dry_run_checks_requested_delivery_mode() {
   local tmp source target output status
   tmp="$(mktemp -d)"
@@ -2495,6 +2538,7 @@ main() {
     test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
     test_managed_upgrade_fetches_once_before_reinstalling_the_established_revision
+    test_upgrade_rejects_a_changed_recorded_codex_resolution
     test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed

@@ -211,6 +211,68 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_managed_status_reads_version_from_the_same_canonical_commit_as_revision
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "1.0.0\n")
+        system("git", "-C", source, "init", "--quiet", "--initial-branch=main", exception: true)
+        system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+        system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+        system("git", "-C", source, "add", "VERSION", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "canonical", exception: true)
+        canonical = AgentWorkflowsSourceContract.git(source, "rev-parse", "HEAD")
+        system(
+          "git", "-C", source, "remote", "add", "origin", AgentWorkflowsSourceContract::CANONICAL_URL,
+          exception: true
+        )
+        system(
+          "git", "-C", source, "update-ref", AgentWorkflowsSourceContract::REMOTE_REF, canonical,
+          exception: true
+        )
+        system("git", "-C", source, "switch", "--quiet", "-c", "feature", exception: true)
+        File.write(File.join(source, "VERSION"), "9.9.9-feature\n")
+        system("git", "-C", source, "commit", "--quiet", "-am", "feature", exception: true)
+        write_metadata(
+          target,
+          "version" => "0.9.0",
+          "source" => source,
+          "source_revision" => "0" * 40,
+          "provider_profile" => "managed",
+          "provider_repository" => AgentWorkflowsSourceContract::REPOSITORY,
+          "provider_ref" => AgentWorkflowsSourceContract::REF,
+          "gh_executable" => "/bin/true",
+          "delivery_mode" => "plugin-companion"
+        )
+        original = AgentWorkflowsStatus.method(:delivery_state)
+        AgentWorkflowsStatus.define_singleton_method(:delivery_state) { |**| [{}, nil] }
+
+        payload = AgentWorkflowsStatus.build_payload(
+          host: "claude", target:, source:, delivery_mode: nil, fetch: false, json: true
+        )
+
+        assert_equal "UPGRADE_AVAILABLE", payload.fetch("status")
+        assert_equal canonical, payload.fetch("available_revision")
+        assert_equal "1.0.0", payload.fetch("available_version")
+        refute_equal "9.9.9-feature", payload.fetch("available_version")
+
+        original_version_reader = AgentWorkflowsSourceContract.method(:version_at_revision!)
+        AgentWorkflowsSourceContract.define_singleton_method(:version_at_revision!) do |*|
+          raise "canonical VERSION is unavailable"
+        end
+        failed = AgentWorkflowsStatus.build_payload(
+          host: "claude", target:, source:, delivery_mode: nil, fetch: false, json: true
+        )
+        assert_equal "CHECK_FAILED", failed.fetch("status")
+        assert_nil failed.fetch("available_version")
+      ensure
+        if defined?(original_version_reader) && original_version_reader
+          AgentWorkflowsSourceContract.define_singleton_method(:version_at_revision!, original_version_reader)
+        end
+        AgentWorkflowsStatus.define_singleton_method(:delivery_state, original)
+      end
+    end
+  end
+
   def test_declared_broken_git_checkout_does_not_fall_back_to_version
     Dir.mktmpdir("agent-workflows-status-source") do |source|
       File.write(File.join(source, "VERSION"), "9.9.9\n")

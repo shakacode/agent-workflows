@@ -203,7 +203,7 @@ module AgentWorkflowsStatus
     [nil, "delivery-state check failed: #{error}#{e.message}"]
   end
 
-  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
+  def status_payload(status, target:, source:, host:, metadata: {}, available_version: nil, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
     {
       "status" => status,
       "host" => host,
@@ -211,7 +211,7 @@ module AgentWorkflowsStatus
       "source" => source,
       "installed_version" => metadata["version"],
       "installed_revision" => metadata["source_revision"],
-      "available_version" => source && File.directory?(source) ? version_for(source) : nil,
+      "available_version" => available_version,
       "available_revision" => available_revision,
       "checked_remote" => checked_remote,
       "reason" => reason,
@@ -311,9 +311,14 @@ module AgentWorkflowsStatus
       )
     end
 
+    available_version =
+      if profile == "managed"
+        AgentWorkflowsSourceContract.version_at_revision!(source, revision)
+      else
+        version_for(source)
+      end
     installed_revision = metadata["source_revision"].to_s
     installed_version = metadata["version"].to_s
-    available_version = version_for(source)
     status = if !installed_revision.empty? && installed_revision == revision
                "UP_TO_DATE"
              elsif revision.to_s.start_with?("version:") && installed_version == available_version
@@ -328,6 +333,7 @@ module AgentWorkflowsStatus
       source:,
       host:,
       metadata:,
+      available_version:,
       available_revision: revision,
       checked_remote: options.fetch(:fetch),
       delivery_state: delivery

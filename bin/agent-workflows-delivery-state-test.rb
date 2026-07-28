@@ -642,6 +642,37 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_codex_child_path_starts_with_the_validated_invocation_directory
+    load SCRIPT unless defined?(AgentWorkflowsDeliveryState)
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex-home")
+      invocation_dir = File.join(tmp, "invocation")
+      resolved_dir = File.join(tmp, "resolved")
+      executable = File.join(resolved_dir, "codex-real")
+      invocation = File.join(invocation_dir, "codex")
+      FileUtils.mkdir_p([target, invocation_dir, resolved_dir])
+      File.write(executable, <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(File.join(ENV.fetch("CODEX_HOME"), "captured-path"), ENV.fetch("PATH"))
+        puts "PLUGIN STATUS VERSION PATH"
+        puts "scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git"
+      RUBY
+      FileUtils.chmod(0o755, executable)
+      File.symlink(executable, invocation)
+
+      state = AgentWorkflowsDeliveryState.codex_plugin_cli_state(
+        target,
+        codex_executable: invocation,
+        codex_resolved: executable
+      )
+
+      assert_equal "enabled", state.fetch("state"), state.inspect
+      path = File.read(File.join(target, "captured-path")).split(File::PATH_SEPARATOR)
+      assert_equal invocation_dir, path.first
+      refute_includes path, resolved_dir
+    end
+  end
+
   def test_legacy_codex_native_plugin_blocks_both_delivery_modes_with_migration_guidance
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       target = File.join(tmp, "codex")
