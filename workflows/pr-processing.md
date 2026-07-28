@@ -1876,7 +1876,7 @@ Goal completion contract:
 - When the overall goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one 15-minute current-thread monitor before handoff and do not create a duplicate. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the same explained diff identity remains clean and merge is allowed. Walkthrough participation is not merge approval.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
@@ -2580,9 +2580,11 @@ honor an explicit request to skip or stop it.
 After it completes or is skipped, refresh the diff identity and ordinary
 readiness. If the diff identity changed, invalidate the walkthrough and
 readiness evidence, then restart the walkthrough or stop. If an ordinary gate
-newly fails, stop. Ask one final merge decision only when the same explained
-diff identity remains clean and merge is allowed. Walkthrough participation is
-not merge approval; merge still requires the explicit authority decision.
+newly fails, stop. Ask one final merge decision only when the refreshed diff
+identity matches the recorded identity, ordinary readiness remains clean, and
+merge is allowed; a completed walkthrough must have explained that same diff
+identity. Walkthrough participation is not merge approval; merge still requires
+the explicit authority decision.
 
 ### Autonomous Merge Eligibility Gate
 

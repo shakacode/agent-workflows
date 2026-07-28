@@ -56,7 +56,7 @@ class PrWalkthroughContractTest < Minitest::Test
         "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
         "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
         "If an ordinary gate newly fails, stop.",
-        "Ask one final merge decision only when the same explained diff identity remains clean and merge is allowed.",
+        "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
         "Walkthrough participation is not merge approval."
       ]
       positions = phrases.map do |phrase|

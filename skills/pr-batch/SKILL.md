@@ -769,9 +769,10 @@ walkthrough completed for the same diff identity. Honor an explicit request to
 skip it. After it completes or is skipped, refresh the diff identity and
 ordinary readiness. If the diff identity changed, invalidate the walkthrough
 and readiness evidence, then restart the walkthrough or stop. If an ordinary
-gate newly fails, stop. Ask one final merge decision only when the same
-explained diff identity remains clean and merge is allowed. Walkthrough
-participation is not merge approval.
+gate newly fails, stop. Ask one final merge decision only when the refreshed
+diff identity matches the recorded identity, ordinary readiness remains clean,
+and merge is allowed; a completed walkthrough must have explained that same diff
+identity. Walkthrough participation is not merge approval.
 If approval is declined or not granted by handoff, record
 `ready-no-merge-authority` and do not ask again. When `merge_authority` is
 `none`, done is a

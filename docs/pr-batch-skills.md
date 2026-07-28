@@ -250,8 +250,9 @@ after ordinary gates are clean, the coordinator automatically starts
 large or complex PRs (concise mode for smaller cohesive PRs), then refreshes the
 diff identity and readiness. A changed identity invalidates the walkthrough and
 restarts or stops it; a newly failing gate stops it. The coordinator asks the
-one final merge question only when the same explained diff remains clean. The
-walkthrough itself is not approval.
+one final merge question only when the refreshed identity matches the recorded
+identity and readiness remains clean; a completed walkthrough must have
+explained that same diff. The walkthrough itself is not approval.
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from
 [skills/pr-batch/SKILL.md](../skills/pr-batch/SKILL.md): workers must be able
