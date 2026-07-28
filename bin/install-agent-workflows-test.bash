@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PACK_ROOT="$ROOT"
 FAKE_CODEX_DIR="$(mktemp -d)"
 TEST_SOURCE_ROOT=""
 cleanup() {
@@ -208,6 +209,44 @@ test_codex_host_install_writes_helpers_and_metadata() {
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["provider_profile"] == "pinned" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
 }
 
+test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot() {
+  local tmp source revision target operation mode asset committed_skill
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  revision="$(git -C "$source" rev-parse HEAD)"
+  committed_skill="$(git -C "$source" show "$revision:skills/pr-batch/SKILL.md")"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-$mode"
+    printf 'dirty live source\n' > "$source/skills/pr-batch/SKILL.md"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/.agent-workflows-operation-state/store/$revision" ]] ||
+      fail "$mode install did not seed its committed revision"
+    if [[ "$mode" = "copy" ]]; then
+      [[ "$(cat "$target/skills/pr-batch/SKILL.md")" = "$committed_skill" ]] ||
+        fail "copy install selected uncommitted launcher content"
+    fi
+    operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+    asset="$(printf '%s' "$operation" | ruby -rjson -e 'puts JSON.parse(STDIN.read).dig("assets", "skills", "pr_batch")')"
+    [[ "$(cat "$asset")" != "dirty live source" ]] ||
+      fail "$mode pinned operation selected uncommitted live source content"
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      revision = ARGV.fetch(0)
+      abort payload.inspect unless payload["provider_profile"] == "pinned" &&
+                                   payload["freshness"] == "pinned" &&
+                                   payload["revision"] == revision &&
+                                   payload.dig("assets", "root").include?("/store/#{revision}/tree") &&
+                                   payload["runner"].is_a?(Array) &&
+                                   payload["release"].is_a?(Array)
+    ' "$revision" <<<"$operation"
+    git -C "$source" checkout --quiet -- skills/pr-batch/SKILL.md
+  done
+}
+
 test_copy_mode_refuses_unsafe_bootstrap_directories() {
   local tmp target output status unsafe
 
@@ -278,6 +317,52 @@ test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy() {
     fail "adopted doctor copy differs from its source"
 }
 
+test_copy_mode_refuses_an_exact_unmarked_doctor_copy_with_unsafe_modes() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target/bin"
+  rsync -a "$ROOT/bin/agent_doctor" "$target/bin/"
+  chmod 0777 "$target/bin/agent_doctor"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "copy mode adopted an unsafe unmarked doctor copy"
+  assert_contains "$output" "Refusing unmanaged workflow doctor directory"
+  [[ ! -e "$target/bin/agent_doctor/.agent-workflows-managed" ]] ||
+    fail "copy mode marked an unsafe doctor directory"
+}
+
+test_new_installer_control_helper_can_read_an_older_committed_snapshot() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source" "$target/bin"
+  new_source_repo "$source"
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.binread(path)
+    text.sub!(/\n    def compare_portable.*?^    end\n/m, "\n")
+    text.sub!(/\n  when "compare-portable"\n    .*\n/, "\n")
+    text.sub!(" | compare-portable LEFT RIGHT", "")
+    File.binwrite(path, text)
+  ' "$source/bin/agent_doctor/install_ownership.rb"
+  git -C "$source" add bin/agent_doctor/install_ownership.rb
+  git -C "$source" commit --quiet -m "simulate older committed ownership helper"
+  rsync -a "$source/bin/agent_doctor" "$target/bin/"
+  install -m 0755 "$PACK_ROOT/bin/agent_doctor/install_ownership.rb" \
+    "$source/bin/agent_doctor/install_ownership.rb"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  grep -Eq '^agent-workflows-doctor-v1:[0-9a-f]{64}$' "$target/bin/agent_doctor/.agent-workflows-managed" ||
+    fail "new installer control helper could not adopt content from an older committed snapshot"
+}
+
 test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
   local tmp source target
   tmp="$(mktemp -d)"
@@ -286,6 +371,8 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
   mkdir -p "$source"
   new_source_repo "$source"
   printf 'obsolete managed module\n' > "$source/bin/agent_doctor/obsolete.rb"
+  git -C "$source" add bin/agent_doctor/obsolete.rb
+  git -C "$source" commit --quiet -m "add obsolete managed module"
   write_native_scw_state codex "$target"
 
   "$source/bin/install-agent-workflows" --host codex --target "$target" \
@@ -1178,8 +1265,8 @@ test_install_removes_legacy_copy_from_git_worktree_source() {
   assert_file "$target/docs/agent-workflows-model-routing.md"
 }
 
-test_install_removes_matching_legacy_copy_from_non_git_source() {
-  local tmp current_source previous_source target
+test_pinned_install_rejects_non_git_source_before_legacy_cleanup() {
+  local tmp current_source previous_source target output status
 
   tmp="$(mktemp -d)"
   current_source="$tmp/current-source"
@@ -1194,12 +1281,16 @@ test_install_removes_matching_legacy_copy_from_non_git_source() {
     File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => "unknown"}) + "\n")
   ' "$target/.agent-workflows-install.json" "$previous_source"
 
-  "$current_source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
-    >/tmp/install-agent-workflows-test.out
+  set +e
+  output="$("$current_source/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+  status=$?
+  set -e
 
-  [[ ! -e "$target/docs/model-routing.md" ]] || \
-    fail "copy mode retained a matching legacy model-routing file from a non-git source"
-  assert_file "$target/docs/agent-workflows-model-routing.md"
+  [[ "$status" -ne 0 ]] || fail "pinned install accepted a source without committed Git HEAD"
+  assert_contains "$output" "PINNED_PROVIDER_SOURCE_INVALID"
+  assert_file "$target/docs/model-routing.md"
+  [[ ! -e "$target/docs/agent-workflows-model-routing.md" ]] ||
+    fail "failed pinned install mutated docs before source validation"
 }
 
 test_installed_prompt_guard_ignores_unowned_docs() {
@@ -1723,23 +1814,27 @@ test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout() {
     fail "broken declared Git source without fetch installed workflow metadata"
 }
 
-test_upgrade_fetches_no_plain_standalone_source() {
-  local tmp source target output
+test_upgrade_rejects_plain_standalone_pinned_source() {
+  local tmp source target output status
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
   mkdir -p "$source"
   rsync -a --exclude .git "$ROOT/" "$source/"
 
+  set +e
   output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
 
-  assert_contains "$output" "UPGRADE_COMPLETE"
-  [[ -e "$target/.agent-workflows-install.json" ]] ||
-    fail "standalone plain source did not install workflow metadata"
+  [[ "$status" -ne 0 ]] || fail "upgrade accepted a plain pinned source"
+  assert_contains "$output" "PINNED_PROVIDER_SOURCE_INVALID"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "failed plain-source upgrade installed workflow metadata"
 }
 
-test_upgrade_fetches_no_plain_source_nested_in_a_git_checkout() {
-  local tmp parent source target output
+test_upgrade_rejects_plain_pinned_source_nested_in_a_git_checkout() {
+  local tmp parent source target output status
   tmp="$(mktemp -d)"
   parent="$tmp/parent"
   source="$parent/plain-pack"
@@ -1748,11 +1843,15 @@ test_upgrade_fetches_no_plain_source_nested_in_a_git_checkout() {
   rsync -a --exclude .git "$ROOT/" "$source/"
   git -C "$parent" init --quiet
 
+  set +e
   output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
 
-  assert_contains "$output" "UPGRADE_COMPLETE"
-  [[ -e "$target/.agent-workflows-install.json" ]] ||
-    fail "nested plain source did not install workflow metadata"
+  [[ "$status" -ne 0 ]] || fail "upgrade accepted nested plain pinned source"
+  assert_contains "$output" "PINNED_PROVIDER_SOURCE_INVALID"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "failed nested plain-source upgrade installed workflow metadata"
 }
 
 test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head() {
@@ -1861,7 +1960,7 @@ test_upgrade_reports_missing_source_as_check_failed() {
 }
 
 test_upgrade_rolls_back_when_consumer_seam_fails() {
-  local tmp source target consumer before after output status
+  local tmp source target consumer before after output status operation
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
@@ -1886,6 +1985,13 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   assert_contains "$output" "ROLLBACK_COMPLETE"
   after="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
   [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  ruby -rjson -e '
+    payload = JSON.parse(STDIN.read)
+    abort payload.inspect unless payload["provider_profile"] == "pinned" &&
+                                 payload["freshness"] == "pinned" &&
+                                 payload["revision"] == ARGV.fetch(0)
+  ' "$before" <<<"$operation"
 }
 
 test_failed_upgrade_preserves_operation_state_and_removes_transaction_backup() {
@@ -2141,15 +2247,18 @@ main() {
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
+    test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot
     test_copy_mode_refuses_unsafe_bootstrap_directories
     test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
     test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
+    test_copy_mode_refuses_an_exact_unmarked_doctor_copy_with_unsafe_modes
+    test_new_installer_control_helper_can_read_an_older_committed_snapshot
     test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
     test_install_preserves_exact_content_generic_collision_without_source_evidence
     test_install_removes_legacy_managed_model_routing_path
     test_install_removes_legacy_copy_from_git_worktree_source
-    test_install_removes_matching_legacy_copy_from_non_git_source
+    test_pinned_install_rejects_non_git_source_before_legacy_cleanup
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
@@ -2170,8 +2279,8 @@ main() {
     test_upgrade_fetches_linked_worktree_source
     test_upgrade_rejects_a_declared_broken_git_checkout
     test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout
-    test_upgrade_fetches_no_plain_standalone_source
-    test_upgrade_fetches_no_plain_source_nested_in_a_git_checkout
+    test_upgrade_rejects_plain_standalone_pinned_source
+    test_upgrade_rejects_plain_pinned_source_nested_in_a_git_checkout
     test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
     test_upgrade_dry_run_checks_requested_delivery_mode

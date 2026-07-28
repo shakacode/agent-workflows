@@ -116,7 +116,17 @@ bin/install-agent-workflows --host codex --delivery-mode plugin-companion
 Install metadata persists `provider_profile` as `pinned` or `managed`. New and
 legacy installs default to `pinned`; a missing legacy field is interpreted as
 `pinned`. Pinned installs never fetch a current snapshot and never expose
-current-provider mutations. Select `--provider-profile managed` only with
+current-provider mutations. During installation, the installer imports the
+source worktree's exact committed `HEAD` into the private per-SHA Store and
+verifies the archived tree against the imported Git objects before committing
+the receipt. Uncommitted source changes are deliberately excluded. A pinned
+`begin` opens only that receipt revision, returns `freshness: pinned`, and
+supplies the same immutable named assets and lifecycle handle as managed
+operations without requiring `gh` or network access. Missing or corrupt legacy
+Store state fails with `PINNED_PROVIDER_SNAPSHOT_MISSING` and requires reinstall
+or upgrade; it is never reconstructed from mutable installed files.
+
+Select `--provider-profile managed` only with
 `--mode copy --delivery-mode plugin-companion --gh-executable
 /absolute/path/to/gh`. Verify that absolute path explicitly; the installer
 resolves and validates it, then persists it as trusted install configuration.
@@ -135,9 +145,9 @@ from cached-but-disabled plugin files. They fail closed when native state is
 enabled but its install receipt/cache cannot be verified, or when native and
 installer-managed flat skills would coexist.
 
-For a managed current-provider operation, the native plugin and copied
-companion install must be at the same canonical `main` SHA. Begin before reading
-deeper shared workflows or running helpers:
+For every provider profile, begin before reading deeper shared workflows or
+running helpers. A managed native plugin and copied companion install must be at
+the same canonical `main` SHA:
 
 ```bash
 "${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve" begin --host codex --json
@@ -151,8 +161,9 @@ and registered capability launcher. Its `runner` value is a complete argv
 prefix, including the trusted absolute environment sanitizer and Ruby
 interpreter. Preserve every element in order and append only
 `CAPABILITY -- ARGS`; do not execute only the installed runner-script element,
-resolve any prefix through `PATH`, or run a snapshot executable directly. A
-degraded begin is read-only and cannot authorize current-provider mutations.
+resolve any prefix through `PATH`, or run a snapshot executable directly. A pinned or degraded begin is read-only and cannot authorize a capability
+marked `requires_current_provider`. The outer installed runner checks that
+condition before starting the private launcher or capability child.
 
 If alignment fails, follow the complete host-specific update/reinstall/reload
 action printed by the resolver. A provider update in a running session always
@@ -179,6 +190,11 @@ Clone the source pack once:
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
 cd "$HOME/src/agent-workflows"
 ```
+
+Pinned installation requires that source path to be the exact root of a Git
+worktree with a resolved committed `HEAD`. An unpacked directory without Git
+objects cannot seed a verifiable pinned Store snapshot and fails with
+`PINNED_PROVIDER_SOURCE_INVALID`.
 
 Install for Codex:
 
@@ -659,7 +675,7 @@ the session must avoid network access.
 
 ## Explicit Provider Operation Lifecycle
 
-Managed operation state is bounded by explicit references, not age or process
+Provider operation state is bounded by explicit references, not age or process
 heuristics. The resolver exposes
 `release --host HOST --target TARGET --operation HANDLE --json` and
 `list --host HOST --target TARGET --json`. `begin --json` returns the complete

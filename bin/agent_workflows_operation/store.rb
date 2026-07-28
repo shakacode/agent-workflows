@@ -24,6 +24,12 @@ module AgentWorkflowsOperation
       fetch_url!(SecureGit::CANONICAL_URL)
     end
 
+    def import_local!(source, revision)
+      stage_snapshot!(revision, repair_existing: true) do |repository, private_home|
+        git.import_local_revision!(repository, source, revision, private_home: private_home)
+      end
+    end
+
     def open!(revision)
       unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
         raise StoreError, "canonical content store revision must be a full SHA-1"
@@ -36,6 +42,12 @@ module AgentWorkflowsOperation
     private
 
     def fetch_url!(url, cleanup_probe: nil)
+      stage_snapshot!(nil, cleanup_probe:) do |repository, private_home|
+        git.send(:fetch_url!, repository, url, private_home: private_home)
+      end
+    end
+
+    def stage_snapshot!(expected_revision, cleanup_probe: nil, repair_existing: false)
       quarantine = File.join(state_root, "quarantine")
       SecurePaths.verify_private_directory!(quarantine)
       stage = File.join(quarantine, SecureRandom.hex(24))
@@ -50,8 +62,12 @@ module AgentWorkflowsOperation
         Dir.mkdir(private_home, 0o700)
         git.init_bare!(repository, private_home: private_home)
         FileUtils.chmod(0o700, repository)
-        git.send(:fetch_url!, repository, url, private_home: private_home)
+        yield repository, private_home
         revision = git.resolve_private_revision!(repository, private_home: private_home)
+        if expected_revision && revision != expected_revision
+          raise StoreError, "imported provider revision does not match #{expected_revision}"
+        end
+
         Dir.mkdir(tree, 0o700)
         git.archive!(repository, revision, tree, private_home: private_home)
         Tree.verify_against_git!(
@@ -65,10 +81,16 @@ module AgentWorkflowsOperation
         cleanup_probe&.call(stage)
         destination = File.join(state_root, "store", revision)
         if File.exist?(destination) || File.symlink?(destination)
-          snapshot = verify_store!(destination, revision)
-          SecurePaths.cleanup_owned_directory!(stage, identity)
-          published = true
-          return snapshot
+          begin
+            snapshot = verify_store!(destination, revision)
+            SecurePaths.cleanup_owned_directory!(stage, identity)
+            published = true
+            return snapshot
+          rescue StoreError
+            raise unless repair_existing
+
+            remove_repairable_store!(destination)
+          end
         end
         begin
           File.rename(stage, destination)
@@ -87,6 +109,23 @@ module AgentWorkflowsOperation
       ensure
         SecurePaths.cleanup_owned_directory!(cleanup_path, identity) unless published
       end
+    end
+
+    def remove_repairable_store!(root)
+      stat = File.lstat(root)
+      unless stat.directory? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o022).zero?
+        raise StoreError, "existing canonical content store is not safely repairable"
+      end
+
+      Find.find(root) do |path|
+        entry = File.lstat(path)
+        unless entry.uid == Process.uid && (entry.symlink? || entry.directory? || entry.file?)
+          raise StoreError, "existing canonical content store contains an unsafe entry: #{path}"
+        end
+      end
+      SecurePaths.cleanup_owned_directory!(root, SecurePaths.owned_identity(root))
+    rescue Errno::ENOENT
+      nil
     end
 
     def verify_store!(root, revision)

@@ -52,11 +52,11 @@ names the next desired action. For example:
 Resume now from your restart handoff. Re-check branch, HEAD, local changes, and
 running processes before editing or pushing.
 
-Read the active-host install metadata and select exactly one branch. If metadata
-is unavailable, use the pinned/offline branch. A missing `provider_profile`
-means `pinned`; an unknown value stops.
+The receiving invocation must bind its own operation. Identify the active host,
+then use the active host home's absolute resolver command below exactly once.
+The resolver selects the installed provider profile; never pre-read install
+metadata or branch around resolution. Never inherit a sender's handle or paths.
 
-Managed provider branch:
 Run the active host home's absolute `bin/agent-workflows-resolve begin` command
 exactly once and retain that exact JSON result as `resume_operation`. Do not
 begin a second operation. Compare `resume_operation.revision` with the handoff's
@@ -65,21 +65,13 @@ On mismatch, stop normal resume and require explicit cancellation/relaunch or
 state reconciliation before any work continues. On match, re-read only
 `resume_operation.assets.skills.pause` before continuing.
 
-Pinned or offline provider branch:
-Do not run the provider resolver. Continue only from the repo's current
-AGENTS.md, this already-loaded pause instruction, local policy/command seams,
-the verified live state, and the recorded next resume step. If that step needs
-another shared instruction or a registered mutation, stop before it and report
-the pinned/offline limitation.
-
-After provider branch selection:
 After the invocation's final shared-instruction read and final helper/capability
 use, invoke `resume_operation.release` to release the old operation. Release
 invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
 or follow-up must begin a new operation. Recover crashed or orphaned handles only
 with the active resolver's `list --json` and named `release`;
 never TTL or PID inference.
-Continue only after the applicable branch's checks pass.
+Continue only after the operation checks pass.
 ```
 
 If the original thread cannot be reopened, start a new chat and paste the
@@ -99,11 +91,11 @@ If live state does not match the handoff, report the mismatch and stop for
 operator direction before editing, pushing, polling, merging, or launching
 servers.
 
-Read the active-host install metadata and select exactly one branch. If metadata
-is unavailable, use the pinned/offline branch. A missing `provider_profile`
-means `pinned`; an unknown value stops.
+The receiving invocation must bind its own operation. Identify the active host,
+then use the active host home's absolute resolver command below exactly once.
+The resolver selects the installed provider profile; never pre-read install
+metadata or branch around resolution. Never inherit a sender's handle or paths.
 
-Managed provider branch:
 Run the active host home's absolute `bin/agent-workflows-resolve begin` command
 exactly once and retain that exact JSON result as `resume_operation`. Do not
 begin a second operation. Compare `resume_operation.revision` with the handoff's
@@ -112,21 +104,13 @@ On mismatch, stop normal resume and require explicit cancellation/relaunch or
 state reconciliation before any work continues. On match, re-read only
 `resume_operation.assets.skills.pause` before continuing.
 
-Pinned or offline provider branch:
-Do not run the provider resolver. Continue only from the repo's current
-AGENTS.md, this already-loaded pause instruction, local policy/command seams,
-the verified live state, and the recorded next resume step. If that step needs
-another shared instruction or a registered mutation, stop before it and report
-the pinned/offline limitation.
-
-After provider branch selection:
 After the invocation's final shared-instruction read and final helper/capability
 use, invoke `resume_operation.release` to release the old operation. Release
 invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
 or follow-up must begin a new operation. Recover crashed or orphaned handles only
 with the active resolver's `list --json` and named `release`;
 never TTL or PID inference.
-Continue only after the applicable branch's checks pass.
+Continue only after the operation checks pass.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>
@@ -150,11 +134,11 @@ into every paused persistent batch thread:
 ```text
 Resume batch processing now.
 
-Read the active-host install metadata and select exactly one branch. If metadata
-is unavailable, use the pinned/offline branch. A missing `provider_profile`
-means `pinned`; an unknown value stops.
+The receiving invocation must bind its own operation. Identify the active host,
+then use the active host home's absolute resolver command below exactly once.
+The resolver selects the installed provider profile; never pre-read install
+metadata or branch around resolution. Never inherit a sender's handle or paths.
 
-Managed provider branch:
 Run the active host home's absolute `bin/agent-workflows-resolve begin` command
 exactly once and retain that exact JSON result as `resume_operation`. Do not
 begin a second operation. Compare `resume_operation.revision` with the handoff's
@@ -166,20 +150,13 @@ state reconciliation before any work continues. On match, re-read only
 recovery steps under "Pausing For An Agent-Runner Restart" before editing,
 pushing, polling, or starting a target.
 
-Pinned or offline provider branch:
-Do not run the provider resolver. This batch resume requires shared workflow and
-claim-recovery instructions, so stop before editing, pushing, polling, changing
-a claim, or starting a target. Report the pinned/offline limitation and require
-a managed-provider resume or explicit coordinator cancellation.
-
-After provider branch selection:
 After the invocation's final shared-instruction read and final helper/capability
 use, invoke `resume_operation.release` to release the old operation. Release
 invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
 or follow-up must begin a new operation. Recover crashed or orphaned handles only
 with the active resolver's `list --json` and named `release`;
 never TTL or PID inference.
-Continue only after the applicable branch's checks pass.
+Continue only after the operation checks pass.
 ```
 
 This is a resume instruction for the same lanes, not a cancellation or relaunch
@@ -195,11 +172,11 @@ this prompt:
 Resume this PR-batch lane from a restart handoff in a new chat.
 
 Treat the pasted handoff as stale evidence, not authority. Read the repo's
-current AGENTS.md first. Read the active-host install metadata and select
-exactly one branch. If metadata is unavailable, use the pinned/offline branch.
-A missing `provider_profile` means `pinned`; an unknown value stops.
+current AGENTS.md first. The receiving invocation must bind its own operation. Use the active host's
+absolute resolver command below exactly once. The resolver selects the installed
+provider profile; never pre-read install metadata or branch around resolution.
+Never inherit a sender's handle or paths.
 
-Managed provider branch:
 Run the active host home's absolute `bin/agent-workflows-resolve begin` command
 exactly once and retain that exact JSON result as `resume_operation`. Do not
 begin a second operation. Compare `resume_operation.revision` with the handoff's
@@ -211,21 +188,13 @@ state reconciliation before any work continues. On match, re-read only
 recovery steps under "Pausing For An Agent-Runner Restart" before editing,
 pushing, polling, or starting a target.
 
-Pinned or offline provider branch:
-Do not run the provider resolver. This batch replacement requires shared
-workflow and claim-recovery instructions, so stop before editing, pushing,
-polling, changing a claim, or starting a target. Report the pinned/offline
-limitation and require a managed-provider replacement or explicit coordinator
-cancellation.
-
-After provider branch selection:
 After the invocation's final shared-instruction read and final helper/capability
 use, invoke `resume_operation.release` to release the old operation. Release
 invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
 or follow-up must begin a new operation. Recover crashed or orphaned handles only
 with the active resolver's `list --json` and named `release`;
 never TTL or PID inference.
-Continue only after the applicable branch's checks pass.
+Continue only after the operation checks pass.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
 state, and private claim or active public `codex-claim` fallback comments. If

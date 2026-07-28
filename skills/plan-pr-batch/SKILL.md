@@ -8,33 +8,26 @@ argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
 
 ## Bound Provider Operation
 
-The persisted install metadata field `provider_profile` controls resolution. A
-missing legacy field is `pinned`; any unknown profile is invalid and requires a
-stop.
-
-**Pinned profile:** never fetch or run the current-provider resolver. Do not
-expect `assets.*`. Continue only from Consumer `AGENTS.md`, this already-loaded
-entry, `.agents/agent-workflow.yml`, and `.agents/bin/*` policy/command seams. Do
-not load a shared sibling skill, workflow, or doc, and do not run a registered
-mutation. If the remaining task requires any of those shared assets,
-stop with a precise pinned-provider limitation. This preserves the declared
-installed snapshot without fetching or mixing another provider.
-
-**Managed profile only:** for `managed`, use only a provider operation that the
-current invocation created locally and whose exact `begin --json` result it
-retained. Otherwise identify the active host and use the active host home's
-absolute `bin/agent-workflows-resolve begin` path:
-`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host codex
---json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve begin
---host claude --json`. Never bootstrap through `PATH`, and never trust an
-inherited operation handle, runner command, or asset variable.
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
 
 Re-read this entry at returned `assets.skills.plan_pr_batch`. Read canonical PR
 processing only through `assets.workflow`. Resolve shared sibling skills,
 workflows, and docs through returned named assets or beneath `assets.root`; stop
-if a required asset is absent. Reuse a handle only when this current invocation
-created and retained that exact result. Run registered mutations only through
-the complete returned `runner` command; stop if the capability is unavailable.
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
 
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 

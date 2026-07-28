@@ -24,15 +24,15 @@ module AgentWorkflowsOperation
     def begin!(degraded: false)
       lease.with_exclusive do
         profile = installed_profile
-        if profile == "pinned"
-          raise ProviderError, "PINNED_PROVIDER_OPERATION_UNAVAILABLE: pinned providers do not resolve operations"
-        end
+        pinned_snapshot = open_pinned_snapshot! if profile == "pinned"
 
         inventory = lifecycle.gc!
         lifecycle.enforce_operation_capacity!(inventory)
         lifecycle.enforce_revision_capacity!(inventory)
         begin
-          snapshot = if degraded
+          snapshot = if pinned_snapshot
+                       pinned_snapshot
+                     elsif degraded
                        revision = installed_revision
                        store.open!(revision)
                      else
@@ -41,7 +41,13 @@ module AgentWorkflowsOperation
           lifecycle.enforce_revision_capacity!(lifecycle.inventory!, snapshot.revision)
           registry = Registry.load!(snapshot)
           provider = Provider.new(host: host, target: target, snapshot: snapshot).verify!
-          freshness = degraded ? "degraded" : "current"
+          freshness = if profile == "pinned"
+                        "pinned"
+                      elsif degraded
+                        "degraded"
+                      else
+                        "current"
+                      end
           state.publish_operation!(
             snapshot: snapshot,
             registry: registry,
@@ -78,6 +84,14 @@ module AgentWorkflowsOperation
 
     def fetch_current_store!
       store.fetch_current!
+    end
+
+    def open_pinned_snapshot!
+      store.open!(installed_revision)
+    rescue StoreError => e
+      raise ProviderError,
+            "PINNED_PROVIDER_SNAPSHOT_MISSING: the installed receipt snapshot is unavailable or corrupt; " \
+            "reinstall or upgrade this pinned provider before retrying (#{e.message})"
     end
 
     def installed_revision

@@ -10,7 +10,7 @@ module AgentDoctor
 
     module_function
 
-    def digest(root)
+    def digest(root, portable_modes: false)
       root = File.expand_path(root)
       result = Digest::SHA256.new
       entries = []
@@ -28,7 +28,8 @@ module AgentDoctor
                 when "directory" then ""
                 else raise ArgumentError, "unsupported doctor install entry: #{relative}"
                 end
-        entries << [relative, stat.ftype, (stat.mode & 0o7777).to_s(8), value]
+        mode = portable_modes ? portable_mode(stat) : (stat.mode & 0o7777).to_s(8)
+        entries << [relative, stat.ftype, mode, value]
         Find.prune if stat.symlink?
       end
       entries.sort_by!(&:first)
@@ -38,6 +39,12 @@ module AgentDoctor
 
     def compare(left, right)
       digest(left) == digest(right)
+    rescue ArgumentError, SystemCallError
+      false
+    end
+
+    def compare_portable(left, right)
+      digest(left, portable_modes: true) == digest(right, portable_modes: true)
     rescue ArgumentError, SystemCallError
       false
     end
@@ -59,6 +66,18 @@ module AgentDoctor
         result << [bytes.bytesize].pack("Q>") << bytes
       end
     end
+
+    def portable_mode(stat)
+      raise ArgumentError, "portable install entry has the wrong owner" unless stat.uid == Process.uid
+
+      mode = stat.mode & 0o7777
+      return "755" if stat.directory? && [0o500, 0o700, 0o755].include?(mode)
+      return "777" if stat.symlink? && mode == 0o777
+      return "755" if stat.file? && [0o500, 0o700, 0o755].include?(mode)
+      return "644" if stat.file? && [0o400, 0o600, 0o644].include?(mode)
+
+      raise ArgumentError, "portable install entry has unsafe or unsupported mode #{format('%04o', mode)}"
+    end
   end
 end
 
@@ -67,12 +86,14 @@ if $PROGRAM_NAME == __FILE__
   case command
   when "compare"
     exit(AgentDoctor::InstallOwnership.compare(ARGV.fetch(0), ARGV.fetch(1)) ? 0 : 1)
+  when "compare-portable"
+    exit(AgentDoctor::InstallOwnership.compare_portable(ARGV.fetch(0), ARGV.fetch(1)) ? 0 : 1)
   when "marker"
     puts AgentDoctor::InstallOwnership.marker(ARGV.fetch(0))
   when "verify"
     exit(AgentDoctor::InstallOwnership.verify(ARGV.fetch(0), ARGV.fetch(1)) ? 0 : 1)
   else
-    warn "Usage: install_ownership.rb compare LEFT RIGHT | marker ROOT | verify ROOT MARKER"
+    warn "Usage: install_ownership.rb compare LEFT RIGHT | compare-portable LEFT RIGHT | marker ROOT | verify ROOT MARKER"
     exit 64
   end
 end

@@ -40,9 +40,8 @@ adapter maps those verbs to the current host's mechanisms at runtime.
 | Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check |
 | Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source |
 
-A managed provider binds each operation to one verified
-snapshot and fails closed when that binding is unavailable. An explicit pinned
-or offline snapshot retains its declared provider contract; it does not
+A managed provider binds each operation to one verified snapshot and fails
+closed when that binding is unavailable. An explicit pinned or offline snapshot retains its declared provider contract; it does not
 silently enter rolling resolution or mix assets with a rolling operation.
 
 Native plugins add a host namespace without changing the portable skill name:
@@ -165,7 +164,7 @@ additional repo-owned binstubs, package managers, test runners, or CI parity
 commands named in its `AGENTS.md` seam. Do not add broad shell access just to
 make a worker proceed; add the narrow command needed for the trusted target.
 
-## Provider-Bound Managed Operations
+## Provider-Bound Operations
 
 A managed provider binds one consequential operation to one
 exact canonical commit. Each operation-bound entry skill uses only an operation
@@ -195,6 +194,19 @@ inherited operation state. The resolver:
    the explicit absolute `gh_executable` recorded by the
    trusted managed installation, never from runtime `PATH` or an environment
    override.
+
+A pinned provider uses the same operation result and immutable Store boundary,
+but installation seeds the Store from the source worktree's exact committed
+`HEAD` while holding the lifecycle lease. The import creates independent Git
+objects, archives that commit, verifies the tree against those objects, and
+hardens the instruction tree before the receipt can name it. A pinned begin
+never calls the current-provider fetch: it opens only the receipt's
+`source_revision`, validates the receipt and applicable flat or native companion
+surface, and returns `provider_profile: pinned` with `freshness: pinned`.
+Uncommitted source changes and later edits to a symlink installation do not
+change the operation assets. A missing or corrupt snapshot fails with
+`PINNED_PROVIDER_SNAPSHOT_MISSING`; there is no network, live-source, native, or
+installed-copy reconstruction fallback.
 
 The JSON result retains the exact `revision`, operation handle, freshness,
 capabilities, per-capability provenance, and runner and exposes one read
@@ -239,7 +251,10 @@ The runner revalidates the operation against its private canonical Git store,
 the active native and companion providers, and the recorded launcher/runtime/
 capability bundle source path, device, inode, size, mode, content, exact member
 set, runtime digest, and bound Git/GitHub executable immediately before
-execution. It refuses provider movement after begin. `--degraded` may bind a coherent
+execution. It refuses provider movement after begin. Before the outer launcher
+starts any child, it rejects a capability marked `requires_current_provider`
+unless the operation is managed and current. Pinned operations therefore need
+no `gh` binding. `--degraded` may bind a coherent
 already-stored snapshot for read-only diagnosis, but cannot authorize a
 capability marked `requires_current_provider`.
 
@@ -283,9 +298,11 @@ execute its source helper.
 Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command wrappers
 remain authoritative local policy. They do not replace bound shared files.
 
-An explicit pinned or offline snapshot that does not opt into a bound rolling
-operation retains its declared provider's own resolution contract. It must not
-mix its assets with a managed provider operation.
+Both pinned and managed entries call the active host home's absolute resolver.
+The resolver, not model-side metadata branching, selects the profile. Every
+entry then re-reads itself and all shared siblings, workflows, and docs only
+from the returned assets. Pinned and managed assets never mix within one
+operation.
 
 ## Availability Checks
 
@@ -307,7 +324,7 @@ unavailable host tool into a portable requirement for all users.
 
 ## Explicit Provider Operation Lifecycle
 
-Managed operation state is bounded by explicit references, not age or process
+Provider operation state is bounded by explicit references, not age or process
 heuristics. The resolver exposes
 `release --host HOST --target TARGET --operation HANDLE --json` and
 `list --host HOST --target TARGET --json`. `begin --json` returns the complete
@@ -319,7 +336,7 @@ crashed or orphaned handle by inspecting `list` and naming that exact handle in
 
 The fixed admission limits are 32 live operation records and 8 retained
 revision snapshots. Reference-derived GC never evicts a live operation or the
-installed managed revision. Thus the honest bound is 32 published operations
+installed receipt revision. Thus the honest bound is 32 published operations
 and 8 retained revisions in healthy quiescent state, not a strict byte quota.
 Malformed operation, store, or installation state blocks deletion rather than
 broadening cleanup.

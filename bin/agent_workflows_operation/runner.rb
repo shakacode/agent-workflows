@@ -29,7 +29,9 @@ module AgentWorkflowsOperation
 
     def launch!(handle:, capability:, arguments:)
       lease.with_shared do
-        operation_root, metadata, snapshot, = validated_operation!(handle, capability)
+        operation_root, metadata, snapshot, registry = validated_operation!(handle, capability)
+        enforce_current_provider!(registry.capability!(capability), metadata, capability)
+        verify_provider!(metadata, snapshot)
         launcher = File.join(operation_root, "launcher")
         verify_executable_identity!(launcher, metadata.fetch("launcher"), "operation launcher")
         verify_runtime!(operation_root, metadata, snapshot)
@@ -56,19 +58,9 @@ module AgentWorkflowsOperation
       lease.with_shared do
         operation_root, metadata, snapshot, registry = validated_operation!(handle, capability)
         definition = registry.capability!(capability)
-        if definition.requires_current_provider && metadata["freshness"] != "current"
-          raise RunnerError, "CURRENT_PROVIDER_REQUIRED: #{capability} is unavailable in degraded/offline operations"
-        end
+        enforce_current_provider!(definition, metadata, capability)
 
-        begin
-          Provider.new(
-            host: metadata.dig("provider", "host"),
-            target: target,
-            snapshot: snapshot
-          ).verify!(expected_revision: metadata.fetch("revision"))
-        rescue ProviderError => e
-          raise RunnerError, "provider moved after operation begin: #{e.message}"
-        end
+        verify_provider!(metadata, snapshot)
 
         recorded = metadata.fetch("capabilities").fetch(capability)
         bundle = File.join(operation_root, "capabilities", capability)
@@ -78,7 +70,8 @@ module AgentWorkflowsOperation
         ruby = verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter")
         verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
         verify_external_executable!(metadata.fetch("tools").fetch("git"), "bound Git executable")
-        verify_external_executable!(metadata.fetch("tools").fetch("gh"), "bound gh executable")
+        gh = metadata.fetch("tools")["gh"]
+        verify_external_executable!(gh, "bound gh executable") if gh
         wait_for_command!(
           sanitized_environment(metadata, capability: recorded, bundle: bundle),
           [ruby, "--disable=gems", executable, *arguments]
@@ -110,7 +103,7 @@ module AgentWorkflowsOperation
         "PATH" => "/usr/bin:/bin:/usr/sbin:/sbin",
         "AUTONOMOUS_MERGE_GH" => nil,
         "AGENT_WORKFLOWS_GIT_EXECUTABLE" => metadata.fetch("tools").fetch("git").fetch("path"),
-        "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.fetch("tools").fetch("gh").fetch("path"),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.dig("tools", "gh", "path"),
         "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => nil,
         "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => nil
       }
@@ -198,6 +191,23 @@ module AgentWorkflowsOperation
       end
     rescue SystemCallError, KeyError, StoreError, PathError => e
       raise RunnerError, "operation capability bundle is invalid: #{e.message}"
+    end
+
+    def enforce_current_provider!(definition, metadata, capability)
+      return unless definition.requires_current_provider
+      return if metadata["freshness"] == "current" && metadata.dig("provider", "profile") == "managed"
+
+      raise RunnerError, "CURRENT_PROVIDER_REQUIRED: #{capability} is unavailable in pinned/degraded operations"
+    end
+
+    def verify_provider!(metadata, snapshot)
+      Provider.new(
+        host: metadata.dig("provider", "host"),
+        target: target,
+        snapshot: snapshot
+      ).verify!(expected_revision: metadata.fetch("revision"))
+    rescue ProviderError => e
+      raise RunnerError, "provider moved after operation begin: #{e.message}"
     end
 
     def runtime_digest(runtime, bundle)

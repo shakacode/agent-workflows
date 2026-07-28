@@ -7,9 +7,10 @@ Status: accepted
 
 Keep every shared instruction read for one operation inside one verified,
 immutable provider snapshot. Provider modes distinguish a
-managed provider, which resolves its current canonical
-revision before work, from an explicit pinned or offline snapshot, which keeps
-its own declared contract and never mixes assets with a rolling operation.
+managed provider, which resolves its current canonical revision before work,
+from an explicit pinned or offline snapshot, which resolves its install-time
+committed revision without network access. Both profiles publish the same bound
+operation shape and never mix assets.
 
 Consumer repository policy remains local. `AGENTS.md`,
 `.agents/agent-workflow.yml`, and `.agents/bin/*` continue to supply repository
@@ -62,6 +63,26 @@ Every operation-bound entry skill starts with one common contract:
    beneath `assets.root`.
 7. Stop when a required named asset is absent.
 
+The entry never pre-reads install metadata to choose a branch. The resolver
+selects the profile. Managed begin fetches and verifies current canonical
+content; pinned begin opens only the receipt-bound Store snapshot and returns
+`freshness: pinned`.
+
+## Pinned Snapshot Seed
+
+Pinned installation resolves the source worktree's exact committed `HEAD` under
+the lifecycle lease, imports that commit into an independent private bare Git
+repository, archives it, verifies the archive against the imported objects, and
+hardens the tree before metadata commit. Dirty or uncommitted source content is
+not selected. A missing legacy snapshot is not rebuilt from installed copies or
+a live symlink; reinstall or upgrade is required.
+
+Flat-copy skills remain launchers into the Store snapshot. Flat symlinks may
+track live source for bootstrap discovery, but their returned operation assets
+remain fixed at the installed commit. Plugin-companion pinned operations also
+require the active native root and companion receipt to match the pinned
+revision and tree.
+
 An agent-runner restart creates a new invocation. The replacement starts a new
 operation and uses the newly returned snapshot. A same-invocation continuation
 may reuse only its locally retained exact result.
@@ -74,7 +95,9 @@ handle. Each capability's registry-owned runtime bundle preserves
 provider-relative paths and binds its exact roles and bytes to one provider
 revision. This includes the read-only autonomous-merge evaluator as well as
 mutating merge submission. If a registered capability is unavailable, the
-operation stops; it never executes the capability's source helper path.
+operation stops; it never executes the capability's source helper path. The
+outer runner rejects every `requires_current_provider` capability before the
+launcher or child starts when freshness is pinned or degraded.
 
 The operation result binds machine-readable paths and execution state. It
 cannot prove that a model consumed Markdown, so re-reading the returned entry
@@ -84,12 +107,12 @@ and workflow remains an explicit instruction-contract step.
 
 - Replacing consumer repository policy with provider policy.
 - Creating precedence between operation assets and local/shared copies.
-- Turning pinned or offline providers into rolling providers implicitly.
+- Fetching current provider content for pinned or offline operations.
 - Claiming isolation from a malicious same-user process.
 
 ## Explicit Provider Operation Lifecycle
 
-Managed operation state is bounded by explicit references, not age or process
+Provider operation state is bounded by explicit references, not age or process
 heuristics. The resolver exposes
 `release --host HOST --target TARGET --operation HANDLE --json` and
 `list --host HOST --target TARGET --json`. `begin --json` returns the complete
@@ -101,7 +124,7 @@ crashed or orphaned handle by inspecting `list` and naming that exact handle in
 
 The fixed admission limits are 32 live operation records and 8 retained
 revision snapshots. Reference-derived GC never evicts a live operation or the
-installed managed revision. Thus the honest bound is 32 published operations
+installed receipt revision. Thus the honest bound is 32 published operations
 and 8 retained revisions in healthy quiescent state, not a strict byte quota.
 Malformed operation, store, or installation state blocks deletion rather than
 broadening cleanup.

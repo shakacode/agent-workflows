@@ -76,16 +76,132 @@ class AgentWorkflowsOperationTest < Minitest::Test
     end
   end
 
-  def test_legacy_and_explicit_pinned_profiles_never_begin_a_rolling_operation
+  def test_legacy_and_explicit_pinned_profiles_begin_from_the_installed_snapshot_without_fetch
     [nil, "pinned"].each do |profile|
       metadata = read_metadata
       profile ? metadata["provider_profile"] = profile : metadata.delete("provider_profile")
+      metadata["delivery_mode"] = "flat"
+      metadata["mode"] = "copy"
+      metadata.delete("gh_executable")
       write_metadata(metadata)
 
-      error = assert_raises(AgentWorkflowsOperation::ProviderError) { begin_current_operation }
-      assert_includes error.message, "PINNED_PROVIDER_OPERATION_UNAVAILABLE"
-      assert_empty operation_directories
+      resolver = fixture_resolver
+      resolver.store.import_local!(@source, @revision)
+      resolver.define_singleton_method(:fetch_current_store!) { raise "pinned begin must not fetch" }
+      operation = resolver.begin!
+
+      assert_equal @revision, operation.fetch("revision")
+      assert_equal "pinned", operation.fetch("provider_profile")
+      assert_equal "pinned", operation.fetch("freshness")
+      assert_equal File.join(state_root, "store", @revision, "tree"), operation.dig("assets", "root")
+      assert_equal BOUND_SKILLS, operation.dig("assets", "skills").keys.sort
+      refute operation.fetch("runner").empty?
+      assert_equal 1, operation_directories.length
+      resolver.release!(handle: operation.fetch("operation"))
     end
+  end
+
+  def test_pinned_begin_fails_closed_when_the_installed_snapshot_is_missing
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "copy"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    resolver = fixture_resolver
+    resolver.define_singleton_method(:fetch_current_store!) { raise "pinned begin must not fetch" }
+
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { resolver.begin! }
+
+    assert_includes error.message, "PINNED_PROVIDER_SNAPSHOT_MISSING"
+    assert_includes error.message, "reinstall or upgrade"
+    assert_empty operation_directories
+  end
+
+  def test_corrupt_pinned_snapshot_fails_with_reinstall_guidance_and_local_import_repairs_it
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "copy"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    resolver = fixture_resolver
+    snapshot = resolver.store.import_local!(@source, @revision)
+    corrupted = File.join(snapshot.tree, "skills/pr-batch/SKILL.md")
+    File.chmod(0o600, corrupted)
+    File.write(corrupted, "corrupt\n")
+    File.chmod(0o400, corrupted)
+
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { resolver.begin! }
+
+    assert_includes error.message, "PINNED_PROVIDER_SNAPSHOT_MISSING"
+    assert_includes error.message, "reinstall or upgrade"
+    repaired = resolver.store.import_local!(@source, @revision)
+    assert_equal @revision, repaired.revision
+    assert_equal @revision, resolver.begin!.fetch("revision")
+  end
+
+  def test_pinned_current_only_capability_stops_before_launcher_side_effect
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "copy"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    resolver = fixture_resolver
+    resolver.store.import_local!(@source, @revision)
+    operation = resolver.begin!
+    launcher = File.join(operation_root(operation.fetch("operation")), "launcher")
+    FileUtils.chmod(0o700, operation_root(operation.fetch("operation")))
+    FileUtils.chmod(0o700, launcher)
+    File.write(launcher, "#!/bin/sh\ntouch #{Shellwords.escape(File.join(@tmp, 'launcher-ran'))}\n")
+    FileUtils.chmod(0o500, launcher)
+    FileUtils.chmod(0o700, operation_root(operation.fetch("operation")))
+
+    error = assert_raises(AgentWorkflowsOperation::RunnerError) do
+      AgentWorkflowsOperation::Runner.new(target: @target).launch!(
+        handle: operation.fetch("operation"),
+        capability: "pr-merge-submit",
+        arguments: []
+      )
+    end
+
+    assert_includes error.message, "CURRENT_PROVIDER_REQUIRED"
+    refute_path_exists File.join(@tmp, "launcher-ran")
+  end
+
+  def test_pinned_plugin_companion_requires_the_native_provider_to_match_the_snapshot
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    resolver = fixture_resolver
+    resolver.store.import_local!(@source, @revision)
+
+    operation = resolver.begin!
+    assert_equal "pinned", operation.fetch("freshness")
+
+    advance_source("new-native")
+    reset_native_provider
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { fixture_resolver.begin! }
+    assert_includes error.message, "PINNED_PROVIDER"
+  end
+
+  def test_pinned_installed_revision_remains_gc_protected_after_release
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "copy"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    resolver = fixture_resolver
+    resolver.store.import_local!(@source, @revision)
+    operation = resolver.begin!
+
+    resolver.release!(handle: operation.fetch("operation"))
+
+    assert_path_exists File.join(state_root, "store", @revision)
+    assert_equal @revision, resolver.begin!.fetch("revision")
   end
 
   def test_unknown_provider_profile_fails_before_fetch_or_publication
@@ -591,6 +707,20 @@ class AgentWorkflowsOperationTest < Minitest::Test
       assert_empty errors, "#{action} result failed its committed schema: #{errors}"
     end
 
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "copy"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    pinned_resolver = fixture_resolver
+    pinned_resolver.store.import_local!(@source, @revision)
+    pinned = pinned_resolver.begin!
+    begin_schema = JSONSchemer.schema(
+      JSON.parse(File.binread(File.join(ROOT, "schemas/provider-operation-begin-v1.schema.json")))
+    )
+    assert_empty begin_schema.validate(pinned).to_a
+
     list_schema = JSONSchemer.schema(
       JSON.parse(File.binread(File.join(ROOT, "schemas/provider-operation-list-v1.schema.json")))
     )
@@ -757,7 +887,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     concurrent_rename = lambda do |source, destination|
       if source.include?("/quarantine/") && destination == expected_store && !raced
         raced = true
-        FileUtils.cp_r(source, destination, preserve: true)
+        original_rename.call(source, destination)
         raise Errno::EEXIST, destination
       end
 

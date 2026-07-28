@@ -27,6 +27,24 @@ class AgentDoctorInstallOwnershipTest < Minitest::Test
     refute AgentDoctor::InstallOwnership.compare(@source, @destination)
   end
 
+  def test_portable_comparison_treats_hardened_snapshot_modes_as_git_modes
+    File.chmod(0o500, @source)
+    File.chmod(0o500, File.join(@source, "nested"))
+    File.chmod(0o400, File.join(@source, "nested", "module.rb"))
+
+    refute AgentDoctor::InstallOwnership.compare(@source, @destination)
+    assert AgentDoctor::InstallOwnership.compare_portable(@source, @destination)
+    File.chmod(0o755, File.join(@destination, "nested", "module.rb"))
+    refute AgentDoctor::InstallOwnership.compare_portable(@source, @destination)
+    File.chmod(0o644, File.join(@destination, "nested", "module.rb"))
+    File.chmod(0o777, File.join(@destination, "nested"))
+    refute AgentDoctor::InstallOwnership.compare_portable(@source, @destination)
+  ensure
+    File.chmod(0o700, @source) if File.exist?(@source)
+    File.chmod(0o700, File.join(@source, "nested")) if File.exist?(File.join(@source, "nested"))
+    File.chmod(0o600, File.join(@source, "nested", "module.rb")) if File.exist?(File.join(@source, "nested", "module.rb"))
+  end
+
   def test_marker_verifies_only_the_recorded_tree
     marker = File.join(@destination, ".agent-workflows-managed")
     File.write(marker, "#{AgentDoctor::InstallOwnership.marker(@destination)}\n")

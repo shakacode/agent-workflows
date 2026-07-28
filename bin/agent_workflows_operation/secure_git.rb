@@ -21,6 +21,33 @@ module AgentWorkflowsOperation
       fetch_url!(repository, CANONICAL_URL, private_home: private_home)
     end
 
+    def import_local_revision!(repository, source, revision, private_home:)
+      unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+        raise GitError, "local provider revision must be a full SHA-1 commit"
+      end
+
+      source_root = File.realpath(source)
+      source_head = repository_head!(source_root)
+      unless source_head == revision
+        raise GitError, "local provider HEAD does not match the requested revision"
+      end
+
+      run!(
+        repository,
+        "-c", "protocol.file.allow=always",
+        "fetch",
+        "--no-tags",
+        "--force",
+        "--no-recurse-submodules",
+        "--no-write-fetch-head",
+        source_root,
+        "+#{revision}:#{PRIVATE_REF}",
+        private_home: private_home
+      )
+    rescue SystemCallError => e
+      raise GitError, "local provider source is unavailable: #{e.message}"
+    end
+
     def init_bare!(repository, private_home:)
       environment = command_environment(private_home)
       command = [

@@ -3,12 +3,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dirs=()
+tmp_identities=()
 
 cleanup() {
-  local path
-  for path in "${tmp_dirs[@]:-}"; do
+  local index path identity
+  for index in "${!tmp_dirs[@]}"; do
+    path="${tmp_dirs[$index]}"
     [[ -n "$path" ]] || continue
-    rm -rf "$path"
+    identity="${tmp_identities[$index]}"
+    ruby -I"$ROOT/bin" -ragent_workflows_operation/secure_paths -e '
+      path, encoded = ARGV
+      device, inode, uid, type = encoded.split(":", 4)
+      identity = [Integer(device), Integer(inode), Integer(uid), type]
+      AgentWorkflowsOperation::SecurePaths.cleanup_owned_directory!(path, identity)
+    ' "$path" "$identity"
   done
 }
 trap cleanup EXIT
@@ -22,6 +30,7 @@ make_tmp_dir() {
   local output_variable="$1" path
   path="$(mktemp -d "${TMPDIR:-/tmp}/agent-workflows-doctor-test.XXXXXX")"
   tmp_dirs+=("$path")
+  tmp_identities+=("$(ruby -e 'stat = File.lstat(ARGV.fetch(0)); puts [stat.dev, stat.ino, stat.uid, stat.ftype].join(":")' "$path")")
   printf -v "$output_variable" '%s' "$path"
 }
 

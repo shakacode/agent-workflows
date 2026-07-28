@@ -53,12 +53,15 @@ module AgentWorkflowsOperation
     end
 
     def verify!(expected_revision: snapshot.revision)
-      metadata = companion_metadata!
+      metadata = install_metadata!
       profile = profile_from!(metadata)
-      if profile == "pinned"
-        raise ProviderError, "PINNED_PROVIDER_OPERATION_UNAVAILABLE: pinned providers do not resolve current operations"
-      end
+      return verify_pinned!(metadata, expected_revision) if profile == "pinned"
 
+      verify_managed!(metadata, expected_revision)
+    end
+
+    def verify_managed!(metadata, expected_revision)
+      verify_companion_metadata!(metadata)
       companion_revision = metadata["source_revision"]
       native = native_state!
       roots = Array(native["roots"])
@@ -90,7 +93,7 @@ module AgentWorkflowsOperation
       end
 
       {
-        "profile" => profile,
+        "profile" => "managed",
         "host" => host,
         "target" => target,
         "native_root" => native_root,
@@ -101,9 +104,19 @@ module AgentWorkflowsOperation
     end
 
     def installed_revision!
-      metadata = companion_metadata!
+      metadata = install_metadata!
+      profile = profile_from!(metadata)
+      if profile == "managed"
+        verify_companion_metadata!(metadata)
+      elsif metadata["host"] != host
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: install metadata belongs to another host"
+      end
       revision = metadata["source_revision"]
       unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+        if profile == "pinned"
+          raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: source_revision is not a full commit SHA"
+        end
+
         fail_update!("companion source_revision is not a full commit SHA")
       end
 
@@ -116,6 +129,58 @@ module AgentWorkflowsOperation
 
     private
 
+    def verify_pinned!(metadata, expected_revision)
+      revision = metadata["source_revision"]
+      unless metadata["host"] == host && revision.to_s.match?(/\A[0-9a-f]{40}\z/) &&
+             revision == expected_revision
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: installed host or source revision does not match the snapshot"
+      end
+
+      mode = metadata["mode"]
+      delivery = metadata["delivery_mode"]
+      unless %w[copy symlink].include?(mode) && %w[flat plugin-companion].include?(delivery)
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: installed mode or delivery mode is unsupported"
+      end
+
+      if delivery == "plugin-companion"
+        unless mode == "copy"
+          raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: plugin companion delivery requires copy mode"
+        end
+
+        native = native_state!
+        roots = Array(native["roots"])
+        unless native["state"] == "active" && roots.length == 1
+          raise ProviderError, "PINNED_PROVIDER_MISMATCH: active native provider is unavailable or ambiguous"
+        end
+
+        native_root = File.realpath(roots.fetch(0))
+        native_revision = host == "codex" ? verify_codex_native!(native_root) : verify_claude_native!(native_root)
+        unless native_revision == revision
+          raise ProviderError,
+                "PINNED_PROVIDER_MISMATCH: native and companion revisions differ " \
+                "(native #{native_revision}, companion #{revision})"
+        end
+        verify_native_tree!(native_root)
+        verify_codex_clean!(native_root) if host == "codex"
+        verify_companion_files!
+      elsif mode == "copy"
+        verify_companion_files!
+      end
+
+      {
+        "profile" => "pinned",
+        "host" => host,
+        "target" => target,
+        "installed_revision" => revision,
+        "delivery_mode" => delivery,
+        "mode" => mode
+      }
+    rescue ProviderError => e
+      raise e if e.message.start_with?("PINNED_PROVIDER_")
+
+      raise ProviderError, "PINNED_PROVIDER_MISMATCH: #{e.message}"
+    end
+
     def profile_from!(metadata)
       profile = metadata.fetch("provider_profile", "pinned")
       return profile if PROFILES.include?(profile)
@@ -125,14 +190,17 @@ module AgentWorkflowsOperation
 
     def companion_metadata!
       metadata = install_metadata!
+      verify_companion_metadata!(metadata)
+      metadata
+    end
+
+    def verify_companion_metadata!(metadata)
       unless metadata["host"] == host &&
              metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
         fail_update!("companion metadata must record this host, mode copy, and plugin-companion delivery")
       end
       revision = metadata["source_revision"]
       fail_update!("companion source_revision is invalid") unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
-
-      metadata
     end
 
     def install_metadata!

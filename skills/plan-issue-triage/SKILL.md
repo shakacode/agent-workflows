@@ -7,33 +7,26 @@ description: Use when preparing a ready prompt for Claude, Codex, or another age
 
 ## Bound Provider Operation
 
-The persisted install metadata field `provider_profile` controls resolution. A
-missing legacy field is `pinned`; any unknown profile is invalid and requires a
-stop.
-
-**Pinned profile:** never fetch or run the current-provider resolver. Do not
-expect `assets.*`. Continue only from Consumer `AGENTS.md`, this already-loaded
-entry, `.agents/agent-workflow.yml`, and `.agents/bin/*` policy/command seams. Do
-not load a shared sibling skill, workflow, or doc, and do not run a registered
-mutation. If the remaining task requires any of those shared assets,
-stop with a precise pinned-provider limitation. This preserves the declared
-installed snapshot without fetching or mixing another provider.
-
-**Managed profile only:** for `managed`, use only a provider operation that the
-current invocation created locally and whose exact `begin --json` result it
-retained. Otherwise identify the active host and use the active host home's
-absolute `bin/agent-workflows-resolve begin` path:
-`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host codex
---json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve begin
---host claude --json`. Never bootstrap through `PATH`, and never trust an
-inherited operation handle, runner command, or asset variable.
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
 
 Re-read this entry at returned `assets.skills.plan_issue_triage`. Read canonical PR
 processing only through `assets.workflow`. Resolve shared sibling skills,
 workflows, and docs through returned named assets or beneath `assets.root`; stop
-if a required asset is absent. Reuse a handle only when this current invocation
-created and retained that exact result. Run registered mutations only through
-the complete returned `runner` command; stop if the capability is unavailable.
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
 
 Generate a ready-to-run prompt for issue triage. Do not perform the full audit, change code, or launch workers unless the user explicitly asks.
 
@@ -100,26 +93,13 @@ never TTL or PID inference.
 Return the prompt in a fenced `text` block. Adapt bracketed parts and omit irrelevant clauses.
 
 ```text
-This receiving invocation must bind its own provider. Read active-host install
-metadata and select exactly one branch. If metadata is unavailable, use the
-pinned/offline branch. A missing `provider_profile` means `pinned`; an unknown
-value stops.
-
-Managed provider branch:
-Run the active host home's absolute `bin/agent-workflows-resolve begin` command
-exactly once and retain that exact JSON result as `triage_operation`. Read
+This receiving invocation must bind its own provider. Use the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result as `triage_operation`. The
+resolver selects the installed provider profile; never pre-read install
+metadata or branch around resolution. Read
 `triage_operation.assets.skills.evaluate_issue` and
 `triage_operation.assets.skills.plan_pr_batch` only from that result; stop if
 either is absent. Never inherit operation handles or paths from the sender.
-
-Pinned or offline provider branch:
-Do not run the provider resolver. This copied prompt requires sibling shared
-skill instructions, so stop without running the issue triage. Report the
-pinned/offline limitation and request a managed-provider invocation.
-
-After provider branch selection:
-Continue only from the managed branch's retained `triage_operation`; the
-pinned/offline branch has already stopped.
 
 Use the operation-bound $evaluate-issue and $plan-pr-batch guidance to run a review-only triage of [scope] in [OWNER/REPO].
 

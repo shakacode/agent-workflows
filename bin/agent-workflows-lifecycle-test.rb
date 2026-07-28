@@ -19,13 +19,14 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
   def setup
     @tmp = Dir.mktmpdir("agent-workflows-lifecycle")
     FileUtils.chmod(0o700, @tmp)
+    @tmp_identity = AgentWorkflowsOperation::SecurePaths.owned_identity(@tmp)
     @target = File.join(@tmp, "host home")
     FileUtils.mkdir_p(@target, mode: 0o700)
     @state = AgentWorkflowsOperation::State.new(target: @target)
   end
 
   def teardown
-    FileUtils.remove_entry(@tmp) if File.exist?(@tmp)
+    AgentWorkflowsOperation::SecurePaths.cleanup_owned_directory!(@tmp, @tmp_identity)
   end
 
   def test_multiple_shared_holders_coexist_and_block_exclusive_acquisition

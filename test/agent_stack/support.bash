@@ -3,9 +3,14 @@ export RUBY_BIN
 agent_stack_tmp_registry="$(mktemp)"
 
 agent_stack_test_cleanup() {
-  local temporary
-  while IFS= read -r temporary; do
-    [[ -z "$temporary" || ! -d "$temporary" ]] || rm -rf -- "$temporary"
+  local temporary device inode uid type
+  while IFS=$'\t' read -r temporary device inode uid type; do
+    [[ -z "$temporary" || ! -d "$temporary" ]] || \
+      "$RUBY_BIN" -I"$ROOT/bin" -ragent_workflows_operation/secure_paths -e '
+        path, device, inode, uid, type = ARGV
+        identity = [Integer(device), Integer(inode), Integer(uid), type]
+        AgentWorkflowsOperation::SecurePaths.cleanup_owned_directory!(path, identity)
+      ' "$temporary" "$device" "$inode" "$uid" "$type"
   done < "$agent_stack_tmp_registry"
   rm -f "$agent_stack_tmp_registry"
 }
@@ -20,9 +25,13 @@ assert_mode() {
 }
 
 make_tmp_dir() {
-  local temporary
+  local temporary identity
   temporary="$(mktemp -d)"
-  printf '%s\n' "$temporary" >> "$agent_stack_tmp_registry"
+  identity="$("$RUBY_BIN" -e '
+    stat = File.lstat(ARGV.fetch(0))
+    puts [stat.dev, stat.ino, stat.uid, stat.ftype].join("\t")
+  ' "$temporary")"
+  printf '%s\t%s\n' "$temporary" "$identity" >> "$agent_stack_tmp_registry"
   printf '%s\n' "$temporary"
 }
 

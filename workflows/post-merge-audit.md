@@ -33,12 +33,12 @@ For a verified Claude batch, preserve this provisional route profile
 
 ## Recipient Provider Binding
 
-Every recipient of a copied prompt must bind locally in that invocation. Read the
-active host install metadata: missing `provider_profile` means `pinned`, `managed`
-requires the active host home's absolute `bin/agent-workflows-resolve begin`, and
-unknown profiles stop. Never inherit a sender's handle or paths. A managed
-recipient must use only its newly returned `assets.*`; a pinned recipient uses
-only its declared snapshot and cannot claim current-provider mutations.
+Every recipient of a copied prompt must bind locally in that invocation. Use the
+active host home's absolute `bin/agent-workflows-resolve begin` command exactly
+once and retain that exact JSON result. The resolver selects the installed provider profile;
+never pre-read install metadata or branch around resolution. Never inherit a sender's handle or paths. Use shared instructions only from returned `assets.*`.
+A registered current-only capability requires `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the returned runner.
 
 ## Coordination Rules
 
@@ -219,15 +219,13 @@ share one agent's output with the other until both are done.
 
 ```text
 This receiving invocation must bind its own provider before using shared assets.
-Read active-host install metadata; missing `provider_profile` means `pinned` and
-an unknown value stops. For `managed`, run the active host home's absolute
-`bin/agent-workflows-resolve begin` command and use only that invocation's newly
-returned assets. Never inherit a sender's handle or paths. Because this prompt
-requires shared assets, a `pinned` recipient must stop rather than mix providers.
-Retain the managed begin result's complete `release` argv. Invoke it only after
-this recipient's final shared-instruction read and final helper/capability use;
-that release invalidates every returned `assets.*` path even if files remain.
-A restart or follow-up must begin a new operation and release the old operation
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result. The resolver selects the installed provider profile;
+never pre-read install metadata or branch around resolution. Never inherit a sender's handle or paths. Use shared instructions only from returned `assets.*`.
+Retain the begin result's complete `release` argv. Invoke it only after this
+recipient's final shared-instruction read and final helper/capability use; that
+release invalidates every returned `assets.*` path even if files remain. A
+restart or follow-up must begin a new operation and release the old operation
 when safely finished. Recover an orphan only through `list --json` and named
 `release`; never TTL or PID inference.
 
@@ -645,15 +643,13 @@ Use this when Codex is coordinating a PR and the user wants an independent Claud
 
 ```text
 This receiving invocation must bind its own provider before using shared assets.
-Read active-host install metadata; missing `provider_profile` means `pinned` and
-an unknown value stops. For `managed`, run the active host home's absolute
-`bin/agent-workflows-resolve begin` command and use only that invocation's newly
-returned assets. Never inherit a sender's handle or paths. Because this prompt
-requires shared assets, a `pinned` recipient must stop rather than mix providers.
-Retain the managed begin result's complete `release` argv. Invoke it only after
-this recipient's final shared-instruction read and final helper/capability use;
-that release invalidates every returned `assets.*` path even if files remain.
-A restart or follow-up must begin a new operation and release the old operation
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result. The resolver selects the installed provider profile;
+never pre-read install metadata or branch around resolution. Never inherit a sender's handle or paths. Use shared instructions only from returned `assets.*`.
+Retain the begin result's complete `release` argv. Invoke it only after this
+recipient's final shared-instruction read and final helper/capability use; that
+release invalidates every returned `assets.*` path even if files remain. A
+restart or follow-up must begin a new operation and release the old operation
 when safely finished. Recover an orphan only through `list --json` and named
 `release`; never TTL or PID inference.
 

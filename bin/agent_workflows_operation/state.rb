@@ -46,6 +46,12 @@ module AgentWorkflowsOperation
         end
         interpreter = external_executable_identity!(RbConfig.ruby, "Ruby interpreter")
         environment = external_executable_identity!(trusted_env_executable!, "environment launcher")
+        tools = {
+          "git" => external_executable_identity!(store_git_executable, "Git executable")
+        }
+        if provider["gh_executable"]
+          tools["gh"] = external_executable_identity!(provider.fetch("gh_executable"), "gh executable")
+        end
         metadata = {
           "schema_version" => 1,
           "operation" => handle,
@@ -54,10 +60,7 @@ module AgentWorkflowsOperation
           "provider" => provider,
           "interpreter" => interpreter,
           "environment" => environment,
-          "tools" => {
-            "git" => external_executable_identity!(store_git_executable, "Git executable"),
-            "gh" => external_executable_identity!(provider.fetch("gh_executable"), "gh executable")
-          },
+          "tools" => tools,
           "launcher" => executable_identity(launcher_path),
           "runtime" => runtime_state,
           "capabilities" => capability_state

@@ -33,6 +33,7 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+install_content_root="$repo_root"
 original_args=("$@")
 host="codex"
 target=""
@@ -40,9 +41,10 @@ mode="copy"
 delivery_mode=""
 provider_profile=""
 gh_executable=""
+pinned_source_revision=""
+copy_chmod="Du+rwx,Dgo+rx,Fu+rw,Fgo+r,a+X"
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
-doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
 delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
@@ -191,7 +193,7 @@ prepare_metadata() {
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at
   version="$(metadata_value version)"
-  source_revision="$(metadata_value source_revision)"
+  source_revision="${pinned_source_revision:-$(metadata_value source_revision)}"
   source_branch="$(metadata_value source_branch)"
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -215,6 +217,27 @@ prepare_metadata() {
     File.write(path, JSON.pretty_generate(metadata) + "\n")
   ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$provider_profile" "$gh_executable" \
     "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+}
+
+seed_pinned_snapshot() {
+  local inside top_level
+  if ! inside="$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>&1)" ||
+     [[ "$inside" != "true" ]] ||
+     ! top_level="$(git -C "$repo_root" rev-parse --show-toplevel 2>&1)" ||
+     [[ "$(cd "$top_level" && pwd -P)" != "$repo_root" ]] ||
+     ! pinned_source_revision="$(git -C "$repo_root" rev-parse --verify --quiet 'HEAD^{commit}' 2>&1)" ||
+     [[ ! "$pinned_source_revision" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "PINNED_PROVIDER_SOURCE_INVALID: pinned installation requires this source root to be an exact Git worktree with a committed HEAD." >&2
+    exit 1
+  fi
+
+  "${lifecycle_ruby[@]}" -I"$repo_root/bin" \
+    -ragent_workflows_operation/state -ragent_workflows_operation/store -e '
+      target, source, revision = ARGV
+      state = AgentWorkflowsOperation::State.new(target: target)
+      AgentWorkflowsOperation::Store.new(state_root: state.root).import_local!(source, revision)
+    ' "$target" "$repo_root" "$pinned_source_revision"
+  install_content_root="$target/.agent-workflows-operation-state/store/$pinned_source_revision/tree"
 }
 
 commit_metadata() {
@@ -320,12 +343,13 @@ copy_children_preserving_unrelated() {
     [[ -e "$source_path" ]] || continue
     destination="$target_dir/$(basename "$source_path")"
     rm -rf "$destination"
-    rsync -a "$source_path" "$target_dir/"
+    rsync -a --chmod="$copy_chmod" "$source_path" "$target_dir/"
   done
 }
 
 workflow_doctor_copy_matches_source() {
-  ruby "$doctor_ownership_helper" compare "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+  ruby "$repo_root/bin/agent_doctor/install_ownership.rb" \
+    compare-portable "$install_content_root/bin/agent_doctor" "$target/bin/agent_doctor"
 }
 
 workflow_doctor_symlink_matches_recorded_source() {
@@ -370,7 +394,7 @@ prepare_workflow_doctor_copy_destination() {
     exit 1
   fi
   if [[ -f "$marker" ]]; then
-    if ruby "$doctor_ownership_helper" verify "$destination" "$marker"; then return; fi
+    if ruby "$install_content_root/bin/agent_doctor/install_ownership.rb" verify "$destination" "$marker"; then return; fi
     echo "Refusing invalid workflow doctor ownership marker: $marker" >&2
     exit 1
   fi
@@ -389,7 +413,7 @@ write_workflow_doctor_managed_marker() {
   local destination="$target/bin/agent_doctor"
   local marker="$destination/$doctor_managed_marker"
   local marker_value temporary_marker
-  marker_value="$(ruby "$doctor_ownership_helper" marker "$destination")"
+  marker_value="$(ruby "$install_content_root/bin/agent_doctor/install_ownership.rb" marker "$destination")"
   temporary_marker="$(mktemp "$destination/$doctor_managed_marker.XXXXXX")"
   printf '%s\n' "$marker_value" > "$temporary_marker"
   chmod 0644 "$temporary_marker"
@@ -447,10 +471,10 @@ copy_pack_docs() {
       echo "Refusing to replace non-file path: $destination" >&2
       exit 1
     fi
-    install -m 0644 "$repo_root/docs/$doc_name" "$destination"
+    install -m 0644 "$install_content_root/docs/$doc_name" "$destination"
   done
 
-  copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
+  copy_children_preserving_unrelated "$install_content_root/docs/solutions" "$docs_target/solutions"
 }
 
 link_pack_docs() {
@@ -490,7 +514,7 @@ copy_pack_license() {
     echo "Refusing to replace non-file path: $destination" >&2
     exit 1
   fi
-  install -m 0644 "$repo_root/LICENSE" "$destination"
+  install -m 0644 "$install_content_root/LICENSE" "$destination"
 }
 
 link_pack_license() {
@@ -749,6 +773,9 @@ if [[ "$mode" = "copy" ]]; then
   ensure_trusted_directory "$target/bin"
   ensure_trusted_directory "$target/bin/agent_workflows_operation"
 fi
+if [[ "$provider_profile" = "pinned" ]]; then
+  seed_pinned_snapshot
+fi
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
@@ -756,15 +783,15 @@ if [[ "$mode" = "copy" ]]; then
   copy_pack_license
   if [[ "$delivery_mode" = "flat" ]]; then
     ensure_real_directory "$target/skills"
-    copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
+    copy_children_preserving_unrelated "$install_content_root/skills" "$target/skills"
   fi
   ensure_real_directory "$target/workflows"
   ensure_real_directory "$target/docs"
-  copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
+  copy_children_preserving_unrelated "$install_content_root/workflows" "$target/workflows"
   copy_pack_docs "$target/docs"
-  rsync -a --delete --exclude="/$doctor_managed_marker" --exclude='/.agent-stack-managed' \
-    "$repo_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
-  ruby -e 'File.chmod(File.stat(ARGV.fetch(0)).mode & 0o7777, ARGV.fetch(1))' "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+  rsync -a --delete --chmod="$copy_chmod" --exclude="/$doctor_managed_marker" --exclude='/.agent-stack-managed' \
+    "$install_content_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
+  chmod 0755 "$target/bin/agent_doctor"
   write_workflow_doctor_managed_marker
   for helper in "${atomic_entry_helpers[@]}"; do
     destination="$target/bin/$helper"
@@ -772,9 +799,10 @@ if [[ "$mode" = "copy" ]]; then
       echo "Refusing to replace non-file path: $destination" >&2
       exit 1
     fi
-    publish_entry_copy "$repo_root/bin/$helper" "$destination"
+    publish_entry_copy "$install_content_root/bin/$helper" "$destination"
   done
-  rsync -a --delete "$repo_root/bin/agent_workflows_operation/" "$target/bin/agent_workflows_operation/"
+  rsync -a --delete --chmod="$copy_chmod" \
+    "$install_content_root/bin/agent_workflows_operation/" "$target/bin/agent_workflows_operation/"
   for helper in "${bin_helpers[@]}"; do
     [[ " ${atomic_entry_helpers[*]} " != *" $helper "* ]] || continue
     destination="$target/bin/$helper"
@@ -785,7 +813,7 @@ if [[ "$mode" = "copy" ]]; then
       echo "Refusing to replace non-file path: $destination" >&2
       exit 1
     fi
-    install -m 0755 "$repo_root/bin/$helper" "$destination"
+    install -m 0755 "$install_content_root/bin/$helper" "$destination"
   done
 else
   if [[ -L "$target/bin/agent_doctor" ]] &&

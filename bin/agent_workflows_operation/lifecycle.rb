@@ -269,9 +269,6 @@ module AgentWorkflowsOperation
     def installed_revision!
       placeholder = StoreSnapshot.new(revision: "0" * 40, root: "", repository: "", tree: "")
       provider = Provider.new(host: host, target: target, snapshot: placeholder)
-      profile = provider.profile!
-      return nil unless profile == "managed"
-
       provider.installed_revision!
     end
 

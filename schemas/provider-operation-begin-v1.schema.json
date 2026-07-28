@@ -19,8 +19,8 @@
     "schema_version": { "const": 1 },
     "operation": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "freshness": { "enum": ["current", "degraded"] },
-    "provider_profile": { "const": "managed" },
+    "freshness": { "enum": ["current", "degraded", "pinned"] },
+    "provider_profile": { "enum": ["managed", "pinned"] },
     "assets": {
       "type": "object",
       "required": ["root", "skill", "workflow", "skills", "related_workflows", "docs"],
@@ -66,6 +66,13 @@
       "items": false
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "provider_profile": { "const": "pinned" } } },
+      "then": { "properties": { "freshness": { "const": "pinned" } } },
+      "else": { "properties": { "freshness": { "enum": ["current", "degraded"] } } }
+    }
+  ],
   "$defs": {
     "namedPaths": {
       "type": "object",
