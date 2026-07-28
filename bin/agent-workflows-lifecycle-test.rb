@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "json"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
@@ -149,6 +150,22 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
     assert_includes forged_error, "LIFECYCLE_REENTRY_REJECTED"
   end
 
+  def test_exclusive_wrapper_rejects_a_valid_detached_descriptor_after_normal_unlock
+    result = detached_reentry_result(crash_wrapper: false)
+
+    refute_equal 0, result.fetch(:status)
+    assert_includes result.fetch(:output), "LIFECYCLE_REENTRY_REJECTED"
+    assert_equal "inactive", result.fetch(:token_status)
+  end
+
+  def test_exclusive_wrapper_rejects_crash_residue_that_still_holds_the_inherited_descriptor
+    result = detached_reentry_result(crash_wrapper: true)
+
+    refute_equal 0, result.fetch(:status)
+    assert_includes result.fetch(:output), "LIFECYCLE_REENTRY_REJECTED"
+    assert_equal "active", result.fetch(:token_status)
+  end
+
   def test_installer_uses_lifecycle_lease_before_its_inner_migration_lock
     install_target = File.join(@tmp, "installed codex")
     output, error, status = install_pinned_target(install_target)
@@ -183,6 +200,80 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
     script = File.binread(upgrade)
     assert_operator script.index("exec-exclusive"), :<, script.index("\nbackup_target\n")
     assert_includes script, "validate-exclusive"
+  end
+
+  def test_installed_upgrader_waits_before_loading_runtime_during_publication
+    install_target = File.join(@tmp, "upgrade publication target")
+    output, error, status = install_pinned_target(install_target)
+    assert status.success?, "#{output}\n#{error}"
+    runtime = File.join(install_target, "bin/agent_workflows_operation/lifecycle_lease.rb")
+    withheld_runtime = "#{runtime}.withheld"
+    upgrade_output = File.join(@tmp, "upgrade-publication.out")
+    pid = nil
+
+    lease_with_target(install_target).with_exclusive do
+      File.rename(runtime, withheld_runtime)
+      pid = Process.spawn(
+        File.join(install_target, "bin/upgrade-agent-workflows"),
+        "--host", "codex",
+        "--target", install_target,
+        "--source", ROOT,
+        "--mode", "copy",
+        "--delivery-mode", "flat",
+        "--provider-profile", "pinned",
+        "--no-fetch",
+        out: upgrade_output,
+        err: upgrade_output
+      )
+      sleep 0.2
+      assert process_alive?(pid), File.binread(upgrade_output)
+      File.rename(withheld_runtime, runtime)
+    end
+    _pid, upgrade_status = Process.wait2(pid)
+    assert upgrade_status.success?, File.binread(upgrade_output)
+  ensure
+    File.rename(withheld_runtime, runtime) if withheld_runtime && File.exist?(withheld_runtime)
+    Process.kill("KILL", pid) if pid && process_alive?(pid)
+  end
+
+  def test_legacy_reentry_requires_a_fresh_source_side_upgrade
+    install_target = File.join(@tmp, "legacy transition target")
+    output, error, status = install_pinned_target(install_target)
+    assert status.success?, "#{output}\n#{error}"
+    wrapper = File.join(ROOT, "bin/agent-workflows-lifecycle")
+    nested_install = [
+      File.join(ROOT, "bin/install-agent-workflows"),
+      "--host", "codex",
+      "--target", install_target,
+      "--mode", "copy",
+      "--delivery-mode", "flat",
+      "--provider-profile", "pinned"
+    ]
+    legacy_command = [
+      "/bin/sh", "-c",
+      "unset AGENT_WORKFLOWS_LIFECYCLE_LIVENESS_FD; exec \"$@\"",
+      "legacy-transition",
+      *nested_install
+    ]
+
+    _output, legacy_error, legacy_status = Open3.capture3(
+      wrapper, "exec-exclusive", "--target", install_target, "--", *legacy_command
+    )
+    refute legacy_status.success?
+    assert_includes legacy_error, "LIFECYCLE_RESTART_REQUIRED"
+
+    output, error, status = Open3.capture3(
+      File.join(ROOT, "bin/upgrade-agent-workflows"),
+      "--host", "codex",
+      "--target", install_target,
+      "--source", ROOT,
+      "--mode", "copy",
+      "--delivery-mode", "flat",
+      "--provider-profile", "pinned",
+      "--no-fetch"
+    )
+    assert status.success?, "#{output}\n#{error}"
+    assert_includes output, "UPGRADE_COMPLETE"
   end
 
   def test_installer_waits_behind_a_shared_runner_lease_before_inner_lock
@@ -221,21 +312,21 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
     FileUtils.mkdir_p(fake_bin)
     ready = File.join(@tmp, "rsync-ready")
     proceed = File.join(@tmp, "rsync-proceed")
-    real_rsync = `command -v rsync`.strip
+    real_mv = `command -v mv`.strip
     File.write(
-      File.join(fake_bin, "rsync"),
+      File.join(fake_bin, "mv"),
       <<~BASH
         #!/usr/bin/env bash
         set -euo pipefail
         destination="${!#}"
-        if [[ "$destination" = "${QA_TARGET:?}/bin/agent_workflows_operation/" ]]; then
+        if [[ "$destination" = "${QA_TARGET:?}/bin/agent-workflows-resolve" ]]; then
           : >"${QA_READY:?}"
           while [[ ! -e "${QA_PROCEED:?}" ]]; do sleep 0.01; done
         fi
-        exec "${QA_REAL_RSYNC:?}" "$@"
+        exec "${QA_REAL_MV:?}" "$@"
       BASH
     )
-    FileUtils.chmod(0o755, File.join(fake_bin, "rsync"))
+    FileUtils.chmod(0o755, File.join(fake_bin, "mv"))
     install_output = File.join(@tmp, "entry-order-install.out")
     resolver_output = File.join(@tmp, "entry-order-resolver.out")
     environment = {
@@ -243,7 +334,7 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
       "QA_TARGET" => install_target,
       "QA_READY" => ready,
       "QA_PROCEED" => proceed,
-      "QA_REAL_RSYNC" => real_rsync
+      "QA_REAL_MV" => real_mv
     }
     installer_pid = Process.spawn(
       environment,
@@ -287,11 +378,12 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
       out: File::NULL, err: File::NULL
     )
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3
-    lock = File.join(@state.root, "lifecycle.lock")
-    sleep 0.01 until File.size?(lock) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
-    assert File.size?(lock)
+    token_record = File.join(@state.root, "lifecycle-token.json")
+    sleep 0.01 until File.exist?(token_record) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    assert_equal "active", JSON.parse(File.binread(token_record)).fetch("status")
     Process.kill("TERM", pid)
     Process.wait(pid)
+    assert_equal "inactive", JSON.parse(File.binread(token_record)).fetch("status")
     lease_with_timeout(0.3).with_exclusive { assert true }
   ensure
     Process.kill("KILL", pid) if pid && process_alive?(pid)
@@ -318,8 +410,78 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
 
   private
 
+  def detached_reentry_result(crash_wrapper:)
+    wrapper = File.join(ROOT, "bin/agent-workflows-lifecycle")
+    ready = File.join(@tmp, "detached-ready")
+    proceed = File.join(@tmp, "detached-proceed")
+    result = File.join(@tmp, "detached-result")
+    child = File.join(@tmp, "detached-reentry.rb")
+    File.write(
+      child,
+      <<~RUBY
+        wrapper, target, ready, proceed, result, mode = ARGV
+        validate = proc do
+          File.write(ready, "ready\\n")
+          sleep 0.01 until File.exist?(proceed)
+          pipe = IO.popen([wrapper, "validate-exclusive", "--target", target], err: [:child, :out])
+          output = pipe.read
+          pipe.close
+          File.write(result, "\#{$?.exitstatus}\\n\#{output}")
+        end
+        if mode == "detach"
+          pid = fork do
+            Process.setsid
+            validate.call
+          end
+          Process.detach(pid)
+        else
+          validate.call
+        end
+      RUBY
+    )
+    output = File.join(@tmp, "detached-wrapper.out")
+    wrapper_pid = Process.spawn(
+      wrapper, "exec-exclusive", "--target", @target, "--",
+      RbConfig.ruby, "--disable=gems", child, wrapper, @target, ready, proceed, result,
+      crash_wrapper ? "wait" : "detach",
+      out: output,
+      err: output
+    )
+    wait_for_path(ready)
+    if crash_wrapper
+      Process.kill("KILL", wrapper_pid)
+      Process.wait(wrapper_pid)
+    else
+      _pid, status = Process.wait2(wrapper_pid)
+      assert status.success?, File.binread(output)
+    end
+    File.write(proceed, "continue\n")
+    wait_for_path(result)
+    status_text, command_output = File.binread(result).split("\n", 2)
+    token_record = JSON.parse(File.binread(File.join(@state.root, "lifecycle-token.json")))
+    {
+      status: Integer(status_text, 10),
+      output: command_output.to_s,
+      token_status: token_record.fetch("status")
+    }
+  ensure
+    File.write(proceed, "continue\n") if proceed && !File.exist?(proceed)
+    Process.kill("KILL", wrapper_pid) if wrapper_pid && process_alive?(wrapper_pid)
+  end
+
+  def wait_for_path(path, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    sleep 0.01 until File.exist?(path) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    assert_path_exists path
+  end
+
   def lease_with_timeout(timeout)
     AgentWorkflowsOperation::LifecycleLease.new(target: @target, root: @state.root, timeout:)
+  end
+
+  def lease_with_target(target, timeout: 10)
+    state = AgentWorkflowsOperation::State.new(target:)
+    AgentWorkflowsOperation::LifecycleLease.new(target:, root: state.root, timeout:)
   end
 
   def install_pinned_target(target)

@@ -22,7 +22,6 @@ Installed paths:
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
-  <target>/bin/agent_workflows_entry_lease.rb
   <target>/bin/agent-workflows-lifecycle
   <target>/bin/agent-workflows-resolve
   <target>/bin/agent-workflows-run
@@ -57,9 +56,12 @@ bin_helpers=(
   install-agent-workflows
   upgrade-agent-workflows
 )
-entry_lease_helpers=(
+atomic_entry_helpers=(
+  agent-workflows-lifecycle
   agent-workflows-resolve
   agent-workflows-run
+  install-agent-workflows
+  upgrade-agent-workflows
 )
 
 default_target_for_host() {
@@ -501,6 +503,34 @@ link_pack_license() {
   ln -sfn "$repo_root/LICENSE" "$destination"
 }
 
+publish_entry_copy() {
+  local source="$1"
+  local destination="$2"
+  local temporary
+  temporary="$(mktemp "$target/bin/.$(basename "$destination").XXXXXXXX")"
+  if ! install -m 0755 "$source" "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! mv -f "$temporary" "$destination"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
+publish_entry_symlink() {
+  local source="$1"
+  local destination="$2"
+  local temporary="$target/bin/.$(basename "$destination").link.$$.$RANDOM"
+  if ! ln -s "$source" "$temporary"; then
+    return 1
+  fi
+  if ! mv -f "$temporary" "$destination"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -736,21 +766,17 @@ if [[ "$mode" = "copy" ]]; then
     "$repo_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
   ruby -e 'File.chmod(File.stat(ARGV.fetch(0)).mode & 0o7777, ARGV.fetch(1))' "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
   write_workflow_doctor_managed_marker
-  install -m 0644 "$repo_root/bin/agent_workflows_entry_lease.rb" "$target/bin/agent_workflows_entry_lease.rb"
-  for helper in "${entry_lease_helpers[@]}"; do
+  for helper in "${atomic_entry_helpers[@]}"; do
     destination="$target/bin/$helper"
-    if [[ -L "$destination" ]]; then
-      rm -f "$destination"
-    fi
-    if [[ -e "$destination" && ! -f "$destination" ]]; then
+    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-file path: $destination" >&2
       exit 1
     fi
-    install -m 0755 "$repo_root/bin/$helper" "$destination"
+    publish_entry_copy "$repo_root/bin/$helper" "$destination"
   done
   rsync -a --delete "$repo_root/bin/agent_workflows_operation/" "$target/bin/agent_workflows_operation/"
   for helper in "${bin_helpers[@]}"; do
-    [[ " ${entry_lease_helpers[*]} " != *" $helper "* ]] || continue
+    [[ " ${atomic_entry_helpers[*]} " != *" $helper "* ]] || continue
     destination="$target/bin/$helper"
     if [[ -L "$destination" ]]; then
       rm -f "$destination"
@@ -798,9 +824,17 @@ else
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
   ln -sfn "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+  for helper in "${atomic_entry_helpers[@]}"; do
+    destination="$target/bin/$helper"
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-symlink path: $destination" >&2
+      exit 1
+    fi
+    publish_entry_symlink "$repo_root/bin/$helper" "$destination"
+  done
   ln -sfn "$repo_root/bin/agent_workflows_operation" "$target/bin/agent_workflows_operation"
-  ln -sfn "$repo_root/bin/agent_workflows_entry_lease.rb" "$target/bin/agent_workflows_entry_lease.rb"
   for helper in "${bin_helpers[@]}"; do
+    [[ " ${atomic_entry_helpers[*]} " != *" $helper "* ]] || continue
     destination="$target/bin/$helper"
     if [[ -e "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-symlink path: $destination" >&2

@@ -184,7 +184,6 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
   assert_file "$target/bin/agent-workflows-lifecycle"
-  assert_file "$target/bin/agent_workflows_entry_lease.rb"
   assert_file "$target/bin/agent-workflows-resolve"
   assert_file "$target/bin/agent-workflows-run"
   assert_file "$target/bin/agent_workflows_operation/resolver.rb"

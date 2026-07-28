@@ -503,7 +503,6 @@ class AgentWorkflowsOperationTest < Minitest::Test
   def test_list_and_release_cli_json_schemas
     operation = begin_current_operation
     resolver_path = File.join(@target, "bin/agent-workflows-resolve")
-    assert_path_exists File.join(@target, "bin/agent_workflows_entry_lease.rb")
     list_output, list_error, list_status = Open3.capture3(
       resolver_path, "list", "--host", "codex", "--target", @target, "--json"
     )
@@ -1157,7 +1156,6 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "bin/agent-workflow-seam-doctor" => "#!/bin/sh\n",
       "bin/agent-workflows-delivery-state" => File.binread(File.join(ROOT, "bin/agent-workflows-delivery-state")),
       "bin/agent-workflows-doctor" => "#!/bin/sh\n",
-      "bin/agent_workflows_entry_lease.rb" => File.binread(File.join(ROOT, "bin/agent_workflows_entry_lease.rb")),
       "bin/agent-workflows-lifecycle" => File.binread(File.join(ROOT, "bin/agent-workflows-lifecycle")),
       "bin/agent-workflows-status" => "#!/bin/sh\n",
       "bin/agent-workflows-trust-audit" => "#!/bin/sh\n",

@@ -681,3 +681,26 @@ and GC share one bounded POSIX `flock` lifecycle lease at a stable private inode
 Runners hold a shared lease through capability process completion. Mutations and
 GC hold the exclusive lease. Installer migration locking remains an inner,
 secondary defense.
+
+The installed resolver and runner embed a self-contained minimal lease
+bootstrap, and the lifecycle wrapper has no mutable runtime dependency. Those
+files plus the install and upgrade shell entries are published by atomic rename
+before the installer replaces any runtime module. A command therefore starts
+from one complete entry inode and acquires the lifecycle lease without first
+loading an installer-mutated helper or runtime file.
+
+Nested installer reentry requires three independent proofs: a matching active
+mode-`0600` token record, a wrapper-only liveness pipe that has not reached EOF,
+and a separate probe process that opens the exact lock inode and confirms that
+an exclusive nonblocking lock is still denied. Validation never calls `flock`
+on the inherited descriptor. The wrapper marks the token inactive before
+unlocking; a hard wrapper crash instead closes the wrapper-only pipe writer, so
+retained child descriptors and active-looking crash residue cannot authorize
+reentry.
+
+An upgrade nested under a lifecycle wrapper from before the liveness protocol
+fails closed with `LIFECYCLE_RESTART_REQUIRED`; accepting its descriptor and
+token would also accept indistinguishable detached crash residue. Let that
+command exit, then rerun the new upgrader from the updated source pack. The
+second invocation starts outside the old wrapper and acquires a fresh
+liveness-backed lease before mutation.

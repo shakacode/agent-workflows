@@ -319,6 +319,66 @@ class ProviderOperationContractTest < Minitest::Test
     assert_empty failures, failures.join("\n")
   end
 
+  def test_entry_scripts_embed_the_same_self_contained_lease_before_loading_mutable_runtime
+    entries = %w[bin/agent-workflows-resolve bin/agent-workflows-run].to_h do |path|
+      text = read(path)
+      module_source = text.match(/module AgentWorkflowsEntryLease\n.*?^end\n/m)&.to_s
+
+      refute_empty module_source, path
+      assert_operator text.index(module_source), :<, text.index("AgentWorkflowsEntryLease.with"), path
+      assert_operator text.index("AgentWorkflowsEntryLease.with"), :<,
+                      text.index("require_relative \"agent_workflows_operation/"), path
+      refute_includes text[0...text.index("AgentWorkflowsEntryLease.with")], "require_relative", path
+      [path, module_source]
+    end
+
+    assert_equal entries.fetch("bin/agent-workflows-resolve"), entries.fetch("bin/agent-workflows-run")
+  end
+
+  def test_lifecycle_entry_is_self_contained
+    lifecycle = read("bin/agent-workflows-lifecycle")
+
+    refute_includes lifecycle, "require_relative"
+    assert_includes lifecycle, "with_exclusive_lease(target)"
+    assert_includes lifecycle, "validate_reentry!(target)"
+  end
+
+  def test_installer_atomically_publishes_complete_entries_before_mutable_runtime
+    installer = read("bin/install-agent-workflows")
+
+    assert_includes installer, "install -m 0755 \"$source\" \"$temporary\""
+    assert_includes installer, "ln -s \"$source\" \"$temporary\""
+    assert_operator installer.index("publish_entry_copy \"$repo_root/bin/$helper\" \"$destination\""), :<,
+                    installer.index("rsync -a --delete \"$repo_root/bin/agent_workflows_operation/\"")
+    assert_operator installer.index("publish_entry_symlink \"$repo_root/bin/$helper\" \"$destination\""), :<,
+                    installer.index("ln -sfn \"$repo_root/bin/agent_workflows_operation\"")
+    %w[
+      agent-workflows-lifecycle
+      agent-workflows-resolve
+      agent-workflows-run
+      install-agent-workflows
+      upgrade-agent-workflows
+    ].each do |entry|
+      assert_match(/atomic_entry_helpers=\(.*?^\s+#{Regexp.escape(entry)}$/m, installer)
+    end
+  end
+
+  def test_public_contract_explains_bootstrap_and_stale_reentry_proofs
+    paths = %w[
+      docs/host-adapter/contract.md
+      docs/installation-and-upgrades.md
+      docs/plans/2026-07-25-bound-provider-snapshot-design.md
+    ]
+    failures = paths.flat_map do |path|
+      text = read(path)
+      %w[atomic wrapper-only independent inherited inactive EOF].filter_map do |fragment|
+        "#{path}: missing #{fragment.inspect}" unless text.include?(fragment)
+      end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
   private
 
   def assert_restart_provider_contract(prompt, label)
