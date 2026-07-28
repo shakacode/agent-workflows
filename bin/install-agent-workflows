@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH] [--no-fetch]
 
 Installs this shared workflow pack into an agent home.
 
@@ -43,6 +43,7 @@ provider_profile=""
 gh_executable=""
 codex_executable=""
 codex_executable_resolved=""
+managed_fetch=true
 pinned_source_revision=""
 copy_chmod="Du+rwx,Dgo+rx,Fu+rw,Fgo+r,a+X"
 metadata_name=".agent-workflows-install.json"
@@ -228,15 +229,23 @@ prepare_metadata() {
     "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
 }
 
-seed_pinned_snapshot() {
-  local inside top_level
+seed_source_snapshot() {
+  local inside top_level resolved_revision source_error
   if ! inside="$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>&1)" ||
      [[ "$inside" != "true" ]] ||
      ! top_level="$(git -C "$repo_root" rev-parse --show-toplevel 2>&1)" ||
-     [[ "$(cd "$top_level" && pwd -P)" != "$repo_root" ]] ||
-     ! pinned_source_revision="$(git -C "$repo_root" rev-parse --verify --quiet 'HEAD^{commit}' 2>&1)" ||
-     [[ ! "$pinned_source_revision" =~ ^[0-9a-f]{40}$ ]]; then
-    echo "PINNED_PROVIDER_SOURCE_INVALID: pinned installation requires this source root to be an exact Git worktree with a committed HEAD." >&2
+     [[ "$(cd "$top_level" && pwd -P)" != "$repo_root" ]]; then
+    source_error="${provider_profile^^}_PROVIDER_SOURCE_INVALID"
+    echo "$source_error: installation requires this source root to be an exact Git worktree." >&2
+    exit 1
+  fi
+  if [[ -z "$pinned_source_revision" ]]; then
+    pinned_source_revision="$(git -C "$repo_root" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null || true)"
+  fi
+  resolved_revision="$(git -C "$repo_root" rev-parse --verify --quiet "$pinned_source_revision^{commit}" 2>/dev/null || true)"
+  if [[ ! "$pinned_source_revision" =~ ^[0-9a-f]{40}$ || "$resolved_revision" != "$pinned_source_revision" ]]; then
+    source_error="${provider_profile^^}_PROVIDER_SOURCE_INVALID"
+    echo "$source_error: installation requires an available committed source revision." >&2
     exit 1
   fi
 
@@ -622,6 +631,10 @@ while [[ $# -gt 0 ]]; do
       codex_executable="${2:?--codex-executable requires an absolute path}"
       shift 2
       ;;
+    --no-fetch)
+      managed_fetch=false
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -691,8 +704,9 @@ if [[ "$provider_profile" = "managed" ]]; then
     exit 64
   fi
   gh_executable="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$gh_executable")"
-  if ! ruby -I"$repo_root/bin" -ragent_workflows_source_contract -e \
-    'AgentWorkflowsSourceContract.validate_managed_install!(ARGV.fetch(0))' "$repo_root"; then
+  if ! pinned_source_revision="$(ruby -I"$repo_root/bin" -ragent_workflows_source_contract -e \
+    'puts AgentWorkflowsSourceContract.validate_managed_install!(ARGV.fetch(0), fetch: ARGV.fetch(1) == "true")' \
+    "$repo_root" "$managed_fetch")"; then
     echo "Managed provider source must be a clean canonical main checkout equal to origin/main." >&2
     exit 64
   fi
@@ -841,9 +855,7 @@ if [[ "$mode" = "copy" ]]; then
   ensure_trusted_directory "$target/bin"
   ensure_trusted_directory "$target/bin/agent_workflows_operation"
 fi
-if [[ "$provider_profile" = "pinned" ]]; then
-  AGENT_WORKFLOWS_INSTALL_HOST="$host" seed_pinned_snapshot
-fi
+AGENT_WORKFLOWS_INSTALL_HOST="$host" seed_source_snapshot
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then

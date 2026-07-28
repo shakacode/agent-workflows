@@ -34,23 +34,72 @@ class AgentWorkflowsSourceContractTest < Minitest::Test
     end
   end
 
-  def test_managed_install_accepts_only_clean_canonical_main_at_cached_remote
+  def test_offline_managed_install_accepts_only_clean_main_at_the_cached_ref
     with_repository do |root|
       head = AgentWorkflowsSourceContract.git(root, "rev-parse", "HEAD")
-      assert_equal head, AgentWorkflowsSourceContract.validate_managed_install!(root)
+      assert_equal head, AgentWorkflowsSourceContract.validate_managed_install!(root, fetch: false)
 
       File.write(File.join(root, "dirty"), "dirty\n")
-      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root) }
+      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root, fetch: false) }
       assert_includes error.message, "clean"
       FileUtils.rm_f(File.join(root, "dirty"))
 
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "switch", "-qc", "feature", exception: true)
-      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root) }
+      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root, fetch: false) }
       assert_includes error.message, "main"
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "switch", "-q", "main", exception: true)
 
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "checkout", "-q", "--detach", exception: true)
-      assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root) }
+      assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root, fetch: false) }
+    end
+  end
+
+  def test_managed_install_refreshes_the_hardcoded_canonical_ref_by_default
+    with_repository do |root|
+      fetched = false
+      original = AgentWorkflowsSourceContract.method(:fetch!)
+      AgentWorkflowsSourceContract.define_singleton_method(:fetch!) do |source|
+        fetched = true
+        cached_revision!(source)
+      end
+
+      AgentWorkflowsSourceContract.validate_managed_install!(root)
+
+      assert fetched
+    ensure
+      AgentWorkflowsSourceContract.define_singleton_method(:fetch!, original)
+    end
+  end
+
+  def test_canonical_network_fetch_runs_outside_the_candidate_repository
+    with_repository do |root|
+      revision = AgentWorkflowsSourceContract.git(root, "rev-parse", "HEAD")
+      calls = []
+      original = AgentWorkflowsSourceContract.method(:git)
+      AgentWorkflowsSourceContract.define_singleton_method(:git) do |repository, *arguments|
+        calls << [repository, arguments]
+        case arguments.first
+        when "rev-parse"
+          revision
+        when "bundle", "init", "fetch", "update-ref"
+          ""
+        else
+          raise "unexpected secure Git command: #{arguments.inspect}"
+        end
+      end
+
+      assert_equal revision, AgentWorkflowsSourceContract.fetch!(root)
+
+      network_fetch = calls.find { |_repository, arguments| arguments.first == "fetch" }
+      refute_nil network_fetch
+      refute_equal root, network_fetch.first
+      assert_includes network_fetch.last, AgentWorkflowsSourceContract::CANONICAL_URL
+      assert(calls.any? { |repository, arguments| repository == root && arguments.take(2) == %w[bundle unbundle] })
+      assert(calls.any? do |repository, arguments|
+        repository == root && arguments.take(2) == %w[update-ref refs/remotes/origin/main]
+      end)
+    ensure
+      AgentWorkflowsSourceContract.define_singleton_method(:git, original)
     end
   end
 
@@ -61,14 +110,14 @@ class AgentWorkflowsSourceContractTest < Minitest::Test
         "-C", root, "remote", "set-url", "origin", "https://github.com/example/fork.git",
         exception: true
       )
-      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root) }
+      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root, fetch: false) }
       assert_includes error.message, "origin"
     end
 
     with_repository do |root|
       File.write(File.join(root, "README.md"), "ahead\n")
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "commit", "-qam", "ahead", exception: true)
-      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root) }
+      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root, fetch: false) }
       assert_includes error.message, "equal"
     end
 
@@ -85,7 +134,7 @@ class AgentWorkflowsSourceContractTest < Minitest::Test
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "checkout", "-q", "--detach", first, exception: true)
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "branch", "-f", "main", first, exception: true)
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "switch", "-q", "main", exception: true)
-      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root) }
+      error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.validate_managed_install!(root, fetch: false) }
       assert_includes error.message, "equal"
     end
   end

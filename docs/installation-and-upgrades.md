@@ -144,6 +144,13 @@ child environment. Managed installs also require an exact clean canonical
 `shakacode/agent-workflows` `main` checkout whose `HEAD` equals cached
 `origin/main`; feature, detached, dirty, ahead, behind, fork, and local-origin
 sources fail before target mutation.
+Managed installation refreshes the hardcoded canonical `main` ref by default.
+After validation, it imports that exact fetched commit into the same immutable
+per-SHA Store used by pinned installs and copies companion assets from the
+snapshot, not from the mutable source worktree.
+Use `--no-fetch` only for an intentionally offline install after independently
+establishing that cached `origin/main` is current; this explicit mode cannot
+prove where a locally mutable cached ref originated.
 Status and upgrade surface and replay this profile. Unknown values fail closed.
 
 Native plugin installation does not install helper binaries on `PATH`, write

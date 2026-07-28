@@ -161,15 +161,31 @@ module AgentWorkflowsStatus
     value.to_s.start_with?("version:") ? value : value.to_s[0, 12]
   end
 
-  def delivery_state(host:, target:, source:, delivery_mode:, metadata:)
+  def codex_binding(helper, metadata, allow_path_fallback:)
+    invocation = metadata["codex_executable"].to_s
+    resolved = metadata["codex_executable_resolved"].to_s
+    return [invocation, resolved] unless invocation.empty? || resolved.empty?
+    if invocation.empty? != resolved.empty?
+      raise "pinned Codex executable receipt is incomplete; reinstall the provider"
+    end
+    return [invocation, resolved] unless allow_path_fallback
+
+    output, _error, status = Open3.capture3(RbConfig.ruby, helper, "--resolve-codex-executable")
+    return ["", ""] unless status.success?
+
+    output.strip.split("\t", 2)
+  end
+
+  def delivery_state(host:, target:, source:, delivery_mode:, metadata:, allow_path_fallback:)
     codex_arguments = []
+    helper = File.expand_path("agent-workflows-delivery-state", __dir__)
     if host == "codex"
+      invocation, resolved = codex_binding(helper, metadata, allow_path_fallback:)
       codex_arguments = [
-        "--codex-executable", metadata["codex_executable"].to_s,
-        "--codex-resolved", metadata["codex_executable_resolved"].to_s
+        "--codex-executable", invocation.to_s,
+        "--codex-resolved", resolved.to_s
       ]
     end
-    helper = File.expand_path("agent-workflows-delivery-state", __dir__)
     output, error, status = Open3.capture3(
       RbConfig.ruby,
       helper,
@@ -183,7 +199,7 @@ module AgentWorkflowsStatus
     )
     payload = JSON.parse(output)
     [payload, status.success? ? nil : payload["reason"]]
-  rescue SystemCallError, JSON::ParserError, TypeError => e
+  rescue RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
     [nil, "delivery-state check failed: #{error}#{e.message}"]
   end
 
@@ -262,7 +278,9 @@ module AgentWorkflowsStatus
 
     source = File.expand_path(options[:source] || metadata["source"].to_s)
     delivery_mode = requested_delivery_mode || metadata.fetch("delivery_mode", "flat")
-    delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:, metadata:)
+    delivery, delivery_error = delivery_state(
+      host:, target:, source:, delivery_mode:, metadata:, allow_path_fallback: profile == "pinned"
+    )
     if delivery_error
       return status_payload(
         "CHECK_FAILED",

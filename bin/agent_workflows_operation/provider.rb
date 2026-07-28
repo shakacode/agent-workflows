@@ -165,7 +165,7 @@ module AgentWorkflowsOperation
           raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: plugin companion delivery requires copy mode"
         end
 
-        native = native_state!
+        native = native_state!(metadata, allow_path_fallback: true)
         roots = Array(native["roots"])
         unless native["state"] == "active" && roots.length == 1
           raise ProviderError, "PINNED_PROVIDER_MISMATCH: active native provider is unavailable or ambiguous"
@@ -245,14 +245,23 @@ module AgentWorkflowsOperation
       fail_update!("companion install metadata is unavailable: #{e.message}")
     end
 
-    def native_state!(metadata = nil)
+    def native_state!(metadata = nil, allow_path_fallback: false)
       load_delivery_state!
       options = {}
       if host == "codex"
         metadata ||= install_metadata!
+        invocation = metadata["codex_executable"]
+        resolved = metadata["codex_executable_resolved"]
+        if invocation.to_s.empty? != resolved.to_s.empty?
+          raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: Codex executable binding is incomplete"
+        end
+
+        if allow_path_fallback && invocation.to_s.empty? && resolved.to_s.empty?
+          invocation, resolved = AgentWorkflowsDeliveryState.resolve_codex_executable
+        end
         options = {
-          codex_executable: metadata["codex_executable"],
-          codex_resolved: metadata["codex_executable_resolved"]
+          codex_executable: invocation,
+          codex_resolved: resolved
         }.compact
       end
       AgentWorkflowsDeliveryState.native_state(host, target, **options)

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require "tmpdir"
 
 module AgentWorkflowsSourceContract
   REPOSITORY = "shakacode/agent-workflows"
@@ -83,18 +84,36 @@ module AgentWorkflowsSourceContract
   end
 
   def fetch!(source)
-    git(
-      source,
-      "fetch", "--quiet", "--no-tags", "--prune", "--force",
-      "--no-recurse-submodules", "--no-write-fetch-head",
-      CANONICAL_URL, FETCH_REFSPEC
-    )
-    cached_revision!(source)
+    revision = nil
+    Dir.mktmpdir("agent-workflows-canonical-fetch") do |staging|
+      File.chmod(0o700, staging)
+      git(staging, "init", "--quiet", "--bare", "--template=")
+      git(
+        staging,
+        "fetch", "--quiet", "--no-tags", "--prune", "--force",
+        "--no-recurse-submodules", "--no-write-fetch-head",
+        CANONICAL_URL, "+#{REF}:#{REF}"
+      )
+      revision = git(staging, "rev-parse", "--verify", "#{REF}^{commit}")
+      raise "canonical main is not a full commit SHA" unless revision.match?(/\A[0-9a-f]{40}\z/)
+
+      bundle = File.join(staging, "canonical-main.bundle")
+      git(staging, "bundle", "create", bundle, REF)
+      git(source, "bundle", "unbundle", bundle)
+      git(source, "update-ref", REMOTE_REF, revision)
+    end
+    raise "canonical fetch did not resolve main" unless revision
+
+    cached = cached_revision!(source)
+    raise "cached canonical main differs from the isolated fetch" unless cached == revision
+
+    revision
   end
 
-  def validate_managed_install!(source)
+  def validate_managed_install!(source, fetch: true)
     root = validate_root!(source)
     validate_origin!(root)
+    fetch!(root) if fetch
     branch = git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
     raise "managed install requires the clean main branch" unless branch == "main"
     raise "managed install requires a clean source checkout" unless git(root, "status", "--porcelain=v1", "--untracked-files=all").empty?

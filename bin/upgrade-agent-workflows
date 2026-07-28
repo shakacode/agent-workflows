@@ -482,6 +482,9 @@ fi
 if [[ -n "$codex_executable" ]]; then
   install_args+=(--codex-executable "$codex_executable")
 fi
+if [[ "$provider_profile" = "managed" || "$fetch" != "true" ]]; then
+  install_args+=(--no-fetch)
+fi
 "$install_script" "${install_args[@]}"
 
 if [[ "${#consumer_roots[@]}" -gt 0 ]]; then

@@ -544,7 +544,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     codex_args=()
     [[ "$host" != "codex" ]] || codex_args=(--codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE")
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
-      --provider-profile managed --gh-executable "$gh" "${codex_args[@]}" \
+      --provider-profile managed --gh-executable "$gh" "${codex_args[@]}" --no-fetch \
       >"$tmp/install.out"
 
     [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
@@ -590,6 +590,58 @@ test_managed_profile_requires_explicit_absolute_gh_binding() {
   [[ "$status" -eq 64 ]] || fail "managed install without explicit gh returned $status: $output"
   assert_contains "$output" "requires --gh-executable with an explicit absolute path"
   [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "failed managed install wrote metadata"
+}
+
+test_managed_install_copies_the_validated_commit_when_the_worktree_changes_after_validation() {
+  local tmp source target gh enable mutated document committed_content
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  gh="$tmp/gh"
+  enable="$tmp/enable-mutation"
+  mutated="$tmp/mutation-complete"
+  document="docs/coordination-backend.md"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  committed_content="$(cat "$source/$document")"
+
+  ruby -e '
+    path, enable, mutated, document = ARGV
+    source = File.read(path)
+    marker = "require_relative \"agent_doctor/timeout_budget\"\n"
+    injection = <<~RUBY
+
+      if ENV["AGENT_WORKFLOWS_LIFECYCLE_FD"] && File.exist?(#{enable.dump}) && !File.exist?(#{mutated.dump})
+        File.write(#{document.dump}, "MUTATED WORKTREE CONTENT\\n")
+        File.write(#{mutated.dump}, "done\\n")
+      end
+    RUBY
+    abort "delivery-state marker missing" unless source.sub!(marker, marker + injection)
+    File.write(path, source)
+  ' "$source/bin/agent-workflows-delivery-state" "$enable" "$mutated" "$source/$document"
+  git -C "$source" add bin/agent-workflows-delivery-state
+  git -C "$source" commit --quiet -m "instrument post-validation mutation"
+  git -C "$source" update-ref refs/remotes/origin/main HEAD
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+  touch "$enable"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+    --codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" --no-fetch >"$tmp/managed.out"
+
+  assert_file "$mutated"
+  grep -qxF "MUTATED WORKTREE CONTENT" "$source/$document" ||
+    fail "race fixture did not mutate the source worktree"
+  [[ "$(cat "$target/$document")" = "$committed_content" ]] ||
+    fail "managed install copied mutable worktree content instead of the validated commit"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    expected = `git -C #{ARGV.fetch(1).dump} rev-parse HEAD`.strip
+    abort metadata.inspect unless metadata["source_revision"] == expected
+  ' "$target/.agent-workflows-install.json" "$source"
 }
 
 test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills() {
@@ -2020,6 +2072,45 @@ test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
   ' "$target/.agent-workflows-install.json" "$gh"
 }
 
+test_managed_upgrade_fetches_once_before_reinstalling_the_established_revision() {
+  local tmp source target gh fetch_log
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  gh="$tmp/gh"
+  fetch_log="$tmp/fetch.log"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  ruby -e '
+    path = ARGV.fetch(0)
+    source = File.read(path)
+    marker = "  def fetch!(source)\n"
+    replacement = <<~RUBY
+      def fetch!(source)
+        File.open(ENV.fetch("AGENT_WORKFLOWS_TEST_FETCH_LOG"), "a") { |file| file.puts("fetch") }
+        return cached_revision!(source)
+    RUBY
+    abort "fetch marker missing" unless source.sub!(marker, replacement.lines.map { |line| "  #{line}" }.join.sub(/\A  /, ""))
+    File.write(path, source)
+  ' "$source/bin/agent_workflows_operation/source_contract.rb"
+  git -C "$source" add bin/agent_workflows_operation/source_contract.rb
+  git -C "$source" commit --quiet -m "instrument managed fetch"
+  git -C "$source" update-ref refs/remotes/origin/main HEAD
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+  AGENT_WORKFLOWS_TEST_FETCH_LOG="$fetch_log" \
+    "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+      --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+      --codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" >"$tmp/upgrade.out"
+
+  [[ "$(wc -l <"$fetch_log" | tr -d ' ')" = "1" ]] ||
+    fail "managed upgrade fetched more than once: $(cat "$fetch_log")"
+}
+
 test_upgrade_dry_run_checks_requested_delivery_mode() {
   local tmp source target output status
   tmp="$(mktemp -d)"
@@ -2343,6 +2434,7 @@ main() {
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_plugin_companion_installs_non_skill_assets_and_records_mode
     test_managed_profile_requires_explicit_absolute_gh_binding
+    test_managed_install_copies_the_validated_commit_when_the_worktree_changes_after_validation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode
@@ -2402,6 +2494,7 @@ main() {
     test_upgrade_rejects_plain_pinned_source_nested_in_a_git_checkout
     test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
+    test_managed_upgrade_fetches_once_before_reinstalling_the_established_revision
     test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed

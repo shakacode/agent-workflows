@@ -31,7 +31,8 @@ class AgentWorkflowsStatusTest < Minitest::Test
   end
 
   def run_status(env, *)
-    Open3.capture2e(env, "ruby", SCRIPT, *)
+    path = [@fake_codex_dir, ENV.fetch("PATH", "")].join(File::PATH_SEPARATOR)
+    Open3.capture2e({ "PATH" => path }.merge(env), "ruby", SCRIPT, *)
   end
 
   def write_metadata(target, metadata)
@@ -107,6 +108,62 @@ class AgentWorkflowsStatusTest < Minitest::Test
       payload = JSON.parse(out)
       assert_equal "CHECK_FAILED", payload.fetch("status")
       assert_includes payload.fetch("reason"), "explicit absolute gh"
+    end
+  end
+
+  def test_legacy_pinned_companion_status_resolves_validated_codex_from_path
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_codex_native_state(target)
+        File.write(
+          File.join(target, ".agent-workflows-install.json"),
+          "#{JSON.pretty_generate(
+            'version' => '9.9.9',
+            'source' => source,
+            'source_revision' => '',
+            'provider_profile' => 'pinned',
+            'delivery_mode' => 'plugin-companion'
+          )}\n"
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", JSON.parse(out).fetch("status")
+      end
+    end
+  end
+
+  def test_pinned_companion_status_rejects_a_partial_codex_binding_without_path_fallback
+    %w[codex_executable codex_executable_resolved].each do |missing_key|
+      Dir.mktmpdir("agent-workflows-status-test") do |target|
+        Dir.mktmpdir("agent-workflows-status-source") do |source|
+          File.write(File.join(source, "VERSION"), "9.9.9\n")
+          write_codex_native_state(target)
+          metadata = {
+            "version" => "9.9.9",
+            "source" => source,
+            "source_revision" => "",
+            "provider_profile" => "pinned",
+            "delivery_mode" => "plugin-companion",
+            "codex_executable" => @fake_codex,
+            "codex_executable_resolved" => File.realpath(@fake_codex)
+          }
+          metadata.delete(missing_key)
+          File.write(
+            File.join(target, ".agent-workflows-install.json"),
+            "#{JSON.pretty_generate(metadata)}\n"
+          )
+
+          out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+          assert_equal 3, status.exitstatus, out
+          payload = JSON.parse(out)
+          assert_equal "CHECK_FAILED", payload.fetch("status")
+          assert_includes payload.fetch("reason"), "receipt is incomplete"
+        end
+      end
     end
   end
 

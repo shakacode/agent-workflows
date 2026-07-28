@@ -16,6 +16,16 @@ module AgentWorkflowsDeliveryState
 
   module_function
 
+  def resolve_codex_executable
+    ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |directory|
+      next unless directory.start_with?(File::SEPARATOR)
+
+      candidate = File.join(directory, "codex")
+      return validate_executable(candidate) if File.file?(candidate) && File.executable?(candidate)
+    end
+    raise ArgumentError, "Codex executable was not found on the explicit absolute PATH"
+  end
+
   def validate_executable(path, expected_resolved: nil)
     raise ArgumentError, "Codex executable must be an absolute path" unless path.to_s.start_with?(File::SEPARATOR)
 
@@ -665,6 +675,11 @@ module AgentWorkflowsDeliveryState
 end
 
 if $PROGRAM_NAME == __FILE__
+  if ARGV.first == "--resolve-codex-executable"
+    invocation, resolved = AgentWorkflowsDeliveryState.resolve_codex_executable
+    puts "#{invocation}\t#{resolved}"
+    exit 0
+  end
   if ARGV.first == "--validate-executable"
     ARGV.shift
     invocation, resolved = AgentWorkflowsDeliveryState.validate_executable(ARGV.fetch(0))

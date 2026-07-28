@@ -123,6 +123,50 @@ class AgentWorkflowsOperationTest < Minitest::Test
     end
   end
 
+  def test_legacy_pinned_companion_receipt_resolves_validated_codex_from_path
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata.delete("codex_executable")
+    metadata.delete("codex_executable_resolved")
+    write_metadata(metadata)
+    resolver = fixture_resolver
+    resolver.store.import_local!(@source, @revision)
+    prior_path = ENV["PATH"]
+    legacy_bin = File.join(@tmp, "legacy-bin")
+    FileUtils.mkdir_p(legacy_bin)
+    FileUtils.cp(@fake_codex, File.join(legacy_bin, "codex"), preserve: true)
+    ENV["PATH"] = [legacy_bin, prior_path].compact.join(File::PATH_SEPARATOR)
+    snapshot = resolver.store.open!(@revision)
+    native = AgentWorkflowsOperation::Provider.new(
+      host: "codex", target: @target, snapshot:
+    ).send(:native_state!, metadata, allow_path_fallback: true)
+    assert_equal "active", native.fetch("state"), native.inspect
+
+    operation = resolver.begin!
+
+    assert_equal "pinned", operation.fetch("freshness")
+  ensure
+    ENV["PATH"] = prior_path
+  end
+
+  def test_pinned_companion_receipt_rejects_a_partial_codex_binding_without_path_fallback
+    %w[codex_executable codex_executable_resolved].each do |missing_key|
+      metadata = read_metadata
+      metadata["provider_profile"] = "pinned"
+      metadata.delete(missing_key)
+      write_metadata(metadata)
+      resolver = fixture_resolver
+      resolver.store.import_local!(@source, @revision)
+
+      error = assert_raises(AgentWorkflowsOperation::ProviderError) { resolver.begin! }
+
+      assert_includes error.message, "PINNED_PROVIDER_RECEIPT_INVALID"
+      assert_includes error.message, "binding is incomplete"
+      assert_empty operation_directories
+      install_provider
+    end
+  end
+
   def test_pinned_begin_fails_closed_when_the_installed_snapshot_is_missing
     metadata = read_metadata
     metadata["provider_profile"] = "pinned"
