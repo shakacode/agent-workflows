@@ -21,6 +21,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     address_review
     adversarial_pr_review
     autoreview
+    benchmark_verification
     evaluate_issue
     pause
     plan_issue_triage

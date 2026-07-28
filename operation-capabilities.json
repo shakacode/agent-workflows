@@ -7,6 +7,7 @@
       "address_review": "skills/address-review/SKILL.md",
       "adversarial_pr_review": "skills/adversarial-pr-review/SKILL.md",
       "autoreview": "skills/autoreview/SKILL.md",
+      "benchmark_verification": "skills/benchmark-verification/SKILL.md",
       "evaluate_issue": "skills/evaluate-issue/SKILL.md",
       "pause": "skills/pause/SKILL.md",
       "plan_issue_triage": "skills/plan-issue-triage/SKILL.md",

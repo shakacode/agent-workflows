@@ -204,17 +204,19 @@ test_codex_host_install_writes_helpers_and_metadata() {
 }
 
 test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot() {
-  local tmp source revision target operation mode asset committed_skill
+  local tmp source revision target operation mode asset committed_skill committed_version receipt_version
   tmp="$(mktemp -d)"
   source="$tmp/source"
   mkdir -p "$source"
   new_source_repo "$source"
   revision="$(git -C "$source" rev-parse HEAD)"
   committed_skill="$(git -C "$source" show "$revision:skills/pr-batch/SKILL.md")"
+  committed_version="$(git -C "$source" show "$revision:VERSION")"
 
   for mode in copy symlink; do
     target="$tmp/codex-$mode"
     printf 'dirty live source\n' > "$source/skills/pr-batch/SKILL.md"
+    printf 'dirty-live-%s\n' "$mode" >"$source/VERSION"
     "$source/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" >"$tmp/install-$mode.out"
 
     [[ -d "$target/.agent-workflows-operation-state/store/$revision" ]] ||
@@ -227,6 +229,11 @@ test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot() {
     asset="$(printf '%s' "$operation" | ruby -rjson -e 'puts JSON.parse(STDIN.read).dig("assets", "skills", "pr_batch")')"
     [[ "$(cat "$asset")" != "dirty live source" ]] ||
       fail "$mode pinned operation selected uncommitted live source content"
+    receipt_version="$(ruby -rjson -e \
+      'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("version")' \
+      "$target/.agent-workflows-install.json")"
+    [[ "$receipt_version" = "$committed_version" ]] ||
+      fail "$mode pinned receipt selected uncommitted VERSION: $receipt_version"
     ruby -rjson -e '
       payload = JSON.parse(STDIN.read)
       revision = ARGV.fetch(0)
@@ -237,7 +244,7 @@ test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot() {
                                    payload["runner"].is_a?(Array) &&
                                    payload["release"].is_a?(Array)
     ' "$revision" <<<"$operation"
-    git -C "$source" checkout --quiet -- skills/pr-batch/SKILL.md
+    git -C "$source" checkout --quiet -- skills/pr-batch/SKILL.md VERSION
   done
 }
 
@@ -593,7 +600,7 @@ test_managed_profile_requires_explicit_absolute_gh_binding() {
 }
 
 test_managed_install_copies_the_validated_commit_when_the_worktree_changes_after_validation() {
-  local tmp source target gh enable mutated document committed_content
+  local tmp source target gh enable mutated document committed_content committed_version receipt_version
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
@@ -606,21 +613,23 @@ test_managed_install_copies_the_validated_commit_when_the_worktree_changes_after
   mkdir -p "$source"
   new_source_repo "$source"
   committed_content="$(cat "$source/$document")"
+  committed_version="$(cat "$source/VERSION")"
 
   ruby -e '
-    path, enable, mutated, document = ARGV
+    path, enable, mutated, document, version = ARGV
     source = File.read(path)
     marker = "require_relative \"agent_doctor/timeout_budget\"\n"
     injection = <<~RUBY
 
       if ENV["AGENT_WORKFLOWS_LIFECYCLE_FD"] && File.exist?(#{enable.dump}) && !File.exist?(#{mutated.dump})
         File.write(#{document.dump}, "MUTATED WORKTREE CONTENT\\n")
+        File.write(#{version.dump}, "MUTATED WORKTREE VERSION\\n")
         File.write(#{mutated.dump}, "done\\n")
       end
     RUBY
     abort "delivery-state marker missing" unless source.sub!(marker, marker + injection)
     File.write(path, source)
-  ' "$source/bin/agent-workflows-delivery-state" "$enable" "$mutated" "$source/$document"
+  ' "$source/bin/agent-workflows-delivery-state" "$enable" "$mutated" "$source/$document" "$source/VERSION"
   git -C "$source" add bin/agent-workflows-delivery-state
   git -C "$source" commit --quiet -m "instrument post-validation mutation"
   git -C "$source" update-ref refs/remotes/origin/main HEAD
@@ -637,6 +646,11 @@ test_managed_install_copies_the_validated_commit_when_the_worktree_changes_after
     fail "race fixture did not mutate the source worktree"
   [[ "$(cat "$target/$document")" = "$committed_content" ]] ||
     fail "managed install copied mutable worktree content instead of the validated commit"
+  receipt_version="$(ruby -rjson -e \
+    'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("version")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$receipt_version" = "$committed_version" ]] ||
+    fail "managed receipt selected post-validation VERSION: $receipt_version"
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     expected = `git -C #{ARGV.fetch(1).dump} rev-parse HEAD`.strip

@@ -957,7 +957,8 @@ For each user-visible UI change:
    scope, give a reasoned `not applicable`.
 6. If the change can affect a rendered page, delivered asset, or bundle, follow
    the repository's `AGENTS.md` / Agent Workflow Configuration performance seam
-   and use `$benchmark-verification` when it applies. Record the result as
+   and use returned `assets.skills.benchmark_verification` when it applies.
+   Record the result as
    `bundle_hygiene` when it only constrains size/shape, or `measured_metric` only
    when a real runtime/user metric was measured; name that metric with
    `metric_name=<runtime/user metric>`. Name non-byte hygiene values with

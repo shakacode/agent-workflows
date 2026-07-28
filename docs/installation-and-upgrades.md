@@ -158,6 +158,9 @@ Status and upgrade surface and replay this profile. Unknown values fail closed.
 Managed status reads both the available revision and `VERSION` from the same
 canonical commit rather than mixing canonical revision state with the live
 checkout.
+Install receipts likewise read both `source_revision` and `version` from the
+verified immutable Store snapshot, so dirty pinned worktrees and
+post-validation managed worktree changes cannot alter receipt identity.
 
 Native plugin installation does not install helper binaries on `PATH`, write
 `<target>/.agent-workflows-install.json`, or participate in status and upgrade

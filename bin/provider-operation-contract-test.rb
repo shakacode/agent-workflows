@@ -10,6 +10,7 @@ class ProviderOperationContractTest < Minitest::Test
     address_review
     adversarial_pr_review
     autoreview
+    benchmark_verification
     evaluate_issue
     pause
     plan_issue_triage
@@ -127,6 +128,21 @@ class ProviderOperationContractTest < Minitest::Test
 
     assert_empty routed - declared, "unbound outgoing routes: #{(routed - declared).sort.join(', ')}"
     assert_includes routed, "run-ci"
+  end
+
+  def test_registry_covers_every_skill_route_in_the_canonical_operation_workflow
+    registry = JSON.parse(read("operation-capabilities.json"))
+    declared = registry.dig("assets", "skills").keys
+    workflow = read("workflows/pr-processing.md")
+    shared = Dir.glob(File.join(ROOT, "skills/*/SKILL.md")).to_h do |path|
+      name = File.basename(File.dirname(path))
+      [name, name.tr("-", "_")]
+    end
+    picker_routes = workflow.scan(/\$([a-z][a-z0-9-]+)/).flatten & shared.keys
+    named_routes = workflow.scan(/(?:\b[a-z_]+_operation\.)?assets\.skills\.([a-z][a-z0-9_]*)/).flatten
+    required = (picker_routes.map { |name| shared.fetch(name) } + named_routes).uniq
+
+    assert_empty required - declared, "unbound canonical workflow routes: #{(required - declared).sort.join(', ')}"
   end
 
   def test_every_operation_bound_entry_skill_carries_the_bootstrap_contract

@@ -197,7 +197,11 @@ prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at
-  version="$(metadata_value version)"
+  if [[ -f "$install_content_root/VERSION" && ! -L "$install_content_root/VERSION" ]]; then
+    version="$(tr -d '\r\n' < "$install_content_root/VERSION")"
+  else
+    version="unknown"
+  fi
   source_revision="${pinned_source_revision:-$(metadata_value source_revision)}"
   source_branch="$(metadata_value source_branch)"
   source_remote="$(metadata_value source_remote)"
