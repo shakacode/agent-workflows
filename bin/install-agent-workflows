@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH]
 
 Installs this shared workflow pack into an agent home.
 
@@ -41,6 +41,8 @@ mode="copy"
 delivery_mode=""
 provider_profile=""
 gh_executable=""
+codex_executable=""
+codex_executable_resolved=""
 pinned_source_revision=""
 copy_chmod="Du+rwx,Dgo+rx,Fu+rw,Fgo+r,a+X"
 metadata_name=".agent-workflows-install.json"
@@ -55,6 +57,7 @@ bin_helpers=(
   agent-workflows-run
   agent-workflows-status
   agent-workflows-trust-audit
+  agent_workflows_source_contract.rb
   install-agent-workflows
   upgrade-agent-workflows
 )
@@ -200,6 +203,7 @@ prepare_metadata() {
 
   ruby -rjson -e '
     path, host, mode, delivery_mode, provider_profile, gh_executable,
+      codex_executable, codex_executable_resolved,
       source, version, revision, branch, remote, installed_at = ARGV
     metadata = {
       "host" => host,
@@ -207,6 +211,10 @@ prepare_metadata() {
       "delivery_mode" => delivery_mode,
       "provider_profile" => provider_profile,
       "gh_executable" => gh_executable.empty? ? nil : gh_executable,
+      "codex_executable" => codex_executable.empty? ? nil : codex_executable,
+      "codex_executable_resolved" => codex_executable_resolved.empty? ? nil : codex_executable_resolved,
+      "provider_repository" => provider_profile == "managed" ? "shakacode/agent-workflows" : nil,
+      "provider_ref" => provider_profile == "managed" ? "refs/heads/main" : nil,
       "source" => File.expand_path(source),
       "version" => version,
       "source_revision" => revision,
@@ -216,6 +224,7 @@ prepare_metadata() {
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
   ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$provider_profile" "$gh_executable" \
+    "$codex_executable" "$codex_executable_resolved" \
     "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
 }
 
@@ -609,6 +618,10 @@ while [[ $# -gt 0 ]]; do
       gh_executable="${2:?--gh-executable requires an absolute path}"
       shift 2
       ;;
+    --codex-executable)
+      codex_executable="${2:?--codex-executable requires an absolute path}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -678,6 +691,29 @@ if [[ "$provider_profile" = "managed" ]]; then
     exit 64
   fi
   gh_executable="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$gh_executable")"
+  if ! ruby -I"$repo_root/bin" -ragent_workflows_source_contract -e \
+    'AgentWorkflowsSourceContract.validate_managed_install!(ARGV.fetch(0))' "$repo_root"; then
+    echo "Managed provider source must be a clean canonical main checkout equal to origin/main." >&2
+    exit 64
+  fi
+fi
+if [[ "$host" = "codex" ]]; then
+  if [[ "$provider_profile" = "managed" && "$codex_executable" != /* ]]; then
+    echo "Managed Codex provider requires --codex-executable with an explicit absolute path." >&2
+    exit 64
+  fi
+  if [[ -z "$codex_executable" ]]; then
+    codex_executable="$(command -v codex 2>/dev/null || true)"
+  fi
+  if [[ -n "$codex_executable" ]]; then
+    codex_binding="$(ruby "$delivery_state_script" --validate-executable "$codex_executable" 2>/dev/null || true)"
+    if [[ -z "$codex_binding" ]]; then
+      echo "Codex executable binding is unsafe or unavailable: $codex_executable" >&2
+      exit 64
+    fi
+    codex_executable="${codex_binding%%$'\t'*}"
+    codex_executable_resolved="${codex_binding#*$'\t'}"
+  fi
 fi
 
 lifecycle_wrapper="$repo_root/bin/agent-workflows-lifecycle"
@@ -705,9 +741,13 @@ else
     exec-exclusive --target "$target" -- "$0" "${original_args[@]}"
 fi
 pending_migration_receipt="$target/.agent-workflows-migration-staging"
+delivery_codex_args=()
+if [[ "$host" = "codex" && -n "$codex_executable" ]]; then
+  delivery_codex_args=(--codex-executable "$codex_executable" --codex-resolved "$codex_executable_resolved")
+fi
 if [[ ! -f "$pending_migration_receipt" ]]; then
   set +e
-  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
@@ -786,7 +826,7 @@ trap release_install_transaction EXIT
 # The pre-lock check avoids mutating an obviously unsafe target. This second
 # check is authoritative and holds the advisory install lock through commit.
 set +e
-delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --json 2>&1)"
 delivery_status=$?
 set -e
 if [[ "$delivery_status" -ne 0 ]]; then
@@ -902,7 +942,7 @@ fi
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   set +e
-  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
@@ -919,7 +959,7 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
   )"
 
   set +e
-  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then

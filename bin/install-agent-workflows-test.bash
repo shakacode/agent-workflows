@@ -11,23 +11,15 @@ cleanup() {
 }
 trap cleanup EXIT
 export AGENT_WORKFLOWS_CODEX_EXECUTABLE="$FAKE_CODEX_DIR/codex"
-cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
-#!/usr/bin/env ruby
-abort "unexpected arguments: #{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
-case ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
-when "enabled"
-  version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
-  source = ENV.fetch("QA_CODEX_PLUGIN_SOURCE", "https://github.com/shakacode/agent-workflows.git")
-  puts "PLUGIN STATUS VERSION PATH"
-  puts "scw@agent-workflows  installed, enabled  #{version}  #{source}"
-when "disabled"
-  puts "PLUGIN STATUS VERSION PATH"
-  puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
-else
-  warn "invalid Codex TOML"
-  exit 2
-end
-RUBY
+export PATH="$FAKE_CODEX_DIR:$PATH"
+cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'SH'
+#!/bin/sh
+[ "$*" = "plugin list --marketplace agent-workflows" ] || exit 2
+version=0.1.0
+[ ! -f "$CODEX_HOME/.qa-codex-version" ] || version="$(cat "$CODEX_HOME/.qa-codex-version")"
+printf 'PLUGIN STATUS VERSION PATH\n'
+printf 'scw@agent-workflows  installed, enabled  %s  https://github.com/shakacode/agent-workflows.git\n' "$version"
+SH
 chmod +x "$AGENT_WORKFLOWS_CODEX_EXECUTABLE"
 
 fail() {
@@ -85,11 +77,13 @@ write_native_scw_state() {
 new_source_repo() {
   local source_dir="$1"
   rsync -a --exclude .git "$ROOT/" "$source_dir/"
-  git -C "$source_dir" init --quiet
+  git -C "$source_dir" init --quiet --initial-branch=main
   git -C "$source_dir" config user.email "agent-workflows-test@example.com"
   git -C "$source_dir" config user.name "Agent Workflows Test"
   git -C "$source_dir" add .
   git -C "$source_dir" commit --quiet -m "initial"
+  git -C "$source_dir" remote add origin https://github.com/shakacode/agent-workflows.git
+  git -C "$source_dir" update-ref refs/remotes/origin/main HEAD
 }
 
 new_source_repo_with_legacy_model_routing_history() {
@@ -534,6 +528,7 @@ test_native_plugin_plus_default_flat_install_fails_before_mutation() {
 
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
   local tmp target consumer host output gh
+  local -a codex_args
 
   for host in codex claude; do
     tmp="$(mktemp -d)"
@@ -546,8 +541,10 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     mkdir -p "$target/skills/personal"
     printf 'personal\n' > "$target/skills/personal/SKILL.md"
 
+    codex_args=()
+    [[ "$host" != "codex" ]] || codex_args=(--codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE")
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
-      --provider-profile managed --gh-executable "$gh" \
+      --provider-profile managed --gh-executable "$gh" "${codex_args[@]}" \
       >"$tmp/install.out"
 
     [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
@@ -1165,8 +1162,8 @@ test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() 
 
     set +e
     if [[ "$host" = codex ]]; then
-      output="$(QA_CODEX_PLUGIN_VERSION="0.2.0" \
-        "$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+      printf '0.2.0\n' > "$target/.qa-codex-version"
+      output="$("$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
       status=$?
     else
       output="$("$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
@@ -2009,7 +2006,8 @@ test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
   "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
   write_native_scw_state codex "$target"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
-    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" --no-fetch >"$tmp/upgrade-one.out"
+    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+    --codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" --no-fetch >"$tmp/upgrade-one.out"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
     --no-fetch >"$tmp/upgrade-two.out"
 

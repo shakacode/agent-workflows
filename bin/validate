@@ -63,6 +63,7 @@ ruby bin/provider-operation-contract-test.rb
 
 echo "== status unit tests =="
 ruby bin/agent-workflows-status-test.rb
+ruby bin/agent-workflows-source-contract-test.rb
 ruby bin/agent-workflows-trust-audit-test.rb
 
 echo "== push-downstream unit tests =="

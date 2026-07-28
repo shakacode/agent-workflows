@@ -5,6 +5,7 @@ require "json"
 require "optparse"
 require "open3"
 require "rbconfig"
+require_relative "agent_workflows_source_contract"
 
 module AgentWorkflowsStatus
   METADATA_NAME = ".agent-workflows-install.json"
@@ -142,11 +143,32 @@ module AgentWorkflowsStatus
     [revision, nil]
   end
 
+  def managed_available_revision(source, metadata, fetch:)
+    AgentWorkflowsSourceContract.validate_managed_metadata!(metadata)
+    root = AgentWorkflowsSourceContract.validate_root!(source)
+    AgentWorkflowsSourceContract.validate_origin!(root)
+    revision = if fetch
+                 AgentWorkflowsSourceContract.fetch!(root)
+               else
+                 AgentWorkflowsSourceContract.cached_revision!(root)
+               end
+    [revision, nil]
+  rescue RuntimeError, SystemCallError => e
+    [nil, e.message]
+  end
+
   def short_revision(value)
     value.to_s.start_with?("version:") ? value : value.to_s[0, 12]
   end
 
-  def delivery_state(host:, target:, source:, delivery_mode:)
+  def delivery_state(host:, target:, source:, delivery_mode:, metadata:)
+    codex_arguments = []
+    if host == "codex"
+      codex_arguments = [
+        "--codex-executable", metadata["codex_executable"].to_s,
+        "--codex-resolved", metadata["codex_executable_resolved"].to_s
+      ]
+    end
     helper = File.expand_path("agent-workflows-delivery-state", __dir__)
     output, error, status = Open3.capture3(
       RbConfig.ruby,
@@ -156,6 +178,7 @@ module AgentWorkflowsStatus
       "--target", target,
       "--source", source,
       "--delivery-mode", delivery_mode,
+      *codex_arguments,
       "--json"
     )
     payload = JSON.parse(output)
@@ -228,10 +251,18 @@ module AgentWorkflowsStatus
                         reason: "managed provider profile requires an explicit absolute gh executable"
       )
     end
+    if profile == "managed" && host == "codex" &&
+       (!metadata["codex_executable"].to_s.start_with?("/") ||
+        !metadata["codex_executable_resolved"].to_s.start_with?("/"))
+      return status_payload(
+        "CHECK_FAILED", target:, source: options[:source], host:, metadata:,
+                        reason: "managed Codex provider requires a recorded executable binding; reinstall with --codex-executable"
+      )
+    end
 
     source = File.expand_path(options[:source] || metadata["source"].to_s)
     delivery_mode = requested_delivery_mode || metadata.fetch("delivery_mode", "flat")
-    delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:)
+    delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:, metadata:)
     if delivery_error
       return status_payload(
         "CHECK_FAILED",
@@ -243,7 +274,12 @@ module AgentWorkflowsStatus
         delivery_state: delivery
       )
     end
-    revision, error = available_revision(source, metadata, fetch: options.fetch(:fetch))
+    revision, error =
+      if profile == "managed"
+        managed_available_revision(source, metadata, fetch: options.fetch(:fetch))
+      else
+        available_revision(source, metadata, fetch: options.fetch(:fetch))
+      end
     if error
       return status_payload(
         "CHECK_FAILED",

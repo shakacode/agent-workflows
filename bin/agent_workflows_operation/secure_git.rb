@@ -3,12 +3,13 @@
 require "open3"
 
 require_relative "errors"
+require_relative "source_contract"
 
 module AgentWorkflowsOperation
   class SecureGit
-    CANONICAL_URL = "https://github.com/shakacode/agent-workflows.git"
+    CANONICAL_URL = AgentWorkflowsSourceContract::CANONICAL_URL
     PRIVATE_REF = "refs/agent-workflows/canonical-main"
-    GIT_CANDIDATES = %w[/usr/bin/git /usr/local/bin/git /opt/homebrew/bin/git].freeze
+    GIT_CANDIDATES = AgentWorkflowsSourceContract::GIT_CANDIDATES
 
     attr_reader :executable
 

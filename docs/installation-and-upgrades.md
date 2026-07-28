@@ -131,11 +131,19 @@ or upgrade; it is never reconstructed from mutable installed files.
 
 Select `--provider-profile managed` only with
 `--mode copy --delivery-mode plugin-companion --gh-executable
-/absolute/path/to/gh`. Verify that absolute path explicitly; the installer
-resolves and validates it, then persists it as trusted install configuration.
+/absolute/path/to/gh`. Codex additionally requires `--codex-executable
+/absolute/path/to/codex`. Verify both absolute paths explicitly; the installer
+resolves and validates them, then persists them as trusted install
+configuration.
 Managed operations never derive `gh` authority from runtime `PATH` or
-`AGENT_WORKFLOWS_GH_EXECUTABLE`. They verify the native and companion copies
-before resolving current canonical content.
+`AGENT_WORKFLOWS_GH_EXECUTABLE`, and native Codex proof never derives its
+executable or timeout from `AGENT_WORKFLOWS_CODEX_*`. The recorded Codex
+invocation and resolved target must still agree, remain executable, and have
+safe ownership, modes, and ancestors. Native inspection runs with a minimal
+child environment. Managed installs also require an exact clean canonical
+`shakacode/agent-workflows` `main` checkout whose `HEAD` equals cached
+`origin/main`; feature, detached, dirty, ahead, behind, fork, and local-origin
+sources fail before target mutation.
 Status and upgrade surface and replay this profile. Unknown values fail closed.
 
 Native plugin installation does not install helper binaries on `PATH`, write
@@ -514,9 +522,12 @@ Stable status tokens:
 | `NOT_INSTALLED` | 2 | Target has no `.agent-workflows-install.json`. |
 | `CHECK_FAILED` | 3 | The check could not safely determine status. |
 
-Use `--json` for machine-readable output. Use `--fetch` only when you want a
-network check against `origin`; without `--fetch`, status compares against the
-current local source clone. Status also reports `delivery_mode`, native plugin
+Use `--json` for machine-readable output. For managed profiles, `--fetch`
+fetches only canonical `refs/heads/main` into cached `origin/main`; without
+`--fetch`, status compares against that cached ref without network access.
+Checkout `HEAD`, the current branch, and configured upstream are never the
+managed availability authority. Pinned profiles retain their recorded-source
+behavior. Status also reports `delivery_mode`, native plugin
 evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
@@ -549,7 +560,10 @@ upgrade-agent-workflows --host codex --dry-run
 Upgrade behavior:
 
 1. Resolve target and source from arguments or install metadata.
-2. Fetch and fast-forward the source clone unless `--no-fetch` is set.
+2. For a managed profile, require clean canonical `main`, fetch the exact
+   canonical main ref, and fast-forward only local `main`. `--no-fetch` requires
+   local `main` to equal cached `origin/main`. Pinned profiles retain their
+   recorded-source update behavior.
 3. Back up the target install.
 4. Reinstall with the recorded or requested artifact and delivery modes.
 5. Run `agent-workflow-seam-doctor --root <consumer> --shared <source>` for
@@ -652,9 +666,12 @@ stale workflow instructions or that explicitly need the new process.
 ## Network And Privacy
 
 `agent-workflows-status` does not contact the network unless `--fetch` is
-provided. `upgrade-agent-workflows` fetches and fast-forwards the source clone by
-default. Use `--no-fetch` when the source clone has already been updated or when
-the session must avoid network access.
+provided. For managed installs, status and upgrade use the hardcoded canonical
+GitHub repository and exact `main` refspec rather than checkout branch,
+upstream, Git configuration rewrites, or ambient Git environment. Upgrade
+fetches and fast-forwards canonical `main` by default. Use `--no-fetch` only
+when local `main` already equals the cached canonical `origin/main`, or when a
+pinned source can be replayed without network access.
 
 ## Troubleshooting
 

@@ -31,10 +31,14 @@ class AgentWorkflowsStatusTest < Minitest::Test
   end
 
   def run_status(env, *)
-    Open3.capture2e({ "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex }.merge(env), "ruby", SCRIPT, *)
+    Open3.capture2e(env, "ruby", SCRIPT, *)
   end
 
   def write_metadata(target, metadata)
+    metadata = {
+      "codex_executable" => @fake_codex,
+      "codex_executable_resolved" => File.realpath(@fake_codex)
+    }.merge(metadata)
     File.write(File.join(target, ".agent-workflows-install.json"), "#{JSON.pretty_generate(metadata)}\n")
   end
 

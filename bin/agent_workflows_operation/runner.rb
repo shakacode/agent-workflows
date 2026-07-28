@@ -102,6 +102,8 @@ module AgentWorkflowsOperation
         "GEM_PATH" => nil,
         "PATH" => "/usr/bin:/bin:/usr/sbin:/sbin",
         "AUTONOMOUS_MERGE_GH" => nil,
+        "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => nil,
+        "AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS" => nil,
         "AGENT_WORKFLOWS_GIT_EXECUTABLE" => metadata.fetch("tools").fetch("git").fetch("path"),
         "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.dig("tools", "gh", "path"),
         "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => nil,

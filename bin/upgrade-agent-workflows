@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--consumer-root DIR] [--dry-run] [--no-fetch]
+Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH] [--consumer-root DIR] [--dry-run] [--no-fetch]
 
 Updates the source clone, reinstalls this shared workflow pack into an agent
 home, and optionally validates one or more consumer repository seams.
@@ -24,6 +24,7 @@ mode=""
 delivery_mode=""
 provider_profile=""
 gh_executable=""
+codex_executable=""
 dry_run=false
 fetch=true
 consumer_roots=()
@@ -305,6 +306,10 @@ while [[ $# -gt 0 ]]; do
       gh_executable="${2:?--gh-executable requires an absolute path}"
       shift 2
       ;;
+    --codex-executable)
+      codex_executable="${2:?--codex-executable requires an absolute path}"
+      shift 2
+      ;;
     --consumer-root)
       consumer_roots+=("${2:?--consumer-root requires a directory}")
       shift 2
@@ -379,6 +384,9 @@ fi
 if [[ -z "$gh_executable" ]]; then
   gh_executable="$(metadata_value "$metadata_path" gh_executable 2>/dev/null || true)"
 fi
+if [[ -z "$codex_executable" ]]; then
+  codex_executable="$(metadata_value "$metadata_path" codex_executable 2>/dev/null || true)"
+fi
 case "$provider_profile" in
   pinned|managed) ;;
   *)
@@ -440,7 +448,19 @@ else
   exec "${lifecycle_ruby[@]}" "$lifecycle_wrapper" \
     exec-exclusive --target "$target" -- "$0" "${original_args[@]}"
 fi
-if [[ "$fetch" = "true" && "$declared_git_source" = "true" ]]; then
+if [[ "$provider_profile" = "managed" && "$declared_git_source" = "true" ]]; then
+  managed_fetch_arg=true
+  [[ "$fetch" = "true" ]] || managed_fetch_arg=false
+  if ! ruby -I"$source/bin" -ragent_workflows_source_contract -e \
+    'AgentWorkflowsSourceContract.fast_forward_main!(ARGV.fetch(0), fetch: ARGV.fetch(1) == "true")' \
+    "$source" "$managed_fetch_arg"; then
+    echo "CHECK_FAILED managed upgrade requires clean canonical main and the exact canonical ref." >&2
+    exit 3
+  fi
+  if ! validate_declared_git_source; then
+    exit 3
+  fi
+elif [[ "$fetch" = "true" && "$declared_git_source" = "true" ]]; then
   update_source_clone
   if ! validate_declared_git_source; then
     exit 3
@@ -458,6 +478,9 @@ install_args=(
 )
 if [[ -n "$gh_executable" ]]; then
   install_args+=(--gh-executable "$gh_executable")
+fi
+if [[ -n "$codex_executable" ]]; then
+  install_args+=(--codex-executable "$codex_executable")
 fi
 "$install_script" "${install_args[@]}"
 

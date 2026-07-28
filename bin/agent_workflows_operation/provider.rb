@@ -5,6 +5,7 @@ require "json"
 require_relative "errors"
 require_relative "secure_paths"
 require_relative "tree"
+require_relative "source_contract"
 
 module AgentWorkflowsOperation
   class Provider
@@ -20,6 +21,7 @@ module AgentWorkflowsOperation
       bin/agent-workflows-trust-audit
       bin/install-agent-workflows
       bin/upgrade-agent-workflows
+      bin/agent_workflows_source_contract.rb
     ].freeze
     COMPANION_DOC_FILES = %w[
       docs/agent-workflows-model-routing.md
@@ -32,7 +34,7 @@ module AgentWorkflowsOperation
       `codex plugin remove scw@agent-workflows` and
       `codex plugin add scw@agent-workflows`. Reinstall companion assets from
       that exact canonical main checkout with
-      `bin/install-agent-workflows --host codex --mode copy --delivery-mode plugin-companion --provider-profile managed --gh-executable /absolute/path/to/gh`.
+      `bin/install-agent-workflows --host codex --mode copy --delivery-mode plugin-companion --provider-profile managed --gh-executable /absolute/path/to/gh --codex-executable /absolute/path/to/codex`.
       Fully restart Codex and start a new session before retrying.
     GUIDANCE
     CLAUDE_UPDATE = <<~GUIDANCE.strip
@@ -62,8 +64,13 @@ module AgentWorkflowsOperation
 
     def verify_managed!(metadata, expected_revision)
       verify_companion_metadata!(metadata)
+      begin
+        AgentWorkflowsSourceContract.validate_managed_metadata!(metadata)
+      rescue RuntimeError => e
+        fail_update!(e.message)
+      end
       companion_revision = metadata["source_revision"]
-      native = native_state!
+      native = native_state!(metadata)
       roots = Array(native["roots"])
       unless native["state"] == "active" && roots.length == 1
         fail_update!("active native provider is unavailable or ambiguous")
@@ -91,6 +98,12 @@ module AgentWorkflowsOperation
         raise ProviderError,
               "MANAGED_TOOL_BINDING_REQUIRED: install metadata must declare an explicit absolute gh executable"
       end
+      if host == "codex" &&
+         (!metadata["codex_executable"].to_s.start_with?("/") ||
+          !metadata["codex_executable_resolved"].to_s.start_with?("/"))
+        raise ProviderError,
+              "MANAGED_TOOL_BINDING_REQUIRED: reinstall with an explicit --codex-executable"
+      end
 
       {
         "profile" => "managed",
@@ -108,6 +121,11 @@ module AgentWorkflowsOperation
       profile = profile_from!(metadata)
       if profile == "managed"
         verify_companion_metadata!(metadata)
+        begin
+          AgentWorkflowsSourceContract.validate_managed_metadata!(metadata)
+        rescue RuntimeError => e
+          fail_update!(e.message)
+        end
       elsif metadata["host"] != host
         raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: install metadata belongs to another host"
       end
@@ -227,9 +245,17 @@ module AgentWorkflowsOperation
       fail_update!("companion install metadata is unavailable: #{e.message}")
     end
 
-    def native_state!
+    def native_state!(metadata = nil)
       load_delivery_state!
-      AgentWorkflowsDeliveryState.native_state(host, target)
+      options = {}
+      if host == "codex"
+        metadata ||= install_metadata!
+        options = {
+          codex_executable: metadata["codex_executable"],
+          codex_resolved: metadata["codex_executable_resolved"]
+        }.compact
+      end
+      AgentWorkflowsDeliveryState.native_state(host, target, **options)
     rescue StandardError => e
       fail_update!("native provider state could not be verified: #{e.message}")
     end

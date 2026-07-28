@@ -7,10 +7,48 @@ require "find"
 require "open3"
 require "optparse"
 require "tmpdir"
+require "etc"
 require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
+  DEFAULT_CODEX_TIMEOUT = AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT
+  MAX_CODEX_TIMEOUT = 120.0
+
   module_function
+
+  def validate_executable(path, expected_resolved: nil)
+    raise ArgumentError, "Codex executable must be an absolute path" unless path.to_s.start_with?(File::SEPARATOR)
+
+    invocation = File.expand_path(path)
+    resolved = File.realpath(invocation)
+    raise ArgumentError, "Codex executable resolution changed; reinstall the managed provider" if expected_resolved && resolved != expected_resolved
+
+    stat = File.stat(resolved)
+    unless stat.file? && (stat.uid == Process.euid || stat.uid.zero?) &&
+           (stat.mode & 0o111).positive? && (stat.mode & 0o022).zero?
+      raise ArgumentError, "Codex executable is not a trusted executable file"
+    end
+
+    [File.dirname(invocation), File.dirname(resolved)].uniq.each do |directory|
+      current = directory
+      loop do
+        ancestor = File.stat(current)
+        sticky_root = ancestor.uid.zero? && (ancestor.mode & 0o1000).positive?
+        unless ancestor.directory? && (ancestor.uid == Process.euid || ancestor.uid.zero?) &&
+               ((ancestor.mode & 0o022).zero? || sticky_root)
+          raise ArgumentError, "Codex executable has an unsafe writable ancestor: #{current}"
+        end
+
+        parent = File.dirname(current)
+        break if parent == current
+
+        current = parent
+      end
+    end
+    [invocation, resolved]
+  rescue SystemCallError => e
+    raise ArgumentError, "Codex executable is unavailable: #{e.message}"
+  end
 
   def normalized_plugin_source(value)
     return nil unless value.is_a?(String) && !value.strip.empty?
@@ -44,7 +82,7 @@ module AgentWorkflowsDeliveryState
     nil
   end
 
-  def codex_native_state(target)
+  def codex_native_state(target, codex_executable: nil, codex_resolved: nil, timeout_seconds: DEFAULT_CODEX_TIMEOUT)
     config_path = File.join(target, "config.toml")
     config = File.file?(config_path) ? File.binread(config_path) : ""
     legacy_plugin_id = "agent-workflows@agent-workflows"
@@ -61,7 +99,18 @@ module AgentWorkflowsDeliveryState
     relevant = config.include?("scw@agent-workflows") || Dir.glob(cache_pattern).any?
     return { "state" => "inactive", "reason" => "scw@agent-workflows is not configured" } unless relevant
 
-    cli_state = codex_plugin_cli_state(target)
+    unless codex_executable
+      return {
+        "state" => "unknown",
+        "reason" => "Codex executable binding is missing; reinstall with --codex-executable ABSOLUTE_PATH"
+      }
+    end
+    cli_state = codex_plugin_cli_state(
+      target,
+      codex_executable:,
+      codex_resolved:,
+      timeout_seconds:
+    )
     return cli_state if cli_state["state"] == "unknown"
     return { "state" => "inactive", "reason" => "scw@agent-workflows is disabled" } if cli_state["state"] == "disabled"
 
@@ -113,16 +162,25 @@ module AgentWorkflowsDeliveryState
     { "state" => "unknown", "reason" => "unable to read Codex plugin state: #{e.message}" }
   end
 
-  def codex_plugin_cli_state(target)
-    executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
-    default_timeout = AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT.to_s
-    timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
-    return { "state" => "unknown", "reason" => "invalid Codex plugin state timeout" } unless timeout_seconds.positive?
+  def codex_plugin_cli_state(target, codex_executable:, codex_resolved: nil, timeout_seconds: DEFAULT_CODEX_TIMEOUT)
+    _invocation, executable = validate_executable(codex_executable, expected_resolved: codex_resolved)
+    timeout_seconds = Float(timeout_seconds)
+    unless timeout_seconds.positive? && timeout_seconds <= MAX_CODEX_TIMEOUT
+      return { "state" => "unknown", "reason" => "invalid Codex plugin state timeout" }
+    end
 
     output = error = status = nil
+    home = Etc.getpwuid(Process.euid).dir
+    environment = {
+      "CODEX_HOME" => target,
+      "HOME" => home,
+      "PATH" => ([File.dirname(executable)] + %w[/usr/local/bin /usr/bin /bin /usr/sbin /sbin]).uniq.join(":"),
+      "LANG" => "C.UTF-8",
+      "LC_ALL" => "C.UTF-8"
+    }
     Open3.popen3(
-      { "CODEX_HOME" => target }, executable, "plugin", "list", "--marketplace", "agent-workflows",
-      pgroup: true
+      environment, executable, "plugin", "list", "--marketplace", "agent-workflows",
+      pgroup: true, unsetenv_others: true
     ) do |stdin, stdout, stderr, wait_thread|
       stdin.close
       stdout_reader = Thread.new { stdout.read }
@@ -246,8 +304,8 @@ module AgentWorkflowsDeliveryState
     { "state" => "unknown", "reason" => "invalid Claude plugin state: #{e.message}" }
   end
 
-  def native_state(host, target)
-    host == "codex" ? codex_native_state(target) : claude_native_state(target)
+  def native_state(host, target, **options)
+    host == "codex" ? codex_native_state(target, **options) : claude_native_state(target)
   end
 
   def symlinked_target_component(target)
@@ -467,8 +525,9 @@ module AgentWorkflowsDeliveryState
     }
   end
 
-  def check(host:, target:, source:, delivery_mode:)
-    native = native_state(host, target)
+  def check(host:, target:, source:, delivery_mode:, codex_executable: nil, codex_resolved: nil,
+            timeout_seconds: DEFAULT_CODEX_TIMEOUT)
+    native = native_state(host, target, codex_executable:, codex_resolved:, timeout_seconds:)
     collision_names = Array(native["skill_names"])
     flat = managed_flat_inventory(
       target: target,
@@ -515,7 +574,11 @@ module AgentWorkflowsDeliveryState
   end
 
   def migrate(**options)
-    payload = check(**options.slice(:host, :target, :source, :delivery_mode))
+    payload = check(
+      **options.slice(
+        :host, :target, :source, :delivery_mode, :codex_executable, :codex_resolved, :timeout_seconds
+      )
+    )
     return payload unless payload.fetch("compatible")
 
     removed = payload.dig("flat", "removable")
@@ -602,6 +665,12 @@ module AgentWorkflowsDeliveryState
 end
 
 if $PROGRAM_NAME == __FILE__
+  if ARGV.first == "--validate-executable"
+    ARGV.shift
+    invocation, resolved = AgentWorkflowsDeliveryState.validate_executable(ARGV.fetch(0))
+    puts "#{invocation}\t#{resolved}"
+    exit 0
+  end
   action = ARGV.shift
   options = { json: false, retain_staging: false }
   parser = OptionParser.new do |opts|
@@ -609,6 +678,9 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
     opts.on("--source DIR") { |value| options[:source] = File.expand_path(value) }
     opts.on("--delivery-mode MODE") { |value| options[:delivery_mode] = value }
+    opts.on("--codex-executable PATH") { |value| options[:codex_executable] = value }
+    opts.on("--codex-resolved PATH") { |value| options[:codex_resolved] = value }
+    opts.on("--codex-timeout SECONDS", Float) { |value| options[:timeout_seconds] = value }
     opts.on("--retain-staging") { options[:retain_staging] = true }
     opts.on("--staging-receipt PATH") { |value| options[:staging_receipt] = File.expand_path(value) }
     opts.on("--json") { options[:json] = true }
@@ -620,7 +692,9 @@ if $PROGRAM_NAME == __FILE__
   abort "--host must be codex or claude" unless %w[codex claude].include?(options[:host])
   abort "--delivery-mode must be flat or plugin-companion" unless %w[flat plugin-companion].include?(options[:delivery_mode])
 
-  call_options = options.slice(:host, :target, :source, :delivery_mode)
+  call_options = options.slice(
+    :host, :target, :source, :delivery_mode, :codex_executable, :codex_resolved, :timeout_seconds
+  ).compact
   call_options[:retain_staging] = options[:retain_staging] if action == "migrate"
   call_options[:staging_receipt] = options[:staging_receipt] if action == "migrate" && options[:staging_receipt]
   payload = AgentWorkflowsDeliveryState.public_send(action, **call_options)

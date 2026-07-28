@@ -102,6 +102,27 @@ class AgentWorkflowsOperationTest < Minitest::Test
     end
   end
 
+  def test_managed_begin_rejects_missing_or_wrong_canonical_metadata_before_fetch
+    [nil, "example/fork"].each do |repository|
+      metadata = read_metadata
+      if repository
+        metadata["provider_repository"] = repository
+      else
+        metadata.delete("provider_repository")
+      end
+      write_metadata(metadata)
+      resolver = fixture_resolver
+      def resolver.fetch_current_store!
+        raise "network must not be reached"
+      end
+
+      error = assert_raises(AgentWorkflowsOperation::Error) { resolver.begin! }
+      assert_includes error.message, "install metadata must record"
+      refute_includes error.message, "network must not be reached"
+      install_provider
+    end
+  end
+
   def test_pinned_begin_fails_closed_when_the_installed_snapshot_is_missing
     metadata = read_metadata
     metadata["provider_profile"] = "pinned"
@@ -1596,6 +1617,9 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "bin/agent-workflows-lifecycle" => File.binread(File.join(ROOT, "bin/agent-workflows-lifecycle")),
       "bin/agent-workflows-status" => "#!/bin/sh\n",
       "bin/agent-workflows-trust-audit" => "#!/bin/sh\n",
+      "bin/agent_workflows_source_contract.rb" => File.binread(
+        File.join(ROOT, "bin/agent_workflows_source_contract.rb")
+      ),
       "bin/agent_doctor/timeout_budget.rb" => File.binread(File.join(ROOT, "bin/agent_doctor/timeout_budget.rb")),
       "bin/agent-workflows-resolve" => File.binread(File.join(ROOT, "bin/agent-workflows-resolve")),
       "bin/agent-workflows-run" => File.binread(File.join(ROOT, "bin/agent-workflows-run")),
@@ -1737,6 +1761,14 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "'scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git'\n"
     )
     FileUtils.chmod(0o755, @fake_codex)
+    metadata = read_metadata
+    metadata.merge!(
+      "provider_repository" => "shakacode/agent-workflows",
+      "provider_ref" => "refs/heads/main",
+      "codex_executable" => @fake_codex,
+      "codex_executable_resolved" => File.realpath(@fake_codex)
+    )
+    write_metadata(metadata)
   end
 
   def install_claude_provider(target)
@@ -1772,7 +1804,9 @@ class AgentWorkflowsOperationTest < Minitest::Test
       "delivery_mode" => "plugin-companion",
       "provider_profile" => "managed",
       "source_revision" => @revision,
-      "gh_executable" => @fake_gh
+      "gh_executable" => @fake_gh,
+      "provider_repository" => "shakacode/agent-workflows",
+      "provider_ref" => "refs/heads/main"
     )
   end
 
