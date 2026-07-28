@@ -91,7 +91,9 @@ facts remain fail-closed and stop before mutation.
   Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
-  for `none`, `ask`, or `auto_merge_when_gates_pass`. Do not silently default it.
+  for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
+  automatic interactive exact-head walkthrough before the one final merge
+  decision. Do not silently default it.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
 a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
@@ -174,8 +176,9 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
-   it before worker launch from visible authority or ask the user; do not
-   silently default it.
+   it before worker launch from visible authority or ask the user. Explain that
+   `ask` automatically walks through the exact-head PR one conceptual change at
+   a time before the one final merge decision; do not silently default it.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
    user-requested host or paste destination wins. Use `codex` for up to 10
@@ -499,12 +502,13 @@ Execution rules:
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- Dispatch one subagent/disjoint item; group only for shared context; separate serial/UNKNOWN.
-- Workers obey owned paths/execution envelope; unlisted paths, contradiction/ambiguity, scope/risk growth, or weaker verification -> stop for coordinator.
+- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
+- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
 - Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 - Apply Batch QA Lane; include QA Evidence.
-- Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
+- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
+- ask=>exact-head $pr-walkthrough stepwise; full large/complex; refresh gates; one merge decision
 - Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
 
 ```
@@ -757,10 +761,17 @@ Replay the final visible status line from the normalized blocker union: render a
 
 When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
 target is merged + closed out (or a true blocker / no-PR with evidence), not
-"stopped at a recommendation." When `merge_authority` is `ask`, surface exactly
-one final merge decision if gates are clean and merge is allowed; if approval is
-declined or not granted by handoff, record `ready-no-merge-authority` and do not
-ask again. When `merge_authority` is `none`, done is a
+"stopped at a recommendation." When `merge_authority` is `ask` and gates are
+clean, automatically start the exact-head PR walkthrough before approval: use
+`$pr-walkthrough` when available, use full interactive mode for large or complex
+PRs and concise interactive mode for smaller cohesive PRs, and do not repeat a
+walkthrough completed for the same exact head. Honor an explicit request to
+skip it. After it completes or is skipped, refresh the head and ordinary
+readiness, then surface one final merge decision if the exact head remains
+clean and merge is allowed. Walkthrough participation is not merge approval.
+If approval is declined or not granted by handoff, record
+`ready-no-merge-authority` and do not ask again. When `merge_authority` is
+`none`, done is a
 `ready-no-merge-authority` handoff per `AGENTS.md`: all current-head checks and
 review threads satisfied, with evidence and the generic `Confidence note:`
 recorded (the `Agent Merge Confidence` block is the accelerated-RC auto-merge

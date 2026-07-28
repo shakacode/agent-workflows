@@ -116,9 +116,16 @@ cohorts on the new head.
    - `auto_merge_when_gates_pass`: merge only if ordinary readiness and the
      exact-head autonomous eligibility gate pass, or a qualifying exact-head
      human risk decision produces `human-approved-for-current-head`.
-   - `ask`: ask exactly once at the final clean merge decision. If approval is
-     declined or not granted by handoff, record `ready-no-merge-authority` and
-     do not ask again for the same decision.
+   - `ask`: when gates are clean, automatically start the exact-head PR
+     walkthrough before approval. Use `$pr-walkthrough` when available, use
+     full interactive mode for large or complex PRs and concise interactive
+     mode for smaller cohesive PRs, and do not repeat a walkthrough completed
+     for the same exact head. Honor an explicit request to skip it. After it
+     completes or is skipped, refresh the head and ordinary readiness, then ask
+     one final merge decision if the exact head remains clean. Walkthrough
+     participation is not approval. If approval is declined or not granted by
+     handoff, record `ready-no-merge-authority` and do not ask again for the same
+     decision.
    - `none`: hand off as `ready-no-merge-authority` when checks, review
      threads, and policy gates are clean.
 

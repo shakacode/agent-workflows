@@ -50,6 +50,7 @@ Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
 | `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
+| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | An exact-head, one-change-at-a-time explanation with questions between each change.   |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
 The `agents/openai.yaml` file under a skill is optional Codex UI metadata for skill picker display text and the default prompt. Add it only for skills that need Codex picker metadata; it is not required for every skill. Deliberate exclusion: `qa-stress` ships without picker metadata because destructive stress campaigns must be invoked by explicit request, not surfaced through default picker prompting.
@@ -242,6 +243,13 @@ host supports it, a separate coordinator, the canonical staged cost-aware worker
 route, and an explicit `merge_authority` choice before launch. It collapses only
 multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
+
+Choose `ask` when a human should understand the exact-head PR before deciding:
+after ordinary gates are clean, the coordinator automatically starts
+`$pr-walkthrough`, explains one conceptual change at a time in full mode for
+large or complex PRs (concise mode for smaller cohesive PRs), refreshes the head
+and readiness, and only then asks the one final merge question. The walkthrough
+itself is not approval.
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from
 [skills/pr-batch/SKILL.md](../skills/pr-batch/SKILL.md): workers must be able
