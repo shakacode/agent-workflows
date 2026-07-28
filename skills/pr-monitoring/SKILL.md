@@ -156,10 +156,12 @@ cohorts on the new head.
      exact-head autonomous eligibility gate pass, or a qualifying exact-head
      human risk decision produces `human-approved-for-current-head`.
    - `ask`: when gates are clean, automatically start the exact-diff PR
-     walkthrough before approval. Use `$pr-walkthrough` when available, use
-     full interactive mode for large or complex PRs and concise interactive
-     mode for smaller cohesive PRs, and do not repeat a walkthrough completed
-     for the same diff identity. Honor an explicit request to skip it. After it
+     walkthrough before approval by reading returned
+     `assets.skills.pr_walkthrough`; stop with a precise provider-contract
+     failure if that named asset is absent. Use full interactive mode for large
+     or complex PRs and concise interactive mode for smaller cohesive PRs, and
+     do not repeat a walkthrough completed for the same diff identity. Honor an
+     explicit request to skip it. After it
      completes or is skipped, refresh the diff identity and ordinary readiness.
      If the diff identity changed, invalidate the walkthrough and readiness
      evidence, then restart the walkthrough or stop. If an ordinary gate newly

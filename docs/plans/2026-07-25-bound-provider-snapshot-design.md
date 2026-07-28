@@ -18,7 +18,8 @@ rules and command seams; they are not shared-provider substitutes.
 ## Operation Result
 
 `agent-workflows-resolve begin --json` returns the operation handle, exact Git
-revision, freshness, capabilities, runner, and these assets:
+revision, freshness, capabilities, per-capability provider-operation
+provenance, runner, and these assets:
 
 - `assets.root`: absolute canonical snapshot tree for this operation;
 - `assets.skills`: validated snake_case skill name to absolute `SKILL.md` map;
@@ -67,11 +68,13 @@ may reuse only its locally retained exact result.
 
 ## Execution Boundary
 
-Read-only helpers may run from directories derived from returned
-`assets.skills` entries. Registered provider mutations run only through the
-absolute operation runner with the retained handle. If a registered capability
-is unavailable, the operation stops; it never executes the capability's source
-helper path.
+Shared instruction reads come from returned `assets.*` paths. Registered
+capabilities run only through the absolute operation runner with the retained
+handle. Each capability's registry-owned runtime bundle preserves
+provider-relative paths and binds its exact roles and bytes to one provider
+revision. This includes the read-only autonomous-merge evaluator as well as
+mutating merge submission. If a registered capability is unavailable, the
+operation stops; it never executes the capability's source helper path.
 
 The operation result binds machine-readable paths and execution state. It
 cannot prove that a model consumed Markdown, so re-reading the returned entry

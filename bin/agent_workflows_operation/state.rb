@@ -42,9 +42,7 @@ module AgentWorkflowsOperation
           launcher_path
         )
         capability_state = registry.capabilities.to_h do |name, capability|
-          destination = File.join(capabilities, name)
-          copy_private_executable!(File.join(snapshot.tree, capability.executable), destination)
-          [name, executable_identity(destination).merge("source" => capability.executable)]
+          [name, copy_capability_bundle!(snapshot, capabilities, capability)]
         end
         interpreter = external_executable_identity!(RbConfig.ruby, "Ruby interpreter")
         environment = external_executable_identity!(trusted_env_executable!, "environment launcher")
@@ -57,6 +55,7 @@ module AgentWorkflowsOperation
           "interpreter" => interpreter,
           "environment" => environment,
           "tools" => {
+            "git" => external_executable_identity!(store_git_executable, "Git executable"),
             "gh" => external_executable_identity!(provider.fetch("gh_executable"), "gh executable")
           },
           "launcher" => executable_identity(launcher_path),
@@ -70,7 +69,7 @@ module AgentWorkflowsOperation
         load_operation!(handle)
         operation_result(
           handle, snapshot, registry, freshness, provider.fetch("profile"), provider.fetch("host"),
-          interpreter:, environment:
+          interpreter:, environment:, capability_state:
         )
       ensure
         SecurePaths.cleanup_owned_directory!(stage, identity) unless published
@@ -137,6 +136,72 @@ module AgentWorkflowsOperation
       File.chmod(0o500, destination)
     end
 
+    def copy_capability_bundle!(snapshot, capabilities_root, capability)
+      bundle_root = File.join(capabilities_root, capability.name)
+      Dir.mkdir(bundle_root, 0o700)
+      runtime = capability.runtime.to_h do |role, source_relative|
+        destination = File.join(bundle_root, source_relative)
+        create_private_parent_directories!(bundle_root, File.dirname(destination))
+        executable = source_relative == capability.executable
+        copy_private_file!(
+          File.join(snapshot.tree, source_relative),
+          destination,
+          mode: executable ? 0o500 : 0o400
+        )
+        identity = executable ? executable_identity(destination) : file_identity(destination)
+        [role, identity.merge(
+          "source" => source_relative,
+          "path" => source_relative,
+          "mode" => executable ? "0500" : "0400"
+        )]
+      end
+      Find.find(bundle_root) do |path|
+        File.chmod(0o500, path) if File.directory?(path)
+      end
+      digest = runtime_digest(runtime, bundle_root)
+      {
+        "executable_role" => capability.runtime.key(capability.executable),
+        "runtime" => runtime,
+        "digest" => digest,
+        "provenance" => "provider-operation:#{snapshot.revision}:#{digest}"
+      }
+    end
+
+    def create_private_parent_directories!(root, parent)
+      relative = parent.delete_prefix("#{root}/")
+      current = root
+      return if relative == parent || relative == "."
+
+      relative.split("/").each do |component|
+        current = File.join(current, component)
+        Dir.mkdir(current, 0o700) unless File.exist?(current)
+      end
+    end
+
+    def copy_private_file!(source, destination, mode:)
+      stat = File.lstat(source)
+      unless stat.file? && !stat.symlink?
+        raise ResolverError, "canonical capability runtime is not a regular file: #{source}"
+      end
+
+      File.open(destination, File::WRONLY | File::CREAT | File::EXCL, mode) do |file|
+        file.write(File.binread(source))
+        file.flush
+        file.fsync
+      end
+      File.chmod(mode, destination)
+    end
+
+    def runtime_digest(runtime, bundle_root)
+      digest = Digest::SHA256.new
+      runtime.sort.each do |role, recorded|
+        bytes = File.binread(File.join(bundle_root, recorded.fetch("path")))
+        digest << [role.bytesize].pack("N") << role
+        digest << [bytes.bytesize].pack("Q>") << bytes
+      end
+      digest.hexdigest
+    end
+
     def executable_identity(path)
       stat = SecurePaths.verify_private_file!(path, mode: 0o500)
       identity_payload(stat, path)
@@ -177,7 +242,10 @@ module AgentWorkflowsOperation
       raise ResolverError, "#{label} is unavailable: #{e.message}"
     end
 
-    def operation_result(handle, snapshot, registry, freshness, provider_profile, provider_host, interpreter:, environment:)
+    def operation_result(
+      handle, snapshot, registry, freshness, provider_profile, provider_host,
+      interpreter:, environment:, capability_state:
+    )
       asset_root = File.realpath(snapshot.tree)
       {
         "schema_version" => 1,
@@ -198,6 +266,7 @@ module AgentWorkflowsOperation
           "docs" => registry.assets.fetch("docs").transform_values { |path| File.join(asset_root, path) }
         },
         "capabilities" => registry.capabilities.keys.sort,
+        "capability_provenance" => capability_state.transform_values { |binding| binding.fetch("provenance") },
         "runner" => startup_environment_command(environment.fetch("path")) + [
           interpreter.fetch("path"),
           "--disable=gems",
@@ -214,6 +283,11 @@ module AgentWorkflowsOperation
           "--json"
         ]
       }
+    end
+
+    def store_git_executable
+      require_relative "secure_git"
+      SecureGit.new.executable
     end
 
     def startup_environment_command(environment)

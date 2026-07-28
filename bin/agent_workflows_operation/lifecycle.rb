@@ -174,8 +174,62 @@ module AgentWorkflowsOperation
       end
 
       verify_bound_directory!(File.join(root, "runtime"), runtime, mode: 0o400)
-      verify_bound_directory!(File.join(root, "capabilities"), capabilities, mode: 0o500)
+      verify_capability_bundles!(File.join(root, "capabilities"), capabilities)
       verify_bound_file!(File.join(root, "launcher"), metadata.fetch("launcher"), mode: 0o500)
+    end
+
+    def verify_capability_bundles!(directory, bindings)
+      SecurePaths.verify_private_directory!(directory)
+      unless Dir.children(directory).sort == bindings.keys.sort
+        raise LifecycleError, "operation capability directory contains unknown or missing entries"
+      end
+
+      bindings.each do |name, binding|
+        unless name.match?(/\A[a-z][a-z0-9-]*\z/) && binding.is_a?(Hash)
+          raise LifecycleError, "operation capability binding is malformed"
+        end
+
+        bundle = File.join(directory, name)
+        verify_bundle_tree!(bundle, binding.fetch("runtime"))
+      end
+    rescue KeyError => e
+      raise LifecycleError, "operation capability binding is incomplete: #{e.message}"
+    end
+
+    def verify_bundle_tree!(bundle, runtime)
+      root_stat = File.lstat(bundle)
+      unless root_stat.directory? && !root_stat.symlink? && root_stat.uid == Process.uid &&
+             (root_stat.mode & 0o777) == 0o500
+        raise LifecycleError, "operation capability bundle root is unsafe"
+      end
+
+      expected_files = runtime.values.map { |recorded| recorded.fetch("path") }.sort
+      actual_files = []
+      Find.find(bundle) do |path|
+        next if path == bundle
+
+        relative = path.delete_prefix("#{bundle}/")
+        stat = File.lstat(path)
+        raise LifecycleError, "operation capability bundle contains a symlink" if stat.symlink?
+
+        if stat.directory?
+          unless stat.uid == Process.uid && (stat.mode & 0o777) == 0o500
+            raise LifecycleError, "operation capability bundle directory is unsafe"
+          end
+        elsif stat.file?
+          actual_files << relative
+        else
+          raise LifecycleError, "operation capability bundle contains an unsupported entry"
+        end
+      end
+      unless actual_files.sort == expected_files
+        raise LifecycleError, "operation capability bundle contains unknown or missing entries"
+      end
+
+      runtime.each_value do |recorded|
+        mode = recorded.fetch("mode") == "0500" ? 0o500 : 0o400
+        verify_bound_file!(File.join(bundle, recorded.fetch("path")), recorded, mode:)
+      end
     end
 
     def verify_bound_directory!(directory, bindings, mode:)

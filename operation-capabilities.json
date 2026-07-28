@@ -14,6 +14,7 @@
       "post_merge_audit": "skills/post-merge-audit/SKILL.md",
       "pr_batch": "skills/pr-batch/SKILL.md",
       "pr_monitoring": "skills/pr-monitoring/SKILL.md",
+      "pr_walkthrough": "skills/pr-walkthrough/SKILL.md",
       "run_ci": "skills/run-ci/SKILL.md",
       "spec": "skills/spec/SKILL.md",
       "tdd": "skills/tdd/SKILL.md",
@@ -51,6 +52,29 @@
         "docs/security-posture.md"
       ],
       "mutation": true,
+      "requires_current_provider": true,
+      "runtime": {
+        "helper": "skills/pr-batch/bin/pr-merge-submit"
+      }
+    },
+    "autonomous-merge-eligibility": {
+      "executable": "skills/pr-batch/bin/autonomous-merge-eligibility",
+      "runtime": {
+        "helper": "skills/pr-batch/bin/autonomous-merge-eligibility",
+        "decision-library": "skills/pr-batch/lib/autonomous_merge_decision.rb",
+        "evidence-library": "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+        "policy-library": "bin/agent_doctor/autonomous_merge_policy.rb",
+        "policy-glob-library": "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+        "policy-yaml-library": "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+        "runtime-trust-library": "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
+        "calibration-decision": "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+      },
+      "instruction_dependencies": [
+        "skills/pr-batch/SKILL.md",
+        "workflows/pr-processing.md",
+        "docs/security-posture.md"
+      ],
+      "mutation": false,
       "requires_current_provider": true
     }
   }

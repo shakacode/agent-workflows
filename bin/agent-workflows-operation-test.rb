@@ -9,6 +9,7 @@ require "minitest/autorun"
 require "open3"
 require "rbconfig"
 require "socket"
+require "shellwords"
 require "tmpdir"
 
 require_relative "agent_workflows_operation/resolver"
@@ -27,6 +28,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     post_merge_audit
     pr_batch
     pr_monitoring
+    pr_walkthrough
     run_ci
     spec
     tdd
@@ -206,6 +208,56 @@ class AgentWorkflowsOperationTest < Minitest::Test
       )
     end
     assert_includes error.message, "CURRENT_PROVIDER_REQUIRED"
+  end
+
+  def test_degraded_operation_cannot_run_the_autonomous_merge_evaluator
+    begin_current_operation
+    operation = fixture_resolver.begin!(degraded: true)
+
+    error = assert_raises(AgentWorkflowsOperation::RunnerError) do
+      AgentWorkflowsOperation::Runner.new(target: @target).run!(
+        handle: operation.fetch("operation"),
+        capability: "autonomous-merge-eligibility",
+        arguments: []
+      )
+    end
+    assert_includes error.message, "CURRENT_PROVIDER_REQUIRED"
+  end
+
+  def test_claude_degraded_operation_cannot_run_the_autonomous_merge_evaluator
+    claude_target = File.join(@tmp, "claude")
+    install_claude_provider(claude_target)
+    resolver = TestResolver.new(host: "claude", target: claude_target, fixture_url: @fixture_url)
+    resolver.begin!
+    operation = resolver.begin!(degraded: true)
+
+    error = assert_raises(AgentWorkflowsOperation::RunnerError) do
+      AgentWorkflowsOperation::Runner.new(target: claude_target).run!(
+        handle: operation.fetch("operation"),
+        capability: "autonomous-merge-eligibility",
+        arguments: []
+      )
+    end
+    assert_includes error.message, "CURRENT_PROVIDER_REQUIRED"
+  end
+
+  def test_begin_publishes_provider_operation_provenance_for_runtime_bundles
+    operation = begin_current_operation
+    provenance = operation.dig("capability_provenance", "autonomous-merge-eligibility")
+
+    assert_match(/\Aprovider-operation:#{@revision}:[0-9a-f]{64}\z/, provenance)
+    _root, metadata = AgentWorkflowsOperation::State.new(target: @target).load_operation!(
+      operation.fetch("operation")
+    )
+    binding = metadata.fetch("capabilities").fetch("autonomous-merge-eligibility")
+    assert_equal provenance, binding.fetch("provenance")
+    assert_equal(
+      %w[
+        calibration-decision decision-library evidence-library helper policy-glob-library
+        policy-library policy-yaml-library runtime-trust-library
+      ],
+      binding.fetch("runtime").keys.sort
+    )
   end
 
   def test_handles_are_opaque_and_state_permissions_are_private
@@ -742,19 +794,32 @@ class AgentWorkflowsOperationTest < Minitest::Test
 
   def test_runner_rejects_capability_inode_and_hash_swaps
     operation = begin_current_operation
-    executable = File.join(operation_root(operation.fetch("operation")), "capabilities", "pr-merge-submit")
+    executable = File.join(
+      operation_root(operation.fetch("operation")),
+      "capabilities/pr-merge-submit/skills/pr-batch/bin/pr-merge-submit"
+    )
     original = File.binread(executable)
 
     replacement = "#{executable}.replacement"
+    FileUtils.chmod(0o700, File.dirname(executable))
     File.write(replacement, original)
     FileUtils.chmod(0o500, replacement)
     File.rename(replacement, executable)
+    FileUtils.chmod(0o500, File.dirname(executable))
     error = run_error(operation)
     assert_includes error.message, "inode"
 
-    FileUtils.rm_rf(operation_root(operation.fetch("operation")))
+    stale_root = operation_root(operation.fetch("operation"))
+    Find.find(stale_root) do |path|
+      stat = File.lstat(path)
+      File.chmod(stat.directory? ? 0o700 : 0o600, path) unless stat.symlink?
+    end
+    FileUtils.rm_rf(stale_root)
     operation = begin_current_operation
-    executable = File.join(operation_root(operation.fetch("operation")), "capabilities", "pr-merge-submit")
+    executable = File.join(
+      operation_root(operation.fetch("operation")),
+      "capabilities/pr-merge-submit/skills/pr-batch/bin/pr-merge-submit"
+    )
     content = File.binread(executable)
     FileUtils.chmod(0o700, executable)
     content.setbyte(content.bytesize - 2, content.getbyte(content.bytesize - 2) ^ 1)
@@ -848,6 +913,156 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert status.success?, "#{output}#{error}"
     assert_equal "fixture-helper --probe\n", output
     refute_path_exists sentinel
+  end
+
+  def test_autonomous_evaluator_uses_provider_runtime_and_consumer_base_policy
+    consumer = File.join(@tmp, "consumer")
+    FileUtils.mkdir_p(File.join(consumer, ".agents"))
+    File.write(File.join(consumer, "README.md"), "consumer\n")
+    File.write(
+      File.join(consumer, ".agents/agent-workflow.yml"),
+      "autonomous_merge:\n  thresholds:\n    max_changed_files: 0\n"
+    )
+    system("git", "-C", consumer, "init", "--quiet", exception: true)
+    system("git", "-C", consumer, "config", "user.name", "Consumer", exception: true)
+    system("git", "-C", consumer, "config", "user.email", "consumer@example.com", exception: true)
+    system("git", "-C", consumer, "add", ".", exception: true)
+    system("git", "-C", consumer, "commit", "--quiet", "-m", "consumer base", exception: true)
+    consumer_sha = `git -C #{consumer.shellescape} rev-parse HEAD`.strip
+    refute_equal @revision, consumer_sha
+    File.write(File.join(consumer, ".agents/agent-workflow.yml"), "{}\n")
+    system("git", "-C", consumer, "add", ".", exception: true)
+    system("git", "-C", consumer, "commit", "--quiet", "-m", "weaker replacement policy", exception: true)
+    replacement_sha = `git -C #{consumer.shellescape} rev-parse HEAD`.strip
+    system("git", "-C", consumer, "replace", consumer_sha, replacement_sha, exception: true)
+
+    objective = {
+      "head_sha" => "a" * 40,
+      "base_sha" => consumer_sha,
+      "files" => [{ "path" => "README.md", "additions" => 1, "deletions" => 0 }],
+      "commits" => [{ "sha" => "c" * 40 }],
+      "reviews" => [],
+      "decision_comments" => []
+    }
+    objective_path = File.join(@tmp, "objective.json")
+    semantic_path = File.join(@tmp, "semantic.json")
+    File.write(objective_path, JSON.generate(objective))
+    File.write(semantic_path, JSON.generate(provider_operation_semantic_assessment))
+    write_autonomous_fake_gh(@fake_gh)
+    operation = begin_current_operation
+
+    output, error, status = Open3.capture3(
+      {
+        "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path,
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => "provider-operation:#{'0' * 40}:#{'0' * 64}",
+        "AGENT_WORKFLOWS_GIT_EXECUTABLE" => File.join(@tmp, "fake-git"),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.join(@tmp, "fake-gh"),
+        "GIT_DIR" => File.join(@tmp, "hostile-git-dir"),
+        "GIT_OBJECT_DIRECTORY" => File.join(@tmp, "hostile-objects"),
+        "GIT_REPLACE_REF_BASE" => "refs/replace/"
+      },
+      *operation.fetch("runner"), "autonomous-merge-eligibility", "--",
+      "--repo-root", consumer,
+      "--trusted-base", consumer_sha,
+      "--trusted-helper-provenance", "trusted-base:#{consumer_sha}",
+      "--repo", "example/repo",
+      "--pr", "1",
+      "--semantic-assessment", semantic_path
+    )
+
+    assert status.success?, error
+    result = JSON.parse(output)
+    assert_equal "human-approval-required", result.fetch("verdict"), result.inspect
+    assert_equal ["changed-files-limit"], result.fetch("triggered_gates")
+    assert_equal operation.dig("capability_provenance", "autonomous-merge-eligibility"),
+                 result.fetch("helper_provenance")
+    assert_match(/\Agit:#{consumer_sha}:/, result.fetch("policy_provenance"))
+    assert_equal "mechanically-verified", result.dig("helper_trust", "status")
+  end
+
+  def test_runner_rejects_extra_missing_symlinked_and_replaced_bundle_entries
+    mutations = {
+      "extra" => lambda do |bundle, _runtime|
+        FileUtils.chmod(0o700, bundle)
+        File.write(File.join(bundle, "EXTRA"), "extra\n")
+        FileUtils.chmod(0o400, File.join(bundle, "EXTRA"))
+        FileUtils.chmod(0o500, bundle)
+      end,
+      "missing" => lambda do |bundle, runtime|
+        path = File.join(bundle, runtime.fetch("evidence-library").fetch("path"))
+        FileUtils.chmod(0o700, File.dirname(path))
+        File.unlink(path)
+        FileUtils.chmod(0o500, File.dirname(path))
+      end,
+      "symlinked" => lambda do |bundle, runtime|
+        path = File.join(bundle, runtime.fetch("evidence-library").fetch("path"))
+        FileUtils.chmod(0o700, File.dirname(path))
+        File.unlink(path)
+        File.symlink(runtime.fetch("decision-library").fetch("path").split("/").last, path)
+        FileUtils.chmod(0o500, File.dirname(path))
+      end,
+      "replaced" => lambda do |bundle, runtime|
+        path = File.join(bundle, runtime.fetch("evidence-library").fetch("path"))
+        FileUtils.chmod(0o700, File.dirname(path))
+        replacement = "#{path}.replacement"
+        File.write(replacement, File.binread(path))
+        FileUtils.chmod(0o400, replacement)
+        File.rename(replacement, path)
+        FileUtils.chmod(0o500, File.dirname(path))
+      end,
+      "calibration replaced" => lambda do |bundle, runtime|
+        path = File.join(bundle, runtime.fetch("calibration-decision").fetch("path"))
+        FileUtils.chmod(0o700, File.dirname(path))
+        replacement = "#{path}.replacement"
+        File.write(replacement, File.binread(path))
+        FileUtils.chmod(0o400, replacement)
+        File.rename(replacement, path)
+        FileUtils.chmod(0o500, File.dirname(path))
+      end
+    }
+
+    mutations.each do |label, mutation|
+      operation = begin_current_operation
+      root, metadata = AgentWorkflowsOperation::State.new(target: @target).load_operation!(
+        operation.fetch("operation")
+      )
+      binding = metadata.fetch("capabilities").fetch("autonomous-merge-eligibility")
+      bundle = File.join(root, "capabilities/autonomous-merge-eligibility")
+      mutation.call(bundle, binding.fetch("runtime"))
+      error = assert_raises(AgentWorkflowsOperation::RunnerError, label) do
+        AgentWorkflowsOperation::Runner.new(target: @target).run!(
+          handle: operation.fetch("operation"),
+          capability: "autonomous-merge-eligibility",
+          arguments: []
+        )
+      end
+      assert_match(/bundle|identity|inode|symlink|unknown|missing/, error.message, label)
+      Find.find(root) do |path|
+        stat = File.lstat(path)
+        File.chmod(stat.directory? ? 0o700 : 0o600, path) unless stat.symlink?
+      end
+      FileUtils.rm_rf(root)
+    end
+  end
+
+  def test_runner_rejects_metadata_that_reassigns_the_registered_executable_role
+    operation = begin_current_operation
+    root, metadata = AgentWorkflowsOperation::State.new(target: @target).load_operation!(
+      operation.fetch("operation")
+    )
+    metadata.fetch("capabilities").fetch("autonomous-merge-eligibility")["executable_role"] =
+      "decision-library"
+    File.write(File.join(root, "operation.json"), JSON.generate(metadata))
+    FileUtils.chmod(0o600, File.join(root, "operation.json"))
+
+    error = assert_raises(AgentWorkflowsOperation::RunnerError) do
+      AgentWorkflowsOperation::Runner.new(target: @target).run!(
+        handle: operation.fetch("operation"),
+        capability: "autonomous-merge-eligibility",
+        arguments: []
+      )
+    end
+    assert_includes error.message, "registry runtime manifest"
   end
 
   def test_gh_binding_comes_only_from_explicit_install_metadata
@@ -1173,12 +1388,18 @@ class AgentWorkflowsOperationTest < Minitest::Test
     Dir.glob(File.join(ROOT, "bin/agent_workflows_operation", "*.rb")).each do |path|
       files["bin/agent_workflows_operation/#{File.basename(path)}"] = File.binread(path)
     end
+    JSON.parse(files.fetch("operation-capabilities.json")).fetch("capabilities").each_value do |capability|
+      capability.fetch("runtime").each_value do |relative|
+        files[relative] ||= File.binread(File.join(ROOT, relative))
+      end
+    end
     files.each do |relative, content|
       path = File.join(@source, relative)
       FileUtils.mkdir_p(File.dirname(path))
       File.binwrite(path, content)
     end
     FileUtils.chmod(0o755, File.join(@source, "skills/pr-batch/bin/pr-merge-submit"))
+    FileUtils.chmod(0o755, File.join(@source, "skills/pr-batch/bin/autonomous-merge-eligibility"))
     %w[
       agent-workflow-seam-doctor
       agent-workflows-delivery-state
@@ -1196,6 +1417,66 @@ class AgentWorkflowsOperationTest < Minitest::Test
     end
   end
 
+  def write_autonomous_fake_gh(path)
+    File.write(path, <<~RUBY)
+      #!#{RbConfig.ruby}
+      require "json"
+
+      objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      request = ARGV.fetch(-1)
+      response = case request
+                 when "repos/example/repo/pulls/1"
+                   {
+                     "head" => { "sha" => objective.fetch("head_sha") },
+                     "base" => { "sha" => objective.fetch("base_sha") },
+                     "updated_at" => "2026-07-25T12:00:00Z",
+                     "changed_files" => objective.fetch("files").length,
+                     "commits" => objective.fetch("commits").length
+                   }
+                 when "repos/example/repo/issues/1/timeline?per_page=100&page=1"
+                   []
+                 when "repos/example/repo/pulls/1/files?per_page=100&page=1"
+                   objective.fetch("files").map do |file|
+                     {
+                       "filename" => file.fetch("path"),
+                       "status" => "modified",
+                       "additions" => file.fetch("additions"),
+                       "deletions" => file.fetch("deletions")
+                     }
+                   end
+                 when "repos/example/repo/pulls/1/commits?per_page=100&page=1"
+                   objective.fetch("commits")
+                 when "repos/example/repo/pulls/1/reviews?per_page=100&page=1"
+                   objective.fetch("reviews")
+                 when "repos/example/repo/issues/1/comments?per_page=100&page=1"
+                   objective.fetch("decision_comments")
+                 else
+                   warn "unexpected GitHub API path: \#{request}"
+                   exit 1
+                 end
+      puts JSON.generate(response)
+    RUBY
+    FileUtils.chmod(0o755, path)
+  end
+
+  def provider_operation_semantic_assessment
+    {
+      "provenance" => "trusted-coordinator",
+      "persistent_data_storage" => false,
+      "infrastructure_delivery" => false,
+      "irreversible_external_effect" => false,
+      "public_compatibility" => false,
+      "security_auth_privacy" => false,
+      "architectural_product_judgment" => false,
+      "unresolved_maintainer_concern" => false,
+      "rollback_assessment" => "code-only-rollback-established",
+      "safe_class" => "none",
+      "safe_classification_complete" => true,
+      "test_change" => "not-applicable",
+      "decision_provenance" => []
+    }
+  end
+
   def install_provider
     reset_native_provider
     FileUtils.mkdir_p(File.join(@target, "bin"))
@@ -1208,11 +1489,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
       File.join(@target, "bin/agent_workflows_operation"),
       preserve: true
     )
-    FileUtils.mkdir_p(File.join(@target, "bin/agent_doctor"))
-    FileUtils.cp(
-      File.join(@source, "bin/agent_doctor/timeout_budget.rb"),
-      File.join(@target, "bin/agent_doctor/timeout_budget.rb")
-    )
+    FileUtils.cp_r(File.join(@source, "bin/agent_doctor"), File.join(@target, "bin/agent_doctor"))
     FileUtils.cp_r(File.join(@source, "workflows"), File.join(@target, "workflows"))
     FileUtils.mkdir_p(File.join(@target, "docs"))
     AgentWorkflowsOperation::Provider::COMPANION_DOC_FILES.each do |relative|
@@ -1287,11 +1564,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
       File.join(target, "bin/agent_workflows_operation"),
       preserve: true
     )
-    FileUtils.mkdir_p(File.join(target, "bin/agent_doctor"))
-    FileUtils.cp(
-      File.join(@source, "bin/agent_doctor/timeout_budget.rb"),
-      File.join(target, "bin/agent_doctor/timeout_budget.rb")
-    )
+    FileUtils.cp_r(File.join(@source, "bin/agent_doctor"), File.join(target, "bin/agent_doctor"))
     FileUtils.cp_r(File.join(@source, "workflows"), File.join(target, "workflows"))
     FileUtils.mkdir_p(File.join(target, "docs"))
     AgentWorkflowsOperation::Provider::COMPANION_DOC_FILES.each do |relative|

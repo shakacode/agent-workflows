@@ -592,7 +592,7 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
+Lane Card: exact model/effort+binding; claim/PR-open/status; holder/branch/phase/URLs/UNKNOWN
 
 Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
 
@@ -610,25 +610,25 @@ Batch QA Lane: <owner/scope|none+rationale>.
 Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
 
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original: trusted ad-hoc prompt; else n/a.
+- Target: PR #N URL | Issue #N URL | Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+  Original: trusted ad-hoc|n/a.
   Goal: one-line outcome.
-  Notes: scope/branch/dependency.
-  Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+  Notes: scope/branch/deps.
+  Done: requested authority final state; PR/no-PR evidence/no-fix rationale.
 
 Execution rules:
 - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- Disjoint owned item/subagent; shared context; serial/UNKNOWN apart.
+- Owned envelope: unlisted/contradiction/ambiguity/scope-risk growth/weaker checks=>stop.
+- Each verifies live GitHub before edits; unverified=>UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-- Apply Batch QA Lane; include QA Evidence.
-- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-- Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
+- Apply QA+evidence.
+- merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval; clean gates; document confidence data in the PR description.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. require assets.skills.pr_walkthrough;large|complex=>full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- Final: canonical closeout; URLs/tests/blocks/next/confidence/UNKNOWN/auth/QA/state.
 ```
 
 ## Common Mistakes

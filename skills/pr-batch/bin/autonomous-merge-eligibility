@@ -22,6 +22,28 @@ end.parse!
 
 @verified_runtime_trust = nil
 
+TRUSTED_GIT_ENV = {
+  "GIT_CONFIG_GLOBAL" => "/dev/null",
+  "GIT_CONFIG_NOSYSTEM" => "1",
+  "GIT_CONFIG_SYSTEM" => "/dev/null",
+  "GIT_NO_REPLACE_OBJECTS" => "1",
+  "GIT_OPTIONAL_LOCKS" => "0",
+  "GIT_TERMINAL_PROMPT" => "0",
+  "LANG" => "C",
+  "LC_ALL" => "C",
+  "PATH" => "/usr/bin:/bin:/usr/sbin:/sbin"
+}.freeze
+
+def trusted_git_capture(git_executable, *arguments, **options)
+  Open3.capture2(
+    TRUSTED_GIT_ENV,
+    git_executable,
+    *arguments,
+    unsetenv_others: true,
+    **options
+  )
+end
+
 def emit_unknown(failure, head_sha: "UNKNOWN", policy_provenance: "UNKNOWN")
   runtime_trust = @verified_runtime_trust
   helper_provenance = runtime_trust&.accepted ? runtime_trust.provenance : "UNKNOWN"
@@ -54,11 +76,29 @@ emit_unknown("--trusted-base is required") unless options[:trusted_base]
 
 repo_root = options.fetch(:repo_root)
 trusted_base = options.fetch(:trusted_base)
-base_sha, base_status = Open3.capture2(
-  "git", "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
+provider_operation_claim = ENV["AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE"]
+if provider_operation_claim
+  unless provider_operation_claim.match?(/\Aprovider-operation:[0-9a-f]{40}:[0-9a-f]{64}\z/)
+    emit_unknown("provider-operation provenance is malformed")
+  end
+  git_executable = ENV["AGENT_WORKFLOWS_GIT_EXECUTABLE"]
+  gh_executable = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
+  {
+    "Git" => git_executable,
+    "GitHub" => gh_executable
+  }.each do |label, path|
+    unless path&.start_with?("/") && File.file?(path) && File.executable?(path)
+      emit_unknown("#{label} executable binding is missing, nonabsolute, or unavailable")
+    end
+  end
+else
+  git_executable = "git"
+end
+base_sha, base_status = trusted_git_capture(
+  git_executable, "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
 )
 emit_unknown("trusted base is unavailable: #{trusted_base}") unless base_status.success?
-trusted_helper_claim = options[:trusted_helper_provenance]
+trusted_helper_claim = provider_operation_claim || options[:trusted_helper_provenance]
 runtime_trust = AutonomousMergeRuntimeTrust.verify(
   repo_root:,
   base_sha: base_sha.strip,
@@ -196,16 +236,16 @@ unless semantic["decision_provenance"].is_a?(Array)
 end
 
 policy_path = ".agents/agent-workflow.yml"
-policy_entry, policy_entry_status = Open3.capture2(
-  "git", "-C", repo_root, "ls-tree", "--name-only", base_sha.strip, "--", policy_path
+policy_entry, policy_entry_status = trusted_git_capture(
+  git_executable, "-C", repo_root, "ls-tree", "--name-only", base_sha.strip, "--", policy_path
 )
 unless policy_entry_status.success?
   emit_unknown("trusted-base policy presence cannot be established",
                head_sha: reported_head_sha, policy_provenance: "git:#{base_sha.strip}")
 end
 if policy_entry.lines.map(&:strip).include?(policy_path)
-  policy_yaml, policy_status = Open3.capture2(
-    "git", "-C", repo_root, "show", "#{base_sha.strip}:#{policy_path}"
+  policy_yaml, policy_status = trusted_git_capture(
+    git_executable, "-C", repo_root, "show", "#{base_sha.strip}:#{policy_path}"
   )
   unless policy_status.success?
     emit_unknown("trusted-base policy cannot be retrieved",
@@ -213,8 +253,8 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
                  policy_provenance: "git:#{base_sha.strip}:#{policy_path}")
   end
   policy = AutonomousMergePolicy.parse(policy_yaml)
-  policy_blob, blob_status = Open3.capture2(
-    "git", "-C", repo_root, "rev-parse", "#{base_sha.strip}:#{policy_path}"
+  policy_blob, blob_status = trusted_git_capture(
+    git_executable, "-C", repo_root, "rev-parse", "#{base_sha.strip}:#{policy_path}"
   )
   policy_provenance = if blob_status.success?
                         "git:#{base_sha.strip}:#{policy_path}@#{policy_blob.strip}"

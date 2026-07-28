@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "digest"
+require "find"
+require "json"
 
 require_relative "errors"
 require_relative "lifecycle_lease"
@@ -68,22 +70,19 @@ module AgentWorkflowsOperation
           raise RunnerError, "provider moved after operation begin: #{e.message}"
         end
 
-        executable = File.join(operation_root, "capabilities", capability)
         recorded = metadata.fetch("capabilities").fetch(capability)
-        verify_executable_identity!(executable, recorded, "capability inode")
-        Tree.verify_path_against_git!(
-          git: store.git,
-          repository: snapshot.repository,
-          revision: snapshot.revision,
-          path: executable,
-          source_relative: recorded.fetch("source"),
-          private_home: File.join(snapshot.root, "home")
-        )
-        verify_executable_identity!(executable, recorded, "canonical executable")
+        bundle = File.join(operation_root, "capabilities", capability)
+        verify_capability_bundle!(bundle, recorded, definition, snapshot)
+        executable_record = recorded.fetch("runtime").fetch(recorded.fetch("executable_role"))
+        executable = File.join(bundle, executable_record.fetch("path"))
         ruby = verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter")
         verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
+        verify_external_executable!(metadata.fetch("tools").fetch("git"), "bound Git executable")
         verify_external_executable!(metadata.fetch("tools").fetch("gh"), "bound gh executable")
-        wait_for_command!(sanitized_environment(metadata), [ruby, "--disable=gems", executable, *arguments])
+        wait_for_command!(
+          sanitized_environment(metadata, capability: recorded, bundle: bundle),
+          [ruby, "--disable=gems", executable, *arguments]
+        )
       end
     rescue KeyError, RegistryError => e
       raise RunnerError, "operation capability binding is invalid: #{e.message}"
@@ -99,8 +98,8 @@ module AgentWorkflowsOperation
       raise RunnerError, "operation capability could not be started: #{e.message}"
     end
 
-    def sanitized_environment(metadata)
-      {
+    def sanitized_environment(metadata, capability: nil, bundle: nil)
+      environment = {
         "RUBYOPT" => nil,
         "RUBYLIB" => nil,
         "BUNDLE_GEMFILE" => nil,
@@ -108,8 +107,107 @@ module AgentWorkflowsOperation
         "BUNDLE_PATH" => nil,
         "GEM_HOME" => nil,
         "GEM_PATH" => nil,
-        "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.fetch("tools").fetch("gh").fetch("path")
+        "PATH" => "/usr/bin:/bin:/usr/sbin:/sbin",
+        "AUTONOMOUS_MERGE_GH" => nil,
+        "AGENT_WORKFLOWS_GIT_EXECUTABLE" => metadata.fetch("tools").fetch("git").fetch("path"),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.fetch("tools").fetch("gh").fetch("path"),
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => nil,
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => nil
       }
+      if capability
+        environment["AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE"] = capability.fetch("provenance")
+        environment["AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST"] = JSON.generate(
+          capability.fetch("runtime").transform_values do |recorded|
+            {
+              "path" => File.join(bundle, recorded.fetch("path")),
+              "source" => recorded.fetch("source"),
+              "sha256" => recorded.fetch("sha256")
+            }
+          end
+        )
+      end
+      environment
+    end
+
+    def verify_capability_bundle!(bundle, binding, definition, snapshot)
+      runtime = binding.fetch("runtime")
+      raise RunnerError, "operation capability runtime must be a nonempty object" unless runtime.is_a?(Hash) && !runtime.empty?
+
+      expected_runtime = definition.runtime
+      actual_runtime = runtime.transform_values { |recorded| recorded.fetch("source") }
+      expected_executable_role = expected_runtime.key(definition.executable)
+      unless actual_runtime == expected_runtime && binding.fetch("executable_role") == expected_executable_role
+        raise RunnerError, "operation capability does not match the registry runtime manifest"
+      end
+
+      root_stat = File.lstat(bundle)
+      unless root_stat.directory? && !root_stat.symlink? && root_stat.uid == Process.uid &&
+             (root_stat.mode & 0o777) == 0o500
+        raise RunnerError, "operation capability bundle root is unsafe"
+      end
+
+      expected = runtime.values.map { |recorded| recorded.fetch("path") }.sort
+      actual = []
+      Find.find(bundle) do |path|
+        next if path == bundle
+
+        relative = path.delete_prefix("#{bundle}/")
+        stat = File.lstat(path)
+        raise RunnerError, "operation capability bundle contains a symlink" if stat.symlink?
+
+        if stat.directory?
+          unless stat.uid == Process.uid && (stat.mode & 0o777) == 0o500
+            raise RunnerError, "operation capability bundle directory is unsafe"
+          end
+        elsif stat.file?
+          actual << relative
+        else
+          raise RunnerError, "operation capability bundle contains an unsupported entry"
+        end
+      end
+      unless actual.sort == expected
+        raise RunnerError, "operation capability bundle contains unknown or missing entries"
+      end
+
+      runtime.each do |role, recorded|
+        path = File.join(bundle, recorded.fetch("path"))
+        expected_mode = role == expected_executable_role ? "0500" : "0400"
+        unless recorded.fetch("path") == recorded.fetch("source") && recorded.fetch("mode") == expected_mode
+          raise RunnerError, "operation capability runtime path or mode differs from the registry"
+        end
+
+        mode = expected_mode == "0500" ? 0o500 : 0o400
+        if mode == 0o500
+          verify_executable_identity!(path, recorded, "capability #{role}")
+        else
+          verify_file_identity!(path, recorded, "capability #{role}")
+        end
+        Tree.verify_path_against_git!(
+          git: store.git,
+          repository: snapshot.repository,
+          revision: snapshot.revision,
+          path: path,
+          source_relative: recorded.fetch("source"),
+          private_home: File.join(snapshot.root, "home")
+        )
+      end
+      digest = runtime_digest(runtime, bundle)
+      expected_provenance = "provider-operation:#{snapshot.revision}:#{digest}"
+      unless binding.fetch("digest") == digest && binding.fetch("provenance") == expected_provenance
+        raise RunnerError, "operation capability provenance does not match its runtime bundle"
+      end
+    rescue SystemCallError, KeyError, StoreError, PathError => e
+      raise RunnerError, "operation capability bundle is invalid: #{e.message}"
+    end
+
+    def runtime_digest(runtime, bundle)
+      digest = Digest::SHA256.new
+      runtime.sort.each do |role, recorded|
+        bytes = File.binread(File.join(bundle, recorded.fetch("path")))
+        digest << [role.bytesize].pack("N") << role
+        digest << [bytes.bytesize].pack("Q>") << bytes
+      end
+      digest.hexdigest
     end
 
     def verify_external_executable!(recorded, label)

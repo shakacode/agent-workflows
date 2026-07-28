@@ -191,12 +191,14 @@ inherited operation state. The resolver:
 6. publishes an opaque operation handle only after the private launcher,
    runtime, capability copies, registry, instruction assets, and provider
    evidence all verify;
-7. binds `gh` only from the explicit absolute `gh_executable` recorded by the
+7. binds Git from a trusted absolute system location and binds `gh` only from
+   the explicit absolute `gh_executable` recorded by the
    trusted managed installation, never from runtime `PATH` or an environment
    override.
 
 The JSON result retains the exact `revision`, operation handle, freshness,
-capabilities, and runner and exposes one read binding:
+capabilities, per-capability provenance, and runner and exposes one read
+binding:
 
 - `assets.root` is the absolute canonical tree already verified for this
   operation. It is informational output, never resolver input.
@@ -220,17 +222,24 @@ The production fetch URL is not configurable. Tests use a test-defined
 resolver subclass and local HTTP transport; neither the CLI nor installed
 runtime exposes a remote override. The capability registry rejects absolute or
 traversing paths, missing dependencies, symlinks where regular files are
-required, and non-executable capability targets. The initial current-only
-mutation is `pr-merge-submit`, invoked as:
+required, and non-executable capability targets. Each capability declares a
+stable role-to-source-path runtime manifest. The operation copies only those
+files while preserving provider-relative paths, uses mode `0500` for the
+executable and `0400` for libraries/data, and publishes
+`provider-operation:<revision>:<role-length-framed-runtime-digest>`. The
+current-provider-only capabilities are the mutating `pr-merge-submit` and the
+read-only `autonomous-merge-eligibility`, invoked as:
 
 ```bash
 "${AGENT_WORKFLOWS_RUNNER[@]}" pr-merge-submit -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility -- ARGS...
 ```
 
 The runner revalidates the operation against its private canonical Git store,
 the active native and companion providers, and the recorded launcher/runtime/
-capability device, inode, size, mode, and content immediately before execution.
-It refuses provider movement after begin. `--degraded` may bind a coherent
+capability bundle source path, device, inode, size, mode, content, exact member
+set, runtime digest, and bound Git/GitHub executable immediately before
+execution. It refuses provider movement after begin. `--degraded` may bind a coherent
 already-stored snapshot for read-only diagnosis, but cannot authorize a
 capability marked `requires_current_provider`.
 

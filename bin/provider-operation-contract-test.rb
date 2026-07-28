@@ -17,6 +17,7 @@ class ProviderOperationContractTest < Minitest::Test
     post_merge_audit
     pr_batch
     pr_monitoring
+    pr_walkthrough
     run_ci
     spec
     tdd
@@ -61,6 +62,55 @@ class ProviderOperationContractTest < Minitest::Test
 
     assert_instance_of Hash, declared
     assert_equal ENTRY_SKILLS, declared.keys.sort
+  end
+
+  def test_registry_declares_the_complete_autonomous_merge_runtime_bundle
+    registry = JSON.parse(read("operation-capabilities.json"))
+    capability = registry.dig("capabilities", "autonomous-merge-eligibility")
+
+    refute_nil capability
+    assert_equal false, capability.fetch("mutation")
+    assert_equal true, capability.fetch("requires_current_provider")
+    assert_equal(
+      {
+        "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+        "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
+        "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+        "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
+        "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+        "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+        "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
+        "calibration-decision" =>
+          "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+      },
+      capability.fetch("runtime")
+    )
+  end
+
+  def test_canonical_workflow_runs_autonomous_merge_only_through_the_bound_runner
+    workflow = read("workflows/pr-processing.md")
+
+    assert_includes workflow, '"${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility'
+    refute_includes workflow, "TRUSTED_RUNTIME_ROOT"
+    refute_includes workflow, "TRUSTED_PR_BATCH_SKILL_DIR"
+    refute_includes workflow, "verified-installed-pack:"
+    refute_includes workflow, "trusted-base materialization"
+    refute_match(%r{git archive.*skills/pr-batch}m, workflow)
+  end
+
+  def test_walkthrough_routes_use_the_bound_named_asset_without_picker_fallback
+    %w[
+      skills/plan-pr-batch/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/pr-monitoring/SKILL.md
+      skills/triage/SKILL.md
+      workflows/pr-processing.md
+    ].each do |path|
+      text = read(path)
+      assert_includes text, "assets.skills.pr_walkthrough", path
+      refute_includes text, "$pr-walkthrough", path
+      refute_match(/pr-walkthrough.*when available/i, text, path)
+    end
   end
 
   def test_registry_covers_actual_outgoing_operation_bound_skill_routes

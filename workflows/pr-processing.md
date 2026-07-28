@@ -29,8 +29,9 @@ Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command seams remai
 authoritative local policy, but are never substitutes for this provider
 snapshot. Registered semantic mutations run only by appending `CAPABILITY --`
 and its arguments to `"${AGENT_WORKFLOWS_RUNNER[@]}"`.
-The initial registry exposes `pr-merge-submit`; an unavailable capability is a
-hard stop, not permission to execute its underlying path.
+The registry exposes `pr-merge-submit` and
+`autonomous-merge-eligibility`; an unavailable capability is a hard stop, not
+permission to execute its underlying path.
 
 Use this workflow when an agent is assigned an issue, an existing PR, a PR review-fix pass, or a multi-PR landing plan. The goal is to reduce review turns, CI churn, and follow-up issue noise by doing more local work before asking GitHub to spend reviewer or runner time.
 
@@ -53,7 +54,7 @@ For post-merge audits after a concurrent batch or before a release candidate, us
 For adversarial pre-merge or post-merge PR review, use returned `assets.skills.adversarial_pr_review` when skills are available. Reusable Codex, Claude, and comparison prompts live in returned `assets.related_workflows.adversarial_pr_review`.
 
 For an interactive human-oriented explanation of a PR, use
-`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
+returned `assets.skills.pr_walkthrough` when skills are available. It presents
 one conceptual change at a time, explains why it exists, and pauses for
 questions before continuing.
 
@@ -1185,7 +1186,7 @@ dispatch; workers copy it unchanged.
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
+Lane Card: exact model/effort+binding; claim/PR-open/status; holder/branch/phase/URLs/UNKNOWN
 
 Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
 
@@ -1203,25 +1204,25 @@ Batch QA Lane: <owner/scope|none+rationale>.
 Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
 
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original: trusted ad-hoc prompt; else n/a.
+- Target: PR #N URL | Issue #N URL | Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+  Original: trusted ad-hoc|n/a.
   Goal: one-line outcome.
-  Notes: scope/branch/dependency.
-  Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+  Notes: scope/branch/deps.
+  Done: requested authority final state; PR/no-PR evidence/no-fix rationale.
 
 Execution rules:
 - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- Disjoint owned item/subagent; shared context; serial/UNKNOWN apart.
+- Owned envelope: unlisted/contradiction/ambiguity/scope-risk growth/weaker checks=>stop.
+- Each verifies live GitHub before edits; unverified=>UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-- Apply Batch QA Lane; include QA Evidence.
-- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-- Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
+- Apply QA+evidence.
+- merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval; clean gates; document confidence data in the PR description.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. require assets.skills.pr_walkthrough;large|complex=>full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- Final: canonical closeout; URLs/tests/blocks/next/confidence/UNKNOWN/auth/QA/state.
 
 ```
 
@@ -1964,7 +1965,7 @@ Goal completion contract:
 - When the overall goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one 15-minute current-thread monitor before handoff and do not create a duplicate. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval by reading returned `assets.skills.pr_walkthrough`; stop with a precise provider-contract failure if that named asset is absent. Use full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
@@ -2659,8 +2660,9 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge
-approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
-contract inline: inspect the complete diff first, group it into conceptual
+approval. Read and use returned `assets.skills.pr_walkthrough`; otherwise stop with a
+provider-contract failure rather than resolving a second provider. Its read-only
+contract requires you to inspect the complete diff first, group it into conceptual
 changes, explain the reason, behavior, tradeoffs, risks, and proof for exactly
 one change at a time, then wait for explicit readiness before continuing.
 
@@ -2689,69 +2691,33 @@ passes. This gate applies only when `merge_authority` is
 `auto_merge_when_gates_pass`; `merge_authority` remains separate from
 eligibility and neither value grants the missing human judgment.
 
-Resolve the trusted current base SHA and fetch it. Execute the read-only
-evaluator from a trusted-base materialization or verified installed Agent Workflows pack.
-Its expected digest must be established independently of the PR. A repo-local
-fallback is usable only after materializing every runtime source from the
-trusted base; never execute evaluator, calibration decision, or library code
-modified by the PR head. Resolve the source-pack or installed `.agents` layout
-at that commit, fail closed if either complete runtime set is absent, and
-materialize it outside the evaluated checkout:
+Resolve the trusted current consumer base SHA and fetch it. Execute the
+read-only evaluator only through this operation's retained
+`AGENT_WORKFLOWS_RUNNER`. The runner verifies the complete evaluator runtime
+bundle against the bound provider revision and supplies its
+`provider-operation:<provider-revision>:<runtime-digest>` provenance. The
+consumer base contributes policy only; never execute evaluator, calibration
+decision, or library code from the consumer checkout or PR head.
 
 ```bash
-set -o pipefail
-TRUSTED_RUNTIME_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TRUSTED_RUNTIME_ROOT"' EXIT
-if git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-eligibility" &&
-   git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy.rb" &&
-   git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
-   git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
-  git archive "${TRUSTED_BASE_SHA}" -- skills/pr-batch \
-    bin/agent_doctor/autonomous_merge_policy.rb \
-    bin/agent_doctor/autonomous_merge_policy_globs.rb \
-    bin/agent_doctor/autonomous_merge_policy_yaml.rb |
-    tar -x -C "${TRUSTED_RUNTIME_ROOT}"
-  TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/skills/pr-batch"
-elif git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-eligibility" &&
-     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy.rb" &&
-     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
-     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
-  git archive "${TRUSTED_BASE_SHA}" -- .agents/skills/pr-batch \
-    .agents/bin/agent_doctor/autonomous_merge_policy.rb \
-    .agents/bin/agent_doctor/autonomous_merge_policy_globs.rb \
-    .agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb |
-    tar -x -C "${TRUSTED_RUNTIME_ROOT}"
-  TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/.agents/skills/pr-batch"
-else
-  echo "UNKNOWN: trusted base lacks a complete autonomous-merge runtime" >&2
-  exit 1
-fi
-```
-
-Then pass the corresponding provenance claim:
-
-```bash
-"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-eligibility" \
+: "${AGENT_WORKFLOWS_RUNNER:?bind the complete runner array from begin --json}"
+"${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility -- \
   --repo-root . \
   --trusted-base "${TRUSTED_BASE_SHA}" \
-  --trusted-helper-provenance "trusted-base:${TRUSTED_BASE_SHA}" \
   --repo "${REPO}" \
   --pr "${PR_NUMBER}" \
   --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}"
 ```
 
-For an independently verified installed pack, use
-`verified-installed-pack:<64-lowercase-sha256>` instead, after resolving
-`PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
-repo-pinned chain. The expected digest is trusted coordinator or installation
-state, not output learned from the helper being evaluated. The evaluator
-mechanically recomputes a length-framed manifest over the executing helper,
+The evaluator ignores inherited provenance overrides. The runner supplies the
+expected provider revision, deterministic role-length-framed runtime digest,
+absolute Git and GitHub executable bindings, and the exact runtime manifest.
+The evaluator mechanically recomputes that manifest over the executing helper,
 decision/evidence/policy/trust libraries (including
-`autonomous_merge_runtime_trust.rb`), and selected calibration decision.
-For `trusted-base:<SHA>`, it instead compares every one of those runtime bytes
-with the claimed commit tree. A missing source or byte mismatch yields
-`UNKNOWN`. The claim flag supplies an expected identity; it cannot create
-trust.
+`autonomous_merge_runtime_trust.rb`), and selected calibration decision. A
+missing role, extra role, path replacement, byte mismatch, changed tool, or
+provider movement fails closed. Legacy provenance modes remain diagnostic-only
+outside the canonical managed workflow.
 
 The trust boundary has both mechanical and procedural parts. Runtime-byte
 matching and live mutation-stable objective collection are mechanically
@@ -2762,9 +2728,9 @@ integer IDs of all `head_ref_force_pushed` events must match exactly. Thus an
 ABA force-push cannot be hidden by returning to the original head within one
 timestamp second, while an ordinary concurrent PR update is caught by
 `updated_at`. Unavailable, malformed, incomplete, duplicate-ID, or changing
-timeline evidence fails closed as `UNKNOWN`. Choosing the trusted base or
-installed-pack digest, inspecting the diff, producing the semantic assessment,
-and proving a human decision plus merge authority remain coordinator procedures
+timeline evidence fails closed as `UNKNOWN`. Choosing the trusted consumer
+base, retaining the provider operation, inspecting the diff, producing the
+semantic assessment, and proving a human decision plus merge authority remain coordinator procedures
 backed by durable evidence.
 The semantic assessment must be an external coordinator-owned file derived
 from the trusted task and inspected diff; a path lexically or physically

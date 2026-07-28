@@ -11,6 +11,7 @@
     "provider_profile",
     "assets",
     "capabilities",
+    "capability_provenance",
     "runner",
     "release"
   ],
@@ -37,6 +38,14 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
       "uniqueItems": true
+    },
+    "capability_provenance": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^provider-operation:[0-9a-f]{40}:[0-9a-f]{64}$"
+      }
     },
     "runner": { "type": "array", "minItems": 1, "items": { "type": "string" } },
     "release": {

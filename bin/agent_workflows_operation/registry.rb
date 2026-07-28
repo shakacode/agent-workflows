@@ -9,6 +9,7 @@ module AgentWorkflowsOperation
   Capability = Data.define(
     :name,
     :executable,
+    :runtime,
     :instruction_dependencies,
     :mutation,
     :requires_current_provider
@@ -78,6 +79,11 @@ module AgentWorkflowsOperation
         raise RegistryError, "capability #{name} must be an object" unless definition.is_a?(Hash)
 
         executable = validate_executable!(definition["executable"], "capabilities.#{name}.executable")
+        runtime = validate_runtime!(definition["runtime"], "capabilities.#{name}.runtime")
+        unless runtime.value?(executable)
+          raise RegistryError, "capability #{name} runtime must include its executable"
+        end
+
         dependencies = definition["instruction_dependencies"]
         unless dependencies.is_a?(Array) && !dependencies.empty?
           raise RegistryError, "capability #{name} must declare instruction dependencies"
@@ -98,11 +104,30 @@ module AgentWorkflowsOperation
         [name, Capability.new(
           name: name,
           executable: executable,
+          runtime: runtime,
           instruction_dependencies: dependencies,
           mutation: mutation,
           requires_current_provider: current
         )]
       end
+    end
+
+    def validate_runtime!(value, label)
+      raise RegistryError, "#{label} must be a nonempty object" unless value.is_a?(Hash) && !value.empty?
+
+      runtime = value.to_h do |role, path|
+        unless role.is_a?(String) && role.match?(/\A[a-z][a-z0-9-]*\z/)
+          raise RegistryError, "#{label} roles must be lowercase identifiers"
+        end
+
+        validate_regular_file!(path, "#{label}.#{role}")
+        [role, path]
+      end
+      if runtime.values.uniq.length != runtime.length
+        raise RegistryError, "#{label} must not assign one source path to multiple roles"
+      end
+
+      runtime
     end
 
     def validate_instruction_file!(relative, label)

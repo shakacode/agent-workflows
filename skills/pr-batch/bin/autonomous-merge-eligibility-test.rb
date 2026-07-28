@@ -14,6 +14,76 @@ FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
 
 class AutonomousMergeEligibilityTest < Minitest::Test
   HEAD_SHA = "a" * 40
+
+  def test_provider_operation_provenance_verifies_the_exact_runtime_manifest
+    Dir.mktmpdir("provider-operation-runtime") do |root|
+      calibration_path = write_calibration(root)
+      sources = AutonomousMergeRuntimeTrust.runtime_sources(calibration_path)
+      digest = AutonomousMergeRuntimeTrust.installed_pack_digest(sources)
+      revision = "b" * 40
+      manifest = sources.transform_values do |source|
+        {
+          "path" => source.fetch(:path),
+          "source" => source.fetch(:tree_paths).first,
+          "sha256" => Digest::SHA256.file(source.fetch(:path)).hexdigest
+        }
+      end
+      claim = "provider-operation:#{revision}:#{digest}"
+
+      with_environment(
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => claim,
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => JSON.generate(manifest),
+        "AGENT_WORKFLOWS_GIT_EXECUTABLE" => File.realpath("/usr/bin/git"),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.realpath("/usr/bin/true")
+      ) do
+        result = AutonomousMergeRuntimeTrust.verify(
+          repo_root: root,
+          base_sha: "c" * 40,
+          claim:,
+          calibration_path:
+        )
+
+        assert result.accepted, result.errors.join("; ")
+        assert_equal claim, result.provenance
+        assert_equal manifest.transform_values { |entry| entry.fetch("source") }, result.manifest
+      end
+    end
+  end
+
+  def test_provider_operation_provenance_rejects_a_missing_or_replaced_role
+    Dir.mktmpdir("provider-operation-runtime") do |root|
+      calibration_path = write_calibration(root)
+      sources = AutonomousMergeRuntimeTrust.runtime_sources(calibration_path)
+      digest = AutonomousMergeRuntimeTrust.installed_pack_digest(sources)
+      manifest = sources.transform_values do |source|
+        {
+          "path" => source.fetch(:path),
+          "source" => source.fetch(:tree_paths).first,
+          "sha256" => Digest::SHA256.file(source.fetch(:path)).hexdigest
+        }
+      end
+      manifest.delete("evidence-library")
+      claim = "provider-operation:#{'b' * 40}:#{digest}"
+
+      with_environment(
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => claim,
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => JSON.generate(manifest),
+        "AGENT_WORKFLOWS_GIT_EXECUTABLE" => File.realpath("/usr/bin/git"),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.realpath("/usr/bin/true")
+      ) do
+        result = AutonomousMergeRuntimeTrust.verify(
+          repo_root: root,
+          base_sha: "c" * 40,
+          claim:,
+          calibration_path:
+        )
+
+        refute result.accepted
+        assert_includes result.errors.join("; "), "manifest roles"
+      end
+    end
+  end
+
   def test_changed_files_value_immediately_below_portable_boundary_is_eligible
     result = evaluate { |base_sha| evidence(base_sha:, files: files(29)) }
 
@@ -1336,5 +1406,15 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       evidence: #{evidence}
       ...
     YAML
+  end
+
+  def with_environment(values)
+    original = values.to_h { |name, _| [name, ENV[name]] }
+    values.each { |name, value| ENV[name] = value }
+    yield
+  ensure
+    original.each do |name, value|
+      value ? ENV[name] = value : ENV.delete(name)
+    end
   end
 end

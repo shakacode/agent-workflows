@@ -275,17 +275,17 @@ precise blocker.
    Each generated item must use this exact contiguous shape:
 
    ```text
-   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-     Original: trusted ad-hoc prompt; else n/a.
+   - Target: PR #N URL | Issue #N URL | Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+     Original: trusted ad-hoc|n/a.
      Goal: one-line outcome.
-     Notes: scope/branch/dependency.
-     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+     Notes: scope/branch/deps.
+     Done: requested authority final state; PR/no-PR evidence/no-fix rationale.
    ```
 
    Each prompt must include this exact base-resolution line:
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
-   ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
+   ``- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. require assets.skills.pr_walkthrough;large|complex=>full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
    GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
    `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
@@ -321,7 +321,7 @@ precise blocker.
    the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
    suffix, `<lane>` from the lane id or owner slug, and `<word>` as a short
    coordinator-chosen session word. Then add the compact
-   `Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN`
+   `Lane Card: exact model/effort+binding; claim/PR-open/status; holder/branch/phase/URLs/UNKNOWN`
    line so workers emit the canonical Lane Card after a successful claim, on
    blocked/cancelled state, and in final handoff. The actor that opens or
    updates the PR emits the PR-open Lane Card when the PR is opened. The

@@ -5,6 +5,45 @@ description: Walk a human through a pull request interactively, one conceptual c
 
 # PR Walkthrough
 
+## Bound Provider Operation
+
+The persisted install metadata field `provider_profile` controls resolution. A
+missing legacy field is `pinned`; any unknown profile is invalid and requires a
+stop.
+
+**Pinned profile:** never fetch or run the current-provider resolver. Do not
+expect `assets.*`. Continue only from Consumer `AGENTS.md`, this already-loaded
+entry, `.agents/agent-workflow.yml`, and `.agents/bin/*` policy/command seams. Do
+not load a shared sibling skill, workflow, or doc, and do not run a registered
+mutation. If the remaining task requires any of those shared assets, stop with
+a precise pinned-provider limitation.
+
+**Managed profile only:** for `managed`, use only a provider operation that the
+current invocation created locally and whose exact `begin --json` result it
+retained. Otherwise identify the active host and use the active host home's
+absolute `bin/agent-workflows-resolve begin` path:
+`${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host codex
+--json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve begin
+--host claude --json`. Never bootstrap through `PATH`, and never trust an
+inherited operation handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.pr_walkthrough`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Reuse a handle only when this current invocation
+created and retained that exact result. Run registered capabilities only
+through the complete returned `runner` command.
+
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
 Build the reviewer's mental model of a PR without making them reconstruct it
 from file-order diffs. Inspect the entire exact-diff change first, then present
 coherent changes interactively. This is an explanation workflow, not a code

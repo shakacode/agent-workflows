@@ -446,10 +446,14 @@ rollback_assessment:
 human_decision_evidence:
 ```
 
-The final verdict is recomputed immediately before merge. The evaluator
-mechanically compares its executing helper, required libraries, and selected
-calibration decision with the claimed trusted-base tree or recomputes the exact
-installed-pack manifest digest. It also collects objective evidence directly
+The final verdict is recomputed immediately before merge. In the canonical
+managed workflow, the provider-operation runner mechanically verifies the
+executing helper, required libraries, selected calibration decision, and bound
+Git and GitHub executables against one provider revision. It publishes a
+deterministic role-length-framed runtime digest as
+`provider-operation:<provider-revision>:<runtime-digest>`. The evaluator
+recomputes that bundle digest while reading repository policy separately from
+the trusted consumer base. It also collects objective evidence directly
 from the named live GitHub PR. Collection reads the initial PR detail, a fully
 paginated issue-timeline watermark, every objective evidence page, the complete
 timeline watermark again, and the final PR detail. It requires exact equality
@@ -463,13 +467,14 @@ semantic assessment files lexically or physically inside the evaluated
 repository likewise yield `UNKNOWN`.
 
 Those mechanical checks do not eliminate procedural trust. The coordinator
-must establish the trusted base or expected installed-pack digest independently
-of the PR, inspect the diff, provide the external semantic assessment, and
+must establish the trusted consumer base independently of the PR, inspect the
+diff, provide the external semantic assessment, and
 durably establish human provenance plus merge authority for any risk decision.
-`--trusted-helper-provenance` states an expected identity; the flag itself does
-not make bytes, an assessment, or a decision trusted. PR-body claims and
-branch-provided assessment files remain untrusted input and cannot establish a
-passing result.
+The runner-supplied provider-operation provenance does not make an assessment
+or decision trusted. Legacy trusted-base and installed-pack provenance remain
+available only for explicit diagnostics and compatibility tests, not canonical
+managed execution. PR-body claims and branch-provided assessment files remain
+untrusted input and cannot establish a passing result.
 
 ### Canonical gate IDs
 
