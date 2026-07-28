@@ -98,7 +98,7 @@ Plan a PR batch
      `merge_authority`, ask for `none`, `ask`, or
      `auto_merge_when_gates_pass`; do not leave this field as an unresolved
      placeholder in the generated prompt. Explain that `ask` automatically
-     walks through the exact-head PR one conceptual change at a time before its
+     walks through the exact-diff PR one conceptual change at a time before its
      one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list.
 
@@ -565,11 +565,11 @@ Execution rules:
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 - One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
 - Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 - Apply Batch QA Lane; include QA Evidence.
 - Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
-- ask=>exact-head $pr-walkthrough stepwise; full large/complex; refresh gates; one merge decision
+- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 - Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
 ```
 

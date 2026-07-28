@@ -92,7 +92,7 @@ facts remain fail-closed and stop before mutation.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
-  automatic interactive exact-head walkthrough before the one final merge
+  automatic interactive exact-diff walkthrough before the one final merge
   decision. Do not silently default it.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
@@ -177,7 +177,7 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 <!-- host-branch: codex-only end -->
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
    it before worker launch from visible authority or ask the user. Explain that
-   `ask` automatically walks through the exact-head PR one conceptual change at
+   `ask` automatically walks through the exact-diff PR one conceptual change at
    a time before the one final merge decision; do not silently default it.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
@@ -504,11 +504,11 @@ Execution rules:
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 - One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
 - Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 - Apply Batch QA Lane; include QA Evidence.
 - Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
-- ask=>exact-head $pr-walkthrough stepwise; full large/complex; refresh gates; one merge decision
+- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 - Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
 
 ```
@@ -762,13 +762,16 @@ Replay the final visible status line from the normalized blocker union: render a
 When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
 target is merged + closed out (or a true blocker / no-PR with evidence), not
 "stopped at a recommendation." When `merge_authority` is `ask` and gates are
-clean, automatically start the exact-head PR walkthrough before approval: use
+clean, automatically start the exact-diff PR walkthrough before approval: use
 `$pr-walkthrough` when available, use full interactive mode for large or complex
 PRs and concise interactive mode for smaller cohesive PRs, and do not repeat a
-walkthrough completed for the same exact head. Honor an explicit request to
-skip it. After it completes or is skipped, refresh the head and ordinary
-readiness, then surface one final merge decision if the exact head remains
-clean and merge is allowed. Walkthrough participation is not merge approval.
+walkthrough completed for the same diff identity. Honor an explicit request to
+skip it. After it completes or is skipped, refresh the diff identity and
+ordinary readiness. If the diff identity changed, invalidate the walkthrough
+and readiness evidence, then restart the walkthrough or stop. If an ordinary
+gate newly fails, stop. Ask one final merge decision only when the same
+explained diff identity remains clean and merge is allowed. Walkthrough
+participation is not merge approval.
 If approval is declined or not granted by handoff, record
 `ready-no-merge-authority` and do not ask again. When `merge_authority` is
 `none`, done is a
