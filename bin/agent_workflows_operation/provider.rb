@@ -163,8 +163,18 @@ module AgentWorkflowsOperation
         verify_native_tree!(native_root)
         verify_codex_clean!(native_root) if host == "codex"
         verify_companion_files!
-      elsif mode == "copy"
-        verify_companion_files!
+      else
+        if mode == "copy"
+          verify_companion_files!
+          verify_flat_skill_copies!
+        else
+          verify_flat_symlink_surface!(metadata)
+        end
+        native = native_state!
+        unless native["state"] == "inactive"
+          raise ProviderError,
+                "PINNED_PROVIDER_MISMATCH: flat delivery requires the native provider to be inactive"
+        end
       end
 
       {
@@ -229,8 +239,10 @@ module AgentWorkflowsOperation
 
       delivery_state = File.join(target, "bin/agent-workflows-delivery-state")
       timeout_budget = File.join(target, "bin/agent_doctor/timeout_budget.rb")
-      verify_companion_file!("bin/agent-workflows-delivery-state")
-      verify_companion_file!("bin/agent_doctor/timeout_budget.rb")
+      unless @verified_symlink_surface
+        verify_companion_file!("bin/agent-workflows-delivery-state")
+        verify_companion_file!("bin/agent_doctor/timeout_budget.rb")
+      end
       raise ProviderError, "verified delivery-state dependency disappeared" unless File.file?(timeout_budget)
 
       load delivery_state
@@ -301,6 +313,57 @@ module AgentWorkflowsOperation
       (managed + COMPANION_BIN_FILES + COMPANION_DOC_FILES + ["LICENSE"]).uniq.each do |relative|
         verify_companion_file!(relative)
       end
+    end
+
+    def verify_flat_skill_copies!
+      skill_names = snapshot_manifest.keys.filter_map do |relative|
+        match = relative.match(%r{\Askills/([^/]+)/})
+        match[1] if match
+      end.uniq
+      skill_names.each do |name|
+        prefix = "skills/#{name}/"
+        expected = snapshot_manifest.each_with_object({}) do |(relative, entry), result|
+          result[relative.delete_prefix(prefix)] = entry if relative.start_with?(prefix)
+        end
+        actual = Tree.filesystem_entries(File.join(target, "skills", name), ignore_git: false)
+        unless actual == expected
+          raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat skill copy differs from receipt: #{name}"
+        end
+      end
+    rescue StoreError => e
+      raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat skill copies are unavailable: #{e.message}"
+    end
+
+    def verify_flat_symlink_surface!(metadata)
+      source = metadata["source"]
+      unless source.is_a?(String) && source.start_with?("/")
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: symlink install source is invalid"
+      end
+
+      links = COMPANION_BIN_FILES + [
+        "bin/agent_doctor",
+        "bin/agent_workflows_operation",
+        "workflows",
+        "LICENSE"
+      ] + COMPANION_DOC_FILES
+      links.concat(snapshot_manifest.keys.grep(%r{\Adocs/solutions/}))
+      skill_names = snapshot_manifest.keys.filter_map do |relative|
+        match = relative.match(%r{\Askills/([^/]+)/})
+        match[1] if match
+      end.uniq
+      skill_names.each do |name|
+        links << "skills/#{name}"
+      end
+      links.uniq.each do |relative|
+        installed = File.join(target, relative)
+        expected = File.join(source, relative)
+        unless File.symlink?(installed) && File.expand_path(File.readlink(installed), File.dirname(installed)) == expected
+          raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat link differs from receipt: #{relative}"
+        end
+      end
+      @verified_symlink_surface = true
+    rescue SystemCallError => e
+      raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat skill links are unavailable: #{e.message}"
     end
 
     def verify_companion_file!(relative)

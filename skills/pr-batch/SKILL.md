@@ -34,7 +34,10 @@ it requires a current provider, require `provider_profile: managed` and
 Bind `PR_BATCH_SKILL_DIR` once to the parent of `assets.skills.pr_batch`, set
 `AGENT_WORKFLOWS_OPERATION` from the retained operation value, and bind
 `AGENT_WORKFLOWS_RUNNER` as a shell array containing every returned `runner`
-element in order. Require `freshness: current` before any mutation. The model
+element in order. Require `provider_profile: managed` and `freshness: current`
+only before invoking a registered capability whose registry entry requires the
+current provider. Ordinary repository mutations remain governed by repository
+and user authority. The model
 must actually read the returned instructions; machine verification cannot prove
 that consumption.
 

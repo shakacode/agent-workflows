@@ -84,6 +84,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
       metadata["mode"] = "copy"
       metadata.delete("gh_executable")
       write_metadata(metadata)
+      prepare_pinned_flat_install
 
       resolver = fixture_resolver
       resolver.store.import_local!(@source, @revision)
@@ -108,6 +109,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     metadata["mode"] = "copy"
     metadata.delete("gh_executable")
     write_metadata(metadata)
+    prepare_pinned_flat_install
     resolver = fixture_resolver
     resolver.define_singleton_method(:fetch_current_store!) { raise "pinned begin must not fetch" }
 
@@ -118,6 +120,54 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_empty operation_directories
   end
 
+  def test_pinned_flat_copy_rejects_skill_tampering_and_later_native_activation
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "copy"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    prepare_pinned_flat_install
+    resolver = fixture_resolver
+    resolver.store.import_local!(@source, @revision)
+
+    skill = File.join(@target, "skills/pr-batch/SKILL.md")
+    File.write(skill, "tampered\n")
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { resolver.begin! }
+    assert_includes error.message, "PINNED_PROVIDER_MISMATCH"
+
+    prepare_pinned_flat_install
+    File.write(File.join(@target, "skills/pr-batch/EXTRA"), "unexpected\n")
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { resolver.begin! }
+    assert_includes error.message, "installed flat skill copy differs"
+
+    prepare_pinned_flat_install
+    reset_native_provider
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { resolver.begin! }
+    assert_includes error.message, "native provider to be inactive"
+  end
+
+  def test_pinned_flat_symlink_rejects_a_skill_link_that_moved_from_the_receipt_source
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "symlink"
+    metadata["source"] = @source
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    prepare_pinned_flat_install(mode: "symlink")
+    resolver = fixture_resolver
+    resolver.store.import_local!(@source, @revision)
+    assert_equal "pinned", resolver.begin!.fetch("freshness")
+
+    moved = File.join(@tmp, "moved-skill")
+    FileUtils.mkdir_p(moved)
+    FileUtils.rm(File.join(@target, "skills/pr-batch"))
+    File.symlink(moved, File.join(@target, "skills/pr-batch"))
+    error = assert_raises(AgentWorkflowsOperation::ProviderError) { resolver.begin! }
+    assert_includes error.message, "installed flat link differs"
+  end
+
   def test_corrupt_pinned_snapshot_fails_with_reinstall_guidance_and_local_import_repairs_it
     metadata = read_metadata
     metadata["provider_profile"] = "pinned"
@@ -125,6 +175,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     metadata["mode"] = "copy"
     metadata.delete("gh_executable")
     write_metadata(metadata)
+    prepare_pinned_flat_install
     resolver = fixture_resolver
     snapshot = resolver.store.import_local!(@source, @revision)
     corrupted = File.join(snapshot.tree, "skills/pr-batch/SKILL.md")
@@ -148,6 +199,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     metadata["mode"] = "copy"
     metadata.delete("gh_executable")
     write_metadata(metadata)
+    prepare_pinned_flat_install
     resolver = fixture_resolver
     resolver.store.import_local!(@source, @revision)
     operation = resolver.begin!
@@ -194,6 +246,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     metadata["mode"] = "copy"
     metadata.delete("gh_executable")
     write_metadata(metadata)
+    prepare_pinned_flat_install
     resolver = fixture_resolver
     resolver.store.import_local!(@source, @revision)
     operation = resolver.begin!
@@ -713,6 +766,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     metadata["mode"] = "copy"
     metadata.delete("gh_executable")
     write_metadata(metadata)
+    prepare_pinned_flat_install
     pinned_resolver = fixture_resolver
     pinned_resolver.store.import_local!(@source, @revision)
     pinned = pinned_resolver.begin!
@@ -883,11 +937,18 @@ class AgentWorkflowsOperationTest < Minitest::Test
   def test_store_publication_verifies_a_concurrent_winner
     original_rename = File.method(:rename)
     expected_store = File.join(state_root, "store", @revision)
+    winner_target = File.join(@tmp, "winner-target")
+    FileUtils.mkdir_p(winner_target)
+    FileUtils.chmod(0o700, winner_target)
+    winner_state = AgentWorkflowsOperation::State.new(target: winner_target)
+    winner = AgentWorkflowsOperation::Store.new(state_root: winner_state.root).import_local!(@source, @revision)
     raced = false
+    losing_stage = nil
     concurrent_rename = lambda do |source, destination|
       if source.include?("/quarantine/") && destination == expected_store && !raced
         raced = true
-        original_rename.call(source, destination)
+        losing_stage = source
+        original_rename.call(winner.root, destination)
         raise Errno::EEXIST, destination
       end
 
@@ -896,6 +957,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
 
     operation = stub_singleton_method(File, :rename, concurrent_rename) { begin_current_operation }
     assert raced
+    refute_path_exists losing_stage
     assert_equal @revision, operation.fetch("revision")
     assert_equal [File.join(@target, "bin/agent-workflows-run"), "--operation", operation.fetch("operation")],
                  operation.fetch("runner").last(3)
@@ -1409,6 +1471,36 @@ class AgentWorkflowsOperationTest < Minitest::Test
   def fixture_resolver
     TestResolver.new(host: "codex", target: @target, fixture_url: @fixture_url).tap do |resolver|
       resolver.cleanup_probe = nil
+    end
+  end
+
+  def prepare_pinned_flat_install(mode: "copy")
+    FileUtils.rm_rf(native_provider_root)
+    FileUtils.rm_f(File.join(@target, "config.toml"))
+    FileUtils.rm_rf(File.join(@target, "skills"))
+    FileUtils.mkdir_p(File.join(@target, "skills"))
+    Dir.glob(File.join(@source, "skills", "*")).each do |skill|
+      destination = File.join(@target, "skills", File.basename(skill))
+      if mode == "copy"
+        FileUtils.cp_r(skill, destination, preserve: true)
+      else
+        File.symlink(skill, destination)
+      end
+    end
+    return unless mode == "symlink"
+
+    links = AgentWorkflowsOperation::Provider::COMPANION_BIN_FILES + [
+      "bin/agent_doctor",
+      "bin/agent_workflows_operation",
+      "workflows",
+      "LICENSE"
+    ] + AgentWorkflowsOperation::Provider::COMPANION_DOC_FILES
+    links.concat(Dir.glob(File.join(@source, "docs/solutions/*")).map { |path| path.delete_prefix("#{@source}/") })
+    links.each do |relative|
+      destination = File.join(@target, relative)
+      FileUtils.rm_rf(destination)
+      FileUtils.mkdir_p(File.dirname(destination))
+      File.symlink(File.join(@source, relative), destination)
     end
   end
 

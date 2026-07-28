@@ -14,6 +14,7 @@ module AgentWorkflowsOperation
   OperationReference = Data.define(:handle, :revision, :root)
 
   class Lifecycle
+    RECEIPT_REVISION = Object.new.freeze
     MAX_LIVE_OPERATIONS = 32
     MAX_RETAINED_REVISIONS = 8
 
@@ -70,8 +71,8 @@ module AgentWorkflowsOperation
       raise ambiguous!(e)
     end
 
-    def gc!(additional_protected: [])
-      inventory = inventory!
+    def gc!(additional_protected: [], installed_revision: RECEIPT_REVISION)
+      inventory = inventory!(installed_revision:)
       protected = inventory.fetch(:operations).map(&:revision)
       protected << inventory.fetch(:installed_revision) if inventory.fetch(:installed_revision)
       protected.concat(additional_protected)
@@ -86,7 +87,7 @@ module AgentWorkflowsOperation
       debris_candidates = debris_candidates!
       store_candidates.each { |path, identity| SecurePaths.cleanup_owned_directory!(path, identity) }
       debris_candidates.each { |path, identity| SecurePaths.cleanup_owned_directory!(path, identity) }
-      inventory!
+      inventory!(installed_revision:)
     rescue PathError, RunnerError, StoreError, ProviderError, CleanupError, LifecycleError => e
       raise ambiguous!(e)
     end
@@ -116,10 +117,10 @@ module AgentWorkflowsOperation
             "live handles: #{handles.join(',')}; release named handles only after final shared use"
     end
 
-    def inventory!
+    def inventory!(installed_revision: RECEIPT_REVISION)
       operations = scan_operations!
       stores = scan_stores!
-      installed_revision = installed_revision!
+      installed_revision = installed_revision! if installed_revision.equal?(RECEIPT_REVISION)
       missing = operations.map(&:revision).uniq - stores.keys
       unless missing.empty?
         raise LifecycleError, "operation references missing retained revisions: #{missing.sort.join(',')}"

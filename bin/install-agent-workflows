@@ -232,10 +232,38 @@ seed_pinned_snapshot() {
   fi
 
   "${lifecycle_ruby[@]}" -I"$repo_root/bin" \
-    -ragent_workflows_operation/state -ragent_workflows_operation/store -e '
+    -ragent_workflows_operation/lifecycle -e '
       target, source, revision = ARGV
       state = AgentWorkflowsOperation::State.new(target: target)
-      AgentWorkflowsOperation::Store.new(state_root: state.root).import_local!(source, revision)
+      store = AgentWorkflowsOperation::Store.new(state_root: state.root)
+      destination = File.join(state.root, "store", revision)
+      candidate_preexisted = File.exist?(destination) || File.symlink?(destination)
+      store.import_local!(source, revision)
+      lifecycle = AgentWorkflowsOperation::Lifecycle.new(host: ENV.fetch("AGENT_WORKFLOWS_INSTALL_HOST"),
+                                                         target: target, state: state, store: store)
+      begin
+        metadata = File.join(target, ".agent-workflows-install.json")
+        installed_revision = if File.file?(metadata) && !File.symlink?(metadata)
+                               JSON.parse(File.binread(metadata))["source_revision"]
+                             end
+        installed_revision = nil unless installed_revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+        inventory = lifecycle.gc!(
+          additional_protected: [revision],
+          installed_revision: installed_revision
+        )
+        lifecycle.enforce_operation_capacity!(inventory)
+        lifecycle.enforce_revision_capacity!(inventory, revision)
+      rescue AgentWorkflowsOperation::CapacityError
+        referenced = inventory && (
+          inventory.fetch(:installed_revision) == revision ||
+          inventory.fetch(:operations).any? { |operation| operation.revision == revision }
+        )
+        unless candidate_preexisted || referenced
+          identity = AgentWorkflowsOperation::SecurePaths.owned_identity(destination)
+          AgentWorkflowsOperation::SecurePaths.cleanup_owned_directory!(destination, identity)
+        end
+        raise
+      end
     ' "$target" "$repo_root" "$pinned_source_revision"
   install_content_root="$target/.agent-workflows-operation-state/store/$pinned_source_revision/tree"
 }
@@ -774,7 +802,7 @@ if [[ "$mode" = "copy" ]]; then
   ensure_trusted_directory "$target/bin/agent_workflows_operation"
 fi
 if [[ "$provider_profile" = "pinned" ]]; then
-  seed_pinned_snapshot
+  AGENT_WORKFLOWS_INSTALL_HOST="$host" seed_pinned_snapshot
 fi
 prepare_metadata
 

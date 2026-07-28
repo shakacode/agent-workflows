@@ -119,7 +119,10 @@ legacy installs default to `pinned`; a missing legacy field is interpreted as
 current-provider mutations. During installation, the installer imports the
 source worktree's exact committed `HEAD` into the private per-SHA Store and
 verifies the archived tree against the imported Git objects before committing
-the receipt. Uncommitted source changes are deliberately excluded. A pinned
+the receipt. The installer runs reference-aware Store GC and admits that
+candidate under the retained-revision limit before committing metadata; a
+capacity refusal removes only a newly imported, unreferenced candidate and
+preserves the prior receipt. Uncommitted source changes are deliberately excluded. A pinned
 `begin` opens only that receipt revision, returns `freshness: pinned`, and
 supplies the same immutable named assets and lifecycle handle as managed
 operations without requiring `gh` or network access. Missing or corrupt legacy
@@ -161,9 +164,12 @@ and registered capability launcher. Its `runner` value is a complete argv
 prefix, including the trusted absolute environment sanitizer and Ruby
 interpreter. Preserve every element in order and append only
 `CAPABILITY -- ARGS`; do not execute only the installed runner-script element,
-resolve any prefix through `PATH`, or run a snapshot executable directly. A pinned or degraded begin is read-only and cannot authorize a capability
-marked `requires_current_provider`. The outer installed runner checks that
-condition before starting the private launcher or capability child.
+resolve any prefix through `PATH`, or run a snapshot executable directly. A
+pinned or degraded begin cannot authorize a registered capability marked
+`requires_current_provider`. The outer installed runner checks that condition
+before starting the private launcher or capability child. Ordinary repository
+mutations remain governed by repository policy and user authority rather than
+provider freshness.
 
 If alignment fails, follow the complete host-specific update/reinstall/reload
 action printed by the resolver. A provider update in a running session always

@@ -247,6 +247,126 @@ test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot() {
   done
 }
 
+test_pinned_install_refuses_capacity_without_changing_the_receipt() {
+  local tmp source target installed operation handle operation_root label revision candidate output status
+  local index new_handle
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/initial.out"
+  installed="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  handle="$(ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("operation")' <<<"$operation")"
+  operation_root="$target/.agent-workflows-operation-state/operations/$handle"
+
+  for label in b c d e f g h; do
+    printf '%s\n' "$label" >"$source/VERSION"
+    git -C "$source" add VERSION
+    git -C "$source" commit --quiet -m "revision $label"
+    revision="$(git -C "$source" rev-parse HEAD)"
+    ruby -I"$source/bin" -ragent_workflows_operation/state -ragent_workflows_operation/store -e '
+      target, source, revision = ARGV
+      state = AgentWorkflowsOperation::State.new(target: target)
+      AgentWorkflowsOperation::Store.new(state_root: state.root).import_local!(source, revision)
+    ' "$target" "$source" "$revision"
+    new_handle="$(printf '%s' "$label" | sha256sum | cut -d' ' -f1)"
+    cp -a "$operation_root" "$target/.agent-workflows-operation-state/operations/$new_handle"
+    rm "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json"
+    ruby -rjson -rdigest -e '
+      source, destination, handle, revision = ARGV
+      payload = JSON.parse(File.read(source))
+      payload["operation"] = handle
+      payload["revision"] = revision
+      root = File.dirname(destination)
+      refresh = lambda do |recorded, path|
+        stat = File.stat(path)
+        recorded.update("device" => stat.dev, "inode" => stat.ino, "size" => stat.size,
+                        "sha256" => Digest::SHA256.file(path).hexdigest)
+      end
+      payload.fetch("runtime").each { |name, recorded| refresh.call(recorded, File.join(root, "runtime", name)) }
+      payload.fetch("capabilities").each do |name, binding|
+        binding.fetch("runtime").each_value do |recorded|
+          refresh.call(recorded, File.join(root, "capabilities", name, recorded.fetch("path")))
+        end
+      end
+      refresh.call(payload.fetch("launcher"), File.join(root, "launcher"))
+      File.write(destination, JSON.pretty_generate(payload) + "\n")
+      File.chmod(0o600, destination)
+    ' "$operation_root/operation.json" \
+      "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json" \
+      "$new_handle" "$revision"
+  done
+
+  printf 'i\n' >"$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "revision i"
+  candidate="$(git -C "$source" rev-parse HEAD)"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "pinned install admitted a ninth protected revision"
+  assert_contains "$output" "STATE_CAPACITY_REACHED"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")" = "$installed" ]] ||
+    fail "capacity refusal changed the installed receipt"
+  [[ ! -e "$target/.agent-workflows-operation-state/store/$candidate" ]] ||
+    fail "capacity refusal retained its unreferenced candidate"
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("revision")' <<<"$operation")" = "$installed" ]] ||
+    fail "capacity refusal made the prior receipt unusable"
+
+  for index in $(seq 1 23); do
+    new_handle="$(printf 'operation-%s' "$index" | sha256sum | cut -d' ' -f1)"
+    cp -a "$operation_root" "$target/.agent-workflows-operation-state/operations/$new_handle"
+    rm "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json"
+    ruby -rjson -rdigest -e '
+      source, destination, handle = ARGV
+      payload = JSON.parse(File.read(source))
+      payload["operation"] = handle
+      root = File.dirname(destination)
+      refresh = lambda do |recorded, path|
+        stat = File.stat(path)
+        recorded.update("device" => stat.dev, "inode" => stat.ino, "size" => stat.size,
+                        "sha256" => Digest::SHA256.file(path).hexdigest)
+      end
+      payload.fetch("runtime").each { |name, recorded| refresh.call(recorded, File.join(root, "runtime", name)) }
+      payload.fetch("capabilities").each do |name, binding|
+        binding.fetch("runtime").each_value do |recorded|
+          refresh.call(recorded, File.join(root, "capabilities", name, recorded.fetch("path")))
+        end
+      end
+      refresh.call(payload.fetch("launcher"), File.join(root, "launcher"))
+      File.write(destination, JSON.pretty_generate(payload) + "\n")
+      File.chmod(0o600, destination)
+    ' "$operation_root/operation.json" \
+      "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json" \
+      "$new_handle"
+  done
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "pinned install admitted a candidate with 32 live operations"
+  assert_contains "$output" "32/32 live operations"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")" = "$installed" ]] ||
+    fail "operation-capacity refusal changed the installed receipt"
+  [[ ! -e "$target/.agent-workflows-operation-state/store/$candidate" ]] ||
+    fail "operation-capacity refusal retained its unreferenced candidate"
+
+  "$target/bin/agent-workflows-resolve" release --host codex --target "$target" \
+    --operation "$new_handle" --json >/dev/null
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("revision")' <<<"$operation")" = "$installed" ]] ||
+    fail "operation-capacity refusal made the prior receipt unusable after a named release"
+}
+
 test_copy_mode_refuses_unsafe_bootstrap_directories() {
   local tmp target output status unsafe
 
@@ -2248,6 +2368,7 @@ main() {
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
     test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot
+    test_pinned_install_refuses_capacity_without_changing_the_receipt
     test_copy_mode_refuses_unsafe_bootstrap_directories
     test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
     test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
