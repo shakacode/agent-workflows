@@ -789,12 +789,14 @@ class PrCiReadinessCliTest < Minitest::Test
     head = "a" * 40
     action_runs = [
       {
-        "id" => 100, "name" => "Dynamic CI", "head_sha" => head,
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "Dynamic CI", "head_sha" => head,
         "status" => "completed", "conclusion" => "success",
         "actor" => { "login" => "octocat" }, "html_url" => "https://example/run/100"
       },
       {
-        "id" => 101, "name" => "Dependabot CI", "head_sha" => head,
+        "id" => 101, "workflow_id" => 11, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "Dependabot CI", "head_sha" => head,
         "status" => "completed", "conclusion" => "success",
         "actor" => { "login" => "dependabot[bot]" }, "html_url" => "https://example/run/101"
       }
@@ -863,6 +865,140 @@ class PrCiReadinessCliTest < Minitest::Test
         refute_nil scope.fetch("checked_at")
       end
     end
+  end
+
+  def test_exact_head_actions_keep_only_current_run_per_workflow_and_event
+    head = "a" * 40
+    action_runs = [
+      {
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "cancelled"
+      },
+      {
+        "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "cancelled"
+      },
+      {
+        "id" => 102, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "cancelled"
+      },
+      {
+        "id" => 103, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "success"
+      },
+      {
+        "id" => 104, "workflow_id" => 10, "event" => "workflow_dispatch",
+        "run_number" => 3, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "success"
+      },
+      {
+        "id" => 105, "workflow_id" => 11, "event" => "pull_request",
+        "run_number" => 2, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "success"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      id = run.fetch("id")
+      [
+        id.to_s,
+        if id < 103
+          { run:, jobs: [], jobs_error: true }
+        else
+          {
+            run:,
+            jobs: [{
+              "id" => id * 10, "name" => "unit", "status" => "completed",
+              "conclusion" => "success"
+            }]
+          }
+        end
+      ]
+    end
+
+    results = [action_runs, action_runs.reverse].map do |ordered_runs|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        exact_actions: ordered_runs,
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        [
+          data.fetch("verdict"),
+          data.dig("scopes", "github_actions", "state"),
+          data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+        ]
+      end
+    end
+
+    assert_equal(
+      Array.new(2) { ["READY", "READY", [103, 1030, 104, 1040, 105, 1050]] },
+      results
+    )
+  end
+
+  def test_exact_head_actions_fail_closed_for_missing_or_malformed_run_identity
+    head = "a" * 40
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "status" => "completed", "conclusion" => "success"
+    }
+    missing = ->(key) { valid_run.reject { |candidate, _value| candidate == key } }
+    changed = ->(key, value) { valid_run.merge(key => value) }
+    invalid_runs = {
+      "missing workflow_id" => missing.call("workflow_id"),
+      "non-integer workflow_id" => changed.call("workflow_id", "20"),
+      "non-positive workflow_id" => changed.call("workflow_id", 0),
+      "missing event" => missing.call("event"),
+      "non-string event" => changed.call("event", 123),
+      "blank event" => changed.call("event", "  "),
+      "missing run_number" => missing.call("run_number"),
+      "non-integer run_number" => changed.call("run_number", "4"),
+      "non-positive run_number" => changed.call("run_number", 0),
+      "missing run_attempt" => missing.call("run_attempt"),
+      "non-integer run_attempt" => changed.call("run_attempt", "1"),
+      "non-positive run_attempt" => changed.call("run_attempt", 0),
+      "missing id" => missing.call("id"),
+      "non-integer id" => changed.call("id", "200"),
+      "non-positive id" => changed.call("id", 0),
+      "missing head_sha" => missing.call("head_sha"),
+      "wrong head_sha" => changed.call("head_sha", "b" * 40)
+    }
+
+    accepted_invalid_runs = invalid_runs.filter_map do |label, run|
+      run_id = run["id"]
+      runs =
+        if run_id
+          { run_id.to_s => { run:, jobs: [] } }
+        else
+          {}
+        end
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        exact_actions: [run],
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_invalid_runs
   end
 
   def test_head_movement_marks_every_evidence_scope_incomplete
@@ -1020,14 +1156,16 @@ class PrCiReadinessCliTest < Minitest::Test
       full_json: "[]",
       pr_head: head,
       exact_actions: [{
-        "id" => 100, "name" => "CI", "head_sha" => head,
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
         "status" => "completed", "conclusion" => "success",
         "actor" => { "login" => "octocat" }
       }],
       runs: {
         "100" => {
           run: {
-            "id" => 100, "name" => "CI", "head_sha" => head,
+            "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+            "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
             "status" => "completed", "conclusion" => "success"
           },
           jobs: []
@@ -1049,7 +1187,8 @@ class PrCiReadinessCliTest < Minitest::Test
   def test_partial_exact_head_actions_jobs_are_unknown_not_complete
     head = "a" * 40
     action_run = {
-      "id" => 100, "name" => "CI", "head_sha" => head,
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
       "status" => "completed", "conclusion" => "success",
       "actor" => { "login" => "octocat" }
     }

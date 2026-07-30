@@ -600,9 +600,14 @@ module PrCiReadiness
         "repos/#{repo}/actions/runs?head_sha=#{head_sha}&per_page=100&page=%<page>s",
         "workflow_runs"
       )
+      runs.each { |run| validate_actions_run_identity!(run, head_sha) }
       rows = []
-      runs.each do |run|
-        ensure_exact_head!(run, head_sha, "Actions run")
+      current_runs = runs.group_by { |run| [run["workflow_id"], run["event"]] }
+      current_runs = current_runs.values.map do |group|
+        group.max_by { |run| [run["run_number"], run["run_attempt"], run["id"]] }
+      end
+      current_runs.sort_by! { |run| [run["workflow_id"], run["event"]] }
+      current_runs.each do |run|
         dependabot = dependabot_attributed?(run)
         rows << normalize_actions_row(run, "run", dependabot:)
         fetch_actions_jobs(repo, run.fetch("id")).each do |job|
@@ -701,6 +706,23 @@ module PrCiReadiness
         page += 1
       end
       rows
+    end
+
+    def validate_actions_run_identity!(run, head_sha)
+      raise Error, "Actions run was not an object" unless run.is_a?(Hash)
+
+      %w[id workflow_id run_number run_attempt].each do |field|
+        value = run[field]
+        unless value.is_a?(Integer) && value.positive?
+          raise Error, "Actions run #{field} was not a positive integer"
+        end
+      end
+      event = run["event"]
+      unless event.is_a?(String) && !event.strip.empty?
+        raise Error, "Actions run event was not a nonblank string"
+      end
+
+      ensure_exact_head!(run, head_sha, "Actions run")
     end
 
     def ensure_exact_head!(row, head_sha, context, sha_key: "head_sha")
