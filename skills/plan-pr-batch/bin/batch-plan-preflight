@@ -144,7 +144,9 @@ module BatchPlanPreflight
                           lanes,
                           input["plan"]["serialization_groups"],
                           input["file_touch_map"],
-                          input["stage_dependency_plan"]
+                          input["stage_dependency_plan"],
+                          input["stage_dependency_gate"],
+                          completed_lane_ids
                         ))
       if changed_surfaces_valid
         violations.concat(validate_caps(
@@ -441,10 +443,11 @@ module BatchPlanPreflight
     return false unless nonempty_identity?(map["repo"]) && map["repo"].match?(%r{\A[^/]+/[^/]+\z})
     return false unless map["changed_files"].is_a?(Integer) && map["changed_files"] >= 0
     return false unless map["paths"].is_a?(Array) && map["paths"].uniq.length == map["paths"].length &&
-                        map["paths"].all? { |path| nonempty_identity?(path) }
+                        map["paths"].all? { |path| canonical_repository_relative_path?(path) }
     return false unless map["renames"].is_a?(Array) && map["renames"].all? do |rename|
       rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
-      nonempty_identity?(rename["old"]) && nonempty_identity?(rename["new"])
+      canonical_repository_relative_path?(rename["old"]) &&
+      canonical_repository_relative_path?(rename["new"])
     end
 
     map["source"].is_a?(String) && !map["source"].strip.empty?
@@ -458,14 +461,24 @@ module BatchPlanPreflight
     return false unless durable_evidence_ref?(map["evidence_ref"], map["source_kind"])
     return false unless map["paths"].is_a?(Array) && !map["paths"].empty? &&
                         map["paths"].uniq.length == map["paths"].length &&
-                        map["paths"].all? { |path| nonempty_identity?(path) }
+                        map["paths"].all? { |path| canonical_repository_relative_path?(path) }
     return false unless map["renames"].is_a?(Array) && map["renames"].all? do |rename|
       rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
-      nonempty_identity?(rename["old"]) && nonempty_identity?(rename["new"]) &&
+      canonical_repository_relative_path?(rename["old"]) &&
+      canonical_repository_relative_path?(rename["new"]) &&
       map["paths"].include?(rename["old"]) && map["paths"].include?(rename["new"])
     end
 
     true
+  end
+
+  def canonical_repository_relative_path?(value)
+    return false unless nonempty_identity?(value)
+    return false if value.include?("\0") || value.include?("\\")
+    return false if value.start_with?("/") || value.end_with?("/") || value.include?("//")
+    return false if value.match?(/\A[A-Za-z]:/)
+
+    value.split("/").none? { |component| %w[. ..].include?(component) }
   end
 
   def durable_evidence_ref?(value, source_kind)
@@ -577,16 +590,25 @@ module BatchPlanPreflight
       permissions.values.all? { |value| [true, false].include?(value) }
   end
 
-  def validate_collisions(lanes, groups, maps, dependency_plan)
+  def validate_collisions(lanes, groups, maps, dependency_plan, gate, completed_lane_ids)
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
     lane_ids = lanes_by_id.keys.sort
+    gate_lanes = Array(gate.is_a?(Hash) ? gate["lanes"] : nil).filter_map do |lane|
+      [lane["id"], lane] if lane.is_a?(Hash)
+    end.to_h
     collisions = []
     lane_ids.combination(2) do |left_id, right_id|
       collision_paths = colliding_paths(maps.fetch(left_id), maps.fetch(right_id))
       next if collision_paths.empty?
       next if lanes_by_id.fetch(left_id)["wave"] != lanes_by_id.fetch(right_id)["wave"]
       next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
-      next if serialized_by_edit_edge?(left_id, right_id, dependency_plan.fetch("edges"))
+      next if serialized_by_edit_edge?(
+        left_id,
+        right_id,
+        dependency_plan.fetch("edges"),
+        gate_lanes,
+        completed_lane_ids
+      )
 
       collisions << violation(
         "unsafe-concurrent-edit",
@@ -621,10 +643,16 @@ module BatchPlanPreflight
     end
   end
 
-  def serialized_by_edit_edge?(left_id, right_id, edges)
-    edges.any? do |edge|
+  def serialized_by_edit_edge?(left_id, right_id, edges, gate_lanes, completed_lane_ids)
+    edit_edge = edges.any? do |edge|
       edge.is_a?(Hash) && edge["type"] == "edit" &&
         [[left_id, right_id], [right_id, left_id]].include?([edge["from"], edge["to"]])
+    end
+    return false unless edit_edge
+    return true if completed_lane_ids.include?(left_id) || completed_lane_ids.include?(right_id)
+
+    [left_id, right_id].any? do |lane_id|
+      gate_lanes.dig(lane_id, "permissions", "patch_edit") != true
     end
   end
 

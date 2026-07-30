@@ -776,6 +776,50 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["consumer"], result.dig("launch", "held_lane_ids")
   end
 
+  def test_satisfied_edit_edge_does_not_exempt_two_patch_enabled_incomplete_lanes
+    lanes = [lane("foundation"), lane("consumer")]
+    maps = {
+      "foundation" => touch_map(1, ["CHANGELOG.md"]),
+      "consumer" => touch_map(2, ["CHANGELOG.md"])
+    }
+    edges = [{
+      "id" => "foundation-before-consumer",
+      "from" => "foundation",
+      "to" => "consumer",
+      "type" => "edit"
+    }]
+    result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps, edges: edges))
+
+    refute status.success?
+    collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+    assert_equal %w[consumer foundation], collision.fetch("lane_ids")
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_edit_edge_overlap_is_safe_after_trusted_predecessor_completion
+    lanes = [lane("foundation"), lane("consumer")]
+    maps = {
+      "foundation" => touch_map(1, ["CHANGELOG.md"]),
+      "consumer" => touch_map(2, ["CHANGELOG.md"])
+    }
+    edges = [{
+      "id" => "foundation-before-consumer",
+      "from" => "foundation",
+      "to" => "consumer",
+      "type" => "edit"
+    }]
+    receipt = lane_lifecycle_receipt(lane_id: "foundation")
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, maps: maps, edges: edges, lifecycle_receipts: [receipt]),
+      helper: workflow_control_helper
+    )
+
+    assert status.success?, stderr
+    assert_equal ["consumer"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["foundation"], result.dig("launch", "completed_lane_ids")
+    assert_empty result.fetch("violations")
+  end
+
   def test_backend_lane_and_risky_caps_accept_boundary_and_reject_one_over
     caps = {
       "codex" => { lanes: 10, risky: 8 },
@@ -1062,6 +1106,80 @@ class BatchPlanPreflightTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
     assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_both_file_touch_shapes_reject_noncanonical_paths_and_rename_endpoints
+    invalid_paths = {
+      "empty" => "",
+      "non-string" => 123,
+      "nul" => "lib/\0task.rb",
+      "backslash" => 'lib\task.rb',
+      "drive" => 'C:\repo\lib\task.rb',
+      "drive-forward-separators" => "C:/repo/lib/task.rb",
+      "drive-relative" => "C:lib/task.rb",
+      "unc" => '\\\\server\share\task.rb',
+      "mixed-separators" => 'lib\sub/task.rb',
+      "absolute" => "/lib/task.rb",
+      "trailing-separator" => "lib/task.rb/",
+      "repeated-separator" => "lib//task.rb",
+      "leading-dot-component" => "./lib/task.rb",
+      "nested-dot-component" => "lib/./task.rb",
+      "dot-dot-component" => "lib/../lib/task.rb"
+    }
+    shapes = {
+      "verified" => {
+        expected_code: "file-touch-map-shape-invalid",
+        build: lambda do |target, invalid_path|
+          paths = target == "paths" ? [invalid_path] : ["lib/task.rb"]
+          renames = if target == "paths"
+                      []
+                    else
+                      [{ "old" => "lib/task.rb", "new" => "lib/task-renamed.rb" }
+                         .merge(target => invalid_path)]
+                    end
+          touch_map(1, paths).merge("renames" => renames)
+        end
+      },
+      "planned" => {
+        expected_code: "planned-path-evidence-invalid",
+        build: lambda do |target, invalid_path|
+          paths = if target == "paths"
+                    [invalid_path]
+                  else
+                    ["lib/task.rb", "lib/task-renamed.rb", invalid_path].uniq
+                  end
+          renames = if target == "paths"
+                      []
+                    else
+                      [{ "old" => "lib/task.rb", "new" => "lib/task-renamed.rb" }
+                         .merge(target => invalid_path)]
+                    end
+          planned_path_evidence(paths, renames: renames)
+        end
+      }
+    }
+
+    unexpected_results = []
+    shapes.each do |shape, details|
+      %w[paths old new].each do |target|
+        invalid_paths.each do |label, invalid_path|
+          input = input_for(
+            maps: { "lane-a" => details.fetch(:build).call(target, invalid_path) }
+          )
+          result, _stderr, status = evaluate(input)
+          assertion = "#{shape} #{target} #{label}"
+          codes = result.fetch("violations").map { |item| item.fetch("code") }
+          unexpected_results << "#{assertion}: accepted" if status.success?
+          unless codes.include?(details.fetch(:expected_code))
+            unexpected_results << "#{assertion}: missing #{details.fetch(:expected_code)}"
+          end
+          unless result.dig("launch", "eligible_lane_ids").empty?
+            unexpected_results << "#{assertion}: launch remained eligible"
+          end
+        end
+      end
+    end
+    assert_empty unexpected_results, unexpected_results.join("\n")
   end
 
   def test_planned_path_evidence_cannot_masquerade_or_omit_provenance
