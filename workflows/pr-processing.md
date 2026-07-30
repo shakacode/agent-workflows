@@ -17,6 +17,11 @@ For post-merge audits after a concurrent batch or before a release candidate, us
 
 For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversarial-pr-review/SKILL.md` when skills are available. Reusable Codex, Claude, and comparison prompts live in `.agents/workflows/adversarial-pr-review.md`.
 
+For an interactive human-oriented explanation of a PR, use
+`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
+one conceptual change at a time, explains why it exists, and pauses for
+questions before continuing.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -571,7 +576,9 @@ The user should not need to write a long launch prompt. If the request is short,
   public discovery that needs confirmation.
 - Goal name: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`, not the pasted prompt text.
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
-- `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`.
+- `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`; `ask`
+  automatically walks through the exact-diff PR one conceptual change at a
+  time before its one final merge decision.
 - Concurrency: one machine, multiple machines, or single-threaded.
 - Batch size target: `codex`, `claude`, or `generic`; explicit paste
   destination or runner wins, otherwise use reliable host detection or
@@ -1149,12 +1156,13 @@ Execution rules:
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- Dispatch one subagent/disjoint item; group only for shared context; separate serial/UNKNOWN.
-- Workers obey owned paths/execution envelope; unlisted paths, contradiction/ambiguity, scope/risk growth, or weaker verification -> stop for coordinator.
-- Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
+- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
+- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 - Apply Batch QA Lane; include QA Evidence.
-- Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
+- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
+- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 - Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
 
 ```
@@ -1868,6 +1876,7 @@ Goal completion contract:
 - When the overall goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one 15-minute current-thread monitor before handoff and do not create a duplicate. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
@@ -2550,6 +2559,32 @@ Also verify:
 - The merge ledger has no `UNKNOWN` fields and reports `complete_allowed: true`.
 
 Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow -> For All PRs: CI is passing, all current review comments and threads are addressed or explicitly triaged by tier, no major question or discussion item needs maintainer attention, and advisory AI systems such as CodeRabbit.ai are not special approval gates.
+
+### Ask Merge Authority Walkthrough Gate
+
+When `merge_authority` is `ask` and every ordinary gate is clean,
+automatically start the exact-diff PR walkthrough before asking for merge
+approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
+contract inline: inspect the complete diff first, group it into conceptual
+changes, explain the reason, behavior, tradeoffs, risks, and proof for exactly
+one change at a time, then wait for explicit readiness before continuing.
+
+Use full interactive mode for large or complex PRs and concise interactive mode
+for smaller cohesive PRs. Treat a PR as large when it exceeds any trusted-base
+`autonomous_merge.thresholds` maximum for changed files, changed lines, or
+commits. Complexity, cross-cutting behavior, security, migrations,
+architecture, or difficult rollback may require full mode below those limits.
+Do not repeat a walkthrough already completed for the same diff identity, and
+honor an explicit request to skip or stop it.
+
+After it completes or is skipped, refresh the diff identity and ordinary
+readiness. If the diff identity changed, invalidate the walkthrough and
+readiness evidence, then restart the walkthrough or stop. If an ordinary gate
+newly fails, stop. Ask one final merge decision only when the refreshed diff
+identity matches the recorded identity, ordinary readiness remains clean, and
+merge is allowed; a completed walkthrough must have explained that same diff
+identity. Walkthrough participation is not merge approval; merge still requires
+the explicit authority decision.
 
 ### Autonomous Merge Eligibility Gate
 

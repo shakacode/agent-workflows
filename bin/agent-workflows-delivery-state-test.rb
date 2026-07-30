@@ -20,8 +20,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
       case state
       when "enabled"
+        version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
+        source = ENV.fetch("QA_CODEX_PLUGIN_SOURCE", "https://github.com/shakacode/agent-workflows.git")
         puts "PLUGIN STATUS VERSION PATH"
-        puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+        puts "scw@agent-workflows  installed, enabled  \#{version}  \#{source}"
       when "disabled"
         puts "PLUGIN STATUS VERSION PATH"
         puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
@@ -48,11 +50,19 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     FileUtils.remove_entry(@fake_codex_dir)
   end
 
-  def run_state(*args, codex_state: "enabled", codex_executable: @fake_codex)
+  def run_state(
+    *args,
+    codex_state: "enabled",
+    codex_executable: @fake_codex,
+    codex_version: nil,
+    codex_source: nil
+  )
     env = {
       "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => codex_executable,
       "QA_CODEX_PLUGIN_STATE" => codex_state
     }
+    env["QA_CODEX_PLUGIN_VERSION"] = codex_version if codex_version
+    env["QA_CODEX_PLUGIN_SOURCE"] = codex_source if codex_source
     Open3.capture3(env, "ruby", SCRIPT, *args)
   end
 
@@ -69,7 +79,13 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     FileUtils.mkdir_p(manifest_dir)
     FileUtils.mkdir_p(File.join(root, "skills/example"))
     File.write(File.join(root, "skills/example/SKILL.md"), "example\n")
-    File.write(File.join(manifest_dir, "plugin.json"), "#{JSON.pretty_generate('name' => 'scw', 'version' => '0.1.0', 'skills' => './skills/')}\n")
+    manifest = {
+      "name" => "scw",
+      "version" => File.basename(root),
+      "repository" => "https://github.com/shakacode/agent-workflows",
+      "skills" => "./skills/"
+    }
+    File.write(File.join(manifest_dir, "plugin.json"), "#{JSON.pretty_generate(manifest)}\n")
   end
 
   def write_codex_native_state(target)
@@ -124,6 +140,226 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
         assert status.success?, "#{host}: #{out}#{err}"
         assert_equal "active", JSON.parse(out).dig("native", "state")
+      end
+    end
+  end
+
+  def test_codex_real_cli_source_url_resolves_the_unique_versioned_cache
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+      write_codex_native_state(target)
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", payload.dig("native", "state")
+      assert_equal [plugin_root], payload.dig("native", "roots")
+      assert_equal "https://github.com/shakacode/agent-workflows.git", payload.dig("native", "source")
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json",
+        codex_source: "https://github.com/example/unrelated.git"
+      )
+
+      refute status.success?, out
+      assert_equal "unknown", JSON.parse(out).dig("native", "state")
+    end
+  end
+
+  def test_plugin_companion_ignores_unrelated_skill_without_install_metadata
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      unrelated = File.join(target, "skills/personal/SKILL.md")
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.dirname(unrelated))
+      File.write(unrelated, "personal\n")
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert payload.fetch("compatible")
+      assert_equal "absent", payload.dig("flat", "state")
+      assert_empty payload.dig("flat", "blocking")
+      assert_equal "personal\n", File.read(unrelated)
+    end
+  end
+
+  def test_plugin_companion_ignores_unrelated_skill_after_companion_install
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      unrelated = File.join(target, "skills/personal/SKILL.md")
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.dirname(unrelated))
+      File.write(unrelated, "personal\n")
+      write_metadata(target, "delivery_mode" => "plugin-companion")
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert status.success?, "#{out}#{err}"
+      assert payload.fetch("compatible")
+      assert_equal "absent", payload.dig("flat", "state")
+      assert_empty payload.dig("flat", "blocking")
+      assert_equal "personal\n", File.read(unrelated)
+    end
+  end
+
+  def test_plugin_companion_blocks_new_current_native_skill_missing_from_recorded_revision
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+      write_codex_native_state(target)
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "plugin-companion",
+        "source" => source,
+        "source_revision" => recorded_revision
+      )
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      metadata_before = File.binread(metadata_path)
+
+      new_skill = File.join(source, "skills/current-only/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(new_skill))
+      File.write(new_skill, "current source\n")
+      system("git", "-C", source, "add", "skills/current-only", exception: true)
+      system("git", "-C", source, "commit", "--quiet", "-m", "add current skill", exception: true)
+      native_skill = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0/skills/current-only/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(native_skill))
+      File.write(native_skill, "current native\n")
+      flat_skill = File.join(target, "skills/current-only/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(flat_skill))
+      File.write(flat_skill, "personal collision\n")
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?
+      refute payload.fetch("compatible")
+      assert_equal [File.dirname(flat_skill)], payload.dig("flat", "blocking")
+      assert_equal "personal collision\n", File.binread(flat_skill)
+      assert_equal metadata_before, File.binread(metadata_path)
+    end
+  end
+
+  def test_plugin_companion_blocks_native_skill_removed_from_current_source
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+      write_codex_native_state(target)
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "plugin-companion",
+        "source" => source,
+        "source_revision" => recorded_revision
+      )
+
+      native_skill = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0/skills/alpha/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(native_skill))
+      File.write(native_skill, "recorded native\n")
+      FileUtils.rm_r(File.join(source, "skills/alpha"))
+      system("git", "-C", source, "add", "-u", "skills/alpha", exception: true)
+      system("git", "-C", source, "commit", "--quiet", "-m", "remove alpha skill", exception: true)
+      flat_skill = File.join(target, "skills/alpha/SKILL.md")
+      FileUtils.mkdir_p(File.dirname(flat_skill))
+      File.write(flat_skill, "flat duplicate\n")
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+      payload = JSON.parse(out)
+
+      refute status.success?
+      refute payload.fetch("compatible")
+      assert_equal [File.dirname(flat_skill)], payload.dig("flat", "blocking")
+      assert_equal "flat duplicate\n", File.binread(flat_skill)
+    end
+  end
+
+  def test_plugin_companion_rejects_mixed_valid_and_invalid_candidate_native_roots
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      FileUtils.mkdir_p(source)
+      recorded_revision = create_source(source)
+
+      %w[codex claude].each do |host|
+        target = File.join(tmp, host)
+        stale_root = File.join(target, "plugins/cache/agent-workflows/scw/0.1.0")
+        candidate_root = File.join(target, "plugins/cache/agent-workflows/scw/0.2.0")
+        write_manifest(stale_root, host: host)
+        manifest_dir = File.join(candidate_root, host == "codex" ? ".codex-plugin" : ".claude-plugin")
+        FileUtils.mkdir_p(File.join(candidate_root, "skills/beta"))
+        FileUtils.mkdir_p(manifest_dir)
+        File.write(File.join(candidate_root, "skills/beta/SKILL.md"), "candidate beta\n")
+        File.write(File.join(manifest_dir, "plugin.json"), "{malformed\n")
+
+        if host == "codex"
+          File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
+        else
+          FileUtils.mkdir_p(File.join(target, "plugins"))
+          File.write(
+            File.join(target, "settings.json"),
+            "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n"
+          )
+          receipts = {
+            "plugins" => {
+              "scw@agent-workflows" => [{ "installPath" => stale_root }, { "installPath" => candidate_root }]
+            }
+          }
+          File.write(
+            File.join(target, "plugins/installed_plugins.json"),
+            "#{JSON.generate(receipts)}\n"
+          )
+        end
+
+        write_metadata(
+          target,
+          "host" => host,
+          "mode" => "copy",
+          "delivery_mode" => "plugin-companion",
+          "source" => source,
+          "source_revision" => recorded_revision
+        )
+        metadata_path = File.join(target, ".agent-workflows-install.json")
+        metadata_before = File.binread(metadata_path)
+        flat_skill = File.join(target, "skills/beta/SKILL.md")
+        FileUtils.mkdir_p(File.dirname(flat_skill))
+        File.write(flat_skill, "personal beta\n")
+
+        out, _err, status = run_state(
+          "check", "--host", host, "--target", target, "--source", source,
+          "--delivery-mode", "plugin-companion", "--json", codex_version: "0.2.0"
+        )
+        payload = JSON.parse(out)
+
+        refute status.success?, "#{host}: #{out}"
+        assert_equal "unknown", payload.dig("native", "state"), host
+        assert_equal "personal beta\n", File.binread(flat_skill)
+        assert_equal metadata_before, File.binread(metadata_path)
       end
     end
   end

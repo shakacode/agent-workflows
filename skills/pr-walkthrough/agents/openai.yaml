@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Walkthrough"
+  short_description: "Explain a pull request one change at a time"
+  default_prompt: "Use $pr-walkthrough to walk me through this PR one change at a time, including why each change was made."
