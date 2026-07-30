@@ -1,14 +1,17 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Submit one authorized, merge-ready PR against the reviewed GitHub host, base,
-# and head when GitHub may require a merge queue. Readiness and merge authority
-# remain caller responsibilities; this helper only makes the mutation bounded.
+# Submit one merge-assured PR against the reviewed GitHub host, base, base SHA,
+# and head when GitHub may require a merge queue. Every run requires a fresh,
+# integrity-bound eligible merge-assurance receipt before mutation.
 
 require "json"
 require "optparse"
 require "tempfile"
+require "time"
 require "uri"
+
+load File.expand_path("merge-assurance", __dir__) unless defined?(MergeAssurance)
 
 module PrMergeSubmit
   class Error < StandardError; end
@@ -64,6 +67,7 @@ module PrMergeSubmit
             id
             headRefOid
             baseRefName
+            baseRefOid
             state
             isDraft
             url
@@ -117,6 +121,7 @@ module PrMergeSubmit
           pullRequest {
             headRefOid
             baseRefName
+            baseRefOid
             merged
             mergedAt
             url
@@ -138,7 +143,9 @@ module PrMergeSubmit
       return print_help if options[:help]
 
       validate_options!(options)
+      @merge_assurance_receipt = load_merge_assurance_receipt!(options)
       pull_request = fetch_pr(options)
+      validate_receipt_live_bindings!(pull_request, options)
       result = if exact_merge?(pull_request, options)
                  already_merged_result(pull_request, options)
                else
@@ -163,11 +170,13 @@ module PrMergeSubmit
     def parse_options(argv)
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
-        expected_head: nil, expected_base: nil, help: false, pr: nil
+        expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
+        help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
-                      "--expected-head SHA --expected-base BRANCH --method METHOD [options]"
+                      "--expected-head SHA --expected-base BRANCH --method METHOD " \
+                      "--merge-assurance-receipt FILE [options]"
         opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
         opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
         opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
@@ -175,6 +184,9 @@ module PrMergeSubmit
         end
         opts.on("--expected-base BRANCH", "Exact PR base branch already cleared by readiness gates") do |value|
           options[:expected_base] = value
+        end
+        opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
+          options[:merge_assurance_receipt] = value
         end
         opts.on("--method METHOD", METHODS, "Direct merge method: merge, rebase, or squash") do |value|
           options[:method] = value
@@ -213,9 +225,11 @@ module PrMergeSubmit
     def usage_parser
       OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
-                      "--expected-head SHA --expected-base BRANCH --method METHOD [options]"
+                      "--expected-head SHA --expected-base BRANCH --method METHOD " \
+                      "--merge-assurance-receipt FILE [options]"
         opts.separator "        --subject SUBJECT  Direct merge commit subject"
         opts.separator "        --body BODY        Direct merge commit body"
+        opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
       end
     end
 
@@ -232,9 +246,106 @@ module PrMergeSubmit
         raise Error, "--expected-base must be a valid branch name"
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
+      raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
 
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
+    end
+
+    RECEIPT_KEYS = %w[
+      bindings contract eligible evidence evidence_digest follow_up_accounting
+      freshness issued_at verdict version
+    ].freeze
+    RECEIPT_BINDING_KEYS = %w[
+      authority base diff_identity head_sha host pr repo
+    ].freeze
+
+    def load_merge_assurance_receipt!(options)
+      raw = File.read(options[:merge_assurance_receipt], encoding: "UTF-8")
+      receipt = PrMergeSubmit.parse_json!(raw, "merge-assurance receipt")
+      unless receipt.keys.sort == RECEIPT_KEYS.sort &&
+             receipt["contract"] == "merge-assurance-receipt" &&
+             receipt["version"] == 1 &&
+             receipt["eligible"] == true &&
+             receipt["verdict"] == "ELIGIBLE"
+        raise Error, "merge-assurance receipt is not an eligible v1 receipt"
+      end
+      unless receipt["bindings"].is_a?(Hash) &&
+             receipt["bindings"].keys.sort == RECEIPT_BINDING_KEYS.sort
+        raise Error, "merge-assurance receipt bindings are malformed"
+      end
+      unless MergeAssurance.valid_evidence_digest?(receipt)
+        raise Error, "merge-assurance receipt evidence digest mismatch"
+      end
+
+      evidence = receipt["evidence"]
+      unless evidence.is_a?(Hash) && evidence.keys.sort == %w[autonomous_result ci_result context]
+        raise Error, "merge-assurance receipt evidence is malformed"
+      end
+
+      now = Time.now.utc
+      reassessed = MergeAssurance.assess(
+        ci_result: evidence["ci_result"],
+        autonomous_result: evidence["autonomous_result"],
+        context: evidence["context"],
+        now:
+      )
+      unless reassessed["eligible"] == true
+        raise Error, "merge-assurance receipt evidence does not currently qualify: " \
+                     "#{Array(reassessed['failures']).join('; ')}"
+      end
+      unless receipt["bindings"] == reassessed["bindings"] &&
+             receipt["follow_up_accounting"] == reassessed["follow_up_accounting"]
+        raise Error, "merge-assurance receipt bindings or accounting do not match its evidence"
+      end
+
+      expected_freshness = reassessed["freshness"]
+      unless receipt["freshness"] == expected_freshness
+        raise Error, "merge-assurance receipt freshness contract is malformed"
+      end
+
+      validate_receipt_freshness!(receipt, now)
+      validate_receipt_option_bindings!(receipt, options)
+      receipt
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def validate_receipt_freshness!(receipt, now = Time.now.utc)
+      issued_at = Time.iso8601(receipt["issued_at"].to_s)
+      age = now - issued_at
+      raise Error, "merge-assurance receipt is stale (maximum age is exactly 300 seconds)" if
+        age > MergeAssurance::MAX_EVIDENCE_AGE_SECONDS
+      raise Error, "merge-assurance receipt is future-dated beyond exactly 30 seconds of clock skew" if
+        age < -MergeAssurance::MAX_FUTURE_SKEW_SECONDS
+    rescue ArgumentError
+      raise Error, "merge-assurance receipt issued_at is invalid"
+    end
+
+    def validate_receipt_option_bindings!(receipt, options)
+      bindings = receipt.fetch("bindings")
+      raise Error, "merge-assurance receipt host mismatch" unless bindings["host"] == options[:host]
+      raise Error, "merge-assurance receipt repo mismatch" unless bindings["repo"] == options[:repo]
+      raise Error, "merge-assurance receipt PR mismatch" unless bindings["pr"] == options[:pr].to_i
+      raise Error, "merge-assurance receipt head mismatch" unless
+        bindings["head_sha"].to_s.casecmp?(options[:expected_head])
+      raise Error, "merge-assurance receipt base ref mismatch" unless
+        bindings.dig("base", "ref") == options[:expected_base]
+    end
+
+    def validate_receipt_live_bindings!(pull_request, options)
+      bindings = @merge_assurance_receipt.fetch("bindings")
+      unless pull_request["headRefOid"].to_s.casecmp?(bindings["head_sha"])
+        raise Error, "PR head moved: receipt binds #{bindings['head_sha']}, found #{pull_request['headRefOid']}"
+      end
+      unless pull_request["baseRefName"] == bindings.dig("base", "ref")
+        raise Error, "PR base moved: receipt binds #{bindings.dig('base', 'ref')}, found #{pull_request['baseRefName']}"
+      end
+      unless pull_request["baseRefOid"].to_s.casecmp?(bindings.dig("base", "sha").to_s)
+        raise Error, "merge-assurance receipt base SHA mismatch: expected " \
+                     "#{bindings.dig('base', 'sha')}, found #{pull_request['baseRefOid']}"
+      end
+      validate_receipt_option_bindings!(@merge_assurance_receipt, options)
     end
 
     # gh treats a field value beginning with "@" as a file path to read, so a
@@ -344,9 +455,20 @@ module PrMergeSubmit
       unless pull_request["baseRefName"] == options[:expected_base]
         raise Error, "PR base moved: expected #{options[:expected_base]}, found #{pull_request['baseRefName']}"
       end
-      return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+
+      if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+        validate_receipt_base_sha!(pull_request) if @merge_assurance_receipt
+        return
+      end
 
       raise Error, "PR head moved: expected #{options[:expected_head]}, found #{pull_request['headRefOid']}"
+    end
+
+    def validate_receipt_base_sha!(pull_request)
+      expected = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      return if pull_request["baseRefOid"].to_s.casecmp?(expected.to_s)
+
+      raise Error, "merge-assurance receipt base SHA mismatch: expected #{expected}, found #{pull_request['baseRefOid']}"
     end
 
     def direct_merge_args(pull_request, options)
@@ -371,6 +493,8 @@ module PrMergeSubmit
       unless pull_request["baseRefName"] == options[:expected_base]
         raise Error, "PR base moved during direct merge: expected #{options[:expected_base]}, found #{pull_request['baseRefName']}"
       end
+
+      validate_receipt_live_bindings!(pull_request, options)
       return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
 
       raise Error, "PR head moved during direct merge: expected #{options[:expected_head]}, found #{pull_request['headRefOid']}"
@@ -588,7 +712,9 @@ module PrMergeSubmit
 
     def exact_target?(pull_request, options)
       pull_request["baseRefName"] == options[:expected_base] &&
-        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
+        (!@merge_assurance_receipt ||
+          pull_request["baseRefOid"].to_s.casecmp?(@merge_assurance_receipt.dig("bindings", "base", "sha").to_s))
     end
 
     def reject_mismatched_queue!(pull_request, options)
@@ -606,6 +732,7 @@ module PrMergeSubmit
     end
 
     def run_gh(*args, host:, mutation: false)
+      validate_receipt_freshness!(@merge_assurance_receipt) if mutation && @merge_assurance_receipt
       timeout_seconds = gh_timeout_seconds
       if @cancellation_signal && (mutation || !@mutation_attempted)
         cancellation_signal = @cancellation_signal

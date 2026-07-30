@@ -27,6 +27,7 @@
 
 require "json"
 require "open3"
+require "time"
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
 # the raw `gh pr checks --json` output string (or parsed rows) so they can be
@@ -97,6 +98,121 @@ module PrCiReadiness
     else
       "NOT_READY"
     end
+  end
+
+  EVIDENCE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
+  SUCCESSFUL_CONCLUSIONS = %w[success neutral skipped].freeze
+
+  def evidence_row_state(row)
+    return "UNKNOWN" unless row.is_a?(Hash)
+
+    bucket = row["bucket"].to_s
+    return "READY" if %w[pass skipping].include?(bucket)
+    return "NOT_READY" if %w[cancel fail pending].include?(bucket)
+
+    state = row["state"].to_s.downcase
+    return "READY" if state == "success"
+    return "NOT_READY" if %w[error failure pending].include?(state)
+
+    status = row["status"].to_s.downcase
+    return "NOT_READY" unless status.empty? || status == "completed"
+    return "UNKNOWN" if status.empty?
+
+    conclusion = row["conclusion"].to_s.downcase
+    return "READY" if SUCCESSFUL_CONCLUSIONS.include?(conclusion)
+    return "NOT_READY" unless conclusion.empty?
+
+    "UNKNOWN"
+  end
+
+  def evidence_scope(source:, head_sha:, complete:, rows:, checked_at:, error: nil)
+    normalized_rows = rows.is_a?(Array) ? rows : []
+    row_states = normalized_rows.map { |row| evidence_row_state(row) }
+    state =
+      if complete != true
+        "UNKNOWN"
+      elsif !rows.is_a?(Array) || row_states.include?("UNKNOWN")
+        "UNKNOWN"
+      elsif normalized_rows.empty?
+        "NOT_APPLICABLE"
+      elsif row_states.include?("NOT_READY")
+        "NOT_READY"
+      else
+        "READY"
+      end
+    result = {
+      "state" => state,
+      "source" => source,
+      "complete" => complete == true,
+      "head_sha" => head_sha,
+      "rows" => normalized_rows,
+      "checked_at" => checked_at
+    }
+    result["error"] = error.to_s unless error.to_s.empty?
+    result["error"] ||= "one or more rows had an unknown state" if state == "UNKNOWN" && complete == true
+    result
+  end
+
+  def evidence_contract(repo:, pr_number:, head_sha:, checked_at:, scopes:)
+    states = scopes.values.map { |scope| scope["state"] }
+    verdict =
+      if states.any? { |state| !EVIDENCE_STATES.include?(state) } || states.include?("UNKNOWN")
+        "UNKNOWN"
+      elsif states.include?("NOT_READY")
+        "NOT_READY"
+      else
+        "READY"
+      end
+    {
+      "contract" => "pr-ci-readiness",
+      "version" => 2,
+      "repo" => repo,
+      "pr" => pr_number.to_i,
+      "head_sha" => head_sha,
+      "checked_at" => checked_at,
+      "verdict" => verdict,
+      "scopes" => scopes
+    }
+  end
+
+  def inventory_scopes(
+    head_sha:, checked_at:, required_rows:, required_complete:, actions_rows:,
+    actions_complete:, check_runs:, check_runs_complete:, statuses:,
+    statuses_complete:, errors: {}
+  )
+    required_names = required_rows.filter_map do |row|
+      row["name"].to_s unless row["name"].to_s.empty?
+    end
+    dependabot_rows = actions_rows.select { |row| row["dependabot"] == true }
+    github_actions_rows = actions_rows.reject { |row| row["dependabot"] == true }
+    other_rows = (check_runs + statuses).reject do |row|
+      required_names.include?(row["name"].to_s) ||
+        row["app_slug"].to_s == "github-actions" ||
+        row["dependabot"] == true
+    end
+
+    {
+      "required_status_check_rollup" => evidence_scope(
+        source: "github.pull_request.status_check_rollup.required",
+        head_sha:, complete: required_complete, rows: required_rows, checked_at:,
+        error: errors["required_status_check_rollup"]
+      ),
+      "github_actions" => evidence_scope(
+        source: "github.actions.exact_head",
+        head_sha:, complete: actions_complete && check_runs_complete,
+        rows: github_actions_rows, checked_at:, error: errors["github_actions"]
+      ),
+      "dependabot" => evidence_scope(
+        source: "github.dependabot.exact_head",
+        head_sha:, complete: actions_complete && check_runs_complete,
+        rows: dependabot_rows, checked_at:, error: errors["dependabot"]
+      ),
+      "other" => evidence_scope(
+        source: "github.checks_and_statuses.exact_head.non_required",
+        head_sha:, complete: check_runs_complete && statuses_complete,
+        rows: other_rows, checked_at:, error: errors["other"]
+      )
+    }
   end
 
   # Build the normalized result hash from the captured check rows.
@@ -293,6 +409,8 @@ module PrCiReadiness
     # Fetch the required-check list first; fall back to the full list when the
     # required form yields no current rows. required_used flips false on fallback.
     def assess(repo, pr_number, requested_hosted_runs:)
+      checked_at = Time.now.utc.iso8601
+      exact_head_sha = fetch_pr_head_oid(repo, pr_number)
       required_fetch = fetch_checks(repo, pr_number, required: true)
       required_raw = required_fetch.fetch(:raw)
       required_query_known = required_fetch.fetch(:known_good)
@@ -332,7 +450,227 @@ module PrCiReadiness
       query_evidence_known = required_query_known && full_query_known != false
       result["verdict"] = "UNKNOWN" if !query_evidence_known && result["verdict"] == "READY"
       result = apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
-      apply_viewer_review_inventory(result, repo, pr_number)
+      result = apply_viewer_review_inventory(result, repo, pr_number)
+      required_evidence_rows =
+        if required_used
+          PrCiReadiness.readiness_rows(required_rows, required_used: true)
+        else
+          required_contexts = required_cancellations.map { |row| PrCiReadiness.check_identity(row) }
+          matching_current_rows = PrCiReadiness.active_rows(rows).select do |row|
+            required_contexts.include?(PrCiReadiness.check_identity(row))
+          end
+          PrCiReadiness.readiness_rows(
+            matching_current_rows,
+            required_used: false,
+            required_cancellations:
+          )
+        end
+      inventory = exact_head_inventory(repo, exact_head_sha)
+      final_head_sha = fetch_pr_head_oid(repo, pr_number)
+      if final_head_sha != exact_head_sha
+        inventory[:errors].transform_values! do |error|
+          [error, "PR head moved during exact-head inventory: #{exact_head_sha} -> #{final_head_sha}"].compact.join("; ")
+        end
+        inventory[:required_complete] = false
+        inventory[:actions_complete] = false
+        inventory[:check_runs_complete] = false
+        inventory[:statuses_complete] = false
+      end
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha: exact_head_sha, checked_at:,
+        required_rows: required_evidence_rows, required_complete: required_query_known,
+        actions_rows: inventory.fetch(:actions_rows),
+        actions_complete: inventory.fetch(:actions_complete),
+        check_runs: inventory.fetch(:check_runs),
+        check_runs_complete: inventory.fetch(:check_runs_complete),
+        statuses: inventory.fetch(:statuses),
+        statuses_complete: inventory.fetch(:statuses_complete),
+        errors: inventory.fetch(:errors)
+      )
+      contract = PrCiReadiness.evidence_contract(
+        repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
+      )
+      ordinary_verdict = result.fetch("verdict")
+      overall_verdict =
+        if ordinary_verdict == "NOT_READY" || contract.fetch("verdict") == "NOT_READY"
+          "NOT_READY"
+        elsif ordinary_verdict == "UNKNOWN" || contract.fetch("verdict") == "UNKNOWN"
+          "UNKNOWN"
+        else
+          "READY"
+        end
+      contract.merge(result).merge(
+        "verdict" => overall_verdict,
+        "ordinary_verdict" => ordinary_verdict,
+        "scopes" => scopes
+      )
+    end
+
+    def exact_head_inventory(repo, head_sha)
+      errors = {}
+      actions_rows, actions_complete, actions_error = fetch_exact_head_actions(repo, head_sha)
+      errors["github_actions"] = actions_error if actions_error
+      errors["dependabot"] = actions_error if actions_error
+
+      check_runs, check_runs_complete, check_runs_error = fetch_exact_head_check_runs(repo, head_sha)
+      if check_runs_error
+        errors["github_actions"] = [errors["github_actions"], check_runs_error].compact.join("; ")
+        errors["dependabot"] = [errors["dependabot"], check_runs_error].compact.join("; ")
+        errors["other"] = check_runs_error
+      end
+      actions_rows += check_runs.select do |row|
+        row["app_slug"] == "github-actions" || row["dependabot"] == true
+      end
+
+      statuses, statuses_complete, statuses_error = fetch_exact_head_statuses(repo, head_sha)
+      errors["other"] = [errors["other"], statuses_error].compact.join("; ") if statuses_error
+
+      {
+        actions_rows:, actions_complete:, check_runs:, check_runs_complete:,
+        statuses:, statuses_complete:, errors:,
+        required_complete: true
+      }
+    end
+
+    def fetch_exact_head_actions(repo, head_sha)
+      runs = fetch_paginated_collection(
+        "repos/#{repo}/actions/runs?head_sha=#{head_sha}&per_page=100&page=%<page>s",
+        "workflow_runs"
+      )
+      rows = []
+      runs.each do |run|
+        ensure_exact_head!(run, head_sha, "Actions run")
+        dependabot = dependabot_attributed?(run)
+        rows << normalize_actions_row(run, "run", dependabot:)
+        fetch_actions_jobs(repo, run.fetch("id")).each do |job|
+          rows << normalize_actions_row(job, "job", dependabot:, head_sha:)
+        end
+      end
+      [rows, true, nil]
+    rescue StandardError => e
+      [[], false, "exact-head Actions inventory failed: #{e.message}"]
+    end
+
+    def fetch_exact_head_check_runs(repo, head_sha)
+      rows = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/check-runs?per_page=100&page=%<page>s",
+        "check_runs"
+      ).map do |row|
+        ensure_exact_head!(row, head_sha, "check run")
+        {
+          "kind" => "check_run",
+          "id" => row["id"],
+          "name" => row["name"].to_s,
+          "status" => row["status"].to_s,
+          "conclusion" => row["conclusion"],
+          "url" => row["html_url"].to_s,
+          "head_sha" => head_sha,
+          "app_slug" => row.dig("app", "slug").to_s,
+          "dependabot" => dependabot_attributed?(row)
+        }
+      end
+      [rows, true, nil]
+    rescue StandardError => e
+      [[], false, "exact-head check-run inventory failed: #{e.message}"]
+    end
+
+    def fetch_exact_head_statuses(repo, head_sha)
+      rows = fetch_paginated_array(
+        "repos/#{repo}/commits/#{head_sha}/statuses?per_page=100&page=%<page>s"
+      ).map do |row|
+        ensure_exact_head!(row, head_sha, "status context", sha_key: "sha")
+        {
+          "kind" => "status",
+          "id" => row["id"],
+          "name" => row["context"].to_s,
+          "state" => row["state"].to_s,
+          "url" => row["target_url"].to_s,
+          "head_sha" => head_sha
+        }
+      end
+      [rows, true, nil]
+    rescue StandardError => e
+      [[], false, "exact-head status-context inventory failed: #{e.message}"]
+    end
+
+    def fetch_paginated_collection(endpoint_template, key)
+      page = 1
+      rows = []
+      expected_total = nil
+      loop do
+        payload = capture_json!("gh", "api", format(endpoint_template, page:))
+        page_rows = payload.fetch(key)
+        raise Error, "#{key} response was not an array" unless page_rows.is_a?(Array)
+
+        page_total = payload["total_count"]
+        unless page_total.is_a?(Integer) && page_total >= 0
+          raise Error, "#{key} response lacked a valid total_count"
+        end
+
+        expected_total ||= page_total
+        raise Error, "#{key} total_count changed during pagination" unless page_total == expected_total
+
+        rows.concat(page_rows)
+        break if page_rows.length < 100
+
+        page += 1
+      end
+      unless rows.length == expected_total
+        raise Error, "#{key} pagination was incomplete: expected #{expected_total}, received #{rows.length}"
+      end
+
+      rows
+    end
+
+    def fetch_paginated_array(endpoint_template)
+      page = 1
+      rows = []
+      loop do
+        page_rows = capture_json!("gh", "api", format(endpoint_template, page:))
+        raise Error, "status response was not an array" unless page_rows.is_a?(Array)
+
+        rows.concat(page_rows)
+        break if page_rows.length < 100
+
+        page += 1
+      end
+      rows
+    end
+
+    def ensure_exact_head!(row, head_sha, context, sha_key: "head_sha")
+      actual = row[sha_key].to_s
+      return if actual == head_sha
+
+      raise Error, "#{context} was not bound to exact head #{head_sha} (found #{actual.empty? ? 'missing' : actual})"
+    end
+
+    def normalize_actions_row(row, kind, dependabot:, head_sha: nil)
+      {
+        "kind" => kind,
+        "id" => row["id"],
+        "name" => row["name"].to_s,
+        "status" => row["status"].to_s,
+        "conclusion" => row["conclusion"],
+        "url" => row["html_url"].to_s,
+        "head_sha" => head_sha || row["head_sha"].to_s,
+        "actor" => row.dig("actor", "login").to_s,
+        "triggering_actor" => row.dig("triggering_actor", "login").to_s,
+        "dependabot" => dependabot
+      }
+    end
+
+    def dependabot_attributed?(row)
+      candidates = [
+        row.dig("actor", "login"),
+        row.dig("triggering_actor", "login"),
+        row.dig("check_suite", "creator", "login"),
+        row.dig("app", "slug"),
+        row.dig("check_suite", "head_branch")
+      ].compact.map(&:to_s)
+      candidates.any? do |value|
+        value.casecmp?("dependabot") || value.casecmp?("dependabot[bot]") ||
+          value.start_with?("dependabot/")
+      end
     end
 
     # `gh pr checks` exits non-zero for ordinary failing/pending checks and when
@@ -544,14 +882,27 @@ module PrCiReadiness
       per_page = 100
       jobs = []
       page = 1
+      expected_total = nil
       loop do
         data = capture_json!("gh", "api", "repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=#{per_page}&page=#{page}")
         page_jobs = data.fetch("jobs", [])
+        page_total = data["total_count"]
+        unless page_jobs.is_a?(Array) && page_total.is_a?(Integer) && page_total >= 0
+          raise Error, "Actions jobs response was incomplete"
+        end
+
+        expected_total ||= page_total
+        raise Error, "Actions jobs total_count changed during pagination" unless page_total == expected_total
+
         jobs.concat(page_jobs)
         break if page_jobs.length < per_page
 
         page += 1
       end
+      unless jobs.length == expected_total
+        raise Error, "Actions jobs pagination was incomplete: expected #{expected_total}, received #{jobs.length}"
+      end
+
       jobs
     end
 

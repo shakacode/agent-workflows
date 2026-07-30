@@ -6,8 +6,11 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "tmpdir"
+require "time"
 
 SCRIPT = File.expand_path("pr-merge-submit", __dir__)
+ASSURANCE_SCRIPT = File.expand_path("merge-assurance", __dir__)
+load ASSURANCE_SCRIPT
 load SCRIPT
 
 class PrMergeSubmitTest < Minitest::Test
@@ -468,6 +471,86 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_merge_assurance_receipt_flag_is_required_before_any_gh_call
+    result, log = run_cli(mode: "direct", include_merge_assurance_receipt: false)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--merge-assurance-receipt is required"
+    assert_empty log
+  end
+
+  def test_unavailable_merge_assurance_receipt_stops_before_any_gh_call
+    result, log = run_cli(mode: "direct", receipt_mode: :missing)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "merge-assurance receipt is unavailable"
+    assert_empty log
+  end
+
+  def test_unknown_nested_in_receipt_evidence_stops_before_any_mutation
+    result, log = run_cli(mode: "direct", receipt_mode: :nested_unknown)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "receipt evidence does not currently qualify"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_unavailable_autonomous_helper_result_stops_before_any_mutation
+    result, log = run_cli(mode: "direct", receipt_mode: :autonomous_unavailable)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "receipt evidence does not currently qualify"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_evidence_digest_and_envelope_binding_mismatches_stop_before_any_gh_call
+    {
+      digest_mismatch: "evidence digest mismatch",
+      binding_mismatch: "bindings or accounting do not match"
+    }.each do |receipt_mode, expected|
+      result, log = run_cli(mode: "direct", receipt_mode:)
+
+      refute result.fetch(:status).success?, receipt_mode
+      assert_includes result.fetch(:stderr), expected, receipt_mode
+      assert_empty log, receipt_mode
+    end
+  end
+
+  def test_stale_and_future_receipts_stop_before_any_gh_call
+    { stale: "stale", future: "future" }.each do |receipt_mode, expected|
+      result, log = run_cli(mode: "direct", receipt_mode:)
+
+      refute result.fetch(:status).success?, receipt_mode
+      assert_includes result.fetch(:stderr), expected, receipt_mode
+      assert_empty log, receipt_mode
+    end
+  end
+
+  def test_receipt_age_and_future_skew_boundaries_are_exactly_300_and_30_seconds
+    runner = PrMergeSubmit::Runner.new
+    now = Time.iso8601("2026-07-30T12:00:00Z")
+
+    runner.send(:validate_receipt_freshness!, { "issued_at" => (now - 300).iso8601 }, now)
+    runner.send(:validate_receipt_freshness!, { "issued_at" => (now + 30).iso8601 }, now)
+    assert_raises(PrMergeSubmit::Error) do
+      runner.send(:validate_receipt_freshness!, { "issued_at" => (now - 300.001).iso8601(3) }, now)
+    end
+    assert_raises(PrMergeSubmit::Error) do
+      runner.send(:validate_receipt_freshness!, { "issued_at" => (now + 30.001).iso8601(3) }, now)
+    end
+  end
+
+  def test_live_base_sha_mismatch_stops_before_any_mutation
+    result, log = run_cli(mode: "direct", receipt_mode: :mismatched_base_sha)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "receipt base SHA mismatch"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
   def test_expected_base_is_required
     result, log = run_cli(mode: "direct", include_expected_base: false)
 
@@ -579,6 +662,8 @@ class PrMergeSubmitTest < Minitest::Test
     include_expected_base: true,
     subject: "Fix the thing (#42)",
     body: nil,
+    include_merge_assurance_receipt: true,
+    receipt_mode: :valid,
     after_stub_warmup: nil
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
@@ -588,9 +673,19 @@ class PrMergeSubmitTest < Minitest::Test
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path) if mode.include?("timeout")
       after_stub_warmup&.call
+      receipt_path = File.join(dir, "merge-assurance-receipt.json")
+      unless receipt_mode == :missing
+        write_merge_assurance_receipt(
+          receipt_path, mode: receipt_mode, repo:, head: expected_head,
+                        base_ref: "main", host: HOST, pr_number: 42
+        )
+      end
       stdout, stderr, status = Open3.capture3(
         cli_environment(dir, log_path, mode),
-        *cli_arguments(repo, expected_head, include_expected_head, include_expected_base, subject:, body:)
+        *cli_arguments(
+          repo, expected_head, include_expected_head, include_expected_base,
+          subject:, body:, include_merge_assurance_receipt:, receipt_path:
+        )
       )
       log = File.exist?(log_path) ? File.read(log_path) : ""
       [{ stdout:, stderr:, status: }, log]
@@ -605,9 +700,17 @@ class PrMergeSubmitTest < Minitest::Test
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path)
       after_stub_warmup&.call
+      receipt_path = File.join(dir, "merge-assurance-receipt.json")
+      write_merge_assurance_receipt(
+        receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
+                      base_ref: "main", host: HOST, pr_number: 42
+      )
       result = Open3.popen3(
         cli_environment(dir, log_path, mode),
-        *cli_arguments("owner/repo", HEAD_SHA, true, true)
+        *cli_arguments(
+          "owner/repo", HEAD_SHA, true, true,
+          include_merge_assurance_receipt: true, receipt_path:
+        )
       ) do |stdin, stdout, stderr, wait_thread|
         stdin.close
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
@@ -658,7 +761,11 @@ class PrMergeSubmitTest < Minitest::Test
     SOLE_CALL_TIMEOUT_GH_SECONDS
   end
 
-  def cli_arguments(repo, expected_head, include_expected_head, include_expected_base, subject: "Fix the thing (#42)", body: nil)
+  def cli_arguments(
+    repo, expected_head, include_expected_head, include_expected_base,
+    subject: "Fix the thing (#42)", body: nil,
+    include_merge_assurance_receipt: true, receipt_path: nil
+  )
     args = [
       SCRIPT, "42", "--repo", repo, "--host", HOST,
       "--method", "squash", "--subject", subject
@@ -666,7 +773,92 @@ class PrMergeSubmitTest < Minitest::Test
     args.concat(["--body", body]) unless body.nil?
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", "main"]) if include_expected_base
+    args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
     args
+  end
+
+  def write_merge_assurance_receipt(path, mode:, repo:, head:, base_ref:, host:, pr_number:)
+    now = Time.now.utc
+    base_sha = mode == :mismatched_base_sha ? "c" * 40 : "b" * 40
+    checked_at = (now - 1).iso8601
+    scope = lambda do |name, rows|
+      {
+        "state" => rows.empty? ? "NOT_APPLICABLE" : "READY",
+        "source" => "github.test.#{name}",
+        "complete" => true,
+        "head_sha" => head,
+        "rows" => rows,
+        "checked_at" => checked_at
+      }
+    end
+    ci_result = {
+      "contract" => "pr-ci-readiness",
+      "version" => 2,
+      "repo" => repo,
+      "pr" => pr_number,
+      "head_sha" => head,
+      "checked_at" => checked_at,
+      "verdict" => "READY",
+      "ordinary_verdict" => "READY",
+      "scopes" => {
+        "required_status_check_rollup" => scope.call(
+          "required", [{ "name" => "required", "bucket" => "pass" }]
+        ),
+        "github_actions" => scope.call(
+          "actions", [{ "name" => "CI", "status" => "completed", "conclusion" => "success" }]
+        ),
+        "dependabot" => scope.call("dependabot", []),
+        "other" => scope.call("other", [])
+      }
+    }
+    autonomous_result = {
+      "verdict" => "autonomous-merge-eligible",
+      "head_sha" => head,
+      "policy_provenance" => "git:#{base_sha}",
+      "helper_provenance" => "trusted-base:#{base_sha}",
+      "helper_trust" => {
+        "status" => "mechanically-verified",
+        "manifest" => { "digest" => "sha256:#{'d' * 64}" }
+      },
+      "evidence_failures" => []
+    }
+    context = {
+      "contract" => "merge-assurance-context",
+      "version" => 1,
+      "host" => host,
+      "repo" => repo,
+      "pr" => pr_number,
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "head_sha" => head,
+      "authority" => "auto_merge_when_gates_pass",
+      "diff_identity" => "e" * 64,
+      "human_merge_decision" => nil,
+      "walkthrough" => nil,
+      "semantic_github_actions_change" => false,
+      "operations" => []
+    }
+    receipt = MergeAssurance.assess(
+      ci_result:, autonomous_result:, context:, now:
+    )
+    raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
+
+    case mode
+    when :nested_unknown
+      receipt.dig("evidence", "autonomous_result", "helper_trust", "manifest")["note"] = "UNKNOWN"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :autonomous_unavailable
+      receipt["evidence"]["autonomous_result"] = nil
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :digest_mismatch
+      receipt["evidence_digest"] = "sha256:#{'0' * 64}"
+    when :binding_mismatch
+      receipt["bindings"]["diff_identity"] = "f" * 64
+    when :stale
+      receipt["issued_at"] = (now - 301).iso8601
+    when :future
+      receipt["issued_at"] = (now + 60).iso8601
+    end
+    File.write(path, JSON.generate(receipt))
   end
 
   def fake_gh(mode:, head:, base:, url_host:)
@@ -690,6 +882,7 @@ class PrMergeSubmitTest < Minitest::Test
           "pullRequest" => {
             "headRefOid" => head,
             "baseRefName" => base,
+            "baseRefOid" => "b" * 40,
             "merged" => true,
             "mergedAt" => "2026-07-20T15:00:00Z",
             "url" => "https://#{url_host}/owner/repo/pull/42",
@@ -775,6 +968,7 @@ class PrMergeSubmitTest < Minitest::Test
                 "id" => "PR_42",
                 "headRefOid" => #{head.inspect},
                 "baseRefName" => live_base,
+                "baseRefOid" => #{('b' * 40).inspect},
                 "state" => merged ? "MERGED" : "OPEN",
                 "isDraft" => false,
                 "url" => "https://#{url_host}/owner/repo/pull/42",

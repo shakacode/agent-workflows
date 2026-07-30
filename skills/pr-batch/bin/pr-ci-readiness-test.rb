@@ -143,6 +143,117 @@ class PrCiReadinessTest < Minitest::Test
     assert_includes PrCiReadiness::USAGE, '"viewer_pending_review_drafts"'
     assert_includes PrCiReadiness::USAGE, '"scope": "authenticated_viewer"'
   end
+
+  def test_versioned_exact_head_scope_contract_has_four_closed_states
+    head = "a" * 40
+    ready = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: true,
+      rows: [{ "name" => "ci", "status" => "completed", "conclusion" => "success" }],
+      checked_at: "2026-07-30T12:00:00Z"
+    )
+    not_ready = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: true,
+      rows: [{ "name" => "ci", "status" => "in_progress", "conclusion" => nil }],
+      checked_at: "2026-07-30T12:00:00Z"
+    )
+    not_applicable = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: true, rows: [],
+      checked_at: "2026-07-30T12:00:00Z"
+    )
+    unknown = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: false,
+      rows: [], error: "query failed", checked_at: "2026-07-30T12:00:00Z"
+    )
+
+    assert_equal "READY", ready.fetch("state")
+    assert_equal "NOT_READY", not_ready.fetch("state")
+    assert_equal "NOT_APPLICABLE", not_applicable.fetch("state")
+    assert_equal "UNKNOWN", unknown.fetch("state")
+    assert_equal(
+      %w[checked_at complete head_sha rows source state],
+      ready.keys.sort
+    )
+    assert_equal "query failed", unknown.fetch("error")
+  end
+
+  def test_exact_head_evidence_contract_fails_closed_for_unknown_or_not_ready_scope
+    head = "a" * 40
+    scopes = {
+      "required_status_check_rollup" => PrCiReadiness.evidence_scope(
+        source: "github.pull_request.status_check_rollup.required", head_sha: head,
+        complete: true, rows: [{ "name" => "required", "bucket" => "pass" }],
+        checked_at: "2026-07-30T12:00:00Z"
+      ),
+      "github_actions" => PrCiReadiness.evidence_scope(
+        source: "github.actions.exact_head", head_sha: head, complete: true, rows: [],
+        checked_at: "2026-07-30T12:00:00Z"
+      ),
+      "dependabot" => PrCiReadiness.evidence_scope(
+        source: "github.dependabot.exact_head", head_sha: head, complete: false,
+        rows: [], error: "unavailable", checked_at: "2026-07-30T12:00:00Z"
+      ),
+      "other" => PrCiReadiness.evidence_scope(
+        source: "github.checks_and_statuses.exact_head.non_required", head_sha: head,
+        complete: true,
+        rows: [{ "name" => "external", "state" => "failure" }],
+        checked_at: "2026-07-30T12:00:00Z"
+      )
+    }
+
+    contract = PrCiReadiness.evidence_contract(
+      repo: "owner/repo", pr_number: 7, head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z", scopes:
+    )
+
+    assert_equal "pr-ci-readiness", contract.fetch("contract")
+    assert_equal 2, contract.fetch("version")
+    assert_equal head, contract.fetch("head_sha")
+    assert_equal "UNKNOWN", contract.fetch("verdict")
+    assert_equal scopes, contract.fetch("scopes")
+  end
+
+  def test_exact_head_inventory_partitions_dynamic_actions_dependabot_and_other_rows
+    head = "a" * 40
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [{ "workflow" => "CI", "name" => "required", "bucket" => "pass" }],
+      required_complete: true,
+      actions_rows: [
+        { "kind" => "run", "id" => 10, "name" => "CI", "status" => "completed",
+          "conclusion" => "success", "dependabot" => false },
+        { "kind" => "check_run", "id" => 11, "name" => "dynamic-matrix", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "github-actions", "dependabot" => false },
+        { "kind" => "run", "id" => 12, "name" => "Dependabot Updates", "status" => "completed",
+          "conclusion" => "success", "dependabot" => true }
+      ],
+      actions_complete: true,
+      check_runs: [
+        { "kind" => "check_run", "id" => 13, "name" => "required", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "external-ci", "dependabot" => false },
+        { "kind" => "check_run", "id" => 14, "name" => "security", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "external-ci", "dependabot" => false }
+      ],
+      check_runs_complete: true,
+      statuses: [
+        { "kind" => "status", "id" => 15, "name" => "required", "state" => "success" },
+        { "kind" => "status", "id" => 16, "name" => "legacy", "state" => "success" }
+      ],
+      statuses_complete: true
+    )
+
+    assert_equal(["required"], scopes.dig("required_status_check_rollup", "rows").map { |row| row["name"] })
+    assert_equal(
+      %w[CI dynamic-matrix],
+      scopes.dig("github_actions", "rows").map { |row| row["name"] }.sort
+    )
+    assert_equal(["Dependabot Updates"], scopes.dig("dependabot", "rows").map { |row| row["name"] })
+    assert_equal(
+      %w[legacy security],
+      scopes.dig("other", "rows").map { |row| row["name"] }.sort
+    )
+    assert_equal(%w[READY READY READY READY], scopes.values.map { |scope| scope.fetch("state") })
+  end
 end
 
 # CLI / Runner integration via a fake gh on PATH.
@@ -151,12 +262,15 @@ class PrCiReadinessCliTest < Minitest::Test
   # checks` JSON, then run the real script with that dir prepended to PATH.
   def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", runs: {}, review_pages: {}, review_error: false,
                    required_check_fields: nil, rejected_check_field: nil, check_stderr: nil, check_status: 0,
-                   required_check_error: nil, full_check_error: nil)
+                   required_check_error: nil, full_check_error: nil, exact_actions: [],
+                   exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
+                   exact_actions_total_count: nil)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(gh, fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error,
                                     required_check_fields, rejected_check_field, check_stderr, check_status,
-                                    required_check_error, full_check_error))
+                                    required_check_error, full_check_error, exact_actions, exact_check_runs,
+                                    exact_statuses, exact_inventory_error, exact_actions_total_count))
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
@@ -167,10 +281,15 @@ class PrCiReadinessCliTest < Minitest::Test
   # `gh pr checks ...`, returning the required vs full payload based on the
   # presence of the --required flag. Non-JSON ("") models "no required checks".
   def fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error, required_check_fields,
-                     rejected_check_field, check_stderr, check_status, required_check_error, full_check_error)
+                     rejected_check_field, check_stderr, check_status, required_check_error, full_check_error,
+                     exact_actions, exact_check_runs, exact_statuses, exact_inventory_error,
+                     exact_actions_total_count)
     run_cases = runs.map do |run_id, payload|
       run_json = JSON.generate(payload.fetch(:run))
-      jobs_json = JSON.generate("total_count" => payload.fetch(:jobs).length, "jobs" => payload.fetch(:jobs))
+      jobs_json = JSON.generate(
+        "total_count" => payload.fetch(:jobs_total_count, payload.fetch(:jobs).length),
+        "jobs" => payload.fetch(:jobs)
+      )
       jobs_case =
         if payload.fetch(:jobs_error, false)
           <<~BASH
@@ -298,6 +417,27 @@ class PrCiReadinessCliTest < Minitest::Test
       JSON
           exit 0
         fi
+        if [[ "$*" = *"actions/runs?head_sha="* ]]; then
+          #{exact_inventory_error == 'actions' ? 'exit 1' : ''}
+          cat <<'JSON'
+      #{JSON.generate('total_count' => exact_actions_total_count || exact_actions.length, 'workflow_runs' => exact_actions)}
+      JSON
+          exit 0
+        fi
+        if [[ "$*" = *"/check-runs?per_page="* ]]; then
+          #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
+          cat <<'JSON'
+      #{JSON.generate('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
+      JSON
+          exit 0
+        fi
+        if [[ "$*" = *"/statuses?per_page="* ]]; then
+          #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
+          cat <<'JSON'
+      #{JSON.generate(exact_statuses)}
+      JSON
+          exit 0
+        fi
       #{run_cases}
       fi
       exit 1
@@ -331,6 +471,152 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", data["verdict"]
       assert_equal true, data["required_used"]
       assert_equal 123, data["pr"]
+    end
+  end
+
+  def test_cli_emits_complete_exact_head_inventory_with_dynamic_and_dependabot_rows
+    head = "a" * 40
+    action_runs = [
+      {
+        "id" => 100, "name" => "Dynamic CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "success",
+        "actor" => { "login" => "octocat" }, "html_url" => "https://example/run/100"
+      },
+      {
+        "id" => 101, "name" => "Dependabot CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "success",
+        "actor" => { "login" => "dependabot[bot]" }, "html_url" => "https://example/run/101"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      [
+        run.fetch("id").to_s,
+        {
+          run:,
+          jobs: [{
+            "id" => run.fetch("id") * 10, "name" => "#{run.fetch('name')} job",
+            "status" => "completed", "conclusion" => "success",
+            "html_url" => "#{run.fetch('html_url')}/job"
+          }]
+        }
+      ]
+    end
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: action_runs,
+      exact_check_runs: [
+        {
+          "id" => 300, "name" => "dynamic-check", "status" => "completed",
+          "conclusion" => "success", "head_sha" => head,
+          "app" => { "slug" => "github-actions" }, "html_url" => "https://example/check/300"
+        },
+        {
+          "id" => 301, "name" => "security", "status" => "completed",
+          "conclusion" => "success", "head_sha" => head,
+          "app" => { "slug" => "external-ci" }, "html_url" => "https://example/check/301"
+        }
+      ],
+      exact_statuses: [
+        {
+          "id" => 400, "context" => "legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/400"
+        }
+      ],
+      runs:
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "pr-ci-readiness", data.fetch("contract")
+      assert_equal 2, data.fetch("version")
+      assert_equal head, data.fetch("head_sha")
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal(
+        ["Dynamic CI", "Dynamic CI job", "dynamic-check"],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("name") }.sort
+      )
+      assert_equal(
+        ["Dependabot CI", "Dependabot CI job"],
+        data.dig("scopes", "dependabot", "rows").map { |row| row.fetch("name") }.sort
+      )
+      assert_equal(
+        %w[legacy security],
+        data.dig("scopes", "other", "rows").map { |row| row.fetch("name") }.sort
+      )
+      data.fetch("scopes").each_value do |scope|
+        assert_equal true, scope.fetch("complete")
+        assert_equal head, scope.fetch("head_sha")
+        refute_nil scope.fetch("checked_at")
+      end
+    end
+  end
+
+  def test_partial_exact_head_actions_page_is_unknown_not_complete
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [{
+        "id" => 100, "name" => "CI", "head_sha" => head,
+        "status" => "completed", "conclusion" => "success",
+        "actor" => { "login" => "octocat" }
+      }],
+      runs: {
+        "100" => {
+          run: {
+            "id" => 100, "name" => "CI", "head_sha" => head,
+            "status" => "completed", "conclusion" => "success"
+          },
+          jobs: []
+        }
+      },
+      exact_actions_total_count: 2
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal "UNKNOWN", data.dig("scopes", "github_actions", "state")
+      assert_equal false, data.dig("scopes", "github_actions", "complete")
+      assert_includes data.dig("scopes", "github_actions", "error"), "incomplete"
+    end
+  end
+
+  def test_partial_exact_head_actions_jobs_are_unknown_not_complete
+    head = "a" * 40
+    action_run = {
+      "id" => 100, "name" => "CI", "head_sha" => head,
+      "status" => "completed", "conclusion" => "success",
+      "actor" => { "login" => "octocat" }
+    }
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [action_run],
+      runs: {
+        "100" => {
+          run: action_run,
+          jobs: [{
+            "id" => 1000, "name" => "unit", "status" => "completed",
+            "conclusion" => "success"
+          }],
+          jobs_total_count: 2
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "github_actions", "complete")
+      assert_includes data.dig("scopes", "github_actions", "error"), "incomplete"
     end
   end
 
