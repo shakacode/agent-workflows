@@ -37,6 +37,16 @@ module MergeAssurance
   AUTONOMOUS_METRIC_KEYS = %w[
     changed_files changed_lines commits reviewed_heads
   ].freeze
+  AUTONOMOUS_RUNTIME_MANIFEST_KEYS = %w[
+    helper
+    decision-library
+    evidence-library
+    policy-library
+    policy-glob-library
+    policy-yaml-library
+    runtime-trust-library
+    calibration-decision
+  ].freeze
   AUTONOMOUS_PORTABLE_GATE_IDS = %w[
     architectural-product-judgment
     autonomous-merge-policy-change
@@ -268,7 +278,7 @@ module MergeAssurance
     helper_trust = result["helper_trust"]
     unless exact_keys?(helper_trust, %w[manifest status]) &&
            helper_trust["status"] == "mechanically-verified" &&
-           helper_trust["manifest"].is_a?(Hash)
+           valid_autonomous_runtime_manifest?(helper_trust["manifest"])
       failures << "autonomous_result helper trust is unavailable"
     end
     metrics = result["metrics"]
@@ -334,6 +344,11 @@ module MergeAssurance
     value.is_a?(Hash) &&
       value.keys.length == expected_keys.length &&
       (value.keys - expected_keys).empty?
+  end
+
+  def valid_autonomous_runtime_manifest?(manifest)
+    exact_keys?(manifest, AUTONOMOUS_RUNTIME_MANIFEST_KEYS) &&
+      manifest.values.all? { |path| path.is_a?(String) && !path.strip.empty? }
   end
 
   def valid_autonomous_gates?(gates)

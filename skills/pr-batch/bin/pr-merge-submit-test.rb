@@ -825,7 +825,17 @@ class PrMergeSubmitTest < Minitest::Test
       "helper_provenance" => "trusted-base:#{base_sha}",
       "helper_trust" => {
         "status" => "mechanically-verified",
-        "manifest" => { "digest" => "sha256:#{'d' * 64}" }
+        "manifest" => {
+          "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+          "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
+          "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+          "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
+          "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+          "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+          "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
+          "calibration-decision" =>
+            "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+        }
       },
       "metrics" => {
         "changed_files" => 1,

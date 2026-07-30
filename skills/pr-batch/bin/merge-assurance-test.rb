@@ -206,6 +206,32 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal [true, true, true], verdicts
   end
 
+  def test_autonomous_helper_trust_requires_the_exact_runtime_manifest
+    canonical = autonomous_runtime_manifest
+    invalid_manifests = {
+      "empty" => {},
+      "non-string-value" => canonical.merge("helper" => 123),
+      "missing-role" => canonical.reject { |role, _path| role == "decision-library" },
+      "extra-role" => canonical.merge("future-library" => "/trusted/future.rb"),
+      "blank-path" => canonical.merge("policy-library" => " "),
+      "legacy-digest-only" => { "digest" => "sha256:#{'d' * 64}" }
+    }
+
+    eligible_invalid_manifests = invalid_manifests.filter_map do |label, manifest|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["helper_trust"]["manifest"] = manifest
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_invalid_manifests
+  end
+
   def test_autonomous_result_requires_exactly_empty_evidence_failures
     autonomous = autonomous_result("autonomous-merge-eligible")
     autonomous["evidence_failures"] = ["live force-push evidence is incomplete"]
@@ -1269,7 +1295,7 @@ class MergeAssuranceTest < Minitest::Test
       "helper_provenance" => "trusted-base:#{BASE_SHA}",
       "helper_trust" => {
         "status" => "mechanically-verified",
-        "manifest" => { "digest" => "sha256:#{'d' * 64}" }
+        "manifest" => autonomous_runtime_manifest
       },
       "metrics" => { "changed_files" => 1, "changed_lines" => 2, "commits" => 1, "reviewed_heads" => 0 },
       "path_matches" => [],
@@ -1280,6 +1306,20 @@ class MergeAssuranceTest < Minitest::Test
       "rollback_assessment" => "code-only-rollback-established",
       "human_decision_evidence" => human_decision_evidence,
       "evidence_failures" => []
+    }
+  end
+
+  def autonomous_runtime_manifest
+    {
+      "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+      "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
+      "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+      "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
+      "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+      "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+      "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
+      "calibration-decision" =>
+        "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
     }
   end
 
