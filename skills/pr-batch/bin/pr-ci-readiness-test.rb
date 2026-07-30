@@ -217,7 +217,10 @@ class PrCiReadinessTest < Minitest::Test
     scopes = PrCiReadiness.inventory_scopes(
       head_sha: head,
       checked_at: "2026-07-30T12:00:00Z",
-      required_rows: [{ "workflow" => "CI", "name" => "required", "bucket" => "pass" }],
+      required_rows: [
+        { "workflow" => "external-ci", "name" => "required", "bucket" => "pass" },
+        { "workflow" => "", "name" => "required-status", "bucket" => "pass" }
+      ],
       required_complete: true,
       actions_rows: [
         { "kind" => "run", "id" => 10, "name" => "CI", "status" => "completed",
@@ -236,23 +239,51 @@ class PrCiReadinessTest < Minitest::Test
       ],
       check_runs_complete: true,
       statuses: [
-        { "kind" => "status", "id" => 15, "name" => "required", "state" => "success" },
-        { "kind" => "status", "id" => 16, "name" => "legacy", "state" => "success" }
+        { "kind" => "status", "id" => 15, "name" => "required-status", "state" => "success" },
+        { "kind" => "status", "id" => 16, "name" => "required", "state" => "success" },
+        { "kind" => "status", "id" => 17, "name" => "legacy", "state" => "success" }
       ],
       statuses_complete: true
     )
 
-    assert_equal(["required"], scopes.dig("required_status_check_rollup", "rows").map { |row| row["name"] })
+    assert_equal(
+      %w[required required-status],
+      scopes.dig("required_status_check_rollup", "rows").map { |row| row["name"] }
+    )
     assert_equal(
       %w[CI dynamic-matrix],
       scopes.dig("github_actions", "rows").map { |row| row["name"] }.sort
     )
     assert_equal(["Dependabot Updates"], scopes.dig("dependabot", "rows").map { |row| row["name"] })
     assert_equal(
-      %w[legacy security],
+      %w[legacy required security],
       scopes.dig("other", "rows").map { |row| row["name"] }.sort
     )
     assert_equal(%w[READY READY READY READY], scopes.values.map { |scope| scope.fetch("state") })
+  end
+
+  def test_required_rollup_filters_other_checks_by_producer_and_context_not_name_alone
+    head = "a" * 40
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [{ "workflow" => "required-ci", "name" => "lint", "bucket" => "pass" }],
+      required_complete: true,
+      actions_rows: [],
+      actions_complete: true,
+      check_runs: [
+        { "kind" => "check_run", "id" => 21, "name" => "lint", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "required-ci", "dependabot" => false },
+        { "kind" => "check_run", "id" => 22, "name" => "lint", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "external-ci", "dependabot" => false }
+      ],
+      check_runs_complete: true,
+      statuses: [],
+      statuses_complete: true
+    )
+
+    other_ids = scopes.dig("other", "rows").map { |row| row.fetch("id") }
+    assert_equal [22], other_ids
   end
 end
 

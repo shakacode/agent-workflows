@@ -180,13 +180,14 @@ module PrCiReadiness
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
     statuses_complete:, errors: {}
   )
-    required_names = required_rows.filter_map do |row|
-      row["name"].to_s unless row["name"].to_s.empty?
+    required_identities = required_rows.filter_map do |row|
+      name = row["name"].to_s
+      [row["workflow"].to_s, name] unless name.empty?
     end
     dependabot_rows = actions_rows.select { |row| row["dependabot"] == true }
     github_actions_rows = actions_rows.reject { |row| row["dependabot"] == true }
     other_rows = (check_runs + statuses).reject do |row|
-      required_names.include?(row["name"].to_s) ||
+      required_identities.include?([row["app_slug"].to_s, row["name"].to_s]) ||
         row["app_slug"].to_s == "github-actions" ||
         row["dependabot"] == true
     end

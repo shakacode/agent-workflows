@@ -357,6 +357,26 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes collision.fetch("message"), "CHANGELOG.md"
   end
 
+  def test_directory_rename_endpoints_collide_with_descendant_touches
+    %w[old new].each do |endpoint|
+      lanes = [lane("lane-a"), lane("lane-b")]
+      descendant = "lib/#{endpoint}/nested.rb"
+      maps = {
+        "lane-a" => touch_map(1, %w[lib/old lib/new]).merge(
+          "renames" => [{ "old" => "lib/old", "new" => "lib/new" }]
+        ),
+        "lane-b" => touch_map(2, [descendant])
+      }
+
+      result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps))
+
+      refute status.success?, endpoint
+      collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+      assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
+      assert_includes collision.fetch("message"), descendant, endpoint
+    end
+  end
+
   def test_shared_path_is_safe_in_different_waves
     lanes = [lane("lane-a", wave: "wave-a"), lane("lane-b", wave: "wave-b")]
     maps = {
@@ -644,12 +664,15 @@ class BatchPlanPreflightTest < Minitest::Test
       "generic" => { lanes: 5, risky: 3 }
     }
     caps.each do |backend, cap|
-      boundary = Array.new(cap.fetch(:lanes)) do |index|
-        surfaces = index < cap.fetch(:risky) ? ["security_boundary"] : []
-        lane("lane-#{index}", surfaces: surfaces)
+      lane_boundary = Array.new(cap.fetch(:lanes)) { |index| lane("lane-#{index}") }
+      _result, stderr, status = evaluate(input_for(lanes: lane_boundary, backend: backend))
+      assert status.success?, "#{backend} lane boundary: #{stderr}"
+
+      risky_boundary = Array.new(cap.fetch(:risky)) do |index|
+        lane("risky-#{index}", surfaces: ["security_boundary"])
       end
-      _result, stderr, status = evaluate(input_for(lanes: boundary, backend: backend))
-      assert status.success?, "#{backend} boundary: #{stderr}"
+      _result, stderr, status = evaluate(input_for(lanes: risky_boundary, backend: backend))
+      assert status.success?, "#{backend} risky boundary: #{stderr}"
 
       one_too_many = Array.new(cap.fetch(:lanes) + 1) { |index| lane("lane-#{index}") }
       result, _stderr, status = evaluate(input_for(lanes: one_too_many, backend: backend))
@@ -665,16 +688,75 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_backend_lane_cap_counts_only_the_active_launch_wave
+    active_lanes = Array.new(5) { |index| lane("active-#{index}", wave: "wave-a") }
+    future_lanes = Array.new(5) { |index| lane("future-#{index}", wave: "wave-b") }
+
+    result, stderr, status = evaluate(input_for(lanes: active_lanes + future_lanes, backend: "generic"))
+
+    assert status.success?, stderr
+    assert_equal active_lanes.map { |record| record.fetch("id") },
+                 result.dig("launch", "eligible_lane_ids")
+    assert_equal future_lanes.map { |record| record.fetch("id") },
+                 result.dig("launch", "held_lane_ids")
+  end
+
+  def test_any_risky_lane_limits_the_entire_active_wave_to_the_reduced_cap
+    lanes = Array.new(5) do |index|
+      surfaces = index.zero? ? ["security_boundary"] : []
+      lane("lane-#{index}", surfaces: surfaces)
+    end
+
+    %w[generic claude].each do |backend|
+      result, _stderr, status = evaluate(input_for(lanes: lanes, backend: backend))
+
+      refute status.success?, backend
+      cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
+      assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids"), backend
+    end
+  end
+
   def test_safe_changed_path_collisions_still_count_toward_risky_cap
-    lanes = Array.new(4) { |index| lane("lane-#{index}", wave: "wave-#{index}") }
+    lanes = Array.new(4) do |index|
+      lane("lane-#{index}").merge("serialization_group" => "shared-path-writers")
+    end
     maps = lanes.each_with_index.to_h do |record, index|
       [record.fetch("id"), touch_map(index + 1, ["CHANGELOG.md"])]
     end
-    result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps, backend: "generic"))
+    groups = [{ "id" => "shared-path-writers", "max_concurrency" => 1 }]
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, maps: maps, groups: groups, backend: "generic")
+    )
 
     refute status.success?
     cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
     assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids")
+  end
+
+  def test_serialized_directory_rename_collision_counts_toward_risky_cap
+    lanes = [
+      lane("rename").merge("serialization_group" => "directory-writers"),
+      lane("descendant").merge("serialization_group" => "directory-writers"),
+      lane("ordinary-a"),
+      lane("ordinary-b")
+    ]
+    maps = {
+      "rename" => touch_map(1, %w[lib/old lib/new]).merge(
+        "renames" => [{ "old" => "lib/old", "new" => "lib/new" }]
+      ),
+      "descendant" => touch_map(2, ["lib/new/nested.rb"]),
+      "ordinary-a" => touch_map(3, ["lib/ordinary-a.rb"]),
+      "ordinary-b" => touch_map(4, ["lib/ordinary-b.rb"])
+    }
+    groups = [{ "id" => "directory-writers", "max_concurrency" => 1 }]
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, maps: maps, groups: groups, backend: "generic")
+    )
+
+    refute status.success?
+    cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
+    assert_equal lanes.map { |record| record.fetch("id") }.sort, cap.fetch("lane_ids")
   end
 
   def test_unknown_external_api_support_blocks_implementation_but_allows_investigation
@@ -810,6 +892,20 @@ class BatchPlanPreflightTest < Minitest::Test
     codes = result.fetch("violations").map { |item| item.fetch("code") }
     assert_includes codes, "lane-id-invalid-or-duplicate"
     assert_includes codes, "lane-record-invalid"
+    refute_includes codes, "invalid-envelope"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_multiple_malformed_lane_ids_preserve_the_structured_lane_identity_violation
+    input = input_for(lanes: [lane("lane-a"), lane("lane-b")])
+    input.dig("plan", "lanes", 0).delete("id")
+    input.dig("plan", "lanes", 1)["id"] = []
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    codes = result.fetch("violations").map { |item| item.fetch("code") }
+    assert_includes codes, "lane-id-invalid-or-duplicate"
     refute_includes codes, "invalid-envelope"
     assert_empty result.dig("launch", "eligible_lane_ids")
   end

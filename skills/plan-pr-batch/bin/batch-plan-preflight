@@ -146,7 +146,12 @@ module BatchPlanPreflight
                           input["stage_dependency_plan"]
                         ))
       if changed_surfaces_valid
-        violations.concat(validate_caps(input["plan"]["backend"], lanes, input["file_touch_map"]))
+        violations.concat(validate_caps(
+                            input["plan"]["backend"],
+                            input["plan"]["active_wave"],
+                            lanes,
+                            input["file_touch_map"]
+                          ))
       end
     end
     violations.concat(validate_external_premises(input["plan"]["external_api_premises"], lane_ids))
@@ -399,7 +404,7 @@ module BatchPlanPreflight
     end
 
     violations = []
-    unless maps.keys.sort == lane_ids.sort
+    unless maps.keys.tally == lane_ids.tally
       violations << violation("file-touch-map-lanes-mismatch", "$.file_touch_map",
                               "File-touch map keys must exactly match planned lane ids.")
     end
@@ -506,7 +511,7 @@ module BatchPlanPreflight
                               "Gate trusted_plan_id must equal the supplied trusted plan id.")
     end
     gate_lane_ids = gate.fetch("lanes").filter_map { |lane| lane["id"] if lane.is_a?(Hash) }
-    if gate_lane_ids.sort != lane_ids.sort
+    if gate_lane_ids.tally != lane_ids.tally
       violations << violation("stage-dependency-gate-lanes-mismatch", "$.stage_dependency_gate.lanes",
                               "Completed gate lane ids must exactly match planned lane ids.")
     end
@@ -534,8 +539,8 @@ module BatchPlanPreflight
     lane_ids = lanes_by_id.keys.sort
     collisions = []
     lane_ids.combination(2) do |left_id, right_id|
-      shared_paths = maps.fetch(left_id).fetch("paths") & maps.fetch(right_id).fetch("paths")
-      next if shared_paths.empty?
+      collision_paths = colliding_paths(maps.fetch(left_id), maps.fetch(right_id))
+      next if collision_paths.empty?
       next if lanes_by_id.fetch(left_id)["wave"] != lanes_by_id.fetch(right_id)["wave"]
       next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
       next if serialized_by_edit_edge?(left_id, right_id, dependency_plan.fetch("edges"))
@@ -544,11 +549,24 @@ module BatchPlanPreflight
         "unsafe-concurrent-edit",
         "$.file_touch_map",
         "Same-wave lanes share changed path(s) without max-1 serialization or a typed edit edge: " \
-        "#{shared_paths.sort.join(', ')}.",
+        "#{collision_paths.sort.join(', ')}.",
         lane_ids: [left_id, right_id]
       )
     end
     collisions
+  end
+
+  def colliding_paths(left_map, right_map)
+    left_paths = left_map.fetch("paths")
+    right_paths = right_map.fetch("paths")
+    paths = left_paths & right_paths
+    left_map.fetch("renames").each do |rename|
+      paths.concat(right_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+    end
+    right_map.fetch("renames").each do |rename|
+      paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+    end
+    paths.uniq
   end
 
   def serialized_by_group?(left, right, groups)
@@ -605,9 +623,12 @@ module BatchPlanPreflight
     [eligible.sort, held.sort]
   end
 
-  def validate_caps(backend, lanes, maps)
+  def validate_caps(backend, active_wave, lanes, maps)
     return [] unless BACKEND_CAPS.key?(backend)
 
+    lanes = lanes.select { |lane| lane["wave"] == active_wave }
+    active_lane_ids = lanes.to_h { |lane| [lane.fetch("id"), true] }
+    maps = maps.select { |lane_id, _map| active_lane_ids.key?(lane_id) }
     caps = BACKEND_CAPS.fetch(backend)
     violations = []
     if lanes.length > caps.fetch("lanes")
@@ -621,20 +642,19 @@ module BatchPlanPreflight
     risky_lane_ids = lanes.filter_map do |lane|
       lane.fetch("id") unless lane.fetch("changed_surfaces").empty?
     end
-    path_owners = Hash.new { |hash, path| hash[path] = [] }
-    maps.each do |lane_id, map|
-      map.fetch("paths").each { |path| path_owners[path] << lane_id }
-    end
-    path_owners.each_value do |owners|
-      risky_lane_ids.concat(owners) if owners.uniq.length > 1
+    active_lane_ids.keys.combination(2) do |left_id, right_id|
+      next if colliding_paths(maps.fetch(left_id), maps.fetch(right_id)).empty?
+
+      risky_lane_ids.concat([left_id, right_id])
     end
     risky_lane_ids.uniq!
-    if risky_lane_ids.length > caps.fetch("risky")
+    if risky_lane_ids.any? && lanes.length > caps.fetch("risky")
       violations << violation(
         "backend-risky-cap-exceeded",
         "$.plan.lanes",
-        "#{backend} permits at most #{caps.fetch('risky')} risky/shared lanes; received #{risky_lane_ids.length}.",
-        lane_ids: risky_lane_ids.sort
+        "#{backend} permits at most #{caps.fetch('risky')} lanes in a risky/shared active wave; " \
+        "received #{lanes.length}.",
+        lane_ids: lanes.map { |lane| lane.fetch("id") }.sort
       )
     end
     violations
