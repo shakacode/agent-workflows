@@ -226,6 +226,15 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "mergePullRequest"
   end
 
+  def test_initial_queue_membership_with_a_merge_commit_is_not_exact_queue_proof
+    result, log = run_cli(mode: "already_queued_with_commit")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "lacks strict proof"
+    refute_includes log, "enqueuePullRequest"
+    refute_includes log, "mergePullRequest"
+  end
+
   def test_existing_exact_merge_is_idempotent
     result, log = run_cli(mode: "already_merged")
 
@@ -391,6 +400,39 @@ class PrMergeSubmitTest < Minitest::Test
     )
   end
 
+  def test_valid_merge_proof_wins_when_queue_fields_coexist
+    result, = run_cli(mode: "enqueue_graphql_error_merged_queued")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "already_merged", payload.fetch("submission")
+    assert_equal "merge_queue", payload.fetch("attempted_submission")
+    refute payload.key?("queue_method")
+  end
+
+  def test_terminal_queue_fields_with_an_invalid_commit_prove_neither_outcome
+    %w[UNKNOWN malformed].each do |merge_commit_oid|
+      result, = run_cli(mode: "enqueue_graphql_error_merged_queued", merge_commit_oid:)
+
+      assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
+      assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
+    end
+  end
+
+  def test_reconciliation_callers_reject_queue_state_with_a_merge_commit
+    {
+      "enqueue_transport_queued_with_commit" => "enqueuePullRequest",
+      "enqueue_graphql_error_queued_with_commit" => "enqueuePullRequest",
+      "direct_graphql_error_queued_with_commit" => "mergePullRequest"
+    }.each do |mode, attempted_mutation|
+      result, log = run_cli(mode:)
+
+      assert_equal 2, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "could not be proven", mode
+      assert_includes log, attempted_mutation, mode
+    end
+  end
+
   def test_successful_enqueue_response_preserves_queue_provenance_after_fast_merge
     result, = run_cli(mode: "queue_fast_merged")
 
@@ -412,6 +454,13 @@ class PrMergeSubmitTest < Minitest::Test
       assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
       assert_includes result.fetch(:stderr), "live membership could not be confirmed", merge_commit_oid
     end
+  end
+
+  def test_fast_post_enqueue_queue_with_a_merge_commit_is_not_exact_queue_proof
+    result, = run_cli(mode: "queue_post_queued_with_commit")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "live membership could not be confirmed"
   end
 
   def test_initial_metadata_timeout_is_bounded
@@ -1144,22 +1193,33 @@ class PrMergeSubmitTest < Minitest::Test
         queue_enabled = case current_mode
                         when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
+                             "already_queued_with_commit",
                              "enqueue_transport_queued", "enqueue_transport_merged",
+                             "enqueue_transport_queued_with_commit",
                              "enqueue_graphql_error", "enqueue_graphql_error_merged",
+                             "enqueue_graphql_error_merged_queued",
+                             "enqueue_graphql_error_queued_with_commit",
                              "enqueue_timeout_unknown", "enqueue_timeout_merged",
                              "enqueue_transport_base_race", "enqueue_graphql_error_base_race",
                              "enqueue_transport_queued_base_advanced", "queue_post_queued_base_advanced",
+                             "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
                         when "queue_race", "queue_race_merged", "queue_race_mixed_errors" then query_count.positive?
                         else false
                         end
         queued = case current_mode
-                 when "already_queued", "already_queued_base_advanced" then true
+                 when "already_queued", "already_queued_base_advanced",
+                      "already_queued_with_commit" then true
                  when "queue", "enqueue_transport_queued", "enqueue_non_object_response_queued",
                       "enqueue_transport_queued_base_advanced",
+                      "enqueue_transport_queued_with_commit",
+                      "enqueue_graphql_error_queued_with_commit",
+                      "enqueue_graphql_error_merged_queued",
                       "queue_entry_replaced_same_target",
-                      "queue_post_queued_base_advanced" then query_count.positive?
+                      "queue_post_queued_base_advanced",
+                      "queue_post_queued_with_commit",
+                      "direct_graphql_error_queued_with_commit" then query_count.positive?
                  when "queue_race" then query_count > 1
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
@@ -1170,6 +1230,7 @@ class PrMergeSubmitTest < Minitest::Test
           "direct_incomplete_response_merged", "direct_non_object_response_merged",
           "direct_timeout_merged", "direct_transport_merged_base_advanced",
           "enqueue_transport_merged", "enqueue_graphql_error_merged",
+          "enqueue_graphql_error_merged_queued",
           "enqueue_timeout_merged", "queue_fast_merged", "queue_fast_merged_base_advanced",
           "queue_race_merged"
         ].include?(current_mode)
@@ -1222,7 +1283,13 @@ class PrMergeSubmitTest < Minitest::Test
                 "url" => "https://#{url_host}/#{repo}/pull/42",
                 "merged" => merged,
                 "mergedAt" => merged ? "2026-07-20T15:00:00Z" : nil,
-                "mergeCommit" => merged ? { "oid" => #{merge_commit_oid.inspect} } : nil,
+                "mergeCommit" => if merged || %w[
+                  already_queued_with_commit queue_post_queued_with_commit
+                  enqueue_transport_queued_with_commit enqueue_graphql_error_queued_with_commit
+                  direct_graphql_error_queued_with_commit
+                ].include?(current_mode)
+                                   { "oid" => #{merge_commit_oid.inspect} }
+                                 end,
                 "isInMergeQueue" => queued,
                 "mergeQueueEntry" => queue_entry,
                 "isMergeQueueEnabled" => queue_enabled
@@ -1272,6 +1339,12 @@ class PrMergeSubmitTest < Minitest::Test
             "errors" => [{ "message" => "nested field resolution failed" }]
           )
           exit 1
+        when "direct_graphql_error_queued_with_commit"
+          puts JSON.generate(
+            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
+            "errors" => [{ "message" => "nested field resolution failed" }]
+          )
+          exit 1
         when "direct_incomplete_response_merged", "direct_incomplete_response_unknown"
           puts JSON.generate("data" => { "mergePullRequest" => { "pullRequest" => nil } })
         when "direct_non_object_response_merged"
@@ -1288,13 +1361,15 @@ class PrMergeSubmitTest < Minitest::Test
         end
         if [
           "enqueue_transport_queued", "enqueue_transport_merged", "enqueue_transport_base_race",
-          "enqueue_transport_queued_base_advanced"
+          "enqueue_transport_queued_base_advanced", "enqueue_transport_queued_with_commit"
         ].include?(#{mode.inspect})
           warn "connection reset after request"
           exit 1
         end
         if [
-          "enqueue_graphql_error", "enqueue_graphql_error_merged", "enqueue_graphql_error_base_race"
+          "enqueue_graphql_error", "enqueue_graphql_error_merged", "enqueue_graphql_error_merged_queued",
+          "enqueue_graphql_error_base_race",
+          "enqueue_graphql_error_queued_with_commit"
         ].include?(#{mode.inspect})
           puts JSON.generate(
             "data" => { "enqueuePullRequest" => { "mergeQueueEntry" => nil } },

@@ -486,7 +486,11 @@ module PrMergeSubmit
     end
 
     def submit(pull_request, options)
-      return existing_queue_result(pull_request, options) if pull_request["isInMergeQueue"] == true
+      if pull_request["isInMergeQueue"] == true
+        return existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
+
+        raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof"
+      end
       unless pull_request["isInMergeQueue"] == false && pull_request["mergeQueueEntry"].nil?
         raise UnknownOutcome, "PR merge-queue membership is inconsistent or UNKNOWN"
       end
@@ -812,7 +816,10 @@ module PrMergeSubmit
     end
 
     def exact_queue?(pull_request, options)
-      pull_request["isInMergeQueue"] == true && exact_target?(pull_request, options) &&
+      pull_request["state"] == "OPEN" &&
+        pull_request["merged"] == false &&
+        pull_request["mergeCommit"].nil? &&
+        pull_request["isInMergeQueue"] == true && exact_target?(pull_request, options) &&
         pull_request["mergeQueueEntry"].is_a?(Hash) && pull_request.dig("mergeQueueEntry", "id")
     end
 
