@@ -258,6 +258,7 @@ module MergeAssurance
     failures << "operations must contain objects" if operations.any? { |operation| !operation.is_a?(Hash) }
 
     bundle_ids = []
+    approval_ids = []
     ordinary.each_with_index do |bundle, index|
       unless bundle.keys.sort == %w[approval bundle_id items type]
         failures << "ordinary follow-up bundle has unknown or missing fields"
@@ -274,11 +275,24 @@ module MergeAssurance
              bundle["items"].all? { |item| item.is_a?(String) && !item.strip.empty? }
         failures << "ordinary follow-up bundle #{bundle_id} items are invalid"
       end
-      expected_scope = index.zero? ? "first-bundle" : "additional-bundle"
-      unless valid_follow_up_approval?(bundle["approval"], expected_scope, now)
-        qualifier = index.zero? ? "explicit human approval" : "additional explicit approval"
-        failures << "ordinary follow-up bundle #{bundle_id} lacks #{qualifier}"
+      approval_id = bundle.dig("approval", "approval_id")
+      if approval_id.is_a?(String) && !approval_id.strip.empty?
+        if approval_ids.include?(approval_id)
+          failures << "ordinary follow-up approval #{approval_id} is duplicated"
+        end
+        approval_ids << approval_id
       end
+      expected_scope = index.zero? ? "first-bundle" : "additional-bundle"
+      next if valid_follow_up_approval?(
+        bundle["approval"],
+        bundle:,
+        context:,
+        scope: expected_scope,
+        now:
+      )
+
+      qualifier = index.zero? ? "explicit human approval" : "additional explicit approval"
+      failures << "ordinary follow-up bundle #{bundle_id} lacks #{qualifier}"
     end
 
     if context["semantic_github_actions_change"] == true
@@ -288,7 +302,7 @@ module MergeAssurance
     elsif semantic_trackers.any?
       failures << "semantic GitHub Actions tracker is invalid for a non-semantic change"
     end
-    semantic_trackers.each { |tracker| validate_semantic_tracker(tracker, failures) }
+    semantic_trackers.each { |tracker| validate_semantic_tracker(tracker, context, now, failures) }
     failures << "post-merge audit permits at most one report-only operation" if report_only_operations.length > 1
     report_only_operations.each do |operation|
       next if operation.keys.sort == %w[disposition provenance reason type] &&
@@ -320,9 +334,10 @@ module MergeAssurance
     }
   end
 
-  def validate_semantic_tracker(tracker, failures)
+  def validate_semantic_tracker(tracker, context, now, failures)
     required_keys = %w[
-      changed_files cleanup_instructions exercise expected_evidence source_pr tracker type
+      changed_files cleanup_instructions exercise expected_evidence read_verification
+      source_pr tracker type
     ]
     allowed_keys = required_keys + ["owner"]
     unless (tracker.keys - allowed_keys).empty? && (required_keys - tracker.keys).empty?
@@ -334,10 +349,23 @@ module MergeAssurance
         failures << "semantic GitHub Actions tracker #{key} is required"
       end
     end
-    failures << "semantic GitHub Actions tracker URL is invalid" unless
-      tracker["tracker"].to_s.match?(%r{\Ahttps://[^\s]+\z})
-    failures << "semantic GitHub Actions source PR is invalid" unless
-      tracker["source_pr"].to_s.match?(%r{\Ahttps://[^\s]+/pull/[1-9]\d*\z})
+    tracker_pattern = %r{
+      \Ahttps://#{Regexp.escape(context['host'].to_s)}/
+      #{Regexp.escape(context['repo'].to_s)}/issues/([1-9]\d*)\z
+    }x
+    tracker_match = tracker["tracker"].to_s.match(tracker_pattern)
+    failures << "semantic GitHub Actions tracker URL is not a same-repository issue" unless tracker_match
+    expected_source_pr = "https://#{context['host']}/#{context['repo']}/pull/#{context['pr']}"
+    failures << "semantic GitHub Actions source PR binding mismatch" unless
+      tracker["source_pr"] == expected_source_pr
+    validate_tracker_read_verification(
+      tracker["read_verification"],
+      tracker:,
+      issue_number: tracker_match&.captures&.first&.to_i,
+      context:,
+      now:,
+      failures:
+    )
     changed_files = tracker["changed_files"]
     unless changed_files.is_a?(Array) && !changed_files.empty? &&
            changed_files.all? do |path|
@@ -352,19 +380,71 @@ module MergeAssurance
     end
   end
 
-  def valid_follow_up_approval?(approval, scope, _now)
+  def validate_tracker_read_verification(verification, tracker:, issue_number:, context:, now:, failures:)
+    required_keys = %w[
+      checked_at complete contract diff_identity head_sha host issue provenance repo
+      source_pr status tracker version
+    ]
+    unless verification.is_a?(Hash) && verification.keys.sort == required_keys.sort
+      failures << "semantic GitHub Actions tracker read verification is missing or malformed"
+      return
+    end
+    unless verification["contract"] == "semantic-tracker-read-verification" &&
+           verification["version"] == 1 &&
+           verification["status"] == "verified" &&
+           verification["complete"] == true &&
+           verification["provenance"] == "authenticated-github-api"
+      failures << "semantic GitHub Actions tracker read verification is unavailable or incomplete"
+    end
+    expected_bindings = {
+      "tracker" => tracker["tracker"],
+      "issue" => issue_number,
+      "host" => context["host"],
+      "repo" => context["repo"],
+      "source_pr" => tracker["source_pr"],
+      "head_sha" => context["head_sha"],
+      "diff_identity" => context["diff_identity"]
+    }
+    mismatched = expected_bindings.keys.reject do |key|
+      verification[key] == expected_bindings[key]
+    end
+    unless mismatched.empty?
+      failures << "semantic GitHub Actions tracker read verification binding mismatch: #{mismatched.join(', ')}"
+    end
+    validate_timestamp(
+      verification["checked_at"],
+      now,
+      "semantic GitHub Actions tracker read verification",
+      failures
+    )
+  end
+
+  def valid_follow_up_approval?(approval, bundle:, context:, scope:, now: Time.now.utc)
     return false unless approval.is_a?(Hash)
     return false unless approval.keys.sort == %w[
-      approved_at contract decision provenance scope version
+      approval_id approved_at bundle_id contract decision diff_identity head_sha
+      host items_digest pr provenance repo scope version
     ].sort
     return false unless approval["contract"] == "follow-up-approval" && approval["version"] == 1
     return false unless approval["decision"] == "approved" && approval["scope"] == scope
     return false unless %w[direct-user human-maintainer].include?(approval["provenance"])
+    return false unless approval["approval_id"].is_a?(String) && !approval["approval_id"].strip.empty?
+    return false unless approval["items_digest"] == canonical_items_digest(bundle["items"])
+    return false unless approval["bundle_id"] == bundle["bundle_id"]
+    return false unless approval["host"] == context["host"] &&
+                        approval["repo"] == context["repo"] &&
+                        approval["pr"] == context["pr"] &&
+                        approval["head_sha"] == context["head_sha"] &&
+                        approval["diff_identity"] == context["diff_identity"]
 
-    Time.iso8601(approval["approved_at"].to_s)
+    validate_approval_timestamp(approval["approved_at"], now)
     true
   rescue ArgumentError
     false
+  end
+
+  def validate_approval_timestamp(raw, _now)
+    Time.iso8601(raw.to_s)
   end
 
   def validate_timestamp(raw, now, label, failures)
@@ -389,6 +469,10 @@ module MergeAssurance
 
   def evidence_digest(evidence)
     "sha256:#{Digest::SHA256.hexdigest(canonical_json(evidence))}"
+  end
+
+  def canonical_items_digest(items)
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(items))}"
   end
 
   def valid_evidence_digest?(receipt)

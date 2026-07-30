@@ -126,6 +126,117 @@ class MergeAssuranceTest < Minitest::Test
     )
   end
 
+  def test_follow_up_approval_rejects_items_changed_after_approval
+    bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
+    bundle["items"] << "scope added after approval"
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass", operations: [bundle]),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+  end
+
+  def test_follow_up_approval_rejects_cross_bundle_and_context_reuse
+    mutations = {
+      "bundle_id" => "bundle-other",
+      "host" => "github.example",
+      "repo" => "other/repo",
+      "pr" => 43,
+      "head_sha" => "d" * 40,
+      "diff_identity" => "e" * 64
+    }
+    eligible_reuses = mutations.filter_map do |field, value|
+      bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
+      bundle.fetch("approval")[field] = value
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context("auto_merge_when_gates_pass", operations: [bundle]),
+        now: NOW
+      )
+      field if result.fetch("eligible")
+    end
+
+    assert_empty eligible_reuses
+  end
+
+  def test_follow_up_approval_identity_is_unique_across_bundles
+    first = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
+    additional = ordinary_follow_up("bundle-2", approval_scope: "additional-bundle")
+    additional.fetch("approval")["approval_id"] = first.dig("approval", "approval_id")
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        operations: [first, additional]
+      ),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+  end
+
+  def test_one_additional_approval_cannot_authorize_multiple_bundles
+    first = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
+    second = ordinary_follow_up("bundle-2", approval_scope: "additional-bundle")
+    third = ordinary_follow_up("bundle-3", approval_scope: "additional-bundle")
+    third["approval"] = second["approval"]
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        operations: [first, second, third]
+      ),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+  end
+
+  def test_follow_up_approval_preserves_human_provenance_and_timestamp_validation
+    mutations = {
+      "provenance" => "automation",
+      "approved_at" => "not-a-timestamp"
+    }
+    eligible_mutations = mutations.filter_map do |field, value|
+      bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
+      bundle.fetch("approval")[field] = value
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context("auto_merge_when_gates_pass", operations: [bundle]),
+        now: NOW
+      )
+      field if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mutations
+  end
+
+  def test_follow_up_approval_bindings_are_covered_by_receipt_evidence_digest
+    bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass", operations: [bundle]),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+    assert_equal(
+      bundle.fetch("approval"),
+      result.dig("evidence", "context", "operations", 0, "approval")
+    )
+    tampered = JSON.parse(JSON.generate(result))
+    tampered.dig("evidence", "context", "operations", 0, "approval")["approval_id"] = "other"
+    refute MergeAssurance.valid_evidence_digest?(tampered)
+  end
+
   def test_semantic_github_actions_change_requires_exactly_one_complete_mandatory_tracker
     missing = MergeAssurance.assess(
       ci_result: ready_ci,
@@ -164,6 +275,101 @@ class MergeAssuranceTest < Minitest::Test
       semantic_tracker,
       eligible.dig("follow_up_accounting", "semantic_github_actions_tracker")
     )
+  end
+
+  def test_semantic_tracker_rejects_reviewer_reproduction_with_unbound_urls
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [
+          semantic_tracker.merge(
+            "tracker" => "https://example.invalid/issues/1",
+            "source_pr" => "https://evil.invalid/pull/999"
+          )
+        ]
+      ),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+  end
+
+  def test_semantic_tracker_rejects_a_naked_url_without_read_verification
+    tracker_without_read_verification = semantic_tracker.reject do |key, _value|
+      key == "read_verification"
+    end
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [tracker_without_read_verification]
+      ),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+  end
+
+  def test_semantic_tracker_read_verification_fails_closed_on_invalid_or_unavailable_evidence
+    verification = tracker_read_verification
+    cases = {
+      "malformed" => {},
+      "unavailable" => verification.merge("status" => "unavailable"),
+      "incomplete" => verification.merge("complete" => false),
+      "unknown" => verification.merge("status" => "UNKNOWN"),
+      "stale" => verification.merge("checked_at" => "2026-07-30T11:54:59Z"),
+      "future" => verification.merge("checked_at" => "2026-07-30T12:00:31Z")
+    }
+    eligible_cases = cases.filter_map do |name, read_verification|
+      tracker = semantic_tracker.merge("read_verification" => read_verification)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context(
+          "auto_merge_when_gates_pass",
+          semantic_github_actions_change: true,
+          operations: [tracker]
+        ),
+        now: NOW
+      )
+      name if result.fetch("eligible")
+    end
+
+    assert_empty eligible_cases
+  end
+
+  def test_semantic_tracker_read_verification_rejects_every_exact_binding_mismatch
+    mutations = {
+      "tracker" => "https://github.com/owner/repo/issues/2",
+      "issue" => 2,
+      "host" => "github.example",
+      "repo" => "other/repo",
+      "source_pr" => "https://github.com/owner/repo/pull/43",
+      "head_sha" => "d" * 40,
+      "diff_identity" => "e" * 64
+    }
+    eligible_mutations = mutations.filter_map do |field, value|
+      read_verification = tracker_read_verification.merge(field => value)
+      tracker = semantic_tracker.merge("read_verification" => read_verification)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context(
+          "auto_merge_when_gates_pass",
+          semantic_github_actions_change: true,
+          operations: [tracker]
+        ),
+        now: NOW
+      )
+      field if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mutations
   end
 
   def test_post_merge_audit_defaults_to_accounted_and_report_only_is_a_typed_operation
@@ -345,20 +551,29 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def ordinary_follow_up(bundle_id, approval_scope:)
+    items = ["deferred cleanup"]
     approval = if approval_scope
                  {
                    "contract" => "follow-up-approval",
                    "version" => 1,
+                   "approval_id" => "approval-#{bundle_id}",
                    "decision" => "approved",
                    "provenance" => "direct-user",
                    "scope" => approval_scope,
+                   "bundle_id" => bundle_id,
+                   "items_digest" => MergeAssurance.canonical_items_digest(items),
+                   "host" => "github.com",
+                   "repo" => "owner/repo",
+                   "pr" => 42,
+                   "head_sha" => HEAD_SHA,
+                   "diff_identity" => DIFF_IDENTITY,
                    "approved_at" => "2026-07-30T11:59:30Z"
                  }
                end
     {
       "type" => "ordinary-follow-up-bundle",
       "bundle_id" => bundle_id,
-      "items" => ["deferred cleanup"],
+      "items" => items,
       "approval" => approval
     }
   end
@@ -368,11 +583,30 @@ class MergeAssuranceTest < Minitest::Test
       "type" => "semantic-github-actions-tracker",
       "tracker" => "https://github.com/owner/repo/issues/1",
       "source_pr" => "https://github.com/owner/repo/pull/42",
+      "read_verification" => tracker_read_verification,
       "changed_files" => [".github/workflows/ci.yml"],
       "exercise" => "Open a secondary verification PR after merge.",
       "expected_evidence" => "The dynamic matrix checks appear on the verification PR.",
       "cleanup_instructions" => "Close the verification-only PR without merging.",
       "owner" => "maintainer"
+    }
+  end
+
+  def tracker_read_verification
+    {
+      "contract" => "semantic-tracker-read-verification",
+      "version" => 1,
+      "status" => "verified",
+      "complete" => true,
+      "provenance" => "authenticated-github-api",
+      "checked_at" => "2026-07-30T11:59:30Z",
+      "tracker" => "https://github.com/owner/repo/issues/1",
+      "issue" => 1,
+      "host" => "github.com",
+      "repo" => "owner/repo",
+      "source_pr" => "https://github.com/owner/repo/pull/42",
+      "head_sha" => HEAD_SHA,
+      "diff_identity" => DIFF_IDENTITY
     }
   end
 end
