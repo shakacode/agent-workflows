@@ -14,6 +14,7 @@
     "type": "batch-plan-preflight",
     "version": 1,
     "plan": {
+      "id": "batch-ror-a-17-1-wave-a-20260729",
       "backend": "claude",
       "active_wave": "wave-a",
       "lanes": [
@@ -102,6 +103,7 @@
         }
       ]
     },
+    "lane_lifecycle_receipts": [],
     "file_touch_map": {
       "lane-4813-changelog-171": {
         "type": "planned-path-evidence",

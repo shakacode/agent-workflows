@@ -3,6 +3,7 @@
 
 require "json"
 require "date"
+require "time"
 require "uri"
 
 module BatchPlanPreflight
@@ -26,6 +27,30 @@ module BatchPlanPreflight
     "design" => %w[design],
     "durable-plan" => %w[plan-state batch comment]
   }.freeze
+  INLINE_LIFECYCLE_FIELDS = %w[
+    completed
+    completed_at
+    completion
+    completion_source
+    completion_source_kind
+    lifecycle
+    lifecycle_state
+    state
+    status
+  ].freeze
+  LIFECYCLE_RECEIPT_KEYS = %w[
+    batch_plan_id
+    completed_at
+    lane_id
+    producer
+    receipt_ref
+    recorded_at
+    stage_dependency_plan_id
+    state
+    type
+    version
+    wave
+  ].freeze
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -50,14 +75,15 @@ module BatchPlanPreflight
     item
   end
 
-  def result(status, eligible_lane_ids, held_lane_ids, violations)
+  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [])
     {
       "type" => "batch-plan-preflight",
       "version" => 1,
       "status" => status,
       "launch" => {
         "eligible_lane_ids" => status == "accepted" ? eligible_lane_ids : [],
-        "held_lane_ids" => status == "accepted" ? held_lane_ids : []
+        "held_lane_ids" => status == "accepted" ? held_lane_ids : [],
+        "completed_lane_ids" => status == "accepted" ? completed_lane_ids : []
       },
       "violations" => violations
     }
@@ -76,6 +102,12 @@ module BatchPlanPreflight
     lane_ids = lanes.map { |lane| lane.fetch("id") }
     violations = validate_plan(input["plan"])
     violations.concat(validate_unknown_decisions(input["plan"]))
+    lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_receipts(
+      input["lane_lifecycle_receipts"],
+      input["plan"],
+      input["stage_dependency_plan"]
+    )
+    violations.concat(lifecycle_violations)
     file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
     violations.concat(file_touch_violations)
     violations.concat(validate_stage_dependencies(
@@ -99,13 +131,18 @@ module BatchPlanPreflight
       lanes,
       input["stage_dependency_gate"],
       input["plan"]["active_wave"],
-      input["plan"]["serialization_groups"]
+      input["plan"]["serialization_groups"],
+      completed_lane_ids
     )
-    result(status, eligible_lane_ids, held_lane_ids, violations)
+    result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: completed_lane_ids.sort)
   end
 
   def validate_plan(plan)
     violations = []
+    unless nonempty_identity?(plan["id"])
+      violations << violation("batch-plan-id-invalid", "$.plan.id",
+                              "Batch plan id must be a nonempty known identity.")
+    end
     unless BACKENDS.include?(plan["backend"])
       violations << violation("backend-invalid", "$.plan.backend",
                               "Backend must be exactly codex, claude, or generic.")
@@ -122,6 +159,14 @@ module BatchPlanPreflight
     end
     plan.fetch("lanes").each_with_index do |lane, index|
       path = "$.plan.lanes[#{index}]"
+      if (lane.keys & INLINE_LIFECYCLE_FIELDS).any?
+        violations << violation(
+          "inline-lane-lifecycle-forbidden",
+          path,
+          "Lane lifecycle cannot be declared inline; provide a workflow-control lifecycle receipt.",
+          lane_ids: [lane["id"]].compact
+        )
+      end
       unless nonempty_identity?(lane["id"]) && nonempty_identity?(lane["wave"]) &&
              PURPOSES.include?(lane["purpose"])
         violations << violation("lane-record-invalid", path,
@@ -153,6 +198,80 @@ module BatchPlanPreflight
       end
     end
     violations
+  end
+
+  def validate_lane_lifecycle_receipts(receipts, plan, stage_dependency_plan)
+    unless receipts.is_a?(Array)
+      return [
+        [violation(
+          "lane-lifecycle-receipts-array-required",
+          "$.lane_lifecycle_receipts",
+          "Provide the workflow-control lifecycle receipt collection, even when empty."
+        )],
+        []
+      ]
+    end
+
+    lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
+    completed_lane_ids = []
+    violations = []
+    receipts.each_with_index do |receipt, index|
+      path = "$.lane_lifecycle_receipts[#{index}]"
+      unless valid_lane_lifecycle_receipt?(
+        receipt,
+        plan["id"],
+        stage_dependency_plan["id"],
+        lanes_by_id
+      )
+        violations << violation(
+          "lane-lifecycle-receipt-invalid",
+          path,
+          "Require the exact workflow-control receipt with canonical durable-state reference, " \
+          "matching identities, terminal state, and completed-at/recorded-at chronology."
+        )
+        next
+      end
+
+      completed_lane_ids << receipt["lane_id"]
+    end
+    if completed_lane_ids.uniq.length != completed_lane_ids.length
+      violations << violation(
+        "lane-lifecycle-receipt-duplicate",
+        "$.lane_lifecycle_receipts",
+        "Provide at most one completed lifecycle receipt per lane."
+      )
+    end
+    [violations, completed_lane_ids.uniq]
+  end
+
+  def valid_lane_lifecycle_receipt?(receipt, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
+    return false unless receipt.is_a?(Hash) && receipt.keys.sort == LIFECYCLE_RECEIPT_KEYS
+    return false unless receipt["type"] == "workflow-control-lane-lifecycle-receipt" &&
+                        receipt["version"] == 1 &&
+                        receipt["producer"] == "pr-batch-workflow-control"
+    return false unless receipt["batch_plan_id"] == batch_plan_id &&
+                        receipt["stage_dependency_plan_id"] == stage_dependency_plan_id
+
+    lane = lanes_by_id[receipt["lane_id"]]
+    return false unless lane && receipt["wave"] == lane["wave"] && receipt["state"] == "completed"
+    return false unless utc_timestamp?(receipt["completed_at"]) && utc_timestamp?(receipt["recorded_at"])
+    return false unless Time.iso8601(receipt["completed_at"]) <= Time.iso8601(receipt["recorded_at"])
+
+    receipt["receipt_ref"] == workflow_control_receipt_ref(receipt)
+  end
+
+  def workflow_control_receipt_ref(receipt)
+    "workflow-control-state://#{receipt['batch_plan_id']}/stage-dependency-plans/" \
+      "#{receipt['stage_dependency_plan_id']}/waves/#{receipt['wave']}/lanes/" \
+      "#{receipt['lane_id']}/#{receipt['state']}"
+  end
+
+  def utc_timestamp?(value)
+    value.is_a?(String) &&
+      value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/) &&
+      Time.iso8601(value).utc.iso8601 == value
+  rescue ArgumentError
+    false
   end
 
   def validate_unknown_decisions(value, path = "$.plan")
@@ -348,12 +467,14 @@ module BatchPlanPreflight
     end
   end
 
-  def launch_partition(lanes, gate, active_wave, serialization_groups)
+  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids)
     gate_lanes = gate.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
     eligible = []
     held = []
     lanes.each do |lane|
       lane_id = lane.fetch("id")
+      next if completed_lane_ids.include?(lane_id)
+
       gate_lane = gate_lanes.fetch(lane_id)
       if lane["wave"] != active_wave
         held << lane_id

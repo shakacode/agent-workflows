@@ -56,6 +56,25 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
+  def lane_lifecycle_receipt(lane_id: "lane-a", wave: "wave-a",
+                             batch_plan_id: "batch-plan-1",
+                             stage_dependency_plan_id: "trusted-plan-1")
+    {
+      "type" => "workflow-control-lane-lifecycle-receipt",
+      "version" => 1,
+      "producer" => "pr-batch-workflow-control",
+      "receipt_ref" => "workflow-control-state://#{batch_plan_id}/stage-dependency-plans/" \
+                       "#{stage_dependency_plan_id}/waves/#{wave}/lanes/#{lane_id}/completed",
+      "batch_plan_id" => batch_plan_id,
+      "stage_dependency_plan_id" => stage_dependency_plan_id,
+      "lane_id" => lane_id,
+      "wave" => wave,
+      "state" => "completed",
+      "completed_at" => "2026-07-30T00:00:00Z",
+      "recorded_at" => "2026-07-30T00:00:01Z"
+    }
+  end
+
   def gate_lane(id, patch_edit: true)
     permissions = {
       "read_only_discovery" => true,
@@ -77,7 +96,8 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
-                backend: "generic", active_wave: "wave-a")
+                backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
+                lifecycle_receipts: [])
     maps ||= lanes.each_with_index.to_h { |record, index| [record.fetch("id"), touch_map(index + 1, ["lib/#{record.fetch('id')}.rb"])] }
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
@@ -85,6 +105,7 @@ class BatchPlanPreflightTest < Minitest::Test
       "type" => "batch-plan-preflight",
       "version" => 1,
       "plan" => {
+        "id" => batch_plan_id,
         "backend" => backend,
         "active_wave" => active_wave,
         "lanes" => lanes,
@@ -92,6 +113,7 @@ class BatchPlanPreflightTest < Minitest::Test
         "external_api_premises" => premises
       },
       "file_touch_map" => maps,
+      "lane_lifecycle_receipts" => lifecycle_receipts,
       "stage_dependency_plan" => {
         "contract" => "stage-dependency-plan",
         "version" => 1,
@@ -254,6 +276,138 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["lane-b"], result.dig("launch", "held_lane_ids")
   end
 
+  def test_max_one_serialization_advances_after_trusted_lane_completion
+    lanes = [lane("lane-b"), lane("lane-a")]
+    lanes.each { |record| record["serialization_group"] = "changelog-writers" }
+    maps = {
+      "lane-a" => touch_map(1, ["CHANGELOG.md"]),
+      "lane-b" => touch_map(2, ["CHANGELOG.md"])
+    }
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+
+    first_result, first_stderr, first_status = evaluate(
+      input_for(lanes: lanes, maps: maps, groups: groups)
+    )
+    assert first_status.success?, first_stderr
+    assert_equal ["lane-a"], first_result.dig("launch", "eligible_lane_ids")
+
+    receipt = lane_lifecycle_receipt(lane_id: "lane-a")
+    second_result, second_stderr, second_status = evaluate(
+      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: [receipt])
+    )
+    assert second_status.success?, second_stderr
+    assert_equal ["lane-b"], second_result.dig("launch", "eligible_lane_ids")
+    assert_equal [], second_result.dig("launch", "held_lane_ids")
+    assert_equal ["lane-a"], second_result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_inline_lane_completion_claim_is_rejected
+    input = input_for
+    planned_lane = input.dig("plan", "lanes", 0)
+    planned_lane["completed"] = true
+    planned_lane["completion_source_kind"] = "durable-coordinator"
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "inline-lane-lifecycle-forbidden"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_untrusted_unknown_or_malformed_lifecycle_receipts_are_rejected
+    valid_receipt = lane_lifecycle_receipt
+    cases = {
+      "unidentified producer" => lambda { |receipt|
+        receipt["producer"] = "caller-authored"
+      },
+      "unknown state" => lambda { |receipt|
+        receipt["state"] = "UNKNOWN"
+      },
+      "missing durable reference" => lambda { |receipt|
+        receipt.delete("receipt_ref")
+      },
+      "foreign batch" => lambda { |receipt|
+        receipt["batch_plan_id"] = "other-batch"
+      },
+      "foreign dependency plan" => lambda { |receipt|
+        receipt["stage_dependency_plan_id"] = "other-plan"
+      },
+      "unknown lane" => lambda { |receipt|
+        receipt["lane_id"] = "lane-z"
+      },
+      "wrong wave" => lambda { |receipt|
+        receipt["wave"] = "wave-z"
+      },
+      "impossible chronology" => lambda { |receipt|
+        receipt["completed_at"] = "2026-07-30T00:00:02Z"
+      },
+      "noncanonical reference" => lambda { |receipt|
+        receipt["receipt_ref"] = "https://example.test/completed"
+      },
+      "caller source label" => lambda { |receipt|
+        receipt["source_kind"] = "durable-coordinator"
+      }
+    }
+
+    cases.each do |label, mutation|
+      receipt = JSON.parse(JSON.generate(valid_receipt))
+      mutation.call(receipt)
+      result, _stderr, status = evaluate(input_for(lifecycle_receipts: [receipt]))
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "lane-lifecycle-receipt-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+      assert_empty result.dig("launch", "completed_lane_ids"), label
+    end
+  end
+
+  def test_completed_lanes_never_relaunch_and_exhausted_group_has_none_eligible
+    lanes = [lane("lane-b"), lane("lane-a")]
+    lanes.each { |record| record["serialization_group"] = "changelog-writers" }
+    maps = {
+      "lane-a" => touch_map(1, ["CHANGELOG.md"]),
+      "lane-b" => touch_map(2, ["CHANGELOG.md"])
+    }
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    receipts = [
+      lane_lifecycle_receipt(lane_id: "lane-a"),
+      lane_lifecycle_receipt(lane_id: "lane-b")
+    ]
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: receipts)
+    )
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert_empty result.dig("launch", "held_lane_ids")
+    assert_equal %w[lane-a lane-b], result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_lifecycle_receipt_collection_is_required_and_rejects_duplicate_lane_receipts
+    missing = input_for
+    missing.delete("lane_lifecycle_receipts")
+    result, _stderr, status = evaluate(missing)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipts-array-required"
+
+    receipt = lane_lifecycle_receipt
+    duplicate = input_for(lifecycle_receipts: [receipt, receipt.dup])
+    result, _stderr, status = evaluate(duplicate)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-duplicate"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
   def test_typed_edit_edge_serializes_shared_path_and_gate_holds_consumer
     lanes = [lane("foundation"), lane("consumer")]
     maps = {
@@ -381,8 +535,10 @@ class BatchPlanPreflightTest < Minitest::Test
     assert(fixture.fetch("comment_refs").all? { |ref| ref.start_with?("https://github.com/") })
     refute_includes fixture_json, "/Users/justin"
     assert_equal 5, fixture.dig("input", "plan", "lanes").length
+    assert_equal "batch-ror-a-17-1-wave-a-20260729", fixture.dig("input", "plan", "id")
     assert_equal "claude", fixture.dig("input", "plan", "backend")
     assert_equal "wave-a", fixture.dig("input", "plan", "active_wave")
+    assert_empty fixture.dig("input", "lane_lifecycle_receipts")
     assert_empty fixture.dig("input", "stage_dependency_plan", "edges")
     assert(fixture.dig("input", "plan", "lanes").all? { |record| record["purpose"] == "implementation" })
     assert(fixture.dig("input", "plan", "lanes").all? { |record| record.dig("qa", "disposition") == "not-required" })

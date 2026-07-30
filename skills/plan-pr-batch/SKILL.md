@@ -335,11 +335,16 @@ Plan a PR batch
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
      owns schema, collision, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
-     requires `plan.active_wave`. Preserve real PR `pr-file-touch-map` verified
-     results unchanged; represent explicit pre-PR paths with the helper's typed
-     `planned-path-evidence` v1 record and durable evidence reference. A rejected
-     result launches no worker; an accepted result permits only its eligible
-     lanes and keeps its held lanes unlaunched.
+     requires `plan.id`, `plan.active_wave`, and a top-level
+     `lane_lifecycle_receipts` array. Advance max-one groups only from the
+     helper's exact workflow-control completion receipt bound to the batch,
+     dependency plan, lane, wave, canonical durable-state reference, and
+     completed/recorded chronology; inline lane completion claims are invalid.
+     Preserve real PR `pr-file-touch-map` verified results unchanged; represent
+     explicit pre-PR paths with the helper's typed `planned-path-evidence` v1
+     record and durable evidence reference. A rejected result launches no
+     worker; an accepted result permits only its eligible lanes and keeps its
+     held lanes unlaunched.
      Before launch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var /
      loaded-skill / repo-local pinned-copy chain, then send the requested
      route/dispatcher, explicit route and dispatch authority, ordered candidates,
