@@ -24,7 +24,7 @@ class PrMergeSubmitTest < Minitest::Test
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
   #
-  # These four modes hang exactly one call -- the mutation -- and need the
+  # These modes hang exactly one call -- the mutation -- and need the
   # metadata query before it and the reconciliation query after it to succeed.
   # At 0.1s those queries lost the race with the stub's own startup, so the run
   # died in setup and the mutation-timeout path was never exercised (#222).
@@ -35,7 +35,6 @@ class PrMergeSubmitTest < Minitest::Test
   # stale-assignment-sweep-test.rb uses; only the stub's deliberate 5s sleep
   # can cross it.
   MUTATION_TIMEOUT_MODES = %w[
-    direct_timeout_unknown direct_timeout_merged
     enqueue_timeout_unknown enqueue_timeout_merged
   ].freeze
   MUTATION_TIMEOUT_GH_SECONDS = "2"
@@ -47,42 +46,14 @@ class PrMergeSubmitTest < Minitest::Test
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
   MUTATION_TIMEOUT_ATTEMPTS = 3
 
-  def test_direct_merge_uses_exact_head_bound_graphql_mutation
+  def test_open_queue_disabled_pr_fails_closed_before_direct_merge_mutation
     result, log = run_cli(mode: "direct")
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "direct", payload.fetch("submission")
-    assert_equal "main", payload.fetch("expected_base")
-    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
-    assert_includes log, "GH_HOST=#{HOST} api graphql"
-    assert_includes log, "GraphQL-Features: merge_queue"
-    assert_includes log, "mergePullRequest"
-    assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
-    assert_includes log, "mergeMethod=SQUASH"
-    assert_includes log, "commitHeadline=Fix the thing (#42)"
-    refute_includes log, "pr merge"
-    refute_includes log, "--auto"
-  end
-
-  def test_direct_merge_accepts_advanced_base_oid_after_exact_merged_response
-    result, log = run_cli(mode: "direct_base_advanced")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "direct", payload.fetch("submission")
-    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
-    assert_includes log, "mergePullRequest"
-  end
-
-  def test_direct_merge_response_requires_a_full_hex_merge_commit_oid
-    ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
-      result, log = run_cli(mode: "direct", merge_commit_oid:)
-
-      assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
-      assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
-      assert_includes log, "mergePullRequest", merge_commit_oid
-    end
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "direct merge is unsupported"
+    assert_includes result.fetch(:stderr), "merge queue"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
   end
 
   def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
@@ -102,62 +73,12 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "--auto"
   end
 
-  def test_queue_enablement_race_retries_only_after_explicit_queue_error
-    result, log = run_cli(mode: "queue_race")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "merge_queue", payload.fetch("submission")
-    assert_includes payload.fetch("direct_attempt"), "set by the merge queue"
-    query_count = log.lines.count { |line| line.include?("number=42") }
-    assert_equal 3, query_count
-    assert_includes log, "mergePullRequest"
-    assert_includes log, "enqueuePullRequest"
-  end
-
-  def test_queue_control_error_followed_by_merge_preserves_unknown_provenance
-    result, log = run_cli(mode: "queue_race_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "already_merged", payload.fetch("submission")
-    assert_equal "UNKNOWN", payload.fetch("merge_provenance")
-    assert_equal true, payload.fetch("reconciled_after_failure")
-    refute payload.key?("method")
-    assert_includes log, "mergePullRequest"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_unrelated_direct_failure_does_not_enqueue
-    result, log = run_cli(mode: "direct_failure")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    refute_includes log, "enqueuePullRequest"
-  end
-
   def test_enqueue_graphql_failure_with_unresolved_state_is_unknown
     result, log = run_cli(mode: "enqueue_graphql_error")
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "do not retry blindly"
     assert_includes log, "enqueuePullRequest"
-  end
-
-  def test_raw_queue_control_text_does_not_authorize_enqueue
-    result, log = run_cli(mode: "direct_raw_queue_error")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_mixed_graphql_errors_do_not_authorize_enqueue
-    result, log = run_cli(mode: "queue_race_mixed_errors")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    refute_includes log, "enqueuePullRequest"
   end
 
   def test_head_movement_stops_before_any_merge_mutation
@@ -178,15 +99,6 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
-  def test_successful_api_diagnostics_do_not_corrupt_json
-    result, = run_cli(mode: "direct_with_stderr")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "direct", payload.fetch("submission")
-    assert_includes payload.fetch("diagnostics"), "debug diagnostic"
-  end
-
   def test_returned_pr_url_must_match_explicit_host
     result, log = run_cli(mode: "direct", url_host: "github.com")
 
@@ -195,9 +107,9 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "mergePullRequest"
   end
 
-  def test_repository_name_and_commit_oid_are_sent_as_raw_strings
+  def test_repository_name_and_head_oid_are_sent_as_raw_strings
     result, log = run_cli(
-      mode: "direct", repo: "owner/123", head: NUMERIC_SHA,
+      mode: "queue", repo: "owner/123", head: NUMERIC_SHA,
       expected_head: NUMERIC_SHA
     )
 
@@ -271,41 +183,10 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_direct_transport_failure_reconciles_an_exact_merge
-    result, log = run_cli(mode: "direct_transport_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_unknown_reconciled_merge(payload, attempted_submission: "direct")
-    assert_includes log, "mergePullRequest"
-  end
-
-  def test_reconciliation_requires_a_full_hex_merge_commit_oid
-    ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
-      result, log = run_cli(mode: "direct_transport_merged", merge_commit_oid:)
-
-      assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
-      assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
-      assert_includes log, "mergePullRequest", merge_commit_oid
-    end
-  end
-
-  def test_ambiguous_direct_response_reconciles_merged_pr_after_base_advances
-    result, log = run_cli(mode: "direct_transport_merged_base_advanced")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_unknown_reconciled_merge(
-      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
-    )
-    assert_includes log, "mergePullRequest"
-  end
-
-  def test_base_advancement_never_qualifies_open_queued_or_nonterminal_states
+  def test_base_advancement_never_qualifies_queued_states
     {
-      "direct_transport_open_base_advanced" => "mergePullRequest",
       "enqueue_transport_queued_base_advanced" => "enqueuePullRequest",
-      "queue_post_queued_base_advanced" => "enqueuePullRequest",
-      "direct_nonterminal_base_advanced" => "mergePullRequest"
+      "queue_post_queued_base_advanced" => "enqueuePullRequest"
     }.each do |mode, attempted_mutation|
       result, log = run_cli(mode:)
 
@@ -323,54 +204,6 @@ class PrMergeSubmitTest < Minitest::Test
       refute_includes log, "mergePullRequest", mode
       refute_includes log, "enqueuePullRequest", mode
     end
-  end
-
-  def test_invalid_direct_response_reconciles_an_exact_merge
-    result, = run_cli(mode: "direct_invalid_json_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_unknown_reconciled_merge(payload, attempted_submission: "direct")
-  end
-
-  def test_direct_graphql_errors_reconcile_an_exact_merge
-    result, = run_cli(mode: "direct_graphql_error_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_unknown_reconciled_merge(payload, attempted_submission: "direct")
-  end
-
-  def test_incomplete_direct_response_reconciles_an_exact_merge
-    result, = run_cli(mode: "direct_incomplete_response_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_unknown_reconciled_merge(payload, attempted_submission: "direct")
-  end
-
-  def test_incomplete_direct_response_with_unchanged_live_state_reports_unknown
-    result, = run_cli(mode: "direct_incomplete_response_unknown")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-  end
-
-  def test_non_object_direct_response_reconciles_an_exact_merge
-    result, = run_cli(mode: "direct_non_object_response_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_unknown_reconciled_merge(payload, attempted_submission: "direct")
-  end
-
-  def test_unresolved_direct_transport_failure_reports_unknown
-    result, log = run_cli(mode: "direct_transport_unknown")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    assert_includes log, "mergePullRequest"
-    refute_includes log, "enqueuePullRequest"
   end
 
   def test_enqueue_transport_failure_reconciles_an_exact_queue_entry
@@ -419,11 +252,10 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_reconciliation_callers_reject_queue_state_with_a_merge_commit
+  def test_enqueue_reconciliation_callers_reject_queue_state_with_a_merge_commit
     {
       "enqueue_transport_queued_with_commit" => "enqueuePullRequest",
-      "enqueue_graphql_error_queued_with_commit" => "enqueuePullRequest",
-      "direct_graphql_error_queued_with_commit" => "mergePullRequest"
+      "enqueue_graphql_error_queued_with_commit" => "enqueuePullRequest"
     }.each do |mode, attempted_mutation|
       result, log = run_cli(mode:)
 
@@ -492,7 +324,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_interrupt_is_forwarded_and_mutation_outcome_is_reconciled
     started_at = nil
     result, log = run_cli_with_interrupt(
-      mode: "direct_interrupt_unknown",
+      mode: "enqueue_interrupt_unknown", wait_for: "enqueuePullRequest",
       after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
     )
 
@@ -500,17 +332,19 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "interrupted by SIGINT"
     assert_includes result.fetch(:stderr), "do not retry blindly"
-    assert_includes log, "mergePullRequest"
+    assert_includes log, "enqueuePullRequest"
     assert_operator elapsed, :<, 3
   end
 
   def test_interrupted_mutation_that_exits_zero_still_reconciles
-    result, log = run_cli_with_interrupt(mode: "direct_interrupt_exit_zero")
+    result, log = run_cli_with_interrupt(
+      mode: "enqueue_interrupt_exit_zero", wait_for: "enqueuePullRequest"
+    )
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "interrupted by SIGINT"
     assert_includes result.fetch(:stderr), "do not retry blindly"
-    assert_includes log, "mergePullRequest"
+    assert_includes log, "enqueuePullRequest"
   end
 
   def test_interrupted_metadata_request_that_exits_zero_cannot_mutate
@@ -524,7 +358,7 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
-  def test_persistent_cancellation_blocks_a_later_fallback_mutation
+  def test_persistent_cancellation_blocks_a_later_mutation
     runner = PrMergeSubmit::Runner.new
     runner.instance_variable_set(:@mutation_attempted, true)
     runner.instance_variable_set(:@cancellation_signal, "INT")
@@ -537,23 +371,6 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty stdout
     assert_includes stderr, "cancelled by SIGINT before it started"
     refute status.success?
-  end
-
-  def test_direct_mutation_timeout_with_unchanged_state_is_unknown
-    result = run_mutation_timeout_cli("direct_timeout_unknown")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "timed out"
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-  end
-
-  def test_direct_mutation_timeout_reconciles_with_unknown_provenance
-    result = run_mutation_timeout_cli("direct_timeout_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_unknown_reconciled_merge(
-      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
-    )
   end
 
   def test_enqueue_mutation_timeout_with_unchanged_state_is_unknown
@@ -642,11 +459,11 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_authenticated_semantic_tracker_receipt_reaches_the_merge_mutation
-    result, log = run_cli(mode: "direct", receipt_mode: :semantic)
+    result, log = run_cli(mode: "queue", receipt_mode: :semantic)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_includes log, "repos/owner/repo/issues/1"
-    assert_includes log, "mergePullRequest"
+    assert_includes log, "enqueuePullRequest"
   end
 
   def test_authenticated_tracker_receipt_evidence_is_exact_and_current
@@ -1200,6 +1017,7 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_graphql_error_merged_queued",
                              "enqueue_graphql_error_queued_with_commit",
                              "enqueue_timeout_unknown", "enqueue_timeout_merged",
+                             "enqueue_interrupt_unknown", "enqueue_interrupt_exit_zero",
                              "enqueue_transport_base_race", "enqueue_graphql_error_base_race",
                              "enqueue_transport_queued_base_advanced", "queue_post_queued_base_advanced",
                              "queue_post_queued_with_commit",
@@ -1356,6 +1174,14 @@ class PrMergeSubmitTest < Minitest::Test
       end
 
       if ARGV.any? { |arg| arg.include?("enqueuePullRequest") }
+        sleep 5 if #{mode.inspect} == "enqueue_interrupt_unknown"
+        if #{mode.inspect} == "enqueue_interrupt_exit_zero"
+          trap("INT") do
+            puts #{JSON.generate(queue_payload).inspect}
+            exit 0
+          end
+          sleep 5
+        end
         if ["enqueue_timeout_unknown", "enqueue_timeout_merged"].include?(#{mode.inspect})
           sleep 5
         end

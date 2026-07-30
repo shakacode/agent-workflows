@@ -2859,7 +2859,6 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --subject "<consumer-required direct-merge subject>" \
   --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
@@ -2867,38 +2866,34 @@ chain, then run:
 bindings and freshness before any mutation.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
-uses `enqueuePullRequest` for a queue-controlled base and invokes GitHub's
-`mergePullRequest` with the consumer's ordinary direct merge method, subject,
-and expected head otherwise. Every API call is bound to the explicit host, and
-the returned PR URL must match it.
-If queue enforcement changes between that read and the direct mutation, only
-GitHub's explicit queue-control error permits one refreshed exact-head enqueue
-retry. The helper never invokes the queue-aware `gh pr merge` path, never enables
-auto-merge, never retries an unrelated direct-merge
-error as a queue operation, and fails closed when the head moved, queue state is
-missing, or GitHub returns no queue entry.
+preserves read-only, idempotent observation when the exact reviewed PR is
+already merged, preserves an exact existing queue entry, and uses
+`enqueuePullRequest` only for an exact open PR on a queue-controlled base. An
+open PR on a queue-disabled base exits 2 before any `mergePullRequest` mutation:
+GitHub exposes an atomic expected-head field but no atomic expected-base OID for
+direct merge. Migrate the base branch to a merge queue, then restart ordinary
+readiness, autonomous eligibility, and merge-assurance receipt generation.
+Every API call is bound to the explicit host, and the returned PR URL must match
+it. The helper never invokes `gh pr merge`, never enables auto-merge, and fails
+closed when the head moved, queue state is missing, or GitHub returns no queue
+entry.
 
 Submission is restart-safe for an exact head already merged or already present
-in the queue. After an ambiguous mutation response, the helper re-reads the PR
+in the queue. After an ambiguous enqueue response, the helper re-reads the PR
 and reports success only when that exact expected head and base are proven
 merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
 reconcile live state rather than retrying blindly. If post-enqueue verification
 detects a retarget or head change, the helper exits 2 without automatic cleanup:
 GitHub's dequeue mutation accepts only the PR ID, so it cannot prove that a
 later live queue entry is the one created by this submission rather than a
-concurrent actor's replacement.
-
-GitHub's merge and enqueue mutations expose an atomic expected-head field but
-not an expected-base field. The helper therefore verifies the exact expected
-base immediately before and after its mutation and reports any retarget as a
-blocker; merge authority must not be exercised while another actor is
-retargeting the PR. Manual reconciliation is required because GitHub exposes
-neither an atomic base precondition nor an entry-bound dequeue mutation.
+concurrent actor's replacement. A pre/post base check cannot substitute for the
+missing atomic expected-base precondition, so direct merge remains unsupported.
 
 For a queued merge, GitHub's queue configuration controls the actual merge
 method and commit-title/body formatting. Before submission, verify the PR title
 and live repository queue settings satisfy any consumer squash-title policy;
-the direct-only `--subject` cannot override a queue-generated commit title.
+legacy direct-method or subject options cannot override a queue-generated commit
+title.
 Treat `submission: merge_queue` as in-progress evidence, not as merged state.
 An idempotent rerun that finds the exact reviewed head and base already merged
 reports `submission: already_merged` with `merge_provenance: UNKNOWN`; it must
