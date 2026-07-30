@@ -193,6 +193,51 @@ class MergeAssuranceTest < Minitest::Test
     assert_empty eligible_invalid_rows
   end
 
+  def test_ci_row_official_gh_bucket_state_pairs_are_compatible
+    cases = {
+      "pass/SUCCESS" => [%w[pass SUCCESS], "READY"],
+      "skipping/SKIPPED" => [%w[skipping SKIPPED], "READY"],
+      "skipping/NEUTRAL" => [%w[skipping NEUTRAL], "READY"],
+      "fail/ERROR" => [%w[fail ERROR], "NOT_READY"],
+      "fail/FAILURE" => [%w[fail FAILURE], "NOT_READY"],
+      "fail/TIMED_OUT" => [%w[fail TIMED_OUT], "NOT_READY"],
+      "fail/ACTION_REQUIRED" => [%w[fail ACTION_REQUIRED], "NOT_READY"],
+      "cancel/CANCELLED" => [%w[cancel CANCELLED], "NOT_READY"],
+      "pending/EXPECTED" => [%w[pending EXPECTED], "NOT_READY"],
+      "pending/REQUESTED" => [%w[pending REQUESTED], "NOT_READY"],
+      "pending/WAITING" => [%w[pending WAITING], "NOT_READY"],
+      "pending/QUEUED" => [%w[pending QUEUED], "NOT_READY"],
+      "pending/PENDING" => [%w[pending PENDING], "NOT_READY"],
+      "pending/IN_PROGRESS" => [%w[pending IN_PROGRESS], "NOT_READY"],
+      "pending/STALE" => [%w[pending STALE], "NOT_READY"]
+    }
+
+    actual_states = cases.to_h do |label, ((bucket, state), _expected)|
+      [label, MergeAssurance.ci_evidence_row_state({ "bucket" => bucket, "state" => state })]
+    end
+    skipping_ci = ready_ci
+    skipping_ci.fetch("scopes").fetch("github_actions")["rows"] = [
+      { "name" => "lint", "bucket" => "skipping", "state" => "SKIPPED" }
+    ]
+    skipping_result = MergeAssurance.assess(
+      ci_result: skipping_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal(
+      {
+        "states" => cases.transform_values(&:last),
+        "skipping_eligible" => true
+      },
+      {
+        "states" => actual_states,
+        "skipping_eligible" => skipping_result.fetch("eligible")
+      }
+    )
+  end
+
   def test_ci_row_agreeing_producer_shapes_preserve_pass_fail_and_pending_states
     cases = {
       { "bucket" => "pass", "state" => "success" } => "READY",

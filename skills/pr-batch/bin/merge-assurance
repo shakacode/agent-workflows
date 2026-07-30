@@ -26,8 +26,11 @@ module MergeAssurance
   SCOPE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
   CI_BUCKET_READY_VALUES = %w[pass skipping].freeze
   CI_BUCKET_NOT_READY_VALUES = %w[cancel fail pending].freeze
-  CI_STATE_READY_VALUES = %w[success].freeze
-  CI_STATE_NOT_READY_VALUES = %w[error failure pending].freeze
+  CI_STATE_READY_VALUES = %w[neutral skipped success].freeze
+  CI_STATE_NOT_READY_VALUES = %w[
+    action_required cancelled error expected failure in_progress pending queued
+    requested stale timed_out waiting
+  ].freeze
   CI_STATUS_NOT_READY_VALUES = %w[
     in_progress pending queued requested waiting
   ].freeze
