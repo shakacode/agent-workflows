@@ -256,7 +256,7 @@ class PrCiReadinessTest < Minitest::Test
     )
     assert_equal(["Dependabot Updates"], scopes.dig("dependabot", "rows").map { |row| row["name"] })
     assert_equal(
-      %w[legacy required security],
+      %w[legacy required required-status security],
       scopes.dig("other", "rows").map { |row| row["name"] }.sort
     )
     assert_equal(%w[READY READY READY READY], scopes.values.map { |scope| scope.fetch("state") })
@@ -284,6 +284,60 @@ class PrCiReadinessTest < Minitest::Test
 
     other_ids = scopes.dig("other", "rows").map { |row| row.fetch("id") }
     assert_equal [22], other_ids
+  end
+
+  def test_required_rows_without_positive_producer_do_not_hide_failing_same_name_evidence
+    head = "a" * 40
+    checked_at = "2026-07-30T12:00:00Z"
+    cases = [
+      {
+        label: "missing producer status",
+        required: {},
+        check_runs: [],
+        statuses: [{ "kind" => "status", "id" => 23, "name" => "lint", "state" => "failure" }]
+      },
+      {
+        label: "empty producer check",
+        required: { "workflow" => "" },
+        check_runs: [
+          { "kind" => "check_run", "id" => 24, "name" => "lint", "status" => "completed",
+            "conclusion" => "failure", "app_slug" => "", "dependabot" => false }
+        ],
+        statuses: []
+      },
+      {
+        label: "unknown producer check",
+        required: { "workflow" => "UNKNOWN" },
+        check_runs: [
+          { "kind" => "check_run", "id" => 25, "name" => "lint", "status" => "completed",
+            "conclusion" => "failure", "app_slug" => "UNKNOWN", "dependabot" => false }
+        ],
+        statuses: []
+      }
+    ]
+
+    cases.each do |item|
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha: head,
+        checked_at:,
+        required_rows: [{ "name" => "lint", "bucket" => "pass" }.merge(item.fetch(:required))],
+        required_complete: true,
+        actions_rows: [],
+        actions_complete: true,
+        check_runs: item.fetch(:check_runs),
+        check_runs_complete: true,
+        statuses: item.fetch(:statuses),
+        statuses_complete: true
+      )
+      contract = PrCiReadiness.evidence_contract(
+        repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+      )
+      other_ids = (item.fetch(:check_runs) + item.fetch(:statuses)).map { |row| row.fetch("id") }
+
+      assert_equal other_ids, scopes.dig("other", "rows").map { |row| row.fetch("id") }, item.fetch(:label)
+      assert_equal "NOT_READY", scopes.dig("other", "state"), item.fetch(:label)
+      assert_equal "NOT_READY", contract.fetch("verdict"), item.fetch(:label)
+    end
   end
 end
 
