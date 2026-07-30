@@ -20,6 +20,12 @@ module BatchPlanPreflight
   EXTERNAL_SUPPORT = %w[supported unsupported UNKNOWN].freeze
   APPLICABILITY = %w[applicable not-applicable].freeze
   EDGE_TYPES = %w[edit validation_open merge_order].freeze
+  PLANNED_PATH_SOURCE_KINDS = %w[issue design durable-plan].freeze
+  PLANNED_PATH_REF_SCHEMES = {
+    "issue" => %w[issue],
+    "design" => %w[design],
+    "durable-plan" => %w[plan-state batch comment]
+  }.freeze
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -92,7 +98,8 @@ module BatchPlanPreflight
     eligible_lane_ids, held_lane_ids = launch_partition(
       lanes,
       input["stage_dependency_gate"],
-      input["stage_dependency_plan"]
+      input["plan"]["active_wave"],
+      input["plan"]["serialization_groups"]
     )
     result(status, eligible_lane_ids, held_lane_ids, violations)
   end
@@ -107,6 +114,11 @@ module BatchPlanPreflight
     if lane_ids.any? { |lane_id| !nonempty_identity?(lane_id) } || lane_ids.uniq.length != lane_ids.length
       violations << violation("lane-id-invalid-or-duplicate", "$.plan.lanes",
                               "Lane ids must be nonempty, known, and unique.")
+    end
+    lane_waves = plan.fetch("lanes").filter_map { |lane| lane["wave"] }
+    unless nonempty_identity?(plan["active_wave"]) && lane_waves.include?(plan["active_wave"])
+      violations << violation("active-wave-invalid", "$.plan.active_wave",
+                              "Active wave must be a nonempty known wave declared by at least one lane.")
     end
     plan.fetch("lanes").each_with_index do |lane, index|
       path = "$.plan.lanes[#{index}]"
@@ -175,6 +187,14 @@ module BatchPlanPreflight
     end
     maps.each do |lane_id, map|
       path = "$.file_touch_map.#{lane_id}"
+      if map.is_a?(Hash) && map["type"] == "planned-path-evidence"
+        unless valid_planned_path_evidence_shape?(map)
+          violations << violation("planned-path-evidence-invalid", path,
+                                  "Preserve the exact planned-path-evidence v1 shape and durable provenance.",
+                                  lane_ids: [lane_id])
+        end
+        next
+      end
       unless valid_file_touch_map_shape?(map)
         violations << violation("file-touch-map-shape-invalid", path,
                                 "Preserve the exact pr-file-touch-map result shape.",
@@ -204,6 +224,37 @@ module BatchPlanPreflight
     end
 
     map["source"].is_a?(String) && !map["source"].strip.empty?
+  end
+
+  def valid_planned_path_evidence_shape?(map)
+    expected_keys = %w[evidence_ref paths renames source_kind type version]
+    return false unless map.keys.sort == expected_keys
+    return false unless map["type"] == "planned-path-evidence" && map["version"] == 1
+    return false unless PLANNED_PATH_SOURCE_KINDS.include?(map["source_kind"])
+    return false unless durable_evidence_ref?(map["evidence_ref"], map["source_kind"])
+    return false unless map["paths"].is_a?(Array) && !map["paths"].empty? &&
+                        map["paths"].uniq.length == map["paths"].length &&
+                        map["paths"].all? { |path| nonempty_identity?(path) }
+    return false unless map["renames"].is_a?(Array) && map["renames"].all? do |rename|
+      rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
+      nonempty_identity?(rename["old"]) && nonempty_identity?(rename["new"]) &&
+      map["paths"].include?(rename["old"]) && map["paths"].include?(rename["new"])
+    end
+
+    true
+  end
+
+  def durable_evidence_ref?(value, source_kind)
+    return false unless nonempty_identity?(value)
+
+    parsed = URI.parse(value)
+    return false if parsed.host.to_s.empty?
+    return true if PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
+
+    source_kind == "issue" && parsed.scheme == "https" &&
+      parsed.host == "github.com" && parsed.path.match?(%r{/issues/\d+\z})
+  rescue URI::InvalidURIError
+    false
   end
 
   def validate_stage_dependencies(plan, gate, lane_ids)
@@ -297,16 +348,17 @@ module BatchPlanPreflight
     end
   end
 
-  def launch_partition(lanes, gate, dependency_plan)
+  def launch_partition(lanes, gate, active_wave, serialization_groups)
     gate_lanes = gate.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
-    incoming_edit_targets = dependency_plan.fetch("edges").filter_map do |edge|
-      edge["to"] if edge.is_a?(Hash) && edge["type"] == "edit"
-    end
     eligible = []
     held = []
     lanes.each do |lane|
       lane_id = lane.fetch("id")
       gate_lane = gate_lanes.fetch(lane_id)
+      if lane["wave"] != active_wave
+        held << lane_id
+        next
+      end
       allowed = if lane["purpose"] == "investigation"
                   gate_lane.dig("permissions", "read_only_discovery") == true
                 else
@@ -314,9 +366,20 @@ module BatchPlanPreflight
                 end
       if allowed
         eligible << lane_id
-      elsif incoming_edit_targets.include?(lane_id)
+      else
         held << lane_id
       end
+    end
+    lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
+    serialized_group_ids = Array(serialization_groups).filter_map do |group|
+      group["id"] if group.is_a?(Hash) && group["max_concurrency"] == 1
+    end
+    serialized_group_ids.uniq.sort.each do |group_id|
+      group_lane_ids = eligible.select do |lane_id|
+        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
+      end.sort
+      held.concat(group_lane_ids.drop(1))
+      eligible -= group_lane_ids.drop(1)
     end
     [eligible.sort, held.sort]
   end

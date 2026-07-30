@@ -44,6 +44,18 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
+  def planned_path_evidence(paths, evidence_ref: "plan-state://batch-1/plan#lane-a",
+                            source_kind: "durable-plan", renames: [])
+    {
+      "type" => "planned-path-evidence",
+      "version" => 1,
+      "source_kind" => source_kind,
+      "evidence_ref" => evidence_ref,
+      "paths" => paths,
+      "renames" => renames
+    }
+  end
+
   def gate_lane(id, patch_edit: true)
     permissions = {
       "read_only_discovery" => true,
@@ -65,7 +77,7 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
-                backend: "generic")
+                backend: "generic", active_wave: "wave-a")
     maps ||= lanes.each_with_index.to_h { |record, index| [record.fetch("id"), touch_map(index + 1, ["lib/#{record.fetch('id')}.rb"])] }
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
@@ -74,6 +86,7 @@ class BatchPlanPreflightTest < Minitest::Test
       "version" => 1,
       "plan" => {
         "backend" => backend,
+        "active_wave" => active_wave,
         "lanes" => lanes,
         "serialization_groups" => groups,
         "external_api_premises" => premises
@@ -132,8 +145,11 @@ class BatchPlanPreflightTest < Minitest::Test
     [JSON.parse(stdout), stderr, status]
   end
 
-  def test_minimal_valid_plan_is_accepted
-    result, stderr, status = evaluate(input_for)
+  def test_unchanged_verified_pr_file_touch_map_result_is_accepted
+    input = input_for
+    assert_equal %w[changed_files paths pr renames repo source],
+                 input.dig("file_touch_map", "lane-a").keys.sort
+    result, stderr, status = evaluate(input)
 
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
@@ -218,10 +234,12 @@ class BatchPlanPreflightTest < Minitest::Test
 
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
+    assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-b"], result.dig("launch", "held_lane_ids")
   end
 
   def test_shared_path_is_safe_in_a_max_one_serialization_group
-    lanes = [lane("lane-a"), lane("lane-b")]
+    lanes = [lane("lane-b"), lane("lane-a")]
     lanes.each { |record| record["serialization_group"] = "changelog-writers" }
     maps = {
       "lane-a" => touch_map(1, ["CHANGELOG.md"]),
@@ -232,6 +250,8 @@ class BatchPlanPreflightTest < Minitest::Test
 
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
+    assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-b"], result.dig("launch", "held_lane_ids")
   end
 
   def test_typed_edit_edge_serializes_shared_path_and_gate_holds_consumer
@@ -352,17 +372,26 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_historical_wave_a_replay_is_rejected_before_dispatch
-    fixture = JSON.parse(File.read(REPLAY_FIXTURE, encoding: "UTF-8"))
+    fixture_json = File.read(REPLAY_FIXTURE, encoding: "UTF-8")
+    fixture = JSON.parse(fixture_json)
     assert_equal "batch-plan-preflight-replay", fixture.fetch("type")
     assert_equal 1, fixture.fetch("version")
+    assert_equal "batch://ror-a-17-1-wave-a-20260729", fixture.fetch("batch_ref")
+    assert(fixture.fetch("plan_state_refs").all? { |ref| ref.start_with?("plan-state://") })
+    assert(fixture.fetch("comment_refs").all? { |ref| ref.start_with?("https://github.com/") })
+    refute_includes fixture_json, "/Users/justin"
     assert_equal 5, fixture.dig("input", "plan", "lanes").length
     assert_equal "claude", fixture.dig("input", "plan", "backend")
+    assert_equal "wave-a", fixture.dig("input", "plan", "active_wave")
     assert_empty fixture.dig("input", "stage_dependency_plan", "edges")
     assert(fixture.dig("input", "plan", "lanes").all? { |record| record["purpose"] == "implementation" })
     assert(fixture.dig("input", "plan", "lanes").all? { |record| record.dig("qa", "disposition") == "not-required" })
-    assert(fixture.dig("input", "file_touch_map").values.all? { |map| map.fetch("paths").include?("CHANGELOG.md") })
+    path_evidence = fixture.dig("input", "file_touch_map").values
+    assert(path_evidence.all? { |record| record["type"] == "planned-path-evidence" })
+    assert(path_evidence.all? { |record| record["source_kind"] == "durable-plan" })
+    assert(path_evidence.none? { |record| record.key?("pr") || record.key?("source") })
+    assert(path_evidence.all? { |record| record.fetch("paths").include?("CHANGELOG.md") })
     assert_equal "UNKNOWN", fixture.dig("input", "plan", "external_api_premises", 0, "support")
-    assert_equal 2, fixture.fetch("batch_evidence_files").length
 
     result, _stderr, status = evaluate(fixture.fetch("input"))
     dispatches = 0
@@ -370,10 +399,17 @@ class BatchPlanPreflightTest < Minitest::Test
 
     refute status.success?
     assert_equal "rejected", result.fetch("status")
+    assert_empty result.dig("launch", "eligible_lane_ids")
     assert_equal 0, dispatches
-    assert_includes result.fetch("violations").map { |item| item.fetch("code") }, "unsafe-concurrent-edit"
-    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "external-api-support-blocks-implementation"
+    assert_equal(
+      {
+        "qa-required-for-risky-surface" => 5,
+        "unsafe-concurrent-edit" => 10,
+        "backend-risky-cap-exceeded" => 1,
+        "external-api-support-blocks-implementation" => 1
+      },
+      result.fetch("violations").map { |item| item.fetch("code") }.tally
+    )
   end
 
   def test_dependency_edge_type_is_pinned
@@ -394,6 +430,66 @@ class BatchPlanPreflightTest < Minitest::Test
 
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") }, "lane-record-invalid"
+  end
+
+  def test_active_wave_is_required_known_and_matches_a_planned_wave
+    cases = {
+      "missing" => :delete,
+      "empty" => "",
+      "unknown" => "UNKNOWN",
+      "not-planned" => "wave-z"
+    }
+    cases.each do |label, active_wave|
+      input = input_for
+      if active_wave == :delete
+        input.fetch("plan").delete("active_wave")
+      else
+        input.fetch("plan")["active_wave"] = active_wave
+      end
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "active-wave-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_typed_planned_path_evidence_is_accepted
+    planned = planned_path_evidence(
+      %w[lib/new.rb lib/old.rb],
+      renames: [{ "old" => "lib/old.rb", "new" => "lib/new.rb" }]
+    )
+    result, stderr, status = evaluate(input_for(maps: { "lane-a" => planned }))
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_planned_path_evidence_cannot_masquerade_or_omit_provenance
+    masquerading = planned_path_evidence(["lib/a.rb"]).merge(
+      "source" => "verified",
+      "pr" => 123
+    )
+    incomplete = planned_path_evidence(["lib/a.rb"]).tap { |record| record.delete("evidence_ref") }
+    mismatched = planned_path_evidence(
+      ["lib/a.rb"],
+      source_kind: "issue",
+      evidence_ref: "plan-state://batch-1/plan#lane-a"
+    )
+
+    {
+      "masquerading" => masquerading,
+      "incomplete" => incomplete,
+      "mismatched" => mismatched
+    }.each do |label, record|
+      result, _stderr, status = evaluate(input_for(maps: { "lane-a" => record }))
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "planned-path-evidence-invalid", label
+    end
   end
 
   def test_file_touch_map_preserves_the_exact_existing_result_shape

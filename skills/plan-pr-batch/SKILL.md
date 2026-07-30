@@ -333,11 +333,13 @@ Plan a PR batch
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
-     owns collision, backend-cap, QA, and external-premise schema enforcement;
-     do not duplicate its matrices here. Legacy plans must be adapted to the v1
-     envelope with their `pr-file-touch-map` and stage-dependency helper results
-     unchanged. A rejected result launches no worker; an accepted result permits
-     only its eligible lanes and keeps its held lanes unlaunched.
+     owns schema, collision, backend-cap, QA, external-premise, active-wave, and
+     max-one serialization scheduling; do not duplicate its matrices here. V1
+     requires `plan.active_wave`. Preserve real PR `pr-file-touch-map` verified
+     results unchanged; represent explicit pre-PR paths with the helper's typed
+     `planned-path-evidence` v1 record and durable evidence reference. A rejected
+     result launches no worker; an accepted result permits only its eligible
+     lanes and keeps its held lanes unlaunched.
      Before launch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var /
      loaded-skill / repo-local pinned-copy chain, then send the requested
      route/dispatcher, explicit route and dispatch authority, ordered candidates,

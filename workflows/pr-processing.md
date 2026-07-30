@@ -633,13 +633,14 @@ PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch
   < path/to/batch-plan-preflight-v1.json
 ```
 
-This machine gate owns collision, backend-cap, QA, and external-premise schema
-enforcement. Do not reproduce those matrices in dispatcher or merge checks. A
-rejected result launches nothing; an accepted result permits only
-`launch.eligible_lane_ids` and leaves `launch.held_lane_ids` unlaunched. Legacy
-plans are not grandfathered: wrap them in a v1 envelope and pass through the
-unchanged `pr-file-touch-map`, stage-dependency-plan, and stage-dependency-gate
-helper results.
+This machine gate owns schema and launch scheduling, including collision,
+backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
+serialization enforcement. Do not reproduce those matrices in dispatcher or
+merge checks. Preserve real PR verified `pr-file-touch-map` results unchanged;
+encode explicit pre-PR paths as typed `planned-path-evidence` v1 records with
+durable evidence references. A rejected result launches nothing; an accepted
+result permits only `launch.eligible_lane_ids` and leaves
+`launch.held_lane_ids` unlaunched.
 
 ### Model And Effort Routing
 

@@ -84,10 +84,11 @@ facts remain fail-closed and stop before mutation.
   - Routine deterministic QA: Opus 4.8/high
 - **Batch plan preflight**: before dispatcher selection or worker launch, run
   the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
-  owns collision, backend-cap, QA, and external-premise schema enforcement.
-  Legacy plans must supply the v1 envelope with unchanged file-touch and
-  stage-dependency helper results. A rejection launches nothing; an acceptance
-  permits only the returned eligible lanes.
+  owns schema and launch scheduling, including the required active wave and
+  max-one serialization. Preserve real PR verified `pr-file-touch-map` results
+  unchanged; encode explicit pre-PR paths as typed `planned-path-evidence` v1
+  records with durable evidence references. A rejection launches nothing; an
+  acceptance permits only the returned eligible lanes.
 - **Dispatcher capability preflight**: before launch, pass the requested
   route/dispatcher, explicit authority, ordered candidates, and preserved lane
   state to `bin/dispatcher-capability-preflight`. It records a bound, attested
