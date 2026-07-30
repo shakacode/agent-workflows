@@ -178,6 +178,7 @@
       "version": 1,
       "status": "eligible",
       "trusted_plan_id": "ror-a-17-1-wave-a-20260729",
+      "trusted_plan_binding": "sha256:8a413f521938f01c85b2fe1c77e8991a305b7d7c6b7faa052239fee98dccf96e",
       "lanes": [
         {
           "id": "lane-4584-ssr-bundle-http",

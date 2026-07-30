@@ -2,15 +2,18 @@
 # frozen_string_literal: true
 
 require "base64"
+require "digest"
 require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
 require "openssl"
 require "rbconfig"
+require "tempfile"
 require "tmpdir"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
+STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
@@ -104,6 +107,20 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def stage_dependency_plan_binding(plan)
+    immutable_edges = plan.fetch("edges").map do |edge|
+      edge.slice("id", "from", "to", "type")
+    end
+    immutable_edges.sort_by! { |edge| edge.values_at("id", "from", "to", "type") }
+    payload = {
+      "contract" => plan.fetch("contract"),
+      "id" => plan.fetch("id"),
+      "edges" => immutable_edges
+    }
+
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
+  end
+
   def installed_workflow_control_helper(key_id: "test-workflow-control-key",
                                         key: workflow_control_signing_key,
                                         config_mode: 0o600, agents_mode: 0o700,
@@ -180,7 +197,7 @@ class BatchPlanPreflightTest < Minitest::Test
     maps ||= lanes.each_with_index.to_h { |record, index| [record.fetch("id"), touch_map(index + 1, ["lib/#{record.fetch('id')}.rb"])] }
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
-    {
+    input = {
       "type" => "batch-plan-preflight",
       "version" => 1,
       "plan" => {
@@ -218,6 +235,9 @@ class BatchPlanPreflightTest < Minitest::Test
         }
       }
     }
+    input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
+      stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
+    input
   end
 
   def external_premise(lane_ids:, support: "supported")
@@ -244,6 +264,29 @@ class BatchPlanPreflightTest < Minitest::Test
   def evaluate_raw(input)
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, stdin_data: input)
     [JSON.parse(stdout), stderr, status]
+  end
+
+  def evaluate_stage_dependency_gate(plan, lanes:, edges:)
+    Tempfile.create(["stage-dependency-plan", ".json"]) do |plan_file|
+      plan_file.write(JSON.generate(plan))
+      plan_file.flush
+      stdout, stderr, status = Open3.capture3(
+        RbConfig.ruby,
+        STAGE_DEPENDENCY_GATE,
+        "--trusted-plan",
+        plan_file.path,
+        "--trusted-plan-id",
+        plan.fetch("id"),
+        stdin_data: JSON.generate(
+          "contract" => "stage-dependency-gate",
+          "version" => 1,
+          "lanes" => lanes,
+          "edges" => edges
+        )
+      )
+      assert status.success?, stderr
+      return JSON.parse(stdout)
+    end
   end
 
   def test_unchanged_verified_pr_file_touch_map_result_is_accepted
@@ -287,6 +330,82 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "stage-dependency-gate-plan-mismatch"
+  end
+
+  def test_changed_immutable_edge_tuple_rejects_stale_gate_before_launch
+    lanes = [lane("foundation"), lane("consumer")]
+    stale_edges = [{
+      "id" => "foundation-before-consumer",
+      "from" => "foundation",
+      "to" => "consumer",
+      "type" => "merge_order"
+    }]
+    stale_plan = {
+      "contract" => "stage-dependency-plan",
+      "version" => 1,
+      "id" => "trusted-plan-1",
+      "edges" => stale_edges
+    }
+    stage_lanes = %w[foundation consumer].map do |id|
+      {
+        "id" => id,
+        "maker" => "maker-#{id}",
+        "checker" => "checker-#{id}",
+        "head_sha" => "1" * 40,
+        "base_sha" => "a" * 40,
+        "preparation" => {}
+      }
+    end
+    stale_gate = evaluate_stage_dependency_gate(
+      stale_plan,
+      lanes: stage_lanes,
+      edges: [{ "id" => "foundation-before-consumer", "state" => "pending" }]
+    )
+    input = input_for(
+      lanes: lanes,
+      edges: [{
+        "id" => "foundation-before-consumer",
+        "from" => "foundation",
+        "to" => "consumer",
+        "type" => "edit"
+      }]
+    )
+    input["stage_dependency_gate"] = stale_gate
+
+    consumer = stale_gate.fetch("lanes").find { |entry| entry["id"] == "consumer" }
+    assert_equal true, consumer.dig("permissions", "patch_edit")
+    result, stderr, status = evaluate(input)
+
+    refute status.success?, stderr
+    assert_equal "rejected", result.fetch("status")
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "stage-dependency-gate-plan-binding-mismatch"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_stage_gate_plan_binding_is_required_known_and_well_formed
+    cases = {
+      "missing" => ["stage-dependency-gate-plan-binding-missing", :delete],
+      "UNKNOWN" => %w[stage-dependency-gate-plan-binding-unknown UNKNOWN],
+      "malformed" => ["stage-dependency-gate-plan-binding-malformed", "sha256:not-a-digest"]
+    }
+
+    cases.each do |label, (expected_code, value)|
+      input = input_for
+      if value == :delete
+        input.fetch("stage_dependency_gate").delete("trusted_plan_binding")
+      else
+        input.fetch("stage_dependency_gate")["trusted_plan_binding"] = value
+      end
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      assert_equal "rejected", result.fetch("status"), label
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      expected_code,
+                      label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
   end
 
   def test_batch_and_stage_dependency_plan_ids_must_be_known

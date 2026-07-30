@@ -4,6 +4,7 @@
 require "base64"
 require "json"
 require "date"
+require "digest"
 require "openssl"
 require "time"
 require "uri"
@@ -497,18 +498,46 @@ module BatchPlanPreflight
 
     violations = []
     edge_ids = plan.fetch("edges").filter_map { |edge| edge["id"] if edge.is_a?(Hash) }
-    unless edge_ids.length == plan.fetch("edges").length && edge_ids.uniq.length == edge_ids.length &&
-           plan.fetch("edges").all? do |edge|
-             nonempty_identity?(edge["id"]) &&
-             lane_ids.include?(edge["from"]) && lane_ids.include?(edge["to"]) &&
-             edge["from"] != edge["to"] && EDGE_TYPES.include?(edge["type"])
-           end
+    edges_valid = edge_ids.length == plan.fetch("edges").length &&
+                  edge_ids.uniq.length == edge_ids.length &&
+                  plan.fetch("edges").all? do |edge|
+                    nonempty_identity?(edge["id"]) &&
+                      lane_ids.include?(edge["from"]) && lane_ids.include?(edge["to"]) &&
+                      edge["from"] != edge["to"] && EDGE_TYPES.include?(edge["type"])
+                  end
+    unless edges_valid
       violations << violation("stage-dependency-plan-edge-invalid", "$.stage_dependency_plan.edges",
                               "Edges need unique ids, known distinct endpoints, and a pinned edge type.")
     end
     if gate["trusted_plan_id"] != plan["id"]
       violations << violation("stage-dependency-gate-plan-mismatch", "$.stage_dependency_gate.trusted_plan_id",
                               "Gate trusted_plan_id must equal the supplied trusted plan id.")
+    end
+    binding = gate["trusted_plan_binding"]
+    if !binding.is_a?(String) || binding.strip.empty?
+      violations << violation(
+        "stage-dependency-gate-plan-binding-missing",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding is required."
+      )
+    elsif binding.strip.casecmp?("UNKNOWN")
+      violations << violation(
+        "stage-dependency-gate-plan-binding-unknown",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding must be known."
+      )
+    elsif !binding.match?(/\Asha256:[0-9a-f]{64}\z/)
+      violations << violation(
+        "stage-dependency-gate-plan-binding-malformed",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding must be sha256 followed by 64 lowercase hex characters."
+      )
+    elsif edges_valid && binding != stage_dependency_plan_binding(plan)
+      violations << violation(
+        "stage-dependency-gate-plan-binding-mismatch",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding must match the supplied trusted dependency graph."
+      )
     end
     gate_lane_ids = gate.fetch("lanes").filter_map { |lane| lane["id"] if lane.is_a?(Hash) }
     if gate_lane_ids.tally != lane_ids.tally
@@ -520,6 +549,20 @@ module BatchPlanPreflight
                               "Preserve each completed gate lane and all boolean permission decisions.")
     end
     violations
+  end
+
+  def stage_dependency_plan_binding(plan)
+    immutable_edges = plan.fetch("edges").map do |edge|
+      edge.slice("id", "from", "to", "type")
+    end
+    immutable_edges.sort_by! { |edge| edge.values_at("id", "from", "to", "type") }
+    payload = {
+      "contract" => plan.fetch("contract"),
+      "id" => plan.fetch("id"),
+      "edges" => immutable_edges
+    }
+
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
   end
 
   def valid_gate_lane?(lane)

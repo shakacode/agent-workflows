@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "digest"
 
 MUTATION_CAPABILITIES = %w[
   branch_worktree_create
@@ -113,6 +114,33 @@ def validated_trusted_plan_edges(plan, lane_ids)
   end
 
   plan.fetch("edges")
+end
+
+def canonicalize(value)
+  case value
+  when Hash
+    value.keys.sort.each_with_object({}) do |key, canonical|
+      canonical[key] = canonicalize(value.fetch(key))
+    end
+  when Array
+    value.map { |entry| canonicalize(entry) }
+  else
+    value
+  end
+end
+
+def trusted_plan_binding(plan, edges)
+  immutable_edges = edges.map do |edge|
+    edge.slice("id", "from", "to", "type")
+  end
+  immutable_edges.sort_by! { |edge| edge.values_at("id", "from", "to", "type") }
+  payload = {
+    "contract" => plan.fetch("contract"),
+    "id" => plan.fetch("id"),
+    "edges" => immutable_edges
+  }
+
+  "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
 end
 
 def critical_path(lanes, edges)
@@ -357,6 +385,7 @@ puts JSON.generate(
   "version" => 1,
   "status" => lanes.all? { |lane| lane.fetch("permissions").fetch("merge") } ? "eligible" : "gated",
   "trusted_plan_id" => trusted_plan&.fetch("id", nil),
+  "trusted_plan_binding" => trusted_plan_binding(trusted_plan, planned_edges),
   "lanes" => lanes,
   "checker_verdict" => {
     "status" => checker_blockers.empty? ? "eligible" : "blocked",
