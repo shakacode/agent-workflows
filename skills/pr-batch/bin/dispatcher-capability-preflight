@@ -2,13 +2,18 @@
 # frozen_string_literal: true
 
 require "digest"
+require "base64"
 require "json"
+require "openssl"
 require "time"
+require "uri"
 
 ACCEPTED_BINDING_EVIDENCE = %w[operator-selected dispatcher-bound].freeze
 NEGATIVE_BINDING_EVIDENCE = %w[unbound binding-rejected binding-failed].freeze
 ACCEPTED_ATTESTATION_EVIDENCE = %w[instance-bound dispatcher-attested].freeze
 NEGATIVE_ATTESTATION_EVIDENCE = %w[unattested attestation-rejected attestation-failed].freeze
+TRUSTED_KEY_ID_ENV = "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID"
+TRUSTED_PUBLIC_KEY_ENV = "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM"
 
 def fail_input(message)
   puts JSON.generate("status" => "invalid-input", "reason" => message)
@@ -71,6 +76,56 @@ def timestamp?(value)
   Time.iso8601(value)
   true
 rescue ArgumentError
+  false
+end
+
+def configured_trust_anchor?(confirmation)
+  nonempty_string?(ENV[TRUSTED_KEY_ID_ENV]) &&
+    nonempty_string?(ENV[TRUSTED_PUBLIC_KEY_ENV]) &&
+    confirmation["key_id"] == ENV[TRUSTED_KEY_ID_ENV]
+end
+
+def durable_evidence_ref?(value)
+  return false unless nonempty_string?(value)
+
+  URI.parse(value).absolute?
+rescue URI::InvalidURIError
+  false
+end
+
+def launch_observation_payload(confirmation)
+  assignment = confirmation["assignment"]
+  {
+    "type" => "dispatcher-launch-observation",
+    "version" => 1,
+    "confirmation_id" => confirmation["id"],
+    "key_id" => confirmation["key_id"],
+    "lane_id" => assignment["lane_id"],
+    "route" => assignment["route"],
+    "dispatcher" => assignment["dispatcher"],
+    "instance_id" => confirmation["instance_id"],
+    "launch_token" => assignment["launch_token"],
+    "actual_model" => confirmation["actual_model"],
+    "actual_effort" => confirmation["actual_effort"],
+    "binding_source" => confirmation["binding_source"],
+    "attestation" => confirmation["attestation"],
+    "observed_at" => confirmation["observed_at"],
+    "routing_mode" => confirmation["routing_mode"],
+    "inherited" => confirmation["inherited"],
+    "evidence_ref" => confirmation["evidence_ref"]
+  }
+end
+
+def launch_observation_signature_verified?(confirmation)
+  return false unless configured_trust_anchor?(confirmation)
+
+  public_key = OpenSSL::PKey.read(ENV.fetch(TRUSTED_PUBLIC_KEY_ENV))
+  return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
+
+  signature = Base64.strict_decode64(confirmation["signature"])
+  payload = JSON.generate(canonicalize(launch_observation_payload(confirmation)))
+  public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
+rescue ArgumentError, OpenSSL::PKey::PKeyError
   false
 end
 
@@ -227,11 +282,16 @@ def confirmation_shape?(confirmation)
 
   confirmation["actual_model"] == confirmation.dig("assignment", "route", "model") &&
     confirmation["actual_effort"] == confirmation.dig("assignment", "route", "effort") &&
-    ACCEPTED_BINDING_EVIDENCE.include?(confirmation["binding_source"]) &&
-    ACCEPTED_ATTESTATION_EVIDENCE.include?(confirmation["attestation"]) &&
+    confirmation["binding_source"] == "dispatcher-bound" &&
+    confirmation["attestation"] == "instance-bound" &&
     confirmation["instance_id"] == confirmation.dig("assignment", "instance_id") &&
     timestamp?(confirmation["observed_at"]) &&
-    confirmation["routing_mode"] == "explicit"
+    confirmation["routing_mode"] == "explicit" &&
+    confirmation["inherited"] == false &&
+    durable_evidence_ref?(confirmation["evidence_ref"]) &&
+    nonempty_string?(confirmation["key_id"]) &&
+    nonempty_string?(confirmation["signature"]) &&
+    launch_observation_signature_verified?(confirmation)
 end
 
 def confirmation_qualifies?(confirmation)

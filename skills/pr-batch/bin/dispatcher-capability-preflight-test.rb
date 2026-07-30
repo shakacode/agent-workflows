@@ -1,15 +1,17 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "base64"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "openssl"
 
 HELPER = File.expand_path("dispatcher-capability-preflight", __dir__)
 
 class DispatcherCapabilityPreflightTest < Minitest::Test
-  def dispatch(input)
-    stdout, stderr, status = Open3.capture3(HELPER, stdin_data: JSON.generate(input))
+  def dispatch(input, env = {})
+    stdout, stderr, status = Open3.capture3(env, HELPER, stdin_data: JSON.generate(input))
     assert status.success?, "helper failed: #{stderr}"
 
     JSON.parse(stdout)
@@ -22,8 +24,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     JSON.parse(stdout)
   end
 
-  def launch_confirmation(assignment, overrides = {})
-    {
+  def launch_confirmation(assignment, overrides = {}, signing_key = dispatcher_signing_key)
+    confirmation = {
       "type" => "launch-confirmation",
       "version" => 2,
       "id" => "launch-confirmation-v2",
@@ -31,11 +33,64 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "actual_model" => assignment.dig("route", "model"),
       "actual_effort" => assignment.dig("route", "effort"),
       "binding_source" => "dispatcher-bound",
-      "attestation" => "dispatcher-attested",
+      "attestation" => "instance-bound",
       "instance_id" => assignment.fetch("instance_id"),
       "observed_at" => "2026-07-30T00:00:00Z",
-      "routing_mode" => "explicit"
+      "routing_mode" => "explicit",
+      "inherited" => false,
+      "evidence_ref" => "dispatcher-receipt://test-launch-observation",
+      "key_id" => "test-dispatcher-key"
     }.merge(overrides)
+    return confirmation if overrides.key?("signature")
+
+    payload = JSON.generate(canonicalize(launch_observation_payload(confirmation)))
+    signature = signing_key.sign(OpenSSL::Digest.new("SHA256"), payload)
+    confirmation.merge("signature" => Base64.strict_encode64(signature))
+  end
+
+  def dispatcher_signing_key
+    @dispatcher_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
+  end
+
+  def dispatcher_trust_env(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
+    {
+      "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID" => key_id,
+      "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM" => key.public_to_pem
+    }
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) { |key, canonical| canonical[key] = canonicalize(value[key]) }
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def launch_observation_payload(confirmation)
+    assignment = confirmation.fetch("assignment")
+    {
+      "type" => "dispatcher-launch-observation",
+      "version" => 1,
+      "confirmation_id" => confirmation["id"],
+      "key_id" => confirmation["key_id"],
+      "lane_id" => assignment["lane_id"],
+      "route" => assignment["route"],
+      "dispatcher" => assignment["dispatcher"],
+      "instance_id" => confirmation["instance_id"],
+      "launch_token" => assignment["launch_token"],
+      "actual_model" => confirmation["actual_model"],
+      "actual_effort" => confirmation["actual_effort"],
+      "binding_source" => confirmation["binding_source"],
+      "attestation" => confirmation["attestation"],
+      "observed_at" => confirmation["observed_at"],
+      "routing_mode" => confirmation["routing_mode"],
+      "inherited" => confirmation["inherited"],
+      "evidence_ref" => confirmation["evidence_ref"]
+    }
   end
 
   def test_required_route_and_dispatcher_bind_attest_and_resume_once
@@ -857,7 +912,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
           first.fetch("dispatch"),
           "id" => "confirm-replacement-proof-1"
         )
-      )
+      ),
+      dispatcher_trust_env
     )
     replacement_candidate = input.fetch("candidates").map { |candidate| candidate.merge("instance_id" => "worker-new") }
 
@@ -963,7 +1019,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
           first.fetch("dispatch"),
           "id" => "confirm-replacement-target-1"
         )
-      )
+      ),
+      dispatcher_trust_env
     )
     replacement_candidate = input.fetch("candidates").map { |candidate| candidate.merge("instance_id" => "worker-new") }
     expected_replacement = dispatch(input.merge("candidates" => replacement_candidate)).fetch("dispatch")
@@ -1485,14 +1542,16 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       input.merge(
         "active_assignments" => replay_pending.fetch("active_assignments"),
         "launch_confirmation" => confirmation
-      )
+      ),
+      dispatcher_trust_env
     )
     assert_equal "replay-already-active", confirmed.fetch("status")
     replay_active = dispatch(
       input.merge(
         "active_assignments" => confirmed.fetch("active_assignments"),
         "launch_confirmation" => confirmed.fetch("launch_confirmation")
-      )
+      ),
+      dispatcher_trust_env
     )
 
     assert_equal "launch-pending", pending.dig("active_assignments", 0, "lifecycle")
@@ -1503,6 +1562,151 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal confirmation, confirmed.fetch("launch_confirmation")
     assert_equal "replay-already-active", replay_active.fetch("status")
     refute replay_active.key?("dispatch")
+  end
+
+  def test_forged_v2_confirmation_cannot_activate_by_copying_assignment_and_self_declaring_enums
+    input = {
+      "lane_id" => "incident-forged-launch-confirmation",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "forged-confirmation-instance"
+      }]
+    }
+    pending = dispatch(input)
+    forged_confirmation = launch_confirmation(
+      pending.fetch("dispatch"),
+      "attestation" => "instance-bound",
+      "inherited" => false,
+      "evidence_ref" => "dispatcher-receipt://forged-confirmation",
+      "key_id" => "attacker-key",
+      "signature" => "Zm9yZ2Vk"
+    )
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => forged_confirmation
+      )
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_rejects_a_bad_signature_under_the_configured_trust_anchor
+    input = {
+      "lane_id" => "incident-bad-launch-signature",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "bad-signature-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = launch_confirmation(
+      pending.fetch("dispatch"),
+      "attestation" => "instance-bound",
+      "inherited" => false,
+      "evidence_ref" => "dispatcher-receipt://bad-signature",
+      "key_id" => "test-dispatcher-key",
+      "signature" => "Zm9yZ2Vk"
+    )
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      dispatcher_trust_env
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_requires_a_durable_observation_evidence_reference
+    input = {
+      "lane_id" => "incident-nondurable-evidence-ref",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "nondurable-evidence-ref-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = launch_confirmation(
+      pending.fetch("dispatch"),
+      "evidence_ref" => "copied request fields"
+    )
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      dispatcher_trust_env
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_fails_closed_for_missing_mismatched_or_invalid_trust_anchors
+    input = {
+      "lane_id" => "incident-invalid-trust-anchor",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "invalid-trust-anchor-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = launch_confirmation(pending.fetch("dispatch"))
+    another_key = OpenSSL::PKey::RSA.generate(1024)
+    trust_anchors = {
+      "missing" => {},
+      "wrong key id" => dispatcher_trust_env(key_id: "different-key-id"),
+      "wrong public key" => dispatcher_trust_env(key: another_key),
+      "malformed public key" => {
+        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID" => "test-dispatcher-key",
+        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM" => "not-a-public-key"
+      },
+      "private key material" => {
+        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID" => "test-dispatcher-key",
+        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM" => dispatcher_signing_key.to_pem
+      }
+    }
+
+    trust_anchors.each do |label, trust_env|
+      output = dispatch(
+        input.merge(
+          "active_assignments" => pending.fetch("active_assignments"),
+          "launch_confirmation" => confirmation
+        ),
+        trust_env
+      )
+
+      assert_equal "invalid-input", output.fetch("status"), label
+      assert_equal "launch_confirmation must be a well-formed identity-bound confirmation",
+                   output.fetch("reason"), label
+      refute output.key?("dispatch"), label
+    end
   end
 
   def test_launch_confirmation_fails_closed_without_its_matching_persisted_assignment
@@ -1602,7 +1806,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
           pending.fetch("dispatch"),
           "observed_at" => "not-a-timestamp"
         )
-      )
+      ),
+      dispatcher_trust_env
     )
 
     assert_equal "invalid-input", output.fetch("status")
@@ -1628,16 +1833,22 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     malformed_confirmations = {
       "actual model mismatch" => valid_confirmation.merge("actual_model" => "Terra"),
       "actual effort mismatch" => valid_confirmation.merge("actual_effort" => "medium"),
+      "request-only operator binding" => valid_confirmation.merge("binding_source" => "operator-selected"),
       "negative binding" => valid_confirmation.merge("binding_source" => "binding-rejected"),
+      "dispatcher-only attestation" => valid_confirmation.merge("attestation" => "dispatcher-attested"),
       "negative attestation" => valid_confirmation.merge("attestation" => "attestation-failed"),
       "instance mismatch" => valid_confirmation.merge("instance_id" => "different-instance"),
       "implicit routing" => valid_confirmation.merge("routing_mode" => "implicit"),
       "inherited routing" => valid_confirmation.merge("routing_mode" => "inherited"),
+      "inherited flag" => valid_confirmation.merge("inherited" => true),
       "nested unknown" => valid_confirmation.merge(
         "host_metadata" => { "probe" => [{ "result" => "UNKNOWN" }] }
       )
     }
-    evidence_fields = %w[actual_model actual_effort binding_source attestation instance_id observed_at routing_mode]
+    evidence_fields = %w[
+      actual_model actual_effort binding_source attestation instance_id observed_at routing_mode inherited
+      evidence_ref key_id signature
+    ]
     %w[type version id assignment].concat(evidence_fields).each do |field|
       malformed_confirmations["missing #{field}"] = valid_confirmation.reject { |key, _value| key == field }
     end
@@ -1654,7 +1865,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         input.merge(
           "active_assignments" => pending.fetch("active_assignments"),
           "launch_confirmation" => confirmation
-        )
+        ),
+        dispatcher_trust_env
       )
 
       assert_equal "invalid-input", output.fetch("status"), label
@@ -1691,7 +1903,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         input.merge(
           "active_assignments" => pending.fetch("active_assignments"),
           "launch_confirmation" => launch_confirmation(stale_assignment)
-        )
+        ),
+        dispatcher_trust_env
       )
 
       assert_equal "invalid-input", output.fetch("status"), label
@@ -1701,38 +1914,30 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     end
   end
 
-  def test_launch_confirmation_v2_accepts_each_positive_binding_and_attestation_value
-    [
-      %w[operator-selected instance-bound],
-      %w[dispatcher-bound dispatcher-attested]
-    ].each do |binding_source, attestation|
-      input = {
-        "lane_id" => "incident-positive-#{binding_source}",
-        "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
-        "candidates" => [{
-          "route" => { "model" => "Sol", "effort" => "high" },
-          "dispatcher" => "remote",
-          "binding" => binding_source,
-          "attestation" => attestation,
-          "instance_id" => "#{binding_source}-instance"
-        }]
-      }
-      pending = dispatch(input)
-      output = dispatch(
-        input.merge(
-          "active_assignments" => pending.fetch("active_assignments"),
-          "launch_confirmation" => launch_confirmation(
-            pending.fetch("dispatch"),
-            "binding_source" => binding_source,
-            "attestation" => attestation
-          )
-        )
-      )
+  def test_launch_confirmation_v2_accepts_signed_dispatcher_bound_instance_bound_runtime_evidence
+    input = {
+      "lane_id" => "incident-positive-runtime-observation",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "positive-runtime-observation-instance"
+      }]
+    }
+    pending = dispatch(input)
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => launch_confirmation(pending.fetch("dispatch"))
+      ),
+      dispatcher_trust_env
+    )
 
-      assert_equal "replay-already-active", output.fetch("status"), binding_source
-      assert_equal "confirmed-active", output.dig("active_assignments", 0, "lifecycle"), binding_source
-      refute output.key?("dispatch"), binding_source
-    end
+    assert_equal "replay-already-active", output.fetch("status")
+    assert_equal "confirmed-active", output.dig("active_assignments", 0, "lifecycle")
+    refute output.key?("dispatch")
   end
 
   def test_checker_lane_effort_must_match_the_selected_route_exactly
@@ -1755,7 +1960,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
           pending.fetch("dispatch"),
           "actual_effort" => "medium"
         )
-      )
+      ),
+      dispatcher_trust_env
     )
 
     assert_equal "invalid-input", output.fetch("status")
@@ -1780,7 +1986,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       input.merge(
         "active_assignments" => pending.fetch("active_assignments"),
         "launch_confirmation" => launch_confirmation(pending.fetch("dispatch"))
-      )
+      ),
+      dispatcher_trust_env
     )
     legacy_confirmation = {
       "type" => "launch-confirmation",
@@ -1842,8 +2049,13 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       pending.fetch("dispatch"),
       "id" => "old-instance-confirmation"
     )
-    active = dispatch(input.merge("active_assignments" => pending.fetch("active_assignments"),
-                                  "launch_confirmation" => confirmation))
+    active = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      dispatcher_trust_env
+    )
     changed_request = {
       "requested" => { "route" => { "model" => "Terra", "effort" => "high" },
                        "dispatcher" => "remote", "hard_route" => true },
@@ -1874,8 +2086,13 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       pending.fetch("dispatch"),
       "id" => "active-confirmation"
     )
-    active = dispatch(input.merge("active_assignments" => pending.fetch("active_assignments"),
-                                  "launch_confirmation" => confirmation))
+    active = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      dispatcher_trust_env
+    )
     replay = dispatch(input.merge("candidates" => [], "active_assignments" => active.fetch("active_assignments")))
     changed = dispatch(
       input.merge(

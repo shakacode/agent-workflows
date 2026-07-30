@@ -26,6 +26,10 @@ EVIDENCE_VOCABULARY_RULE = "Accepted binding evidence is `operator-selected` or 
 REPLACEMENT_PROOF_RULE = "A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences."
 LAUNCH_CONFIRMATION_V2_RULE = "A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction."
 LAUNCH_CONFIRMATION_V1_HISTORY_RULE = "Version 1 confirmations are history-only and cannot activate a launch-pending assignment."
+SIGNED_LAUNCH_OBSERVATION_RULE = "A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload."
+SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE = "The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature."
+DISPATCHER_TRUST_ANCHOR_RULE = "Verify the signature with the public key and key id configured explicitly in `AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM` and `AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID`; missing, mismatched, malformed, private, or invalid trust material fails closed."
+LAUNCH_CONFIRMATION_V1_MIGRATION_RULE = "During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies."
 OBSOLETE_V1_ACTIVATION_RULE = "only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`"
 DECISION_RESOLUTION_RULE = "Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`."
 SELF_CONTAINED_PERSISTENCE_RULE = "Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch."
@@ -151,8 +155,9 @@ class ModelRoutingContractTest < Minitest::Test
     guide = read_repo_file("docs/agent-workflows-model-routing.md")
     docs = read_repo_file("docs/pr-batch-skills.md")
     context = read_repo_file("CONTEXT.md")
+    triage = read_repo_file("skills/triage/SKILL.md")
     [guide, docs, context, read_repo_file("skills/plan-pr-batch/SKILL.md"), read_repo_file("skills/pr-batch/SKILL.md"),
-     read_repo_file("skills/triage/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
+     triage, read_repo_file("workflows/pr-processing.md")].each do |text|
       assert_includes text, "dispatch-decision-request v1"
       assert_includes text, "dispatcher-capability-preflight"
       assert_includes text, PROSPECTIVE_INSTANCE_ID_RULE
@@ -167,6 +172,10 @@ class ModelRoutingContractTest < Minitest::Test
     end
 
     [
+      guide,
+      docs,
+      context,
+      triage,
       read_repo_file("skills/plan-pr-batch/SKILL.md"),
       read_repo_file("skills/pr-batch/SKILL.md"),
       read_repo_file("workflows/pr-processing.md")
@@ -174,6 +183,12 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes text, LAUNCH_CONFIRMATION_V2_RULE
       assert_includes text, LAUNCH_CONFIRMATION_V1_HISTORY_RULE
       refute_includes text, OBSOLETE_V1_ACTIVATION_RULE
+    end
+    [guide, docs, context, triage].each do |text|
+      assert_includes text, SIGNED_LAUNCH_OBSERVATION_RULE
+      assert_includes text, SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE
+      assert_includes text, DISPATCHER_TRUST_ANCHOR_RULE
+      assert_includes text, LAUNCH_CONFIRMATION_V1_MIGRATION_RULE
     end
 
     portable_call = '"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"'
