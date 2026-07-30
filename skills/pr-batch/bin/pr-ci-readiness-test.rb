@@ -264,13 +264,14 @@ class PrCiReadinessCliTest < Minitest::Test
                    required_check_fields: nil, rejected_check_field: nil, check_stderr: nil, check_status: 0,
                    required_check_error: nil, full_check_error: nil, exact_actions: [],
                    exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
-                   exact_actions_total_count: nil)
+                   exact_actions_total_count: nil, expected_host: nil)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(gh, fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error,
                                     required_check_fields, rejected_check_field, check_stderr, check_status,
                                     required_check_error, full_check_error, exact_actions, exact_check_runs,
-                                    exact_statuses, exact_inventory_error, exact_actions_total_count))
+                                    exact_statuses, exact_inventory_error, exact_actions_total_count,
+                                    File.join(dir, "pr-head-state"), expected_host))
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
@@ -283,7 +284,40 @@ class PrCiReadinessCliTest < Minitest::Test
   def fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error, required_check_fields,
                      rejected_check_field, check_stderr, check_status, required_check_error, full_check_error,
                      exact_actions, exact_check_runs, exact_statuses, exact_inventory_error,
-                     exact_actions_total_count)
+                     exact_actions_total_count, pr_head_state_path, expected_host)
+    host_guard =
+      if expected_host
+        <<~BASH
+          if [ "$GH_HOST" != #{expected_host.inspect} ]; then
+            echo "unexpected GH_HOST: $GH_HOST" >&2
+            exit 91
+          fi
+        BASH
+      else
+        ""
+      end
+    pr_head_command =
+      if pr_head.is_a?(Array)
+        cases = pr_head.each_with_index.map do |head, index|
+          "#{index}) payload=#{JSON.generate('headRefOid' => head).inspect} ;;"
+        end.join("\n")
+        <<~BASH
+          count=0
+          if [ -f #{pr_head_state_path.inspect} ]; then count=$(cat #{pr_head_state_path.inspect}); fi
+          case "$count" in
+          #{cases}
+          *) payload=#{JSON.generate('headRefOid' => pr_head.last).inspect} ;;
+          esac
+          printf '%s' "$payload"
+          printf '%s' "$((count + 1))" > #{pr_head_state_path.inspect}
+        BASH
+      else
+        <<~BASH
+          cat <<'JSON'
+          #{JSON.generate('headRefOid' => pr_head)}
+          JSON
+        BASH
+      end
     run_cases = runs.map do |run_id, payload|
       run_json = JSON.generate(payload.fetch(:run))
       jobs_json = JSON.generate(
@@ -381,14 +415,13 @@ class PrCiReadinessCliTest < Minitest::Test
 
     <<~SH
       #!/usr/bin/env bash
+      #{host_guard}
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
         printf 'owner/repo'
         exit 0
       fi
       if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-        cat <<'JSON'
-      {"headRefOid":#{pr_head.inspect}}
-      JSON
+      #{pr_head_command}
         exit 0
       fi
       if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
@@ -457,6 +490,108 @@ class PrCiReadinessCliTest < Minitest::Test
       out, status = run_script(env, "123", "--repo", "owner/repo")
       assert status.success?, out
       assert_equal "READY", JSON.parse(out)["verdict"]
+    end
+  end
+
+  def test_explicit_ghes_host_is_normalized_propagated_and_emitted
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example.com"
+    ) do |env|
+      out, status = run_script(env, "123", "--host", "GHE.EXAMPLE.COM:443")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "owner/repo", data.fetch("repo")
+      assert_equal "ghe.example.com", data.dig("context", "host")
+    end
+  end
+
+  def test_invalid_explicit_hosts_are_rejected
+    invalid_hosts = [
+      "",
+      "https://ghe.example.com",
+      "ghe.example.com/path",
+      "user@ghe.example.com",
+      "ghe.example.com:8443",
+      "bad..example.com",
+      "-bad.example.com",
+      "bad-.example.com",
+      "bad_host.example.com"
+    ]
+    with_fake_gh(required_json: "[]", full_json: "[]") do |env|
+      invalid_hosts.each do |host|
+        out, status = run_script(env, "123", "--repo", "owner/repo", "--host", host)
+
+        refute status.success?, host
+        assert_includes out, "invalid GitHub host", host
+      end
+    end
+  end
+
+  def test_host_defaults_to_caller_environment_then_github_dot_com
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.env.example"
+    ) do |env|
+      env["GH_HOST"] = "GHE.ENV.EXAMPLE:443"
+      out, status = run_script(env, "123")
+
+      assert status.success?, out
+      assert_equal "ghe.env.example", JSON.parse(out).dig("context", "host")
+    end
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "github.com"
+    ) do |env|
+      env["GH_HOST"] = nil
+      out, status = run_script(env, "123")
+
+      assert status.success?, out
+      assert_equal "github.com", JSON.parse(out).dig("context", "host")
+    end
+  end
+
+  def test_host_qualified_repo_cannot_conflict_with_resolved_host
+    with_fake_gh(
+      required_json: "[]",
+      full_json: "[]",
+      expected_host: "ghe.example.com"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example.com",
+        "--repo", "github.com/owner/repo"
+      )
+
+      refute status.success?
+      assert_includes out, "repo host github.com conflicts with resolved GitHub host ghe.example.com"
+    end
+  end
+
+  def test_matching_host_qualified_repo_is_normalized_for_collection
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example.com"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example.com",
+        "--repo", "GHE.EXAMPLE.COM:443/owner/repo"
+      )
+
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "owner/repo", data.fetch("repo")
+      assert_equal "ghe.example.com", data.dig("context", "host")
     end
   end
 
@@ -551,6 +686,30 @@ class PrCiReadinessCliTest < Minitest::Test
         assert_equal head, scope.fetch("head_sha")
         refute_nil scope.fetch("checked_at")
       end
+    end
+  end
+
+  def test_head_movement_marks_every_evidence_scope_incomplete
+    original_head = "a" * 40
+    moved_head = "b" * 40
+    head_moved_error =
+      "PR head moved during exact-head inventory: #{original_head} -> #{moved_head}"
+    with_fake_gh(
+      required_json: "[]",
+      full_json: '[{"workflow":"CI","name":"advisory","bucket":"pass"}]',
+      pr_head: [original_head, original_head, moved_head]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      data.fetch("scopes").each do |name, scope|
+        assert_equal false, scope.fetch("complete"), name
+        assert_equal "UNKNOWN", scope.fetch("state"), name
+        assert_includes scope.fetch("error"), head_moved_error, name
+      end
+      assert_empty data.dig("scopes", "required_status_check_rollup", "rows")
     end
   end
 

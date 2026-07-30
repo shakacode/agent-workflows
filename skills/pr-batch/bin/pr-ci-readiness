@@ -293,7 +293,8 @@ module PrCiReadiness
       <pr-number>        PR number to inspect (integer).
 
     Options:
-          --repo REPO                         GitHub repo in OWNER/REPO form. Defaults to gh repo view.
+          --host HOST                         GitHub host. Defaults to GH_HOST, then github.com.
+          --repo REPO                         GitHub repo in [HOST/]OWNER/REPO form. Defaults to gh repo view.
           --requested-hosted-run RUN_ID_OR_URL
                                               Require this explicit current-head hosted run to finish.
                                               Repeat for multiple maintainer-requested runs.
@@ -307,6 +308,7 @@ module PrCiReadiness
     Output JSON shape:
       {
         "pr": 1234,
+        "context": { "host": "github.com" },
         "verdict": "READY" | "NOT_READY" | "UNKNOWN",
         "required_used": true | false,
         "failing": [ "check name", ... ],
@@ -345,11 +347,15 @@ module PrCiReadiness
         puts USAGE
         return 0
       end
+      host = resolve_host!(opts[:host])
+      @gh_env = { "GH_HOST" => host }
       return self_check if opts[:self_check]
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      print_result(assess(repo, pr_number, requested_hosted_runs: opts[:requested_hosted_runs]), opts[:format])
+      result = assess(repo, pr_number, requested_hosted_runs: opts[:requested_hosted_runs])
+      result["context"] = { "host" => host }
+      print_result(result, opts[:format])
       0
     rescue Error => e
       warn "Error: #{e.message}"
@@ -359,11 +365,20 @@ module PrCiReadiness
     private
 
     def parse_args(argv)
-      opts = { format: "json", help: false, self_check: false, pr: nil, repo: nil, requested_hosted_runs: [] }
+      opts = {
+        format: "json",
+        help: false,
+        self_check: false,
+        pr: nil,
+        repo: nil,
+        host: nil,
+        requested_hosted_runs: []
+      }
       args = argv.dup
       until args.empty?
         arg = args.shift
         case arg
+        when "--host" then opts[:host] = take_value!(args, "--host")
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
         when "--requested-hosted-run" then opts[:requested_hosted_runs] << take_value!(args, "--requested-hosted-run")
         when "--json" then opts[:format] = "json"
@@ -396,12 +411,45 @@ module PrCiReadiness
       pr_number
     end
 
-    # Strict OWNER/REPO: non-empty owner and name, exactly one slash, no spaces.
+    def resolve_host!(requested_host)
+      raw_host =
+        if requested_host.nil?
+          ENV.key?("GH_HOST") ? ENV["GH_HOST"] : "github.com"
+        else
+          requested_host
+        end
+      host = raw_host.to_s.strip.downcase.sub(/:443\z/, "")
+      labels = host.split(".", -1)
+      valid = !host.empty? && host.length <= 253 && labels.all? do |label|
+        label.length <= 63 &&
+          label.match?(/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/)
+      end
+      raise Error, "invalid GitHub host: '#{raw_host}'" unless valid
+
+      host
+    end
+
+    # Strict [HOST/]OWNER/REPO: non-empty parts and no spaces.
     REPO_FORMAT = %r{\A[^/\s]+/[^/\s]+\z}
 
     def resolve_repo!(repo)
       repo ||= capture_required!("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").strip
-      raise Error, "--repo must be in OWNER/REPO form (got: '#{repo}')" unless repo.match?(REPO_FORMAT)
+      parts = repo.split("/", -1)
+      resolved_host = @gh_env.fetch("GH_HOST")
+      host_qualified = parts.length == 3 &&
+                       (parts.first.include?(".") || parts.first.include?(":") ||
+                        parts.first.casecmp?(resolved_host))
+      if host_qualified
+        repo_host = resolve_host!(parts.shift)
+        if repo_host != resolved_host
+          raise Error, "repo host #{repo_host} conflicts with resolved GitHub host #{resolved_host}"
+        end
+
+        repo = parts.join("/")
+      end
+      unless parts.length == 2 && repo.match?(REPO_FORMAT)
+        raise Error, "--repo must be in OWNER/REPO form (got: '#{repo}')"
+      end
 
       repo
     end
@@ -468,8 +516,11 @@ module PrCiReadiness
       inventory = exact_head_inventory(repo, exact_head_sha)
       final_head_sha = fetch_pr_head_oid(repo, pr_number)
       if final_head_sha != exact_head_sha
-        inventory[:errors].transform_values! do |error|
-          [error, "PR head moved during exact-head inventory: #{exact_head_sha} -> #{final_head_sha}"].compact.join("; ")
+        head_moved_error =
+          "PR head moved during exact-head inventory: #{exact_head_sha} -> #{final_head_sha}"
+        %w[required_status_check_rollup github_actions dependabot other].each do |scope|
+          inventory[:errors][scope] =
+            [inventory[:errors][scope], head_moved_error].compact.join("; ")
         end
         inventory[:required_complete] = false
         inventory[:actions_complete] = false
@@ -478,7 +529,8 @@ module PrCiReadiness
       end
       scopes = PrCiReadiness.inventory_scopes(
         head_sha: exact_head_sha, checked_at:,
-        required_rows: required_evidence_rows, required_complete: required_query_known,
+        required_rows: required_evidence_rows,
+        required_complete: required_query_known && inventory.fetch(:required_complete),
         actions_rows: inventory.fetch(:actions_rows),
         actions_complete: inventory.fetch(:actions_complete),
         check_runs: inventory.fetch(:check_runs),
@@ -683,7 +735,7 @@ module PrCiReadiness
       cmd = ["gh", "pr", "checks", pr_number.to_s, "--repo", repo]
       cmd << "--required" if required
       cmd += ["--json", "name,state,bucket,link,workflow"]
-      out, err, status = Open3.capture3(*cmd)
+      out, err, status = Open3.capture3(@gh_env, *cmd)
       raw = out.to_s.force_encoding("UTF-8")
       known_good = PrCiReadiness.json_array_payload?(raw) ||
                    status.success? && raw.strip.empty? || no_checks_diagnostic?(err)
@@ -919,7 +971,7 @@ module PrCiReadiness
     # Run a command with no shell (array args) and return UTF-8 stdout, raising
     # when the command fails. Used only for commands whose exit status matters.
     def capture_required!(*cmd)
-      out, status = Open3.capture2(*cmd)
+      out, status = Open3.capture2(@gh_env, *cmd)
       raise Error, "command failed: #{cmd.first(3).join(' ')}" unless status.success?
 
       out.force_encoding("UTF-8")
@@ -1013,7 +1065,10 @@ module PrCiReadiness
     def gh_smoke
       return "gh smoke: skipped (gh not installed)" unless system("command -v gh > /dev/null 2>&1")
 
-      repo, status = Open3.capture2("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
+      repo, status = Open3.capture2(
+        @gh_env,
+        "gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"
+      )
       return "gh smoke: skipped (gh not authenticated)" unless status.success? && !repo.strip.empty?
 
       "gh smoke: ok for #{repo.strip}"

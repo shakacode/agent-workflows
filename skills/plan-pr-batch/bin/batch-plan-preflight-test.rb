@@ -319,6 +319,20 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_changed_surfaces_preserves_its_structured_violation
+    input = input_for
+    input.dig("plan", "lanes", 0)["changed_surfaces"] = nil
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "changed-surfaces-invalid"
+    refute_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "invalid-envelope"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
   def test_no_qa_disposition_requires_no_risky_surface_and_nonempty_rationale
     no_qa_lane = lane
     no_qa_lane["qa"] = { "disposition" => "not-required", "rationale" => "  " }
@@ -784,6 +798,20 @@ class BatchPlanPreflightTest < Minitest::Test
 
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") }, "lane-record-invalid"
+  end
+
+  def test_missing_lane_id_preserves_lane_identity_violations
+    input = input_for
+    input.dig("plan", "lanes", 0).delete("id")
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    codes = result.fetch("violations").map { |item| item.fetch("code") }
+    assert_includes codes, "lane-id-invalid-or-duplicate"
+    assert_includes codes, "lane-record-invalid"
+    refute_includes codes, "invalid-envelope"
+    assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
   def test_active_wave_is_required_known_and_matches_a_planned_wave

@@ -115,15 +115,22 @@ module BatchPlanPreflight
     end
 
     lanes = input.fetch("plan").fetch("lanes")
-    lane_ids = lanes.map { |lane| lane.fetch("id") }
-    violations = validate_plan(input["plan"])
+    lane_ids = lanes.map { |lane| lane["id"] }
+    plan_violations = validate_plan(input["plan"])
+    violations = plan_violations.dup
     violations.concat(validate_unknown_decisions(input["plan"]))
-    lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_receipts(
-      input["lane_lifecycle_receipts"],
-      input["plan"],
-      input["stage_dependency_plan"]
-    )
-    violations.concat(lifecycle_violations)
+    plan_violation_codes = plan_violations.map { |item| item["code"] }
+    lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
+    changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
+    completed_lane_ids = []
+    if lane_ids_valid
+      lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_receipts(
+        input["lane_lifecycle_receipts"],
+        input["plan"],
+        input["stage_dependency_plan"]
+      )
+      violations.concat(lifecycle_violations)
+    end
     file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
     violations.concat(file_touch_violations)
     violations.concat(validate_stage_dependencies(
@@ -131,25 +138,34 @@ module BatchPlanPreflight
                         input["stage_dependency_gate"],
                         lane_ids
                       ))
-    if file_touch_violations.empty?
+    if file_touch_violations.empty? && lane_ids_valid
       violations.concat(validate_collisions(
                           lanes,
                           input["plan"]["serialization_groups"],
                           input["file_touch_map"],
                           input["stage_dependency_plan"]
                         ))
-      violations.concat(validate_caps(input["plan"]["backend"], lanes, input["file_touch_map"]))
+      if changed_surfaces_valid
+        violations.concat(validate_caps(input["plan"]["backend"], lanes, input["file_touch_map"]))
+      end
     end
     violations.concat(validate_external_premises(input["plan"]["external_api_premises"], lane_ids))
-    violations.concat(validate_external_support(input["plan"]["external_api_premises"], lanes))
+    if lane_ids_valid
+      violations.concat(validate_external_support(input["plan"]["external_api_premises"], lanes))
+    end
     status = violations.empty? ? "accepted" : "rejected"
-    eligible_lane_ids, held_lane_ids = launch_partition(
-      lanes,
-      input["stage_dependency_gate"],
-      input["plan"]["active_wave"],
-      input["plan"]["serialization_groups"],
-      completed_lane_ids
-    )
+    eligible_lane_ids, held_lane_ids =
+      if status == "accepted"
+        launch_partition(
+          lanes,
+          input["stage_dependency_gate"],
+          input["plan"]["active_wave"],
+          input["plan"]["serialization_groups"],
+          completed_lane_ids
+        )
+      else
+        [[], []]
+      end
     result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: completed_lane_ids.sort)
   end
 

@@ -1653,32 +1653,50 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute output.key?("dispatch")
   end
 
-  def test_caller_controlled_env_key_cannot_make_a_forged_v2_confirmation_trusted
+  def test_public_input_cannot_override_fixed_dispatcher_trust
     input = {
-      "lane_id" => "incident-caller-controlled-trust",
+      "lane_id" => "incident-public-input-trust-override",
       "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
       "candidates" => [{
         "route" => { "model" => "Sol", "effort" => "high" },
         "dispatcher" => "remote",
         "binding" => "operator-selected",
         "attestation" => "instance-bound",
-        "instance_id" => "caller-controlled-trust-instance"
+        "instance_id" => "public-input-trust-instance"
       }]
     }
     pending = dispatch(input)
+    trusted_helper = fixed_dispatcher_trust
+    trusted_confirmation = launch_confirmation(pending.fetch("dispatch"))
+    trusted = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => trusted_confirmation
+      ),
+      trusted_helper
+    )
+    assert_equal "replay-already-active", trusted.fetch("status")
+
     attacker_key = OpenSSL::PKey::RSA.generate(1024)
     forged_confirmation = launch_confirmation(pending.fetch("dispatch"), {}, attacker_key)
-
     output = dispatch(
       input.merge(
         "active_assignments" => pending.fetch("active_assignments"),
-        "launch_confirmation" => forged_confirmation
+        "launch_confirmation" => forged_confirmation,
+        "agent_workflow_dispatcher_trusted_key_id" => "test-dispatcher-key",
+        "agent_workflow_dispatcher_trusted_public_key_pem" => attacker_key.public_to_pem,
+        "dispatcher_trust_anchor" => {
+          "type" => "agent-workflow-dispatcher-trust-anchor",
+          "version" => 1,
+          "agent_workflow_dispatcher_trusted_key_id" => "test-dispatcher-key",
+          "agent_workflow_dispatcher_trusted_public_key_pem" => attacker_key.public_to_pem
+        }
       ),
-      caller_dispatcher_trust_env(key: attacker_key)
+      trusted_helper
     )
 
     assert_equal "invalid-input", output.fetch("status")
-    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    assert_equal "caller input cannot override dispatcher trust", output.fetch("reason")
     refute output.key?("dispatch")
   end
 

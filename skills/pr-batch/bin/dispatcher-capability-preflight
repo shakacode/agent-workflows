@@ -18,6 +18,11 @@ TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
 TRUST_CONFIG_PATH = File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
 TRUSTED_KEY_ID_FIELD = "agent_workflow_dispatcher_trusted_key_id"
 TRUSTED_PUBLIC_KEY_FIELD = "agent_workflow_dispatcher_trusted_public_key_pem"
+CALLER_TRUST_OVERRIDE_FIELDS = [
+  TRUSTED_KEY_ID_FIELD,
+  TRUSTED_PUBLIC_KEY_FIELD,
+  "dispatcher_trust_anchor"
+].freeze
 
 def fail_input(message)
   puts JSON.generate("status" => "invalid-input", "reason" => message)
@@ -619,6 +624,9 @@ rescue JSON::ParserError
   fail_input("malformed-json")
 end
 fail_input("JSON object is required") unless input.is_a?(Hash)
+if (input.keys & CALLER_TRUST_OVERRIDE_FIELDS).any?
+  fail_input("caller input cannot override dispatcher trust")
+end
 fail_input("lane_id is required") unless input["lane_id"].is_a?(String) && !input["lane_id"].empty?
 
 requested = input["requested"]
