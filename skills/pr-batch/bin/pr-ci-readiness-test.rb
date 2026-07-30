@@ -345,18 +345,24 @@ end
 class PrCiReadinessCliTest < Minitest::Test
   # Build a temp dir with a fake `gh` executable that emits canned `gh pr
   # checks` JSON, then run the real script with that dir prepended to PATH.
-  def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", runs: {}, review_pages: {}, review_error: false,
-                   required_check_fields: nil, rejected_check_field: nil, check_stderr: nil, check_status: 0,
+  def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", pr_identity: nil, runs: {},
+                   review_pages: {}, review_error: false, required_check_fields: nil,
+                   rejected_check_field: nil, check_stderr: nil, check_status: 0,
                    required_check_error: nil, full_check_error: nil, exact_actions: [],
                    exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
                    exact_actions_total_count: nil, expected_host: nil)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
-      File.write(gh, fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error,
-                                    required_check_fields, rejected_check_field, check_stderr, check_status,
-                                    required_check_error, full_check_error, exact_actions, exact_check_runs,
-                                    exact_statuses, exact_inventory_error, exact_actions_total_count,
-                                    File.join(dir, "pr-head-state"), expected_host))
+      File.write(
+        gh,
+        fake_gh_script(
+          required_json, full_json, pr_head, pr_identity, runs, review_pages, review_error,
+          required_check_fields, rejected_check_field, check_stderr, check_status,
+          required_check_error, full_check_error, exact_actions, exact_check_runs,
+          exact_statuses, exact_inventory_error, exact_actions_total_count,
+          File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host
+        )
+      )
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
@@ -370,10 +376,11 @@ class PrCiReadinessCliTest < Minitest::Test
     "printf '%s' #{JSON.generate(value).inspect}"
   end
 
-  def fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error, required_check_fields,
-                     rejected_check_field, check_stderr, check_status, required_check_error, full_check_error,
-                     exact_actions, exact_check_runs, exact_statuses, exact_inventory_error,
-                     exact_actions_total_count, pr_head_state_path, expected_host)
+  def fake_gh_script(required_json, full_json, pr_head, pr_identity, runs, review_pages, review_error,
+                     required_check_fields, rejected_check_field, check_stderr, check_status,
+                     required_check_error, full_check_error, exact_actions, exact_check_runs,
+                     exact_statuses, exact_inventory_error, exact_actions_total_count,
+                     pr_head_state_path, pr_identity_state_path, expected_host)
     host_guard =
       if expected_host
         <<~BASH
@@ -406,6 +413,45 @@ class PrCiReadinessCliTest < Minitest::Test
           #{JSON.generate('headRefOid' => pr_head)}
           JSON
         BASH
+      end
+    pr_identity_command =
+      if pr_identity.is_a?(Array)
+        cases = pr_identity.each_with_index.map do |identity, index|
+          if identity.nil?
+            "#{index}) exit 1 ;;"
+          else
+            "#{index}) payload=#{JSON.generate(identity).inspect}; printf '%s' \"$payload\" ;;"
+          end
+        end.join("\n")
+        fallback =
+          if pr_identity.last.nil?
+            "exit 1"
+          else
+            "payload=#{JSON.generate(pr_identity.last).inspect}; printf '%s' \"$payload\""
+          end
+        <<~BASH
+          count=0
+          if [ -f #{pr_identity_state_path.inspect} ]; then count=$(cat #{pr_identity_state_path.inspect}); fi
+          printf '%s' "$((count + 1))" > #{pr_identity_state_path.inspect}
+          case "$count" in
+          #{cases}
+          *) #{fallback} ;;
+          esac
+        BASH
+      elsif pr_identity
+        shell_json_printf(pr_identity)
+      else
+        default_identity = {
+          "id" => 9_001,
+          "number" => 0,
+          "head" => {
+            "sha" => pr_head.to_s,
+            "ref" => "feature",
+            "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+          }
+        }
+        template = JSON.generate(default_identity).sub('"number":0', '"number":%s')
+        "printf #{template.inspect} \"$FAKE_PR_NUMBER\""
       end
     run_cases = runs.map do |run_id, payload|
       run_json = JSON.generate(payload.fetch(:run))
@@ -529,6 +575,10 @@ class PrCiReadinessCliTest < Minitest::Test
         exit #{check_status}
       fi
       if [ "$1" = "api" ]; then
+        if [[ "$2" = repos/*/pulls/* ]]; then
+        #{pr_identity_command}
+          exit 0
+        fi
         if [ "$2" = "graphql" ]; then
           if #{review_error}; then
             exit 1
@@ -563,8 +613,9 @@ class PrCiReadinessCliTest < Minitest::Test
     SH
   end
 
-  def run_script(env, *)
-    Open3.capture2e(env, "ruby", SCRIPT, *)
+  def run_script(env, *args)
+    fake_env = env.merge("FAKE_PR_NUMBER" => args.first.to_s)
+    Open3.capture2e(fake_env, "ruby", SCRIPT, *args)
   end
 
   def test_check_fetch_requests_workflow_identity
@@ -791,12 +842,16 @@ class PrCiReadinessCliTest < Minitest::Test
       {
         "id" => 100, "workflow_id" => 10, "event" => "pull_request",
         "run_number" => 1, "run_attempt" => 1, "name" => "Dynamic CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "success",
         "actor" => { "login" => "octocat" }, "html_url" => "https://example/run/100"
       },
       {
         "id" => 101, "workflow_id" => 11, "event" => "pull_request",
         "run_number" => 1, "run_attempt" => 1, "name" => "Dependabot CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "success",
         "actor" => { "login" => "dependabot[bot]" }, "html_url" => "https://example/run/101"
       }
@@ -873,31 +928,43 @@ class PrCiReadinessCliTest < Minitest::Test
       {
         "id" => 100, "workflow_id" => 10, "event" => "pull_request",
         "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "cancelled"
       },
       {
         "id" => 101, "workflow_id" => 10, "event" => "pull_request",
         "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "cancelled"
       },
       {
         "id" => 102, "workflow_id" => 10, "event" => "pull_request",
         "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "cancelled"
       },
       {
         "id" => 103, "workflow_id" => 10, "event" => "pull_request",
         "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "success"
       },
       {
         "id" => 104, "workflow_id" => 10, "event" => "workflow_dispatch",
         "run_number" => 3, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "success"
       },
       {
         "id" => 105, "workflow_id" => 11, "event" => "pull_request",
         "run_number" => 2, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "success"
       }
     ]
@@ -944,11 +1011,254 @@ class PrCiReadinessCliTest < Minitest::Test
     )
   end
 
+  def test_exact_head_actions_select_target_pr_before_current_run_grouping
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    other_association = {
+      "id" => 5_002, "number" => 456, "url" => "https://api.example/pulls/456",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    action_runs = [
+      {
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [target_association],
+        "status" => "completed", "conclusion" => "failure"
+      },
+      {
+        "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [other_association],
+        "status" => "completed", "conclusion" => "success"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      id = run.fetch("id")
+      [
+        id.to_s,
+        {
+          run:,
+          jobs: [{
+            "id" => id * 10, "name" => "unit", "status" => "completed",
+            "conclusion" => run.fetch("conclusion")
+          }]
+        }
+      ]
+    end
+
+    results = [action_runs, action_runs.reverse].map do |ordered_runs|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: ordered_runs,
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        [
+          data.fetch("verdict"),
+          data.dig("scopes", "github_actions", "state"),
+          data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+        ]
+      end
+    end
+
+    assert_equal(
+      Array.new(2) { ["NOT_READY", "NOT_READY", [100, 1000]] },
+      results
+    )
+  end
+
+  def test_exact_head_actions_scope_empty_associations_to_target_branch_and_repository
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    action_runs = [
+      {
+        "id" => 300, "workflow_id" => 30, "event" => "push",
+        "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [], "status" => "completed", "conclusion" => "failure"
+      },
+      {
+        "id" => 301, "workflow_id" => 30, "event" => "push",
+        "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "other-feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [], "status" => "completed", "conclusion" => "success"
+      },
+      {
+        "id" => 302, "workflow_id" => 30, "event" => "push",
+        "run_number" => 9, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_003 },
+        "pull_requests" => [], "status" => "completed", "conclusion" => "success"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      id = run.fetch("id")
+      [
+        id.to_s,
+        {
+          run:,
+          jobs: [{
+            "id" => id * 10, "name" => "unit", "status" => "completed",
+            "conclusion" => run.fetch("conclusion")
+          }]
+        }
+      ]
+    end
+
+    results = [action_runs, action_runs.reverse].map do |ordered_runs|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: ordered_runs,
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        [
+          data.fetch("verdict"),
+          data.dig("scopes", "github_actions", "state"),
+          data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+        ]
+      end
+    end
+
+    assert_equal(
+      Array.new(2) { ["NOT_READY", "NOT_READY", [300, 3000]] },
+      results
+    )
+  end
+
+  def test_target_pr_identity_move_or_malformed_refetch_invalidates_every_evidence_scope
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    changed_head = ->(values) { target_identity.merge("head" => target_identity.fetch("head").merge(values)) }
+    changed_repo = lambda do |values|
+      changed_head.call("repo" => target_identity.dig("head", "repo").merge(values))
+    end
+    final_identities = {
+      "PR id moved" => target_identity.merge("id" => 5_002),
+      "PR id missing" => target_identity.reject { |key, _value| key == "id" },
+      "PR id non-positive" => target_identity.merge("id" => 0),
+      "PR number moved" => target_identity.merge("number" => 124),
+      "PR number missing" => target_identity.reject { |key, _value| key == "number" },
+      "PR number non-positive" => target_identity.merge("number" => 0),
+      "head SHA moved" => changed_head.call("sha" => "b" * 40),
+      "head SHA missing" => changed_head.call("sha" => nil),
+      "head ref moved" => changed_head.call("ref" => "other-feature"),
+      "head ref blank" => changed_head.call("ref" => "  "),
+      "head repo moved" => changed_repo.call("id" => 9_003),
+      "head repo id missing" => changed_repo.call("id" => nil),
+      "head repo id non-positive" => changed_repo.call("id" => 0),
+      "identity unavailable" => nil
+    }
+
+    accepted_invalid_identities = final_identities.filter_map do |label, final_identity|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: [target_identity, final_identity]
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        invalidated = data.fetch("verdict") == "UNKNOWN" &&
+                      data.fetch("scopes").values.all? do |scope|
+                        scope.fetch("complete") == false && scope.fetch("state") == "UNKNOWN"
+                      end
+        label unless invalidated
+      end
+    end
+
+    assert_empty accepted_invalid_identities
+  end
+
+  def test_initial_malformed_or_unavailable_target_identity_emits_unknown_evidence
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    invalid_identities = {
+      "missing PR id" => target_identity.reject { |key, _value| key == "id" },
+      "wrong PR number" => target_identity.merge("number" => 124),
+      "blank head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "  ")
+      ),
+      "blank head ref" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("ref" => "  ")
+      ),
+      "non-positive head repo id" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge(
+          "repo" => target_identity.dig("head", "repo").merge("id" => 0)
+        )
+      ),
+      "identity unavailable" => [nil]
+    }
+
+    incomplete_initial_identities = invalid_identities.filter_map do |label, identity|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: identity
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        next label unless status.success?
+
+        data = JSON.parse(out)
+        unknown = data.fetch("verdict") == "UNKNOWN" &&
+                  data.fetch("scopes").values.all? do |scope|
+                    scope.fetch("complete") == false && scope.fetch("state") == "UNKNOWN"
+                  end
+        label unless unknown
+      end
+    end
+
+    assert_empty incomplete_initial_identities
+  end
+
   def test_exact_head_actions_fail_closed_for_missing_or_malformed_run_identity
     head = "a" * 40
     valid_run = {
       "id" => 200, "workflow_id" => 20, "event" => "pull_request",
       "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
       "status" => "completed", "conclusion" => "success"
     }
     missing = ->(key) { valid_run.reject { |candidate, _value| candidate == key } }
@@ -970,7 +1280,17 @@ class PrCiReadinessCliTest < Minitest::Test
       "non-integer id" => changed.call("id", "200"),
       "non-positive id" => changed.call("id", 0),
       "missing head_sha" => missing.call("head_sha"),
-      "wrong head_sha" => changed.call("head_sha", "b" * 40)
+      "wrong head_sha" => changed.call("head_sha", "b" * 40),
+      "missing head_branch" => missing.call("head_branch"),
+      "non-string head_branch" => changed.call("head_branch", 123),
+      "blank head_branch" => changed.call("head_branch", "  "),
+      "missing head_repository" => missing.call("head_repository"),
+      "non-object head_repository" => changed.call("head_repository", "owner/repo"),
+      "missing head_repository id" => changed.call("head_repository", {}),
+      "non-integer head_repository id" => changed.call("head_repository", { "id" => "9002" }),
+      "non-positive head_repository id" => changed.call("head_repository", { "id" => 0 }),
+      "missing pull_requests" => missing.call("pull_requests"),
+      "non-array pull_requests" => changed.call("pull_requests", {})
     }
 
     accepted_invalid_runs = invalid_runs.filter_map do |label, run|
@@ -1001,15 +1321,102 @@ class PrCiReadinessCliTest < Minitest::Test
     assert_empty accepted_invalid_runs
   end
 
-  def test_head_movement_marks_every_evidence_scope_incomplete
+  def test_exact_head_actions_fail_closed_for_malformed_pull_request_association
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    valid_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    missing = ->(key) { valid_association.reject { |candidate, _value| candidate == key } }
+    changed = ->(key, value) { valid_association.merge(key => value) }
+    changed_head = ->(values) { changed.call("head", valid_association.fetch("head").merge(values)) }
+    changed_repo = lambda do |values|
+      changed_head.call("repo" => valid_association.dig("head", "repo").merge(values))
+    end
+    invalid_associations = {
+      "non-object association" => "malformed",
+      "missing id" => missing.call("id"),
+      "non-integer id" => changed.call("id", "5001"),
+      "non-positive id" => changed.call("id", 0),
+      "missing number" => missing.call("number"),
+      "non-integer number" => changed.call("number", "123"),
+      "non-positive number" => changed.call("number", 0),
+      "missing URL" => missing.call("url"),
+      "non-string URL" => changed.call("url", 123),
+      "blank URL" => changed.call("url", "  "),
+      "missing head" => missing.call("head"),
+      "non-object head" => changed.call("head", "feature"),
+      "missing head SHA" => changed_head.call("sha" => nil),
+      "non-string head SHA" => changed_head.call("sha" => 123),
+      "blank head SHA" => changed_head.call("sha" => "  "),
+      "missing head ref" => changed_head.call("ref" => nil),
+      "non-string head ref" => changed_head.call("ref" => 123),
+      "blank head ref" => changed_head.call("ref" => "  "),
+      "missing head repo" => changed_head.call("repo" => nil),
+      "non-object head repo" => changed_head.call("repo" => "owner/repo"),
+      "missing head repo id" => changed_repo.call("id" => nil),
+      "non-integer head repo id" => changed_repo.call("id" => "9002"),
+      "non-positive head repo id" => changed_repo.call("id" => 0)
+    }
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "status" => "completed", "conclusion" => "success"
+    }
+
+    accepted_invalid_associations = invalid_associations.filter_map do |label, association|
+      run = valid_run.merge("pull_requests" => [association])
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: [run],
+        runs: { "200" => { run:, jobs: [] } }
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_invalid_associations
+  end
+
+  def test_target_identity_head_movement_marks_every_evidence_scope_incomplete
     original_head = "a" * 40
     moved_head = "b" * 40
-    head_moved_error =
-      "PR head moved during exact-head inventory: #{original_head} -> #{moved_head}"
+    original_identity = {
+      "id" => 9_001, "number" => 123,
+      "head" => {
+        "sha" => original_head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    moved_identity = {
+      "id" => 9_001, "number" => 123,
+      "head" => {
+        "sha" => moved_head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
     with_fake_gh(
       required_json: "[]",
       full_json: '[{"workflow":"CI","name":"advisory","bucket":"pass"}]',
-      pr_head: [original_head, original_head, moved_head]
+      pr_head: original_head,
+      pr_identity: [original_identity, moved_identity]
     ) do |env|
       out, status = run_script(env, "123", "--repo", "owner/repo")
       assert status.success?, out
@@ -1019,7 +1426,9 @@ class PrCiReadinessCliTest < Minitest::Test
       data.fetch("scopes").each do |name, scope|
         assert_equal false, scope.fetch("complete"), name
         assert_equal "UNKNOWN", scope.fetch("state"), name
-        assert_includes scope.fetch("error"), head_moved_error, name
+        assert_includes scope.fetch("error"), "target PR identity moved during exact-head inventory", name
+        assert_includes scope.fetch("error"), original_head, name
+        assert_includes scope.fetch("error"), moved_head, name
       end
       assert_empty data.dig("scopes", "required_status_check_rollup", "rows")
     end
@@ -1158,6 +1567,8 @@ class PrCiReadinessCliTest < Minitest::Test
       exact_actions: [{
         "id" => 100, "workflow_id" => 10, "event" => "pull_request",
         "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
         "status" => "completed", "conclusion" => "success",
         "actor" => { "login" => "octocat" }
       }],
@@ -1166,6 +1577,8 @@ class PrCiReadinessCliTest < Minitest::Test
           run: {
             "id" => 100, "workflow_id" => 10, "event" => "pull_request",
             "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+            "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+            "pull_requests" => [],
             "status" => "completed", "conclusion" => "success"
           },
           jobs: []
@@ -1189,6 +1602,8 @@ class PrCiReadinessCliTest < Minitest::Test
     action_run = {
       "id" => 100, "workflow_id" => 10, "event" => "pull_request",
       "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
       "status" => "completed", "conclusion" => "success",
       "actor" => { "login" => "octocat" }
     }

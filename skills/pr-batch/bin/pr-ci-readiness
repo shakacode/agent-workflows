@@ -469,7 +469,13 @@ module PrCiReadiness
     # required form yields no current rows. required_used flips false on fallback.
     def assess(repo, pr_number, requested_hosted_runs:)
       checked_at = Time.now.utc.iso8601
-      exact_head_sha = fetch_pr_head_oid(repo, pr_number)
+      target_pr =
+        begin
+          fetch_target_pr_identity(repo, pr_number)
+        rescue StandardError => e
+          return unavailable_target_pr_result(repo, pr_number, checked_at, e)
+        end
+      exact_head_sha = target_pr.fetch(:head_sha)
       required_fetch = fetch_checks(repo, pr_number, required: true)
       required_raw = required_fetch.fetch(:raw)
       required_query_known = required_fetch.fetch(:known_good)
@@ -524,14 +530,22 @@ module PrCiReadiness
             required_cancellations:
           )
         end
-      inventory = exact_head_inventory(repo, exact_head_sha)
-      final_head_sha = fetch_pr_head_oid(repo, pr_number)
-      if final_head_sha != exact_head_sha
-        head_moved_error =
-          "PR head moved during exact-head inventory: #{exact_head_sha} -> #{final_head_sha}"
+      inventory = exact_head_inventory(repo, target_pr)
+      target_identity_error =
+        begin
+          final_target_pr = fetch_target_pr_identity(repo, pr_number)
+          unless same_target_pr_identity?(target_pr, final_target_pr)
+            "target PR identity moved during exact-head inventory: " \
+              "#{target_pr_identity_description(target_pr)} -> " \
+              "#{target_pr_identity_description(final_target_pr)}"
+          end
+        rescue StandardError => e
+          "target PR identity unavailable after exact-head inventory: #{e.message}"
+        end
+      if target_identity_error
         %w[required_status_check_rollup github_actions dependabot other].each do |scope|
           inventory[:errors][scope] =
-            [inventory[:errors][scope], head_moved_error].compact.join("; ")
+            [inventory[:errors][scope], target_identity_error].compact.join("; ")
         end
         inventory[:required_complete] = false
         inventory[:actions_complete] = false
@@ -569,9 +583,37 @@ module PrCiReadiness
       )
     end
 
-    def exact_head_inventory(repo, head_sha)
+    def unavailable_target_pr_result(repo, pr_number, checked_at, error)
+      head_sha = "UNKNOWN"
+      message = "target PR identity unavailable before exact-head inventory: #{error.message}"
+      errors = %w[
+        required_status_check_rollup github_actions dependabot other
+      ].to_h { |scope| [scope, message] }
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha:, checked_at:,
+        required_rows: [], required_complete: false,
+        actions_rows: [], actions_complete: false,
+        check_runs: [], check_runs_complete: false,
+        statuses: [], statuses_complete: false,
+        errors:
+      )
+      ordinary = PrCiReadiness.assess(
+        pr_number:, required_used: false, rows: [], required_cancellations: []
+      )
+      contract = PrCiReadiness.evidence_contract(
+        repo:, pr_number:, head_sha:, checked_at:, scopes:
+      )
+      contract.merge(ordinary).merge(
+        "verdict" => "UNKNOWN",
+        "ordinary_verdict" => "UNKNOWN",
+        "scopes" => scopes
+      )
+    end
+
+    def exact_head_inventory(repo, target_pr)
+      head_sha = target_pr.fetch(:head_sha)
       errors = {}
-      actions_rows, actions_complete, actions_error = fetch_exact_head_actions(repo, head_sha)
+      actions_rows, actions_complete, actions_error = fetch_exact_head_actions(repo, target_pr)
       errors["github_actions"] = actions_error if actions_error
       errors["dependabot"] = actions_error if actions_error
 
@@ -595,12 +637,14 @@ module PrCiReadiness
       }
     end
 
-    def fetch_exact_head_actions(repo, head_sha)
+    def fetch_exact_head_actions(repo, target_pr)
+      head_sha = target_pr.fetch(:head_sha)
       runs = fetch_paginated_collection(
         "repos/#{repo}/actions/runs?head_sha=#{head_sha}&per_page=100&page=%<page>s",
         "workflow_runs"
       )
       runs.each { |run| validate_actions_run_identity!(run, head_sha) }
+      runs.select! { |run| actions_run_targets_pr?(run, target_pr) }
       rows = []
       current_runs = runs.group_by { |run| [run["workflow_id"], run["event"]] }
       current_runs = current_runs.values.map do |group|
@@ -722,7 +766,80 @@ module PrCiReadiness
         raise Error, "Actions run event was not a nonblank string"
       end
 
+      head_branch = run["head_branch"]
+      unless head_branch.is_a?(String) && !head_branch.strip.empty?
+        raise Error, "Actions run head_branch was not a nonblank string"
+      end
+
+      head_repository = run["head_repository"]
+      unless head_repository.is_a?(Hash)
+        raise Error, "Actions run head_repository was not an object"
+      end
+
+      head_repository_id = head_repository["id"]
+      unless head_repository_id.is_a?(Integer) && head_repository_id.positive?
+        raise Error, "Actions run head_repository id was not a positive integer"
+      end
+      unless run["pull_requests"].is_a?(Array)
+        raise Error, "Actions run pull_requests was not an array"
+      end
+
+      run["pull_requests"].each { |association| validate_actions_pull_request_association!(association) }
+
       ensure_exact_head!(run, head_sha, "Actions run")
+    end
+
+    def validate_actions_pull_request_association!(association)
+      unless association.is_a?(Hash)
+        raise Error, "Actions run pull request association was not an object"
+      end
+
+      %w[id number].each do |field|
+        value = association[field]
+        unless value.is_a?(Integer) && value.positive?
+          raise Error, "Actions run pull request #{field} was not a positive integer"
+        end
+      end
+      url = association["url"]
+      unless url.is_a?(String) && !url.strip.empty?
+        raise Error, "Actions run pull request URL was not a nonblank string"
+      end
+
+      head = association["head"]
+      unless head.is_a?(Hash)
+        raise Error, "Actions run pull request head was not an object"
+      end
+
+      %w[sha ref].each do |field|
+        value = head[field]
+        unless value.is_a?(String) && !value.strip.empty?
+          raise Error, "Actions run pull request head #{field} was not a nonblank string"
+        end
+      end
+      head_repo = head["repo"]
+      unless head_repo.is_a?(Hash)
+        raise Error, "Actions run pull request head repo was not an object"
+      end
+
+      head_repo_id = head_repo["id"]
+      raise Error, "Actions run pull request head repo id was not a positive integer" unless
+        head_repo_id.is_a?(Integer) && head_repo_id.positive?
+    end
+
+    def actions_run_targets_pr?(run, target_pr)
+      associations = run["pull_requests"]
+      if associations.empty?
+        return run["head_branch"] == target_pr.fetch(:head_ref) &&
+               run.dig("head_repository", "id") == target_pr.fetch(:head_repo_id)
+      end
+
+      associations.any? do |association|
+        association["id"] == target_pr.fetch(:id) &&
+          association["number"] == target_pr.fetch(:number) &&
+          association.dig("head", "sha") == target_pr.fetch(:head_sha) &&
+          association.dig("head", "ref") == target_pr.fetch(:head_ref) &&
+          association.dig("head", "repo", "id") == target_pr.fetch(:head_repo_id)
+      end
     end
 
     def ensure_exact_head!(row, head_sha, context, sha_key: "head_sha")
@@ -960,6 +1077,58 @@ module PrCiReadiness
       raise Error, "could not resolve PR headRefOid for ##{pr_number}" if head.empty?
 
       head
+    end
+
+    def fetch_target_pr_identity(repo, pr_number)
+      data = capture_json!("gh", "api", "repos/#{repo}/pulls/#{pr_number}")
+      raise Error, "target PR response was not an object" unless data.is_a?(Hash)
+
+      id = data["id"]
+      raise Error, "target PR id was not a positive integer" unless id.is_a?(Integer) && id.positive?
+
+      number = data["number"]
+      unless number.is_a?(Integer) && number.positive? && number == pr_number.to_i
+        raise Error, "target PR number did not exactly match ##{pr_number}"
+      end
+
+      head = data["head"]
+      raise Error, "target PR head was not an object" unless head.is_a?(Hash)
+
+      head_sha = head["sha"]
+      unless head_sha.is_a?(String) && !head_sha.strip.empty?
+        raise Error, "target PR head SHA was not a nonblank string"
+      end
+
+      head_ref = head["ref"]
+      unless head_ref.is_a?(String) && !head_ref.strip.empty?
+        raise Error, "target PR head ref was not a nonblank string"
+      end
+
+      head_repo = head["repo"]
+      raise Error, "target PR head repo was not an object" unless head_repo.is_a?(Hash)
+
+      head_repo_id = head_repo["id"]
+      unless head_repo_id.is_a?(Integer) && head_repo_id.positive?
+        raise Error, "target PR head repo id was not a positive integer"
+      end
+
+      {
+        id:, number:, head_sha:, head_ref:, head_repo_id:,
+        head_repo_full_name: head_repo["full_name"].to_s
+      }
+    end
+
+    def same_target_pr_identity?(left, right)
+      keys = %i[id number head_sha head_ref head_repo_id]
+      left.values_at(*keys) == right.values_at(*keys)
+    end
+
+    def target_pr_identity_description(identity)
+      repo_name = identity.fetch(:head_repo_full_name)
+      repo_name = "unknown" if repo_name.empty?
+      "id=#{identity.fetch(:id)} number=##{identity.fetch(:number)} " \
+        "head=#{identity.fetch(:head_sha)} ref=#{identity.fetch(:head_ref)} " \
+        "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name}"
     end
 
     def fetch_actions_run(repo, run_id)
