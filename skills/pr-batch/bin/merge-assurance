@@ -12,6 +12,7 @@ require "json"
 require "optparse"
 require "tempfile"
 require "time"
+require "uri"
 
 module MergeAssurance
   class Error < StandardError; end
@@ -345,12 +346,20 @@ module MergeAssurance
            metrics.values.all? { |value| value.is_a?(Integer) && value >= 0 }
       failures << "autonomous_result metrics shape is invalid"
     end
-    unless result["path_matches"].is_a?(Array) &&
-           result["path_matches"].all? { |match| valid_autonomous_path_match?(match) }
+    path_matches_valid = result["path_matches"].is_a?(Array) &&
+                         result["path_matches"].all? { |match| valid_autonomous_path_match?(match) }
+    unless path_matches_valid
       failures << "autonomous_result path matches shape is invalid"
     end
-    unless valid_autonomous_gates?(result["triggered_gates"])
+    triggered_gates_valid = valid_autonomous_gates?(result["triggered_gates"])
+    unless triggered_gates_valid
       failures << "autonomous_result triggered gates must be canonical, unique, and sorted"
+    end
+    if path_matches_valid && triggered_gates_valid
+      path_match_gates = result.fetch("path_matches").filter_map { |match| match["gate"] }
+      unless (path_match_gates - result.fetch("triggered_gates")).empty?
+        failures << "autonomous_result path match gates are absent from triggered gates"
+      end
     end
     unless AUTONOMOUS_SHADOW_GATE_SHAPES.include?(result["shadow_triggered_gates"])
       failures << "autonomous_result shadow triggered gates shape is invalid"
@@ -365,7 +374,7 @@ module MergeAssurance
     if result["safe_class"] == "none" && result["rollback_assessment"] == "not-applicable"
       failures << "autonomous_result rollback assessment requires a verified safe class"
     end
-    unless valid_autonomous_decision_evidence?(result["human_decision_evidence"])
+    unless valid_autonomous_decision_evidence?(result["human_decision_evidence"], context)
       failures << "autonomous_result human decision evidence shape is invalid"
     end
     failures << "autonomous_result policy provenance binding mismatch" unless
@@ -441,17 +450,46 @@ module MergeAssurance
     end
   end
 
-  def valid_autonomous_decision_evidence?(decision)
+  def valid_autonomous_decision_evidence?(decision, context)
     return false unless decision.is_a?(Hash)
     return true if decision == { "status" => "none" }
     return false unless exact_keys?(decision, AUTONOMOUS_ACCEPTED_DECISION_KEYS)
     return false unless decision["status"] == "accepted"
-    return false unless %w[comment_id url approved_by].all? do |key|
+    return false unless decision["comment_id"].is_a?(String) &&
+                        decision["comment_id"].match?(/\A[1-9]\d*\z/)
+    return false unless %w[url approved_by].all? do |key|
       value = decision[key]
       value.is_a?(String) && !value.strip.empty?
     end
+    return false unless AUTONOMOUS_DECISION_SOURCES.include?(decision["source"])
 
-    AUTONOMOUS_DECISION_SOURCES.include?(decision["source"])
+    valid_autonomous_decision_url?(decision, context)
+  end
+
+  def valid_autonomous_decision_url?(decision, context)
+    return false unless context.is_a?(Hash)
+
+    context_authority = URI.parse("https://#{context['host']}")
+    evidence_url = URI.parse(decision.fetch("url"))
+    return false unless evidence_url.scheme&.casecmp?("https")
+    return false unless evidence_url.userinfo.nil? && evidence_url.query.nil?
+    return false unless context_authority.host
+    return false unless evidence_url.host&.casecmp?(context_authority.host)
+    return false unless evidence_url.port == context_authority.port
+
+    repo_parts = context["repo"].to_s.split("/", -1)
+    url_parts = evidence_url.path.split("/", -1)
+    return false unless repo_parts.length == 2 && url_parts.length == 5
+
+    owner, repo = repo_parts
+    empty, url_owner, url_repo, kind, pr = url_parts
+    return false unless empty == "" && %w[pull issues].include?(kind)
+    return false unless url_owner&.casecmp?(owner) && url_repo&.casecmp?(repo)
+    return false unless pr&.match?(/\A[1-9]\d*\z/) && pr == context["pr"].to_s
+
+    evidence_url.fragment == "issuecomment-#{decision.fetch('comment_id')}"
+  rescue KeyError, URI::Error
+    false
   end
 
   def valid_policy_provenance?(provenance, base_sha)

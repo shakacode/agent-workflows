@@ -496,6 +496,48 @@ class MergeAssuranceTest < Minitest::Test
     assert_empty eligible_invalid_matches
   end
 
+  def test_gate_bearing_path_match_requires_its_triggered_gate
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["path_matches"] = [{
+      "gate" => "repo-path:security",
+      "path" => "config/security.yml",
+      "reason" => "repository policy matched the security path"
+    }]
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "autonomous_result path match gates are absent from triggered gates"
+  end
+
+  def test_generated_path_rows_and_conservative_gates_preserve_one_way_binding
+    generated = autonomous_result("autonomous-merge-eligible")
+    generated["path_matches"] = [{
+      "classification" => "generated",
+      "path" => "dist/generated.js"
+    }]
+    generated_result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: generated,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+    conservative_result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("human-approved-for-current-head"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert generated_result.fetch("eligible")
+    assert conservative_result.fetch("eligible")
+  end
+
   def test_autonomous_triggered_gates_must_be_canonical_unique_and_sorted
     invalid_gates = {
       "unknown" => ["future-gate"],
@@ -631,6 +673,125 @@ class MergeAssuranceTest < Minitest::Test
     end
 
     assert_empty missing_shape_failures
+  end
+
+  def test_accepted_autonomous_decision_evidence_must_bind_to_current_merge_target
+    accepted = autonomous_result("human-approved-for-current-head").fetch("human_decision_evidence")
+    cases = {
+      "other-host" => [accepted.merge(
+        "url" => "https://evil.example/owner/repo/pull/42#issuecomment-123"
+      ), "github.com"],
+      "other-repo" => [accepted.merge(
+        "url" => "https://github.com/other/repo/pull/42#issuecomment-123"
+      ), "github.com"],
+      "other-pr" => [accepted.merge(
+        "url" => "https://github.com/owner/repo/pull/43#issuecomment-123"
+      ), "github.com"],
+      "other-comment" => [accepted.merge(
+        "url" => "https://github.com/owner/repo/pull/42#issuecomment-124"
+      ), "github.com"],
+      "zero-comment-id" => [accepted.merge("comment_id" => "0"), "github.com"],
+      "leading-zero-comment-id" => [accepted.merge("comment_id" => "0123"), "github.com"],
+      "non-decimal-comment-id" => [accepted.merge("comment_id" => "+123"), "github.com"],
+      "malformed-url" => [accepted.merge("url" => "https://[invalid"), "github.com"],
+      "http-url" => [accepted.merge(
+        "url" => "http://github.com/owner/repo/pull/42#issuecomment-123"
+      ), "github.com"],
+      "userinfo" => [accepted.merge(
+        "url" => "https://user@github.com/owner/repo/pull/42#issuecomment-123"
+      ), "github.com"],
+      "query" => [accepted.merge(
+        "url" => "https://github.com/owner/repo/pull/42?view=1#issuecomment-123"
+      ), "github.com"],
+      "extra-path" => [accepted.merge(
+        "url" => "https://github.com/owner/repo/pull/42/files#issuecomment-123"
+      ), "github.com"],
+      "leading-zero-pr" => [accepted.merge(
+        "url" => "https://github.com/owner/repo/pull/042#issuecomment-123"
+      ), "github.com"],
+      "unsupported-form" => [accepted.merge(
+        "url" => "https://github.com/owner/repo/commit/42#issuecomment-123"
+      ), "github.com"],
+      "missing-fragment" => [accepted.merge(
+        "url" => "https://github.com/owner/repo/pull/42"
+      ), "github.com"],
+      "default-port-mismatch" => [accepted.merge(
+        "url" => "https://github.com:8443/owner/repo/pull/42#issuecomment-123"
+      ), "github.com"],
+      "custom-port-mismatch" => [accepted.merge(
+        "url" => "https://github.example/owner/repo/pull/42#issuecomment-123"
+      ), "github.example:8443"]
+    }
+
+    missing_binding_failures = cases.filter_map do |label, (decision, host)|
+      merge_context = context("auto_merge_when_gates_pass")
+      merge_context["host"] = host
+      ci_result = ready_ci
+      ci_result.fetch("context")["host"] = host
+      autonomous = autonomous_result("human-approved-for-current-head")
+      autonomous["human_decision_evidence"] = decision
+      result = MergeAssurance.assess(
+        ci_result:,
+        autonomous_result: autonomous,
+        context: merge_context,
+        now: NOW
+      )
+      label unless Array(result["failures"]).include?(
+        "autonomous_result human decision evidence shape is invalid"
+      )
+    end
+
+    assert_empty missing_binding_failures
+  end
+
+  def test_accepted_autonomous_decision_evidence_allows_bound_comment_permalink_forms
+    cases = {
+      "github-pull" => [
+        "github.com",
+        "owner/repo",
+        "https://github.com/owner/repo/pull/42#issuecomment-123"
+      ],
+      "github-issues" => [
+        "github.com",
+        "owner/repo",
+        "https://github.com/owner/repo/issues/42#issuecomment-123"
+      ],
+      "explicit-default-port" => [
+        "github.com",
+        "owner/repo",
+        "https://github.com:443/owner/repo/pull/42#issuecomment-123"
+      ],
+      "ghes-custom-port" => [
+        "github.example:8443",
+        "owner/repo",
+        "https://github.example:8443/owner/repo/issues/42#issuecomment-123"
+      ],
+      "case-insensitive-host-and-repo" => [
+        "GitHub.Example:8443",
+        "Owner/Repo",
+        "https://github.example:8443/oWnEr/rEpO/pull/42#issuecomment-123"
+      ]
+    }
+
+    blocked_cases = cases.filter_map do |label, (host, repo, url)|
+      merge_context = context("auto_merge_when_gates_pass")
+      merge_context["host"] = host
+      merge_context["repo"] = repo
+      ci_result = ready_ci
+      ci_result.fetch("context")["host"] = host
+      ci_result["repo"] = repo
+      autonomous = autonomous_result("human-approved-for-current-head")
+      autonomous.fetch("human_decision_evidence")["url"] = url
+      result = MergeAssurance.assess(
+        ci_result:,
+        autonomous_result: autonomous,
+        context: merge_context,
+        now: NOW
+      )
+      [label, result.fetch("failures")] unless result.fetch("eligible")
+    end
+
+    assert_empty blocked_cases
   end
 
   def test_ask_requires_exact_head_human_decision_and_same_diff_walkthrough
