@@ -554,6 +554,79 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_commit_status_history_keeps_only_the_latest_row_per_exact_context
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses: [
+        {
+          "id" => 400, "context" => "legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/400"
+        },
+        {
+          "id" => 399, "context" => "legacy", "state" => "failure",
+          "sha" => head, "target_url" => "https://example/status/399"
+        },
+        {
+          "id" => 398, "context" => "legacy", "state" => "pending",
+          "sha" => head, "target_url" => "https://example/status/398"
+        },
+        {
+          "id" => 397, "context" => "Legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/397"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "READY", data.dig("scopes", "other", "state")
+      assert_equal(
+        [[400, "legacy", "success"], [397, "Legacy", "success"]],
+        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
+      )
+    end
+  end
+
+  def test_latest_unknown_commit_status_still_fails_closed_when_older_duplicate_succeeded
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses: [
+        {
+          "id" => 500, "context" => "legacy", "state" => "mystery",
+          "sha" => head, "target_url" => "https://example/status/500"
+        },
+        {
+          "id" => 499, "context" => "legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/499"
+        },
+        {
+          "id" => 498, "context" => "distinct", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/498"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal true, data.dig("scopes", "other", "complete")
+      assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
+      assert_equal(
+        [[500, "legacy", "mystery"], [498, "distinct", "success"]],
+        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
+      )
+    end
+  end
+
   def test_partial_exact_head_actions_page_is_unknown_not_complete
     head = "a" * 40
     with_fake_gh(

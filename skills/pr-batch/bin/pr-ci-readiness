@@ -588,6 +588,9 @@ module PrCiReadiness
           "head_sha" => head_sha
         }
       end
+      # GitHub returns commit status history newest first. Only the first row
+      # for an exact context is current; later duplicates are historical.
+      rows = rows.uniq { |row| row["name"] }
       [rows, true, nil]
     rescue StandardError => e
       [[], false, "exact-head status-context inventory failed: #{e.message}"]
