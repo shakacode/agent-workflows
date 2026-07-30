@@ -1,10 +1,14 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "base64"
+require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "openssl"
 require "rbconfig"
+require "tmpdir"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
@@ -58,8 +62,12 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def lane_lifecycle_receipt(lane_id: "lane-a", wave: "wave-a",
                              batch_plan_id: "batch-plan-1",
-                             stage_dependency_plan_id: "trusted-plan-1")
-    {
+                             stage_dependency_plan_id: "trusted-plan-1",
+                             completed_at: "2026-07-30T00:00:00Z",
+                             recorded_at: "2026-07-30T00:00:01Z",
+                             key_id: "test-workflow-control-key",
+                             signing_key: workflow_control_signing_key)
+    receipt = {
       "type" => "workflow-control-lane-lifecycle-receipt",
       "version" => 1,
       "producer" => "pr-batch-workflow-control",
@@ -70,9 +78,80 @@ class BatchPlanPreflightTest < Minitest::Test
       "lane_id" => lane_id,
       "wave" => wave,
       "state" => "completed",
-      "completed_at" => "2026-07-30T00:00:00Z",
-      "recorded_at" => "2026-07-30T00:00:01Z"
+      "completed_at" => completed_at,
+      "recorded_at" => recorded_at,
+      "key_id" => key_id
     }
+    payload = JSON.generate(canonicalize(receipt))
+    signature = signing_key.sign(OpenSSL::Digest.new("SHA256"), payload)
+    receipt.merge("signature" => Base64.strict_encode64(signature))
+  end
+
+  def workflow_control_signing_key
+    @workflow_control_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) do |key, canonical|
+        canonical[key] = canonicalize(value[key])
+      end
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def installed_workflow_control_helper(key_id: "test-workflow-control-key",
+                                        key: workflow_control_signing_key,
+                                        config_mode: 0o600, agents_mode: 0o700,
+                                        root_mode: 0o700, config_symlink: false,
+                                        agents_symlink: false)
+    root = Dir.mktmpdir("workflow-control-trust-install")
+    File.chmod(root_mode, root)
+    (@workflow_control_install_roots ||= []) << root
+    helper = File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight")
+    agents_dir = File.join(root, ".agents")
+    config_path = File.join(agents_dir, "workflow-control-lifecycle-trust.json")
+    FileUtils.mkdir_p(File.dirname(helper))
+    FileUtils.cp(HELPER, helper)
+    File.chmod(0o755, helper)
+    if agents_symlink
+      actual_agents_dir = File.join(root, "caller-substitutable-agents")
+      FileUtils.mkdir_p(actual_agents_dir)
+      File.chmod(agents_mode, actual_agents_dir)
+      File.symlink(actual_agents_dir, agents_dir)
+    else
+      FileUtils.mkdir_p(agents_dir)
+      File.chmod(agents_mode, agents_dir)
+    end
+    trust_record = {
+      "type" => "agent-workflow-control-lifecycle-trust-anchor",
+      "version" => 1,
+      "agent_workflow_control_lifecycle_trusted_key_id" => key_id,
+      "agent_workflow_control_lifecycle_trusted_public_key_pem" => key.public_to_pem
+    }
+    if config_symlink
+      target = File.join(root, "caller-substitutable-workflow-control-trust.json")
+      File.write(target, JSON.generate(trust_record))
+      File.symlink(target, config_path)
+    else
+      File.write(config_path, JSON.generate(trust_record))
+      File.chmod(config_mode, config_path)
+    end
+    [helper, config_path]
+  end
+
+  def workflow_control_helper
+    @workflow_control_helper ||= installed_workflow_control_helper.first
+  end
+
+  def teardown
+    Array(@workflow_control_install_roots).each do |root|
+      FileUtils.remove_entry(root) if File.exist?(root)
+    end
   end
 
   def gate_lane(id, patch_edit: true)
@@ -157,8 +236,8 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
-  def evaluate(input)
-    stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, stdin_data: JSON.generate(input))
+  def evaluate(input, helper: HELPER, env: {})
+    stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, helper, stdin_data: JSON.generate(input))
     [JSON.parse(stdout), stderr, status]
   end
 
@@ -208,6 +287,24 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "stage-dependency-gate-plan-mismatch"
+  end
+
+  def test_batch_and_stage_dependency_plan_ids_must_be_known
+    unknown_stage = input_for
+    unknown_stage.fetch("stage_dependency_plan")["id"] = "UNKNOWN"
+    unknown_stage.fetch("stage_dependency_gate")["trusted_plan_id"] = "UNKNOWN"
+    result, _stderr, status = evaluate(unknown_stage)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "stage-dependency-plan-invalid"
+
+    unknown_batch = input_for(batch_plan_id: "UNKNOWN")
+    result, _stderr, status = evaluate(unknown_batch)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "batch-plan-id-invalid"
   end
 
   def test_each_risky_changed_surface_requires_qa
@@ -293,7 +390,8 @@ class BatchPlanPreflightTest < Minitest::Test
 
     receipt = lane_lifecycle_receipt(lane_id: "lane-a")
     second_result, second_stderr, second_status = evaluate(
-      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: [receipt])
+      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: [receipt]),
+      helper: workflow_control_helper
     )
     assert second_status.success?, second_stderr
     assert_equal ["lane-b"], second_result.dig("launch", "eligible_lane_ids")
@@ -354,12 +452,111 @@ class BatchPlanPreflightTest < Minitest::Test
     cases.each do |label, mutation|
       receipt = JSON.parse(JSON.generate(valid_receipt))
       mutation.call(receipt)
-      result, _stderr, status = evaluate(input_for(lifecycle_receipts: [receipt]))
+      result, _stderr, status = evaluate(
+        input_for(lifecycle_receipts: [receipt]),
+        helper: workflow_control_helper
+      )
 
       refute status.success?, label
       assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                       "lane-lifecycle-receipt-invalid", label
       assert_empty result.dig("launch", "eligible_lane_ids"), label
+      assert_empty result.dig("launch", "completed_lane_ids"), label
+    end
+  end
+
+  def test_future_dated_lifecycle_receipt_is_rejected
+    receipt = lane_lifecycle_receipt(
+      completed_at: "2099-01-01T00:00:00Z",
+      recorded_at: "2099-01-01T00:00:01Z"
+    )
+
+    result, _stderr, status = evaluate(
+      input_for(lifecycle_receipts: [receipt]),
+      helper: workflow_control_helper
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_caller_forged_producer_and_uri_cannot_advance_with_caller_trust
+    attacker_key = OpenSSL::PKey::RSA.generate(1024)
+    forged_receipt = lane_lifecycle_receipt(signing_key: attacker_key)
+    caller_trust = {
+      "AGENT_WORKFLOW_CONTROL_LIFECYCLE_TRUSTED_KEY_ID" => "test-workflow-control-key",
+      "AGENT_WORKFLOW_CONTROL_LIFECYCLE_TRUSTED_PUBLIC_KEY_PEM" => attacker_key.public_to_pem
+    }
+    assert_equal "pr-batch-workflow-control", forged_receipt.fetch("producer")
+    assert_equal(
+      "workflow-control-state://batch-plan-1/stage-dependency-plans/" \
+      "trusted-plan-1/waves/wave-a/lanes/lane-a/completed",
+      forged_receipt.fetch("receipt_ref")
+    )
+
+    result, _stderr, status = evaluate(
+      input_for(lifecycle_receipts: [forged_receipt]),
+      helper: workflow_control_helper,
+      env: caller_trust
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_lifecycle_signature_covers_timestamp_and_requires_known_key_identity
+    tampered = lane_lifecycle_receipt
+    tampered["recorded_at"] = "2026-07-30T00:00:02Z"
+    result, _stderr, status = evaluate(
+      input_for(lifecycle_receipts: [tampered]),
+      helper: workflow_control_helper
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+
+    unknown_key = lane_lifecycle_receipt(key_id: "UNKNOWN")
+    result, _stderr, status = evaluate(
+      input_for(lifecycle_receipts: [unknown_key]),
+      helper: workflow_control_helper
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+  end
+
+  def test_lifecycle_receipt_rejects_missing_or_unsafe_fixed_trust
+    receipt = lane_lifecycle_receipt
+    input = input_for(lifecycle_receipts: [receipt])
+    missing_helper, missing_config = installed_workflow_control_helper
+    File.unlink(missing_config)
+    wrong_namespace_helper, wrong_namespace_config = installed_workflow_control_helper
+    wrong_namespace_record = JSON.parse(File.read(wrong_namespace_config, encoding: "UTF-8"))
+    wrong_namespace_record["type"] = "agent-workflow-dispatcher-trust-anchor"
+    File.write(wrong_namespace_config, JSON.generate(wrong_namespace_record))
+    File.chmod(0o600, wrong_namespace_config)
+    unsafe_helpers = {
+      "missing trust config" => missing_helper,
+      "wrong trust namespace" => wrong_namespace_helper,
+      "symlinked trust config" => installed_workflow_control_helper(config_symlink: true).first,
+      "symlinked trust directory" => installed_workflow_control_helper(agents_symlink: true).first,
+      "writable trust config" => installed_workflow_control_helper(config_mode: 0o666).first,
+      "writable trust directory" => installed_workflow_control_helper(agents_mode: 0o777).first,
+      "writable installation root" => installed_workflow_control_helper(root_mode: 0o777).first
+    }
+
+    unsafe_helpers.each do |label, helper|
+      result, _stderr, status = evaluate(input, helper: helper)
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "lane-lifecycle-receipt-invalid", label
       assert_empty result.dig("launch", "completed_lane_ids"), label
     end
   end
@@ -378,7 +575,8 @@ class BatchPlanPreflightTest < Minitest::Test
     ]
 
     result, stderr, status = evaluate(
-      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: receipts)
+      input_for(lanes: lanes, maps: maps, groups: groups, lifecycle_receipts: receipts),
+      helper: workflow_control_helper
     )
 
     assert status.success?, stderr
@@ -399,7 +597,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
     receipt = lane_lifecycle_receipt
     duplicate = input_for(lifecycle_receipts: [receipt, receipt.dup])
-    result, _stderr, status = evaluate(duplicate)
+    result, _stderr, status = evaluate(duplicate, helper: workflow_control_helper)
 
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },

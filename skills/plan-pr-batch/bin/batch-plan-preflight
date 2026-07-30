@@ -1,8 +1,10 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "base64"
 require "json"
 require "date"
+require "openssl"
 require "time"
 require "uri"
 
@@ -41,16 +43,30 @@ module BatchPlanPreflight
   LIFECYCLE_RECEIPT_KEYS = %w[
     batch_plan_id
     completed_at
+    key_id
     lane_id
     producer
     receipt_ref
     recorded_at
+    signature
     stage_dependency_plan_id
     state
     type
     version
     wave
   ].freeze
+  LIFECYCLE_FUTURE_SKEW_SECONDS = 300
+  HELPER_PATH = File.realpath(__FILE__)
+  INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
+  WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
+  WORKFLOW_CONTROL_TRUST_CONFIG_PATH = File.join(
+    WORKFLOW_CONTROL_TRUST_CONFIG_DIR,
+    "workflow-control-lifecycle-trust.json"
+  )
+  WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD =
+    "agent_workflow_control_lifecycle_trusted_key_id"
+  WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD =
+    "agent_workflow_control_lifecycle_trusted_public_key_pem"
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -256,8 +272,10 @@ module BatchPlanPreflight
     return false unless lane && receipt["wave"] == lane["wave"] && receipt["state"] == "completed"
     return false unless utc_timestamp?(receipt["completed_at"]) && utc_timestamp?(receipt["recorded_at"])
     return false unless Time.iso8601(receipt["completed_at"]) <= Time.iso8601(receipt["recorded_at"])
+    return false unless Time.iso8601(receipt["recorded_at"]) <= Time.now.utc + LIFECYCLE_FUTURE_SKEW_SECONDS
+    return false unless receipt["receipt_ref"] == workflow_control_receipt_ref(receipt)
 
-    receipt["receipt_ref"] == workflow_control_receipt_ref(receipt)
+    workflow_control_receipt_signature_verified?(receipt)
   end
 
   def workflow_control_receipt_ref(receipt)
@@ -272,6 +290,71 @@ module BatchPlanPreflight
       Time.iso8601(value).utc.iso8601 == value
   rescue ArgumentError
     false
+  end
+
+  def workflow_control_receipt_signature_verified?(receipt)
+    trust_anchor = workflow_control_trust_anchor
+    return false unless trust_anchor &&
+                        nonempty_identity?(receipt["key_id"]) &&
+                        receipt["key_id"] == trust_anchor[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]
+
+    public_key = OpenSSL::PKey.read(
+      trust_anchor.fetch(WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD)
+    )
+    return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
+
+    signature = Base64.strict_decode64(receipt["signature"])
+    payload = JSON.generate(canonicalize(receipt.reject { |key, _value| key == "signature" }))
+    public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
+  rescue ArgumentError, TypeError, OpenSSL::PKey::PKeyError
+    false
+  end
+
+  def workflow_control_trust_anchor
+    helper_uid = File.stat(HELPER_PATH).uid
+    root_stat = File.lstat(INSTALLATION_ROOT)
+    config_dir_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_DIR)
+    config_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_PATH)
+    return unless root_stat.directory? &&
+                  root_stat.uid == helper_uid &&
+                  (root_stat.mode & 0o022).zero? &&
+                  config_dir_stat.directory? &&
+                  config_dir_stat.uid == helper_uid &&
+                  (config_dir_stat.mode & 0o022).zero? &&
+                  config_stat.file? &&
+                  config_stat.uid == helper_uid &&
+                  (config_stat.mode & 0o022).zero?
+
+    record = JSON.parse(File.read(WORKFLOW_CONTROL_TRUST_CONFIG_PATH, encoding: "UTF-8"))
+    expected_keys = [
+      WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD,
+      WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD,
+      "type",
+      "version"
+    ].sort
+    return unless record.is_a?(Hash) &&
+                  record.keys.sort == expected_keys &&
+                  record["type"] == "agent-workflow-control-lifecycle-trust-anchor" &&
+                  record["version"] == 1 &&
+                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]) &&
+                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD])
+
+    record
+  rescue JSON::ParserError, SystemCallError
+    nil
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) do |key, canonical|
+        canonical[key] = canonicalize(value[key])
+      end
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
   end
 
   def validate_unknown_decisions(value, path = "$.plan")
@@ -378,13 +461,14 @@ module BatchPlanPreflight
 
   def validate_stage_dependencies(plan, gate, lane_ids)
     unless plan.is_a?(Hash) && plan["contract"] == "stage-dependency-plan" &&
-           plan["version"] == 1 && plan["id"].is_a?(String) && !plan["id"].strip.empty? &&
+           plan["version"] == 1 && nonempty_identity?(plan["id"]) &&
            plan["edges"].is_a?(Array)
       return [violation("stage-dependency-plan-invalid", "$.stage_dependency_plan",
                         "Provide the trusted stage-dependency-plan v1 object.")]
     end
     unless gate.is_a?(Hash) && gate["contract"] == "stage-dependency-gate" &&
            gate["version"] == 1 && %w[eligible gated].include?(gate["status"]) &&
+           nonempty_identity?(gate["trusted_plan_id"]) &&
            gate["lanes"].is_a?(Array)
       return [violation("stage-dependency-gate-incomplete", "$.stage_dependency_gate",
                         "Provide a completed stage-dependency-gate v1 result, not raw live input.")]

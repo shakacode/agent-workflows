@@ -337,9 +337,16 @@ Plan a PR batch
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
      `lane_lifecycle_receipts` array. Advance max-one groups only from the
-     helper's exact workflow-control completion receipt bound to the batch,
-     dependency plan, lane, wave, canonical durable-state reference, and
-     completed/recorded chronology; inline lane completion claims are invalid.
+     helper's exact signed workflow-control completion receipt bound to the
+     batch, dependency plan, lane, wave, canonical durable-state reference, and
+     completed/recorded chronology. The receipt's RSA-SHA256 signature covers
+     every field except `signature` as recursively key-sorted canonical JSON and
+     is verified only against the safe fixed installation file
+     `<installation-root>/.agents/workflow-control-lifecycle-trust.json`. Its v1
+     record type is `agent-workflow-control-lifecycle-trust-anchor`, with
+     `agent_workflow_control_lifecycle_trusted_key_id` and
+     `agent_workflow_control_lifecycle_trusted_public_key_pem`; caller input and
+     environment cannot supply trust. Inline lane completion claims are invalid.
      Preserve real PR `pr-file-touch-map` verified results unchanged; represent
      explicit pre-PR paths with the helper's typed `planned-path-evidence` v1
      record and durable evidence reference. A rejected result launches no
