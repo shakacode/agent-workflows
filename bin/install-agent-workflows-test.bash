@@ -15,8 +15,10 @@ cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
 abort "unexpected arguments: #{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
 case ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
 when "enabled"
+  version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
+  source = ENV.fetch("QA_CODEX_PLUGIN_SOURCE", "https://github.com/shakacode/agent-workflows.git")
   puts "PLUGIN STATUS VERSION PATH"
-  puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+  puts "scw@agent-workflows  installed, enabled  #{version}  #{source}"
 when "disabled"
   puts "PLUGIN STATUS VERSION PATH"
   puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
@@ -61,7 +63,8 @@ write_native_scw_state() {
   if [[ "$host" = "codex" ]]; then
     mkdir -p "$plugin_root/.codex-plugin"
     printf '[plugins."scw@agent-workflows"]\nenabled = true\n' > "$target/config.toml"
-    printf '{"name":"scw","version":"0.1.0","skills":"./skills/"}\n' > "$plugin_root/.codex-plugin/plugin.json"
+    printf '{"name":"scw","version":"0.1.0","repository":"https://github.com/shakacode/agent-workflows","skills":"./skills/"}\n' \
+      > "$plugin_root/.codex-plugin/plugin.json"
   else
     mkdir -p "$target/plugins" "$plugin_root/.claude-plugin"
     printf '{"enabledPlugins":{"scw@agent-workflows":true}}\n' > "$target/settings.json"
@@ -292,11 +295,14 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     target="$tmp/$host-home"
     consumer="$tmp/consumer"
     write_native_scw_state "$host" "$target"
+    mkdir -p "$target/skills/personal"
+    printf 'personal\n' > "$target/skills/personal/SKILL.md"
 
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
       >"$tmp/install.out"
 
     [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
+    grep -qxF 'personal' "$target/skills/personal/SKILL.md" || fail "$host companion install changed an unrelated skill"
     assert_file "$target/LICENSE"
     assert_file "$target/workflows/pr-processing.md"
     assert_file "$target/docs/coordination-backend.md"
@@ -766,13 +772,147 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
     >"$tmp/first.out"
+  mkdir -p "$target/skills/personal"
+  printf 'personal\n' > "$target/skills/personal/SKILL.md"
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/second.out"
 
   [[ ! -e "$target/skills/pr-batch" ]] || fail "repeat install changed companion delivery mode"
+  grep -qxF 'personal' "$target/skills/personal/SKILL.md" || fail "repeat companion install changed an unrelated skill"
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
   ' "$target/.agent-workflows-install.json"
+}
+
+test_repeat_companion_install_blocks_new_current_native_skill_collision() {
+  local tmp source target plugin_root metadata_before output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/first.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  mkdir -p "$source/skills/current-only" "$plugin_root/skills/current-only" "$target/skills/current-only"
+  printf 'current source\n' > "$source/skills/current-only/SKILL.md"
+  git -C "$source" add skills/current-only
+  git -C "$source" commit --quiet -m "add current skill"
+  printf 'current native\n' > "$plugin_root/skills/current-only/SKILL.md"
+  printf 'personal collision\n' > "$target/skills/current-only/SKILL.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat companion install replaced a newly colliding skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "$target/skills/current-only"
+  grep -qxF 'personal collision' "$target/skills/current-only/SKILL.md" || \
+    fail "repeat companion collision changed the flat path"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "repeat companion collision changed install metadata"
+}
+
+test_repeat_companion_install_blocks_native_skill_removed_from_current_source() {
+  local tmp source target plugin_root metadata_before output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  plugin_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode plugin-companion \
+    >"$tmp/first.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  mkdir -p "$plugin_root/skills/address-review" "$target/skills/address-review"
+  cp "$source/skills/address-review/SKILL.md" "$plugin_root/skills/address-review/SKILL.md"
+  rm -rf "$source/skills/address-review"
+  git -C "$source" add -u skills/address-review
+  git -C "$source" commit --quiet -m "remove address-review skill"
+  printf 'flat duplicate\n' > "$target/skills/address-review/SKILL.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat companion install ignored a native skill removed from current source"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "$target/skills/address-review"
+  grep -qxF 'flat duplicate' "$target/skills/address-review/SKILL.md" || \
+    fail "removed-source collision changed the flat path"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "removed-source collision changed install metadata"
+}
+
+test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() {
+  local tmp source target stale_root candidate_root manifest_dir metadata_before output status host
+
+  for host in codex claude; do
+    tmp="$(mktemp -d)"
+    source="$tmp/source"
+    target="$tmp/$host-home"
+    stale_root="$target/plugins/cache/agent-workflows/scw/0.1.0"
+    candidate_root="$target/plugins/cache/agent-workflows/scw/0.2.0"
+    mkdir -p "$source"
+    new_source_repo "$source"
+    write_native_scw_state "$host" "$target"
+
+    "$source/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
+      >"$tmp/first.out"
+    cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+    metadata_before="$tmp/metadata.before"
+
+    mkdir -p "$source/skills/mixed-root" "$candidate_root/skills/mixed-root" "$target/skills/mixed-root"
+    printf 'current source\n' > "$source/skills/mixed-root/SKILL.md"
+    git -C "$source" add skills/mixed-root
+    git -C "$source" commit --quiet -m "add mixed-root skill"
+    printf 'candidate native\n' > "$candidate_root/skills/mixed-root/SKILL.md"
+    manifest_dir="$candidate_root/$([[ "$host" = codex ]] && printf .codex-plugin || printf .claude-plugin)"
+    mkdir -p "$manifest_dir"
+    printf '{malformed\n' > "$manifest_dir/plugin.json"
+    printf 'personal collision\n' > "$target/skills/mixed-root/SKILL.md"
+
+    if [[ "$host" = claude ]]; then
+      ruby -rjson -e '
+        path, stale_root, candidate_root = ARGV
+        receipts = [
+          {"scope" => "user", "installPath" => stale_root, "version" => "0.1.0"},
+          {"scope" => "user", "installPath" => candidate_root, "version" => "0.2.0"}
+        ]
+        File.write(path, JSON.generate({"version" => 2, "plugins" => {"scw@agent-workflows" => receipts}}) + "\n")
+      ' "$target/plugins/installed_plugins.json" "$stale_root" "$candidate_root"
+    fi
+
+    set +e
+    if [[ "$host" = codex ]]; then
+      output="$(QA_CODEX_PLUGIN_VERSION="0.2.0" \
+        "$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+      status=$?
+    else
+      output="$("$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+      status=$?
+    fi
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$host companion install ignored an invalid candidate native root"
+    assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+    grep -qxF 'personal collision' "$target/skills/mixed-root/SKILL.md" || \
+      fail "$host mixed-root failure changed the flat path"
+    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+      fail "$host mixed-root failure changed install metadata"
+  done
 }
 
 test_invalid_recorded_delivery_mode_fails_before_mutation() {
@@ -1601,6 +1741,9 @@ main() {
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
     test_repeat_install_replays_recorded_companion_delivery_mode
+    test_repeat_companion_install_blocks_new_current_native_skill_collision
+    test_repeat_companion_install_blocks_native_skill_removed_from_current_source
+    test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
     test_invalid_recorded_delivery_mode_fails_before_mutation
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
