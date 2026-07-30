@@ -1,8 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "fileutils"
 require "json"
 require "minitest/autorun"
+require "rbconfig"
+require "tmpdir"
 
 SCRIPT = File.expand_path("merge-assurance", __dir__)
 load SCRIPT
@@ -12,6 +15,32 @@ class MergeAssuranceTest < Minitest::Test
   BASE_SHA = "b" * 40
   DIFF_IDENTITY = "c" * 64
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
+
+  def setup
+    @fake_gh_dir = Dir.mktmpdir("merge-assurance-gh")
+    @fake_gh_calls = File.join(@fake_gh_dir, "calls")
+    @original_path = ENV.fetch("PATH")
+    ENV["PATH"] = @fake_gh_dir
+    ENV["FAKE_GH_CALLS"] = @fake_gh_calls
+    ENV["FAKE_GH_EXIT_STATUS"] = "0"
+    ENV["FAKE_GH_RESPONSE"] = JSON.generate(fake_issue)
+    @fake_gh = File.join(@fake_gh_dir, "gh")
+    File.write(@fake_gh, <<~RUBY)
+      #!#{RbConfig.ruby}
+      File.open(ENV.fetch("FAKE_GH_CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
+      STDOUT.write(ENV.fetch("FAKE_GH_RESPONSE"))
+      exit Integer(ENV.fetch("FAKE_GH_EXIT_STATUS"))
+    RUBY
+    File.chmod(0o755, @fake_gh)
+  end
+
+  def teardown
+    ENV["PATH"] = @original_path
+    ENV.delete("FAKE_GH_CALLS")
+    ENV.delete("FAKE_GH_EXIT_STATUS")
+    ENV.delete("FAKE_GH_RESPONSE")
+    FileUtils.remove_entry(@fake_gh_dir)
+  end
 
   def test_auto_mode_emits_integrity_bound_eligible_receipt
     result = MergeAssurance.assess(
@@ -275,6 +304,47 @@ class MergeAssuranceTest < Minitest::Test
       semantic_tracker,
       eligible.dig("follow_up_accounting", "semantic_github_actions_tracker")
     )
+    assert_equal(
+      %w[api --hostname github.com repos/owner/repo/issues/1],
+      fake_gh_argv
+    )
+    assert_equal(
+      "gh-api",
+      eligible.dig("evidence", "authenticated_tracker_reads", 0, "provenance")
+    )
+  end
+
+  def test_authenticated_issue_read_fails_closed_on_auth_failure
+    ENV["FAKE_GH_EXIT_STATUS"] = "1"
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker]
+      ),
+      now: NOW
+    )
+
+    assert_equal [false, 1], [result.fetch("eligible"), fake_gh_call_count]
+  end
+
+  def test_caller_authored_tracker_verification_is_rejected
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [
+          semantic_tracker.merge("read_verification" => tracker_read_verification)
+        ]
+      ),
+      now: NOW
+    )
+
+    assert_equal [false, 0], [result.fetch("eligible"), fake_gh_call_count]
   end
 
   def test_semantic_tracker_rejects_reviewer_reproduction_with_unbound_urls
@@ -297,79 +367,140 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal false, result.fetch("eligible")
   end
 
-  def test_semantic_tracker_rejects_a_naked_url_without_read_verification
-    tracker_without_read_verification = semantic_tracker.reject do |key, _value|
-      key == "read_verification"
-    end
+  def test_semantic_tracker_uses_authenticated_read_without_caller_authored_provenance
     result = MergeAssurance.assess(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
         "auto_merge_when_gates_pass",
         semantic_github_actions_change: true,
-        operations: [tracker_without_read_verification]
+        operations: [semantic_tracker]
       ),
       now: NOW
     )
 
-    assert_equal false, result.fetch("eligible")
+    assert_equal [true, 1], [result.fetch("eligible"), fake_gh_call_count]
   end
 
-  def test_semantic_tracker_read_verification_fails_closed_on_invalid_or_unavailable_evidence
-    verification = tracker_read_verification
+  def test_semantic_tracker_authenticated_read_fails_closed_on_unavailable_or_malformed_evidence
     cases = {
-      "malformed" => {},
-      "unavailable" => verification.merge("status" => "unavailable"),
-      "incomplete" => verification.merge("complete" => false),
-      "unknown" => verification.merge("status" => "UNKNOWN"),
-      "stale" => verification.merge("checked_at" => "2026-07-30T11:54:59Z"),
-      "future" => verification.merge("checked_at" => "2026-07-30T12:00:31Z")
+      "unavailable" => ["1", "{}"],
+      "invalid-json" => ["0", "{"],
+      "non-object" => ["0", "[]"],
+      "malformed-object" => ["0", "{}"]
     }
-    eligible_cases = cases.filter_map do |name, read_verification|
-      tracker = semantic_tracker.merge("read_verification" => read_verification)
+    eligible_cases = cases.filter_map do |name, (exit_status, response)|
+      reset_fake_gh_calls
+      ENV["FAKE_GH_EXIT_STATUS"] = exit_status
+      ENV["FAKE_GH_RESPONSE"] = response
       result = MergeAssurance.assess(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context(
           "auto_merge_when_gates_pass",
           semantic_github_actions_change: true,
-          operations: [tracker]
+          operations: [semantic_tracker]
         ),
         now: NOW
       )
-      name if result.fetch("eligible")
+      name if result.fetch("eligible") || fake_gh_call_count != 1
     end
 
     assert_empty eligible_cases
   end
 
-  def test_semantic_tracker_read_verification_rejects_every_exact_binding_mismatch
+  def test_semantic_tracker_authenticated_read_rejects_every_exact_binding_mismatch
     mutations = {
-      "tracker" => "https://github.com/owner/repo/issues/2",
-      "issue" => 2,
-      "host" => "github.example",
-      "repo" => "other/repo",
-      "source_pr" => "https://github.com/owner/repo/pull/43",
-      "head_sha" => "d" * 40,
-      "diff_identity" => "e" * 64
+      "tracker-host" => ->(issue) { issue["html_url"] = "https://github.example/owner/repo/issues/1" },
+      "tracker-repo" => ->(issue) { issue["html_url"] = "https://github.com/other/repo/issues/1" },
+      "tracker-issue" => ->(issue) { issue["number"] = 2 },
+      "api-repo" => ->(issue) { issue["url"] = "https://api.github.com/repos/other/repo/issues/1" },
+      "pull-request" => ->(issue) { issue["pull_request"] = {} },
+      "source-pr" => lambda do |issue|
+        issue["body"] = issue["body"].sub("/pull/42", "/pull/43")
+      end,
+      "head-sha" => lambda do |issue|
+        issue["body"] = issue["body"].sub(HEAD_SHA, "d" * 40)
+      end,
+      "diff-identity" => lambda do |issue|
+        issue["body"] = issue["body"].sub(DIFF_IDENTITY, "e" * 64)
+      end,
+      "operation-digest" => lambda do |issue|
+        issue["body"] = issue["body"].sub(
+          MergeAssurance.semantic_tracker_operation_digest(semantic_tracker),
+          "sha256:#{'f' * 64}"
+        )
+      end
     }
-    eligible_mutations = mutations.filter_map do |field, value|
-      read_verification = tracker_read_verification.merge(field => value)
-      tracker = semantic_tracker.merge("read_verification" => read_verification)
+    eligible_mutations = mutations.filter_map do |name, mutate|
+      reset_fake_gh_calls
+      issue = fake_issue
+      mutate.call(issue)
+      ENV["FAKE_GH_RESPONSE"] = JSON.generate(issue)
       result = MergeAssurance.assess(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context(
           "auto_merge_when_gates_pass",
           semantic_github_actions_change: true,
-          operations: [tracker]
+          operations: [semantic_tracker]
         ),
         now: NOW
       )
-      field if result.fetch("eligible")
+      name if result.fetch("eligible") || fake_gh_call_count != 1
     end
 
     assert_empty eligible_mutations
+  end
+
+  def test_semantic_tracker_fails_closed_when_gh_is_unavailable
+    File.rename(@fake_gh, "#{@fake_gh}.unavailable")
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker]
+      ),
+      now: NOW
+    )
+
+    assert_equal [false, 0], [result.fetch("eligible"), fake_gh_call_count]
+  end
+
+  def test_authenticated_tracker_evidence_is_covered_by_receipt_digest
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker]
+      ),
+      now: NOW
+    )
+    tampered = JSON.parse(JSON.generate(result))
+    tampered.dig("evidence", "authenticated_tracker_reads", 0)["issue"] = 2
+
+    assert_equal true, result.fetch("eligible")
+    refute MergeAssurance.valid_evidence_digest?(tampered)
+  end
+
+  def test_merge_authority_none_does_not_read_semantic_tracker
+    ENV["FAKE_GH_EXIT_STATUS"] = "1"
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "none",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker]
+      ),
+      now: NOW
+    )
+
+    assert_equal [false, 0], [result.fetch("eligible"), fake_gh_call_count]
   end
 
   def test_post_merge_audit_defaults_to_accounted_and_report_only_is_a_typed_operation
@@ -445,6 +576,41 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   private
+
+  def fake_gh_call_count
+    return 0 unless File.exist?(@fake_gh_calls)
+
+    File.foreach(@fake_gh_calls).count
+  end
+
+  def fake_gh_argv
+    File.read(@fake_gh_calls).strip.split("\t")
+  end
+
+  def reset_fake_gh_calls
+    File.delete(@fake_gh_calls) if File.exist?(@fake_gh_calls)
+  end
+
+  def fake_issue
+    {
+      "id" => 101,
+      "node_id" => "I_kwDOExample",
+      "number" => 1,
+      "url" => "https://api.github.com/repos/owner/repo/issues/1",
+      "html_url" => "https://github.com/owner/repo/issues/1",
+      "state" => "open",
+      "title" => "Exercise semantic GitHub Actions behavior",
+      "body" => [
+        "Verify the semantic workflow behavior after merge.",
+        "semantic-tracker-source-pr: https://github.com/owner/repo/pull/42",
+        "semantic-tracker-head-sha: #{HEAD_SHA}",
+        "semantic-tracker-diff-identity: #{DIFF_IDENTITY}",
+        "semantic-tracker-operation-digest: " \
+          "#{MergeAssurance.semantic_tracker_operation_digest(semantic_tracker)}"
+      ].join("\n"),
+      "updated_at" => "2026-07-30T11:59:30Z"
+    }
+  end
 
   def ready_ci
     rows = {
@@ -583,7 +749,6 @@ class MergeAssuranceTest < Minitest::Test
       "type" => "semantic-github-actions-tracker",
       "tracker" => "https://github.com/owner/repo/issues/1",
       "source_pr" => "https://github.com/owner/repo/pull/42",
-      "read_verification" => tracker_read_verification,
       "changed_files" => [".github/workflows/ci.yml"],
       "exercise" => "Open a secondary verification PR after merge.",
       "expected_evidence" => "The dynamic matrix checks appear on the verification PR.",

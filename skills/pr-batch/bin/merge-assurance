@@ -9,6 +9,7 @@
 
 require "digest"
 require "json"
+require "open3"
 require "optparse"
 require "time"
 
@@ -42,14 +43,20 @@ module MergeAssurance
     failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
     failures << "context contains UNKNOWN" if contains_unknown?(context)
     validate_authority(safe_context, autonomous_result, now, failures)
-    follow_up_accounting = validate_operations(safe_context, now, failures)
+    follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
+    authenticated_tracker_reads = []
+    if failures.empty? && semantic_tracker
+      tracker_read = authenticate_semantic_tracker(semantic_tracker, safe_context, now, failures)
+      authenticated_tracker_reads << tracker_read if tracker_read
+    end
 
     return blocked_result(failures) unless failures.empty?
 
     evidence = {
       "ci_result" => ci_result,
       "autonomous_result" => autonomous_result,
-      "context" => context
+      "context" => context,
+      "authenticated_tracker_reads" => authenticated_tracker_reads
     }
     receipt = {
       "contract" => "merge-assurance-receipt",
@@ -302,7 +309,7 @@ module MergeAssurance
     elsif semantic_trackers.any?
       failures << "semantic GitHub Actions tracker is invalid for a non-semantic change"
     end
-    semantic_trackers.each { |tracker| validate_semantic_tracker(tracker, context, now, failures) }
+    semantic_trackers.each { |tracker| validate_semantic_tracker(tracker, context, failures) }
     failures << "post-merge audit permits at most one report-only operation" if report_only_operations.length > 1
     report_only_operations.each do |operation|
       next if operation.keys.sort == %w[disposition provenance reason type] &&
@@ -322,7 +329,7 @@ module MergeAssurance
                          }
                        end
 
-    {
+    accounting = {
       "ordinary_follow_up_bundles" => ordinary.map do |bundle|
         {
           "bundle_id" => bundle["bundle_id"],
@@ -332,12 +339,15 @@ module MergeAssurance
       "semantic_github_actions_tracker" => semantic_trackers.one? ? semantic_trackers.first : nil,
       "post_merge_audit" => post_merge_audit
     }
+    semantic_tracker = if context["semantic_github_actions_change"] == true && semantic_trackers.one?
+                         semantic_trackers.first
+                       end
+    [accounting, semantic_tracker]
   end
 
-  def validate_semantic_tracker(tracker, context, now, failures)
+  def validate_semantic_tracker(tracker, context, failures)
     required_keys = %w[
-      changed_files cleanup_instructions exercise expected_evidence read_verification
-      source_pr tracker type
+      changed_files cleanup_instructions exercise expected_evidence source_pr tracker type
     ]
     allowed_keys = required_keys + ["owner"]
     unless (tracker.keys - allowed_keys).empty? && (required_keys - tracker.keys).empty?
@@ -358,14 +368,6 @@ module MergeAssurance
     expected_source_pr = "https://#{context['host']}/#{context['repo']}/pull/#{context['pr']}"
     failures << "semantic GitHub Actions source PR binding mismatch" unless
       tracker["source_pr"] == expected_source_pr
-    validate_tracker_read_verification(
-      tracker["read_verification"],
-      tracker:,
-      issue_number: tracker_match&.captures&.first&.to_i,
-      context:,
-      now:,
-      failures:
-    )
     changed_files = tracker["changed_files"]
     unless changed_files.is_a?(Array) && !changed_files.empty? &&
            changed_files.all? do |path|
@@ -380,43 +382,114 @@ module MergeAssurance
     end
   end
 
-  def validate_tracker_read_verification(verification, tracker:, issue_number:, context:, now:, failures:)
-    required_keys = %w[
-      checked_at complete contract diff_identity head_sha host issue provenance repo
-      source_pr status tracker version
-    ]
-    unless verification.is_a?(Hash) && verification.keys.sort == required_keys.sort
-      failures << "semantic GitHub Actions tracker read verification is missing or malformed"
+  def authenticate_semantic_tracker(tracker, context, now, failures)
+    issue_number = tracker["tracker"].match(%r{/issues/([1-9]\d*)\z})&.captures&.first&.to_i
+    issue = read_authenticated_issue(
+      host: context["host"],
+      repo: context["repo"],
+      issue: issue_number
+    )
+    return failures << "semantic GitHub Actions tracker authenticated read failed" unless issue
+
+    validate_authenticated_issue(
+      issue,
+      tracker:,
+      issue_number:,
+      context:,
+      now:,
+      failures:
+    )
+  end
+
+  def read_authenticated_issue(host:, repo:, issue:)
+    stdout, _stderr, status = Open3.capture3(
+      "gh",
+      "api",
+      "--hostname",
+      host,
+      "repos/#{repo}/issues/#{issue}"
+    )
+    return unless status.success?
+
+    parsed = JSON.parse(stdout)
+    parsed if parsed.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError
+    nil
+  end
+
+  def validate_authenticated_issue(issue, tracker:, issue_number:, context:, now:, failures:)
+    expected_html_url = tracker["tracker"]
+    expected_api_url = if context["host"] == "github.com"
+                         "https://api.github.com/repos/#{context['repo']}/issues/#{issue_number}"
+                       else
+                         "https://#{context['host']}/api/v3/repos/#{context['repo']}/issues/#{issue_number}"
+                       end
+    metadata_valid = issue["id"].is_a?(Integer) && issue["id"].positive? &&
+                     issue["node_id"].is_a?(String) && !issue["node_id"].empty? &&
+                     issue["number"] == issue_number &&
+                     issue["url"] == expected_api_url &&
+                     issue["html_url"] == expected_html_url &&
+                     %w[open closed].include?(issue["state"]) &&
+                     issue["title"].is_a?(String) && !issue["title"].strip.empty? &&
+                     issue["body"].is_a?(String) &&
+                     !issue.key?("pull_request")
+    begin
+      Time.iso8601(issue["updated_at"].to_s)
+    rescue ArgumentError
+      metadata_valid = false
+    end
+    unless metadata_valid
+      failures << "semantic GitHub Actions tracker authenticated issue metadata is malformed or mismatched"
       return
     end
-    unless verification["contract"] == "semantic-tracker-read-verification" &&
-           verification["version"] == 1 &&
-           verification["status"] == "verified" &&
-           verification["complete"] == true &&
-           verification["provenance"] == "authenticated-github-api"
-      failures << "semantic GitHub Actions tracker read verification is unavailable or incomplete"
+
+    operation_digest = semantic_tracker_operation_digest(tracker)
+    expected_lines = {
+      "semantic-tracker-source-pr" => tracker["source_pr"],
+      "semantic-tracker-head-sha" => context["head_sha"],
+      "semantic-tracker-diff-identity" => context["diff_identity"],
+      "semantic-tracker-operation-digest" => operation_digest
+    }.map { |key, value| "#{key}: #{value}" }
+    body_lines = issue["body"].lines(chomp: true).map(&:strip)
+    unless expected_lines.all? { |line| body_lines.count(line) == 1 }
+      failures << "semantic GitHub Actions tracker issue body binding mismatch"
+      return
     end
-    expected_bindings = {
-      "tracker" => tracker["tracker"],
-      "issue" => issue_number,
+
+    {
+      "contract" => "authenticated-semantic-tracker-read",
+      "version" => 1,
+      "provenance" => "gh-api",
+      "checked_at" => now.utc.iso8601,
       "host" => context["host"],
       "repo" => context["repo"],
+      "issue" => issue_number,
+      "tracker" => tracker["tracker"],
       "source_pr" => tracker["source_pr"],
       "head_sha" => context["head_sha"],
-      "diff_identity" => context["diff_identity"]
+      "diff_identity" => context["diff_identity"],
+      "operation_digest" => operation_digest,
+      "issue_metadata" => {
+        "id" => issue["id"],
+        "node_id" => issue["node_id"],
+        "url" => issue["url"],
+        "html_url" => issue["html_url"],
+        "state" => issue["state"],
+        "title" => issue["title"],
+        "updated_at" => issue["updated_at"],
+        "body_digest" => "sha256:#{Digest::SHA256.hexdigest(issue['body'])}"
+      }
     }
-    mismatched = expected_bindings.keys.reject do |key|
-      verification[key] == expected_bindings[key]
+  end
+
+  def semantic_tracker_operation_digest(tracker)
+    keys = %w[
+      changed_files cleanup_instructions exercise expected_evidence owner source_pr tracker type
+    ]
+    operation = keys.each_with_object({}) do |key, selected|
+      selected[key] = tracker[key] if tracker.key?(key)
     end
-    unless mismatched.empty?
-      failures << "semantic GitHub Actions tracker read verification binding mismatch: #{mismatched.join(', ')}"
-    end
-    validate_timestamp(
-      verification["checked_at"],
-      now,
-      "semantic GitHub Actions tracker read verification",
-      failures
-    )
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(operation))}"
   end
 
   def valid_follow_up_approval?(approval, bundle:, context:, scope:, now: Time.now.utc)
