@@ -453,6 +453,30 @@ class MergeAssuranceTest < Minitest::Test
     assert_empty eligible_mutations
   end
 
+  def test_semantic_tracker_rejects_duplicate_same_value_for_every_binding_key
+    eligible_keys = eligible_semantic_binding_mutations do |_key, expected_line|
+      expected_line
+    end
+
+    assert_empty eligible_keys
+  end
+
+  def test_semantic_tracker_rejects_expected_plus_conflicting_value_for_every_binding_key
+    eligible_keys = eligible_semantic_binding_mutations do |key, _expected_line|
+      "#{key}: conflicting-value"
+    end
+
+    assert_empty eligible_keys
+  end
+
+  def test_semantic_tracker_rejects_malformed_prefixed_variants_for_every_binding_key
+    eligible_keys = eligible_semantic_binding_mutations do |key, _expected_line|
+      "#{key}-conflict: conflicting-value"
+    end
+
+    assert_empty eligible_keys
+  end
+
   def test_semantic_tracker_fails_closed_when_gh_is_unavailable
     File.rename(@fake_gh, "#{@fake_gh}.unavailable")
     result = MergeAssurance.assess(
@@ -589,6 +613,34 @@ class MergeAssuranceTest < Minitest::Test
 
   def reset_fake_gh_calls
     File.delete(@fake_gh_calls) if File.exist?(@fake_gh_calls)
+  end
+
+  def eligible_semantic_binding_mutations
+    semantic_binding_lines.filter_map do |key, expected_line|
+      reset_fake_gh_calls
+      issue = fake_issue
+      issue["body"] = "#{issue['body']}\n#{yield(key, expected_line)}"
+      ENV["FAKE_GH_RESPONSE"] = JSON.generate(issue)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context(
+          "auto_merge_when_gates_pass",
+          semantic_github_actions_change: true,
+          operations: [semantic_tracker]
+        ),
+        now: NOW
+      )
+      key if result.fetch("eligible")
+    end
+  end
+
+  def semantic_binding_lines
+    fake_issue.fetch("body").lines(chomp: true).filter_map do |line|
+      next unless line.start_with?("semantic-tracker-")
+
+      [line.split(": ", 2).first, line]
+    end
   end
 
   def fake_issue

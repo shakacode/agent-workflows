@@ -444,14 +444,13 @@ module MergeAssurance
     end
 
     operation_digest = semantic_tracker_operation_digest(tracker)
-    expected_lines = {
+    expected_bindings = {
       "semantic-tracker-source-pr" => tracker["source_pr"],
       "semantic-tracker-head-sha" => context["head_sha"],
       "semantic-tracker-diff-identity" => context["diff_identity"],
       "semantic-tracker-operation-digest" => operation_digest
-    }.map { |key, value| "#{key}: #{value}" }
-    body_lines = issue["body"].lines(chomp: true).map(&:strip)
-    unless expected_lines.all? { |line| body_lines.count(line) == 1 }
+    }
+    unless valid_semantic_tracker_body_bindings?(issue["body"], expected_bindings)
       failures << "semantic GitHub Actions tracker issue body binding mismatch"
       return
     end
@@ -480,6 +479,25 @@ module MergeAssurance
         "body_digest" => "sha256:#{Digest::SHA256.hexdigest(issue['body'])}"
       }
     }
+  end
+
+  def valid_semantic_tracker_body_bindings?(body, expected_bindings)
+    parsed_bindings = Hash.new { |bindings, key| bindings[key] = [] }
+    malformed = body.lines(chomp: true).any? do |raw_line|
+      line = raw_line.strip
+      next false unless line.start_with?("semantic-tracker-")
+
+      key, separator, value = line.partition(": ")
+      if separator.empty? || !expected_bindings.key?(key)
+        true
+      else
+        parsed_bindings[key] << value
+        false
+      end
+    end
+    !malformed && expected_bindings.all? do |key, expected_value|
+      parsed_bindings[key] == [expected_value]
+    end
   end
 
   def semantic_tracker_operation_digest(tracker)
