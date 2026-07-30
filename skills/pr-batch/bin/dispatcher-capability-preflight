@@ -3,6 +3,7 @@
 
 require "digest"
 require "json"
+require "time"
 
 ACCEPTED_BINDING_EVIDENCE = %w[operator-selected dispatcher-bound].freeze
 NEGATIVE_BINDING_EVIDENCE = %w[unbound binding-rejected binding-failed].freeze
@@ -51,6 +52,26 @@ end
 
 def unknown_sentinel?(value)
   value.is_a?(String) && value.strip.casecmp?("UNKNOWN")
+end
+
+def nested_unknown_sentinel?(value)
+  case value
+  when Hash
+    value.any? { |key, entry| nested_unknown_sentinel?(key) || nested_unknown_sentinel?(entry) }
+  when Array
+    value.any? { |entry| nested_unknown_sentinel?(entry) }
+  else
+    unknown_sentinel?(value)
+  end
+end
+
+def timestamp?(value)
+  return false unless nonempty_string?(value)
+
+  Time.iso8601(value)
+  true
+rescue ArgumentError
+  false
 end
 
 def route_shape?(route)
@@ -195,11 +216,26 @@ def requested_shape?(requested)
 end
 
 def confirmation_shape?(confirmation)
-  confirmation.is_a?(Hash) &&
-    confirmation["type"] == "launch-confirmation" &&
-    confirmation["version"] == 1 &&
-    nonempty_string?(confirmation["id"]) &&
-    assignment_identity?(confirmation["assignment"])
+  return false unless confirmation.is_a?(Hash) &&
+                      confirmation["type"] == "launch-confirmation" &&
+                      nonempty_string?(confirmation["id"]) &&
+                      assignment_identity?(confirmation["assignment"]) &&
+                      !nested_unknown_sentinel?(confirmation)
+
+  return true if confirmation["version"] == 1
+  return false unless confirmation["version"] == 2
+
+  confirmation["actual_model"] == confirmation.dig("assignment", "route", "model") &&
+    confirmation["actual_effort"] == confirmation.dig("assignment", "route", "effort") &&
+    ACCEPTED_BINDING_EVIDENCE.include?(confirmation["binding_source"]) &&
+    ACCEPTED_ATTESTATION_EVIDENCE.include?(confirmation["attestation"]) &&
+    confirmation["instance_id"] == confirmation.dig("assignment", "instance_id") &&
+    timestamp?(confirmation["observed_at"]) &&
+    confirmation["routing_mode"] == "explicit"
+end
+
+def confirmation_qualifies?(confirmation)
+  confirmation.is_a?(Hash) && confirmation["version"] == 2 && confirmation_shape?(confirmation)
 end
 
 def replacement_proof_authorizes?(replacement, active_assignment, replacement_assignment)
@@ -649,7 +685,7 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
     exit
   end
 
-  output = if persisted_assignment["lifecycle"] == "confirmed-active" || confirmation
+  output = if persisted_assignment["lifecycle"] == "confirmed-active" || confirmation_qualifies?(confirmation)
              active_replay_output(
                input:,
                requested:,
@@ -722,7 +758,7 @@ if matching_assignment
   if confirmation && !assignment_identity_matches?(confirmation["assignment"], matching_assignment)
     fail_input("launch_confirmation must match the persisted assignment identity")
   end
-  output = if confirmation
+  output = if confirmation_qualifies?(confirmation)
              active_replay_output(
                input:,
                requested:,
