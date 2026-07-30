@@ -418,15 +418,22 @@ module PrCiReadiness
         else
           requested_host
         end
-      host = raw_host.to_s.strip.downcase.sub(/:443\z/, "")
-      labels = host.split(".", -1)
-      valid = !host.empty? && host.length <= 253 && labels.all? do |label|
+      host = raw_host.to_s.strip.downcase
+      hostname = host
+      port = nil
+      if host.include?(":")
+        hostname, _separator, port = host.rpartition(":")
+      end
+      labels = hostname.split(".", -1)
+      valid_labels = labels.all? do |label|
         label.length <= 63 &&
           label.match?(/\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/)
       end
+      valid_port = port.nil? || (port.match?(/\A[1-9]\d*\z/) && port.to_i <= 65_535)
+      valid = !hostname.empty? && hostname.length <= 253 && valid_port && valid_labels
       raise Error, "invalid GitHub host: '#{raw_host}'" unless valid
 
-      host
+      port == "443" ? hostname : host
     end
 
     # Strict [HOST/]OWNER/REPO: non-empty parts and no spaces.

@@ -510,13 +510,65 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_explicit_ghes_host_preserves_canonical_nondefault_port
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example:8443"
+    ) do |env|
+      out, status = run_script(env, "123", "--host", "GHE.EXAMPLE:8443")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "ghe.example:8443", data.dig("context", "host")
+    end
+  end
+
+  def test_explicit_host_rejects_port_above_canonical_range
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]"
+    ) do |env|
+      out, status = run_script(env, "123", "--host", "ghe.example:65536")
+
+      refute status.success?, out
+      assert_includes out, "invalid GitHub host"
+    end
+  end
+
+  def test_explicit_host_preserves_canonical_port_boundaries
+    [1, 65_535].each do |port|
+      host = "ghe.example:#{port}"
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+        full_json: "[]",
+        expected_host: host
+      ) do |env|
+        out, status = run_script(env, "123", "--host", host)
+
+        assert status.success?, out
+        assert_equal host, JSON.parse(out).dig("context", "host")
+      end
+    end
+  end
+
   def test_invalid_explicit_hosts_are_rejected
     invalid_hosts = [
       "",
       "https://ghe.example.com",
       "ghe.example.com/path",
       "user@ghe.example.com",
-      "ghe.example.com:8443",
+      "ghe.example.com:",
+      "ghe.example.com:0",
+      "ghe.example.com:0443",
+      "ghe.example.com:abc",
+      "ghe.example.com:12x",
+      "ghe.example.com:65536",
+      "[ghe.example.com]:8443",
+      "ghe.example.com::8443",
+      ":8443",
+      "ghe.example.com:8443:1",
       "bad..example.com",
       "-bad.example.com",
       "bad-.example.com",
@@ -593,6 +645,44 @@ class PrCiReadinessCliTest < Minitest::Test
       data = JSON.parse(out)
       assert_equal "owner/repo", data.fetch("repo")
       assert_equal "ghe.example.com", data.dig("context", "host")
+    end
+  end
+
+  def test_matching_nondefault_port_host_qualified_repo_is_normalized_for_collection
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example:8443"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example:8443",
+        "--repo", "GHE.EXAMPLE:8443/owner/repo"
+      )
+
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "owner/repo", data.fetch("repo")
+      assert_equal "ghe.example:8443", data.dig("context", "host")
+    end
+  end
+
+  def test_host_qualified_repo_port_cannot_conflict_with_resolved_host
+    with_fake_gh(
+      required_json: "[]",
+      full_json: "[]",
+      expected_host: "ghe.example:8443"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example:8443",
+        "--repo", "ghe.example:9443/owner/repo"
+      )
+
+      refute status.success?
+      assert_includes out, "repo host ghe.example:9443 conflicts with resolved GitHub host ghe.example:8443"
     end
   end
 
