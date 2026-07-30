@@ -345,7 +345,7 @@ end
 class PrCiReadinessCliTest < Minitest::Test
   # Build a temp dir with a fake `gh` executable that emits canned `gh pr
   # checks` JSON, then run the real script with that dir prepended to PATH.
-  def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", pr_identity: nil, runs: {},
+  def with_fake_gh(required_json:, full_json:, pr_head: "a" * 40, pr_identity: nil, runs: {},
                    review_pages: {}, review_error: false, required_check_fields: nil,
                    rejected_check_field: nil, check_stderr: nil, check_status: 0,
                    required_check_error: nil, full_check_error: nil, exact_actions: [],
@@ -441,11 +441,17 @@ class PrCiReadinessCliTest < Minitest::Test
       elsif pr_identity
         shell_json_printf(pr_identity)
       else
+        identity_head =
+          if pr_head.is_a?(String) && pr_head.match?(/\A[0-9a-f]{40,64}\z/i)
+            pr_head
+          else
+            "a" * 40
+          end
         default_identity = {
           "id" => 9_001,
           "number" => 0,
           "head" => {
-            "sha" => pr_head.to_s,
+            "sha" => identity_head,
             "ref" => "feature",
             "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
           }
@@ -1219,6 +1225,12 @@ class PrCiReadinessCliTest < Minitest::Test
       "blank head SHA" => target_identity.merge(
         "head" => target_identity.fetch("head").merge("sha" => "  ")
       ),
+      "short head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "short")
+      ),
+      "non-hex head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "g" * 40)
+      ),
       "blank head ref" => target_identity.merge(
         "head" => target_identity.fetch("head").merge("ref" => "  ")
       ),
@@ -1393,6 +1405,62 @@ class PrCiReadinessCliTest < Minitest::Test
     end
 
     assert_empty accepted_invalid_associations
+  end
+
+  def test_exact_head_actions_fail_closed_for_contradictory_target_pull_request_association
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    changed_head = lambda do |values|
+      target_association.merge("head" => target_association.fetch("head").merge(values))
+    end
+    changed_repo = lambda do |values|
+      changed_head.call("repo" => target_association.dig("head", "repo").merge(values))
+    end
+    contradictory_associations = {
+      "target PR with conflicting head SHA" => changed_head.call("sha" => "b" * 40),
+      "target PR with conflicting head ref" => changed_head.call("ref" => "other-feature"),
+      "target PR with conflicting head repo id" => changed_repo.call("id" => 9_003),
+      "target id with another PR number" => target_association.merge("number" => 456),
+      "target number with another PR id" => target_association.merge("id" => 5_002)
+    }
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "status" => "completed", "conclusion" => "success"
+    }
+
+    accepted_contradictions = contradictory_associations.filter_map do |label, association|
+      run = valid_run.merge("pull_requests" => [association])
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: [run],
+        runs: { "200" => { run:, jobs: [] } }
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_contradictions
   end
 
   def test_target_identity_head_movement_marks_every_evidence_scope_incomplete

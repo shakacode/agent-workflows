@@ -833,13 +833,26 @@ module PrCiReadiness
                run.dig("head_repository", "id") == target_pr.fetch(:head_repo_id)
       end
 
-      associations.any? do |association|
-        association["id"] == target_pr.fetch(:id) &&
-          association["number"] == target_pr.fetch(:number) &&
+      targets_pr = false
+      associations.each do |association|
+        id_matches = association["id"] == target_pr.fetch(:id)
+        number_matches = association["number"] == target_pr.fetch(:number)
+        if id_matches != number_matches
+          raise Error, "Actions run pull request association contradicted the target PR identity"
+        end
+        next unless id_matches
+
+        head_matches =
           association.dig("head", "sha") == target_pr.fetch(:head_sha) &&
           association.dig("head", "ref") == target_pr.fetch(:head_ref) &&
           association.dig("head", "repo", "id") == target_pr.fetch(:head_repo_id)
+        unless head_matches
+          raise Error, "Actions run pull request association contradicted the target PR head identity"
+        end
+
+        targets_pr = true
       end
+      targets_pr
     end
 
     def ensure_exact_head!(row, head_sha, context, sha_key: "head_sha")
@@ -1095,8 +1108,8 @@ module PrCiReadiness
       raise Error, "target PR head was not an object" unless head.is_a?(Hash)
 
       head_sha = head["sha"]
-      unless head_sha.is_a?(String) && !head_sha.strip.empty?
-        raise Error, "target PR head SHA was not a nonblank string"
+      unless head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-f]{40,64}\z/i)
+        raise Error, "target PR head SHA was not a full hexadecimal commit SHA"
       end
 
       head_ref = head["ref"]
