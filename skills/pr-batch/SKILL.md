@@ -82,13 +82,19 @@ facts remain fail-closed and stop before mutation.
   - High-risk or escalated work: Opus 4.8/xhigh
   - Independent adversarial QA: Opus 4.8/xhigh
   - Routine deterministic QA: Opus 4.8/high
+- **Batch plan preflight**: before dispatcher selection or worker launch, run
+  the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
+  owns collision, backend-cap, QA, and external-premise schema enforcement.
+  Legacy plans must supply the v1 envelope with unchanged file-touch and
+  stage-dependency helper results. A rejection launches nothing; an acceptance
+  permits only the returned eligible lanes.
 - **Dispatcher capability preflight**: before launch, pass the requested
   route/dispatcher, explicit authority, ordered candidates, and preserved lane
   state to `bin/dispatcher-capability-preflight`. It records a bound, attested
   exact tuple or first explicitly authorized fallback; it never launches or
   mutates coordination. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. `selected` resumes Goal mode; `blocked-user-input`
   carries one `dispatch-decision-request v1` with canonical viable fallback choices and stops.
-  Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+  Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
@@ -459,6 +465,30 @@ evidence failure, trusted-base policy provenance, and repair action.
 approval. Safe and generated classifications never subtract common hard,
 repository path, size, churn, rollback, or maintainer-concern gates.
 
+## Merge Assurance Gate
+
+After ordinary readiness and any required walkthrough or human decision, capture
+the resolved `pr-ci-readiness` v2 result, the autonomous eligibility result, and
+a trusted coordinator-owned merge context. `pr-ci-readiness` v2 owns the scoped,
+exact-head required-status, GitHub Actions, Dependabot, and other CI evidence;
+legacy v1 CI output is not sufficient.
+
+Run:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+  --ci-result "${CI_RESULT_PATH}" \
+  --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
+  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+```
+
+`merge-assurance` alone owns merge-authority, follow-up accounting, and
+`UNKNOWN` policy at this final boundary. Every merge caller must generate a
+fresh eligible receipt and pass it to `pr-merge-submit`; the submit helper
+requires it unconditionally. `merge_authority: none` remains a no-merge state
+and can never produce an eligible receipt. Keep this gate conceptually separate
+from batch-plan preflight.
+
 ## Goal Prompt Template
 
 Keep this template aligned with the matching plan-to-goal prompt in the
@@ -782,8 +812,10 @@ recorded (the `Agent Merge Confidence` block is the accelerated-RC auto-merge
 block, not the normal-handoff note) for the maintainer to merge. Do not merge
 without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
-When a merge is authorized, submit the reviewed host, base, and exact head through the canonical
-`pr-merge-submit` helper described by `workflows/pr-processing.md`. It preserves
+When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
+then submit the reviewed host, base, and exact head through the canonical
+`pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
+receipt unconditionally. It preserves
 the consumer's normal direct-merge method and subject, but falls back to
 GitHub's `enqueuePullRequest` only when GitHub explicitly says the base branch's
 strategy is controlled by a merge queue. Treat helper exit 2 as an `UNKNOWN`

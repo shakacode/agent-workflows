@@ -329,6 +329,15 @@ Plan a PR batch
      and immediate stop conditions. Contradictory evidence, ambiguous criteria,
      scope or risk growth, weakened verification, or consequential judgment
      returns control to the coordinator before further edits.
+     Before any worker launch, resolve `PLAN_PR_BATCH_SKILL_DIR` through the
+     explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
+     `batch-plan-preflight` v1 envelope on stdin to
+     `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
+     owns collision, backend-cap, QA, and external-premise schema enforcement;
+     do not duplicate its matrices here. Legacy plans must be adapted to the v1
+     envelope with their `pr-file-touch-map` and stage-dependency helper results
+     unchanged. A rejected result launches no worker; an accepted result permits
+     only its eligible lanes and keeps its held lanes unlaunched.
      Before launch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var /
      loaded-skill / repo-local pinned-copy chain, then send the requested
      route/dispatcher, explicit route and dispatch authority, ordered candidates,
@@ -338,7 +347,7 @@ Plan a PR batch
      Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
      Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice.
      Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. The decision request includes canonical viable fallback choices.
-     Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+     Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
      A `selected` result may resume Goal mode; `blocked-user-input` carries one
      `dispatch-decision-request v1` and stops.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
@@ -506,6 +515,7 @@ backend must say so in the declaration.
 - Concurrent activity and dependency status:
 - Coordination hooks, including backend claim exclusions:
 - Batch QA Lane decision and QA Evidence expectations, including replay marker requirements:
+- Batch-plan preflight v1 envelope/result reference:
 - Verification expectations:
 - Expected readiness states or unresolved `UNKNOWN` facts:
 - Prompt sizing: `Goal prompt character count: N characters (target: codex|claude|generic)`; note any split fallback
