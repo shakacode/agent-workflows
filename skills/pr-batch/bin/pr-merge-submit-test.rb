@@ -487,6 +487,31 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_authenticated_semantic_tracker_receipt_reaches_the_merge_mutation
+    result, log = run_cli(mode: "direct", receipt_mode: :semantic)
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "repos/owner/repo/issues/1"
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_authenticated_tracker_receipt_evidence_is_exact_and_current
+    cases = {
+      semantic_read_missing: "authenticated tracker read count is malformed",
+      semantic_read_binding_mismatch: "authenticated tracker read is malformed or mismatched",
+      semantic_read_metadata_changed: "authenticated tracker read does not match the current issue",
+      semantic_read_unknown: "receipt evidence contains UNKNOWN"
+    }
+    cases.each do |receipt_mode, expected_error|
+      result, log = run_cli(mode: "direct", receipt_mode:)
+
+      refute result.fetch(:status).success?, receipt_mode
+      assert_includes result.fetch(:stderr), expected_error, receipt_mode
+      refute_includes log, "mergePullRequest", receipt_mode
+      refute_includes log, "enqueuePullRequest", receipt_mode
+    end
+  end
+
   def test_unknown_nested_in_receipt_evidence_stops_before_any_mutation
     result, log = run_cli(mode: "direct", receipt_mode: :nested_unknown)
 
@@ -677,7 +702,7 @@ class PrMergeSubmitTest < Minitest::Test
       unless receipt_mode == :missing
         write_merge_assurance_receipt(
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
-                        base_ref: "main", host: HOST, pr_number: 42
+                        base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
         )
       end
       stdout, stderr, status = Open3.capture3(
@@ -703,7 +728,7 @@ class PrMergeSubmitTest < Minitest::Test
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", host: HOST, pr_number: 42
+                      base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
       )
       result = Open3.popen3(
         cli_environment(dir, log_path, mode),
@@ -777,7 +802,7 @@ class PrMergeSubmitTest < Minitest::Test
     args
   end
 
-  def write_merge_assurance_receipt(path, mode:, repo:, head:, base_ref:, host:, pr_number:)
+  def write_merge_assurance_receipt(path, mode:, repo:, head:, base_ref:, host:, pr_number:, gh_dir:)
     now = Time.now.utc
     base_sha = mode == :mismatched_base_sha ? "c" * 40 : "b" * 40
     checked_at = (now - 1).iso8601
@@ -822,6 +847,8 @@ class PrMergeSubmitTest < Minitest::Test
       },
       "evidence_failures" => []
     }
+    tracker = semantic_tracker(host:, repo:, pr_number:)
+    semantic = mode.to_s.start_with?("semantic")
     context = {
       "contract" => "merge-assurance-context",
       "version" => 1,
@@ -834,12 +861,14 @@ class PrMergeSubmitTest < Minitest::Test
       "diff_identity" => "e" * 64,
       "human_merge_decision" => nil,
       "walkthrough" => nil,
-      "semantic_github_actions_change" => false,
-      "operations" => []
+      "semantic_github_actions_change" => semantic,
+      "operations" => semantic ? [tracker] : []
     }
-    receipt = MergeAssurance.assess(
-      ci_result:, autonomous_result:, context:, now:
-    )
+    receipt = with_fake_gh(gh_dir) do
+      MergeAssurance.assess(
+        ci_result:, autonomous_result:, context:, now:
+      )
+    end
     raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
 
     case mode
@@ -857,11 +886,76 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["issued_at"] = (now - 301).iso8601
     when :future
       receipt["issued_at"] = (now + 60).iso8601
+    when :semantic_read_missing
+      receipt["evidence"]["authenticated_tracker_reads"] = []
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :semantic_read_binding_mismatch
+      receipt.dig("evidence", "authenticated_tracker_reads", 0)["head_sha"] = MOVED_SHA
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :semantic_read_metadata_changed
+      receipt.dig(
+        "evidence", "authenticated_tracker_reads", 0, "issue_metadata"
+      )["body_digest"] = "sha256:#{'f' * 64}"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :semantic_read_unknown
+      receipt.dig(
+        "evidence", "authenticated_tracker_reads", 0, "issue_metadata"
+      )["title"] = "UNKNOWN"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     end
     File.write(path, JSON.generate(receipt))
   end
 
+  def with_fake_gh(dir)
+    original_path = ENV.fetch("PATH")
+    original_log = ENV["GH_LOG"]
+    ENV["PATH"] = "#{dir}:#{original_path}"
+    ENV["GH_LOG"] = File.join(dir, "receipt-gh.log")
+    yield
+  ensure
+    ENV["PATH"] = original_path
+    original_log ? ENV["GH_LOG"] = original_log : ENV.delete("GH_LOG")
+  end
+
+  def semantic_tracker(host:, repo:, pr_number:)
+    {
+      "type" => "semantic-github-actions-tracker",
+      "tracker" => "https://#{host}/#{repo}/issues/1",
+      "source_pr" => "https://#{host}/#{repo}/pull/#{pr_number}",
+      "changed_files" => [".github/workflows/ci.yml"],
+      "exercise" => "Open a secondary verification PR after merge.",
+      "expected_evidence" => "The dynamic matrix checks appear on the verification PR.",
+      "cleanup_instructions" => "Close the verification-only PR without merging.",
+      "owner" => "maintainer"
+    }
+  end
+
+  def semantic_issue_payload(host:, repo:, pr_number:, head:)
+    tracker = semantic_tracker(host:, repo:, pr_number:)
+    {
+      "id" => 101,
+      "node_id" => "I_kwDOExample",
+      "number" => 1,
+      "url" => "https://#{host}/api/v3/repos/#{repo}/issues/1",
+      "html_url" => tracker["tracker"],
+      "state" => "open",
+      "title" => "Exercise semantic GitHub Actions behavior",
+      "body" => [
+        "Verify the semantic workflow behavior after merge.",
+        "semantic-tracker-source-pr: #{tracker['source_pr']}",
+        "semantic-tracker-head-sha: #{head}",
+        "semantic-tracker-diff-identity: #{'e' * 64}",
+        "semantic-tracker-operation-digest: " \
+          "#{MergeAssurance.semantic_tracker_operation_digest(tracker)}"
+      ].join("\n"),
+      "updated_at" => Time.now.utc.iso8601
+    }
+  end
+
   def fake_gh(mode:, head:, base:, url_host:)
+    semantic_issue = semantic_issue_payload(
+      host: HOST, repo: "owner/repo", pr_number: 42, head:
+    )
     queue_payload = if mode == "queue_missing_entry"
                       { "data" => { "enqueuePullRequest" => { "mergeQueueEntry" => nil } } }
                     else
@@ -898,6 +992,11 @@ class PrMergeSubmitTest < Minitest::Test
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
       warn "debug diagnostic" if #{mode.inspect} == "direct_with_stderr"
+
+      if ARGV.include?("repos/owner/repo/issues/1")
+        puts #{JSON.generate(semantic_issue).inspect}
+        exit 0
+      end
 
       if ARGV.any? { |arg| arg == "number=42" }
         if #{mode.inspect} == "metadata_interrupt_exit_zero"

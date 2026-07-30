@@ -259,6 +259,16 @@ module PrMergeSubmit
     RECEIPT_BINDING_KEYS = %w[
       authority base diff_identity head_sha host pr repo
     ].freeze
+    RECEIPT_EVIDENCE_KEYS = %w[
+      authenticated_tracker_reads autonomous_result ci_result context
+    ].freeze
+    AUTHENTICATED_TRACKER_READ_KEYS = %w[
+      checked_at contract diff_identity head_sha host issue issue_metadata
+      operation_digest provenance repo source_pr tracker version
+    ].freeze
+    AUTHENTICATED_TRACKER_METADATA_KEYS = %w[
+      body_digest html_url id node_id state title updated_at url
+    ].freeze
 
     def load_merge_assurance_receipt!(options)
       raw = File.read(options[:merge_assurance_receipt], encoding: "UTF-8")
@@ -279,11 +289,9 @@ module PrMergeSubmit
       end
 
       evidence = receipt["evidence"]
-      unless evidence.is_a?(Hash) && evidence.keys.sort == %w[autonomous_result ci_result context]
-        raise Error, "merge-assurance receipt evidence is malformed"
-      end
-
       now = Time.now.utc
+      validate_receipt_evidence!(receipt, evidence)
+      validate_receipt_freshness!(receipt, now)
       reassessed = MergeAssurance.assess(
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
@@ -298,17 +306,100 @@ module PrMergeSubmit
              receipt["follow_up_accounting"] == reassessed["follow_up_accounting"]
         raise Error, "merge-assurance receipt bindings or accounting do not match its evidence"
       end
+      unless comparable_tracker_reads(evidence) == comparable_tracker_reads(reassessed["evidence"])
+        raise Error, "merge-assurance receipt authenticated tracker read does not match the current issue"
+      end
 
       expected_freshness = reassessed["freshness"]
       unless receipt["freshness"] == expected_freshness
         raise Error, "merge-assurance receipt freshness contract is malformed"
       end
 
-      validate_receipt_freshness!(receipt, now)
       validate_receipt_option_bindings!(receipt, options)
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def validate_receipt_evidence!(receipt, evidence)
+      unless evidence.is_a?(Hash) && evidence.keys.sort == RECEIPT_EVIDENCE_KEYS.sort &&
+             evidence["context"].is_a?(Hash) &&
+             evidence["authenticated_tracker_reads"].is_a?(Array)
+        raise Error, "merge-assurance receipt evidence is malformed"
+      end
+      if MergeAssurance.contains_unknown?(evidence["authenticated_tracker_reads"])
+        raise Error, "merge-assurance receipt evidence contains UNKNOWN"
+      end
+
+      context = evidence["context"]
+      semantic_trackers = Array(context["operations"]).select do |operation|
+        operation.is_a?(Hash) && operation["type"] == "semantic-github-actions-tracker"
+      end
+      reads = evidence["authenticated_tracker_reads"]
+      expected_read_count = context["semantic_github_actions_change"] == true ? 1 : 0
+      unless semantic_trackers.length == expected_read_count && reads.length == expected_read_count
+        raise Error, "merge-assurance receipt authenticated tracker read count is malformed"
+      end
+      return if expected_read_count.zero?
+
+      validate_authenticated_tracker_read!(
+        reads.first,
+        tracker: semantic_trackers.first,
+        context:,
+        issued_at: receipt["issued_at"]
+      )
+    end
+
+    def validate_authenticated_tracker_read!(read, tracker:, context:, issued_at:)
+      issue_number = tracker["tracker"].to_s.match(%r{/issues/([1-9]\d*)\z})&.captures&.first&.to_i
+      expected_api_url = if context["host"] == "github.com"
+                           "https://api.github.com/repos/#{context['repo']}/issues/#{issue_number}"
+                         else
+                           "https://#{context['host']}/api/v3/repos/#{context['repo']}/issues/#{issue_number}"
+                         end
+      metadata = read["issue_metadata"] if read.is_a?(Hash)
+      valid = read.is_a?(Hash) &&
+              read.keys.sort == AUTHENTICATED_TRACKER_READ_KEYS.sort &&
+              read["contract"] == "authenticated-semantic-tracker-read" &&
+              read["version"] == 1 &&
+              read["provenance"] == "gh-api" &&
+              read["checked_at"] == issued_at &&
+              read["host"] == context["host"] &&
+              read["repo"] == context["repo"] &&
+              read["issue"] == issue_number &&
+              read["tracker"] == tracker["tracker"] &&
+              read["source_pr"] == tracker["source_pr"] &&
+              read["head_sha"] == context["head_sha"] &&
+              read["diff_identity"] == context["diff_identity"] &&
+              read["operation_digest"] == MergeAssurance.semantic_tracker_operation_digest(tracker) &&
+              valid_authenticated_tracker_metadata?(
+                metadata,
+                api_url: expected_api_url,
+                html_url: tracker["tracker"]
+              )
+      raise Error, "merge-assurance receipt authenticated tracker read is malformed or mismatched" unless valid
+    end
+
+    def valid_authenticated_tracker_metadata?(metadata, api_url:, html_url:)
+      return false unless metadata.is_a?(Hash) &&
+                          metadata.keys.sort == AUTHENTICATED_TRACKER_METADATA_KEYS.sort
+      return false unless metadata["id"].is_a?(Integer) && metadata["id"].positive?
+      return false unless metadata["node_id"].is_a?(String) && !metadata["node_id"].empty?
+      return false unless metadata["url"] == api_url && metadata["html_url"] == html_url
+      return false unless %w[open closed].include?(metadata["state"])
+      return false unless metadata["title"].is_a?(String) && !metadata["title"].strip.empty?
+      return false unless metadata["body_digest"].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
+
+      Time.iso8601(metadata["updated_at"].to_s)
+      true
+    rescue ArgumentError
+      false
+    end
+
+    def comparable_tracker_reads(evidence)
+      Array(evidence["authenticated_tracker_reads"]).map do |read|
+        read.reject { |key, _value| key == "checked_at" }
+      end
     end
 
     def validate_receipt_freshness!(receipt, now = Time.now.utc)
