@@ -146,10 +146,10 @@ module PrMergeSubmit
       validate_options!(options)
       @merge_assurance_receipt = load_merge_assurance_receipt!(options)
       pull_request = fetch_pr(options)
-      validate_receipt_live_bindings!(pull_request, options)
       result = if exact_merge?(pull_request, options)
                  already_merged_result(pull_request, options)
                else
+                 validate_receipt_live_bindings!(pull_request, options)
                  validate_pr!(pull_request, options)
                  submit(pull_request, options)
                end
@@ -585,8 +585,7 @@ module PrMergeSubmit
       raise Error, "direct merge response PR URL mismatch" unless pull_request["url"] == expected_url
       raise Error, "direct merge response did not report MERGED state" unless pull_request["state"] == "MERGED"
       raise Error, "direct merge did not report a merged PR" unless pull_request["merged"] == true
-      unless pull_request.dig("mergeCommit", "oid").is_a?(String) &&
-             !pull_request.dig("mergeCommit", "oid").empty?
+      unless valid_merge_commit_oid?(pull_request.dig("mergeCommit", "oid"))
         raise Error, "direct merge did not report a merge commit"
       end
       unless pull_request["baseRefName"] == options[:expected_base]
@@ -688,6 +687,11 @@ module PrMergeSubmit
       end
 
       post_enqueue_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue post-submission verification")
+      if exact_merge?(post_enqueue_pull_request, options)
+        return queue_result(
+          post_enqueue_pull_request, entry, options, direct_output:, reconciled: !direct_output.nil?
+        )
+      end
       begin
         validate_pr!(post_enqueue_pull_request, options, require_open: false)
       rescue Error => e
@@ -697,11 +701,6 @@ module PrMergeSubmit
 
       if exact_queue?(post_enqueue_pull_request, options)
         return existing_queue_result(post_enqueue_pull_request, options, direct_output:)
-      end
-      if exact_merge?(post_enqueue_pull_request, options)
-        return queue_result(
-          post_enqueue_pull_request, entry, options, direct_output:, reconciled: !direct_output.nil?
-        )
       end
 
       raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
@@ -805,8 +804,11 @@ module PrMergeSubmit
         pull_request["url"] == "https://#{options[:host]}/#{options[:repo]}/pull/#{options[:pr]}" &&
         pull_request["baseRefName"] == options[:expected_base] &&
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
-        pull_request.dig("mergeCommit", "oid").is_a?(String) &&
-        !pull_request.dig("mergeCommit", "oid").empty?
+        valid_merge_commit_oid?(pull_request.dig("mergeCommit", "oid"))
+    end
+
+    def valid_merge_commit_oid?(oid)
+      oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/i)
     end
 
     def exact_queue?(pull_request, options)

@@ -19,6 +19,7 @@ class PrMergeSubmitTest < Minitest::Test
   MOVED_SHA = "b" * 40
   HOST = "ghe.example:8443"
   ADVANCED_BASE_SHA = "d" * 40
+  MERGE_COMMIT_SHA = "c" * 40
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -53,7 +54,7 @@ class PrMergeSubmitTest < Minitest::Test
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "direct", payload.fetch("submission")
     assert_equal "main", payload.fetch("expected_base")
-    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
     assert_includes log, "GH_HOST=#{HOST} api graphql"
     assert_includes log, "GraphQL-Features: merge_queue"
     assert_includes log, "mergePullRequest"
@@ -70,8 +71,18 @@ class PrMergeSubmitTest < Minitest::Test
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "direct", payload.fetch("submission")
-    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
     assert_includes log, "mergePullRequest"
+  end
+
+  def test_direct_merge_response_requires_a_full_hex_merge_commit_oid
+    ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
+      result, log = run_cli(mode: "direct", merge_commit_oid:)
+
+      assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
+      assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
+      assert_includes log, "mergePullRequest", merge_commit_oid
+    end
   end
 
   def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
@@ -223,10 +234,32 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "already_merged", payload.fetch("submission")
     assert_equal "UNKNOWN", payload.fetch("merge_provenance")
     assert_equal true, payload.fetch("already_complete")
-    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
     refute payload.key?("method")
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_existing_exact_merge_accepts_an_advanced_base_oid_before_old_base_guard
+    result, log = run_cli(mode: "already_merged_base_advanced")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "already_merged", payload.fetch("submission")
+    assert_equal true, payload.fetch("already_complete")
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_initial_merged_state_requires_a_full_hex_merge_commit_oid
+    ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
+      result, log = run_cli(mode: "already_merged", merge_commit_oid:)
+
+      refute result.fetch(:status).success?, merge_commit_oid
+      assert_includes result.fetch(:stderr), "PR state is not valid for submission", merge_commit_oid
+      refute_includes log, "mergePullRequest", merge_commit_oid
+      refute_includes log, "enqueuePullRequest", merge_commit_oid
+    end
   end
 
   def test_direct_transport_failure_reconciles_an_exact_merge
@@ -236,6 +269,16 @@ class PrMergeSubmitTest < Minitest::Test
     payload = JSON.parse(result.fetch(:stdout))
     assert_unknown_reconciled_merge(payload, attempted_submission: "direct")
     assert_includes log, "mergePullRequest"
+  end
+
+  def test_reconciliation_requires_a_full_hex_merge_commit_oid
+    ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
+      result, log = run_cli(mode: "direct_transport_merged", merge_commit_oid:)
+
+      assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
+      assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
+      assert_includes log, "mergePullRequest", merge_commit_oid
+    end
   end
 
   def test_ambiguous_direct_response_reconciles_merged_pr_after_base_advances
@@ -252,12 +295,24 @@ class PrMergeSubmitTest < Minitest::Test
     {
       "direct_transport_open_base_advanced" => "mergePullRequest",
       "enqueue_transport_queued_base_advanced" => "enqueuePullRequest",
+      "queue_post_queued_base_advanced" => "enqueuePullRequest",
       "direct_nonterminal_base_advanced" => "mergePullRequest"
     }.each do |mode, attempted_mutation|
       result, log = run_cli(mode:)
 
       assert_equal 2, result.fetch(:status).exitstatus, mode
       assert_includes log, attempted_mutation, mode
+    end
+  end
+
+  def test_initial_open_or_queued_base_advancement_stops_before_any_mutation
+    %w[initial_open_base_advanced already_queued_base_advanced].each do |mode|
+      result, log = run_cli(mode:)
+
+      refute result.fetch(:status).success?, mode
+      assert_includes result.fetch(:stderr), "receipt base SHA mismatch", mode
+      refute_includes log, "mergePullRequest", mode
+      refute_includes log, "enqueuePullRequest", mode
     end
   end
 
@@ -341,6 +396,22 @@ class PrMergeSubmitTest < Minitest::Test
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
+  end
+
+  def test_fast_post_enqueue_merge_accepts_an_advanced_base_oid_before_old_base_guard
+    result, = run_cli(mode: "queue_fast_merged_base_advanced")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
+  end
+
+  def test_fast_post_enqueue_merge_requires_a_full_hex_merge_commit_oid
+    ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
+      result, = run_cli(mode: "queue_fast_merged", merge_commit_oid:)
+
+      assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
+      assert_includes result.fetch(:stderr), "live membership could not be confirmed", merge_commit_oid
+    end
   end
 
   def test_initial_metadata_timeout_is_bounded
@@ -650,7 +721,7 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "merge_queue", payload.fetch("submission")
     assert_equal "repository_configured", payload.fetch("queue_method")
     assert_equal "MERGED", payload.fetch("post_submission_state")
-    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
     refute payload.key?("reconciled_after_failure")
     refute payload.key?("method")
     assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
@@ -660,7 +731,7 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "already_merged", payload.fetch("submission")
     assert_equal "UNKNOWN", payload.fetch("merge_provenance")
     assert_equal attempted_submission, payload.fetch("attempted_submission")
-    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
     assert_equal true, payload.fetch("reconciled_after_failure")
     refute payload.key?("method")
     refute payload.key?("queue_method")
@@ -723,12 +794,13 @@ class PrMergeSubmitTest < Minitest::Test
     body: nil,
     include_merge_assurance_receipt: true,
     receipt_mode: :valid,
-    after_stub_warmup: nil
+    after_stub_warmup: nil,
+    merge_commit_oid: MERGE_COMMIT_SHA
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
-      File.write(gh_path, fake_gh(mode:, head:, base:, url_host:, repo:))
+      File.write(gh_path, fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid:))
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path) if mode.include?("timeout")
       after_stub_warmup&.call
@@ -996,7 +1068,7 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def fake_gh(mode:, head:, base:, url_host:, repo:)
+  def fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid: MERGE_COMMIT_SHA)
     semantic_issue = semantic_issue_payload(
       host: HOST, repo: "owner/repo", pr_number: 42, head:
     )
@@ -1033,7 +1105,7 @@ class PrMergeSubmitTest < Minitest::Test
             "merged" => true,
             "mergedAt" => "2026-07-20T15:00:00Z",
             "url" => "https://#{url_host}/#{repo}/pull/42",
-            "mergeCommit" => { "oid" => "COMMIT_1" }
+            "mergeCommit" => { "oid" => merge_commit_oid }
           }
         }
       }
@@ -1070,22 +1142,24 @@ class PrMergeSubmitTest < Minitest::Test
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
         queue_enabled = case current_mode
-                        when "queue", "queue_fast_merged", "queue_missing_entry", "already_queued",
+                        when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
+                             "queue_missing_entry", "already_queued", "already_queued_base_advanced",
                              "enqueue_transport_queued", "enqueue_transport_merged",
                              "enqueue_graphql_error", "enqueue_graphql_error_merged",
                              "enqueue_timeout_unknown", "enqueue_timeout_merged",
                              "enqueue_transport_base_race", "enqueue_graphql_error_base_race",
-                             "enqueue_transport_queued_base_advanced",
+                             "enqueue_transport_queued_base_advanced", "queue_post_queued_base_advanced",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
                         when "queue_race", "queue_race_merged", "queue_race_mixed_errors" then query_count.positive?
                         else false
                         end
         queued = case current_mode
-                 when "already_queued" then true
+                 when "already_queued", "already_queued_base_advanced" then true
                  when "queue", "enqueue_transport_queued", "enqueue_non_object_response_queued",
                       "enqueue_transport_queued_base_advanced",
-                      "queue_entry_replaced_same_target" then query_count.positive?
+                      "queue_entry_replaced_same_target",
+                      "queue_post_queued_base_advanced" then query_count.positive?
                  when "queue_race" then query_count > 1
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
@@ -1096,9 +1170,11 @@ class PrMergeSubmitTest < Minitest::Test
           "direct_incomplete_response_merged", "direct_non_object_response_merged",
           "direct_timeout_merged", "direct_transport_merged_base_advanced",
           "enqueue_transport_merged", "enqueue_graphql_error_merged",
-          "enqueue_timeout_merged", "queue_fast_merged", "queue_race_merged"
+          "enqueue_timeout_merged", "queue_fast_merged", "queue_fast_merged_base_advanced",
+          "queue_race_merged"
         ].include?(current_mode)
-        merged = current_mode == "already_merged" || (merged_after_mutation && query_count.positive?)
+        merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
+                 (merged_after_mutation && query_count.positive?)
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
@@ -1109,10 +1185,18 @@ class PrMergeSubmitTest < Minitest::Test
                       #{base.inspect}
                     end
         base_advanced_modes = %w[
+          already_merged_base_advanced
+          initial_open_base_advanced already_queued_base_advanced
+          queue_fast_merged_base_advanced
+          queue_post_queued_base_advanced
           direct_transport_merged_base_advanced direct_transport_open_base_advanced
           enqueue_transport_queued_base_advanced direct_nonterminal_base_advanced
         ]
-        live_base_oid = if base_advanced_modes.include?(current_mode) && query_count.positive?
+        initially_advanced_modes = %w[
+          already_merged_base_advanced initial_open_base_advanced already_queued_base_advanced
+        ]
+        live_base_oid = if base_advanced_modes.include?(current_mode) &&
+                           (initially_advanced_modes.include?(current_mode) || query_count.positive?)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
                           #{('b' * 40).inspect}
@@ -1138,7 +1222,7 @@ class PrMergeSubmitTest < Minitest::Test
                 "url" => "https://#{url_host}/#{repo}/pull/42",
                 "merged" => merged,
                 "mergedAt" => merged ? "2026-07-20T15:00:00Z" : nil,
-                "mergeCommit" => merged ? { "oid" => "COMMIT_1" } : nil,
+                "mergeCommit" => merged ? { "oid" => #{merge_commit_oid.inspect} } : nil,
                 "isInMergeQueue" => queued,
                 "mergeQueueEntry" => queue_entry,
                 "isMergeQueueEnabled" => queue_enabled
