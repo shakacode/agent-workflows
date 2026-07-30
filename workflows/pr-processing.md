@@ -481,6 +481,13 @@ comments, docs, typo fixes, formatting-only changes, and non-semantic actionlint
 cleanup as exempt only when the PR evidence states that classification and local
 validation. This is a standing exception to the default follow-up tracking
 policy because some GitHub Actions behavior can only be proven from `main`.
+Before `merge-assurance`, update that issue body with exactly one line for each
+authenticated binding: `semantic-tracker-source-pr`, `semantic-tracker-head-sha`,
+`semantic-tracker-diff-identity`, and `semantic-tracker-operation-digest`. The
+digest is `sha256:` plus SHA-256 of canonical recursively key-sorted JSON over
+the tracker operation's `changed_files`, `cleanup_instructions`, `exercise`,
+`expected_evidence`, optional `owner`, `source_pr`, `tracker`, and `type`;
+create the issue first so its final tracker URL participates in that digest.
 
 When adding or broadening a repo-wide lint, CI, release, review, or merge gate,
 include at least one stale-base race control in the PR evidence. This is a
