@@ -810,12 +810,15 @@ module PrCiReadiness
         raise Error, "Actions run pull request head was not an object"
       end
 
-      %w[sha ref].each do |field|
-        value = head[field]
-        unless value.is_a?(String) && !value.strip.empty?
-          raise Error, "Actions run pull request head #{field} was not a nonblank string"
-        end
+      unless full_sha?(head["sha"])
+        raise Error, "Actions run pull request head SHA was not a full hexadecimal commit SHA"
       end
+
+      head_ref = head["ref"]
+      unless head_ref.is_a?(String) && !head_ref.strip.empty?
+        raise Error, "Actions run pull request head ref was not a nonblank string"
+      end
+
       head_repo = head["repo"]
       unless head_repo.is_a?(Hash)
         raise Error, "Actions run pull request head repo was not an object"
@@ -853,6 +856,10 @@ module PrCiReadiness
         targets_pr = true
       end
       targets_pr
+    end
+
+    def full_sha?(value)
+      value.is_a?(String) && value.match?(/\A[0-9a-f]{40}\z/i)
     end
 
     def ensure_exact_head!(row, head_sha, context, sha_key: "head_sha")
@@ -1108,7 +1115,7 @@ module PrCiReadiness
       raise Error, "target PR head was not an object" unless head.is_a?(Hash)
 
       head_sha = head["sha"]
-      unless head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-f]{40,64}\z/i)
+      unless full_sha?(head_sha)
         raise Error, "target PR head SHA was not a full hexadecimal commit SHA"
       end
 

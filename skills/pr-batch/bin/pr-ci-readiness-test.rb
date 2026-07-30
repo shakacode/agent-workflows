@@ -1090,6 +1090,54 @@ class PrCiReadinessCliTest < Minitest::Test
     )
   end
 
+  def test_exact_head_actions_accept_uppercase_full_sha_for_consistent_target
+    head = "A" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [target_association],
+      "status" => "completed", "conclusion" => "success"
+    }
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: target_identity,
+      exact_actions: [run],
+      runs: {
+        "100" => {
+          run:,
+          jobs: [{
+            "id" => 1000, "name" => "unit", "status" => "completed",
+            "conclusion" => "success"
+          }]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "READY", data.dig("scopes", "github_actions", "state")
+      assert_equal(
+        [100, 1000],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      )
+    end
+  end
+
   def test_exact_head_actions_scope_empty_associations_to_target_branch_and_repository
     head = "a" * 40
     target_identity = {
@@ -1225,10 +1273,16 @@ class PrCiReadinessCliTest < Minitest::Test
       "blank head SHA" => target_identity.merge(
         "head" => target_identity.fetch("head").merge("sha" => "  ")
       ),
-      "short head SHA" => target_identity.merge(
-        "head" => target_identity.fetch("head").merge("sha" => "short")
+      "39-character head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "a" * 39)
       ),
-      "non-hex head SHA" => target_identity.merge(
+      "41-character head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "a" * 41)
+      ),
+      "64-character head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "a" * 64)
+      ),
+      "40-character non-hex head SHA" => target_identity.merge(
         "head" => target_identity.fetch("head").merge("sha" => "g" * 40)
       ),
       "blank head ref" => target_identity.merge(
@@ -1377,6 +1431,71 @@ class PrCiReadinessCliTest < Minitest::Test
       "non-integer head repo id" => changed_repo.call("id" => "9002"),
       "non-positive head repo id" => changed_repo.call("id" => 0)
     }
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "status" => "completed", "conclusion" => "success"
+    }
+
+    accepted_invalid_associations = invalid_associations.filter_map do |label, association|
+      run = valid_run.merge("pull_requests" => [association])
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: [run],
+        runs: { "200" => { run:, jobs: [] } }
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_invalid_associations
+  end
+
+  def test_exact_head_actions_fail_closed_for_malformed_association_head_sha_before_target_filtering
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    other_association = {
+      "id" => 5_002, "number" => 456, "url" => "https://api.example/pulls/456",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    invalid_shas = {
+      "short" => "short",
+      "39-character" => "a" * 39,
+      "41-character" => "a" * 41,
+      "64-character" => "a" * 64,
+      "40-character non-hex" => "g" * 40
+    }
+    invalid_associations = invalid_shas.flat_map do |sha_label, sha|
+      [
+        ["target claim with #{sha_label} SHA", target_association],
+        ["proven-other PR with #{sha_label} SHA", other_association]
+      ].map do |label, association|
+        [
+          label,
+          association.merge("head" => association.fetch("head").merge("sha" => sha))
+        ]
+      end
+    end
     valid_run = {
       "id" => 200, "workflow_id" => 20, "event" => "pull_request",
       "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
