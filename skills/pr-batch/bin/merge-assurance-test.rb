@@ -140,6 +140,74 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_ci_row_representations_must_be_recognized_and_agree
+    invalid_rows = {
+      "bucket-state-contradiction" => {
+        "name" => "lint", "bucket" => "pass", "state" => "failure"
+      },
+      "bucket-status-contradiction" => {
+        "name" => "lint", "bucket" => "pass", "status" => "in_progress"
+      },
+      "bucket-conclusion-contradiction" => {
+        "name" => "lint", "bucket" => "pass",
+        "status" => "completed", "conclusion" => "failure"
+      },
+      "state-status-contradiction" => {
+        "name" => "lint", "state" => "success", "status" => "in_progress"
+      },
+      "state-conclusion-contradiction" => {
+        "name" => "lint", "state" => "success",
+        "status" => "completed", "conclusion" => "failure"
+      },
+      "status-conclusion-contradiction" => {
+        "name" => "lint", "bucket" => "pass",
+        "status" => "in_progress", "conclusion" => "success"
+      },
+      "unrecognized-bucket" => {
+        "name" => "lint", "bucket" => "mystery", "state" => "success"
+      },
+      "unrecognized-state" => {
+        "name" => "lint", "bucket" => "pass", "state" => "mystery"
+      },
+      "unrecognized-status" => {
+        "name" => "lint", "bucket" => "pass", "status" => "mystery"
+      },
+      "unrecognized-conclusion" => {
+        "name" => "lint", "bucket" => "pass",
+        "status" => "completed", "conclusion" => "mystery"
+      }
+    }
+
+    eligible_invalid_rows = invalid_rows.filter_map do |label, row|
+      ci_result = ready_ci
+      ci_result.fetch("scopes").fetch("github_actions")["rows"] = [row]
+      result = MergeAssurance.assess(
+        ci_result:,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_invalid_rows
+  end
+
+  def test_ci_row_agreeing_producer_shapes_preserve_pass_fail_and_pending_states
+    cases = {
+      { "bucket" => "pass", "state" => "success" } => "READY",
+      { "bucket" => "fail", "state" => "failure" } => "NOT_READY",
+      { "bucket" => "pending", "state" => "pending" } => "NOT_READY",
+      { "status" => "completed", "conclusion" => "success" } => "READY",
+      { "status" => "completed", "conclusion" => "failure" } => "NOT_READY",
+      { "status" => "in_progress", "conclusion" => nil } => "NOT_READY"
+    }
+
+    states = cases.keys.map { |row| MergeAssurance.ci_evidence_row_state(row) }
+
+    assert_equal cases.values, states
+  end
+
   def test_literal_or_nested_unknown_in_consumed_evidence_blocks
     auto = autonomous_result("autonomous-merge-eligible")
     auto["helper_trust"]["manifest"]["note"] = "nested UNKNOWN evidence"

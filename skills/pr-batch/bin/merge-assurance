@@ -24,6 +24,17 @@ module MergeAssurance
     required_status_check_rollup github_actions dependabot other
   ].freeze
   SCOPE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
+  CI_BUCKET_READY_VALUES = %w[pass skipping].freeze
+  CI_BUCKET_NOT_READY_VALUES = %w[cancel fail pending].freeze
+  CI_STATE_READY_VALUES = %w[success].freeze
+  CI_STATE_NOT_READY_VALUES = %w[error failure pending].freeze
+  CI_STATUS_NOT_READY_VALUES = %w[
+    in_progress pending queued requested waiting
+  ].freeze
+  CI_CONCLUSION_READY_VALUES = %w[neutral skipped success].freeze
+  CI_CONCLUSION_NOT_READY_VALUES = %w[
+    action_required cancelled failure stale startup_failure timed_out
+  ].freeze
   AUTHORITIES = %w[auto_merge_when_gates_pass ask explicit_approval none].freeze
   AUTONOMOUS_VERDICTS = %w[
     autonomous-merge-eligible human-approval-required human-approved-for-current-head
@@ -246,23 +257,68 @@ module MergeAssurance
   def ci_evidence_row_state(row)
     return "UNKNOWN" unless row.is_a?(Hash)
 
-    bucket = row["bucket"].to_s
-    return "READY" if %w[pass skipping].include?(bucket)
-    return "NOT_READY" if %w[cancel fail pending].include?(bucket)
+    outcomes = []
+    bucket_presence, bucket = ci_row_representation(row["bucket"], downcase: false)
+    return "UNKNOWN" unless append_ci_outcome(
+      outcomes, bucket_presence, bucket,
+      ready_values: CI_BUCKET_READY_VALUES,
+      not_ready_values: CI_BUCKET_NOT_READY_VALUES
+    )
 
-    state = row["state"].to_s.downcase
-    return "READY" if state == "success"
-    return "NOT_READY" if %w[error failure pending].include?(state)
+    state_presence, state = ci_row_representation(row["state"])
+    return "UNKNOWN" unless append_ci_outcome(
+      outcomes, state_presence, state,
+      ready_values: CI_STATE_READY_VALUES,
+      not_ready_values: CI_STATE_NOT_READY_VALUES
+    )
 
-    status = row["status"].to_s.downcase
-    return "NOT_READY" unless status.empty? || status == "completed"
-    return "UNKNOWN" if status.empty?
+    status_presence, status = ci_row_representation(row["status"])
+    conclusion_presence, conclusion = ci_row_representation(row["conclusion"])
+    case status_presence
+    when "absent"
+      return "UNKNOWN" unless conclusion_presence == "absent"
+    when "present"
+      if status == "completed"
+        return "UNKNOWN" unless conclusion_presence == "present"
+      elsif CI_STATUS_NOT_READY_VALUES.include?(status)
+        return "UNKNOWN" unless conclusion_presence == "absent"
 
-    conclusion = row["conclusion"].to_s.downcase
-    return "READY" if %w[success neutral skipped].include?(conclusion)
-    return "NOT_READY" unless conclusion.empty?
+        outcomes << "NOT_READY"
+      else
+        return "UNKNOWN"
+      end
+    else
+      return "UNKNOWN"
+    end
+    return "UNKNOWN" unless append_ci_outcome(
+      outcomes, conclusion_presence, conclusion,
+      ready_values: CI_CONCLUSION_READY_VALUES,
+      not_ready_values: CI_CONCLUSION_NOT_READY_VALUES
+    )
+    return "UNKNOWN" if outcomes.empty? || outcomes.uniq.length != 1
 
-    "UNKNOWN"
+    outcomes.first
+  end
+
+  def ci_row_representation(value, downcase: true)
+    return ["absent", nil] if value.nil? || value == ""
+    return ["unrecognized", nil] unless value.is_a?(String)
+
+    ["present", downcase ? value.downcase : value]
+  end
+
+  def append_ci_outcome(outcomes, presence, value, ready_values:, not_ready_values:)
+    return true if presence == "absent"
+    return false unless presence == "present"
+
+    if ready_values.include?(value)
+      outcomes << "READY"
+    elsif not_ready_values.include?(value)
+      outcomes << "NOT_READY"
+    else
+      return false
+    end
+    true
   end
 
   def validate_autonomous(result, context, failures)
