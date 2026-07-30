@@ -97,6 +97,49 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes result.fetch("failures"), "ci_result host binding mismatch"
   end
 
+  def test_ci_scope_declared_ready_or_not_applicable_must_match_recomputed_rows
+    cases = {
+      "failed" => [
+        "READY",
+        { "name" => "lint", "status" => "completed", "conclusion" => "failure" },
+        "NOT_READY"
+      ],
+      "pending" => [
+        "NOT_APPLICABLE",
+        { "name" => "lint", "status" => "queued", "conclusion" => nil },
+        "NOT_READY"
+      ],
+      "cancelled" => ["READY", { "name" => "lint", "bucket" => "cancel" }, "NOT_READY"],
+      "unknown" => [
+        "NOT_APPLICABLE",
+        { "name" => "lint", "status" => "completed", "conclusion" => nil },
+        "UNKNOWN"
+      ],
+      "malformed" => ["READY", nil, "UNKNOWN"]
+    }
+
+    cases.each do |label, (declared, row, recomputed)|
+      ci_result = ready_ci
+      scope = ci_result.fetch("scopes").fetch("github_actions")
+      scope["state"] = declared
+      scope["rows"] = [row]
+      result = MergeAssurance.assess(
+        ci_result:,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+
+      refute result.fetch("eligible"), label
+      refute result.key?("evidence_digest"), label
+      assert_includes(
+        result.fetch("failures"),
+        "ci_result scope github_actions declared #{declared} but recomputed #{recomputed}",
+        label
+      )
+    end
+  end
+
   def test_literal_or_nested_unknown_in_consumed_evidence_blocks
     auto = autonomous_result("autonomous-merge-eligible")
     auto["helper_trust"]["manifest"]["note"] = "nested UNKNOWN evidence"
@@ -161,6 +204,21 @@ class MergeAssuranceTest < Minitest::Test
     end
 
     assert_equal [true, true, true], verdicts
+  end
+
+  def test_autonomous_result_requires_exactly_empty_evidence_failures
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["evidence_failures"] = ["live force-push evidence is incomplete"]
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    refute result.key?("evidence_digest")
+    assert_includes result.fetch("failures"), "autonomous_result evidence failures must be empty"
   end
 
   def test_ask_requires_exact_head_human_decision_and_same_diff_walkthrough

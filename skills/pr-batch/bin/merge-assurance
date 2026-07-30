@@ -163,9 +163,52 @@ module MergeAssurance
       failures << "ci_result scope #{name} is not ready" unless %w[READY NOT_APPLICABLE].include?(scope["state"])
       failures << "ci_result scope #{name} head mismatch" unless scope["head_sha"] == context["head_sha"]
       failures << "ci_result scope #{name} rows are invalid" unless scope["rows"].is_a?(Array)
+      recomputed_state = recompute_ci_scope_state(scope)
+      unless scope["state"] == recomputed_state
+        failures << "ci_result scope #{name} declared #{scope['state']} but recomputed #{recomputed_state}"
+      end
       validate_timestamp(scope["checked_at"], now, "ci_result scope #{name}", failures)
     end
     validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
+  end
+
+  def recompute_ci_scope_state(scope)
+    rows = scope["rows"]
+    normalized_rows = rows.is_a?(Array) ? rows : []
+    row_states = normalized_rows.map { |row| ci_evidence_row_state(row) }
+    if scope["complete"] != true
+      "UNKNOWN"
+    elsif !rows.is_a?(Array) || row_states.include?("UNKNOWN")
+      "UNKNOWN"
+    elsif normalized_rows.empty?
+      "NOT_APPLICABLE"
+    elsif row_states.include?("NOT_READY")
+      "NOT_READY"
+    else
+      "READY"
+    end
+  end
+
+  def ci_evidence_row_state(row)
+    return "UNKNOWN" unless row.is_a?(Hash)
+
+    bucket = row["bucket"].to_s
+    return "READY" if %w[pass skipping].include?(bucket)
+    return "NOT_READY" if %w[cancel fail pending].include?(bucket)
+
+    state = row["state"].to_s.downcase
+    return "READY" if state == "success"
+    return "NOT_READY" if %w[error failure pending].include?(state)
+
+    status = row["status"].to_s.downcase
+    return "NOT_READY" unless status.empty? || status == "completed"
+    return "UNKNOWN" if status.empty?
+
+    conclusion = row["conclusion"].to_s.downcase
+    return "READY" if %w[success neutral skipped].include?(conclusion)
+    return "NOT_READY" unless conclusion.empty?
+
+    "UNKNOWN"
   end
 
   def validate_autonomous(result, context, failures)
@@ -183,8 +226,11 @@ module MergeAssurance
       valid_policy_provenance?(result["policy_provenance"], context.dig("base", "sha"))
     failures << "autonomous_result helper provenance binding mismatch" unless
       valid_helper_provenance?(result["helper_provenance"], context.dig("base", "sha"))
-    failures << "autonomous_result evidence failures are unavailable" unless
-      result["evidence_failures"].is_a?(Array)
+    if !result["evidence_failures"].is_a?(Array)
+      failures << "autonomous_result evidence failures are unavailable"
+    elsif !result["evidence_failures"].empty?
+      failures << "autonomous_result evidence failures must be empty"
+    end
   end
 
   def valid_policy_provenance?(provenance, base_sha)
