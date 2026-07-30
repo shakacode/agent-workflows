@@ -9,8 +9,8 @@
 
 require "digest"
 require "json"
-require "open3"
 require "optparse"
+require "tempfile"
 require "time"
 
 module MergeAssurance
@@ -30,6 +30,9 @@ module MergeAssurance
   ].freeze
   MAX_EVIDENCE_AGE_SECONDS = 300
   MAX_FUTURE_SKEW_SECONDS = 30
+  TRACKER_GH_TIMEOUT_SECONDS = 60
+  TRACKER_GH_TERMINATION_GRACE_SECONDS = 0.25
+  TRACKER_GH_POLL_SECONDS = 0.01
 
   module_function
 
@@ -142,6 +145,7 @@ module MergeAssurance
     failures << "invalid pr-ci-readiness contract or version" unless
       ci_result["contract"] == "pr-ci-readiness" && ci_result["version"] == 2
     failures << "ci_result is not READY" unless ci_result["verdict"] == "READY"
+    failures << "ci_result host binding mismatch" unless ci_result.dig("context", "host") == context["host"]
     failures << "ci_result repo binding mismatch" unless ci_result["repo"] == context["repo"]
     failures << "ci_result PR binding mismatch" unless ci_result["pr"] == context["pr"]
     failures << "ci_result head binding mismatch" unless ci_result["head_sha"] == context["head_sha"]
@@ -175,12 +179,29 @@ module MergeAssurance
            result.dig("helper_trust", "manifest").is_a?(Hash)
       failures << "autonomous_result helper trust is unavailable"
     end
-    failures << "autonomous_result policy provenance is unavailable" unless
-      result["policy_provenance"].is_a?(String) && !result["policy_provenance"].empty?
-    failures << "autonomous_result helper provenance is unavailable" unless
-      result["helper_provenance"].is_a?(String) && !result["helper_provenance"].empty?
+    failures << "autonomous_result policy provenance binding mismatch" unless
+      valid_policy_provenance?(result["policy_provenance"], context.dig("base", "sha"))
+    failures << "autonomous_result helper provenance binding mismatch" unless
+      valid_helper_provenance?(result["helper_provenance"], context.dig("base", "sha"))
     failures << "autonomous_result evidence failures are unavailable" unless
       result["evidence_failures"].is_a?(Array)
+  end
+
+  def valid_policy_provenance?(provenance, base_sha)
+    return false unless full_sha?(base_sha)
+
+    escaped_base = Regexp.escape(base_sha)
+    provenance.to_s.match?(
+      %r{\Agit:#{escaped_base}(?:
+        :\.agents/agent-workflow\.yml@[0-9a-f]{40,64}|
+        :\.agents/agent-workflow\.yml\(absent;\ portable-defaults\)
+      )?\z}x
+    )
+  end
+
+  def valid_helper_provenance?(provenance, base_sha)
+    provenance == "trusted-base:#{base_sha}" ||
+      provenance.to_s.match?(/\Averified-installed-pack:[0-9a-f]{64}\z/)
   end
 
   def validate_authority(context, autonomous_result, now, failures)
@@ -206,31 +227,27 @@ module MergeAssurance
     end
   end
 
-  def valid_human_merge_decision?(decision, context, _now)
+  def valid_human_merge_decision?(decision, context, now)
     return false unless decision.is_a?(Hash)
     return false unless decision.keys.sort == %w[
-      contract decided_at decision diff_identity head_sha merge_authority provenance version
+      base_ref contract decided_at decision diff_identity head_sha host merge_authority
+      pr provenance repo version
     ].sort
     return false unless decision["contract"] == "human-merge-decision" && decision["version"] == 1
     return false unless decision["decision"] == "approved" && decision["merge_authority"] == true
     return false unless %w[direct-user human-maintainer].include?(decision["provenance"])
-    return false unless decision["head_sha"] == context["head_sha"] &&
-                        decision["diff_identity"] == context["diff_identity"]
+    return false unless valid_target_bindings?(decision, context)
 
-    Time.iso8601(decision["decided_at"].to_s)
-    true
-  rescue ArgumentError
-    false
+    valid_human_timestamp?(decision["decided_at"], now)
   end
 
   def valid_walkthrough?(walkthrough, context)
     return false unless walkthrough.is_a?(Hash)
     return false unless walkthrough.keys.sort == %w[
-      contract diff_identity disposition head_sha provenance version
+      base_ref contract diff_identity disposition head_sha host pr provenance repo version
     ].sort
     return false unless walkthrough["contract"] == "pr-walkthrough" && walkthrough["version"] == 1
-    return false unless walkthrough["head_sha"] == context["head_sha"] &&
-                        walkthrough["diff_identity"] == context["diff_identity"]
+    return false unless valid_target_bindings?(walkthrough, context)
 
     case walkthrough["disposition"]
     when "completed"
@@ -240,6 +257,15 @@ module MergeAssurance
     else
       false
     end
+  end
+
+  def valid_target_bindings?(receipt, context)
+    receipt["host"] == context["host"] &&
+      receipt["repo"] == context["repo"] &&
+      receipt["pr"] == context["pr"] &&
+      receipt["base_ref"] == context.dig("base", "ref") &&
+      receipt["head_sha"] == context["head_sha"] &&
+      receipt["diff_identity"] == context["diff_identity"]
   end
 
   def validate_operations(context, now, failures)
@@ -402,19 +428,109 @@ module MergeAssurance
   end
 
   def read_authenticated_issue(host:, repo:, issue:)
-    stdout, _stderr, status = Open3.capture3(
-      "gh",
-      "api",
-      "--hostname",
-      host,
-      "repos/#{repo}/issues/#{issue}"
+    stdout_file = Tempfile.new("merge-assurance-tracker-stdout")
+    stderr_file = Tempfile.new("merge-assurance-tracker-stderr")
+    pid = Process.spawn(
+      "gh", "api", "--hostname", host, "repos/#{repo}/issues/#{issue}",
+      out: stdout_file.path, err: stderr_file.path, pgroup: true
     )
-    return unless status.success?
+    deadline = monotonic_time + tracker_gh_timeout_seconds
+    status = nil
+    timed_out = false
+    cleanup_complete = true
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      if waited
+        status = waited[1]
+        break
+      end
+      if monotonic_time >= deadline
+        timed_out = true
+        status, cleanup_complete = terminate_tracker_process_group(pid)
+        break
+      end
 
-    parsed = JSON.parse(stdout)
+      sleep TRACKER_GH_POLL_SECONDS
+    end
+    unless timed_out
+      group_deadline = monotonic_time + TRACKER_GH_TERMINATION_GRACE_SECONDS
+      unless wait_for_tracker_process_group_exit(pid, group_deadline)
+        _ignored_status, cleanup_complete = terminate_tracker_process_group(pid)
+        status = nil
+      end
+    end
+    return unless cleanup_complete && !timed_out && status&.success?
+
+    stdout_file.rewind
+    parsed = JSON.parse(stdout_file.read)
     parsed if parsed.is_a?(Hash)
-  rescue JSON::ParserError, SystemCallError
+  rescue Error, JSON::ParserError, SystemCallError
     nil
+  ensure
+    terminate_tracker_process_group(pid) if pid && tracker_process_group_alive?(pid)
+    stdout_file&.close!
+    stderr_file&.close!
+  end
+
+  def tracker_gh_timeout_seconds
+    value = Float(ENV.fetch("MERGE_ASSURANCE_GH_TIMEOUT_SECONDS", TRACKER_GH_TIMEOUT_SECONDS.to_s))
+    raise Error, "tracker gh timeout must be a positive finite number" unless value.positive? && value.finite?
+
+    value
+  rescue ArgumentError
+    raise Error, "tracker gh timeout must be a positive finite number"
+  end
+
+  def terminate_tracker_process_group(pid)
+    signal_tracker_process_group("TERM", pid)
+    deadline = monotonic_time + TRACKER_GH_TERMINATION_GRACE_SECONDS
+    status = wait_for_tracker_child(pid, deadline)
+    return [status, true] if wait_for_tracker_process_group_exit(pid, deadline)
+
+    signal_tracker_process_group("KILL", pid)
+    deadline = monotonic_time + TRACKER_GH_TERMINATION_GRACE_SECONDS
+    status ||= wait_for_tracker_child(pid, deadline)
+    [status, wait_for_tracker_process_group_exit(pid, deadline)]
+  end
+
+  def signal_tracker_process_group(signal, pid)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def wait_for_tracker_child(pid, deadline)
+    while monotonic_time < deadline
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited[1] if waited
+
+      sleep TRACKER_GH_POLL_SECONDS
+    end
+    nil
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def tracker_process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_tracker_process_group_exit(pid, deadline)
+    while monotonic_time < deadline
+      return true unless tracker_process_group_alive?(pid)
+
+      sleep TRACKER_GH_POLL_SECONDS
+    end
+    !tracker_process_group_alive?(pid)
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 
   def validate_authenticated_issue(issue, tracker:, issue_number:, context:, now:, failures:)
@@ -528,14 +644,13 @@ module MergeAssurance
                         approval["head_sha"] == context["head_sha"] &&
                         approval["diff_identity"] == context["diff_identity"]
 
-    validate_approval_timestamp(approval["approved_at"], now)
-    true
-  rescue ArgumentError
-    false
+    valid_human_timestamp?(approval["approved_at"], now)
   end
 
-  def validate_approval_timestamp(raw, _now)
-    Time.iso8601(raw.to_s)
+  def valid_human_timestamp?(raw, now)
+    Time.iso8601(raw.to_s) - now <= MAX_FUTURE_SKEW_SECONDS
+  rescue ArgumentError
+    false
   end
 
   def validate_timestamp(raw, now, label, failures)

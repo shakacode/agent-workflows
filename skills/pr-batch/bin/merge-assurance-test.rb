@@ -28,6 +28,16 @@ class MergeAssuranceTest < Minitest::Test
     File.write(@fake_gh, <<~RUBY)
       #!#{RbConfig.ruby}
       File.open(ENV.fetch("FAKE_GH_CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
+      if ENV["FAKE_GH_HANG"] == "1"
+        child_pid = fork do
+          trap("TERM", "IGNORE")
+          File.write(ENV.fetch("FAKE_GH_CHILD_PID"), Process.pid.to_s)
+          sleep 2
+        end
+        trap("TERM", "IGNORE")
+        sleep 2
+        Process.wait(child_pid)
+      end
       STDOUT.write(ENV.fetch("FAKE_GH_RESPONSE"))
       exit Integer(ENV.fetch("FAKE_GH_EXIT_STATUS"))
     RUBY
@@ -39,6 +49,9 @@ class MergeAssuranceTest < Minitest::Test
     ENV.delete("FAKE_GH_CALLS")
     ENV.delete("FAKE_GH_EXIT_STATUS")
     ENV.delete("FAKE_GH_RESPONSE")
+    ENV.delete("FAKE_GH_HANG")
+    ENV.delete("FAKE_GH_CHILD_PID")
+    ENV.delete("MERGE_ASSURANCE_GH_TIMEOUT_SECONDS")
     FileUtils.remove_entry(@fake_gh_dir)
   end
 
@@ -70,6 +83,20 @@ class MergeAssuranceTest < Minitest::Test
     assert MergeAssurance.valid_evidence_digest?(result)
   end
 
+  def test_ci_evidence_host_must_match_merge_context
+    ci_result = ready_ci
+    ci_result["context"]["host"] = "github.example"
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci_result host binding mismatch"
+  end
+
   def test_literal_or_nested_unknown_in_consumed_evidence_blocks
     auto = autonomous_result("autonomous-merge-eligible")
     auto["helper_trust"]["manifest"]["note"] = "nested UNKNOWN evidence"
@@ -85,6 +112,55 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal "BLOCKED", result.fetch("verdict")
     assert_includes result.fetch("failures"), "autonomous_result contains UNKNOWN"
     refute result.key?("evidence_digest")
+  end
+
+  def test_autonomous_provenance_must_bind_to_the_exact_base
+    mutations = {
+      "policy-base" => ["policy_provenance", "git:#{'d' * 40}"],
+      "policy-suffix" => ["policy_provenance", "git:#{BASE_SHA}:unverified-policy"],
+      "helper-base" => ["helper_provenance", "trusted-base:#{'d' * 40}"],
+      "helper-kind" => ["helper_provenance", "caller-asserted:#{BASE_SHA}"]
+    }
+    eligible_mutations = mutations.filter_map do |name, (field, value)|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous[field] = value
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      name if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mutations
+  end
+
+  def test_autonomous_provenance_accepts_only_documented_bound_forms
+    accepted = [
+      {
+        "policy_provenance" =>
+          "git:#{BASE_SHA}:.agents/agent-workflow.yml@#{'d' * 40}"
+      },
+      {
+        "policy_provenance" =>
+          "git:#{BASE_SHA}:.agents/agent-workflow.yml(absent; portable-defaults)"
+      },
+      {
+        "helper_provenance" => "verified-installed-pack:#{'d' * 64}"
+      }
+    ]
+    verdicts = accepted.map do |fields|
+      autonomous = autonomous_result("autonomous-merge-eligible").merge(fields)
+      MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      ).fetch("eligible")
+    end
+
+    assert_equal [true, true, true], verdicts
   end
 
   def test_ask_requires_exact_head_human_decision_and_same_diff_walkthrough
@@ -109,6 +185,76 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes missing.fetch("failures"), "ask authority requires a proven exact-current-head human merge decision"
     assert_includes missing.fetch("failures"), "ask authority requires a same-diff walkthrough or explicit user skip"
     assert_equal true, eligible.fetch("eligible")
+  end
+
+  def test_human_decision_and_walkthrough_require_exact_target_bindings
+    binding_keys = %w[host repo pr base_ref]
+    unbound_decision = human_merge_decision.reject { |key, _value| binding_keys.include?(key) }
+    unbound_walkthrough = walkthrough("completed", "pr-walkthrough").reject do |key, _value|
+      binding_keys.include?(key)
+    end
+    decision_result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("human-approval-required"),
+      context: context("explicit_approval", human_merge_decision: unbound_decision),
+      now: NOW
+    )
+    walkthrough_result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("human-approval-required"),
+      context: context(
+        "ask",
+        human_merge_decision: human_merge_decision,
+        walkthrough: unbound_walkthrough
+      ),
+      now: NOW
+    )
+
+    assert_equal [false, false], [
+      decision_result.fetch("eligible"),
+      walkthrough_result.fetch("eligible")
+    ]
+  end
+
+  def test_human_receipt_target_bindings_fail_closed_on_every_invalid_shape
+    mutations = {
+      "missing-host" => ->(receipt) { receipt.delete("host") },
+      "unknown-repo" => ->(receipt) { receipt["repo"] = "UNKNOWN" },
+      "malformed-pr" => ->(receipt) { receipt["pr"] = "42" },
+      "duplicate-host" => ->(receipt) { receipt["host_copy"] = receipt["host"] },
+      "conflicting-host" => ->(receipt) { receipt["host"] = "github.example" },
+      "conflicting-repo" => ->(receipt) { receipt["repo"] = "other/repo" },
+      "conflicting-pr" => ->(receipt) { receipt["pr"] = 43 },
+      "conflicting-base-ref" => ->(receipt) { receipt["base_ref"] = "release" }
+    }
+    eligible_mutations = mutations.keys.flat_map do |name|
+      decision = human_merge_decision
+      mutations.fetch(name).call(decision)
+      walkthrough_receipt = walkthrough("completed", "pr-walkthrough")
+      mutations.fetch(name).call(walkthrough_receipt)
+      decision_result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("human-approval-required"),
+        context: context("explicit_approval", human_merge_decision: decision),
+        now: NOW
+      )
+      walkthrough_result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("human-approval-required"),
+        context: context(
+          "ask",
+          human_merge_decision: human_merge_decision,
+          walkthrough: walkthrough_receipt
+        ),
+        now: NOW
+      )
+      [
+        decision_result.fetch("eligible") ? "#{name}-decision" : nil,
+        walkthrough_result.fetch("eligible") ? "#{name}-walkthrough" : nil
+      ].compact
+    end
+
+    assert_empty eligible_mutations
   end
 
   def test_ordinary_follow_up_requires_human_approval_and_second_bundle_requires_additional_approval
@@ -245,6 +391,31 @@ class MergeAssuranceTest < Minitest::Test
     end
 
     assert_empty eligible_mutations
+  end
+
+  def test_human_decision_and_follow_up_approval_reject_excessive_future_skew
+    verdicts = [30, 30.001].map do |future_seconds|
+      timestamp = (NOW + future_seconds).iso8601(3)
+      decision = human_merge_decision.merge("decided_at" => timestamp)
+      bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
+      bundle.fetch("approval")["approved_at"] = timestamp
+      [
+        MergeAssurance.assess(
+          ci_result: ready_ci,
+          autonomous_result: autonomous_result("human-approval-required"),
+          context: context("explicit_approval", human_merge_decision: decision),
+          now: NOW
+        ).fetch("eligible"),
+        MergeAssurance.assess(
+          ci_result: ready_ci,
+          autonomous_result: autonomous_result("autonomous-merge-eligible"),
+          context: context("auto_merge_when_gates_pass", operations: [bundle]),
+          now: NOW
+        ).fetch("eligible")
+      ]
+    end
+
+    assert_equal [[true, true], [false, false]], verdicts
   end
 
   def test_follow_up_approval_bindings_are_covered_by_receipt_evidence_digest
@@ -493,6 +664,38 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal [false, 0], [result.fetch("eligible"), fake_gh_call_count]
   end
 
+  def test_semantic_tracker_read_timeout_terminates_the_entire_process_group
+    child_pid_path = File.join(@fake_gh_dir, "hung-child.pid")
+    system(@fake_gh, "--version", out: File::NULL, err: File::NULL)
+    reset_fake_gh_calls
+    ENV["FAKE_GH_HANG"] = "1"
+    ENV["FAKE_GH_CHILD_PID"] = child_pid_path
+    ENV["MERGE_ASSURANCE_GH_TIMEOUT_SECONDS"] = "0.5"
+    started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker]
+      ),
+      now: NOW
+    )
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+    child_pid = Integer(File.read(child_pid_path))
+
+    assert_equal false, result.fetch("eligible")
+    assert_operator elapsed, :<, 1.5
+    refute process_alive?(child_pid), "hung gh child #{child_pid} leaked"
+  ensure
+    begin
+      Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+    rescue Errno::ESRCH
+      nil
+    end
+  end
+
   def test_authenticated_tracker_evidence_is_covered_by_receipt_digest
     result = MergeAssurance.assess(
       ci_result: ready_ci,
@@ -607,6 +810,13 @@ class MergeAssuranceTest < Minitest::Test
     File.foreach(@fake_gh_calls).count
   end
 
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  end
+
   def fake_gh_argv
     File.read(@fake_gh_calls).strip.split("\t")
   end
@@ -691,6 +901,7 @@ class MergeAssuranceTest < Minitest::Test
     {
       "contract" => "pr-ci-readiness",
       "version" => 2,
+      "context" => { "host" => "github.com" },
       "repo" => "owner/repo",
       "pr" => 42,
       "head_sha" => HEAD_SHA,
@@ -749,6 +960,10 @@ class MergeAssuranceTest < Minitest::Test
       "contract" => "human-merge-decision",
       "version" => 1,
       "decision" => "approved",
+      "host" => "github.com",
+      "repo" => "owner/repo",
+      "pr" => 42,
+      "base_ref" => "main",
       "head_sha" => HEAD_SHA,
       "diff_identity" => DIFF_IDENTITY,
       "provenance" => "direct-user",
@@ -762,6 +977,10 @@ class MergeAssuranceTest < Minitest::Test
       "contract" => "pr-walkthrough",
       "version" => 1,
       "disposition" => disposition,
+      "host" => "github.com",
+      "repo" => "owner/repo",
+      "pr" => 42,
+      "base_ref" => "main",
       "head_sha" => HEAD_SHA,
       "diff_identity" => DIFF_IDENTITY,
       "provenance" => provenance

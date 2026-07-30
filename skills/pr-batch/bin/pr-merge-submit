@@ -122,6 +122,7 @@ module PrMergeSubmit
             headRefOid
             baseRefName
             baseRefOid
+            state
             merged
             mergedAt
             url
@@ -580,12 +581,18 @@ module PrMergeSubmit
       raise Error, "direct merge submission returned no pull request" unless pull_request.is_a?(Hash)
 
       validate_url_host!(pull_request["url"], options[:host])
+      expected_url = "https://#{options[:host]}/#{options[:repo]}/pull/#{options[:pr]}"
+      raise Error, "direct merge response PR URL mismatch" unless pull_request["url"] == expected_url
+      raise Error, "direct merge response did not report MERGED state" unless pull_request["state"] == "MERGED"
       raise Error, "direct merge did not report a merged PR" unless pull_request["merged"] == true
+      unless pull_request.dig("mergeCommit", "oid").is_a?(String) &&
+             !pull_request.dig("mergeCommit", "oid").empty?
+        raise Error, "direct merge did not report a merge commit"
+      end
       unless pull_request["baseRefName"] == options[:expected_base]
         raise Error, "PR base moved during direct merge: expected #{options[:expected_base]}, found #{pull_request['baseRefName']}"
       end
 
-      validate_receipt_live_bindings!(pull_request, options)
       return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
 
       raise Error, "PR head moved during direct merge: expected #{options[:expected_head]}, found #{pull_request['headRefOid']}"
@@ -793,7 +800,13 @@ module PrMergeSubmit
     end
 
     def exact_merge?(pull_request, options)
-      pull_request["merged"] == true && exact_target?(pull_request, options)
+      pull_request["state"] == "MERGED" &&
+        pull_request["merged"] == true &&
+        pull_request["url"] == "https://#{options[:host]}/#{options[:repo]}/pull/#{options[:pr]}" &&
+        pull_request["baseRefName"] == options[:expected_base] &&
+        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
+        pull_request.dig("mergeCommit", "oid").is_a?(String) &&
+        !pull_request.dig("mergeCommit", "oid").empty?
     end
 
     def exact_queue?(pull_request, options)

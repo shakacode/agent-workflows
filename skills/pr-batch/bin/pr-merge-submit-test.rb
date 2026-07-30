@@ -18,6 +18,7 @@ class PrMergeSubmitTest < Minitest::Test
   NUMERIC_SHA = "1" * 40
   MOVED_SHA = "b" * 40
   HOST = "ghe.example:8443"
+  ADVANCED_BASE_SHA = "d" * 40
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -61,6 +62,16 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "commitHeadline=Fix the thing (#42)"
     refute_includes log, "pr merge"
     refute_includes log, "--auto"
+  end
+
+  def test_direct_merge_accepts_advanced_base_oid_after_exact_merged_response
+    result, log = run_cli(mode: "direct_base_advanced")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal "COMMIT_1", payload.fetch("merge_commit")
+    assert_includes log, "mergePullRequest"
   end
 
   def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
@@ -225,6 +236,29 @@ class PrMergeSubmitTest < Minitest::Test
     payload = JSON.parse(result.fetch(:stdout))
     assert_unknown_reconciled_merge(payload, attempted_submission: "direct")
     assert_includes log, "mergePullRequest"
+  end
+
+  def test_ambiguous_direct_response_reconciles_merged_pr_after_base_advances
+    result, log = run_cli(mode: "direct_transport_merged_base_advanced")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_unknown_reconciled_merge(
+      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
+    )
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_base_advancement_never_qualifies_open_queued_or_nonterminal_states
+    {
+      "direct_transport_open_base_advanced" => "mergePullRequest",
+      "enqueue_transport_queued_base_advanced" => "enqueuePullRequest",
+      "direct_nonterminal_base_advanced" => "mergePullRequest"
+    }.each do |mode, attempted_mutation|
+      result, log = run_cli(mode:)
+
+      assert_equal 2, result.fetch(:status).exitstatus, mode
+      assert_includes log, attempted_mutation, mode
+    end
   end
 
   def test_invalid_direct_response_reconciles_an_exact_merge
@@ -694,7 +728,7 @@ class PrMergeSubmitTest < Minitest::Test
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
-      File.write(gh_path, fake_gh(mode:, head:, base:, url_host:))
+      File.write(gh_path, fake_gh(mode:, head:, base:, url_host:, repo:))
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path) if mode.include?("timeout")
       after_stub_warmup&.call
@@ -721,7 +755,10 @@ class PrMergeSubmitTest < Minitest::Test
     Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
-      File.write(gh_path, fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST))
+      File.write(
+        gh_path,
+        fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST, repo: "owner/repo")
+      )
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path)
       after_stub_warmup&.call
@@ -738,6 +775,8 @@ class PrMergeSubmitTest < Minitest::Test
         )
       ) do |stdin, stdout, stderr, wait_thread|
         stdin.close
+        stdout_reader = Thread.new { stdout.read }
+        stderr_reader = Thread.new { stderr.read }
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
         until File.exist?(log_path) && File.read(log_path).include?(wait_for)
           raise "gh request did not start before interrupt deadline" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
@@ -745,7 +784,11 @@ class PrMergeSubmitTest < Minitest::Test
           sleep 0.01
         end
         Process.kill("INT", wait_thread.pid)
-        { stdout: stdout.read, stderr: stderr.read, status: wait_thread.value }
+        {
+          stdout: stdout_reader.value,
+          stderr: stderr_reader.value,
+          status: wait_thread.value
+        }
       end
       log = File.exist?(log_path) ? File.read(log_path) : ""
       [result, log]
@@ -819,6 +862,7 @@ class PrMergeSubmitTest < Minitest::Test
     ci_result = {
       "contract" => "pr-ci-readiness",
       "version" => 2,
+      "context" => { "host" => host },
       "repo" => repo,
       "pr" => pr_number,
       "head_sha" => head,
@@ -952,7 +996,7 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def fake_gh(mode:, head:, base:, url_host:)
+  def fake_gh(mode:, head:, base:, url_host:, repo:)
     semantic_issue = semantic_issue_payload(
       host: HOST, repo: "owner/repo", pr_number: 42, head:
     )
@@ -970,16 +1014,25 @@ class PrMergeSubmitTest < Minitest::Test
                         }
                       }
                     end
+    direct_base_oid = if %w[
+      direct_base_advanced direct_nonterminal_base_advanced
+    ].include?(mode)
+                        ADVANCED_BASE_SHA
+                      else
+                        "b" * 40
+                      end
+    direct_state = mode == "direct_nonterminal_base_advanced" ? "OPEN" : "MERGED"
     direct_payload = {
       "data" => {
         "mergePullRequest" => {
           "pullRequest" => {
             "headRefOid" => head,
             "baseRefName" => base,
-            "baseRefOid" => "b" * 40,
+            "baseRefOid" => direct_base_oid,
+            "state" => direct_state,
             "merged" => true,
             "mergedAt" => "2026-07-20T15:00:00Z",
-            "url" => "https://#{url_host}/owner/repo/pull/42",
+            "url" => "https://#{url_host}/#{repo}/pull/42",
             "mergeCommit" => { "oid" => "COMMIT_1" }
           }
         }
@@ -1022,6 +1075,7 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_graphql_error", "enqueue_graphql_error_merged",
                              "enqueue_timeout_unknown", "enqueue_timeout_merged",
                              "enqueue_transport_base_race", "enqueue_graphql_error_base_race",
+                             "enqueue_transport_queued_base_advanced",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
                         when "queue_race", "queue_race_merged", "queue_race_mixed_errors" then query_count.positive?
@@ -1030,6 +1084,7 @@ class PrMergeSubmitTest < Minitest::Test
         queued = case current_mode
                  when "already_queued" then true
                  when "queue", "enqueue_transport_queued", "enqueue_non_object_response_queued",
+                      "enqueue_transport_queued_base_advanced",
                       "queue_entry_replaced_same_target" then query_count.positive?
                  when "queue_race" then query_count > 1
                  when "queue_base_race", "enqueue_transport_base_race",
@@ -1039,7 +1094,8 @@ class PrMergeSubmitTest < Minitest::Test
         merged_after_mutation = [
           "direct_transport_merged", "direct_invalid_json_merged", "direct_graphql_error_merged",
           "direct_incomplete_response_merged", "direct_non_object_response_merged",
-          "direct_timeout_merged", "enqueue_transport_merged", "enqueue_graphql_error_merged",
+          "direct_timeout_merged", "direct_transport_merged_base_advanced",
+          "enqueue_transport_merged", "enqueue_graphql_error_merged",
           "enqueue_timeout_merged", "queue_fast_merged", "queue_race_merged"
         ].include?(current_mode)
         merged = current_mode == "already_merged" || (merged_after_mutation && query_count.positive?)
@@ -1052,6 +1108,15 @@ class PrMergeSubmitTest < Minitest::Test
                     else
                       #{base.inspect}
                     end
+        base_advanced_modes = %w[
+          direct_transport_merged_base_advanced direct_transport_open_base_advanced
+          enqueue_transport_queued_base_advanced direct_nonterminal_base_advanced
+        ]
+        live_base_oid = if base_advanced_modes.include?(current_mode) && query_count.positive?
+                          #{ADVANCED_BASE_SHA.inspect}
+                        else
+                          #{('b' * 40).inspect}
+                        end
         queue_entry = if queued
                         {
                           "id" => current_mode.start_with?("queue_entry_replaced") ? "MQE_2" : "MQE_1",
@@ -1067,10 +1132,10 @@ class PrMergeSubmitTest < Minitest::Test
                 "id" => "PR_42",
                 "headRefOid" => #{head.inspect},
                 "baseRefName" => live_base,
-                "baseRefOid" => #{('b' * 40).inspect},
+                "baseRefOid" => live_base_oid,
                 "state" => merged ? "MERGED" : "OPEN",
                 "isDraft" => false,
-                "url" => "https://#{url_host}/owner/repo/pull/42",
+                "url" => "https://#{url_host}/#{repo}/pull/42",
                 "merged" => merged,
                 "mergedAt" => merged ? "2026-07-20T15:00:00Z" : nil,
                 "mergeCommit" => merged ? { "oid" => "COMMIT_1" } : nil,
@@ -1100,7 +1165,8 @@ class PrMergeSubmitTest < Minitest::Test
         when "direct_failure"
           puts JSON.generate("errors" => [{ "message" => "permission denied" }])
           exit 1
-        when "direct_transport_merged", "direct_transport_unknown"
+        when "direct_transport_merged", "direct_transport_merged_base_advanced",
+             "direct_transport_open_base_advanced", "direct_transport_unknown"
           warn "connection reset after request"
           exit 1
         when "direct_timeout_unknown", "direct_timeout_merged", "direct_interrupt_unknown"
@@ -1137,7 +1203,8 @@ class PrMergeSubmitTest < Minitest::Test
           sleep 5
         end
         if [
-          "enqueue_transport_queued", "enqueue_transport_merged", "enqueue_transport_base_race"
+          "enqueue_transport_queued", "enqueue_transport_merged", "enqueue_transport_base_race",
+          "enqueue_transport_queued_base_advanced"
         ].include?(#{mode.inspect})
           warn "connection reset after request"
           exit 1
