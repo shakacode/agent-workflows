@@ -12,8 +12,12 @@ ACCEPTED_BINDING_EVIDENCE = %w[operator-selected dispatcher-bound].freeze
 NEGATIVE_BINDING_EVIDENCE = %w[unbound binding-rejected binding-failed].freeze
 ACCEPTED_ATTESTATION_EVIDENCE = %w[instance-bound dispatcher-attested].freeze
 NEGATIVE_ATTESTATION_EVIDENCE = %w[unattested attestation-rejected attestation-failed].freeze
-TRUSTED_KEY_ID_ENV = "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID"
-TRUSTED_PUBLIC_KEY_ENV = "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM"
+HELPER_PATH = File.realpath(__FILE__)
+INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
+TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
+TRUST_CONFIG_PATH = File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
+TRUSTED_KEY_ID_FIELD = "agent_workflow_dispatcher_trusted_key_id"
+TRUSTED_PUBLIC_KEY_FIELD = "agent_workflow_dispatcher_trusted_public_key_pem"
 
 def fail_input(message)
   puts JSON.generate("status" => "invalid-input", "reason" => message)
@@ -79,10 +83,31 @@ rescue ArgumentError
   false
 end
 
-def configured_trust_anchor?(confirmation)
-  nonempty_string?(ENV[TRUSTED_KEY_ID_ENV]) &&
-    nonempty_string?(ENV[TRUSTED_PUBLIC_KEY_ENV]) &&
-    confirmation["key_id"] == ENV[TRUSTED_KEY_ID_ENV]
+def dispatcher_trust_anchor
+  helper_uid = File.stat(HELPER_PATH).uid
+  root_stat = File.lstat(INSTALLATION_ROOT)
+  config_dir_stat = File.lstat(TRUST_CONFIG_DIR)
+  config_stat = File.lstat(TRUST_CONFIG_PATH)
+  return unless root_stat.directory? &&
+                root_stat.uid == helper_uid &&
+                (root_stat.mode & 0o022).zero? &&
+                config_dir_stat.directory? &&
+                config_dir_stat.uid == helper_uid &&
+                (config_dir_stat.mode & 0o022).zero? &&
+                config_stat.file? &&
+                config_stat.uid == helper_uid &&
+                (config_stat.mode & 0o022).zero?
+
+  record = JSON.parse(File.read(TRUST_CONFIG_PATH))
+  return unless record.is_a?(Hash) &&
+                record["type"] == "agent-workflow-dispatcher-trust-anchor" &&
+                record["version"] == 1 &&
+                nonempty_string?(record[TRUSTED_KEY_ID_FIELD]) &&
+                nonempty_string?(record[TRUSTED_PUBLIC_KEY_FIELD])
+
+  record
+rescue JSON::ParserError, SystemCallError
+  nil
 end
 
 def durable_evidence_ref?(value)
@@ -117,9 +142,10 @@ def launch_observation_payload(confirmation)
 end
 
 def launch_observation_signature_verified?(confirmation)
-  return false unless configured_trust_anchor?(confirmation)
+  trust_anchor = dispatcher_trust_anchor
+  return false unless trust_anchor && confirmation["key_id"] == trust_anchor[TRUSTED_KEY_ID_FIELD]
 
-  public_key = OpenSSL::PKey.read(ENV.fetch(TRUSTED_PUBLIC_KEY_ENV))
+  public_key = OpenSSL::PKey.read(trust_anchor.fetch(TRUSTED_PUBLIC_KEY_FIELD))
   return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
 
   signature = Base64.strict_decode64(confirmation["signature"])

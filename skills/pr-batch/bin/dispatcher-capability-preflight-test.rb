@@ -2,16 +2,20 @@
 # frozen_string_literal: true
 
 require "base64"
+require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
 require "openssl"
+require "tmpdir"
 
 HELPER = File.expand_path("dispatcher-capability-preflight", __dir__)
 
 class DispatcherCapabilityPreflightTest < Minitest::Test
-  def dispatch(input, env = {})
-    stdout, stderr, status = Open3.capture3(env, HELPER, stdin_data: JSON.generate(input))
+  def dispatch(input, env_or_helper = {}, helper = HELPER)
+    env = env_or_helper.is_a?(Hash) ? env_or_helper : {}
+    helper = env_or_helper unless env_or_helper.is_a?(Hash)
+    stdout, stderr, status = Open3.capture3(env, helper, stdin_data: JSON.generate(input))
     assert status.success?, "helper failed: #{stderr}"
 
     JSON.parse(stdout)
@@ -52,11 +56,62 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     @dispatcher_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
   end
 
-  def dispatcher_trust_env(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
+  def caller_dispatcher_trust_env(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
     {
       "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID" => key_id,
       "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM" => key.public_to_pem
     }
+  end
+
+  def installed_dispatcher_helper(key_id: "test-dispatcher-key", key: dispatcher_signing_key,
+                                  config_mode: 0o600, agents_mode: 0o700, root_mode: 0o700, config_symlink: false,
+                                  agents_symlink: false)
+    root = Dir.mktmpdir("dispatcher-trust-install")
+    File.chmod(root_mode, root)
+    (@dispatcher_install_roots ||= []) << root
+    helper = File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight")
+    agents_dir = File.join(root, ".agents")
+    config_path = File.join(agents_dir, "dispatcher-launch-trust.json")
+    FileUtils.mkdir_p(File.dirname(helper))
+    FileUtils.cp(HELPER, helper)
+    File.chmod(0o755, helper)
+    if agents_symlink
+      actual_agents_dir = File.join(root, "caller-substitutable-agents")
+      FileUtils.mkdir_p(actual_agents_dir)
+      File.chmod(agents_mode, actual_agents_dir)
+      File.symlink(actual_agents_dir, agents_dir)
+    else
+      FileUtils.mkdir_p(agents_dir)
+      File.chmod(agents_mode, agents_dir)
+    end
+    trust_record = {
+      "type" => "agent-workflow-dispatcher-trust-anchor",
+      "version" => 1,
+      "agent_workflow_dispatcher_trusted_key_id" => key_id,
+      "agent_workflow_dispatcher_trusted_public_key_pem" => key.public_to_pem
+    }
+    if config_symlink
+      target = File.join(root, "caller-substitutable-trust.json")
+      File.write(target, JSON.generate(trust_record))
+      File.symlink(target, config_path)
+    else
+      File.write(config_path, JSON.generate(trust_record))
+      File.chmod(config_mode, config_path)
+    end
+    [helper, config_path]
+  end
+
+  def fixed_dispatcher_trust(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
+    helper, = installed_dispatcher_helper(key_id:, key:)
+    helper
+  end
+
+  def dispatcher_trust_env(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
+    fixed_dispatcher_trust(key_id:, key:)
+  end
+
+  def teardown
+    Array(@dispatcher_install_roots).each { |root| FileUtils.remove_entry(root) if File.exist?(root) }
   end
 
   def canonicalize(value)
@@ -1598,6 +1653,176 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute output.key?("dispatch")
   end
 
+  def test_caller_controlled_env_key_cannot_make_a_forged_v2_confirmation_trusted
+    input = {
+      "lane_id" => "incident-caller-controlled-trust",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "caller-controlled-trust-instance"
+      }]
+    }
+    pending = dispatch(input)
+    attacker_key = OpenSSL::PKey::RSA.generate(1024)
+    forged_confirmation = launch_confirmation(pending.fetch("dispatch"), {}, attacker_key)
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => forged_confirmation
+      ),
+      caller_dispatcher_trust_env(key: attacker_key)
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_rejects_a_symlinked_fixed_trust_config
+    input = {
+      "lane_id" => "incident-symlinked-trust-config",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "symlinked-trust-config-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = launch_confirmation(pending.fetch("dispatch"))
+    unsafe_helper, = installed_dispatcher_helper(config_symlink: true)
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      {},
+      unsafe_helper
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_rejects_a_group_or_world_writable_fixed_trust_config
+    input = {
+      "lane_id" => "incident-writable-trust-config",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "writable-trust-config-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = launch_confirmation(pending.fetch("dispatch"))
+    unsafe_helper, = installed_dispatcher_helper(config_mode: 0o666)
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      {},
+      unsafe_helper
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_rejects_a_symlinked_trust_config_directory
+    input = {
+      "lane_id" => "incident-symlinked-trust-directory",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "symlinked-trust-directory-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = launch_confirmation(pending.fetch("dispatch"))
+    unsafe_helper, = installed_dispatcher_helper(agents_symlink: true)
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      {},
+      unsafe_helper
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_rejects_missing_replaced_or_writable_fixed_trust_configuration
+    input = {
+      "lane_id" => "incident-untrusted-fixed-config",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "untrusted-fixed-config-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = launch_confirmation(pending.fetch("dispatch"))
+
+    missing_helper, missing_config = installed_dispatcher_helper
+    File.unlink(missing_config)
+
+    replaced_helper, replaced_config = installed_dispatcher_helper
+    replaced_record = JSON.parse(File.read(replaced_config))
+    replaced_record["agent_workflow_dispatcher_trusted_public_key_pem"] =
+      OpenSSL::PKey::RSA.generate(1024).public_to_pem
+    File.write(replaced_config, JSON.generate(replaced_record))
+    File.chmod(0o600, replaced_config)
+
+    writable_dir_helper, = installed_dispatcher_helper(agents_mode: 0o777)
+    writable_root_helper, = installed_dispatcher_helper(root_mode: 0o777)
+    unsafe_helpers = {
+      "missing config" => missing_helper,
+      "replaced key" => replaced_helper,
+      "writable config directory" => writable_dir_helper,
+      "writable installation root" => writable_root_helper
+    }
+
+    unsafe_helpers.each do |label, helper|
+      output = dispatch(
+        input.merge(
+          "active_assignments" => pending.fetch("active_assignments"),
+          "launch_confirmation" => confirmation
+        ),
+        {},
+        helper
+      )
+
+      assert_equal "invalid-input", output.fetch("status"), label
+      assert_equal "launch_confirmation must be a well-formed identity-bound confirmation",
+                   output.fetch("reason"), label
+      refute output.key?("dispatch"), label
+    end
+  end
+
   def test_v2_confirmation_rejects_a_bad_signature_under_the_configured_trust_anchor
     input = {
       "lane_id" => "incident-bad-launch-signature",
@@ -1679,18 +1904,24 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     pending = dispatch(input)
     confirmation = launch_confirmation(pending.fetch("dispatch"))
     another_key = OpenSSL::PKey::RSA.generate(1024)
+    missing_helper, missing_config = installed_dispatcher_helper
+    File.unlink(missing_config)
+    malformed_helper, malformed_config = installed_dispatcher_helper
+    malformed_record = JSON.parse(File.read(malformed_config))
+    malformed_record["agent_workflow_dispatcher_trusted_public_key_pem"] = "not-a-public-key"
+    File.write(malformed_config, JSON.generate(malformed_record))
+    File.chmod(0o600, malformed_config)
+    private_helper, private_config = installed_dispatcher_helper
+    private_record = JSON.parse(File.read(private_config))
+    private_record["agent_workflow_dispatcher_trusted_public_key_pem"] = dispatcher_signing_key.to_pem
+    File.write(private_config, JSON.generate(private_record))
+    File.chmod(0o600, private_config)
     trust_anchors = {
-      "missing" => {},
+      "missing" => missing_helper,
       "wrong key id" => dispatcher_trust_env(key_id: "different-key-id"),
       "wrong public key" => dispatcher_trust_env(key: another_key),
-      "malformed public key" => {
-        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID" => "test-dispatcher-key",
-        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM" => "not-a-public-key"
-      },
-      "private key material" => {
-        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID" => "test-dispatcher-key",
-        "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM" => dispatcher_signing_key.to_pem
-      }
+      "malformed public key" => malformed_helper,
+      "private key material" => private_helper
     }
 
     trust_anchors.each do |label, trust_env|
