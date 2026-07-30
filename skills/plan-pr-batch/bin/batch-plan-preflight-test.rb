@@ -33,9 +33,9 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
-  def touch_map(pr, paths)
+  def touch_map(pr_number, paths)
     {
-      "pr" => pr,
+      "pr" => pr_number,
       "repo" => "owner/repo",
       "source" => "verified",
       "changed_files" => paths.length,
@@ -147,7 +147,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
     refute status.success?
     assert_equal "rejected", result.fetch("status")
-    assert_equal ["unsupported-contract-version"], result.fetch("violations").map { |item| item.fetch("code") }
+    assert_equal(["unsupported-contract-version"], result.fetch("violations").map { |item| item.fetch("code") })
     assert_equal "$", result.dig("violations", 0, "path")
   end
 
@@ -348,7 +348,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
     refute status.success?
     assert_equal "rejected", result.fetch("status")
-    assert_equal ["malformed-json"], result.fetch("violations").map { |item| item.fetch("code") }
+    assert_equal(["malformed-json"], result.fetch("violations").map { |item| item.fetch("code") })
   end
 
   def test_historical_wave_a_replay_is_rejected_before_dispatch
@@ -358,9 +358,9 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal 5, fixture.dig("input", "plan", "lanes").length
     assert_equal "claude", fixture.dig("input", "plan", "backend")
     assert_empty fixture.dig("input", "stage_dependency_plan", "edges")
-    assert fixture.dig("input", "plan", "lanes").all? { |record| record["purpose"] == "implementation" }
-    assert fixture.dig("input", "plan", "lanes").all? { |record| record.dig("qa", "disposition") == "not-required" }
-    assert fixture.dig("input", "file_touch_map").values.all? { |map| map.fetch("paths").include?("CHANGELOG.md") }
+    assert(fixture.dig("input", "plan", "lanes").all? { |record| record["purpose"] == "implementation" })
+    assert(fixture.dig("input", "plan", "lanes").all? { |record| record.dig("qa", "disposition") == "not-required" })
+    assert(fixture.dig("input", "file_touch_map").values.all? { |map| map.fetch("paths").include?("CHANGELOG.md") })
     assert_equal "UNKNOWN", fixture.dig("input", "plan", "external_api_premises", 0, "support")
     assert_equal 2, fixture.fetch("batch_evidence_files").length
 
@@ -424,13 +424,13 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def test_incomplete_v1_envelope_fails_closed_without_a_stack_trace
     result, stderr, status = evaluate_raw(JSON.generate(
-                                           "type" => "batch-plan-preflight",
-                                           "version" => 1
-                                         ))
+                                            "type" => "batch-plan-preflight",
+                                            "version" => 1
+                                          ))
 
     refute status.success?
     assert_empty stderr
-    assert_equal ["invalid-envelope"], result.fetch("violations").map { |item| item.fetch("code") }
+    assert_equal(["invalid-envelope"], result.fetch("violations").map { |item| item.fetch("code") })
   end
 
   def test_completed_stage_gate_preserves_boolean_permission_decisions

@@ -163,8 +163,10 @@ module BatchPlanPreflight
   end
 
   def validate_file_touch_maps(maps, lane_ids)
-    return [violation("file-touch-map-object-required", "$.file_touch_map",
-                      "Provide one unchanged pr-file-touch-map result per lane.")] unless maps.is_a?(Hash)
+    unless maps.is_a?(Hash)
+      return [violation("file-touch-map-object-required", "$.file_touch_map",
+                        "Provide one unchanged pr-file-touch-map result per lane.")]
+    end
 
     violations = []
     unless maps.keys.sort == lane_ids.sort
@@ -179,11 +181,11 @@ module BatchPlanPreflight
                                 lane_ids: [lane_id])
         next
       end
-      unless map["source"] == "verified"
-        violations << violation("file-touch-map-unverified", "#{path}.source",
-                                "Run pr-file-touch-map through both sources; only source verified is launch-safe.",
-                                lane_ids: [lane_id])
-      end
+      next if map["source"] == "verified"
+
+      violations << violation("file-touch-map-unverified", "#{path}.source",
+                              "Run pr-file-touch-map through both sources; only source verified is launch-safe.",
+                              lane_ids: [lane_id])
     end
     violations
   end
@@ -198,7 +200,7 @@ module BatchPlanPreflight
                         map["paths"].all? { |path| nonempty_identity?(path) }
     return false unless map["renames"].is_a?(Array) && map["renames"].all? do |rename|
       rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
-        nonempty_identity?(rename["old"]) && nonempty_identity?(rename["new"])
+      nonempty_identity?(rename["old"]) && nonempty_identity?(rename["new"])
     end
 
     map["source"].is_a?(String) && !map["source"].strip.empty?
@@ -223,8 +225,8 @@ module BatchPlanPreflight
     unless edge_ids.length == plan.fetch("edges").length && edge_ids.uniq.length == edge_ids.length &&
            plan.fetch("edges").all? do |edge|
              nonempty_identity?(edge["id"]) &&
-               lane_ids.include?(edge["from"]) && lane_ids.include?(edge["to"]) &&
-               edge["from"] != edge["to"] && EDGE_TYPES.include?(edge["type"])
+             lane_ids.include?(edge["from"]) && lane_ids.include?(edge["to"]) &&
+             edge["from"] != edge["to"] && EDGE_TYPES.include?(edge["type"])
            end
       violations << violation("stage-dependency-plan-edge-invalid", "$.stage_dependency_plan.edges",
                               "Edges need unique ids, known distinct endpoints, and a pinned edge type.")
@@ -406,12 +408,12 @@ module BatchPlanPreflight
                                 "Retrieved date must be a real ISO YYYY-MM-DD date.")
       end
       chronology = premise["version_chronology"]
-      unless chronology.is_a?(Array) && !chronology.empty? &&
-             chronology.all? { |row| valid_chronology_row?(row) }
-        violations << violation("external-api-chronology-row-invalid", "#{path}.version_chronology",
-                                "Each chronology row needs version, pinned applicability, source_url, " \
-                                "and an ISO release_date or literal UNKNOWN.")
-      end
+      next if chronology.is_a?(Array) && !chronology.empty? &&
+              chronology.all? { |row| valid_chronology_row?(row) }
+
+      violations << violation("external-api-chronology-row-invalid", "#{path}.version_chronology",
+                              "Each chronology row needs version, pinned applicability, source_url, " \
+                              "and an ISO release_date or literal UNKNOWN.")
     end
     violations
   end
