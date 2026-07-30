@@ -221,6 +221,279 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes result.fetch("failures"), "autonomous_result evidence failures must be empty"
   end
 
+  def test_autonomous_verdict_must_match_gates_and_decision_evidence
+    contradictions = [
+      {
+        "verdict" => "autonomous-merge-eligible",
+        "triggered_gates" => ["changed-files-limit"],
+        "human_decision_evidence" => { "status" => "none" }
+      },
+      {
+        "verdict" => "human-approved-for-current-head",
+        "triggered_gates" => [],
+        "human_decision_evidence" => {
+          "status" => "accepted",
+          "comment_id" => "123",
+          "url" => "https://github.com/owner/repo/pull/42#issuecomment-123",
+          "approved_by" => "maintainer",
+          "source" => "human-pr-comment"
+        }
+      },
+      {
+        "verdict" => "human-approved-for-current-head",
+        "triggered_gates" => ["changed-files-limit"],
+        "human_decision_evidence" => { "status" => "none" }
+      }
+    ]
+
+    eligible_contradictions = contradictions.filter_map do |fields|
+      autonomous = autonomous_result(fields.fetch("verdict")).merge(fields)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      fields if result.fetch("eligible")
+    end
+
+    assert_empty eligible_contradictions
+  end
+
+  def test_accepts_each_exact_autonomous_verdict_relation_without_recomputing_thresholds
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["metrics"] = {
+      "changed_files" => 10_000,
+      "changed_lines" => 1_000_000,
+      "commits" => 1_000,
+      "reviewed_heads" => 100
+    }
+    autonomous_result_receipt = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+    helper_approved_receipt = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("human-approved-for-current-head"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+    external_approval_receipt = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("human-approval-required"),
+      context: context("explicit_approval", human_merge_decision: human_merge_decision),
+      now: NOW
+    )
+
+    assert_equal [true, true, true], [
+      autonomous_result_receipt.fetch("eligible"),
+      helper_approved_receipt.fetch("eligible"),
+      external_approval_receipt.fetch("eligible")
+    ]
+  end
+
+  def test_autonomous_result_requires_the_exact_consumed_output_shape
+    mutations = {
+      "unknown-top-level-field" => ->(result) { result["future_field"] = true },
+      "non-string-top-level-field" => ->(result) { result[:future_field] = true },
+      "missing-metrics" => ->(result) { result.delete("metrics") },
+      "unknown-metric" => ->(result) { result["metrics"]["threshold"] = 10 },
+      "unknown-helper-trust-field" => ->(result) { result["helper_trust"]["source"] = "caller" },
+      "malformed-path-matches" => ->(result) { result["path_matches"] = {} }
+    }
+
+    eligible_mutations = mutations.filter_map do |label, mutation|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      mutation.call(autonomous)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mutations
+  end
+
+  def test_autonomous_path_matches_require_an_exact_gate_or_generated_record_shape
+    invalid_path_matches = {
+      "non-object" => [nil],
+      "unknown-field" => [{
+        "path" => "skills/example.rb",
+        "gate" => "changed-files-limit",
+        "reason" => "policy",
+        "extra" => true
+      }],
+      "missing-reason" => [{
+        "path" => "skills/example.rb",
+        "gate" => "changed-files-limit"
+      }],
+      "unknown-classification" => [{
+        "path" => "generated/example.rb",
+        "classification" => "vendored"
+      }],
+      "blank-path" => [{
+        "path" => " ",
+        "classification" => "generated"
+      }]
+    }
+
+    eligible_invalid_matches = invalid_path_matches.filter_map do |label, path_matches|
+      autonomous = autonomous_result("human-approval-required")
+      autonomous["path_matches"] = path_matches
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("explicit_approval", human_merge_decision: human_merge_decision),
+        now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_invalid_matches
+  end
+
+  def test_autonomous_triggered_gates_must_be_canonical_unique_and_sorted
+    invalid_gates = {
+      "unknown" => ["future-gate"],
+      "duplicate" => %w[changed-files-limit changed-files-limit],
+      "unsorted" => %w[commit-count-limit changed-files-limit],
+      "malformed-repo-path" => ["repo-path:bad_id"]
+    }
+
+    eligible_invalid_gates = invalid_gates.filter_map do |label, gates|
+      autonomous = autonomous_result("human-approval-required")
+      autonomous["triggered_gates"] = gates
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("explicit_approval", human_merge_decision: human_merge_decision),
+        now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_invalid_gates
+  end
+
+  def test_autonomous_shadow_fields_require_the_pinned_helper_shapes
+    mutations = {
+      "shadow-gates-not-array" => ->(result) { result["shadow_triggered_gates"] = "reviewed-heads-limit" },
+      "shadow-gate-unknown" => ->(result) { result["shadow_triggered_gates"] = ["changed-files-limit"] },
+      "shadow-gate-duplicate" => lambda do |result|
+        result["shadow_triggered_gates"] = %w[reviewed-heads-limit reviewed-heads-limit]
+      end,
+      "shadow-evidence-unknown" => ->(result) { result["shadow_evidence_unknown"] = ["future-evidence"] },
+      "shadow-evidence-duplicate" => lambda do |result|
+        result["shadow_evidence_unknown"] = %w[submitted-review-head-missing submitted-review-head-missing]
+      end,
+      "shadow-evidence-reversed" => lambda do |result|
+        result["shadow_evidence_unknown"] = %w[review-pagination-incomplete submitted-review-head-missing]
+      end
+    }
+
+    eligible_mutations = mutations.filter_map do |label, mutation|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      mutation.call(autonomous)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mutations
+  end
+
+  def test_autonomous_safe_class_and_rollback_assessment_must_be_compatible_known_enums
+    mutations = {
+      "unknown-safe-class" => ->(result) { result["safe_class"] = "future-safe-class" },
+      "unknown-rollback" => ->(result) { result["rollback_assessment"] = "UNKNOWN" },
+      "unsafe-not-applicable" => lambda do |result|
+        result["safe_class"] = "none"
+        result["rollback_assessment"] = "not-applicable"
+      end
+    }
+
+    eligible_mutations = mutations.filter_map do |label, mutation|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      mutation.call(autonomous)
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mutations
+  end
+
+  def test_autonomous_decision_evidence_requires_an_exact_none_or_accepted_record
+    accepted = {
+      "status" => "accepted",
+      "comment_id" => "123",
+      "url" => "https://github.com/owner/repo/pull/42#issuecomment-123",
+      "approved_by" => "maintainer",
+      "source" => "human-pr-comment"
+    }
+    cases = {
+      "none-extra-field" => [
+        "autonomous-merge-eligible", [], { "status" => "none", "reason" => "caller supplied" }
+      ],
+      "accepted-extra-field" => [
+        "human-approved-for-current-head", ["changed-files-limit"], accepted.merge("reason" => "extra")
+      ],
+      "accepted-missing-url" => [
+        "human-approved-for-current-head", ["changed-files-limit"], accepted.reject { |key, _value| key == "url" }
+      ],
+      "accepted-non-string-comment-id" => [
+        "human-approved-for-current-head", ["changed-files-limit"], accepted.merge("comment_id" => 123)
+      ],
+      "accepted-blank-url" => [
+        "human-approved-for-current-head", ["changed-files-limit"], accepted.merge("url" => " ")
+      ],
+      "accepted-blank-approver" => [
+        "human-approved-for-current-head", ["changed-files-limit"], accepted.merge("approved_by" => "")
+      ],
+      "accepted-unknown-source" => [
+        "human-approved-for-current-head", ["changed-files-limit"], accepted.merge("source" => "automation")
+      ],
+      "uncertain" => [
+        "human-approved-for-current-head",
+        ["changed-files-limit"],
+        accepted.merge(
+          "status" => "uncertain",
+          "reason" => "matching human and merge-authority attestation is missing or uncertain"
+        )
+      ]
+    }
+
+    missing_shape_failures = cases.filter_map do |label, (verdict, gates, decision)|
+      autonomous = autonomous_result(verdict)
+      autonomous["triggered_gates"] = gates
+      autonomous["human_decision_evidence"] = decision
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+      label unless Array(result["failures"]).include?(
+        "autonomous_result human decision evidence shape is invalid"
+      )
+    end
+
+    assert_empty missing_shape_failures
+  end
+
   def test_ask_requires_exact_head_human_decision_and_same_diff_walkthrough
     missing = MergeAssurance.assess(
       ci_result: ready_ci,
@@ -971,6 +1244,24 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def autonomous_result(verdict)
+    triggered_gates, human_decision_evidence =
+      case verdict
+      when "human-approval-required"
+        [["changed-files-limit"], { "status" => "none" }]
+      when "human-approved-for-current-head"
+        [
+          ["changed-files-limit"],
+          {
+            "status" => "accepted",
+            "comment_id" => "123",
+            "url" => "https://github.com/owner/repo/pull/42#issuecomment-123",
+            "approved_by" => "maintainer",
+            "source" => "human-pr-comment"
+          }
+        ]
+      else
+        [[], { "status" => "none" }]
+      end
     {
       "verdict" => verdict,
       "head_sha" => HEAD_SHA,
@@ -983,11 +1274,11 @@ class MergeAssuranceTest < Minitest::Test
       "metrics" => { "changed_files" => 1, "changed_lines" => 2, "commits" => 1, "reviewed_heads" => 0 },
       "path_matches" => [],
       "safe_class" => "tests",
-      "triggered_gates" => [],
+      "triggered_gates" => triggered_gates,
       "shadow_triggered_gates" => [],
       "shadow_evidence_unknown" => [],
       "rollback_assessment" => "code-only-rollback-established",
-      "human_decision_evidence" => { "status" => "none" },
+      "human_decision_evidence" => human_decision_evidence,
       "evidence_failures" => []
     }
   end

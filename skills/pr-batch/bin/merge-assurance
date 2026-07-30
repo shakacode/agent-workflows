@@ -28,6 +28,50 @@ module MergeAssurance
   AUTONOMOUS_VERDICTS = %w[
     autonomous-merge-eligible human-approval-required human-approved-for-current-head
   ].freeze
+  AUTONOMOUS_RESULT_KEYS = %w[
+    verdict head_sha policy_provenance helper_provenance helper_trust metrics
+    path_matches safe_class triggered_gates shadow_triggered_gates
+    shadow_evidence_unknown rollback_assessment human_decision_evidence
+    evidence_failures
+  ].freeze
+  AUTONOMOUS_METRIC_KEYS = %w[
+    changed_files changed_lines commits reviewed_heads
+  ].freeze
+  AUTONOMOUS_PORTABLE_GATE_IDS = %w[
+    architectural-product-judgment
+    autonomous-merge-policy-change
+    changed-files-limit
+    changed-lines-limit
+    commit-count-limit
+    infrastructure-delivery
+    irreversible-external-effect
+    persistent-data-storage
+    public-compatibility
+    reviewed-heads-limit
+    security-auth-privacy
+  ].freeze
+  AUTONOMOUS_SHADOW_GATE_SHAPES = [
+    [],
+    ["reviewed-heads-limit"]
+  ].freeze
+  AUTONOMOUS_SHADOW_EVIDENCE_SHAPES = [
+    [],
+    ["submitted-review-head-missing"],
+    ["review-pagination-incomplete"],
+    %w[submitted-review-head-missing review-pagination-incomplete]
+  ].freeze
+  AUTONOMOUS_SAFE_CLASSES = %w[
+    none documentation tests formatting-comments
+  ].freeze
+  AUTONOMOUS_ROLLBACK_ASSESSMENTS = %w[
+    code-only-rollback-established forward-recovery-established not-applicable
+  ].freeze
+  AUTONOMOUS_ACCEPTED_DECISION_KEYS = %w[
+    status comment_id url approved_by source
+  ].freeze
+  AUTONOMOUS_DECISION_SOURCES = %w[
+    direct-user-task human-pr-review human-pr-comment
+  ].freeze
   MAX_EVIDENCE_AGE_SECONDS = 300
   MAX_FUTURE_SKEW_SECONDS = 30
   TRACKER_GH_TIMEOUT_SECONDS = 60
@@ -216,11 +260,44 @@ module MergeAssurance
       failures << "autonomous_result must be an object"
       return
     end
+    unless exact_keys?(result, AUTONOMOUS_RESULT_KEYS)
+      failures << "autonomous_result has unknown or missing fields"
+    end
     failures << "autonomous_result head binding mismatch" unless result["head_sha"] == context["head_sha"]
     failures << "autonomous_result verdict is unrecognized" unless AUTONOMOUS_VERDICTS.include?(result["verdict"])
-    unless result.dig("helper_trust", "status") == "mechanically-verified" &&
-           result.dig("helper_trust", "manifest").is_a?(Hash)
+    helper_trust = result["helper_trust"]
+    unless exact_keys?(helper_trust, %w[manifest status]) &&
+           helper_trust["status"] == "mechanically-verified" &&
+           helper_trust["manifest"].is_a?(Hash)
       failures << "autonomous_result helper trust is unavailable"
+    end
+    metrics = result["metrics"]
+    unless exact_keys?(metrics, AUTONOMOUS_METRIC_KEYS) &&
+           metrics.values.all? { |value| value.is_a?(Integer) && value >= 0 }
+      failures << "autonomous_result metrics shape is invalid"
+    end
+    unless result["path_matches"].is_a?(Array) &&
+           result["path_matches"].all? { |match| valid_autonomous_path_match?(match) }
+      failures << "autonomous_result path matches shape is invalid"
+    end
+    unless valid_autonomous_gates?(result["triggered_gates"])
+      failures << "autonomous_result triggered gates must be canonical, unique, and sorted"
+    end
+    unless AUTONOMOUS_SHADOW_GATE_SHAPES.include?(result["shadow_triggered_gates"])
+      failures << "autonomous_result shadow triggered gates shape is invalid"
+    end
+    unless AUTONOMOUS_SHADOW_EVIDENCE_SHAPES.include?(result["shadow_evidence_unknown"])
+      failures << "autonomous_result shadow evidence unknown shape is invalid"
+    end
+    failures << "autonomous_result safe class is invalid" unless
+      AUTONOMOUS_SAFE_CLASSES.include?(result["safe_class"])
+    failures << "autonomous_result rollback assessment is invalid" unless
+      AUTONOMOUS_ROLLBACK_ASSESSMENTS.include?(result["rollback_assessment"])
+    if result["safe_class"] == "none" && result["rollback_assessment"] == "not-applicable"
+      failures << "autonomous_result rollback assessment requires a verified safe class"
+    end
+    unless valid_autonomous_decision_evidence?(result["human_decision_evidence"])
+      failures << "autonomous_result human decision evidence shape is invalid"
     end
     failures << "autonomous_result policy provenance binding mismatch" unless
       valid_policy_provenance?(result["policy_provenance"], context.dig("base", "sha"))
@@ -231,6 +308,76 @@ module MergeAssurance
     elsif !result["evidence_failures"].empty?
       failures << "autonomous_result evidence failures must be empty"
     end
+    expected_verdict = expected_autonomous_verdict(
+      result["triggered_gates"],
+      result["human_decision_evidence"]
+    )
+    return if expected_verdict == result["verdict"]
+
+    failures << "autonomous_result verdict contradicts gates and decision evidence"
+  end
+
+  def expected_autonomous_verdict(triggered_gates, human_decision_evidence)
+    return unless triggered_gates.is_a?(Array) && human_decision_evidence.is_a?(Hash)
+
+    decision_status = human_decision_evidence["status"]
+    if triggered_gates.empty? && decision_status == "none"
+      "autonomous-merge-eligible"
+    elsif !triggered_gates.empty? && decision_status == "accepted"
+      "human-approved-for-current-head"
+    elsif !triggered_gates.empty? && decision_status == "none"
+      "human-approval-required"
+    end
+  end
+
+  def exact_keys?(value, expected_keys)
+    value.is_a?(Hash) &&
+      value.keys.length == expected_keys.length &&
+      (value.keys - expected_keys).empty?
+  end
+
+  def valid_autonomous_gates?(gates)
+    gates.is_a?(Array) &&
+      gates.all? { |gate| canonical_autonomous_gate?(gate) } &&
+      gates == gates.uniq.sort
+  end
+
+  def canonical_autonomous_gate?(gate)
+    gate.is_a?(String) &&
+      (AUTONOMOUS_PORTABLE_GATE_IDS.include?(gate) ||
+       gate.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/))
+  end
+
+  def valid_autonomous_path_match?(match)
+    return false unless match.is_a?(Hash)
+
+    path = match["path"]
+    return false unless path.is_a?(String) && !path.strip.empty?
+
+    if exact_keys?(match, %w[gate path reason])
+      gate = match["gate"]
+      reason = match["reason"]
+      (gate == "autonomous-merge-policy-change" ||
+       gate.to_s.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/)) &&
+        reason.is_a?(String) && !reason.strip.empty?
+    elsif exact_keys?(match, %w[classification path])
+      match["classification"] == "generated"
+    else
+      false
+    end
+  end
+
+  def valid_autonomous_decision_evidence?(decision)
+    return false unless decision.is_a?(Hash)
+    return true if decision == { "status" => "none" }
+    return false unless exact_keys?(decision, AUTONOMOUS_ACCEPTED_DECISION_KEYS)
+    return false unless decision["status"] == "accepted"
+    return false unless %w[comment_id url approved_by].all? do |key|
+      value = decision[key]
+      value.is_a?(String) && !value.strip.empty?
+    end
+
+    AUTONOMOUS_DECISION_SOURCES.include?(decision["source"])
   end
 
   def valid_policy_provenance?(provenance, base_sha)

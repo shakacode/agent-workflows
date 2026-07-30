@@ -827,6 +827,19 @@ class PrMergeSubmitTest < Minitest::Test
         "status" => "mechanically-verified",
         "manifest" => { "digest" => "sha256:#{'d' * 64}" }
       },
+      "metrics" => {
+        "changed_files" => 1,
+        "changed_lines" => 2,
+        "commits" => 1,
+        "reviewed_heads" => 0
+      },
+      "path_matches" => [],
+      "safe_class" => "tests",
+      "triggered_gates" => [],
+      "shadow_triggered_gates" => [],
+      "shadow_evidence_unknown" => [],
+      "rollback_assessment" => "code-only-rollback-established",
+      "human_decision_evidence" => { "status" => "none" },
       "evidence_failures" => []
     }
     tracker = semantic_tracker(host:, repo:, pr_number:)
