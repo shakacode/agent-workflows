@@ -281,6 +281,10 @@ class PrCiReadinessCliTest < Minitest::Test
   # The fake gh handles `gh repo view ...` (so --repo is optional) and
   # `gh pr checks ...`, returning the required vs full payload based on the
   # presence of the --required flag. Non-JSON ("") models "no required checks".
+  def shell_json_printf(value)
+    "printf '%s' #{JSON.generate(value).inspect}"
+  end
+
   def fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error, required_check_fields,
                      rejected_check_field, check_stderr, check_status, required_check_error, full_check_error,
                      exact_actions, exact_check_runs, exact_statuses, exact_inventory_error,
@@ -452,23 +456,20 @@ class PrCiReadinessCliTest < Minitest::Test
         fi
         if [[ "$*" = *"actions/runs?head_sha="* ]]; then
           #{exact_inventory_error == 'actions' ? 'exit 1' : ''}
-          cat <<'JSON'
-      #{JSON.generate('total_count' => exact_actions_total_count || exact_actions.length, 'workflow_runs' => exact_actions)}
-      JSON
+          #{shell_json_printf(
+            'total_count' => exact_actions_total_count || exact_actions.length,
+            'workflow_runs' => exact_actions
+          )}
           exit 0
         fi
         if [[ "$*" = *"/check-runs?per_page="* ]]; then
           #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
-          cat <<'JSON'
-      #{JSON.generate('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
-      JSON
+          #{shell_json_printf('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
           exit 0
         fi
         if [[ "$*" = *"/statuses?per_page="* ]]; then
           #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
-          cat <<'JSON'
-      #{JSON.generate(exact_statuses)}
-      JSON
+          #{shell_json_printf(exact_statuses)}
           exit 0
         fi
       #{run_cases}
@@ -783,6 +784,57 @@ class PrCiReadinessCliTest < Minitest::Test
         [[500, "legacy", "mystery"], [498, "distinct", "success"]],
         data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
       )
+    end
+  end
+
+  def test_large_exact_status_fixture_does_not_deadlock_fake_gh
+    head = "a" * 40
+    exact_statuses = Array.new(99) do |index|
+      {
+        "id" => index + 1,
+        "context" => "status-#{index}",
+        "state" => "success",
+        "sha" => head,
+        "target_url" => "https://example.test/#{index}/#{'x' * 2_000}"
+      }
+    end
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses:
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal 99, data.dig("scopes", "other", "rows").length
+    end
+  end
+
+  def test_large_exact_status_fixture_uses_shell_safe_printf
+    exact_statuses = [{
+      "id" => 1,
+      "context" => "large-status",
+      "state" => "success",
+      "sha" => "a" * 40,
+      "target_url" => "https://example.test/#{'x' * 100_000}"
+    }]
+    expected_command = "printf '%s' #{JSON.generate(exact_statuses).inspect}"
+    with_fake_gh(
+      required_json: "[]",
+      full_json: "[]",
+      exact_statuses:
+    ) do |env|
+      fake_gh = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "gh")
+      generated_script = File.read(fake_gh, encoding: "UTF-8")
+      status_branch = generated_script[
+        %r{if \[\[ "\$\*" = \*"/statuses\?per_page="\* \]\]; then.*?exit 0}m
+      ]
+
+      assert_includes status_branch, expected_command
+      refute_includes status_branch, "cat <<'JSON'"
     end
   end
 
