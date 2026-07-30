@@ -1703,8 +1703,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
   def test_launch_confirmation_v2_accepts_each_positive_binding_and_attestation_value
     [
-      ["operator-selected", "instance-bound"],
-      ["dispatcher-bound", "dispatcher-attested"]
+      %w[operator-selected instance-bound],
+      %w[dispatcher-bound dispatcher-attested]
     ].each do |binding_source, attestation|
       input = {
         "lane_id" => "incident-positive-#{binding_source}",
