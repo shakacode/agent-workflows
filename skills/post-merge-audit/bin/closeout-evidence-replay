@@ -30,6 +30,18 @@ module CloseoutEvidenceReplay
   VALID_PERFORMANCE_IMPACTS = %w[not_applicable bundle_hygiene measured_metric].freeze
   VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
+  STRUCTURAL_COUNT_TOKENS = %w[chunk chunks file files module modules test tests].freeze
+  SIZE_METRIC_TOKENS = %w[asset assets bundle bundles byte bytes size sizes].freeze
+  # Runtime-memory names are the only reason a terminal size/byte noun measures behavior rather
+  # than build output, so they are the sole carve-out from the terminal-size rejection.
+  MEMORY_METRIC_TOKENS = %w[heap memory ram resident rss].freeze
+  # Bounded qualifier vocabulary so a single inserted word (`file_total_count`) cannot disguise a
+  # structural or size count as a runtime measurement.
+  COUNT_QUALIFIER_TOKENS = %w[total totals overall aggregate all unique distinct num number].freeze
+  UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
+  PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
+  # Keep URL extraction aligned with semicolon-delimited performance evidence fields.
+  HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*?(?=;\s*(?:#{PERFORMANCE_EVIDENCE_FIELD_NAMES.join('|')})\s*=|[\s<>()]|\z)/i
   LOCAL_MEDIA_EXTENSION = /\.(?:avi|avif|bmp|gif|heic|heif|ico|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm|webp)\b/i
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
   EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
@@ -511,11 +523,11 @@ module CloseoutEvidenceReplay
   end
 
   def without_https_urls(value)
-    value.gsub(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i, "")
+    value.gsub(HTTPS_TOKEN, "")
   end
 
   def http_urls(value)
-    value.scan(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i)
+    value.scan(HTTPS_TOKEN)
   end
 
   def valid_https_url?(value)
@@ -568,24 +580,54 @@ module CloseoutEvidenceReplay
     return false unless names.length == 1
 
     metric_name = names.first.first.strip
-    size_tokens = %w[asset bundle byte bytes size]
     metric_tokens = text_tokens(metric_name)
-    return false if metric_tokens.any? { |token| size_tokens.include?(token) }
+    return false if metric_tokens.empty?
+    return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\A(?:metric|metrics|na|notapplicable)\z/i)
+    return false if unresolved_metric_tokens?(metric_tokens)
 
-    runtime_tokens = %w[
-      cls cpu duration fcp fid fps inp interaction latency lcp load memory paint
-      responsiveness runtime speed throughput time timing ttfb vital web
-    ]
-    return false unless metric_tokens.any? { |token| runtime_tokens.include?(token) }
+    return false if size_metric_shape?(metric_tokens)
+    return false if structural_metric_count?(metric_tokens)
 
     measurement_units = %w[baseline_value candidate_value].flat_map do |key|
       labeled_measurements(non_url_text, key).map { |measurement| measurement.fetch(1) }
     end
+
     byte_valued = measurement_units.any? { |unit| unit.match?(/\A(?:[kmgt]i?)?b(?:ytes?)?\z/i) }
-    memory_metric = metric_tokens.any? { |token| %w[heap memory ram resident rss].include?(token) }
+    memory_metric = metric_tokens.any? { |token| MEMORY_METRIC_TOKENS.include?(token) }
     return false if byte_valued && !memory_metric
 
     true
+  end
+
+  def unresolved_metric_tokens?(tokens)
+    tokens == %w[n a] ||
+      (tokens.length <= 2 && tokens.any? { |token| UNRESOLVED_METRIC_TOKENS.include?(token) }) ||
+      tokens.each_cons(2).any? { |first, second| first == "not" && %w[applicable available measured].include?(second) }
+  end
+
+  def structural_metric_count?(tokens)
+    qualified_terminal_count?(tokens, STRUCTURAL_COUNT_TOKENS)
+  end
+
+  def size_metric_shape?(tokens)
+    return true if tokens.length == 1 && SIZE_METRIC_TOKENS.include?(tokens.first)
+
+    # A terminal size/byte noun names build-output shape whatever the prefix says, so reject it
+    # unless the name is a runtime-memory metric (`heap_size`, `resident_set_size`).
+    if %w[byte bytes size sizes].include?(tokens.last)
+      return tokens.none? { |token| MEMORY_METRIC_TOKENS.include?(token) }
+    end
+
+    qualified_terminal_count?(tokens, SIZE_METRIC_TOKENS)
+  end
+
+  # Terminal `*_count` over a `vocabulary` noun, looking through at most one bounded qualifier so
+  # `file_total_count` is rejected like `total_file_count` while `module_load_count` stays valid.
+  def qualified_terminal_count?(tokens, vocabulary)
+    return false unless tokens.length >= 2 && %w[count counts].include?(tokens.last)
+    return true if vocabulary.include?(tokens[-2])
+
+    tokens.length >= 3 && COUNT_QUALIFIER_TOKENS.include?(tokens[-2]) && vocabulary.include?(tokens[-3])
   end
 
   def valid_repo_seam_source?(value)
@@ -603,7 +645,12 @@ module CloseoutEvidenceReplay
   end
 
   def text_tokens(value)
-    value.downcase.split(/[^a-z0-9]+/).reject(&:empty?)
+    value
+      .gsub(/([A-Z]+)([A-Z][a-z])/, '\\1 \\2')
+      .gsub(/([a-z0-9])([A-Z])/, '\\1 \\2')
+      .downcase
+      .split(/[^a-z0-9]+/)
+      .reject(&:empty?)
   end
 
   def replay_priority(marker, expected_head_sha: nil, required: false)

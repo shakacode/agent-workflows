@@ -78,6 +78,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Fixed
 
+- **Keep `qa-evidence v2` performance validation portable by accepting structurally valid consumer-seam runtime/user metric names and units without closed vocabularies, while retaining placeholder, bounded structural-count, size, byte-memory, source, and measurement-pair safeguards; also reject malformed `https:` references when validating durable evidence URLs.**
 - **Make `plugin-companion` delivery preserve unrelated personal flat skills while blocking any same-named skill advertised by the verified active native plugin—including source/native revision drift—and fail closed when native roots or provenance are ambiguous.** [issue 191](https://github.com/shakacode/agent-workflows/issues/191).
 - **Stop the four `pr-merge-submit` mutation-timeout tests from racing their own `gh` stub: those scenarios hang the mutation alone and need the metadata query before it and the reconciliation query after it to succeed, so the 0.1s deadline timed out the setup query instead and the path under test never ran (exit 1, not 2). Mutation-timeout modes now get a 2s deadline — crossable only by the stub's deliberate 5s sleep — and a run whose setup query still times out is retried as a precondition miss rather than reported as a product failure, with every original assertion kept intact.** [issue 222](https://github.com/shakacode/agent-workflows/issues/222).
 - **Resolve the stale-assignment sweep's agent-claim label from the `agent_claimed_label` seam (default `agent-claimed`, overridable with `--agent-claimed-label`) instead of the hardcoded literal, so a consumer repo that renames the claim label no longer has actively claimed items nudged or released; blank flag values are rejected and non-string or blank seam values fall back to the default with a warning, and every run reports the resolved `Claim label`.** [issue 221](https://github.com/shakacode/agent-workflows/issues/221).
@@ -97,6 +98,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
 - **Fix `upgrade-agent-workflows` with no `--consumer-root` arguments under shells that treat empty arrays as unset.**
 - **Fix `pr-security-preflight` trust config inheritance so repo-local, user-global, environment, and fail-closed packaged allowlists resolve predictably.** [PR 20](https://github.com/shakacode/agent-workflows/pull/20) by [justin808](https://github.com/justin808).
+- **Stop build-output shapes from replaying as a satisfied `measured_metric`: a terminal `size`/`sizes`/`byte`/`bytes` noun is now rejected whatever the prefix says (`page_size`, `response_size`, `payload_size`), carved out only for runtime-memory names (`heap_size`, `resident_set_size`), and terminal `count`/`counts` rejection looks through at most one bounded qualifier so `file_total_count` and `assets_total_count` are rejected like `total_file_count` while runtime names such as `module_load_count` stay valid.**
 
 ### [0.1.0] - 2026-06-24
 

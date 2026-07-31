@@ -561,6 +561,54 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes interaction.fetch("missing"), "interaction_evidence"
   end
 
+  def test_v2_rejects_malformed_https_reference_beside_a_valid_url
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before https:broken after https://github.com/example/repo/pull/123#after"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.url"
+  end
+
+  def test_v2_malformed_media_looking_https_reference_does_not_add_local_reference_diagnostic
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before https:broken.png after https://github.com/example/repo/pull/123#after"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.url"
+    refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
+  end
+
+  def test_v2_interaction_evidence_rejects_malformed_https_and_accepts_uppercase_https
+    valid_url = "https://github.com/example/repo/pull/123#clip"
+    %w[https:broken https:].each do |malformed_url|
+      qa = run_replay(
+        v2_marker(
+          "interaction_change" => "yes",
+          "interaction_evidence" => "clip: #{malformed_url} #{valid_url}"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), malformed_url
+      assert_includes qa.fetch("missing"), "interaction_evidence", malformed_url
+    end
+
+    uppercase = run_replay(
+      v2_marker(
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: HTTPS://github.com/example/repo/pull/123#clip"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", uppercase.fetch("verdict")
+    assert_empty uppercase.fetch("missing")
+  end
+
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual
@@ -808,7 +856,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_v2_measured_metric_requires_named_non_size_runtime_or_user_metric
+  def test_v2_measured_metric_requires_a_named_non_size_non_placeholder_metric
     invalid_evidence = [
       "repo_seam: source=bin/perf-report; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=bin/perf-report; metric_name=bundle_size; baseline_value=120kB; candidate_value=121kB",
@@ -816,11 +864,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=performance_score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s",
-      "repo_seam: source=bin/perf-report; metric_name=test_count; baseline_value=100tests; candidate_value=110tests",
       "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
-      "repo_seam: source=bin/perf-report; metric_name=widgets_clicked; baseline_value=5x; candidate_value=3x",
-      "repo_seam: source=bin/perf-report; metric_name=active_user_count; baseline_value=5users; candidate_value=3users",
-      "repo_seam: source=bin/perf-report; metric_name=power_user_score; baseline_value=5x; candidate_value=3x"
+      "repo_seam: source=bin/perf-report; metric_name=n/a; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=NA; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=N.A.; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=N-A; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=notapplicable; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=NotApplicable; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=NOTAPPLICABLE; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=metrics; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=---; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=測定; baseline_value=1ms; candidate_value=2ms"
     ]
 
     invalid_evidence.each do |evidence|
@@ -833,6 +888,218 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
       assert_includes qa.fetch("missing"), "performance_evidence", evidence
+    end
+  end
+
+  def test_v2_measured_metric_rejects_unresolved_tokens_in_delimited_and_camel_case_names
+    %w[
+      placeholder_metric tbd_checkout todo_latency unknown_duration missing_latency
+      unavailable_metric unmeasured_metric not_available_metric not_measured_metric not_applicable
+      todoLatency placeholderMetric tbdCheckout unknownDuration missingLatency
+      unavailableMetric unmeasuredMetric notAvailableMetric notMeasuredMetric notApplicable
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_classifies_bounded_placeholder_token_shapes
+    %w[unknown_duration missing_value my_placeholder todo_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+    end
+
+    %w[todo_sync_latency missing_translation_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_consumer_defined_metric_names
+    %w[checkout_ready file_upload_latency availability_latency rateUnknownness n_a_latency notapplicable_latency score x result].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_consumer_defined_count_metric_unit
+    qa = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=checkout_error_count; baseline_value=12errors; candidate_value=3errors"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    assert_empty qa.fetch("missing")
+  end
+
+  def test_v2_measured_metric_rejects_structural_counts_without_rejecting_runtime_name_tokens
+    %w[
+      chunk_count chunks_count file_count files_count module_count modules_count test_count tests_count
+      chunk_counts chunksCounts file_counts filesCounts module_counts modulesCounts test_counts testsCounts
+      total_file_count totalFilesCount
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    runtime = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=file_upload_latency; baseline_value=3ms; candidate_value=2ms"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", runtime.fetch("verdict")
+    assert_empty runtime.fetch("missing")
+
+    compound_runtime = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=module_load_count; baseline_value=3ms; candidate_value=2ms"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", compound_runtime.fetch("verdict")
+    assert_empty compound_runtime.fetch("missing")
+  end
+
+  def test_v2_measured_metric_rejects_singular_and_plural_size_tokens
+    %w[asset assets bundle bundles byte bytes size sizes].flat_map { |name| [name, "#{name}_count"] }.each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_runtime_names_containing_plural_size_tokens
+    %w[assets_load_latency bundles_parse_time].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_rejects_terminal_size_nouns_regardless_of_prefix
+    %w[page_size response_size payload_size image_size cache_size viewportSize recordSizes thumbnail_bytes].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_runtime_memory_names_with_terminal_size_nouns
+    %w[heap_size rss_size memory_size resident_set_size ram_bytes heapUsedBytes].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=100MB; candidate_value=90MB"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_looks_through_one_qualifier_before_a_structural_or_size_count
+    %w[
+      file_total_count chunk_total_count module_total_count test_total_count
+      files_overall_count modulesAggregateCount tests_unique_counts assets_total_count
+      bundle_distinct_count bytesNumberCount
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    %w[module_load_count checkout_error_count file_upload_retry_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_classifies_size_and_count_shapes_by_terminal_position
+    {
+      "bundle_compressed_size" => %w[12items 3items UNKNOWN],
+      "total_uncompressed_bundle_size" => %w[12items 3items UNKNOWN],
+      "total_assets_count" => %w[12items 3items UNKNOWN],
+      "assets_count_query_time" => %w[3ms 2ms SATISFIED],
+      "total_uncompressed_bundle_latency" => %w[3ms 2ms SATISFIED]
+    }.each do |metric_name, (baseline, candidate, verdict)|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=#{baseline}; candidate_value=#{candidate}"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal verdict, qa.fetch("verdict"), metric_name
     end
   end
 
@@ -927,6 +1194,34 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
       assert_includes qa.fetch("missing"), "performance_evidence", evidence
     end
+  end
+
+  def test_v2_measured_metric_accepts_https_repo_seam_source_with_labeled_delimiters
+    [
+      "repo_seam: source=https://ci.example.test/run;metric_name=LCP;baseline_value=3ms;candidate_value=2ms",
+      "repo_seam: source=https://ci.example.test/run?trace=a;mode=full;metric_name=INP;baseline_value=3ms;candidate_value=2ms"
+    ].each do |evidence|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => evidence
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), evidence
+      assert_empty qa.fetch("missing"), evidence
+    end
+  end
+
+  def test_v2_retains_semicolons_inside_https_url_content
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before and after https://github.com/example/repo;mode=full/tmp/local.png"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
   end
 
   def test_v2_not_applicable_performance_rejects_unmeasured_placeholder
