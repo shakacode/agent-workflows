@@ -351,6 +351,23 @@ class BatchPlanPreflightTest < Minitest::Test
     [JSON.parse(stdout), stderr, status]
   end
 
+  def evaluate_with_runtime_env(input, runtime_env, helper: HELPER)
+    launcher = <<~RUBY
+      require "json"
+      ENV.update(JSON.parse(ARGV.fetch(0)))
+      load ARGV.fetch(1)
+    RUBY
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby,
+      "-e",
+      launcher,
+      JSON.generate(runtime_env),
+      helper,
+      stdin_data: JSON.generate(input)
+    )
+    [JSON.parse(stdout), stderr, status]
+  end
+
   def evaluate_raw(input)
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, stdin_data: input)
     [JSON.parse(stdout), stderr, status]
@@ -581,6 +598,121 @@ class BatchPlanPreflightTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
     assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_path_cannot_replace_the_ruby_interpreter_for_replay
+    lanes = [lane("foundation"), lane("consumer")]
+    edge = {
+      "id" => "foundation-before-consumer",
+      "from" => "foundation",
+      "to" => "consumer",
+      "type" => "edit"
+    }
+    input = input_for(lanes: lanes, edges: [edge])
+    input.dig("stage_dependency_replay", "edges", 0)["state"] = "pending"
+    input.dig("stage_dependency_replay", "edges", 0).delete("evidence")
+
+    fake_bin = Dir.mktmpdir("caller-ruby")
+    (@workflow_control_install_roots ||= []) << fake_bin
+    stale_gate_path = File.join(fake_bin, "stale-gate.json")
+    fake_ruby_marker = File.join(fake_bin, "fake-ruby-ran")
+    File.write(stale_gate_path, JSON.generate(input.fetch("stage_dependency_gate")))
+    fake_ruby = File.join(fake_bin, "ruby")
+    File.write(
+      fake_ruby,
+      "#!/bin/sh\n: > \"#{fake_ruby_marker}\"\nexec /bin/cat \"#{stale_gate_path}\"\n"
+    )
+    File.chmod(0o755, fake_ruby)
+
+    result, _stderr, status = evaluate(
+      input,
+      env: { "PATH" => "#{fake_bin}:#{ENV.fetch('PATH')}" }
+    )
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    violation_codes = result.fetch("violations").map { |item| item.fetch("code") }
+    assert_equal ["stage-dependency-replay-mismatch"], violation_codes
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    refute File.exist?(fake_ruby_marker)
+  end
+
+  def test_ruby_and_bundler_preload_environment_cannot_run_in_replay
+    ruby_probe_dir = Dir.mktmpdir("replay-ruby-preload")
+    (@workflow_control_install_roots ||= []) << ruby_probe_dir
+    ruby_marker = File.join(ruby_probe_dir, "ruby-preload-ran")
+    File.write(
+      File.join(ruby_probe_dir, "replay_preload_probe.rb"),
+      "File.write(#{ruby_marker.dump}, \"ran\")\n"
+    )
+
+    bundle_probe_dir = Dir.mktmpdir("replay-bundle-preload")
+    (@workflow_control_install_roots ||= []) << bundle_probe_dir
+    bundle_marker = File.join(bundle_probe_dir, "bundle-preload-ran")
+    bundle_gemfile = File.join(bundle_probe_dir, "Gemfile")
+    File.write(
+      bundle_gemfile,
+      "source \"https://rubygems.org\"\nFile.write(#{bundle_marker.dump}, \"ran\")\n"
+    )
+
+    cases = {
+      "RUBYOPT and RUBYLIB" => [
+        {
+          "RUBYOPT" => "-rreplay_preload_probe",
+          "RUBYLIB" => ruby_probe_dir
+        },
+        ruby_marker
+      ],
+      "RUBYOPT and BUNDLE_GEMFILE" => [
+        {
+          "RUBYOPT" => "-rbundler/setup",
+          "BUNDLE_GEMFILE" => bundle_gemfile
+        },
+        bundle_marker
+      ]
+    }
+
+    cases.each do |label, (runtime_env, marker)|
+      result, stderr, status = evaluate_with_runtime_env(input_for, runtime_env)
+
+      assert status.success?, "#{label}: #{stderr}"
+      assert_equal "accepted", result.fetch("status"), label
+      refute File.exist?(marker), label
+    end
+  end
+
+  def test_replay_child_inherits_only_the_minimal_deterministic_environment
+    probe_dir = Dir.mktmpdir("replay-child-env")
+    (@workflow_control_install_roots ||= []) << probe_dir
+    marker = File.join(probe_dir, "inherited-env.json")
+    forbidden_names = %w[
+      BUNDLE_GEMFILE
+      BUNDLE_WITH
+      DYLD_INSERT_LIBRARIES
+      GEM_HOME
+      GEM_PATH
+      LD_PRELOAD
+      RUBYGEMS_GEMDEPS
+      RUBYLIB
+      RUBYOPT
+    ]
+    probe_body = <<~RUBY
+      require "json"
+      inherited = ENV.keys & #{forbidden_names.inspect}
+      File.write(#{marker.dump}, JSON.generate(inherited.sort))
+      load #{STAGE_DEPENDENCY_GATE.dump}
+    RUBY
+    helper = installed_preflight_with_stage_helper(probe_body)
+    runtime_env = forbidden_names.to_h { |name| [name, "caller-controlled"] }
+    runtime_env["RUBYOPT"] = ""
+    runtime_env["DYLD_INSERT_LIBRARIES"] = ""
+    runtime_env["LD_PRELOAD"] = ""
+
+    result, stderr, status = evaluate_with_runtime_env(input_for, runtime_env, helper: helper)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_equal [], JSON.parse(File.read(marker, encoding: "UTF-8"))
   end
 
   def test_fixed_replay_helper_timeout_nonzero_and_invalid_output_fail_closed

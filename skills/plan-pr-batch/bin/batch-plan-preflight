@@ -6,6 +6,7 @@ require "json"
 require "date"
 require "digest"
 require "openssl"
+require "rbconfig"
 require "tempfile"
 require "time"
 require "timeout"
@@ -69,6 +70,11 @@ module BatchPlanPreflight
     "stage-dependency-gate"
   )
   STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS = 5
+  STAGE_DEPENDENCY_REPLAY_ENV = {
+    "LANG" => "C",
+    "LC_ALL" => "C",
+    "TZ" => "UTC"
+  }.freeze
   WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
   WORKFLOW_CONTROL_TRUST_CONFIG_PATH = File.join(
     WORKFLOW_CONTROL_TRUST_CONFIG_DIR,
@@ -686,6 +692,8 @@ module BatchPlanPreflight
         Tempfile.create("stage-dependency-replay-stdout") do |stdout_file|
           Tempfile.create("stage-dependency-replay-stderr") do |stderr_file|
             pid = Process.spawn(
+              STAGE_DEPENDENCY_REPLAY_ENV,
+              RbConfig.ruby,
               helper_path,
               "--trusted-plan",
               plan_file.path,
@@ -694,7 +702,8 @@ module BatchPlanPreflight
               in: replay_file.path,
               out: stdout_file.path,
               err: stderr_file.path,
-              pgroup: true
+              pgroup: true,
+              unsetenv_others: true
             )
             status = wait_for_stage_dependency_gate(pid)
             if status == :timeout
