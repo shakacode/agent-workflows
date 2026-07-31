@@ -686,11 +686,25 @@ module PrCiReadiness
       [[], false, "exact-head check-run inventory failed: #{e.message}"]
     end
 
+    # Commit statuses are read from the combined status endpoint
+    # (`/commits/{ref}/status`), not the status-history list endpoint
+    # (`/commits/{ref}/statuses`). The list endpoint's rows carry no commit
+    # SHA at all, so exact-head identity cannot be asserted per row. The
+    # combined endpoint echoes the resolved commit as a top-level `sha`, which
+    # is an independent confirmation from GitHub that the statuses returned
+    # belong to the exact head we asked about -- a missing or mismatched `sha`
+    # fails closed. The combined endpoint also returns only the most recent
+    # status per context, which is exactly what the history-list dedupe below
+    # was approximating, so scope contents are unchanged.
     def fetch_exact_head_statuses(repo, head_sha)
-      rows = fetch_paginated_array(
-        "repos/#{repo}/commits/#{head_sha}/statuses?per_page=100&page=%<page>s"
+      bind_head = lambda do |payload|
+        ensure_exact_head!(payload, head_sha, "combined commit status", sha_key: "sha")
+      end
+      rows = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/status?per_page=100&page=%<page>s",
+        "statuses",
+        validate_page: bind_head
       ).map do |row|
-        ensure_exact_head!(row, head_sha, "status context", sha_key: "sha")
         {
           "kind" => "status",
           "id" => row["id"],
@@ -700,20 +714,28 @@ module PrCiReadiness
           "head_sha" => head_sha
         }
       end
-      # GitHub returns commit status history newest first. Only the first row
-      # for an exact context is current; later duplicates are historical.
+      # Defense in depth: the combined endpoint already collapses each context
+      # to its current status, so this is a no-op against GitHub today. It is
+      # retained so a duplicated context could never inflate the scope, and it
+      # keeps the newest-first row for a context if one ever appears twice.
       rows = rows.uniq { |row| row["name"] }
       [rows, true, nil]
     rescue StandardError => e
       [[], false, "exact-head status-context inventory failed: #{e.message}"]
     end
 
-    def fetch_paginated_collection(endpoint_template, key)
+    # `validate_page` runs against every raw page payload before its rows are
+    # trusted, so envelope-level identity (such as the combined status
+    # endpoint's top-level `sha`) is asserted on each page, not just the first.
+    def fetch_paginated_collection(endpoint_template, key, validate_page: nil)
       page = 1
       rows = []
       expected_total = nil
       loop do
         payload = capture_json!("gh", "api", format(endpoint_template, page:))
+        raise Error, "#{key} response was not an object" unless payload.is_a?(Hash)
+
+        validate_page&.call(payload)
         page_rows = payload.fetch(key)
         raise Error, "#{key} response was not an array" unless page_rows.is_a?(Array)
 
@@ -734,21 +756,6 @@ module PrCiReadiness
         raise Error, "#{key} pagination was incomplete: expected #{expected_total}, received #{rows.length}"
       end
 
-      rows
-    end
-
-    def fetch_paginated_array(endpoint_template)
-      page = 1
-      rows = []
-      loop do
-        page_rows = capture_json!("gh", "api", format(endpoint_template, page:))
-        raise Error, "status response was not an array" unless page_rows.is_a?(Array)
-
-        rows.concat(page_rows)
-        break if page_rows.length < 100
-
-        page += 1
-      end
       rows
     end
 
