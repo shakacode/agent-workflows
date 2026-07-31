@@ -65,11 +65,21 @@ module AutonomousMergeRuntimeTrust
     skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
     .agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
   ].freeze
+  DEFAULT_CALIBRATION_PATH = File.expand_path(
+    "../fixtures/autonomous-merge-reviewed-heads-calibration.json",
+    __dir__
+  )
 
   module_function
 
-  def verify(repo_root:, base_sha:, claim:, calibration_path:, git_command: nil)
-    sources = runtime_sources(calibration_path)
+  def verify(
+    repo_root:, base_sha:, claim:, calibration_path:, git_command: nil, trusted_sources: nil
+  )
+    sources = trusted_runtime_sources(calibration_path)
+    if trusted_sources && sources != trusted_sources
+      return rejected(claim, ["prevalidated runtime source binding mismatch"])
+    end
+
     unreadable = sources.filter_map do |role, source|
       "#{role} runtime source is unavailable" unless File.file?(source.fetch(:path))
     end
@@ -95,6 +105,40 @@ module AutonomousMergeRuntimeTrust
     end
   rescue SystemCallError, ExecutableError => e
     rejected(claim, ["runtime trust verification failed: #{e.message}"])
+  end
+
+  def trusted_runtime_sources(calibration_path)
+    runtime_sources(calibration_path).each_with_object({}) do |(role, source), trusted|
+      trusted[role] = source.merge(
+        path: trusted_runtime_source_path(
+          source.fetch(:path),
+          "autonomous merge #{role}",
+          executable: role == "helper"
+        )
+      )
+    end
+  end
+
+  def trusted_runtime_source_path(path, label, executable: false)
+    resolved = File.realpath(path)
+    stat = File.lstat(resolved)
+    unless stat.file? && [0, Process.euid].include?(stat.uid) && (stat.mode & 0o022).zero?
+      raise ExecutableError, "#{label} runtime source is not a trusted regular file"
+    end
+    if executable && (stat.mode & 0o111).zero?
+      raise ExecutableError, "#{label} runtime source is not executable"
+    end
+
+    ancestor = File.dirname(resolved)
+    loop do
+      validate_trusted_executable_ancestor!(File.lstat(ancestor), label)
+      break if ancestor == File.dirname(ancestor)
+
+      ancestor = File.dirname(ancestor)
+    end
+    resolved
+  rescue SystemCallError => e
+    raise ExecutableError, "#{label} runtime source could not be safely resolved: #{e.message}"
   end
 
   def trusted_git_executable

@@ -758,7 +758,7 @@ class PrMergeSubmitTest < Minitest::Test
       FileUtils.chmod(0o755, git_path)
       autonomous_result_path = File.join(dir, "merge-assurance-receipt.json.replayed.json")
       autonomous_log_path = File.join(dir, "autonomous-replay.log")
-      submit_script = prepare_submit_helper_layout(
+      submit_script, trusted_helper_provenance = prepare_submit_helper_layout(
         dir, autonomous_result_path:, autonomous_log_path:
       )
       warm_stub(dir, gh_path) if mode.include?("timeout")
@@ -767,15 +767,14 @@ class PrMergeSubmitTest < Minitest::Test
       unless receipt_mode == :missing
         write_merge_assurance_receipt(
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
-                        base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
+                        base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir,
+                        trusted_helper_provenance:
         )
       end
       repo_root = File.join(dir, "consumer")
       FileUtils.mkdir_p(repo_root)
       semantic_assessment = File.join(dir, "semantic-assessment.json")
       File.write(semantic_assessment, "{}\n")
-      trusted_helper_provenance =
-        "trusted-base:#{receipt_mode == :mismatched_base_sha ? 'c' * 40 : 'b' * 40}"
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
         subject:, body:, include_merge_assurance_receipt:, receipt_path:,
@@ -832,7 +831,7 @@ class PrMergeSubmitTest < Minitest::Test
       FileUtils.chmod(0o755, git_path)
       autonomous_result_path = File.join(dir, "merge-assurance-receipt.json.replayed.json")
       autonomous_log_path = File.join(dir, "autonomous-replay.log")
-      submit_script = prepare_submit_helper_layout(
+      submit_script, trusted_helper_provenance = prepare_submit_helper_layout(
         dir, autonomous_result_path:, autonomous_log_path:
       )
       warm_stub(dir, gh_path)
@@ -840,7 +839,8 @@ class PrMergeSubmitTest < Minitest::Test
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
+                      base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir,
+                      trusted_helper_provenance:
       )
       repo_root = File.join(dir, "consumer")
       FileUtils.mkdir_p(repo_root)
@@ -852,6 +852,7 @@ class PrMergeSubmitTest < Minitest::Test
           "owner/repo", HEAD_SHA, true, true,
           include_merge_assurance_receipt: true, receipt_path:,
           script: submit_script, repo_root:, semantic_assessment:,
+          trusted_helper_provenance:,
           trusted_git_executable: git_path, trusted_gh_executable: gh_path
         )
       ) do |stdin, stdout, stderr, wait_thread|
@@ -997,7 +998,10 @@ class PrMergeSubmitTest < Minitest::Test
     args
   end
 
-  def write_merge_assurance_receipt(path, mode:, repo:, head:, base_ref:, host:, pr_number:, gh_dir:)
+  def write_merge_assurance_receipt(
+    path, mode:, repo:, head:, base_ref:, host:, pr_number:, gh_dir:,
+    trusted_helper_provenance:
+  )
     now = Time.now.utc
     base_sha = mode == :mismatched_base_sha ? "c" * 40 : "b" * 40
     checked_at = (now - 1).iso8601
@@ -1036,7 +1040,7 @@ class PrMergeSubmitTest < Minitest::Test
       "verdict" => "autonomous-merge-eligible",
       "head_sha" => head,
       "policy_provenance" => "git:#{base_sha}",
-      "helper_provenance" => "trusted-base:#{base_sha}",
+      "helper_provenance" => trusted_helper_provenance,
       "helper_trust" => {
         "status" => "mechanically-verified",
         "manifest" => {
@@ -1145,20 +1149,25 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def prepare_submit_helper_layout(root, autonomous_result_path:, autonomous_log_path:)
-    bin_dir = File.join(root, "runtime/skills/pr-batch/bin")
-    lib_dir = File.join(root, "runtime/skills/pr-batch/lib")
+    pack_root = File.join(root, "runtime")
+    bin_dir = File.join(pack_root, "skills/pr-batch/bin")
+    lib_dir = File.join(pack_root, "skills/pr-batch/lib")
     FileUtils.mkdir_p([bin_dir, lib_dir])
     submit_script = File.join(bin_dir, "pr-merge-submit")
     assurance_script = File.join(bin_dir, "merge-assurance")
     FileUtils.cp(SCRIPT, submit_script)
     FileUtils.cp(ASSURANCE_SCRIPT, assurance_script)
-    FileUtils.cp(
-      File.expand_path("../lib/autonomous_merge_runtime_trust.rb", __dir__),
-      File.join(lib_dir, "autonomous_merge_runtime_trust.rb")
-    )
+    runtime_sources = AutonomousMergeRuntimeTrust.runtime_sources(
+      AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+    ).each_with_object({}) do |(role, source), copied|
+      destination = File.join(pack_root, source.fetch(:tree_paths).first)
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp(source.fetch(:path), destination)
+      copied[role] = source.merge(path: destination)
+    end
     FileUtils.chmod(0o755, submit_script)
     FileUtils.chmod(0o755, assurance_script)
-    autonomous_helper = File.join(bin_dir, "autonomous-merge-eligibility")
+    autonomous_helper = runtime_sources.fetch("helper").fetch(:path)
     File.write(autonomous_helper, <<~RUBY)
       #!#{RbConfig.ruby}
       require "json"
@@ -1172,7 +1181,9 @@ class PrMergeSubmitTest < Minitest::Test
       STDOUT.write(File.read(#{autonomous_result_path.inspect}))
     RUBY
     FileUtils.chmod(0o755, autonomous_helper)
-    submit_script
+    provenance =
+      "verified-installed-pack:#{AutonomousMergeRuntimeTrust.installed_pack_digest(runtime_sources)}"
+    [submit_script, provenance]
   end
 
   def with_fake_gh(_dir)

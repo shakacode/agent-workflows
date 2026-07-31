@@ -249,13 +249,13 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_final_output_never_reports_a_malformed_head_sha
-    Dir.mktmpdir("autonomous-merge-invalid-head-output-test") do |root|
+    Dir.mktmpdir("autonomous-merge-invalid-head-output-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       objective = evidence(base_sha:, files: files(1)).fetch("objective")
       objective["head_sha"] = "not-a-full-sha"
 
-      Dir.mktmpdir("autonomous-merge-invalid-head-input") do |input_root|
+      Dir.mktmpdir("autonomous-merge-invalid-head-input", SAFE_TMP_PARENT) do |input_root|
         objective_path = File.join(input_root, "objective.json")
         semantic_path = File.join(input_root, "semantic.json")
         harness_path = File.join(input_root, "harness.rb")
@@ -859,7 +859,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_unestablished_helper_provenance_fails_closed
-    Dir.mktmpdir("autonomous-merge-helper-provenance-test") do |root|
+    Dir.mktmpdir("autonomous-merge-helper-provenance-test", SAFE_TMP_PARENT) do |root|
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       calibration_path = write_calibration(root)
       input = JSON.generate(evidence(base_sha:, files: files(1)))
@@ -880,7 +880,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_unverified_stdin_objective_cannot_establish_a_passing_verdict
-    Dir.mktmpdir("autonomous-merge-unverified-stdin-test") do |root|
+    Dir.mktmpdir("autonomous-merge-unverified-stdin-test", SAFE_TMP_PARENT) do |root|
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       calibration_path = write_calibration(root)
       result = invoke(
@@ -896,7 +896,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_trusted_base_claim_fails_when_any_runtime_source_is_absent_from_the_tree
-    Dir.mktmpdir("autonomous-merge-missing-runtime-test") do |root|
+    Dir.mktmpdir("autonomous-merge-missing-runtime-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       result = invoke(
@@ -911,7 +911,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_trusted_base_claim_rejects_runtime_bytes_modified_in_the_claimed_tree
-    Dir.mktmpdir("autonomous-merge-modified-runtime-test") do |root|
+    Dir.mktmpdir("autonomous-merge-modified-runtime-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       helper_path = File.join(root, "skills/pr-batch/bin/autonomous-merge-eligibility")
@@ -935,7 +935,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_installed_pack_claim_binds_the_selected_calibration_bytes
-    Dir.mktmpdir("autonomous-merge-installed-pack-digest-test") do |root|
+    Dir.mktmpdir("autonomous-merge-installed-pack-digest-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       provenance = installed_pack_provenance(calibration_path)
@@ -955,7 +955,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_repo_contained_semantic_assessment_cannot_establish_a_passing_verdict
-    Dir.mktmpdir("autonomous-merge-repo-semantic-test") do |root|
+    Dir.mktmpdir("autonomous-merge-repo-semantic-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       evaluation = evidence(base_sha:, files: files(1))
@@ -969,12 +969,12 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_unavailable_or_unreadable_semantic_assessment_returns_structured_unknown
-    Dir.mktmpdir("autonomous-merge-unreadable-semantic-test") do |root|
+    Dir.mktmpdir("autonomous-merge-unreadable-semantic-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       evaluation = evidence(base_sha:, files: files(1))
 
-      Dir.mktmpdir("autonomous-merge-semantic-inputs") do |input_root|
+      Dir.mktmpdir("autonomous-merge-semantic-inputs", SAFE_TMP_PARENT) do |input_root|
         directory_path = File.join(input_root, "assessment-directory")
         missing_path = File.join(input_root, "missing-assessment.json")
         unreadable_path = File.join(input_root, "unreadable-assessment.json")
@@ -1016,7 +1016,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_malformed_evaluation_and_calibration_inputs_return_structured_unknown
-    Dir.mktmpdir("autonomous-merge-eligibility-malformed-test") do |root|
+    Dir.mktmpdir("autonomous-merge-eligibility-malformed-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       malformed_json = invoke(root:, calibration_path:, stdin_data: "{")
@@ -1186,7 +1186,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       command.concat(["--trusted-helper-provenance", resolved_provenance])
     end
     if evaluation
-      Dir.mktmpdir("autonomous-merge-live-input") do |input_root|
+      Dir.mktmpdir("autonomous-merge-live-input", SAFE_TMP_PARENT) do |input_root|
         objective_path = File.join(input_root, "objective.json")
         resolved_semantic_path = semantic_path || File.join(input_root, "semantic.json")
         fake_gh = File.join(input_root, "gh")
@@ -1215,7 +1215,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil)
-    Dir.mktmpdir("autonomous-merge-eligibility-test") do |root|
+    Dir.mktmpdir("autonomous-merge-eligibility-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root, reviewed_heads_mode:)
       base_sha = initialize_trusted_base(root, policy_yaml:, include_runtime: true)
       evaluation = yield(base_sha)

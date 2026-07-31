@@ -17,6 +17,7 @@ class MergeAssuranceTest < Minitest::Test
   DIFF_IDENTITY = "c" * 64
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
   SAFE_TMP_PARENT = File.expand_path("../../..", __dir__)
+  SYSTEM_GIT = AutonomousMergeRuntimeTrust.trusted_git_executable
 
   def setup
     @fake_gh_dir = Dir.mktmpdir("merge-assurance-gh", SAFE_TMP_PARENT)
@@ -122,8 +123,8 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal(
       [
         "--repo-root", execution.fetch(:repo_root),
-        "--trusted-base", BASE_SHA,
-        "--trusted-helper-provenance", "trusted-base:#{BASE_SHA}",
+        "--trusted-base", execution.fetch(:base_sha),
+        "--trusted-helper-provenance", execution.fetch(:provenance),
         "--repo", "owner/repo",
         "--pr", "42",
         "--semantic-assessment", execution.fetch(:semantic_assessment)
@@ -157,6 +158,30 @@ class MergeAssuranceTest < Minitest::Test
     refute execution.fetch(:poisoned_ruby_ran)
   end
 
+  def test_cli_authenticates_the_complete_replay_runtime_before_executing_the_sibling
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    executions = [
+      run_replay_cli(
+        supplied: autonomous,
+        recomputed: autonomous,
+        helper_writable: true
+      ),
+      run_replay_cli(
+        supplied: autonomous,
+        recomputed: autonomous,
+        helper_tampered: true
+      )
+    ]
+
+    executions.each do |execution|
+      refute execution.fetch(:status).success?
+      assert execution.fetch(:result).fetch("failures").any? do |message|
+        message.include?("autonomous replay runtime is not trusted")
+      end
+      assert_empty execution.fetch(:helper_call)
+    end
+  end
+
   def test_cli_accepts_coordinator_established_absolute_git_and_gh_executables
     autonomous = autonomous_result("autonomous-merge-eligible")
 
@@ -171,6 +196,37 @@ class MergeAssuranceTest < Minitest::Test
       execution.fetch(:trusted_gh_executable),
       execution.dig(:helper_call, "environment", "AUTONOMOUS_MERGE_GH")
     )
+  end
+
+  def test_preexecution_runtime_authentication_accepts_a_complete_trusted_base
+    Dir.mktmpdir("merge-assurance-trusted-base-runtime", SAFE_TMP_PARENT) do |root|
+      repo_root = File.join(root, "consumer")
+      system(SYSTEM_GIT, "init", "--quiet", repo_root, exception: true)
+      system(SYSTEM_GIT, "-C", repo_root, "config", "user.email", "test@example.com", exception: true)
+      system(SYSTEM_GIT, "-C", repo_root, "config", "user.name", "Test", exception: true)
+      runtime_sources = AutonomousMergeRuntimeTrust.runtime_sources(
+        AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+      )
+      runtime_sources.each_value do |source|
+        destination = File.join(repo_root, source.fetch(:tree_paths).first)
+        FileUtils.mkdir_p(File.dirname(destination))
+        FileUtils.cp(source.fetch(:path), destination)
+      end
+      system(SYSTEM_GIT, "-C", repo_root, "add", ".", exception: true)
+      system(SYSTEM_GIT, "-C", repo_root, "commit", "--quiet", "-m", "trusted runtime", exception: true)
+      base_sha, status = Open3.capture2(SYSTEM_GIT, "-C", repo_root, "rev-parse", "HEAD")
+      assert status.success?
+      base_sha = base_sha.strip
+
+      helper = MergeAssurance.authenticated_autonomous_replay_helper_path(
+        repo_root:,
+        base_sha:,
+        trusted_helper_provenance: "trusted-base:#{base_sha}",
+        trusted_git_executable: SYSTEM_GIT
+      )
+
+      assert_equal File.realpath(AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.dig("helper", :path)), helper
+    end
   end
 
   def test_trusted_executable_validation_supports_a_safe_homebrew_style_symlink
@@ -304,18 +360,15 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_cli_accepts_exact_trusted_base_and_verified_installed_pack_replays
+    autonomous = autonomous_result("autonomous-merge-eligible")
     results = [
-      autonomous_result("autonomous-merge-eligible"),
-      autonomous_result("autonomous-merge-eligible").merge(
-        "helper_provenance" => "verified-installed-pack:#{'d' * 64}"
-      )
-    ].map do |autonomous|
       run_replay_cli(
         supplied: autonomous,
         recomputed: autonomous,
-        provenance: autonomous.fetch("helper_provenance")
-      )
-    end
+        provenance: "trusted-base:#{BASE_SHA}"
+      ),
+      run_replay_cli(supplied: autonomous, recomputed: autonomous)
+    ]
 
     assert(results.all? { |execution| execution.fetch(:status).success? })
     assert(results.all? { |execution| execution.fetch(:result).fetch("eligible") })
@@ -337,7 +390,7 @@ class MergeAssuranceTest < Minitest::Test
   def test_cli_replay_fails_closed_for_missing_malformed_unknown_and_mismatched_provenance
     autonomous = autonomous_result("autonomous-merge-eligible")
     failures = {
-      missing: "autonomous eligibility sibling is unavailable",
+      missing: "autonomous replay runtime is not trusted",
       malformed: "autonomous eligibility replay returned invalid JSON",
       unknown: "autonomous eligibility replay returned UNKNOWN",
       nonzero: "autonomous eligibility replay failed"
@@ -357,7 +410,7 @@ class MergeAssuranceTest < Minitest::Test
     end
     refute mismatched.fetch(:status).success?
     assert mismatched.fetch(:result).fetch("failures").any? do |message|
-      message.include?("helper provenance does not match coordinator expectation")
+      message.include?("autonomous replay runtime is not trusted")
     end
   end
 
@@ -1830,22 +1883,25 @@ class MergeAssuranceTest < Minitest::Test
   private
 
   def run_replay_cli(
-    supplied:, recomputed:, provenance: "trusted-base:#{BASE_SHA}",
+    supplied:, recomputed:, provenance: nil,
     helper_mode: :result, layout: :flat, semantic_inside_repo: false, extra_env: {},
-    poisoned_ruby: false
+    poisoned_ruby: false, helper_writable: false, helper_tampered: false
   )
     Dir.mktmpdir("merge-assurance-replay", SAFE_TMP_PARENT) do |root|
-      supplied_path = write_json_fixture(root, "autonomous.json", supplied)
-      recomputed_path = write_json_fixture(root, "recomputed.json", recomputed)
+      supplied_path = File.join(root, "autonomous.json")
+      recomputed_path = File.join(root, "recomputed.json")
       helper_call_path = File.join(root, "helper-call.json")
       trusted_bin = File.join(root, "trusted-bin")
       FileUtils.mkdir_p(trusted_bin)
       trusted_git_executable = File.join(trusted_bin, "git")
       trusted_gh_executable = File.join(trusted_bin, "gh")
-      [trusted_git_executable, trusted_gh_executable].each do |executable|
-        File.write(executable, "#!#{RbConfig.ruby}\nexit 0\n")
-        File.chmod(0o755, executable)
-      end
+      File.write(
+        trusted_git_executable,
+        "#!#{RbConfig.ruby}\nexec(#{SYSTEM_GIT.inspect}, *ARGV)\n"
+      )
+      File.chmod(0o755, trusted_git_executable)
+      File.write(trusted_gh_executable, "#!#{RbConfig.ruby}\nexit 0\n")
+      File.chmod(0o755, trusted_gh_executable)
       real_skill_dir = case layout
                        when :native_plugin_cache
                          File.join(root, "agent-home/plugins/cache/scw/1.0.0/skills/pr-batch")
@@ -1859,11 +1915,8 @@ class MergeAssuranceTest < Minitest::Test
       FileUtils.mkdir_p([bin_dir, lib_dir])
       real_merge_script = File.join(bin_dir, "merge-assurance")
       FileUtils.cp(SCRIPT, real_merge_script)
-      FileUtils.cp(
-        File.expand_path("../lib/autonomous_merge_runtime_trust.rb", __dir__),
-        File.join(lib_dir, "autonomous_merge_runtime_trust.rb")
-      )
-      helper = File.join(bin_dir, "autonomous-merge-eligibility")
+      runtime_sources = copy_replay_runtime(real_skill_dir)
+      helper = runtime_sources.dig("helper", :path)
       unless helper_mode == :missing
         File.write(helper, <<~RUBY)
           #!#{poisoned_ruby ? '/usr/bin/env ruby' : RbConfig.ruby}
@@ -1887,8 +1940,18 @@ class MergeAssuranceTest < Minitest::Test
             STDOUT.write(File.read(#{recomputed_path.inspect}))
           end
         RUBY
-        File.chmod(0o755, helper)
+        File.chmod(helper_writable ? 0o777 : 0o755, helper)
       end
+      effective_provenance = provenance
+      if effective_provenance.nil?
+        effective_provenance = if File.file?(helper)
+                                 digest = AutonomousMergeRuntimeTrust.installed_pack_digest(runtime_sources)
+                                 "verified-installed-pack:#{digest}"
+                               else
+                                 "verified-installed-pack:#{'0' * 64}"
+                               end
+      end
+      File.open(helper, "a") { |file| file.write("\n# tampered after provenance\n") } if helper_tampered
       merge_script = real_merge_script
       if layout == :symlink
         linked_skills = File.join(root, "agent-home/skills")
@@ -1899,6 +1962,19 @@ class MergeAssuranceTest < Minitest::Test
 
       repo_root = File.join(root, "consumer")
       FileUtils.mkdir_p(repo_root)
+      base_sha = BASE_SHA
+      if effective_provenance.start_with?("trusted-base:")
+        base_sha = initialize_replay_trusted_base(repo_root, runtime_sources)
+        effective_provenance = "trusted-base:#{base_sha}"
+      end
+      supplied = JSON.parse(JSON.generate(supplied))
+      recomputed = JSON.parse(JSON.generate(recomputed))
+      [supplied, recomputed].each do |result|
+        result["helper_provenance"] = effective_provenance
+        result["policy_provenance"] = "git:#{base_sha}"
+      end
+      write_json_fixture(root, "autonomous.json", supplied)
+      write_json_fixture(root, "recomputed.json", recomputed)
       semantic_assessment = if semantic_inside_repo
                               File.join(repo_root, "semantic-assessment.json")
                             else
@@ -1906,7 +1982,9 @@ class MergeAssuranceTest < Minitest::Test
                             end
       File.write(semantic_assessment, "{}\n")
       ci_path = write_json_fixture(root, "ci.json", fresh_ready_ci)
-      context_path = write_json_fixture(root, "context.json", context("auto_merge_when_gates_pass"))
+      replay_context = context("auto_merge_when_gates_pass")
+      replay_context.fetch("base")["sha"] = base_sha
+      context_path = write_json_fixture(root, "context.json", replay_context)
       poisoned_ruby_marker = File.join(root, "poisoned-ruby-ran")
       if poisoned_ruby
         poisoned_bin = File.join(root, "poisoned-bin")
@@ -1929,7 +2007,7 @@ class MergeAssuranceTest < Minitest::Test
         "--context", context_path,
         "--repo-root", repo_root,
         "--semantic-assessment", semantic_assessment,
-        "--trusted-helper-provenance", provenance,
+        "--trusted-helper-provenance", effective_provenance,
         "--trusted-git-executable", trusted_git_executable,
         "--trusted-gh-executable", trusted_gh_executable
       )
@@ -1938,13 +2016,61 @@ class MergeAssuranceTest < Minitest::Test
         result: JSON.parse(stdout),
         stderr:,
         repo_root:,
+        base_sha:,
         semantic_assessment:,
         trusted_git_executable: File.realpath(trusted_git_executable),
         trusted_gh_executable: File.realpath(trusted_gh_executable),
+        provenance: effective_provenance,
         helper_call: File.exist?(helper_call_path) ? JSON.parse(File.read(helper_call_path)) : {},
         poisoned_ruby_ran: File.exist?(poisoned_ruby_marker)
       }
     end
+  end
+
+  def copy_replay_runtime(real_skill_dir)
+    pack_root = File.expand_path("../..", real_skill_dir)
+    sources = AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.each_with_object({}) do |(role, source), copied|
+      tree_path = source.fetch(:tree_paths).first
+      destination = if tree_path.start_with?("skills/pr-batch/")
+                      File.join(real_skill_dir, tree_path.delete_prefix("skills/pr-batch/"))
+                    else
+                      File.join(pack_root, tree_path)
+                    end
+      unless role == "helper"
+        FileUtils.mkdir_p(File.dirname(destination))
+        FileUtils.cp(source.fetch(:path), destination)
+      end
+      copied[role] = source.merge(path: destination)
+    end
+    calibration_path = File.join(
+      real_skill_dir,
+      "fixtures/autonomous-merge-reviewed-heads-calibration.json"
+    )
+    FileUtils.mkdir_p(File.dirname(calibration_path))
+    FileUtils.cp(AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH, calibration_path)
+    sources.merge(
+      "calibration-decision" => {
+        path: calibration_path,
+        tree_paths: AutonomousMergeRuntimeTrust::CALIBRATION_TREE_PATHS
+      }
+    )
+  end
+
+  def initialize_replay_trusted_base(repo_root, runtime_sources)
+    system(SYSTEM_GIT, "init", "--quiet", repo_root, exception: true)
+    system(SYSTEM_GIT, "-C", repo_root, "config", "user.email", "test@example.com", exception: true)
+    system(SYSTEM_GIT, "-C", repo_root, "config", "user.name", "Test", exception: true)
+    runtime_sources.each_value do |source|
+      destination = File.join(repo_root, source.fetch(:tree_paths).first)
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp(source.fetch(:path), destination)
+    end
+    system(SYSTEM_GIT, "-C", repo_root, "add", ".", exception: true)
+    system(SYSTEM_GIT, "-C", repo_root, "commit", "--quiet", "-m", "trusted runtime", exception: true)
+    base_sha, status = Open3.capture2(SYSTEM_GIT, "-C", repo_root, "rev-parse", "HEAD")
+    raise "trusted runtime commit is unavailable" unless status.success?
+
+    base_sha.strip
   end
 
   def write_json_fixture(root, name, value)

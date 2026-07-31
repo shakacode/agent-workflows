@@ -204,9 +204,14 @@ module MergeAssurance
     end
 
     validate_semantic_assessment_path!(repo_root, semantic_assessment)
-    helper = autonomous_replay_helper_path
     trusted_git = trusted_executable_path(trusted_git_executable, "--trusted-git-executable")
     trusted_gh = trusted_executable_path(trusted_gh_executable, "--trusted-gh-executable")
+    helper = authenticated_autonomous_replay_helper_path(
+      repo_root:,
+      base_sha: context.dig("base", "sha"),
+      trusted_helper_provenance:,
+      trusted_git_executable: trusted_git
+    )
     args = [
       "--repo-root", repo_root,
       "--trusted-base", context.dig("base", "sha"),
@@ -248,6 +253,36 @@ module MergeAssurance
     replayed
   rescue JSON::ParserError => e
     raise Error, "autonomous eligibility replay returned invalid JSON: #{e.message}"
+  end
+
+  def authenticated_autonomous_replay_helper_path(
+    repo_root:, base_sha:, trusted_helper_provenance:, trusted_git_executable:
+  )
+    trusted_sources = AutonomousMergeRuntimeTrust.trusted_runtime_sources(
+      AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+    )
+    verified_helper_path = trusted_sources.fetch("helper").fetch(:path)
+    runtime_trust = AutonomousMergeRuntimeTrust.verify(
+      repo_root:,
+      base_sha:,
+      claim: trusted_helper_provenance,
+      calibration_path: AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH,
+      git_command: trusted_git_executable,
+      trusted_sources:
+    )
+    unless runtime_trust.accepted && runtime_trust.provenance == trusted_helper_provenance
+      detail = runtime_trust.errors.join("; ")
+      raise Error, "autonomous replay runtime is not trusted: #{detail}"
+    end
+
+    sibling_path = autonomous_replay_helper_path
+    unless sibling_path == verified_helper_path
+      raise Error, "autonomous replay runtime helper does not match the fixed sibling"
+    end
+
+    verified_helper_path
+  rescue AutonomousMergeRuntimeTrust::ExecutableError, SystemCallError => e
+    raise Error, "autonomous replay runtime is not trusted: #{e.message}"
   end
 
   def trusted_executable_path(path, label)

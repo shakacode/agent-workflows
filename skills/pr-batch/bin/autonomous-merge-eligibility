@@ -8,7 +8,7 @@ require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_evidence"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
-default_calibration = File.expand_path("../fixtures/autonomous-merge-reviewed-heads-calibration.json", __dir__)
+default_calibration = AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
 options = { calibration_decision: default_calibration }
 OptionParser.new do |parser|
   parser.on("--repo-root PATH") { |value| options[:repo_root] = value }
