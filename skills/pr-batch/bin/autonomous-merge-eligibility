@@ -54,8 +54,9 @@ emit_unknown("--trusted-base is required") unless options[:trusted_base]
 
 repo_root = options.fetch(:repo_root)
 trusted_base = options.fetch(:trusted_base)
+git_command = ENV.fetch("AUTONOMOUS_MERGE_GIT", "git")
 base_sha, base_status = Open3.capture2(
-  "git", "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
+  git_command, "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
 )
 emit_unknown("trusted base is unavailable: #{trusted_base}") unless base_status.success?
 trusted_helper_claim = options[:trusted_helper_provenance]
@@ -197,7 +198,7 @@ end
 
 policy_path = ".agents/agent-workflow.yml"
 policy_entry, policy_entry_status = Open3.capture2(
-  "git", "-C", repo_root, "ls-tree", "--name-only", base_sha.strip, "--", policy_path
+  git_command, "-C", repo_root, "ls-tree", "--name-only", base_sha.strip, "--", policy_path
 )
 unless policy_entry_status.success?
   emit_unknown("trusted-base policy presence cannot be established",
@@ -205,7 +206,7 @@ unless policy_entry_status.success?
 end
 if policy_entry.lines.map(&:strip).include?(policy_path)
   policy_yaml, policy_status = Open3.capture2(
-    "git", "-C", repo_root, "show", "#{base_sha.strip}:#{policy_path}"
+    git_command, "-C", repo_root, "show", "#{base_sha.strip}:#{policy_path}"
   )
   unless policy_status.success?
     emit_unknown("trusted-base policy cannot be retrieved",
@@ -214,7 +215,7 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
   end
   policy = AutonomousMergePolicy.parse(policy_yaml)
   policy_blob, blob_status = Open3.capture2(
-    "git", "-C", repo_root, "rev-parse", "#{base_sha.strip}:#{policy_path}"
+    git_command, "-C", repo_root, "rev-parse", "#{base_sha.strip}:#{policy_path}"
   )
   policy_provenance = if blob_status.success?
                         "git:#{base_sha.strip}:#{policy_path}@#{policy_blob.strip}"

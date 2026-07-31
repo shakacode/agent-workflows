@@ -487,6 +487,8 @@ Run:
   --repo-root . \
   --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
   --trusted-helper-provenance "${TRUSTED_HELPER_PROVENANCE}" \
+  --trusted-git-executable "${TRUSTED_GIT_EXECUTABLE}" \
+  --trusted-gh-executable "${TRUSTED_GH_EXECUTABLE}" \
   > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
@@ -496,7 +498,12 @@ eligibility evaluator with the coordinator-owned semantic assessment and
 independently established helper provenance, then requires the complete live
 result to equal the supplied result. Every merge caller must generate a fresh
 eligible receipt and pass it to `pr-merge-submit`; the submit helper requires
-the same replay inputs and reruns the evaluator before mutation.
+the same replay inputs and exact coordinator-established absolute git and gh
+paths, and reruns the evaluator before mutation. The helpers resolve symlinks,
+reject unsafe executable targets and directory chains, and never discover these
+tools through `PATH`. A current-user-owned group-writable ancestor is supported
+for Homebrew layouts and explicitly trusts the other members of that group;
+world-writable or foreign-owned paths remain invalid.
 `merge_authority: none` remains a no-merge state and can never produce an
 eligible receipt. Keep this gate conceptually separate from batch-plan
 preflight.
@@ -828,7 +835,8 @@ When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt and the identical repo-root, semantic-assessment, and trusted-helper
-provenance inputs unconditionally. The helper replays autonomous eligibility
+provenance inputs plus the identical trusted absolute git and gh paths
+unconditionally. The helper replays autonomous eligibility
 before preserving read-only, idempotent observation of an exact terminal merge,
 and uses GitHub's `enqueuePullRequest` only when the base branch is controlled
 by a merge queue. An exact open PR on a queue-disabled base fails closed before
