@@ -3,6 +3,24 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 RUBOCOP_VERSION=$(tr -d '[:space:]' < .rubocop-version)
+JSON_SCHEMER_VERSION=$(tr -d '[:space:]' < .json-schemer-version)
+
+echo "== validation dependencies =="
+JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby - <<'RUBY'
+version = ENV.fetch("JSON_SCHEMER_VERSION")
+
+begin
+  gem "json_schemer", version
+  require "json_schemer"
+rescue Gem::LoadError => e
+  warn "Install json_schemer #{version}: gem install json_schemer -v #{version} --no-document"
+  warn e.message
+  exit 1
+end
+
+actual = Gem.loaded_specs.fetch("json_schemer").version.to_s
+abort "Expected json_schemer #{version}, got #{actual}" unless actual == version
+RUBY
 
 echo "== license =="
 test -f LICENSE
