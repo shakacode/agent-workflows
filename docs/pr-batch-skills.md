@@ -168,9 +168,9 @@ omit the queue summary and note that queue state is unavailable.
    bound parent relaunch or checker reservation. Without that policy, preserve
    unavailable binding as `UNKNOWN` and continue portable class-based planning.
    Reverify checker freshness and independence when its instance starts.
-   Before worker launch, resolve `PR_BATCH_SKILL_DIR` through the explicit
-   operation-returned named asset chain, then use
-   `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`: a
+   Before worker launch, retain the complete operation-returned `runner`
+   command as the `AGENT_WORKFLOWS_RUNNER` shell array, then use
+   `"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --`: a
    JSON-in/JSON-out selector that requires binding and attestation, records the
    requested/actual route and dispatcher, and chooses only the requested tuple
    or first explicitly authorized ordered fallback. It does not launch workers
@@ -312,8 +312,8 @@ record it and proceed to consolidated triage instead of parking in
   coverage is the specific risk. Direct `ready-for-hosted-ci` labels are a
   human/local user-token path, not a substitute for comment-command dispatch
   from automation. If the trigger reports specific Actions run ids or URLs, pass
-  them to the `bin/pr-ci-readiness` helper beneath the parent of
-  `assets.skills.pr_batch` with `--requested-hosted-run` so
+  them to `"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness --` with
+  `--requested-hosted-run` so
   readiness waits for the explicitly requested current-head hosted runs only; in
   repos with no usable required checks, those requested runs gate readiness
   instead of the full advisory check list.

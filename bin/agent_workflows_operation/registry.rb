@@ -10,6 +10,7 @@ module AgentWorkflowsOperation
     :name,
     :executable,
     :runtime,
+    :installation_trust,
     :instruction_dependencies,
     :mutation,
     :requires_current_provider
@@ -101,15 +102,36 @@ module AgentWorkflowsOperation
           raise RegistryError, "mutating capability #{name} must require a current provider"
         end
 
+        installation_trust = validate_installation_trust!(
+          definition.fetch("installation_trust", []),
+          "capabilities.#{name}.installation_trust"
+        )
+
         [name, Capability.new(
           name: name,
           executable: executable,
           runtime: runtime,
+          installation_trust: installation_trust,
           instruction_dependencies: dependencies,
           mutation: mutation,
           requires_current_provider: current
         )]
       end
+    end
+
+    def validate_installation_trust!(value, label)
+      raise RegistryError, "#{label} must be an array" unless value.is_a?(Array)
+
+      paths = value.map.with_index do |path, index|
+        unless path.is_a?(String) && path.match?(%r{\A\.agents/[a-z][a-z0-9-]*\.json\z})
+          raise RegistryError, "#{label}[#{index}] must name a fixed .agents JSON trust anchor"
+        end
+
+        path
+      end
+      raise RegistryError, "#{label} must not contain duplicates" unless paths.uniq.length == paths.length
+
+      paths
     end
 
     def validate_runtime!(value, label)

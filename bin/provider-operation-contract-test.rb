@@ -99,6 +99,24 @@ class ProviderOperationContractTest < Minitest::Test
     refute_match(%r{git archive.*skills/pr-batch}m, workflow)
   end
 
+  def test_pr_monitoring_requires_bound_readiness_without_raw_github_fallback
+    monitoring = read("skills/pr-monitoring/SKILL.md")
+
+    assert_includes monitoring, '"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness --'
+    assert_includes monitoring, "stop with a provider-contract"
+    refute_match(/pr-ci-readiness.*(?:unavailable|missing).*fall back.*gh pr checks/im, monitoring)
+  end
+
+  def test_readiness_workflows_keep_raw_github_checks_diagnostic_only
+    %w[workflows/adversarial-pr-review.md workflows/pr-processing.md].each do |path|
+      text = read(path)
+      assert_match(/pr-ci-readiness.*owns (?:the )?readiness/im, text, path)
+      refute_match(%r{`pr-ci-readiness`\s*/\s*`gh pr checks`}i, text, path)
+      refute_match(/when `gh pr checks` can answer the readiness question/i, text, path)
+      refute_match(/All GitHub checks.*`gh pr checks/im, text, path)
+    end
+  end
+
   def test_walkthrough_routes_use_the_bound_named_asset_without_picker_fallback
     %w[
       skills/plan-pr-batch/SKILL.md
@@ -309,6 +327,23 @@ class ProviderOperationContractTest < Minitest::Test
       FORBIDDEN_PROVIDER_FALLBACKS.filter_map do |label, pattern|
         "#{path}: contains #{label}" if text.match?(pattern)
       end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_operation_bound_surfaces_do_not_instruct_direct_capability_execution
+    registry = JSON.parse(read("operation-capabilities.json"))
+    capability_names = registry.fetch("capabilities").keys
+    paths = (
+      OPERATION_BOUND_SURFACES +
+      registry.dig("assets", "skills").values +
+      registry.dig("assets", "related_workflows").values +
+      registry.dig("assets", "docs").values
+    ).uniq
+    direct_capability = %r{`bin/(?:#{capability_names.map { |name| Regexp.escape(name) }.join('|')})`}
+    failures = paths.filter_map do |path|
+      "#{path}: instructs direct registered-capability execution" if read(path).match?(direct_capability)
     end
 
     assert_empty failures, failures.join("\n")

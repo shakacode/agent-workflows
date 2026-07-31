@@ -30,9 +30,10 @@ Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command seams remai
 authoritative local policy, but are never substitutes for this provider
 snapshot. Registered semantic mutations run only by appending `CAPABILITY --`
 and its arguments to `"${AGENT_WORKFLOWS_RUNNER[@]}"`.
-The registry exposes `pr-merge-submit` and
-`autonomous-merge-eligibility`; an unavailable capability is a hard stop, not
-permission to execute its underlying path.
+The registry exposes the batch/dispatcher preflights, `pr-ci-readiness`,
+`merge-assurance`, `pr-merge-submit`, and `autonomous-merge-eligibility`; an
+unavailable capability is a hard stop, not permission to execute its underlying
+path.
 
 Use this workflow when an agent is assigned an issue, an existing PR, a PR review-fix pass, or a multi-PR landing plan. The goal is to reduce review turns, CI churn, and follow-up issue noise by doing more local work before asking GitHub to spend reviewer or runner time.
 
@@ -314,7 +315,7 @@ For a PR, gather current state before touching code:
 ```bash
 gh pr view <PR> --json number,title,body,state,isDraft,headRefOid,headRefName,baseRefName,mergeStateStatus,reviewDecision,labels,url,reviews,comments,mergedAt
 gh pr diff <PR> --name-only
-gh pr checks <PR>
+gh pr checks <PR> # diagnostic snapshot only; not merge-readiness evidence
 ```
 
 For public issue/PR targets, run the security preflight from a trusted checkout
@@ -667,8 +668,7 @@ Before dispatcher selection or any worker launch, use the operation-bound
 `PLAN_PR_BATCH_SKILL_DIR` and run the plan's v1 envelope through:
 
 ```bash
-: "${PLAN_PR_BATCH_SKILL_DIR:?set from assets.skills.plan_pr_batch}"
-"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight" \
+"${AGENT_WORKFLOWS_RUNNER[@]}" batch-plan-preflight -- \
   < path/to/batch-plan-preflight-v1.json
 ```
 
@@ -808,7 +808,7 @@ pairs on the actual host; workers must not inherit the coordinator assignment.
 If the runtime cannot apply the planned pair, record `UNKNOWN` and stop before
 spawning instead of silently inheriting or substituting.
 
-Dispatch preflight: JSON-in/JSON-out; select only bound+attested requested tuple or first explicitly authorized ordered fallback; otherwise one dispatch-decision-request v1. Use the operation-bound `PR_BATCH_SKILL_DIR`, then run `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` before launch. Its input supplies the lane state, requested route/dispatcher, explicit route and dispatch authority, and ordered candidates. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. Its output records requested/actual route and dispatcher, reason, authority, `resume_goal`, one active assignment/launch token, or the durable decision request with canonical viable fallback choices. It selects and records only: it never launches workers or mutates a coordination backend. Do not infer authority from generic subagent wording or inherit the coordinator route. Preserve supplied lane state; a replacement requires the prior instance stopped and reconciled. In Goal mode, an authorized `selected` result resumes automatically only after durable persistence; `blocked-user-input` stops on the same persisted decision request.
+Dispatch preflight: JSON-in/JSON-out; select only bound+attested requested tuple or first explicitly authorized ordered fallback; otherwise one dispatch-decision-request v1. Run `"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --` before launch so the helper and its fixed installation trust anchor come from the retained operation. Its input supplies the lane state, requested route/dispatcher, explicit route and dispatch authority, and ordered candidates. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. Its output records requested/actual route and dispatcher, reason, authority, `resume_goal`, one active assignment/launch token, or the durable decision request with canonical viable fallback choices. It selects and records only: it never launches workers or mutates a coordination backend. Do not infer authority from generic subagent wording or inherit the coordinator route. Preserve supplied lane state; a replacement requires the prior instance stopped and reconciled. In Goal mode, an authorized `selected` result resumes automatically only after durable persistence; `blocked-user-input` stops on the same persisted decision request.
 Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
 
 Resolve `base_branch` from repo configuration or inline `AGENTS.md` configuration;
@@ -2377,7 +2377,7 @@ current tool's timeout or a shell timeout when available:
 ```bash
 # Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
 : "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO>
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness -- <PR> --repo <OWNER/REPO>
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 
@@ -2423,9 +2423,9 @@ runs become the gate instead of the full advisory list. A stale requested run fo
 an older head is `UNKNOWN`, not success.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
-Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
-`statusCheckRollup` alone when `gh pr checks` can answer the readiness question more
-directly. Ignore superseded cancelled workflow rows unless they belong to the
+Avoid long-lived `gh ... --watch` commands in agent sessions. The bound
+`pr-ci-readiness` v2 result owns readiness; use raw `gh pr checks` only as
+advisory diagnostics after that result exists. Ignore superseded cancelled workflow rows unless they belong to the
 current head SHA and are required checks or configured review-agent checks.
 
 If `gh` hangs, times out, or cannot refresh live state, mark the affected CI/review
@@ -2616,7 +2616,7 @@ Before saying a PR is ready to merge:
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
 # Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness -- <PR> \
   --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
 ```
 
@@ -2852,7 +2852,7 @@ After ordinary readiness, autonomous eligibility, and any required walkthrough
 or durable human decision are current for the exact head, run:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+"${AGENT_WORKFLOWS_RUNNER[@]}" merge-assurance -- \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
   --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
@@ -2946,7 +2946,7 @@ Auto-merge requires all of the following:
 - The authoring agent did not finalize its own `8/10` or higher score. The `Finalized by` value names a different GitHub account or named GitHub check/app identity, verifiable from the git log or GitHub review/check record. Two sessions running under the same GitHub account, including separate invocations of the same GitHub App bot, do not satisfy this requirement.
 - Score is at least `8/10`; `7/10` permits human merge after review, but not auto-merge.
 - Before triggering auto-merge, the merge actor verifies `Finalized by` against the GitHub review record, checks, or git log, not only the PR body text.
-- All GitHub checks for the current head SHA are complete. An empty full `gh pr checks <PR>` list is `UNKNOWN` / not ready. Skipped checks count as complete only when CI selector output explains them or a maintainer explicitly waives them.
+- The bound `pr-ci-readiness` v2 verdict for the current head SHA is `READY`. An empty or incomplete exact-head scope is `UNKNOWN` / not ready. Skipped checks count as complete only when CI selector output explains them or a maintainer explicitly waives them.
 - The configured Claude review check for the current head SHA completed with an acceptable conclusion, or a qualifying fallback review completed with the same blocker-triage bar. The portable default check name is `claude-review`; consumer repos that use a differently named review check must define that name under their `AGENTS.md` `Review gate` policy and keep every helper or workflow that polls review status aligned with it before relying on that override. Other repo-configured reviewers, including Cursor Bugbot or Codex review, qualify only when visible as a current-head GitHub check/app result or when attested under the reviewer-identity bullet below. Acceptable conclusions are `success`, or `skipped` / `neutral` only when CI selector output or a maintainer waiver explains why the run did not review code. A `failure`, `cancelled`, `timed_out`, or unknown conclusion does not satisfy this gate and must route through the fallback/error-evidence rules. An `action_required` conclusion is an external approval gate; it blocks auto-merge until the approval is satisfied or a maintainer leaves an explicit waiver, and it is not a fallback trigger by itself.
 - **Fallback trigger and final re-poll.** A fallback trigger is recorded in a timestamped PR comment, review comment, workflow log, or check-run log by the merge actor, maintainer, or trusted automation before the fallback result is used. The PR body may link to that trusted evidence, but do not trust pre-existing or author-controlled PR body text as trigger evidence. The trigger must be one of: no current-head configured Claude review check is available from the Checks API after at least two queries separated by at least 180 seconds; the only visible configured Claude review check/run is for an older head SHA, no current-head run is queued or in progress after the same repeated polling, and the stale run/check is identified by head SHA and run/check URL; or the current-head check failed because of quota exhaustion, hard usage-limit enforcement, provider-reported capacity such as HTTP 503, or persistent HTTP 429 after one 60-second retry. Apply the same two-query / 180-second polling wait before declaring any other configured reviewer unavailable for the inline fallback path. Treat 180 seconds as a minimum; extend polling when runner queues are known to be delayed or Actions run visibility is lagging. Capacity or quota triggers must include the exact observed error/quota text, HTTP status, or run URL; vague failure notes are not enough. Before using the fallback result, re-poll the Checks API one final time. Refuse the fallback if a current-head configured reviewer run is then queued or in progress; if the final poll finds a completed current-head run, re-apply the acceptable-conclusion and fallback-trigger rules before using the fallback result.
 - **Inline fallback eligibility.** Prefer a repo-configured automated reviewer when one is available to produce a usable current-head result. Bounded inline Claude Code is disabled by default and is eligible only when no configured reviewer is available to produce that result, the consumer repo's `AGENTS.md` Review gate explicitly enables inline Claude fallback, and the current environment can run the command with tool isolation, MCP isolation, verified diff input, and a budget cap. Silence in `AGENTS.md` is not permission. For inline Claude Code, first confirm the reviewer-identity bullet below can be satisfied; the command alone is not auto-merge evidence. If the consumer repo's `AGENTS.md` configures a fallback review model or budget, use those values. Otherwise omit the model flag, choose a conservative CLI-supported budget cap, record the exact cap before invocation, and set `fallback_budget_usd` to that recorded value for the example command. If no budget cap can be enforced, do not use inline Claude Code as auto-merge evidence. Record the environment evidence, CLI version, budget cap, and any over-budget, partial, or non-zero-exit result before using the review result; an over-budget, partial, or non-zero-exit result blocks auto-merge until a maintainer raises the cap, chooses another qualifying reviewer, or explicitly waives the fallback requirement. Do not silently retry with a higher budget.

@@ -7,10 +7,12 @@ require "json"
 require "json_schemer"
 require "minitest/autorun"
 require "open3"
+require "openssl"
 require "rbconfig"
 require "socket"
 require "shellwords"
 require "tmpdir"
+require "time"
 
 require_relative "agent_workflows_operation/resolver"
 require_relative "agent_workflows_operation/runner"
@@ -493,6 +495,109 @@ class AgentWorkflowsOperationTest < Minitest::Test
       ],
       binding.fetch("runtime").keys.sort
     )
+  end
+
+  def test_capability_runtime_preserves_canonical_executable_classification
+    operation = begin_current_operation
+    root, metadata = AgentWorkflowsOperation::State.new(target: @target).load_operation!(
+      operation.fetch("operation")
+    )
+    runtime = metadata.dig("capabilities", "pr-merge-submit", "runtime")
+
+    assert_equal "0500", runtime.dig("helper", "mode")
+    assert_equal "0500", runtime.dig("assurance-library", "mode")
+    assert_equal 0o500, File.stat(File.join(root, "capabilities/pr-merge-submit", runtime.dig("helper", "path"))).mode & 0o777
+    assert_equal 0o500,
+                 File.stat(File.join(root, "capabilities/pr-merge-submit", runtime.dig("assurance-library", "path"))).mode &
+                 0o777
+  end
+
+  def test_operation_bound_dispatcher_verifies_a_signed_confirmation_with_the_bound_installation_trust
+    signing_key = OpenSSL::PKey::RSA.generate(1024)
+    trust_path = write_dispatcher_trust(signing_key)
+    operation = begin_current_operation
+    input = {
+      "lane_id" => "provider-bound-dispatch",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "provider-bound-instance"
+      }]
+    }
+    command = [*operation.fetch("runner"), "dispatcher-capability-preflight", "--"]
+    stdout, stderr, status = Open3.capture3(*command, stdin_data: JSON.generate(input))
+    assert status.success?, stderr
+    pending = JSON.parse(stdout)
+    confirmation = signed_launch_confirmation(pending.fetch("dispatch"), signing_key)
+
+    stdout, stderr, status = Open3.capture3(
+      *command,
+      stdin_data: JSON.generate(input.merge(
+                                  "active_assignments" => pending.fetch("active_assignments"),
+                                  "launch_confirmation" => confirmation
+                                ))
+    )
+    assert status.success?, stderr
+    assert_equal "replay-already-active", JSON.parse(stdout).fetch("status")
+
+    File.write(trust_path, "{}")
+    error = assert_raises(AgentWorkflowsOperation::RunnerError) do
+      AgentWorkflowsOperation::Runner.new(target: @target).run!(
+        handle: operation.fetch("operation"),
+        capability: "dispatcher-capability-preflight",
+        arguments: []
+      )
+    end
+    assert_includes error.message, "trust anchor changed after operation begin"
+  end
+
+  def test_lifecycle_lists_and_releases_an_operation_with_bound_installation_trust
+    write_dispatcher_trust(OpenSSL::PKey::RSA.generate(1024))
+    operation = begin_current_operation
+
+    inventory = fixture_resolver.list!
+    handles = inventory.fetch("operations").map { |entry| entry.fetch("handle") }
+    assert_includes handles, operation.fetch("operation")
+    assert_equal "released", fixture_resolver.release!(handle: operation.fetch("operation")).fetch("status")
+    assert_empty operation_directories
+  end
+
+  def test_installation_trust_anchor_appearing_after_begin_requires_a_new_operation
+    operation = begin_current_operation
+    write_dispatcher_trust(OpenSSL::PKey::RSA.generate(1024))
+
+    error = assert_raises(AgentWorkflowsOperation::RunnerError) do
+      AgentWorkflowsOperation::Runner.new(target: @target).run!(
+        handle: operation.fetch("operation"),
+        capability: "dispatcher-capability-preflight",
+        arguments: []
+      )
+    end
+    assert_includes error.message, "trust anchor appeared after operation begin"
+  end
+
+  def test_operation_begin_rejects_a_symlinked_installation_trust_anchor
+    agents = File.join(@target, ".agents")
+    FileUtils.mkdir_p(agents)
+    FileUtils.chmod(0o700, agents)
+    File.symlink(@fake_gh, File.join(agents, "dispatcher-launch-trust.json"))
+
+    error = assert_raises(AgentWorkflowsOperation::ResolverError) { begin_current_operation }
+    assert_includes error.message, "installation trust anchor is unsafe"
+    assert_empty operation_directories
+  end
+
+  def test_operation_bound_ci_readiness_uses_the_recorded_github_executable
+    operation = begin_current_operation
+    stdout, stderr, status = Open3.capture3(
+      *operation.fetch("runner"), "pr-ci-readiness", "--", "--self-check"
+    )
+
+    assert status.success?, stderr
+    assert_includes stdout, "gh smoke: ok for fixture-gh"
   end
 
   def test_handles_are_opaque_and_state_permissions_are_private
@@ -1443,6 +1548,25 @@ class AgentWorkflowsOperationTest < Minitest::Test
     end
   end
 
+  def test_registry_rejects_invalid_installation_trust_paths_and_duplicates
+    cases = [
+      "not-an-array",
+      ["../trust.json"],
+      [".agents/trust.yml"],
+      [".agents/dispatcher-launch-trust.json", ".agents/dispatcher-launch-trust.json"]
+    ]
+
+    cases.each do |installation_trust|
+      payload = JSON.parse(File.binread(File.join(@source, "operation-capabilities.json")))
+      payload.fetch("capabilities").fetch("dispatcher-capability-preflight")["installation_trust"] =
+        installation_trust
+
+      assert_raises(AgentWorkflowsOperation::RegistryError) do
+        AgentWorkflowsOperation::Registry.new(payload, @source)
+      end
+    end
+  end
+
   def test_registry_requires_named_skill_assets
     payload = JSON.parse(File.binread(File.join(@source, "operation-capabilities.json")))
     payload.fetch("assets").delete("skills")
@@ -1522,6 +1646,68 @@ class AgentWorkflowsOperationTest < Minitest::Test
     yield
   ensure
     object.singleton_class.define_method(name, original)
+  end
+
+  def write_dispatcher_trust(signing_key)
+    agents = File.join(@target, ".agents")
+    FileUtils.mkdir_p(agents)
+    FileUtils.chmod(0o700, agents)
+    path = File.join(agents, "dispatcher-launch-trust.json")
+    File.write(path, JSON.generate(
+                       "type" => "agent-workflow-dispatcher-trust-anchor",
+                       "version" => 1,
+                       "agent_workflow_dispatcher_trusted_key_id" => "operation-test-dispatcher-key",
+                       "agent_workflow_dispatcher_trusted_public_key_pem" => signing_key.public_to_pem
+                     ))
+    FileUtils.chmod(0o600, path)
+    path
+  end
+
+  def signed_launch_confirmation(assignment, signing_key)
+    confirmation = {
+      "type" => "launch-confirmation",
+      "version" => 2,
+      "id" => "operation-test-confirmation",
+      "assignment" => assignment,
+      "actual_model" => assignment.dig("route", "model"),
+      "actual_effort" => assignment.dig("route", "effort"),
+      "binding_source" => "dispatcher-bound",
+      "attestation" => "instance-bound",
+      "instance_id" => assignment.fetch("instance_id"),
+      "observed_at" => Time.now.utc.iso8601,
+      "routing_mode" => "explicit",
+      "inherited" => false,
+      "evidence_ref" => "dispatcher-receipt://operation-test",
+      "key_id" => "operation-test-dispatcher-key"
+    }
+    payload = {
+      "type" => "dispatcher-launch-observation",
+      "version" => 1,
+      "confirmation_id" => confirmation.fetch("id"),
+      "key_id" => confirmation.fetch("key_id"),
+      "lane_id" => assignment.fetch("lane_id"),
+      "route" => assignment.fetch("route"),
+      "dispatcher" => assignment.fetch("dispatcher"),
+      "instance_id" => confirmation.fetch("instance_id"),
+      "launch_token" => assignment.fetch("launch_token"),
+      "actual_model" => confirmation.fetch("actual_model"),
+      "actual_effort" => confirmation.fetch("actual_effort"),
+      "binding_source" => confirmation.fetch("binding_source"),
+      "attestation" => confirmation.fetch("attestation"),
+      "observed_at" => confirmation.fetch("observed_at"),
+      "routing_mode" => confirmation.fetch("routing_mode"),
+      "inherited" => confirmation.fetch("inherited"),
+      "evidence_ref" => confirmation.fetch("evidence_ref")
+    }
+    canonical = lambda do |value|
+      case value
+      when Hash then value.keys.sort.to_h { |key| [key, canonical.call(value.fetch(key))] }
+      when Array then value.map { |entry| canonical.call(entry) }
+      else value
+      end
+    end
+    signature = signing_key.sign(OpenSSL::Digest.new("SHA256"), JSON.generate(canonical.call(payload)))
+    confirmation.merge("signature" => [signature].pack("m0"))
   end
 
   def begin_current_operation
@@ -1689,8 +1875,9 @@ class AgentWorkflowsOperationTest < Minitest::Test
       FileUtils.mkdir_p(File.dirname(path))
       File.binwrite(path, content)
     end
-    FileUtils.chmod(0o755, File.join(@source, "skills/pr-batch/bin/pr-merge-submit"))
-    FileUtils.chmod(0o755, File.join(@source, "skills/pr-batch/bin/autonomous-merge-eligibility"))
+    JSON.parse(files.fetch("operation-capabilities.json")).fetch("capabilities").each_value do |capability|
+      FileUtils.chmod(0o755, File.join(@source, capability.fetch("executable")))
+    end
     %w[
       agent-workflow-seam-doctor
       agent-workflows-delivery-state

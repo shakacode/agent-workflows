@@ -191,20 +191,28 @@ module AgentWorkflowsOperation
         end
 
         bundle = File.join(directory, name)
-        verify_bundle_tree!(bundle, binding.fetch("runtime"))
+        verify_bundle_tree!(
+          bundle,
+          binding.fetch("runtime"),
+          binding.fetch("installation_trust", {})
+        )
       end
     rescue KeyError => e
       raise LifecycleError, "operation capability binding is incomplete: #{e.message}"
     end
 
-    def verify_bundle_tree!(bundle, runtime)
+    def verify_bundle_tree!(bundle, runtime, installation_trust)
+      unless runtime.is_a?(Hash) && !runtime.empty? && installation_trust.is_a?(Hash)
+        raise LifecycleError, "operation capability file bindings are malformed"
+      end
+
       root_stat = File.lstat(bundle)
       unless root_stat.directory? && !root_stat.symlink? && root_stat.uid == Process.uid &&
              (root_stat.mode & 0o777) == 0o500
         raise LifecycleError, "operation capability bundle root is unsafe"
       end
 
-      expected_files = runtime.values.map { |recorded| recorded.fetch("path") }.sort
+      expected_files = (runtime.values + installation_trust.values).map { |recorded| recorded.fetch("path") }.sort
       actual_files = []
       Find.find(bundle) do |path|
         next if path == bundle
@@ -228,8 +236,17 @@ module AgentWorkflowsOperation
       end
 
       runtime.each_value do |recorded|
-        mode = recorded.fetch("mode") == "0500" ? 0o500 : 0o400
+        mode = { "0500" => 0o500, "0400" => 0o400 }[recorded.fetch("mode")]
+        raise LifecycleError, "operation capability runtime mode is invalid" unless mode
+
         verify_bound_file!(File.join(bundle, recorded.fetch("path")), recorded, mode:)
+      end
+      installation_trust.each_value do |recorded|
+        unless recorded.fetch("mode") == "0400"
+          raise LifecycleError, "operation installation trust mode is invalid"
+        end
+
+        verify_bound_file!(File.join(bundle, recorded.fetch("path")), recorded, mode: 0o400)
       end
     end
 

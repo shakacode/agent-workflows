@@ -28,6 +28,8 @@ only when this current invocation created and retained that exact result. Run a
 registered capability only through the complete returned `runner` command. If
 it requires a current provider, require `provider_profile: managed` and
 `freshness: current`; otherwise stop before invoking the runner.
+Bind `AGENT_WORKFLOWS_RUNNER` as a shell array containing every returned
+`runner` element in order; never reconstruct it from `PATH`.
 
 Use this after a PR is opened or updated and the task requires current PR state,
 review-comment follow-up, check readiness, or final handoff. A PR being open is
@@ -101,11 +103,10 @@ cohorts on the new head.
      seam contract files, hooks, scripts, or workflow files changed.
 
 2. **Snapshot both current-head cohorts.**
-   - Prefer `pr-ci-readiness` by binding `PR_BATCH_SKILL_DIR` to the parent of
-     returned `assets.skills.pr_batch`, then running
-     `"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" --repo "${REPO}" <PR>`.
-   - If the helper is unavailable, fall back to bounded `gh pr checks` and
-     pass `--repo "${REPO}"`; report that readiness is based on the fallback.
+   - Run `"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness -- --repo "${REPO}" <PR>`.
+     If the registered capability is unavailable, stop with a provider-contract
+     failure; do not replace its exact-head and review evidence with raw GitHub
+     CLI output.
    - Distinguish required checks from advisory checks.
    - Inventory the review cohort independently from validation CI. Missing,
      queued, running, failed, and terminal reviewer states stay visible instead

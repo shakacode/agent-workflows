@@ -28,6 +28,8 @@ only when this current invocation created and retained that exact result. Run a
 registered capability only through the complete returned `runner` command. If
 it requires a current provider, require `provider_profile: managed` and
 `freshness: current`; otherwise stop before invoking the runner.
+Bind `AGENT_WORKFLOWS_RUNNER` as a shell array containing every returned
+`runner` element in order; never reconstruct it from `PATH`.
 
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 
@@ -356,7 +358,7 @@ never TTL or PID inference.
      Before any worker launch, use `PLAN_PR_BATCH_SKILL_DIR` already bound from
      returned `assets.skills.plan_pr_batch` and pass a `batch-plan-preflight` v1
      envelope on stdin to
-     `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
+     `"${AGENT_WORKFLOWS_RUNNER[@]}" batch-plan-preflight --`. This required gate
      owns schema, collision, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
@@ -379,7 +381,7 @@ never TTL or PID inference.
      Before launch, use `PR_BATCH_SKILL_DIR` already bound from returned
      `assets.skills.pr_batch`, then send the requested route/dispatcher,
      explicit route and dispatch authority, ordered candidates, and lane state
-     to `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`.
+     to `"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --`.
      It selects only a bound, attested tuple or explicitly authorized ordered
      fallback; generic subagent wording and the coordinator route grant nothing.
      Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.

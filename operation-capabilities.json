@@ -43,6 +43,67 @@
     }
   },
   "capabilities": {
+    "batch-plan-preflight": {
+      "executable": "skills/plan-pr-batch/bin/batch-plan-preflight",
+      "installation_trust": [
+        ".agents/workflow-control-lifecycle-trust.json"
+      ],
+      "instruction_dependencies": [
+        "skills/plan-pr-batch/SKILL.md",
+        "skills/pr-batch/SKILL.md",
+        "workflows/pr-processing.md",
+        "docs/agent-workflows-model-routing.md"
+      ],
+      "mutation": false,
+      "requires_current_provider": true,
+      "runtime": {
+        "helper": "skills/plan-pr-batch/bin/batch-plan-preflight"
+      }
+    },
+    "dispatcher-capability-preflight": {
+      "executable": "skills/pr-batch/bin/dispatcher-capability-preflight",
+      "installation_trust": [
+        ".agents/dispatcher-launch-trust.json"
+      ],
+      "instruction_dependencies": [
+        "skills/plan-pr-batch/SKILL.md",
+        "skills/pr-batch/SKILL.md",
+        "workflows/pr-processing.md",
+        "docs/agent-workflows-model-routing.md"
+      ],
+      "mutation": false,
+      "requires_current_provider": true,
+      "runtime": {
+        "helper": "skills/pr-batch/bin/dispatcher-capability-preflight"
+      }
+    },
+    "pr-ci-readiness": {
+      "executable": "skills/pr-batch/bin/pr-ci-readiness",
+      "instruction_dependencies": [
+        "skills/pr-batch/SKILL.md",
+        "workflows/pr-processing.md",
+        "docs/host-adapter/contract.md",
+        "docs/security-posture.md"
+      ],
+      "mutation": false,
+      "requires_current_provider": true,
+      "runtime": {
+        "helper": "skills/pr-batch/bin/pr-ci-readiness"
+      }
+    },
+    "merge-assurance": {
+      "executable": "skills/pr-batch/bin/merge-assurance",
+      "instruction_dependencies": [
+        "skills/pr-batch/SKILL.md",
+        "workflows/pr-processing.md",
+        "docs/security-posture.md"
+      ],
+      "mutation": false,
+      "requires_current_provider": true,
+      "runtime": {
+        "helper": "skills/pr-batch/bin/merge-assurance"
+      }
+    },
     "pr-merge-submit": {
       "executable": "skills/pr-batch/bin/pr-merge-submit",
       "instruction_dependencies": [
@@ -55,7 +116,8 @@
       "mutation": true,
       "requires_current_provider": true,
       "runtime": {
-        "helper": "skills/pr-batch/bin/pr-merge-submit"
+        "helper": "skills/pr-batch/bin/pr-merge-submit",
+        "assurance-library": "skills/pr-batch/bin/merge-assurance"
       }
     },
     "autonomous-merge-eligibility": {

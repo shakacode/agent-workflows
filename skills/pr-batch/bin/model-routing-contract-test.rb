@@ -204,11 +204,10 @@ class ModelRoutingContractTest < Minitest::Test
       refute_includes text, "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID"
     end
 
-    portable_call = '"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"'
+    portable_call = '"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --'
     [guide, docs, read_repo_file("skills/plan-pr-batch/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
-      assert_includes text, "PR_BATCH_SKILL_DIR"
       assert_includes text, portable_call
-      refute_includes text, "skills/pr-batch/bin/dispatcher-capability-preflight"
+      refute_includes text, '"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"'
     end
   end
 

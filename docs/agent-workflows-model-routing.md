@@ -292,10 +292,10 @@ regression, not a success.
 
 ## Dispatcher Capability Preflight
 
-Before dispatch, bind `PR_BATCH_SKILL_DIR` to the parent of returned
-`assets.skills.pr_batch`, then call
-`"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` with one JSON
-object on standard input. It writes one JSON result to standard output and does
+Before dispatch, retain the complete operation-returned `runner` command as the
+`AGENT_WORKFLOWS_RUNNER` shell array, then call
+`"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --` with one
+JSON object on standard input. It writes one JSON result to standard output and does
 not launch a worker or mutate a coordination backend. The caller supplies the
 lane state, requested route/dispatcher, explicit route and dispatch authority,
 and ordered candidates with binding and attestation evidence.

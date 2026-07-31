@@ -145,7 +145,7 @@ module AgentWorkflowsOperation
       runtime = capability.runtime.to_h do |role, source_relative|
         destination = File.join(bundle_root, source_relative)
         create_private_parent_directories!(bundle_root, File.dirname(destination))
-        executable = source_relative == capability.executable
+        executable = (File.stat(File.join(snapshot.tree, source_relative)).mode & 0o111).positive?
         copy_private_file!(
           File.join(snapshot.tree, source_relative),
           destination,
@@ -158,16 +158,59 @@ module AgentWorkflowsOperation
           "mode" => executable ? "0500" : "0400"
         )]
       end
+      installation_trust = copy_installation_trust!(bundle_root, capability.installation_trust)
       Find.find(bundle_root) do |path|
         File.chmod(0o500, path) if File.directory?(path)
       end
-      digest = runtime_digest(runtime, bundle_root)
+      digest = capability_digest(runtime, installation_trust, bundle_root)
       {
         "executable_role" => capability.runtime.key(capability.executable),
         "runtime" => runtime,
+        "installation_trust" => installation_trust,
         "digest" => digest,
         "provenance" => "provider-operation:#{snapshot.revision}:#{digest}"
       }
+    end
+
+    def copy_installation_trust!(bundle_root, configured_paths)
+      return {} if configured_paths.empty?
+
+      target_stat = File.lstat(target)
+      unless target_stat.directory? && !target_stat.symlink? && target_stat.uid == Process.uid &&
+             (target_stat.mode & 0o022).zero?
+        raise ResolverError, "installation root for operation trust anchors is unsafe"
+      end
+
+      trust_dir = File.join(target, ".agents")
+      return {} unless File.exist?(trust_dir) || File.symlink?(trust_dir)
+
+      trust_dir_stat = File.lstat(trust_dir)
+      unless trust_dir_stat.directory? && !trust_dir_stat.symlink? && trust_dir_stat.uid == Process.uid &&
+             (trust_dir_stat.mode & 0o022).zero?
+        raise ResolverError, "installation trust directory is unsafe"
+      end
+
+      configured_paths.filter_map do |relative|
+        source = File.join(target, relative)
+        next unless File.exist?(source) || File.symlink?(source)
+
+        source_stat = File.lstat(source)
+        unless source_stat.file? && !source_stat.symlink? && source_stat.uid == Process.uid &&
+               (source_stat.mode & 0o022).zero?
+          raise ResolverError, "installation trust anchor is unsafe: #{relative}"
+        end
+
+        destination = File.join(bundle_root, relative)
+        create_private_parent_directories!(bundle_root, File.dirname(destination))
+        copy_private_file!(source, destination, mode: 0o400)
+        [relative, file_identity(destination).merge(
+          "source" => relative,
+          "path" => relative,
+          "mode" => "0400"
+        )]
+      end.to_h
+    rescue Errno::ENOENT => e
+      raise ResolverError, "installation trust anchor changed during operation begin: #{e.message}"
     end
 
     def create_private_parent_directories!(root, parent)
@@ -195,7 +238,22 @@ module AgentWorkflowsOperation
       File.chmod(mode, destination)
     end
 
-    def runtime_digest(runtime, bundle_root)
+    def capability_digest(runtime, installation_trust, bundle_root)
+      return legacy_runtime_digest(runtime, bundle_root) if installation_trust.empty?
+
+      digest = Digest::SHA256.new
+      { "runtime" => runtime, "installation_trust" => installation_trust }.each do |kind, records|
+        digest << [kind.bytesize].pack("N") << kind
+        records.sort.each do |role, recorded|
+          bytes = File.binread(File.join(bundle_root, recorded.fetch("path")))
+          digest << [role.bytesize].pack("N") << role
+          digest << [bytes.bytesize].pack("Q>") << bytes
+        end
+      end
+      digest.hexdigest
+    end
+
+    def legacy_runtime_digest(runtime, bundle_root)
       digest = Digest::SHA256.new
       runtime.sort.each do |role, recorded|
         bytes = File.binread(File.join(bundle_root, recorded.fetch("path")))

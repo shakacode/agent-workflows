@@ -121,7 +121,7 @@ facts remain fail-closed and stop before mutation.
   - Independent adversarial QA: Opus 4.8/xhigh
   - Routine deterministic QA: Opus 4.8/high
 - **Batch plan preflight**: before dispatcher selection or worker launch, run
-  the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
+  `"${AGENT_WORKFLOWS_RUNNER[@]}" batch-plan-preflight --` with a v1 envelope. It
   owns schema and launch scheduling, including the required active wave and
   max-one serialization. Preserve real PR verified `pr-file-touch-map` results
   unchanged; encode explicit pre-PR paths as typed `planned-path-evidence` v1
@@ -129,7 +129,8 @@ facts remain fail-closed and stop before mutation.
   acceptance permits only the returned eligible lanes.
 - **Dispatcher capability preflight**: before launch, pass the requested
   route/dispatcher, explicit authority, ordered candidates, and preserved lane
-  state to `bin/dispatcher-capability-preflight`. It records a bound, attested
+  state to `"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --`.
+  It records a bound, attested
   exact tuple or first explicitly authorized fallback; it never launches or
   mutates coordination. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. `selected` resumes Goal mode; `blocked-user-input`
   carries one `dispatch-decision-request v1` with canonical viable fallback choices and stops.
@@ -515,7 +516,7 @@ legacy v1 CI output is not sufficient.
 Run:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+"${AGENT_WORKFLOWS_RUNNER[@]}" merge-assurance -- \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
   --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"

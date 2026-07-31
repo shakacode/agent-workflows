@@ -135,13 +135,19 @@ module AgentWorkflowsOperation
         raise RunnerError, "operation capability does not match the registry runtime manifest"
       end
 
+      installation_trust = binding.fetch("installation_trust")
+      unless installation_trust.is_a?(Hash) &&
+             (installation_trust.keys - definition.installation_trust).empty?
+        raise RunnerError, "operation capability installation trust does not match the registry"
+      end
+
       root_stat = File.lstat(bundle)
       unless root_stat.directory? && !root_stat.symlink? && root_stat.uid == Process.uid &&
              (root_stat.mode & 0o777) == 0o500
         raise RunnerError, "operation capability bundle root is unsafe"
       end
 
-      expected = runtime.values.map { |recorded| recorded.fetch("path") }.sort
+      expected = (runtime.values + installation_trust.values).map { |recorded| recorded.fetch("path") }.sort
       actual = []
       Find.find(bundle) do |path|
         next if path == bundle
@@ -166,7 +172,8 @@ module AgentWorkflowsOperation
 
       runtime.each do |role, recorded|
         path = File.join(bundle, recorded.fetch("path"))
-        expected_mode = role == expected_executable_role ? "0500" : "0400"
+        source_executable = (File.stat(File.join(snapshot.tree, recorded.fetch("source"))).mode & 0o111).positive?
+        expected_mode = source_executable ? "0500" : "0400"
         unless recorded.fetch("path") == recorded.fetch("source") && recorded.fetch("mode") == expected_mode
           raise RunnerError, "operation capability runtime path or mode differs from the registry"
         end
@@ -186,13 +193,51 @@ module AgentWorkflowsOperation
           private_home: File.join(snapshot.root, "home")
         )
       end
-      digest = runtime_digest(runtime, bundle)
+      verify_installation_trust!(bundle, installation_trust, definition.installation_trust)
+      digest = capability_digest(runtime, installation_trust, bundle)
       expected_provenance = "provider-operation:#{snapshot.revision}:#{digest}"
       unless binding.fetch("digest") == digest && binding.fetch("provenance") == expected_provenance
         raise RunnerError, "operation capability provenance does not match its runtime bundle"
       end
     rescue SystemCallError, KeyError, StoreError, PathError => e
       raise RunnerError, "operation capability bundle is invalid: #{e.message}"
+    end
+
+    def verify_installation_trust!(bundle, recorded_trust, configured_paths)
+      recorded_trust.each do |relative, recorded|
+        unless relative == recorded.fetch("source") && relative == recorded.fetch("path") &&
+               recorded.fetch("mode") == "0400"
+          raise RunnerError, "operation installation trust binding is invalid"
+        end
+
+        bundled = File.join(bundle, relative)
+        verify_file_identity!(bundled, recorded, "installation trust anchor #{relative}")
+        current = File.join(target, relative)
+        verify_current_trust_source!(current, recorded, relative)
+      end
+
+      (configured_paths - recorded_trust.keys).each do |relative|
+        current = File.join(target, relative)
+        next unless File.exist?(current) || File.symlink?(current)
+
+        raise RunnerError, "installation trust anchor appeared after operation begin; start a new operation: #{relative}"
+      end
+    end
+
+    def verify_current_trust_source!(path, recorded, relative)
+      target_stat = File.lstat(target)
+      trust_dir_stat = File.lstat(File.dirname(path))
+      source_stat = File.lstat(path)
+      safe = [target_stat, trust_dir_stat].all? do |stat|
+        stat.directory? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o022).zero?
+      end
+      safe &&= source_stat.file? && !source_stat.symlink? && source_stat.uid == Process.uid &&
+               (source_stat.mode & 0o022).zero?
+      safe &&= source_stat.size == recorded.fetch("size") &&
+               Digest::SHA256.file(path).hexdigest == recorded.fetch("sha256")
+      raise RunnerError, "installation trust anchor changed after operation begin: #{relative}" unless safe
+    rescue SystemCallError
+      raise RunnerError, "installation trust anchor changed after operation begin: #{relative}"
     end
 
     def enforce_current_provider!(definition, metadata, capability)
@@ -212,7 +257,22 @@ module AgentWorkflowsOperation
       raise RunnerError, "provider moved after operation begin: #{e.message}"
     end
 
-    def runtime_digest(runtime, bundle)
+    def capability_digest(runtime, installation_trust, bundle)
+      return legacy_runtime_digest(runtime, bundle) if installation_trust.empty?
+
+      digest = Digest::SHA256.new
+      { "runtime" => runtime, "installation_trust" => installation_trust }.each do |kind, records|
+        digest << [kind.bytesize].pack("N") << kind
+        records.sort.each do |role, recorded|
+          bytes = File.binread(File.join(bundle, recorded.fetch("path")))
+          digest << [role.bytesize].pack("N") << role
+          digest << [bytes.bytesize].pack("Q>") << bytes
+        end
+      end
+      digest.hexdigest
+    end
+
+    def legacy_runtime_digest(runtime, bundle)
       digest = Digest::SHA256.new
       runtime.sort.each do |role, recorded|
         bytes = File.binread(File.join(bundle, recorded.fetch("path")))

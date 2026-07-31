@@ -35,6 +35,8 @@ once and retain that exact JSON result. The resolver selects the installed provi
 never pre-read install metadata or branch around resolution. Never inherit a sender's handle or paths. Use shared instructions only from returned `assets.*`.
 A registered current-only capability requires `provider_profile: managed` and
 `freshness: current`; otherwise stop before invoking the returned runner.
+Bind `AGENT_WORKFLOWS_RUNNER` as a shell array containing every returned
+`runner` element in order; never reconstruct it from `PATH`.
 
 ## Safety Rules
 
@@ -73,7 +75,7 @@ gh pr diff <PR> --name-only
 gh pr diff <PR>
 # Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
 : "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO>
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness -- <PR> --repo <OWNER/REPO>
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 
@@ -92,8 +94,8 @@ once per review pass while checks are still pending. If live CI or review-agent
 state cannot be verified (for example, tool unavailable or API error), report
 the affected state as `UNKNOWN` instead of guessing. Do not rely on
 `statusCheckRollup` as the primary live check source when the bounded
-`pr-ci-readiness` / `gh pr checks` commands can answer the readiness question
-more directly.
+`pr-ci-readiness` capability owns the readiness question. Raw `gh pr checks`
+output is advisory diagnostics only after the bound readiness result exists.
 
 Fetch inline PR review comments separately; `gh pr view --json comments` is not
 enough for review-thread comments:

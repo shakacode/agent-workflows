@@ -236,13 +236,21 @@ runtime exposes a remote override. The capability registry rejects absolute or
 traversing paths, missing dependencies, symlinks where regular files are
 required, and non-executable capability targets. Each capability declares a
 stable role-to-source-path runtime manifest. The operation copies only those
-files while preserving provider-relative paths, uses mode `0500` for the
-executable and `0400` for libraries/data, and publishes
-`provider-operation:<revision>:<role-length-framed-runtime-digest>`. The
-current-provider-only capabilities are the mutating `pr-merge-submit` and the
-read-only `autonomous-merge-eligibility`, invoked as:
+files while preserving provider-relative paths, uses mode `0500` for every
+runtime source that is executable in the canonical provider tree and `0400`
+for non-executable runtime sources and installation trust data, and publishes
+`provider-operation:<revision>:<length-framed-capability-digest>`. Capabilities
+that consume fixed installation trust anchors copy and bind safe anchors into
+their private operation bundle and reject source-anchor movement after begin.
+The current-provider-only capabilities include the mutating `pr-merge-submit`
+and the read-only preflight, readiness, assurance, and autonomous-merge helpers,
+invoked as:
 
 ```bash
+"${AGENT_WORKFLOWS_RUNNER[@]}" batch-plan-preflight -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" merge-assurance -- ARGS...
 "${AGENT_WORKFLOWS_RUNNER[@]}" pr-merge-submit -- ARGS...
 "${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility -- ARGS...
 ```
