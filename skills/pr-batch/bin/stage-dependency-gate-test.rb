@@ -317,6 +317,65 @@ class StageDependencyGateTest < Minitest::Test
     assert_equal ["pending"], blocker_reasons(consumer)
   end
 
+  def test_trusted_plan_binding_is_canonical_and_excludes_live_edge_facts
+    edges = [
+      {
+        "id" => "z-merge",
+        "from" => "foundation",
+        "to" => "consumer",
+        "type" => "merge_order"
+      },
+      {
+        "id" => "a-edit",
+        "from" => "foundation",
+        "to" => "consumer",
+        "type" => "edit"
+      }
+    ]
+    plan = {
+      "id" => "canonical-plan",
+      "edges" => edges,
+      "version" => 1,
+      "contract" => "stage-dependency-plan"
+    }
+    input = {
+      "contract" => "stage-dependency-gate",
+      "version" => 1,
+      "lanes" => [lane("foundation", head_sha: SHA_A), lane("consumer", head_sha: SHA_B)],
+      "edges" => [
+        { "id" => "z-merge", "state" => "pending", "evidence" => { "ignored" => "first" } },
+        { "id" => "a-edit", "state" => "pending" }
+      ]
+    }
+    first = evaluate(input, trusted_plan: plan)
+    reordered = evaluate(
+      input.merge(
+        "edges" => [
+          { "id" => "a-edit", "state" => "pending", "evidence" => { "ignored" => "second" } },
+          { "id" => "z-merge", "state" => "pending" }
+        ]
+      ),
+      trusted_plan: {
+        "contract" => "stage-dependency-plan",
+        "version" => 1,
+        "edges" => edges.reverse.map { |edge| edge.to_a.reverse.to_h },
+        "id" => "canonical-plan"
+      }
+    )
+    changed = evaluate(
+      input,
+      trusted_plan: plan.merge(
+        "edges" => edges.map do |edge|
+          edge["id"] == "z-merge" ? edge.merge("type" => "validation_open") : edge
+        end
+      )
+    )
+
+    assert_match(/\Asha256:[0-9a-f]{64}\z/, first.fetch("trusted_plan_binding"))
+    assert_equal first.fetch("trusted_plan_binding"), reordered.fetch("trusted_plan_binding")
+    refute_equal first.fetch("trusted_plan_binding"), changed.fetch("trusted_plan_binding")
+  end
+
   def test_missing_trusted_plan_stops_before_mutation
     result = evaluate_raw(JSON.generate(
                             "contract" => "stage-dependency-gate",

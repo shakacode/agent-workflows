@@ -20,7 +20,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
     File.write(@fake_codex, <<~RUBY)
       #!#{RbConfig.ruby}
       puts "PLUGIN STATUS VERSION PATH"
-      puts "scw@agent-workflows  installed, enabled  0.1.0  /fake/scw"
+      puts "scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git"
     RUBY
     FileUtils.chmod(0o755, @fake_codex)
   end
@@ -44,7 +44,13 @@ class AgentWorkflowsStatusTest < Minitest::Test
     FileUtils.mkdir_p(File.join(cache_root, "skills/example"))
     File.write(File.join(target, "config.toml"), "[plugins.\"scw@agent-workflows\"]\nenabled = true\n")
     File.write(File.join(cache_root, "skills/example/SKILL.md"), "example\n")
-    File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate('name' => 'scw', 'version' => '0.1.0', 'skills' => './skills/')}\n")
+    manifest = {
+      "name" => "scw",
+      "version" => "0.1.0",
+      "repository" => "https://github.com/shakacode/agent-workflows",
+      "skills" => "./skills/"
+    }
+    File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate(manifest)}\n")
   end
 
   def test_not_installed_target_reports_not_installed
@@ -90,6 +96,37 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "plugin-companion", payload.fetch("delivery_mode")
         assert_equal "active", payload.dig("native", "state")
         assert_equal "absent", payload.dig("flat", "state")
+      end
+    end
+  end
+
+  def test_companion_status_reports_scalar_native_manifests_as_unknown
+    ["scw", 123, true].each do |manifest|
+      Dir.mktmpdir("agent-workflows-status-test") do |target|
+        Dir.mktmpdir("agent-workflows-status-source") do |source|
+          File.write(File.join(source, "VERSION"), "9.9.9\n")
+          write_codex_native_state(target)
+          manifest_path = File.join(
+            target,
+            "plugins/cache/agent-workflows/scw/0.1.0/.codex-plugin/plugin.json"
+          )
+          File.write(manifest_path, "#{JSON.generate(manifest)}\n")
+          write_metadata(
+            target,
+            "version" => "9.9.9",
+            "source" => source,
+            "source_revision" => "",
+            "delivery_mode" => "plugin-companion"
+          )
+
+          out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+          payload = JSON.parse(out)
+
+          assert_equal 3, status.exitstatus, out
+          assert_equal "CHECK_FAILED", payload.fetch("status")
+          assert_equal "unknown", payload.dig("native", "state")
+          refute_includes out, "NoMethodError"
+        end
       end
     end
   end

@@ -506,6 +506,54 @@ cd /path/to/consumer/repo
 agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
 ```
 
+The autonomous-merge gate takes effect from the installed workflow pack even
+when a consumer has no `autonomous_merge` mapping; omission uses portable
+defaults rather than a permissive grace period. Preset-based downstream sync
+may seed `autonomous_merge: {}` but must preserve any repo-owned mapping.
+Before rollout, run the seam doctor in every consumer. To collect a
+checkpointed, decision-free shadow dataset for threshold review:
+
+```bash
+# First use an explicit PR_BATCH_SKILL_DIR, then the host's loaded-skill base;
+# use a repo-pinned copy only when neither is available.
+if [[ -z "${PR_BATCH_SKILL_DIR:-}" ]]; then
+  if [[ -x .agents/skills/pr-batch/bin/autonomous-merge-calibrate ]]; then
+    PR_BATCH_SKILL_DIR=.agents/skills/pr-batch
+  else
+    echo "Cannot resolve PR_BATCH_SKILL_DIR" >&2
+    exit 1
+  fi
+fi
+"${PR_BATCH_SKILL_DIR}/bin/autonomous-merge-calibrate" \
+  --collect .agents/cache/autonomous-merge-calibration-dataset.json \
+  --repo OWNER/REPO \
+  --since YYYY-MM-DD
+```
+
+The collection mode is GitHub-read-only and resumes the explicit checkpoint
+without refetching completed PR detail. Because closed-PR update order is
+mutable, incomplete discovery restarts at page 1. Before marking discovery
+complete, collection repeats the entire ordered traversal and requires the
+second `[number, merged_at]` snapshot to match the first exactly. A mismatch or
+verification API, pagination, or rate-limit failure checkpoints a page-1
+restart. Use repeated `--repo` flags and exactly one of `--since YYYY-MM-DD` or
+`--pr-count N`. API, pagination, and rate-limit stops leave the checkpoint
+incomplete with failure evidence; rerun the same command to resume. Once
+`scope.complete` is true, analyze it separately:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/autonomous-merge-calibrate" \
+  --input .agents/cache/autonomous-merge-calibration-dataset.json \
+  --repo OWNER/REPO \
+  --since YYYY-MM-DD \
+  > .agents/cache/autonomous-merge-calibration-report.json
+```
+
+Do not graduate `max_reviewed_heads` from shadow reporting until the cached
+dataset covers submitted-review history, the distribution and sampled near
+misses have been reviewed, and a threshold decision is recorded. The
+calibration helper emits no merge decisions.
+
 Then dry-run one installed workflow, such as `$plan-pr-batch` or
 `$address-review`, until it resolves base branch, validation, hosted CI,
 review-gate, changelog, and follow-up values from the repo seam without making

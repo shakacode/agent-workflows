@@ -17,6 +17,11 @@ For post-merge audits after a concurrent batch or before a release candidate, us
 
 For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversarial-pr-review/SKILL.md` when skills are available. Reusable Codex, Claude, and comparison prompts live in `.agents/workflows/adversarial-pr-review.md`.
 
+For an interactive human-oriented explanation of a PR, use
+`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
+one conceptual change at a time, explains why it exists, and pauses for
+questions before continuing.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -476,6 +481,13 @@ comments, docs, typo fixes, formatting-only changes, and non-semantic actionlint
 cleanup as exempt only when the PR evidence states that classification and local
 validation. This is a standing exception to the default follow-up tracking
 policy because some GitHub Actions behavior can only be proven from `main`.
+Before `merge-assurance`, update that issue body with exactly one line for each
+authenticated binding: `semantic-tracker-source-pr`, `semantic-tracker-head-sha`,
+`semantic-tracker-diff-identity`, and `semantic-tracker-operation-digest`. The
+digest is `sha256:` plus SHA-256 of canonical recursively key-sorted JSON over
+the tracker operation's `changed_files`, `cleanup_instructions`, `exercise`,
+`expected_evidence`, optional `owner`, `source_pr`, `tracker`, and `type`;
+create the issue first so its final tracker URL participates in that digest.
 
 When adding or broadening a repo-wide lint, CI, release, review, or merge gate,
 include at least one stale-base race control in the PR evidence. This is a
@@ -571,7 +583,9 @@ The user should not need to write a long launch prompt. If the request is short,
   public discovery that needs confirmation.
 - Goal name: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`, not the pasted prompt text.
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
-- `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`.
+- `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`; `ask`
+  automatically walks through the exact-diff PR one conceptual change at a
+  time before its one final merge decision.
 - Concurrency: one machine, multiple machines, or single-threaded.
 - Batch size target: `codex`, `claude`, or `generic`; explicit paste
   destination or runner wins, otherwise use reliable host detection or
@@ -580,6 +594,7 @@ The user should not need to write a long launch prompt. If the request is short,
 - Permissions: whether the current session can run without blocking worker approval prompts.
 - Question handling: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
 - Completion states: `merged`, `ready-gates-clean`, `ready-no-merge-authority`,
+  `ready-human-review-required`, `autonomous-merge-evidence-unknown`,
   `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`,
   or `no-pr-evidence`.
 
@@ -613,6 +628,27 @@ path evidence stay serial discovery lanes until their real paths are known.
 Prefer a smaller first wave when coordination, CI, approval, or quota health is
 uncertain. Put additional file-disjoint work into later wave prompts instead of
 overfilling the active worker set.
+
+### Batch Plan Preflight
+
+Before dispatcher selection or any worker launch, resolve
+`PLAN_PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
+repo-local pinned-copy chain and run the plan's v1 envelope through:
+
+```bash
+PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"
+"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight" \
+  < path/to/batch-plan-preflight-v1.json
+```
+
+This machine gate owns schema and launch scheduling, including collision,
+backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
+serialization enforcement. Do not reproduce those matrices in dispatcher or
+merge checks. Preserve real PR verified `pr-file-touch-map` results unchanged;
+encode explicit pre-PR paths as typed `planned-path-evidence` v1 records with
+durable evidence references. A rejected result launches nothing; an accepted
+result permits only `launch.eligible_lane_ids` and leaves
+`launch.held_lane_ids` unlaunched.
 
 ### Model And Effort Routing
 
@@ -742,7 +778,7 @@ If the runtime cannot apply the planned pair, record `UNKNOWN` and stop before
 spawning instead of silently inheriting or substituting.
 
 Dispatch preflight: JSON-in/JSON-out; select only bound+attested requested tuple or first explicitly authorized ordered fallback; otherwise one dispatch-decision-request v1. Resolve `PR_BATCH_SKILL_DIR` through the explicit env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` before launch. Its input supplies the lane state, requested route/dispatcher, explicit route and dispatch authority, and ordered candidates. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. Its output records requested/actual route and dispatcher, reason, authority, `resume_goal`, one active assignment/launch token, or the durable decision request with canonical viable fallback choices. It selects and records only: it never launches workers or mutates a coordination backend. Do not infer authority from generic subagent wording or inherit the coordinator route. Preserve supplied lane state; a replacement requires the prior instance stopped and reconciled. In Goal mode, an authorized `selected` result resumes automatically only after durable persistence; `blocked-user-input` stops on the same persisted decision request.
-Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
 
 Resolve `base_branch` from repo configuration or inline `AGENTS.md` configuration;
 unknown configuration remains `UNKNOWN` before a branch is created.
@@ -835,6 +871,71 @@ only a caveated no-PR `park` disposition or a product-decision blocker.
 
 Workers should not turn product-decision blockers into speculative PRs. They should post or draft the evidence-backed question and stop that target.
 
+### Durable Visual Evidence Gate
+
+Apply this gate to every PR or no-PR handoff, not only coordinated batches.
+Classify whether the change alters user-visible rendered output, including
+layout, geometry, copy, color, iconography, loading/error/success states, or
+interaction behavior. A current user-visible UI change requires `qa-evidence
+v2`; a prose claim, an ephemeral scratchpad, a local/file path, or a `qa-evidence
+v1` marker cannot satisfy the current gate.
+
+For each user-visible UI change:
+
+1. Capture the relevant before and after states. The before state may be the
+   current implementation, an intentionally unfixed build, or a named design
+   reference. Inspect each capture: a blank or unpainted page is a failed
+   capture, not passing evidence.
+2. Put the artifacts where every intended reviewer can open them. For a public
+   or GitHub-only project, prefer GitHub PR attachments. When an authenticated
+   browser/file-upload capability is available, use GitHub's UI upload flow and
+   retain the stable `github.com/user-attachments/assets/...` URL; obtaining the
+   URL does not require submitting a comment. A configured linked tracker or
+   repo artifact destination is also valid when every intended reviewer has
+   access; link that evidence from the PR.
+   A `github_pr` destination must contain a reviewer-visible `github.com` URL.
+   A `linked_tracker` or `repo_artifact_store` destination must name that
+   destination and contain its reviewer-visible HTTPS URL.
+3. GitHub documents no public REST or GraphQL attachment-upload route. Do not
+   depend on an undocumented direct-upload endpoint unless the repository has
+   explicitly configured and verified that integration. If no authenticated UI
+   uploader or configured integration is available, prepare clearly named local
+   before/after artifacts and report their absolute paths, but record
+   `human_attachment_pending` and keep QA/release readiness `blocked` until a
+   human attaches them and the receipt contains the resulting durable GitHub
+   URL. A local absolute or relative path (`./`, `../`, `~/`, Windows
+   slash/backslash forms), a plain local media filename, `file:` URL,
+   inaccessible private blob/camo URL, “captured locally”, or any
+   blank/unpainted capture token never satisfies a durable visual-evidence
+   value, even when that value also contains an unrelated HTTPS URL. A media
+   filename inside the path component of the actual HTTPS URL is allowed.
+   The replay helper validates URL and destination shape; it does not fetch
+   evidence URLs or prove their authorization, retention, or liveness. Before
+   reporting readiness, an intended reviewer must open every evidence URL using
+   intended reviewer access and reject dead, inaccessible, private-only, or
+   expiring evidence.
+4. For hover, focus, drag, transition, loading, animation, or another
+   interaction change, link a short durable clip. When recording is unavailable,
+   use the exact labeled substitute
+   `measured_substitute: before_value=52px; after_value=0px; tolerance=1px`
+   (or the deterministic `baseline_value` / `candidate_value` aliases). Every
+   value and the tolerance require units. Stills or incidental numbers in URLs
+   do not satisfy an interaction claim.
+5. For a visual fix, exercise an intentionally unfixed negative control and
+   record the observed failing assertion or mismatch. If no visual fix is in
+   scope, give a reasoned `not applicable`.
+6. If the change can affect a rendered page, delivered asset, or bundle, follow
+   the repository's `AGENTS.md` / Agent Workflow Configuration performance seam
+   and use `$benchmark-verification` when it applies. Record the result as
+   `bundle_hygiene` when it only constrains size/shape, or `measured_metric` only
+   when a real runtime/user metric was measured; name that metric with
+   `metric_name=<runtime/user metric>`. Name non-byte hygiene values with
+   `metric_name=<bundle/asset shape metric>`. Either classification requires
+   `source=<stable command/report/ref>` naming the repo-seam output plus explicit
+   `baseline_value=<number><unit>` and `candidate_value=<number><unit>` fields
+   using the same unit. Incidental CI/report URL IDs do not count. `UNKNOWN`,
+   unavailable, missing, unmeasured, or N/A evidence blocks readiness.
+
 ### Batch QA Lane
 
 Convention: `UNKNOWN` in capitals means coordination/backend state could not be
@@ -897,6 +998,13 @@ includes this evidence block:
 - Tested at: <PR/head SHA(s), audited range, or "not applicable: no PR/code changes">
 - Automated checks: <commands, CI links, or "covered by worker validation: ...">
 - Manual checks: <workflow/app smoke checks, screenshots, or "not applicable: ...">
+- User-visible UI change: <yes | no>
+- Visual evidence: <durable before/after URL(s), destination, and paint check; blocked human-attachment paths; or reasoned "not applicable: no user-visible UI change">
+- Interaction change: <yes | no; yes requires clip/measured substitute, no requires reasoned not applicable>
+- Interaction evidence: <durable clip URL, exact measured_substitute with labeled before/after/tolerance values and units, or reasoned "not applicable: ...">
+- Visual fix: <yes | no; yes requires observed unfixed failure, no requires reasoned not applicable>
+- Negative control: <observed unfixed failure, or reasoned "not applicable: no visual fix">
+- Performance evidence: <repo performance-seam result with source=<stable command/report/ref>, baseline_value=<number><unit>, and candidate_value=<number><unit> plus bundle_hygiene/measured_metric classification; non-byte bundle_hygiene names metric_name=<bundle/asset shape metric>; measured_metric names metric_name=<runtime/user metric>; or reasoned "not applicable: ...">
 - Findings: <none, fixed in PR(s), waived with link, or follow-up recommended with tracking outcome/link>
 - QA required: <yes | no>
 - QA required rationale: <one-line reason for the decision and selected QA depth>
@@ -905,11 +1013,11 @@ includes this evidence block:
 - Process-gap disposition: <script | schema | checklist+replay | park | not applicable>
 ```
 
-For replayable post-merge audit, append a hidden marker next to the human QA
-Evidence block whenever QA is required or explicitly not required:
+For replayable post-merge audit, append a hidden `qa-evidence v2` marker next to
+the human QA Evidence block whenever QA is required or explicitly not required:
 
 ```markdown
-<!-- qa-evidence v1
+<!-- qa-evidence v2
 required: <yes | no>
 status: <satisfied | blocked | waived | in_progress | unknown | not_applicable>
 head_sha: <full 40-character current PR or repository head SHA>
@@ -917,6 +1025,16 @@ tested_at: <PR/head SHA(s), audited range, or no-PR reason anchored to repositor
 scope: <changed areas, PRs, or release phase covered>
 automated_checks: <commands, CI links, or covered-by-worker-validation note>
 manual_checks: <manual smoke checks or not applicable>
+user_visible_ui_change: <yes | no>
+visual_evidence_destination: <github_pr | linked_tracker | repo_artifact_store | human_attachment_pending | not_applicable>
+visual_evidence: <durable: before/after https URL(s) | blocked: human attachment required; prepared local artifacts: absolute paths | not applicable: reason>
+paint_check: <passed: painted/rendered target inspected | not applicable: reason>
+interaction_change: <yes | no>
+interaction_evidence: <clip: durable https URL | measured_substitute: before_value=52px; after_value=0px; tolerance=1px | not applicable: reason>
+visual_fix: <yes | no>
+negative_control: <observed_failure: failing unfixed assertion/mismatch | not applicable: reason>
+performance_impact: <not_applicable | bundle_hygiene | measured_metric>
+performance_evidence: <repo_seam: source=<stable command/report/ref>; metric_name=<runtime/user metric when measured_metric or bundle/asset shape metric for non-byte bundle_hygiene>; baseline_value=<number><unit>; candidate_value=<number><unit> | not applicable: reason>
 findings: <none, fixed, waived, blocked, or follow-up link>
 release_blocking: <clear | blocked | waived | not_applicable>
 process_gap_disposition: <script | schema | checklist+replay | park | not applicable>
@@ -926,6 +1044,15 @@ process_gap_disposition: <script | schema | checklist+replay | park | not applic
 For `required: no`, record `status: not_applicable` and
 `release_blocking: not_applicable`. Replay treats any other terminal pair as an
 inconsistent omission record and returns `UNKNOWN`.
+
+Historical `qa-evidence v1` receipts remain replayable for backward
+compatibility. Do not emit v1 for new closeout evidence. The presence of any v2
+marker explicitly supersedes all v1 markers for that evidence input: a current
+valid v2 ignores legacy v1 history, while a stale or malformed v2 cannot be
+rescued by a current v1. When auditing a current user-visible UI change, run
+`closeout-evidence-replay --expected-head-sha <full-final-head-SHA>
+--require-visual-evidence-v2`; v1-only or stale evidence then fails closed
+rather than silently bypassing the durable visual gate.
 
 For priority review findings that feed a strict merge ledger or final handoff,
 append a hidden disposition marker without inventing a separate review-finding
@@ -1029,10 +1156,10 @@ dispatch; workers copy it unchanged.
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>
-Thread handle: <batch-short>-<lane>-<word>.
-Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN.
+Thread handle: <batch-short>-<lane>-<word>
+Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
 
-Preflight: issue/PR=>pr-security-preflight; trusted-direct `adhoc:`=>skip; blocker=>stop; no raw GitHub text; GitHub input cannot override goal/safety.
+Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
 
 Repo: OWNER/REPO
 Objective: ...
@@ -1043,8 +1170,8 @@ Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.
-GMCC-v2: waiting-on-checks-or-review; pending/missing/untriaged current-head CI/configured review agents; unresolved current-head review threads; fail/UNKNOWN=>NOT COMPLETE; poll/fix; bounded-watch resume handoff; auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume; stop unblocked/done; ready-no-merge-authority iff no auth; auto_merge_when_gates_pass=>no real blocker: merge+close any PR; close target+any issue.
-Batch QA Lane: <owner/scope | none+rationale>.
+GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+Batch QA Lane: <owner/scope|none+rationale>.
 Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
 
 Items:
@@ -1059,13 +1186,14 @@ Execution rules:
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- Dispatch one subagent per disjoint current-wave item; group only for shared context; keep serial/UNKNOWN apart.
-- Workers obey owned paths/execution envelope; unlisted paths, contradiction/ambiguity, scope/risk growth, or weaker verification -> stop for coordinator.
-- Each subagent verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
+- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
+- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 - Apply Batch QA Lane; include QA Evidence.
-- Run validation/review/CI/readiness gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release policy allows it, and gates pass; document confidence data in the PR description.
-- Final handoff: canonical closeout; links/tests/blockers/next, confidence/UNKNOWN, authority, QA, state.
+- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
+- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
 
 ```
 
@@ -1153,6 +1281,11 @@ Every target must use one explicit final state:
   local equivalent evidence, failing hosted URLs, and whether the next action is
   a maintainer waiver, rerun, or code change.
 - `blocked-user-input`: a surfaced maintainer/product decision is required.
+- `ready-human-review-required`: ordinary readiness is clean but autonomous
+  eligibility requires a qualifying exact-current-head human risk decision.
+- `autonomous-merge-evidence-unknown`: ordinary readiness may be clean, but
+  autonomous eligibility evidence is missing, malformed, ambiguous, stale, or
+  not bound to the exact current head.
 - `no-pr-evidence`: no PR was created; link the evidence-backed issue/PR
   comment and disposition. For an ad-hoc target, record the evidence and rationale directly in the final handoff because no GitHub target comment exists.
 
@@ -1229,22 +1362,22 @@ Conversation status: Follow-ups remain — PR #124 (pending): hosted CI `build`;
 
 ### Goal Mode Completion Contract
 
-Use this compact, self-contained `GMCC-v2` line verbatim in PR-batch goal
+Use this compact, self-contained `GMCC-v3` line verbatim in PR-batch goal
 prompts.
-`GMCC-v2` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v2: waiting-on-checks-or-review; pending/missing/untriaged current-head CI/configured review agents; unresolved current-head review threads; fail/UNKNOWN=>NOT COMPLETE; poll/fix; bounded-watch resume handoff; auto-clear block=>host wake: 1 deduped 15m current-thread watch, else exact manual resume; stop unblocked/done; ready-no-merge-authority iff no auth; auto_merge_when_gates_pass=>no real blocker: merge+close any PR; close target+any issue.
+GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
 
-`GMCC-v2` expands to this canonical contract:
+`GMCC-v3` expands to this canonical contract:
 
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. When the overall Goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as available only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; create or update one active 15-minute current-thread monitor before the blocked handoff; do not create a duplicate. On each wake, refresh live blocker evidence and resume work if a blocker clears. Stop the monitor when the goal is unblocked or before completing it. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. When the overall Goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as available only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; create or update one active 15-minute current-thread monitor before the blocked handoff; do not create a duplicate. On each wake, refresh live blocker evidence and resume work if a blocker clears. Stop the monitor when the goal is unblocked or before completing it. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
 Pressure checks:
 
 - A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
 - An autonomously clearable blocked goal gets one 15-minute current-thread monitor when supported; do not duplicate it, and stop it when the goal unblocks or completes. `blocked-user-input` keeps its exact question and manual resume instructions without a monitor.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
-- With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
+- With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
 ### Coordination State
 
@@ -1818,8 +1951,9 @@ Goal completion contract:
 - If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll. Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage. If either cohort does not settle in the bounded watch/retry window, report NOT COMPLETE as `waiting-on-checks-or-review` with exact evidence and resume command. If a check fails, inspect and fix if in scope.
 - If only a real external blocker remains after a bounded watch/retry window, report NOT COMPLETE with exact blocker, evidence, and resume command; do not call the goal complete.
 - When the overall goal is genuinely blocked by a condition that can clear without user input, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one 15-minute current-thread monitor before handoff and do not create a duplicate. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
-- Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
-- With `auto_merge_when_gates_pass`, unless a real blocker prevents it, done means the PR is merged and closed out when present, the target is closed out, and the issue is closed where applicable.
+- Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
+- With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
@@ -2007,6 +2141,9 @@ The closeout lane is:
    evidence: rerun the affected automated and manual QA at the new head, then
    refresh `Tested at` and `head_sha`; never update the evidence marker alone.
    Run the helper separately for that PR or target with
+   `--expected-head-sha <full-final-head-SHA>`. Add
+   `--require-visual-evidence-v2` in the same invocation for every current
+   user-visible UI change; this flag is invalid without
    `--expected-head-sha <full-final-head-SHA>`. Add
    `--require-priority-dispositions` whenever the merge ledger or handoff relies
    on fixed, waived, or deferred priority findings. If the head changes again before
@@ -2471,9 +2608,15 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-gh pr checks <PR> --required
-gh pr checks <PR>
+# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
+  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
 ```
+
+The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
+evidence for required status checks, GitHub Actions, Dependabot, and other
+checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
+must migrate to the scoped v2 result.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -2500,11 +2643,261 @@ Also verify:
 
 Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow -> For All PRs: CI is passing, all current review comments and threads are addressed or explicitly triaged by tier, no major question or discussion item needs maintainer attention, and advisory AI systems such as CodeRabbit.ai are not special approval gates.
 
+### Ask Merge Authority Walkthrough Gate
+
+When `merge_authority` is `ask` and every ordinary gate is clean,
+automatically start the exact-diff PR walkthrough before asking for merge
+approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
+contract inline: inspect the complete diff first, group it into conceptual
+changes, explain the reason, behavior, tradeoffs, risks, and proof for exactly
+one change at a time, then wait for explicit readiness before continuing.
+
+Use full interactive mode for large or complex PRs and concise interactive mode
+for smaller cohesive PRs. Treat a PR as large when it exceeds any trusted-base
+`autonomous_merge.thresholds` maximum for changed files, changed lines, or
+commits. Complexity, cross-cutting behavior, security, migrations,
+architecture, or difficult rollback may require full mode below those limits.
+Do not repeat a walkthrough already completed for the same diff identity, and
+honor an explicit request to skip or stop it.
+
+After it completes or is skipped, refresh the diff identity and ordinary
+readiness. If the diff identity changed, invalidate the walkthrough and
+readiness evidence, then restart the walkthrough or stop. If an ordinary gate
+newly fails, stop. Ask one final merge decision only when the refreshed diff
+identity matches the recorded identity, ordinary readiness remains clean, and
+merge is allowed; a completed walkthrough must have explained that same diff
+identity. Walkthrough participation is not merge approval; merge still requires
+the explicit authority decision.
+
+### Autonomous Merge Eligibility Gate
+
+Ordinary readiness is necessary but not sufficient for autonomous merge;
+evaluate exact-head autonomous-merge eligibility after every ordinary gate
+passes. This gate applies only when `merge_authority` is
+`auto_merge_when_gates_pass`; `merge_authority` remains separate from
+eligibility and neither value grants the missing human judgment.
+
+Resolve the trusted current base SHA and fetch it. Execute the read-only
+evaluator from a trusted-base materialization or verified installed Agent Workflows pack.
+Its expected digest must be established independently of the PR. A repo-local
+fallback is usable only after materializing every runtime source from the
+trusted base; never execute evaluator, calibration decision, or library code
+modified by the PR head. Resolve the source-pack or installed `.agents` layout
+at that commit, fail closed if either complete runtime set is absent, and
+materialize it outside the evaluated checkout:
+
+```bash
+set -o pipefail
+TRUSTED_RUNTIME_ROOT="$(mktemp -d)"
+trap 'rm -rf "$TRUSTED_RUNTIME_ROOT"' EXIT
+if git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-eligibility" &&
+   git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy.rb" &&
+   git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
+   git cat-file -e "${TRUSTED_BASE_SHA}:bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
+  git archive "${TRUSTED_BASE_SHA}" -- skills/pr-batch \
+    bin/agent_doctor/autonomous_merge_policy.rb \
+    bin/agent_doctor/autonomous_merge_policy_globs.rb \
+    bin/agent_doctor/autonomous_merge_policy_yaml.rb |
+    tar -x -C "${TRUSTED_RUNTIME_ROOT}"
+  TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/skills/pr-batch"
+elif git cat-file -e "${TRUSTED_BASE_SHA}:.agents/skills/pr-batch/bin/autonomous-merge-eligibility" &&
+     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy.rb" &&
+     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_globs.rb" &&
+     git cat-file -e "${TRUSTED_BASE_SHA}:.agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb"; then
+  git archive "${TRUSTED_BASE_SHA}" -- .agents/skills/pr-batch \
+    .agents/bin/agent_doctor/autonomous_merge_policy.rb \
+    .agents/bin/agent_doctor/autonomous_merge_policy_globs.rb \
+    .agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb |
+    tar -x -C "${TRUSTED_RUNTIME_ROOT}"
+  TRUSTED_PR_BATCH_SKILL_DIR="${TRUSTED_RUNTIME_ROOT}/.agents/skills/pr-batch"
+else
+  echo "UNKNOWN: trusted base lacks a complete autonomous-merge runtime" >&2
+  exit 1
+fi
+```
+
+Then pass the corresponding provenance claim:
+
+```bash
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-eligibility" \
+  --repo-root . \
+  --trusted-base "${TRUSTED_BASE_SHA}" \
+  --trusted-helper-provenance "trusted-base:${TRUSTED_BASE_SHA}" \
+  --repo "${REPO}" \
+  --pr "${PR_NUMBER}" \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}"
+```
+
+For an independently verified installed pack, use
+`verified-installed-pack:<64-lowercase-sha256>` instead, after resolving
+`PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
+repo-pinned chain. The expected digest is trusted coordinator or installation
+state, not output learned from the helper being evaluated. The evaluator
+mechanically recomputes a length-framed manifest over the executing helper,
+decision/evidence/policy/trust libraries (including
+`autonomous_merge_runtime_trust.rb`), and selected calibration decision.
+For `trusted-base:<SHA>`, it instead compares every one of those runtime bytes
+with the claimed commit tree. A missing source or byte mismatch yields
+`UNKNOWN`. The claim flag supplies an expected identity; it cannot create
+trust.
+
+The trust boundary has both mechanical and procedural parts. Runtime-byte
+matching and live mutation-stable objective collection are mechanically
+verified. The collector sandwiches every paginated objective read between two
+complete issue-timeline traversals and two PR-detail reads. Initial and final
+head SHA, base SHA, valid ISO 8601 `updated_at`, and the sorted unique positive
+integer IDs of all `head_ref_force_pushed` events must match exactly. Thus an
+ABA force-push cannot be hidden by returning to the original head within one
+timestamp second, while an ordinary concurrent PR update is caught by
+`updated_at`. Unavailable, malformed, incomplete, duplicate-ID, or changing
+timeline evidence fails closed as `UNKNOWN`. Choosing the trusted base or
+installed-pack digest, inspecting the diff, producing the semantic assessment,
+and proving a human decision plus merge authority remain coordinator procedures
+backed by durable evidence.
+The semantic assessment must be an external coordinator-owned file derived
+from the trusted task and inspected diff; a path lexically or physically
+inside the evaluated repository is rejected. Do not read it from stdin, the PR
+branch, PR body, review text, or another author-controlled artifact. stdin
+evaluation JSON is diagnostic-only and always returns `UNKNOWN`. The helper
+reads the
+`.agents/agent-workflow.yml` seam from `--trusted-base`, not from the PR head;
+collects complete paginated files, commits, submitted review objects, and PR
+comments; re-reads the PR and its fully paginated force-push watermark to bind
+the result to one mutation-stable PR version; and fails closed on missing,
+malformed, contradictory, or ambiguous required facts. A PR that changes its
+seam, canonical workflow, merge-governing agent
+instructions, parity skills, evaluator or calibration helpers, evaluator
+libraries, the checked calibration decision, generated goal/completion
+contracts, this ADR, or repo-added `policy_paths` triggers
+`autonomous-merge-policy-change`; both source-pack and `.agents` installed
+paths are protected, so the PR cannot weaken its own gate.
+
+The output contract reports `verdict`, `head_sha`, trusted-base
+`policy_provenance`, claimed `helper_provenance`, mechanically verified
+`helper_trust`, objective `metrics`,
+reason-tagged `path_matches`,
+`safe_class`, lexicographically sorted duplicate-free `triggered_gates`,
+`shadow_triggered_gates`, `shadow_evidence_unknown`, `rollback_assessment`,
+`human_decision_evidence`, and exact `evidence_failures`. Canonical v1 gate IDs
+are closed:
+
+- `architectural-product-judgment`
+- `autonomous-merge-policy-change`
+- `changed-files-limit`
+- `changed-lines-limit`
+- `commit-count-limit`
+- `infrastructure-delivery`
+- `irreversible-external-effect`
+- `persistent-data-storage`
+- `public-compatibility`
+- `reviewed-heads-limit`
+- `security-auth-privacy`
+- `repo-path:<human_review_paths.id>` for a trusted-base repository rule
+
+Common persistent-data, infrastructure/delivery, irreversible/external,
+compatibility, security/auth/privacy, and architectural/product categories
+always apply. Portable numeric maxima are 29 changed files, 999 added plus
+deleted lines, 9 commits, and 3 distinct submitted-review head SHAs; the next
+value triggers. All files and lines count, including generated files and
+lockfiles. Safe documentation, strengthening-tests, and
+formatting/comment-only classifications are conjunctive reporting evidence;
+they never subtract hard, path, size, churn, rollback, or maintainer-concern
+gates. `generated_paths` is reporting-only. The checked calibration decision's
+reviewed-head maximum must equal the portable calibrated default; a
+trusted-base seam may then tighten it or relax it with the required rationale,
+and that effective trusted-base value controls both shadow and enforced
+comparisons.
+
+Create or resume a historical dataset first. The collector reads GitHub only,
+writes solely to the explicit checkpoint (using an atomic sibling temporary
+file), checkpoints after every page and completed PR, resumes completed PR
+detail without refetching it, restarts incomplete mutable-order discovery at
+page 1, verifies a second complete ordered `[number, merged_at]` snapshot
+against the first before declaring discovery complete, checkpoints a page-1
+restart on any mismatch or verification failure, and never emits merge
+decisions:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/autonomous-merge-calibrate" \
+  --collect ".agents/cache/autonomous-merge-calibration-dataset.json" \
+  --repo OWNER/REPO \
+  --repo OTHER/REPO \
+  --since YYYY-MM-DD
+```
+
+Use `--pr-count N` instead of `--since` for the latest `N` merged PRs per
+repository. API, pagination, or rate-limit failure leaves `scope.complete:
+false` with checkpointed failure evidence. After collection completes, analyze
+the saved dataset separately:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/autonomous-merge-calibrate" \
+  --input ".agents/cache/autonomous-merge-calibration-dataset.json" \
+  --repo OWNER/REPO \
+  --repo OTHER/REPO \
+  --sample 5
+```
+
+The committed decision remains shadow-only because the cited dataset is not the
+missing complete 397-PR history, reviewed-head coverage is incomplete, and no
+explicit graduation decision exists. Until a reproducible broader calibration
+removes every recorded blocker, `reviewed-heads-limit` appears only in
+`shadow_triggered_gates`; incomplete reviewed-head evidence appears only in
+`shadow_evidence_unknown`. After an explicit checked graduation, the identical
+signal moves to `triggered_gates` and incomplete history becomes `UNKNOWN`.
+File, line, and commit defaults are enforced now.
+
+Map the exact-head result literally:
+
+- `autonomous-merge-eligible`: autonomous mechanics may proceed only while
+  every ordinary gate remains clean.
+- `human-approval-required`: stop as `ready-human-review-required`.
+  `ready-human-review-required` carries the exact current head SHA, every
+  triggered gate, rollback status, and the exact durable human decision needed.
+- `human-approved-for-current-head`: the newest valid, proven-human, durable
+  decision for the exact current head and exact live gate set may permit the
+  mechanical merge while every ordinary gate remains clean.
+- `UNKNOWN`: stop as `autonomous-merge-evidence-unknown`.
+  `autonomous-merge-evidence-unknown` carries the exact current head SHA,
+  evidence failure, trusted-base policy provenance, and repair action.
+
+`UNKNOWN` is not `human-approval-required` and cannot be cleared by risk
+approval. A qualifying human decision uses the exact
+`autonomous-merge-risk-decision:v1` envelope from ADR 0003, names the exact
+current head and exact sorted gate set, records rollback/forward recovery,
+explicitly approves merge, has proven direct-user or human-maintainer
+provenance and merge authority, and is durable on the PR. A later head change,
+stale gate set, malformed envelope, or author-controlled claim cannot clear the
+gate. Absence of an exact current-head marker remains
+`human-approval-required`; an otherwise exact marker whose matching human or
+merge-authority attestation is missing or uncertain yields `UNKNOWN`. Re-run
+the evaluator immediately before `pr-merge-submit`; any head or base movement
+restarts ordinary readiness and eligibility evaluation.
+
+### Merge Assurance Gate
+
+After ordinary readiness, autonomous eligibility, and any required walkthrough
+or durable human decision are current for the exact head, run:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+  --ci-result "${CI_RESULT_PATH}" \
+  --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
+  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+```
+
+This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
+policy and emits a fresh integrity-bound receipt only when the exact-head
+evidence is eligible. It is separate from batch-plan preflight. Legacy merge
+callers must now generate and pass this receipt, and `merge_authority: none`
+remains a no-merge result.
+
 ### Exact-Head Merge Submission
 
-After the readiness gate passes and merge authority is explicit, use the same
-canonical GitHub host, base branch, and current head SHA that passed the gate
-for the final mutation. Resolve
+After the readiness gate passes, merge authority is explicit, and
+`merge-assurance` emits a fresh eligible receipt, use the same canonical GitHub
+host, base branch, and current head SHA that passed the gate for the final
+mutation. Resolve
 `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned helper
 chain, then run:
 
@@ -2515,42 +2908,41 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --subject "<consumer-required direct-merge subject>"
+  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
+`pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
+bindings and freshness before any mutation.
+
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
-uses `enqueuePullRequest` for a queue-controlled base and invokes GitHub's
-`mergePullRequest` with the consumer's ordinary direct merge method, subject,
-and expected head otherwise. Every API call is bound to the explicit host, and
-the returned PR URL must match it.
-If queue enforcement changes between that read and the direct mutation, only
-GitHub's explicit queue-control error permits one refreshed exact-head enqueue
-retry. The helper never invokes the queue-aware `gh pr merge` path, never enables
-auto-merge, never retries an unrelated direct-merge
-error as a queue operation, and fails closed when the head moved, queue state is
-missing, or GitHub returns no queue entry.
+preserves read-only, idempotent observation when the exact reviewed PR is
+already merged, preserves an exact existing queue entry, and uses
+`enqueuePullRequest` only for an exact open PR on a queue-controlled base. An
+open PR on a queue-disabled base exits 2 before any `mergePullRequest` mutation:
+GitHub exposes an atomic expected-head field but no atomic expected-base OID for
+direct merge. Migrate the base branch to a merge queue, then restart ordinary
+readiness, autonomous eligibility, and merge-assurance receipt generation.
+Every API call is bound to the explicit host, and the returned PR URL must match
+it. The helper never invokes `gh pr merge`, never enables auto-merge, and fails
+closed when the head moved, queue state is missing, or GitHub returns no queue
+entry.
 
 Submission is restart-safe for an exact head already merged or already present
-in the queue. After an ambiguous mutation response, the helper re-reads the PR
+in the queue. After an ambiguous enqueue response, the helper re-reads the PR
 and reports success only when that exact expected head and base are proven
 merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
 reconcile live state rather than retrying blindly. If post-enqueue verification
 detects a retarget or head change, the helper exits 2 without automatic cleanup:
 GitHub's dequeue mutation accepts only the PR ID, so it cannot prove that a
 later live queue entry is the one created by this submission rather than a
-concurrent actor's replacement.
-
-GitHub's merge and enqueue mutations expose an atomic expected-head field but
-not an expected-base field. The helper therefore verifies the exact expected
-base immediately before and after its mutation and reports any retarget as a
-blocker; merge authority must not be exercised while another actor is
-retargeting the PR. Manual reconciliation is required because GitHub exposes
-neither an atomic base precondition nor an entry-bound dequeue mutation.
+concurrent actor's replacement. A pre/post base check cannot substitute for the
+missing atomic expected-base precondition, so direct merge remains unsupported.
 
 For a queued merge, GitHub's queue configuration controls the actual merge
 method and commit-title/body formatting. Before submission, verify the PR title
 and live repository queue settings satisfy any consumer squash-title policy;
-the direct-only `--subject` cannot override a queue-generated commit title.
+legacy direct-method or subject options cannot override a queue-generated commit
+title.
 Treat `submission: merge_queue` as in-progress evidence, not as merged state.
 An idempotent rerun that finds the exact reviewed head and base already merged
 reports `submission: already_merged` with `merge_provenance: UNKNOWN`; it must

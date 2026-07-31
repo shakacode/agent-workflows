@@ -1,0 +1,293 @@
+{
+  "type": "batch-plan-preflight-replay",
+  "version": 1,
+  "batch_ref": "batch://ror-a-17-1-wave-a-20260729",
+  "plan_state_refs": [
+    "plan-state://ror-a-17-1-wave-a-20260729/goal-prompt",
+    "plan-state://ror-a-17-1-wave-a-20260729/stage-dependency-plan",
+    "plan-state://ror-a-17-1-wave-a-20260729/stage-dependency-live"
+  ],
+  "comment_refs": [
+    "https://github.com/shakacode/react_on_rails/issues/4010#issuecomment-5120424136"
+  ],
+  "input": {
+    "type": "batch-plan-preflight",
+    "version": 1,
+    "plan": {
+      "id": "batch-ror-a-17-1-wave-a-20260729",
+      "backend": "claude",
+      "active_wave": "wave-a",
+      "lanes": [
+        {
+          "id": "lane-4813-changelog-171",
+          "wave": "wave-a",
+          "purpose": "implementation",
+          "changed_surfaces": [
+            "release_behavior",
+            "generated_output"
+          ],
+          "qa": {
+            "disposition": "not-required",
+            "rationale": "Historical batch-wide waiver: no user-visible UI change."
+          }
+        },
+        {
+          "id": "lane-4753-guardrail-hook",
+          "wave": "wave-a",
+          "purpose": "implementation",
+          "changed_surfaces": [
+            "developer_tooling"
+          ],
+          "qa": {
+            "disposition": "not-required",
+            "rationale": "Historical batch-wide waiver: no user-visible UI change."
+          }
+        },
+        {
+          "id": "lane-4756-ci-mergebase",
+          "wave": "wave-a",
+          "purpose": "implementation",
+          "changed_surfaces": [
+            "ci_workflow"
+          ],
+          "qa": {
+            "disposition": "not-required",
+            "rationale": "Historical batch-wide waiver: no user-visible UI change."
+          }
+        },
+        {
+          "id": "lane-4584-ssr-bundle-http",
+          "wave": "wave-a",
+          "purpose": "implementation",
+          "changed_surfaces": [
+            "broad_runtime"
+          ],
+          "qa": {
+            "disposition": "not-required",
+            "rationale": "Historical batch-wide waiver: no user-visible UI change."
+          }
+        },
+        {
+          "id": "lane-4736-rsc-error-redact",
+          "wave": "wave-a",
+          "purpose": "implementation",
+          "changed_surfaces": [
+            "security_boundary"
+          ],
+          "qa": {
+            "disposition": "not-required",
+            "rationale": "Historical batch-wide waiver: lane-local security evidence substituted for batch QA."
+          }
+        }
+      ],
+      "serialization_groups": [],
+      "external_api_premises": [
+        {
+          "id": "claude-code-post-tool-use-args",
+          "lane_ids": [
+            "lane-4753-guardrail-hook"
+          ],
+          "support": "UNKNOWN",
+          "primary_sources": [
+            "https://docs.anthropic.com/en/docs/claude-code/hooks"
+          ],
+          "retrieved_date": "2026-07-29",
+          "version_chronology": [
+            {
+              "version": "Claude Code installed at batch launch",
+              "applicability": "applicable",
+              "source_url": "https://docs.anthropic.com/en/docs/claude-code/hooks",
+              "release_date": "UNKNOWN"
+            }
+          ]
+        }
+      ]
+    },
+    "lane_lifecycle_receipts": [],
+    "file_touch_map": {
+      "lane-4813-changelog-171": {
+        "type": "planned-path-evidence",
+        "version": 1,
+        "source_kind": "durable-plan",
+        "evidence_ref": "plan-state://ror-a-17-1-wave-a-20260729/goal-prompt#lane-4813-changelog-171",
+        "paths": [
+          "CHANGELOG.md"
+        ],
+        "renames": []
+      },
+      "lane-4753-guardrail-hook": {
+        "type": "planned-path-evidence",
+        "version": 1,
+        "source_kind": "durable-plan",
+        "evidence_ref": "plan-state://ror-a-17-1-wave-a-20260729/goal-prompt#lane-4753-guardrail-hook",
+        "paths": [
+          ".claude/hooks/rsc-app-safety-check.rb",
+          ".claude/settings.json",
+          "CHANGELOG.md",
+          "react_on_rails/lib/react_on_rails/agent_guardrails.rb",
+          "react_on_rails/spec/react_on_rails/agent_guardrails_spec.rb"
+        ],
+        "renames": []
+      },
+      "lane-4756-ci-mergebase": {
+        "type": "planned-path-evidence",
+        "version": 1,
+        "source_kind": "durable-plan",
+        "evidence_ref": "plan-state://ror-a-17-1-wave-a-20260729/goal-prompt#lane-4756-ci-mergebase",
+        "paths": [
+          ".github/workflows/ci-required.yml",
+          "CHANGELOG.md",
+          "internal/planning/CONTEXT.md"
+        ],
+        "renames": []
+      },
+      "lane-4584-ssr-bundle-http": {
+        "type": "planned-path-evidence",
+        "version": 1,
+        "source_kind": "durable-plan",
+        "evidence_ref": "plan-state://ror-a-17-1-wave-a-20260729/goal-prompt#lane-4584-ssr-bundle-http",
+        "paths": [
+          "CHANGELOG.md",
+          "react_on_rails/lib/react_on_rails/server_rendering_pool/ruby_embedded_java_script.rb",
+          "react_on_rails/spec/react_on_rails/server_rendering_pool/ruby_embedded_java_script_spec.rb"
+        ],
+        "renames": []
+      },
+      "lane-4736-rsc-error-redact": {
+        "type": "planned-path-evidence",
+        "version": 1,
+        "source_kind": "durable-plan",
+        "evidence_ref": "plan-state://ror-a-17-1-wave-a-20260729/goal-prompt#lane-4736-rsc-error-redact",
+        "paths": [
+          "CHANGELOG.md",
+          "packages/react-on-rails-pro/src/ReactOnRailsPro/serverRenderUtils/injectRSCPayload.ts",
+          "packages/react-on-rails/src/serverRenderUtils.ts",
+          "packages/react-on-rails/src/serverRenderUtils.test.ts"
+        ],
+        "renames": []
+      }
+    },
+    "stage_dependency_plan": {
+      "contract": "stage-dependency-plan",
+      "version": 1,
+      "id": "ror-a-17-1-wave-a-20260729",
+      "edges": []
+    },
+    "stage_dependency_gate": {
+      "contract": "stage-dependency-gate",
+      "version": 1,
+      "status": "eligible",
+      "trusted_plan_id": "ror-a-17-1-wave-a-20260729",
+      "trusted_plan_binding": "sha256:8a413f521938f01c85b2fe1c77e8991a305b7d7c6b7faa052239fee98dccf96e",
+      "lanes": [
+        {
+          "id": "lane-4584-ssr-bundle-http",
+          "permissions": {
+            "read_only_discovery": true,
+            "branch_worktree_create": true,
+            "patch_edit": true,
+            "commit": true,
+            "push": true,
+            "pr_open": true,
+            "final_validation": true,
+            "merge": true
+          },
+          "hosted_ci": "eligible-via-repo-seam",
+          "blockers": [],
+          "base_refresh": []
+        },
+        {
+          "id": "lane-4736-rsc-error-redact",
+          "permissions": {
+            "read_only_discovery": true,
+            "branch_worktree_create": true,
+            "patch_edit": true,
+            "commit": true,
+            "push": true,
+            "pr_open": true,
+            "final_validation": true,
+            "merge": true
+          },
+          "hosted_ci": "eligible-via-repo-seam",
+          "blockers": [],
+          "base_refresh": []
+        },
+        {
+          "id": "lane-4753-guardrail-hook",
+          "permissions": {
+            "read_only_discovery": true,
+            "branch_worktree_create": true,
+            "patch_edit": true,
+            "commit": true,
+            "push": true,
+            "pr_open": true,
+            "final_validation": true,
+            "merge": true
+          },
+          "hosted_ci": "eligible-via-repo-seam",
+          "blockers": [],
+          "base_refresh": []
+        },
+        {
+          "id": "lane-4756-ci-mergebase",
+          "permissions": {
+            "read_only_discovery": true,
+            "branch_worktree_create": true,
+            "patch_edit": true,
+            "commit": true,
+            "push": true,
+            "pr_open": true,
+            "final_validation": true,
+            "merge": true
+          },
+          "hosted_ci": "eligible-via-repo-seam",
+          "blockers": [],
+          "base_refresh": []
+        },
+        {
+          "id": "lane-4813-changelog-171",
+          "permissions": {
+            "read_only_discovery": true,
+            "branch_worktree_create": true,
+            "patch_edit": true,
+            "commit": true,
+            "push": true,
+            "pr_open": true,
+            "final_validation": true,
+            "merge": true
+          },
+          "hosted_ci": "eligible-via-repo-seam",
+          "blockers": [],
+          "base_refresh": []
+        }
+      ],
+      "checker_verdict": {
+        "status": "eligible",
+        "blockers": []
+      },
+      "critical_path": {
+        "lane_ids": [
+          "lane-4584-ssr-bundle-http"
+        ],
+        "edge_count": 0,
+        "tie_breaker": "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
+        "assignments": [
+          {
+            "lane_id": "lane-4584-ssr-bundle-http",
+            "maker": "maker-lane-4584-ssr-bundle-http",
+            "checker": "checker-ror-a-17-1-wave-a"
+          }
+        ]
+      },
+      "downstream_requirements": {
+        "final_combined_tip_validation": "required-via-repo-seam",
+        "preserved_gates": [
+          "exact_head_ci",
+          "independent_review",
+          "unresolved_threads",
+          "merge_readiness"
+        ]
+      }
+    }
+  }
+}

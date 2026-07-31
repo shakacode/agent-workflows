@@ -434,6 +434,8 @@ verdict: autonomous-merge-eligible |
          UNKNOWN
 head_sha:
 policy_provenance:
+helper_provenance:
+helper_trust:
 metrics:
 path_matches:
 safe_class:
@@ -444,8 +446,29 @@ rollback_assessment:
 human_decision_evidence:
 ```
 
-The final verdict is recomputed immediately before merge. PR-body claims and
-branch-provided assessment files are untrusted input and cannot establish a
+The final verdict is recomputed immediately before merge. The evaluator
+mechanically compares its executing helper, required libraries, and selected
+calibration decision with the claimed trusted-base tree or recomputes the exact
+installed-pack manifest digest. It also collects objective evidence directly
+from the named live GitHub PR. Collection reads the initial PR detail, a fully
+paginated issue-timeline watermark, every objective evidence page, the complete
+timeline watermark again, and the final PR detail. It requires exact equality
+of head SHA, base SHA, valid ISO 8601 `updated_at`, and the sorted unique positive
+integer IDs of every `head_ref_force_pushed` event. This detects an ABA
+force-push even when the final head and a second-resolution timestamp equal
+their initial values; an ordinary concurrent PR update changes `updated_at`.
+Unavailable, malformed, incomplete, or changing timeline evidence fails closed.
+Missing runtime sources, byte mismatch, unverified stdin objective JSON, and
+semantic assessment files lexically or physically inside the evaluated
+repository likewise yield `UNKNOWN`.
+
+Those mechanical checks do not eliminate procedural trust. The coordinator
+must establish the trusted base or expected installed-pack digest independently
+of the PR, inspect the diff, provide the external semantic assessment, and
+durably establish human provenance plus merge authority for any risk decision.
+`--trusted-helper-provenance` states an expected identity; the flag itself does
+not make bytes, an assessment, or a decision trusted. PR-body claims and
+branch-provided assessment files remain untrusted input and cannot establish a
 passing result.
 
 ### Canonical gate IDs
@@ -538,6 +561,8 @@ including:
 - unknown rollback safety;
 - uncertain maintainer-decision provenance;
 - disagreement between live metadata and a recorded decision; or
+- inability to bind every executing runtime source and selected calibration
+  decision to the claimed trusted base or installed pack; or
 - inability to retrieve and use trusted-base policy when the PR changes a
   policy source.
 
@@ -704,6 +729,18 @@ Build a reusable, rate-limit-aware historical calibration command that:
 - identifies PRs that would change classification under proposed thresholds;
 - samples both triggered PRs and near misses for semantic inspection; and
 - emits no merge decisions.
+
+Closed-PR discovery is ordered by GitHub's mutable `updated` order, not by
+merge time. Therefore an incomplete checkpoint restarts discovery at page 1;
+it preserves already completed per-PR detail records and does not refetch them.
+Before declaring discovery complete, the collector performs a second complete
+ordered traversal and compares every `[number, merged_at]` entry with the first
+snapshot. A mismatch or any verification pagination/API/rate-limit failure
+checkpoints discovery incomplete and restarts it at page 1. Both `--since` and
+`--pr-count` traverse the complete closed-PR listing because neither a page's
+update order nor its merge timestamps prove that later pages cannot contain an
+in-window or newer merged PR. This second full traversal is the correctness
+cost of truthful `scope.complete: true`.
 
 Run it across the broader ShakaStack-linked repository set after the initial
 policy lands. Historical calibration may refine repository seams and stricter

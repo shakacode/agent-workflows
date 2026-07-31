@@ -1,0 +1,26 @@
+{
+  "contract": "autonomous-merge-policy-source-fixture",
+  "version": 1,
+  "paths": [
+    "skills/pr-batch/bin/autonomous-merge-eligibility",
+    "skills/pr-batch/bin/autonomous-merge-calibrate",
+    "bin/agent_doctor/autonomous_merge_policy.rb",
+    "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+    "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+    "skills/pr-batch/lib/autonomous_merge_calibration.rb",
+    "skills/pr-batch/bin/goal-completion-contract-test.rb",
+    "skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
+    "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
+    ".agents/skills/pr-batch/bin/autonomous-merge-eligibility",
+    ".agents/skills/pr-batch/bin/autonomous-merge-calibrate",
+    ".agents/bin/agent_doctor/autonomous_merge_policy.rb",
+    ".agents/bin/agent_doctor/autonomous_merge_policy_globs.rb",
+    ".agents/bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+    ".agents/skills/pr-batch/lib/autonomous_merge_evidence.rb",
+    ".agents/skills/pr-batch/bin/goal-completion-contract-test.rb",
+    ".agents/skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
+    ".agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+  ],
+  "expected_gate": "autonomous-merge-policy-change",
+  "expected_verdict": "human-approval-required"
+}

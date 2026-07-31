@@ -12,22 +12,36 @@ require_relative "agent_doctor/timeout_budget"
 module AgentWorkflowsDeliveryState
   module_function
 
-  def plugin_manifest_valid?(root, host)
+  def normalized_plugin_source(value)
+    return nil unless value.is_a?(String) && !value.strip.empty?
+
+    value.strip.sub(%r{/+\z}, "").sub(/\.git\z/i, "")
+  end
+
+  def plugin_manifest_skill_names(root, host, expected_version: nil, expected_source: nil)
     directory = host == "codex" ? ".codex-plugin" : ".claude-plugin"
     path = File.join(root, directory, "plugin.json")
-    return false unless File.file?(path)
+    return nil unless File.file?(path)
 
     manifest = JSON.parse(File.binread(path))
+    return nil unless manifest.is_a?(Hash)
+
     skills = manifest.fetch("skills")
-    return false unless skills.is_a?(String) && !skills.empty?
+    return nil unless skills.is_a?(String) && !skills.empty?
 
     skills_root = File.realpath(File.expand_path(skills, root))
     plugin_root = File.realpath(root)
-    manifest.fetch("name") == "scw" &&
-      (skills_root == plugin_root || skills_root.start_with?("#{plugin_root}/")) &&
-      Dir.glob(File.join(skills_root, "*", "SKILL.md")).any?
+    return nil unless manifest.fetch("name") == "scw"
+    return nil if expected_version && manifest["version"] != expected_version
+    if expected_source && normalized_plugin_source(manifest["repository"]) != normalized_plugin_source(expected_source)
+      return nil
+    end
+    return nil unless skills_root == plugin_root || skills_root.start_with?("#{plugin_root}/")
+
+    names = Dir.glob(File.join(skills_root, "*", "SKILL.md")).map { |skill| File.basename(File.dirname(skill)) }.sort
+    names unless names.empty?
   rescue SystemCallError, JSON::ParserError, KeyError, TypeError
-    false
+    nil
   end
 
   def codex_native_state(target)
@@ -51,12 +65,50 @@ module AgentWorkflowsDeliveryState
     return cli_state if cli_state["state"] == "unknown"
     return { "state" => "inactive", "reason" => "scw@agent-workflows is disabled" } if cli_state["state"] == "disabled"
 
-    roots = Dir.glob(cache_pattern).select do |root|
-      plugin_manifest_valid?(root, "codex")
+    version = cli_state.fetch("version")
+    source = cli_state.fetch("source")
+    unless version.match?(/\A[0-9A-Za-z][0-9A-Za-z._+-]*\z/)
+      return { "state" => "unknown", "reason" => "Codex reports an invalid active scw plugin version: #{version}" }
     end
-    return { "state" => "unknown", "reason" => "enabled Codex scw plugin has no valid installed cache" } if roots.empty?
 
-    { "state" => "active", "roots" => roots.sort }
+    cache_root = File.join(target, "plugins/cache/agent-workflows/scw")
+    candidates = if File.directory?(cache_root) && !File.symlink?(cache_root)
+                   Dir.children(cache_root).filter_map do |entry|
+                     File.join(cache_root, entry) if entry == version
+                   end
+                 else
+                   []
+                 end
+    unless candidates.length == 1
+      return {
+        "state" => "unknown",
+        "reason" => "Codex active scw version #{version} has #{candidates.length} matching cache candidates"
+      }
+    end
+
+    root = candidates.first
+    names = if File.directory?(root) && !File.symlink?(root)
+              plugin_manifest_skill_names(
+                root,
+                "codex",
+                expected_version: version,
+                expected_source: source
+              )
+            end
+    unless names
+      return {
+        "state" => "unknown",
+        "reason" => "Codex reports an enabled scw plugin whose active root has no valid installed cache: #{root}"
+      }
+    end
+
+    {
+      "state" => "active",
+      "roots" => [root],
+      "skill_names" => names,
+      "version" => version,
+      "source" => source
+    }
   rescue SystemCallError => e
     { "state" => "unknown", "reason" => "unable to read Codex plugin state: #{e.message}" }
   end
@@ -100,10 +152,17 @@ module AgentWorkflowsDeliveryState
     return { "state" => "unknown", "reason" => "Codex scw plugin is absent from marketplace agent-workflows" } if rows.empty?
     return { "state" => "unknown", "reason" => "Codex scw plugin state is ambiguous" } unless rows.length == 1
 
-    status_text = rows.first[1]
+    row = rows.first
+    status_text = row[1]
     case status_text
     when "installed, enabled"
-      { "state" => "enabled" }
+      version = row[2]
+      source = row[3]
+      if version.to_s.empty? || source.to_s.empty?
+        return { "state" => "unknown", "reason" => "enabled Codex scw plugin is missing its active version or source" }
+      end
+
+      { "state" => "enabled", "version" => version, "source" => source }
     when "installed, disabled"
       { "state" => "disabled" }
     else
@@ -141,17 +200,36 @@ module AgentWorkflowsDeliveryState
     end
 
     receipts = receipt_state.dig("plugins", "scw@agent-workflows")
-    roots = Array(receipts).filter_map { |receipt| receipt["installPath"] if receipt.is_a?(Hash) }.select do |root|
-      plugin_manifest_valid?(root, "claude")
-    end
-    if roots.empty?
-      missing = receipts.nil? || Array(receipts).empty?
-      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" } if !explicit && missing
+    candidates = Array(receipts)
+    if candidates.empty?
+      return { "state" => "inactive", "reason" => "scw@agent-workflows is not installed" } unless explicit
 
-      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no valid installed cache" }
+      return { "state" => "unknown", "reason" => "enabled Claude scw plugin has no install candidate" }
     end
 
-    { "state" => "active", "roots" => roots.sort }
+    manifests = candidates.map do |receipt|
+      unless receipt.is_a?(Hash) && receipt["installPath"].is_a?(String) && !receipt["installPath"].empty?
+        return { "state" => "unknown", "reason" => "Claude scw plugin has an invalid candidate install receipt" }
+      end
+
+      root = File.expand_path(receipt.fetch("installPath"))
+      expected_version = receipt["version"] if receipt["version"].is_a?(String) && !receipt["version"].empty?
+      names = plugin_manifest_skill_names(root, "claude", expected_version: expected_version)
+      unless names
+        return {
+          "state" => "unknown",
+          "reason" => "Claude scw plugin candidate root is invalid: #{root}"
+        }
+      end
+
+      [root, names]
+    end
+
+    {
+      "state" => "active",
+      "roots" => manifests.map(&:first).sort,
+      "skill_names" => manifests.flat_map(&:last).uniq.sort
+    }
   rescue SystemCallError, JSON::ParserError, TypeError => e
     { "state" => "unknown", "reason" => "invalid Claude plugin state: #{e.message}" }
   end
@@ -218,6 +296,13 @@ module AgentWorkflowsDeliveryState
     [names, source_root ? { type: :directory, root: source_root } : nil]
   end
 
+  def current_skill_names(source)
+    skills_root = File.join(source, "skills")
+    return [] unless File.directory?(skills_root)
+
+    Dir.glob(File.join(skills_root, "*", "SKILL.md")).map { |skill| File.basename(File.dirname(skill)) }.sort
+  end
+
   def filesystem_entries(root)
     return nil unless File.directory?(root) && !File.symlink?(root)
 
@@ -275,7 +360,7 @@ module AgentWorkflowsDeliveryState
     end
   end
 
-  def managed_flat_inventory(target:, source:, delivery_mode:)
+  def managed_flat_inventory(target:, source:, delivery_mode:, collision_names: [])
     if delivery_mode == "plugin-companion" && (component = symlinked_target_component(target))
       return {
         "state" => "ambiguous",
@@ -312,8 +397,8 @@ module AgentWorkflowsDeliveryState
       }
     end
 
-    names, snapshot = skill_names(source, metadata)
     if delivery_mode == "flat"
+      names = current_skill_names(source)
       present = names.filter_map do |name|
         path = File.join(target, "skills", name)
         path if File.exist?(path) || File.symlink?(path)
@@ -326,8 +411,10 @@ module AgentWorkflowsDeliveryState
     end
 
     removable = []
+    legacy_flat = metadata && prior_delivery_mode == "flat"
+    names, snapshot = legacy_flat ? skill_names(source, metadata) : [collision_names, nil]
     recorded_names = names.to_h { |name| [name, true] }
-    blocking = if File.directory?(skills_path) && !File.symlink?(skills_path)
+    blocking = if legacy_flat && File.directory?(skills_path) && !File.symlink?(skills_path)
                  Dir.children(skills_path).filter_map do |name|
                    File.join(skills_path, name) unless recorded_names.key?(name)
                  end
@@ -338,7 +425,7 @@ module AgentWorkflowsDeliveryState
       path = File.join(target, "skills", name)
       next unless File.exist?(path) || File.symlink?(path)
 
-      unless delivery_mode == "plugin-companion" && metadata && prior_delivery_mode == "flat" && snapshot
+      unless legacy_flat && snapshot
         blocking << path
         next
       end
@@ -370,7 +457,13 @@ module AgentWorkflowsDeliveryState
 
   def check(host:, target:, source:, delivery_mode:)
     native = native_state(host, target)
-    flat = managed_flat_inventory(target: target, source: source, delivery_mode: delivery_mode)
+    collision_names = Array(native["skill_names"])
+    flat = managed_flat_inventory(
+      target: target,
+      source: source,
+      delivery_mode: delivery_mode,
+      collision_names: collision_names
+    )
     native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive")
     compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty?
     reason =

@@ -336,6 +336,48 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_required_policy_values_reject_embedded_legacy_placeholders
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "base_branch" => "Use <base branch>",
+          "ci_parity_environment" => "Run in <runner image>"
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "unresolved policy value for key: base_branch"
+      assert_includes out, "unresolved policy value for key: ci_parity_environment"
+    end
+  end
+
+  def test_optional_policy_values_recursively_reject_embedded_legacy_placeholders
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "custom_scalar" => "Use <base branch>",
+          "custom_array" => ["Run in <runner image>"],
+          "custom_mapping" => { "nested" => "Use <main branch>" }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      %w[custom_scalar custom_array custom_mapping].each do |key|
+        assert_includes out, "unresolved policy value for key: #{key}"
+      end
+    end
+  end
+
   def test_optional_repo_prefix_accepts_valid_value_and_remains_optional
     with_repo do |root|
       write_valid_binstub_contract(root)
@@ -378,6 +420,217 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
                         "invalid policy value for key: repo_prefix " \
                         "(expected 1-6 uppercase ASCII letters or digits)"
       end
+    end
+  end
+
+  def test_optional_autonomous_merge_policy_uses_the_shared_closed_schema
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "autonomous_merge" => {
+            "thresholds" => { "max_changed_files" => 20 },
+            "human_review_paths" => [
+              {
+                "id" => "production-hot-path",
+                "pattern" => "app/services/checkout/**",
+                "reason" => "hot-path"
+              }
+            ],
+            "safe_path_groups" => {
+              "documentation" => {
+                "include" => ["docs/**"],
+                "exclude" => ["docs/operator/**"]
+              }
+            }
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_optional_autonomous_merge_policy_accepts_an_exact_empty_mapping_seed
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("autonomous_merge" => {}))
+      write_skill(root, "No commands here.\n")
+
+      policy_text = File.read(File.join(root, ".agents/agent-workflow.yml"), encoding: "UTF-8")
+      out, status = run_doctor(root)
+
+      assert_includes policy_text, "autonomous_merge: {}\n"
+      assert status.success?, out
+    end
+  end
+
+  def test_optional_autonomous_merge_policy_accepts_runtime_valid_empty_arrays
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "autonomous_merge" => {
+            "human_review_paths" => [],
+            "policy_paths" => [],
+            "generated_paths" => []
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+    end
+  end
+
+  def test_optional_autonomous_merge_policy_rejects_nested_unresolved_placeholders
+    variants = {
+      "legacy direct list scalar" => {
+        "policy_paths" => ["<base branch>"]
+      },
+      "legacy nested mapping list scalar" => {
+        "safe_path_groups" => {
+          "documentation" => {
+            "include" => ["docs/**"],
+            "exclude" => ["<base branch>"]
+          }
+        }
+      },
+      "threshold relaxation rationale" => {
+        "thresholds" => { "max_changed_files" => 30 },
+        "threshold_relaxation" => {
+          "rationale" => "<nonempty rationale covering all relaxed thresholds>"
+        }
+      },
+      "policy path" => {
+        "policy_paths" => ["<repo-owned glob>"]
+      },
+      "generated path" => {
+        "generated_paths" => ["<repo-owned generated glob>"]
+      },
+      "human-review pattern" => {
+        "human_review_paths" => [
+          {
+            "id" => "repo-owned-risk",
+            "pattern" => "<repo-owned glob>",
+            "reason" => "hot-path"
+          }
+        ]
+      },
+      "human-review other detail" => {
+        "human_review_paths" => [
+          {
+            "id" => "repo-owned-risk",
+            "pattern" => "app/**",
+            "reason" => "other",
+            "detail" => "<nonempty repo-owned reason>"
+          }
+        ]
+      },
+      "safe-path include" => {
+        "safe_path_groups" => {
+          "documentation" => {
+            "include" => ["<repo-owned glob>"],
+            "exclude" => []
+          }
+        }
+      },
+      "safe-path exclude" => {
+        "safe_path_groups" => {
+          "documentation" => {
+            "include" => ["docs/**"],
+            "exclude" => ["<repo-owned glob>"]
+          }
+        }
+      }
+    }
+    results = variants.transform_values do |autonomous_merge|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("autonomous_merge" => autonomous_merge))
+        write_skill(root, "No commands here.\n")
+
+        run_doctor(root)
+      end
+    end
+    failures = results.filter_map do |label, (out, status)|
+      next unless status.success? || !out.include?("unresolved policy value for key: autonomous_merge")
+
+      "#{label}: status=#{status.exitstatus}, output=#{out.inspect}"
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_optional_autonomous_merge_policy_allows_angle_bracket_text_inside_ordinary_prose
+    rationales = [
+      "Document <nonempty rationale covering all relaxed thresholds> after calibration.",
+      "Document <base branch> as historical context after calibration."
+    ]
+    rationales.each do |rationale|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge(
+            "autonomous_merge" => {
+              "thresholds" => { "max_changed_files" => 30 },
+              "threshold_relaxation" => { "rationale" => rationale }
+            }
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        assert status.success?, out
+      end
+    end
+  end
+
+  def test_empty_collections_outside_autonomous_merge_remain_unresolved
+    [[], {}].each do |empty_collection|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("custom_runtime_paths" => empty_collection))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, empty_collection.class.name
+        assert_includes out, "unresolved policy value for key: custom_runtime_paths", empty_collection.class.name
+      end
+    end
+  end
+
+  def test_invalid_autonomous_merge_policy_is_reported_by_the_seam_doctor
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      File.open(policy_path, "a") do |file|
+        file.write(<<~YAML)
+          autonomous_merge:
+            human_review_paths:
+              - id: custom-risk
+                pattern: "../outside/**"
+                reason: other
+        YAML
+      end
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid autonomous_merge policy"
+      assert_includes out, "invalid glob"
+      assert_includes out, "detail must be a nonempty string"
     end
   end
 

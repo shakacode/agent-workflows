@@ -59,18 +59,79 @@ blocker. Do not fake a manual pass from static inspection.
    - Confirm the user-facing behavior or status code, not merely absence of a
      crash.
 
-4. **For UI changes, separate function from appearance.**
+4. **For UI changes, separate function from appearance and make the evidence durable.**
    - Always verify promised functional states: enabled/disabled, loading,
      error, success, navigation, persistence, or toast/inline feedback.
-   - If no design reference exists, take sanity screenshots and report obvious
-     breakage only.
-   - If a design reference exists, use the repo's visual QA process for
-     fidelity rather than eyeballing it inside this skill.
+   - Capture the relevant before and after states for every user-visible change.
+     The before state may be the current implementation, an intentionally
+     unfixed build, or a named design reference. Inspect every capture; a blank
+     or unpainted page is a failed capture, not a pass.
+   - Put the artifacts where every intended reviewer can open them. For
+     GitHub-only or public work, prefer GitHub PR attachments. When an
+     authenticated browser/file-upload capability is available, use GitHub's UI
+     upload flow and retain its stable `github.com/user-attachments/assets/...`
+     URL; no comment submission is required merely to obtain the URL. A
+     configured linked tracker or artifact store is also valid when every
+     intended reviewer has access; link that evidence from the PR.
+   - GitHub documents no public REST or GraphQL attachment-upload route. Do not
+     depend on an undocumented direct-upload endpoint unless the repository has
+     explicitly configured and verified that integration. If no authenticated
+     UI uploader or configured integration is available, prepare clearly named
+     local files and report their absolute paths, but keep the QA evidence and
+     readiness status `blocked` until a human attaches them and the PR contains
+     the resulting durable GitHub URL. Local paths, `file:`
+     URLs, inaccessible private blob/camo URLs, and “captured locally” are not
+     durable reviewer evidence, even alongside an unrelated HTTPS URL. Reject
+     `./`, `../`, `~/`, Windows-relative/backslash paths, plain local media
+     filenames, and blank or unpainted captures. Do not reject a media filename
+     that is part of the actual HTTPS URL path.
+   - The replay helper validates URL and destination shape; it does not fetch
+     evidence URLs or prove their authorization, retention, or liveness. Before
+     reporting readiness, an intended reviewer must open every evidence URL
+     using intended reviewer access and reject dead, inaccessible, private-only,
+     or expiring evidence.
+     Paint, interaction, and negative-control checks likewise validate a strict
+     text contract, not the semantic truth of the claim; a reviewer must inspect
+     the linked evidence and confirm the stated observation.
+   - For hover, focus, drag, transition, loading, animation, or another
+     interaction change, link a short durable clip. If recording is unavailable,
+     use exact labeled evidence such as `measured_substitute:
+     before_value=52px; after_value=0px; tolerance=1px`; every value and
+     tolerance needs a unit. Incidental URL IDs do not count.
+   - For a visual fix, rerun an intentionally unfixed negative control and
+     record the observed failing assertion or mismatch. A reasoned `not
+     applicable` is required when no visual fix is in scope.
+   - If no design reference exists, treat screenshots as sanity evidence and
+     report obvious breakage only. If one exists, use the repo's visual QA
+     process for fidelity rather than eyeballing it inside this skill.
+   - For rendered-page, asset-delivery, or bundle impact, follow the repository
+     performance seam and use `$benchmark-verification` when it applies. Label
+     size/shape-only evidence `bundle_hygiene` and name any non-byte shape
+     measurement with `metric_name=<bundle/asset shape metric>`; claim `measured_metric` only
+     when a real runtime/user metric was measured, and name it with
+     `metric_name=<runtime/user metric>`. Either claim requires
+     `source=<stable command/report/ref>` naming the repo-seam output plus explicit
+     `baseline_value=<number><unit>` and `candidate_value=<number><unit>` fields
+     with the same unit; incidental CI URL IDs do not count. Unavailable,
+     missing, `UNKNOWN`, unmeasured, or N/A evidence blocks.
 
 5. **Record evidence before claiming pass.**
    - Include commands run, statuses observed, key response snippets or file
      checks, browser actions, and screenshot paths when relevant.
-   - If anything fails, fix and rerun the affected manual path.
+   - For current UI changes, classify `interaction_change` and `visual_fix`,
+     fill the human QA Evidence fields and replayable `qa-evidence v2` marker
+     from the repository-resolved workflow contract. Resolve
+     `POST_MERGE_AUDIT_SKILL_DIR` through the explicit env-var, loaded-skill, and
+     repo-local pinned-copy chain, then run
+     `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"
+     --expected-head-sha <full-final-head-SHA>
+     --require-visual-evidence-v2
+     <file-or->`. The strict v2 flag is invalid
+     without the expected final-head SHA. If the helper cannot be resolved or
+     run, report the evidence and readiness state as `blocked`; do not proceed
+     with a pass claim.
+   - If anything fails or required evidence is still local-only, fix/rerun the
+     affected path or report the explicit blocked state.
 
 ## Passing Bar
 

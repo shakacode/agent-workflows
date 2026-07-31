@@ -49,23 +49,22 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
     Dir.mktmpdir do |directory|
       pid_file = File.join(directory, "descendant")
       script = <<~'RUBY'
-        fork do
+        descendant = fork do
           Signal.trap("TERM", "IGNORE")
           Signal.trap("HUP", "IGNORE")
           STDOUT.sync = true
           STDERR.sync = true
-          File.write(ARGV.fetch(0), Process.pid)
           STDOUT.puts("holding stdout")
           STDERR.puts("holding stderr")
           sleep 60
         end
-        sleep 0.01 until File.exist?(ARGV.fetch(0))
+        File.write(ARGV.fetch(0), descendant)
         exit! 0
       RUBY
       descendant_pid = nil
 
       begin
-        result = runner(timeout: 0.2).capture([RbConfig.ruby, "-e", script, pid_file])
+        result = runner(timeout: 1.0).capture([RbConfig.ruby, "-e", script, pid_file])
         descendant_pid = Integer(File.read(pid_file))
 
         assert_equal "diagnostic timed out", result[:failure]

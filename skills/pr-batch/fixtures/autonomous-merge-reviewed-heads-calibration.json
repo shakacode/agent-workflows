@@ -1,0 +1,9 @@
+{
+  "contract": "autonomous-merge-calibration-decision",
+  "version": 1,
+  "reviewed_heads": {
+    "disposition": "shadow",
+    "max": 3,
+    "evidence": "dataset-sha256:bf91131a11c78dcc2c247e688342a7a40c9cd471257e333f44f198bd55b90f4f; prs=5; blockers=dataset scope is incomplete | reviewed-head history is incomplete | no explicit reviewed-head graduation decision"
+  }
+}

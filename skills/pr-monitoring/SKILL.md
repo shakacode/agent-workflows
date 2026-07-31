@@ -113,11 +113,23 @@ cohorts on the new head.
      policy.
 
 5. **Apply authority.**
-   - `auto_merge_when_gates_pass`: merge only if policy permits and all gates
-     are clean.
-   - `ask`: ask exactly once at the final clean merge decision. If approval is
-     declined or not granted by handoff, record `ready-no-merge-authority` and
-     do not ask again for the same decision.
+   - `auto_merge_when_gates_pass`: merge only if ordinary readiness and the
+     exact-head autonomous eligibility gate pass, or a qualifying exact-head
+     human risk decision produces `human-approved-for-current-head`.
+   - `ask`: when gates are clean, automatically start the exact-diff PR
+     walkthrough before approval. Use `$pr-walkthrough` when available, use
+     full interactive mode for large or complex PRs and concise interactive
+     mode for smaller cohesive PRs, and do not repeat a walkthrough completed
+     for the same diff identity. Honor an explicit request to skip it. After it
+     completes or is skipped, refresh the diff identity and ordinary readiness.
+     If the diff identity changed, invalidate the walkthrough and readiness
+     evidence, then restart the walkthrough or stop. If an ordinary gate newly
+     fails, stop. Ask one final merge decision only when the refreshed diff
+     identity matches the recorded identity, ordinary readiness remains clean,
+     and merge is allowed; a completed walkthrough must have explained that same
+     diff identity. Walkthrough participation is not merge approval. If approval
+     is declined or not granted by handoff,
+     record `ready-no-merge-authority` and do not ask again for the same decision.
    - `none`: hand off as `ready-no-merge-authority` when checks, review
      threads, and policy gates are clean.
 
@@ -131,10 +143,22 @@ Use the same split states as `pr-batch`:
 - `waiting-on-checks-or-review`
 - `external-gate-failing`
 - `blocked-user-input`
+- `ready-human-review-required`
+- `autonomous-merge-evidence-unknown`
 - `no-pr-evidence`
 
 Never collapse pending checks, unresolved current-head threads, merge conflicts,
 missing validation, or missing merge authority into a vague `ready`.
+
+Ordinary readiness is necessary but not sufficient for autonomous merge;
+evaluate exact-head autonomous-merge eligibility after every ordinary gate
+passes. `ready-human-review-required` carries the exact current head SHA, every
+triggered gate, rollback status, and the exact durable human decision needed.
+`autonomous-merge-evidence-unknown` carries the exact current head SHA,
+evidence failure, trusted-base policy provenance, and repair action. `UNKNOWN`
+is not `human-approval-required` and cannot be cleared by risk approval. Follow
+the canonical workflow for trusted-base policy, semantic assessment, exact-head
+decision parsing, and immediate pre-merge recomputation.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 

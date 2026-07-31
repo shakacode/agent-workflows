@@ -1,0 +1,847 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "base64"
+require "json"
+require "date"
+require "digest"
+require "openssl"
+require "time"
+require "uri"
+
+module BatchPlanPreflight
+  BACKENDS = %w[codex claude generic].freeze
+  PURPOSES = %w[implementation investigation].freeze
+  RISK_SURFACES = %w[
+    ci_workflow
+    developer_tooling
+    security_boundary
+    generated_output
+    release_behavior
+    broad_runtime
+  ].freeze
+  QA_DISPOSITIONS = %w[required not-required].freeze
+  EXTERNAL_SUPPORT = %w[supported unsupported UNKNOWN].freeze
+  APPLICABILITY = %w[applicable not-applicable].freeze
+  EDGE_TYPES = %w[edit validation_open merge_order].freeze
+  PLANNED_PATH_SOURCE_KINDS = %w[issue design durable-plan].freeze
+  PLANNED_PATH_REF_SCHEMES = {
+    "issue" => %w[issue],
+    "design" => %w[design],
+    "durable-plan" => %w[plan-state batch comment]
+  }.freeze
+  INLINE_LIFECYCLE_FIELDS = %w[
+    completed
+    completed_at
+    completion
+    completion_source
+    completion_source_kind
+    lifecycle
+    lifecycle_state
+    state
+    status
+  ].freeze
+  LIFECYCLE_RECEIPT_KEYS = %w[
+    batch_plan_id
+    completed_at
+    key_id
+    lane_id
+    producer
+    receipt_ref
+    recorded_at
+    signature
+    stage_dependency_plan_id
+    state
+    type
+    version
+    wave
+  ].freeze
+  LIFECYCLE_FUTURE_SKEW_SECONDS = 300
+  HELPER_PATH = File.realpath(__FILE__)
+  INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
+  WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
+  WORKFLOW_CONTROL_TRUST_CONFIG_PATH = File.join(
+    WORKFLOW_CONTROL_TRUST_CONFIG_DIR,
+    "workflow-control-lifecycle-trust.json"
+  )
+  WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD =
+    "agent_workflow_control_lifecycle_trusted_key_id"
+  WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD =
+    "agent_workflow_control_lifecycle_trusted_public_key_pem"
+  GATE_PERMISSIONS = %w[
+    read_only_discovery
+    branch_worktree_create
+    patch_edit
+    commit
+    push
+    pr_open
+    final_validation
+    merge
+  ].freeze
+  BACKEND_CAPS = {
+    "codex" => { "lanes" => 10, "risky" => 8 },
+    "claude" => { "lanes" => 5, "risky" => 3 },
+    "generic" => { "lanes" => 5, "risky" => 3 }
+  }.freeze
+
+  module_function
+
+  def violation(code, path, message, lane_ids: nil)
+    item = { "code" => code, "path" => path, "message" => message }
+    item["lane_ids"] = lane_ids if lane_ids
+    item
+  end
+
+  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [])
+    {
+      "type" => "batch-plan-preflight",
+      "version" => 1,
+      "status" => status,
+      "launch" => {
+        "eligible_lane_ids" => status == "accepted" ? eligible_lane_ids : [],
+        "held_lane_ids" => status == "accepted" ? held_lane_ids : [],
+        "completed_lane_ids" => status == "accepted" ? completed_lane_ids : []
+      },
+      "violations" => violations
+    }
+  end
+
+  def evaluate(input)
+    unless input.is_a?(Hash) && input["type"] == "batch-plan-preflight" && input["version"] == 1
+      return result(
+        "rejected", [], [],
+        [violation("unsupported-contract-version", "$",
+                   "Expected type batch-plan-preflight with version 1.")]
+      )
+    end
+
+    lanes = input.fetch("plan").fetch("lanes")
+    lane_ids = lanes.map { |lane| lane["id"] }
+    plan_violations = validate_plan(input["plan"])
+    violations = plan_violations.dup
+    violations.concat(validate_unknown_decisions(input["plan"]))
+    plan_violation_codes = plan_violations.map { |item| item["code"] }
+    lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
+    changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
+    completed_lane_ids = []
+    if lane_ids_valid
+      lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_receipts(
+        input["lane_lifecycle_receipts"],
+        input["plan"],
+        input["stage_dependency_plan"]
+      )
+      violations.concat(lifecycle_violations)
+    end
+    file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
+    violations.concat(file_touch_violations)
+    violations.concat(validate_stage_dependencies(
+                        input["stage_dependency_plan"],
+                        input["stage_dependency_gate"],
+                        lane_ids
+                      ))
+    if file_touch_violations.empty? && lane_ids_valid
+      violations.concat(validate_collisions(
+                          lanes,
+                          input["plan"]["serialization_groups"],
+                          input["file_touch_map"],
+                          input["stage_dependency_plan"],
+                          input["stage_dependency_gate"],
+                          completed_lane_ids
+                        ))
+      if changed_surfaces_valid
+        violations.concat(validate_caps(
+                            input["plan"]["backend"],
+                            input["plan"]["active_wave"],
+                            lanes,
+                            input["file_touch_map"]
+                          ))
+      end
+    end
+    violations.concat(validate_external_premises(input["plan"]["external_api_premises"], lane_ids))
+    if lane_ids_valid
+      violations.concat(validate_external_support(input["plan"]["external_api_premises"], lanes))
+    end
+    status = violations.empty? ? "accepted" : "rejected"
+    eligible_lane_ids, held_lane_ids =
+      if status == "accepted"
+        launch_partition(
+          lanes,
+          input["stage_dependency_gate"],
+          input["plan"]["active_wave"],
+          input["plan"]["serialization_groups"],
+          completed_lane_ids
+        )
+      else
+        [[], []]
+      end
+    result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: completed_lane_ids.sort)
+  end
+
+  def validate_plan(plan)
+    violations = []
+    unless nonempty_identity?(plan["id"])
+      violations << violation("batch-plan-id-invalid", "$.plan.id",
+                              "Batch plan id must be a nonempty known identity.")
+    end
+    unless BACKENDS.include?(plan["backend"])
+      violations << violation("backend-invalid", "$.plan.backend",
+                              "Backend must be exactly codex, claude, or generic.")
+    end
+    lane_ids = plan.fetch("lanes").map { |lane| lane["id"] }
+    if lane_ids.any? { |lane_id| !nonempty_identity?(lane_id) } || lane_ids.uniq.length != lane_ids.length
+      violations << violation("lane-id-invalid-or-duplicate", "$.plan.lanes",
+                              "Lane ids must be nonempty, known, and unique.")
+    end
+    lane_waves = plan.fetch("lanes").filter_map { |lane| lane["wave"] }
+    unless nonempty_identity?(plan["active_wave"]) && lane_waves.include?(plan["active_wave"])
+      violations << violation("active-wave-invalid", "$.plan.active_wave",
+                              "Active wave must be a nonempty known wave declared by at least one lane.")
+    end
+    plan.fetch("lanes").each_with_index do |lane, index|
+      path = "$.plan.lanes[#{index}]"
+      if (lane.keys & INLINE_LIFECYCLE_FIELDS).any?
+        violations << violation(
+          "inline-lane-lifecycle-forbidden",
+          path,
+          "Lane lifecycle cannot be declared inline; provide a workflow-control lifecycle receipt.",
+          lane_ids: [lane["id"]].compact
+        )
+      end
+      unless nonempty_identity?(lane["id"]) && nonempty_identity?(lane["wave"]) &&
+             PURPOSES.include?(lane["purpose"])
+        violations << violation("lane-record-invalid", path,
+                                "Lane requires id, wave, and purpose implementation or investigation.")
+      end
+      surfaces = lane["changed_surfaces"]
+      unless surfaces.is_a?(Array) && surfaces.uniq.length == surfaces.length &&
+             surfaces.all? { |surface| RISK_SURFACES.include?(surface) }
+        violations << violation("changed-surfaces-invalid", "#{path}.changed_surfaces",
+                                "Use only the six pinned changed-surface enums without duplicates.")
+        next
+      end
+
+      qa = lane["qa"]
+      unless qa.is_a?(Hash) && QA_DISPOSITIONS.include?(qa["disposition"])
+        violations << violation("qa-disposition-invalid", "#{path}.qa",
+                                "QA disposition must be exactly required or not-required.")
+        next
+      end
+      if !surfaces.empty? && qa["disposition"] != "required"
+        violations << violation("qa-required-for-risky-surface", "#{path}.qa.disposition",
+                                "Every declared risky changed surface requires QA.",
+                                lane_ids: [lane["id"]])
+      elsif qa["disposition"] == "not-required" &&
+            (!qa["rationale"].is_a?(String) || qa["rationale"].strip.empty?)
+        violations << violation("qa-not-required-rationale-missing", "#{path}.qa.rationale",
+                                "A no-QA disposition requires a nonempty rationale.",
+                                lane_ids: [lane["id"]])
+      end
+    end
+    violations
+  end
+
+  def validate_lane_lifecycle_receipts(receipts, plan, stage_dependency_plan)
+    unless receipts.is_a?(Array)
+      return [
+        [violation(
+          "lane-lifecycle-receipts-array-required",
+          "$.lane_lifecycle_receipts",
+          "Provide the workflow-control lifecycle receipt collection, even when empty."
+        )],
+        []
+      ]
+    end
+
+    lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
+    completed_lane_ids = []
+    violations = []
+    receipts.each_with_index do |receipt, index|
+      path = "$.lane_lifecycle_receipts[#{index}]"
+      unless valid_lane_lifecycle_receipt?(
+        receipt,
+        plan["id"],
+        stage_dependency_plan["id"],
+        lanes_by_id
+      )
+        violations << violation(
+          "lane-lifecycle-receipt-invalid",
+          path,
+          "Require the exact workflow-control receipt with canonical durable-state reference, " \
+          "matching identities, terminal state, and completed-at/recorded-at chronology."
+        )
+        next
+      end
+
+      completed_lane_ids << receipt["lane_id"]
+    end
+    if completed_lane_ids.uniq.length != completed_lane_ids.length
+      violations << violation(
+        "lane-lifecycle-receipt-duplicate",
+        "$.lane_lifecycle_receipts",
+        "Provide at most one completed lifecycle receipt per lane."
+      )
+    end
+    [violations, completed_lane_ids.uniq]
+  end
+
+  def valid_lane_lifecycle_receipt?(receipt, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
+    return false unless receipt.is_a?(Hash) && receipt.keys.sort == LIFECYCLE_RECEIPT_KEYS
+    return false unless receipt["type"] == "workflow-control-lane-lifecycle-receipt" &&
+                        receipt["version"] == 1 &&
+                        receipt["producer"] == "pr-batch-workflow-control"
+    return false unless receipt["batch_plan_id"] == batch_plan_id &&
+                        receipt["stage_dependency_plan_id"] == stage_dependency_plan_id
+
+    lane = lanes_by_id[receipt["lane_id"]]
+    return false unless lane && receipt["wave"] == lane["wave"] && receipt["state"] == "completed"
+    return false unless utc_timestamp?(receipt["completed_at"]) && utc_timestamp?(receipt["recorded_at"])
+    return false unless Time.iso8601(receipt["completed_at"]) <= Time.iso8601(receipt["recorded_at"])
+    return false unless Time.iso8601(receipt["recorded_at"]) <= Time.now.utc + LIFECYCLE_FUTURE_SKEW_SECONDS
+    return false unless receipt["receipt_ref"] == workflow_control_receipt_ref(receipt)
+
+    workflow_control_receipt_signature_verified?(receipt)
+  end
+
+  def workflow_control_receipt_ref(receipt)
+    "workflow-control-state://#{receipt['batch_plan_id']}/stage-dependency-plans/" \
+      "#{receipt['stage_dependency_plan_id']}/waves/#{receipt['wave']}/lanes/" \
+      "#{receipt['lane_id']}/#{receipt['state']}"
+  end
+
+  def utc_timestamp?(value)
+    value.is_a?(String) &&
+      value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/) &&
+      Time.iso8601(value).utc.iso8601 == value
+  rescue ArgumentError
+    false
+  end
+
+  def workflow_control_receipt_signature_verified?(receipt)
+    trust_anchor = workflow_control_trust_anchor
+    return false unless trust_anchor &&
+                        nonempty_identity?(receipt["key_id"]) &&
+                        receipt["key_id"] == trust_anchor[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]
+
+    public_key = OpenSSL::PKey.read(
+      trust_anchor.fetch(WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD)
+    )
+    return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
+
+    signature = Base64.strict_decode64(receipt["signature"])
+    payload = JSON.generate(canonicalize(receipt.reject { |key, _value| key == "signature" }))
+    public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
+  rescue ArgumentError, TypeError, OpenSSL::PKey::PKeyError
+    false
+  end
+
+  def workflow_control_trust_anchor
+    helper_uid = File.stat(HELPER_PATH).uid
+    root_stat = File.lstat(INSTALLATION_ROOT)
+    config_dir_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_DIR)
+    config_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_PATH)
+    return unless root_stat.directory? &&
+                  root_stat.uid == helper_uid &&
+                  (root_stat.mode & 0o022).zero? &&
+                  config_dir_stat.directory? &&
+                  config_dir_stat.uid == helper_uid &&
+                  (config_dir_stat.mode & 0o022).zero? &&
+                  config_stat.file? &&
+                  config_stat.uid == helper_uid &&
+                  (config_stat.mode & 0o022).zero?
+
+    record = JSON.parse(File.read(WORKFLOW_CONTROL_TRUST_CONFIG_PATH, encoding: "UTF-8"))
+    expected_keys = [
+      WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD,
+      WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD,
+      "type",
+      "version"
+    ].sort
+    return unless record.is_a?(Hash) &&
+                  record.keys.sort == expected_keys &&
+                  record["type"] == "agent-workflow-control-lifecycle-trust-anchor" &&
+                  record["version"] == 1 &&
+                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]) &&
+                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD])
+
+    record
+  rescue JSON::ParserError, SystemCallError
+    nil
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) do |key, canonical|
+        canonical[key] = canonicalize(value[key])
+      end
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def validate_unknown_decisions(value, path = "$.plan")
+    if value.is_a?(Hash)
+      return value.flat_map do |key, nested|
+        validate_unknown_decisions(nested, "#{path}.#{key}")
+      end
+    end
+    if value.is_a?(Array)
+      return value.each_with_index.flat_map do |nested, index|
+        validate_unknown_decisions(nested, "#{path}[#{index}]")
+      end
+    end
+    return [] unless value == "UNKNOWN"
+    return [] if path.match?(/\.external_api_premises\[\d+\]\.support\z/)
+    return [] if path.match?(/\.version_chronology\[\d+\]\.release_date\z/)
+
+    [violation("unknown-decision", path,
+               "Literal UNKNOWN is not permitted where the preflight requires a decision.")]
+  end
+
+  def validate_file_touch_maps(maps, lane_ids)
+    unless maps.is_a?(Hash)
+      return [violation("file-touch-map-object-required", "$.file_touch_map",
+                        "Provide one unchanged pr-file-touch-map result per lane.")]
+    end
+
+    violations = []
+    unless maps.keys.tally == lane_ids.tally
+      violations << violation("file-touch-map-lanes-mismatch", "$.file_touch_map",
+                              "File-touch map keys must exactly match planned lane ids.")
+    end
+    maps.each do |lane_id, map|
+      path = "$.file_touch_map.#{lane_id}"
+      if map.is_a?(Hash) && map["type"] == "planned-path-evidence"
+        unless valid_planned_path_evidence_shape?(map)
+          violations << violation("planned-path-evidence-invalid", path,
+                                  "Preserve the exact planned-path-evidence v1 shape and durable provenance.",
+                                  lane_ids: [lane_id])
+        end
+        next
+      end
+      unless valid_file_touch_map_shape?(map)
+        violations << violation("file-touch-map-shape-invalid", path,
+                                "Preserve the exact pr-file-touch-map result shape.",
+                                lane_ids: [lane_id])
+        next
+      end
+      next if map["source"] == "verified"
+
+      violations << violation("file-touch-map-unverified", "#{path}.source",
+                              "Run pr-file-touch-map through both sources; only source verified is launch-safe.",
+                              lane_ids: [lane_id])
+    end
+    violations
+  end
+
+  def valid_file_touch_map_shape?(map)
+    expected_keys = %w[changed_files paths pr renames repo source]
+    return false unless map.is_a?(Hash) && map.keys.sort == expected_keys
+    return false unless map["pr"].is_a?(Integer) && map["pr"].positive?
+    return false unless nonempty_identity?(map["repo"]) && map["repo"].match?(%r{\A[^/]+/[^/]+\z})
+    return false unless map["changed_files"].is_a?(Integer) && map["changed_files"] >= 0
+    return false unless map["paths"].is_a?(Array) && map["paths"].uniq.length == map["paths"].length &&
+                        map["paths"].all? { |path| canonical_repository_relative_path?(path) }
+    return false unless map["renames"].is_a?(Array) && map["renames"].all? do |rename|
+      rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
+      canonical_repository_relative_path?(rename["old"]) &&
+      canonical_repository_relative_path?(rename["new"])
+    end
+
+    map["source"].is_a?(String) && !map["source"].strip.empty?
+  end
+
+  def valid_planned_path_evidence_shape?(map)
+    expected_keys = %w[evidence_ref paths renames source_kind type version]
+    return false unless map.keys.sort == expected_keys
+    return false unless map["type"] == "planned-path-evidence" && map["version"] == 1
+    return false unless PLANNED_PATH_SOURCE_KINDS.include?(map["source_kind"])
+    return false unless durable_evidence_ref?(map["evidence_ref"], map["source_kind"])
+    return false unless map["paths"].is_a?(Array) && !map["paths"].empty? &&
+                        map["paths"].uniq.length == map["paths"].length &&
+                        map["paths"].all? { |path| canonical_repository_relative_path?(path) }
+    return false unless map["renames"].is_a?(Array) && map["renames"].all? do |rename|
+      rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
+      canonical_repository_relative_path?(rename["old"]) &&
+      canonical_repository_relative_path?(rename["new"]) &&
+      map["paths"].include?(rename["old"]) && map["paths"].include?(rename["new"])
+    end
+
+    true
+  end
+
+  def canonical_repository_relative_path?(value)
+    return false unless nonempty_identity?(value)
+    return false if value.include?("\0") || value.include?("\\")
+    return false if value.start_with?("/") || value.end_with?("/") || value.include?("//")
+    return false if value.match?(/\A[A-Za-z]:/)
+
+    value.split("/").none? { |component| %w[. ..].include?(component) }
+  end
+
+  def durable_evidence_ref?(value, source_kind)
+    return false unless nonempty_identity?(value)
+
+    parsed = URI.parse(value)
+    return false if parsed.host.to_s.empty?
+    return true if PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
+
+    source_kind == "issue" && parsed.scheme == "https" &&
+      parsed.host == "github.com" && parsed.path.match?(%r{/issues/\d+\z})
+  rescue URI::InvalidURIError
+    false
+  end
+
+  def validate_stage_dependencies(plan, gate, lane_ids)
+    unless plan.is_a?(Hash) && plan["contract"] == "stage-dependency-plan" &&
+           plan["version"] == 1 && nonempty_identity?(plan["id"]) &&
+           plan["edges"].is_a?(Array)
+      return [violation("stage-dependency-plan-invalid", "$.stage_dependency_plan",
+                        "Provide the trusted stage-dependency-plan v1 object.")]
+    end
+    unless gate.is_a?(Hash) && gate["contract"] == "stage-dependency-gate" &&
+           gate["version"] == 1 && %w[eligible gated].include?(gate["status"]) &&
+           nonempty_identity?(gate["trusted_plan_id"]) &&
+           gate["lanes"].is_a?(Array)
+      return [violation("stage-dependency-gate-incomplete", "$.stage_dependency_gate",
+                        "Provide a completed stage-dependency-gate v1 result, not raw live input.")]
+    end
+
+    violations = []
+    edge_ids = plan.fetch("edges").filter_map { |edge| edge["id"] if edge.is_a?(Hash) }
+    edges_valid = edge_ids.length == plan.fetch("edges").length &&
+                  edge_ids.uniq.length == edge_ids.length &&
+                  plan.fetch("edges").all? do |edge|
+                    nonempty_identity?(edge["id"]) &&
+                      lane_ids.include?(edge["from"]) && lane_ids.include?(edge["to"]) &&
+                      edge["from"] != edge["to"] && EDGE_TYPES.include?(edge["type"])
+                  end
+    unless edges_valid
+      violations << violation("stage-dependency-plan-edge-invalid", "$.stage_dependency_plan.edges",
+                              "Edges need unique ids, known distinct endpoints, and a pinned edge type.")
+    end
+    if gate["trusted_plan_id"] != plan["id"]
+      violations << violation("stage-dependency-gate-plan-mismatch", "$.stage_dependency_gate.trusted_plan_id",
+                              "Gate trusted_plan_id must equal the supplied trusted plan id.")
+    end
+    binding = gate["trusted_plan_binding"]
+    if !binding.is_a?(String) || binding.strip.empty?
+      violations << violation(
+        "stage-dependency-gate-plan-binding-missing",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding is required."
+      )
+    elsif binding.strip.casecmp?("UNKNOWN")
+      violations << violation(
+        "stage-dependency-gate-plan-binding-unknown",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding must be known."
+      )
+    elsif !binding.match?(/\Asha256:[0-9a-f]{64}\z/)
+      violations << violation(
+        "stage-dependency-gate-plan-binding-malformed",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding must be sha256 followed by 64 lowercase hex characters."
+      )
+    elsif edges_valid && binding != stage_dependency_plan_binding(plan)
+      violations << violation(
+        "stage-dependency-gate-plan-binding-mismatch",
+        "$.stage_dependency_gate.trusted_plan_binding",
+        "Gate trusted_plan_binding must match the supplied trusted dependency graph."
+      )
+    end
+    gate_lane_ids = gate.fetch("lanes").filter_map { |lane| lane["id"] if lane.is_a?(Hash) }
+    if gate_lane_ids.tally != lane_ids.tally
+      violations << violation("stage-dependency-gate-lanes-mismatch", "$.stage_dependency_gate.lanes",
+                              "Completed gate lane ids must exactly match planned lane ids.")
+    end
+    unless gate.fetch("lanes").all? { |lane| valid_gate_lane?(lane) }
+      violations << violation("stage-dependency-gate-lane-invalid", "$.stage_dependency_gate.lanes",
+                              "Preserve each completed gate lane and all boolean permission decisions.")
+    end
+    violations
+  end
+
+  def stage_dependency_plan_binding(plan)
+    immutable_edges = plan.fetch("edges").map do |edge|
+      edge.slice("id", "from", "to", "type")
+    end
+    immutable_edges.sort_by! { |edge| edge.values_at("id", "from", "to", "type") }
+    payload = {
+      "contract" => plan.fetch("contract"),
+      "id" => plan.fetch("id"),
+      "edges" => immutable_edges
+    }
+
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
+  end
+
+  def valid_gate_lane?(lane)
+    expected_keys = %w[base_refresh blockers hosted_ci id permissions]
+    return false unless lane.is_a?(Hash) && lane.keys.sort == expected_keys
+    return false unless nonempty_identity?(lane["id"])
+    return false unless %w[eligible-via-repo-seam not-yet-eligible].include?(lane["hosted_ci"])
+    return false unless lane["blockers"].is_a?(Array) && lane["base_refresh"].is_a?(Array)
+
+    permissions = lane["permissions"]
+    permissions.is_a?(Hash) && permissions.keys.sort == GATE_PERMISSIONS.sort &&
+      permissions.values.all? { |value| [true, false].include?(value) }
+  end
+
+  def validate_collisions(lanes, groups, maps, dependency_plan, gate, completed_lane_ids)
+    lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
+    lane_ids = lanes_by_id.keys.sort
+    gate_lanes = Array(gate.is_a?(Hash) ? gate["lanes"] : nil).filter_map do |lane|
+      [lane["id"], lane] if lane.is_a?(Hash)
+    end.to_h
+    collisions = []
+    lane_ids.combination(2) do |left_id, right_id|
+      collision_paths = colliding_paths(maps.fetch(left_id), maps.fetch(right_id))
+      next if collision_paths.empty?
+      next if lanes_by_id.fetch(left_id)["wave"] != lanes_by_id.fetch(right_id)["wave"]
+      next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
+      next if serialized_by_edit_edge?(
+        left_id,
+        right_id,
+        dependency_plan.fetch("edges"),
+        gate_lanes,
+        completed_lane_ids
+      )
+
+      collisions << violation(
+        "unsafe-concurrent-edit",
+        "$.file_touch_map",
+        "Same-wave lanes share changed path(s) without max-1 serialization or a typed edit edge: " \
+        "#{collision_paths.sort.join(', ')}.",
+        lane_ids: [left_id, right_id]
+      )
+    end
+    collisions
+  end
+
+  def colliding_paths(left_map, right_map)
+    left_paths = left_map.fetch("paths")
+    right_paths = right_map.fetch("paths")
+    paths = left_paths & right_paths
+    left_map.fetch("renames").each do |rename|
+      paths.concat(right_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+    end
+    right_map.fetch("renames").each do |rename|
+      paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+    end
+    paths.uniq
+  end
+
+  def serialized_by_group?(left, right, groups)
+    group_id = left["serialization_group"]
+    return false unless group_id.is_a?(String) && group_id == right["serialization_group"]
+
+    groups.is_a?(Array) && groups.any? do |group|
+      group.is_a?(Hash) && group["id"] == group_id && group["max_concurrency"] == 1
+    end
+  end
+
+  def serialized_by_edit_edge?(left_id, right_id, edges, gate_lanes, completed_lane_ids)
+    edit_edge = edges.any? do |edge|
+      edge.is_a?(Hash) && edge["type"] == "edit" &&
+        [[left_id, right_id], [right_id, left_id]].include?([edge["from"], edge["to"]])
+    end
+    return false unless edit_edge
+    return true if completed_lane_ids.include?(left_id) || completed_lane_ids.include?(right_id)
+
+    [left_id, right_id].any? do |lane_id|
+      gate_lanes.dig(lane_id, "permissions", "patch_edit") != true
+    end
+  end
+
+  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids)
+    gate_lanes = gate.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
+    eligible = []
+    held = []
+    lanes.each do |lane|
+      lane_id = lane.fetch("id")
+      next if completed_lane_ids.include?(lane_id)
+
+      gate_lane = gate_lanes.fetch(lane_id)
+      if lane["wave"] != active_wave
+        held << lane_id
+        next
+      end
+      allowed = if lane["purpose"] == "investigation"
+                  gate_lane.dig("permissions", "read_only_discovery") == true
+                else
+                  gate_lane.dig("permissions", "patch_edit") == true
+                end
+      if allowed
+        eligible << lane_id
+      else
+        held << lane_id
+      end
+    end
+    lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
+    serialized_group_ids = Array(serialization_groups).filter_map do |group|
+      group["id"] if group.is_a?(Hash) && group["max_concurrency"] == 1
+    end
+    serialized_group_ids.uniq.sort.each do |group_id|
+      group_lane_ids = eligible.select do |lane_id|
+        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
+      end.sort
+      held.concat(group_lane_ids.drop(1))
+      eligible -= group_lane_ids.drop(1)
+    end
+    [eligible.sort, held.sort]
+  end
+
+  def validate_caps(backend, active_wave, lanes, maps)
+    return [] unless BACKEND_CAPS.key?(backend)
+
+    lanes = lanes.select { |lane| lane["wave"] == active_wave }
+    active_lane_ids = lanes.to_h { |lane| [lane.fetch("id"), true] }
+    maps = maps.select { |lane_id, _map| active_lane_ids.key?(lane_id) }
+    caps = BACKEND_CAPS.fetch(backend)
+    violations = []
+    if lanes.length > caps.fetch("lanes")
+      violations << violation(
+        "backend-lane-cap-exceeded",
+        "$.plan.lanes",
+        "#{backend} permits at most #{caps.fetch('lanes')} lanes; received #{lanes.length}."
+      )
+    end
+
+    risky_lane_ids = lanes.filter_map do |lane|
+      lane.fetch("id") unless lane.fetch("changed_surfaces").empty?
+    end
+    active_lane_ids.keys.combination(2) do |left_id, right_id|
+      next if colliding_paths(maps.fetch(left_id), maps.fetch(right_id)).empty?
+
+      risky_lane_ids.concat([left_id, right_id])
+    end
+    risky_lane_ids.uniq!
+    if risky_lane_ids.any? && lanes.length > caps.fetch("risky")
+      violations << violation(
+        "backend-risky-cap-exceeded",
+        "$.plan.lanes",
+        "#{backend} permits at most #{caps.fetch('risky')} lanes in a risky/shared active wave; " \
+        "received #{lanes.length}.",
+        lane_ids: lanes.map { |lane| lane.fetch("id") }.sort
+      )
+    end
+    violations
+  end
+
+  def validate_external_support(premises, lanes)
+    lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
+    Array(premises).filter_map.with_index do |premise, index|
+      next unless premise.is_a?(Hash) && %w[unsupported UNKNOWN].include?(premise["support"])
+
+      implementation_lane_ids = Array(premise["lane_ids"]).select do |lane_id|
+        lanes_by_id[lane_id]&.fetch("purpose", nil) == "implementation"
+      end
+      next if implementation_lane_ids.empty?
+
+      violation(
+        "external-api-support-blocks-implementation",
+        "$.plan.external_api_premises[#{index}].support",
+        "#{premise['support']} external API support permits investigation only.",
+        lane_ids: implementation_lane_ids.sort
+      )
+    end
+  end
+
+  def validate_external_premises(premises, lane_ids)
+    unless premises.is_a?(Array)
+      return [violation("external-api-premises-array-required", "$.plan.external_api_premises",
+                        "External API premises must be an array.")]
+    end
+
+    violations = []
+    premises.each_with_index do |premise, index|
+      path = "$.plan.external_api_premises[#{index}]"
+      unless premise.is_a?(Hash)
+        violations << violation("external-api-premise-invalid", path, "Premise must be an object.")
+        next
+      end
+      unless nonempty_identity?(premise["id"]) && premise["lane_ids"].is_a?(Array) &&
+             !premise["lane_ids"].empty? && premise["lane_ids"].uniq.length == premise["lane_ids"].length &&
+             premise["lane_ids"].all? { |lane_id| lane_ids.include?(lane_id) }
+        violations << violation("external-api-premise-identity-invalid", path,
+                                "Premise id and unique known lane_ids are required.")
+      end
+      unless EXTERNAL_SUPPORT.include?(premise["support"])
+        violations << violation("external-api-support-invalid", "#{path}.support",
+                                "Support must be exactly supported, unsupported, or UNKNOWN.")
+      end
+      sources = premise["primary_sources"]
+      unless sources.is_a?(Array) && !sources.empty? && sources.all? { |url| primary_url?(url) }
+        violations << violation("external-api-primary-sources-invalid", "#{path}.primary_sources",
+                                "Provide one or more nonempty HTTP(S) primary-source URLs.")
+      end
+      unless iso_date?(premise["retrieved_date"])
+        violations << violation("external-api-retrieved-date-invalid", "#{path}.retrieved_date",
+                                "Retrieved date must be a real ISO YYYY-MM-DD date.")
+      end
+      chronology = premise["version_chronology"]
+      next if chronology.is_a?(Array) && !chronology.empty? &&
+              chronology.all? { |row| valid_chronology_row?(row) }
+
+      violations << violation("external-api-chronology-row-invalid", "#{path}.version_chronology",
+                              "Each chronology row needs version, pinned applicability, source_url, " \
+                              "and an ISO release_date or literal UNKNOWN.")
+    end
+    violations
+  end
+
+  def valid_chronology_row?(row)
+    row.is_a?(Hash) &&
+      nonempty_identity?(row["version"]) &&
+      APPLICABILITY.include?(row["applicability"]) &&
+      primary_url?(row["source_url"]) &&
+      (row["release_date"] == "UNKNOWN" || iso_date?(row["release_date"]))
+  end
+
+  def nonempty_identity?(value)
+    value.is_a?(String) && !value.strip.empty? && value != "UNKNOWN"
+  end
+
+  def iso_date?(value)
+    value.is_a?(String) && value.match?(/\A\d{4}-\d{2}-\d{2}\z/) &&
+      Date.iso8601(value).iso8601 == value
+  rescue Date::Error
+    false
+  end
+
+  def primary_url?(value)
+    return false unless value.is_a?(String) && !value.strip.empty?
+
+    parsed = URI.parse(value)
+    %w[http https].include?(parsed.scheme) && !parsed.host.to_s.empty?
+  rescue URI::InvalidURIError
+    false
+  end
+end
+
+begin
+  parsed_input = JSON.parse($stdin.read)
+rescue JSON::ParserError
+  parsed_input = nil
+  output = BatchPlanPreflight.result(
+    "rejected", [], [],
+    [BatchPlanPreflight.violation("malformed-json", "$", "Input must be valid JSON.")]
+  )
+end
+begin
+  output ||= BatchPlanPreflight.evaluate(parsed_input)
+rescue KeyError, NoMethodError, TypeError, ArgumentError
+  output = BatchPlanPreflight.result(
+    "rejected", [], [],
+    [BatchPlanPreflight.violation(
+      "invalid-envelope",
+      "$",
+      "The v1 envelope is incomplete or contains malformed structured fields."
+    )]
+  )
+end
+puts JSON.generate(output)
+exit(output["status"] == "accepted" ? 0 : 1)
