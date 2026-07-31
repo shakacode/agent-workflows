@@ -649,16 +649,26 @@ module BatchPlanPreflight
       File.join(INSTALLATION_ROOT, "skills", "pr-batch"),
       File.join(INSTALLATION_ROOT, "skills", "pr-batch", "bin")
     ]
-    safe_directories = directories.all? do |path|
+    resolved_directories = directories.map { |path| File.realpath(path) }
+    directory_chain = resolved_directories.flat_map do |path|
+      ancestors = []
+      loop do
+        ancestors << path
+        break if path == File.dirname(path)
+
+        path = File.dirname(path)
+      end
+      ancestors
+    end.uniq
+    safe_directories = directory_chain.all? do |path|
       stat = File.lstat(path)
-      stat.directory? && stat.uid == helper_uid && (stat.mode & 0o022).zero?
+      stat.directory? && [0, helper_uid].include?(stat.uid) && (stat.mode & 0o022).zero?
     end
     helper_stat = File.lstat(STAGE_DEPENDENCY_GATE_PATH)
     safe_helper = helper_stat.file? &&
                   helper_stat.uid == helper_uid &&
                   (helper_stat.mode & 0o022).zero? &&
-                  (helper_stat.mode & 0o111).positive? &&
-                  File.realpath(STAGE_DEPENDENCY_GATE_PATH) == STAGE_DEPENDENCY_GATE_PATH
+                  (helper_stat.mode & 0o111).positive?
     return [STAGE_DEPENDENCY_GATE_PATH, nil] if safe_directories && safe_helper
 
     [nil, violation(
@@ -752,8 +762,12 @@ module BatchPlanPreflight
     rescue Errno::ESRCH, Errno::ECHILD
       nil
     rescue Timeout::Error
-      Process.kill("KILL", -pid)
-      Process.wait(pid)
+      begin
+        Process.kill("KILL", -pid)
+        Process.wait(pid)
+      rescue Errno::ESRCH, Errno::ECHILD
+        nil
+      end
     end
     :timeout
   end

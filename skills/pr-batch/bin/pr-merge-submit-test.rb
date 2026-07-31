@@ -21,6 +21,7 @@ class PrMergeSubmitTest < Minitest::Test
   HOST = "ghe.example:8443"
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
+  SAFE_TMP_PARENT = File.expand_path("../../..", __dir__)
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -567,15 +568,27 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
+  def test_submit_binds_receipt_target_before_autonomous_replay
+    result, log = run_cli(mode: "direct", receipt_mode: :foreign_target)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "merge-assurance receipt host mismatch"
+    assert_empty result.fetch(:autonomous_environment)
+    assert_empty log
+  end
+
   def test_evidence_digest_and_envelope_binding_mismatches_stop_before_any_gh_call
     {
       digest_mismatch: "evidence digest mismatch",
-      binding_mismatch: "bindings or accounting do not match"
+      binding_mismatch: "bindings do not match its evidence context",
+      authority_binding_mismatch: "bindings do not match its evidence context",
+      base_binding_mismatch: "bindings do not match its evidence context"
     }.each do |receipt_mode, expected|
       result, log = run_cli(mode: "direct", receipt_mode:)
 
       refute result.fetch(:status).success?, receipt_mode
       assert_includes result.fetch(:stderr), expected, receipt_mode
+      assert_empty result.fetch(:autonomous_environment), receipt_mode
       assert_empty log, receipt_mode
     end
   end
@@ -732,7 +745,7 @@ class PrMergeSubmitTest < Minitest::Test
     include_trusted_git_executable: true,
     include_trusted_gh_executable: true
   )
-    Dir.mktmpdir("pr-merge-submit-test") do |dir|
+    Dir.mktmpdir("pr-merge-submit-test", SAFE_TMP_PARENT) do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
       File.write(
@@ -803,7 +816,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def run_cli_with_interrupt(mode:, wait_for: "mergePullRequest", after_stub_warmup: nil)
-    Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
+    Dir.mktmpdir("pr-merge-submit-interrupt-test", SAFE_TMP_PARENT) do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
       File.write(
@@ -873,12 +886,14 @@ class PrMergeSubmitTest < Minitest::Test
   # deadline in this file would otherwise have to out-wait.
   #
   # The warm-up call matches no request branch in the stub, so it changes no
-  # stub state, and its log goes to a throwaway path so GH_LOG still records
+  # stub state. Clear its unconditional diagnostics so the scenario log records
   # only the gh calls the run under test actually made.
-  def warm_stub(_dir, gh_path)
+  def warm_stub(dir, gh_path)
     system(
       gh_path, "--version", out: File::NULL, err: File::NULL
     )
+    log_path = File.join(dir, "gh.log")
+    FileUtils.rm_f([log_path, "#{log_path}.environments"])
   end
 
   def cli_environment(dir, mode)
@@ -1095,6 +1110,15 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["evidence_digest"] = "sha256:#{'0' * 64}"
     when :binding_mismatch
       receipt["bindings"]["diff_identity"] = "f" * 64
+    when :authority_binding_mismatch
+      receipt["bindings"]["authority"] = "explicit_approval"
+    when :base_binding_mismatch
+      receipt["bindings"]["base"] = receipt["bindings"]["base"].merge("sha" => "d" * 40)
+    when :foreign_target
+      receipt["bindings"]["host"] = "attacker.example"
+      receipt.dig("evidence", "context")["host"] = "attacker.example"
+      receipt.dig("evidence", "ci_result", "context")["host"] = "attacker.example"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :stale
       receipt["issued_at"] = (now - 301).iso8601
     when :future
@@ -1122,11 +1146,16 @@ class PrMergeSubmitTest < Minitest::Test
 
   def prepare_submit_helper_layout(root, autonomous_result_path:, autonomous_log_path:)
     bin_dir = File.join(root, "runtime/skills/pr-batch/bin")
-    FileUtils.mkdir_p(bin_dir)
+    lib_dir = File.join(root, "runtime/skills/pr-batch/lib")
+    FileUtils.mkdir_p([bin_dir, lib_dir])
     submit_script = File.join(bin_dir, "pr-merge-submit")
     assurance_script = File.join(bin_dir, "merge-assurance")
     FileUtils.cp(SCRIPT, submit_script)
     FileUtils.cp(ASSURANCE_SCRIPT, assurance_script)
+    FileUtils.cp(
+      File.expand_path("../lib/autonomous_merge_runtime_trust.rb", __dir__),
+      File.join(lib_dir, "autonomous_merge_runtime_trust.rb")
+    )
     FileUtils.chmod(0o755, submit_script)
     FileUtils.chmod(0o755, assurance_script)
     autonomous_helper = File.join(bin_dir, "autonomous-merge-eligibility")

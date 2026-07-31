@@ -54,7 +54,11 @@ emit_unknown("--trusted-base is required") unless options[:trusted_base]
 
 repo_root = options.fetch(:repo_root)
 trusted_base = options.fetch(:trusted_base)
-git_command = ENV.fetch("AUTONOMOUS_MERGE_GIT", "git")
+begin
+  git_command = AutonomousMergeRuntimeTrust.trusted_git_executable
+rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+  emit_unknown(e.message)
+end
 base_sha, base_status = Open3.capture2(
   git_command, "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
 )
@@ -64,7 +68,8 @@ runtime_trust = AutonomousMergeRuntimeTrust.verify(
   repo_root:,
   base_sha: base_sha.strip,
   claim: trusted_helper_claim,
-  calibration_path: options.fetch(:calibration_decision)
+  calibration_path: options.fetch(:calibration_decision),
+  git_command:
 )
 unless runtime_trust.accepted
   emit_unknown(runtime_trust.errors.join("; "))

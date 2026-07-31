@@ -301,6 +301,8 @@ module PrMergeSubmit
       evidence = receipt["evidence"]
       now = Time.now.utc
       validate_receipt_evidence!(receipt, evidence)
+      validate_receipt_evidence_bindings!(receipt, evidence, options)
+      validate_receipt_option_bindings!(receipt, options)
       validate_receipt_freshness!(receipt, now)
       recomputed_autonomous_result = MergeAssurance.replay_autonomous_result(
         repo_root: options[:repo_root],
@@ -335,7 +337,6 @@ module PrMergeSubmit
         raise Error, "merge-assurance receipt freshness contract is malformed"
       end
 
-      validate_receipt_option_bindings!(receipt, options)
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
@@ -370,6 +371,22 @@ module PrMergeSubmit
         context:,
         issued_at: receipt["issued_at"]
       )
+    end
+
+    def validate_receipt_evidence_bindings!(receipt, evidence, options)
+      context = evidence.fetch("context")
+      expected = context.slice(
+        "authority", "base", "diff_identity", "head_sha", "host", "pr", "repo"
+      )
+      unless receipt.fetch("bindings") == expected
+        raise Error, "merge-assurance receipt bindings do not match its evidence context"
+      end
+
+      provenance = options[:trusted_helper_provenance]
+                   .to_s[/\Atrusted-base:([0-9a-f]{40})\z/, 1]
+      return if provenance.nil? || provenance == context.dig("base", "sha")
+
+      raise Error, "merge-assurance receipt base SHA does not match trusted helper provenance"
     end
 
     def validate_authenticated_tracker_read!(read, tracker:, context:, issued_at:)

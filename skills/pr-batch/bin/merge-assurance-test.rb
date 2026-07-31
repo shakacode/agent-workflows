@@ -16,9 +16,10 @@ class MergeAssuranceTest < Minitest::Test
   BASE_SHA = "b" * 40
   DIFF_IDENTITY = "c" * 64
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
+  SAFE_TMP_PARENT = File.expand_path("../../..", __dir__)
 
   def setup
-    @fake_gh_dir = Dir.mktmpdir("merge-assurance-gh")
+    @fake_gh_dir = Dir.mktmpdir("merge-assurance-gh", SAFE_TMP_PARENT)
     @fake_gh_calls = File.join(@fake_gh_dir, "calls")
     @fake_gh_environment = File.join(@fake_gh_dir, "environment.json")
     @fake_gh_response = File.join(@fake_gh_dir, "response.json")
@@ -173,7 +174,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_trusted_executable_validation_supports_a_safe_homebrew_style_symlink
-    Dir.mktmpdir("merge-assurance-homebrew") do |root|
+    Dir.mktmpdir("merge-assurance-homebrew", SAFE_TMP_PARENT) do |root|
       cellar = File.join(root, "opt/homebrew/Cellar")
       target_dir = File.join(cellar, "gh/2.96.0/bin")
       link_dir = File.join(root, "opt/homebrew/bin")
@@ -364,8 +365,7 @@ class MergeAssuranceTest < Minitest::Test
     semantic = run_replay_cli(
       supplied: autonomous,
       recomputed: autonomous,
-      semantic_inside_repo: true,
-      helper_mode: :semantic_rejection
+      semantic_inside_repo: true
     )
     overrides = %w[AUTONOMOUS_MERGE_GIT AUTONOMOUS_MERGE_GH].to_h do |key|
       [key, run_replay_cli(
@@ -377,8 +377,9 @@ class MergeAssuranceTest < Minitest::Test
 
     refute semantic.fetch(:status).success?
     assert semantic.fetch(:result).fetch("failures").any? do |message|
-      message.include?("autonomous eligibility replay returned UNKNOWN")
+      message.include?("semantic assessment must be supplied from outside the evaluated repository")
     end
+    assert_empty semantic.fetch(:helper_call)
     overrides.each do |key, override|
       refute override.fetch(:status).success?
       assert override.fetch(:result).fetch("failures").any? do |message|
@@ -1699,6 +1700,13 @@ class MergeAssuranceTest < Minitest::Test
       now: NOW
     )
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+    child_pid_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+    until File.size?(child_pid_path)
+      flunk "fake gh child pid was not recorded" if
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) >= child_pid_deadline
+
+      sleep 0.01
+    end
     child_pid = Integer(File.read(child_pid_path))
 
     assert_equal false, result.fetch("eligible")
@@ -1825,7 +1833,7 @@ class MergeAssuranceTest < Minitest::Test
     helper_mode: :result, layout: :flat, semantic_inside_repo: false, extra_env: {},
     poisoned_ruby: false
   )
-    Dir.mktmpdir("merge-assurance-replay") do |root|
+    Dir.mktmpdir("merge-assurance-replay", SAFE_TMP_PARENT) do |root|
       supplied_path = write_json_fixture(root, "autonomous.json", supplied)
       recomputed_path = write_json_fixture(root, "recomputed.json", recomputed)
       helper_call_path = File.join(root, "helper-call.json")
@@ -1846,9 +1854,14 @@ class MergeAssuranceTest < Minitest::Test
                          File.join(root, "skills/pr-batch")
                        end
       bin_dir = File.join(real_skill_dir, "bin")
-      FileUtils.mkdir_p(bin_dir)
+      lib_dir = File.join(real_skill_dir, "lib")
+      FileUtils.mkdir_p([bin_dir, lib_dir])
       real_merge_script = File.join(bin_dir, "merge-assurance")
       FileUtils.cp(SCRIPT, real_merge_script)
+      FileUtils.cp(
+        File.expand_path("../lib/autonomous_merge_runtime_trust.rb", __dir__),
+        File.join(lib_dir, "autonomous_merge_runtime_trust.rb")
+      )
       helper = File.join(bin_dir, "autonomous-merge-eligibility")
       unless helper_mode == :missing
         File.write(helper, <<~RUBY)

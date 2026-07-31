@@ -15,6 +15,7 @@ require "rbconfig"
 require "tempfile"
 require "time"
 require "uri"
+require_relative "../lib/autonomous_merge_runtime_trust"
 
 module MergeAssurance
   class Error < StandardError; end
@@ -202,6 +203,7 @@ module MergeAssurance
       raise Error, "merge context cannot drive autonomous replay: #{context_failures.join('; ')}"
     end
 
+    validate_semantic_assessment_path!(repo_root, semantic_assessment)
     helper = autonomous_replay_helper_path
     trusted_git = trusted_executable_path(trusted_git_executable, "--trusted-git-executable")
     trusted_gh = trusted_executable_path(trusted_gh_executable, "--trusted-gh-executable")
@@ -249,47 +251,36 @@ module MergeAssurance
   end
 
   def trusted_executable_path(path, label)
-    unless path.is_a?(String) && !path.empty? && Pathname.new(path).absolute?
-      raise Error, "#{label} must be an absolute path"
-    end
+    AutonomousMergeRuntimeTrust.trusted_executable_path(path, label)
+  rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+    raise Error, e.message
+  end
 
-    resolved = File.realpath(path)
-    stat = File.lstat(resolved)
-    validate_trusted_executable_target!(stat, label)
+  def validate_semantic_assessment_path!(repo_root, semantic_assessment)
+    repo_path = File.expand_path(repo_root)
+    semantic_path = File.expand_path(semantic_assessment)
+    repo_realpath = File.realpath(repo_path)
+    semantic_realpath = File.realpath(semantic_path)
+    contained_lexically = semantic_path == repo_path || semantic_path.start_with?("#{repo_path}/")
+    contained_physically = semantic_realpath == repo_realpath ||
+                           semantic_realpath.start_with?("#{repo_realpath}/")
+    return unless contained_lexically || contained_physically
 
-    ancestor = File.dirname(resolved)
-    loop do
-      validate_trusted_executable_ancestor!(File.lstat(ancestor), label)
-      break if ancestor == File.dirname(ancestor)
-
-      ancestor = File.dirname(ancestor)
-    end
-
-    resolved
+    raise Error, "semantic assessment must be supplied from outside the evaluated repository"
   rescue SystemCallError => e
-    raise Error, "#{label} could not be safely resolved: #{e.message}"
+    raise Error, "semantic assessment path could not be safely resolved: #{e.message}"
   end
 
   def validate_trusted_executable_target!(stat, label)
-    unless stat.file? && (stat.mode & 0o111).positive?
-      raise Error, "#{label} target must be a regular executable file"
-    end
-    unless [0, Process.euid].include?(stat.uid)
-      raise Error, "#{label} target owner is not trusted"
-    end
-    return if (stat.mode & 0o022).zero?
-
-    raise Error, "#{label} target is group- or world-writable"
+    AutonomousMergeRuntimeTrust.validate_trusted_executable_target!(stat, label)
+  rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+    raise Error, e.message
   end
 
   def validate_trusted_executable_ancestor!(stat, label)
-    unless stat.directory? && [0, Process.euid].include?(stat.uid)
-      raise Error, "#{label} ancestor is not a trusted directory"
-    end
-    raise Error, "#{label} ancestor is world-writable" if (stat.mode & 0o002).positive?
-    return unless (stat.mode & 0o020).positive? && stat.uid != Process.euid
-
-    raise Error, "#{label} ancestor is group-writable by a foreign owner"
+    AutonomousMergeRuntimeTrust.validate_trusted_executable_ancestor!(stat, label)
+  rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+    raise Error, e.message
   end
 
   def trusted_gh_environment(host)

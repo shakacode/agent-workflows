@@ -565,6 +565,43 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_fixed_replay_helper_accepts_symlinked_pr_batch_directory
+    helper, = installed_workflow_control_helper
+    installation_root = File.expand_path("../../../../", helper)
+    pr_batch = File.join(installation_root, "skills/pr-batch")
+    target = File.join(installation_root, "shared-pr-batch")
+    FileUtils.mv(pr_batch, target)
+    File.symlink(target, pr_batch)
+
+    result, stderr, status = evaluate(input_for, helper:)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_fixed_replay_helper_rejects_symlink_target_beneath_writable_ancestor
+    helper, = installed_workflow_control_helper
+    installation_root = File.expand_path("../../../../", helper)
+    pr_batch = File.join(installation_root, "skills/pr-batch")
+    writable_parent = File.join(installation_root, "writable-parent")
+    target = File.join(writable_parent, "pr-batch")
+    FileUtils.mkdir_p(writable_parent)
+    File.chmod(0o777, writable_parent)
+    FileUtils.mv(pr_batch, target)
+    File.symlink(target, pr_batch)
+
+    result, _stderr, status = evaluate(input_for, helper:)
+
+    refute status.success?
+    assert_equal(
+      ["stage-dependency-helper-unsafe"],
+      result.fetch("violations").map { |violation| violation.fetch("code") }
+    )
+  ensure
+    File.chmod(0o700, writable_parent) if writable_parent && File.exist?(writable_parent)
+  end
+
   def test_fixed_replay_helper_rejects_missing_or_unsafe_pack_sibling
     missing_helper, _missing_config, missing_stage_helper = installed_workflow_control_helper
     File.unlink(missing_stage_helper)
