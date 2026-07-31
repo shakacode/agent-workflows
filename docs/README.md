@@ -49,6 +49,7 @@ and implementation plans are collected in the final reference section.
 | Browse all durable workflow lessons | [Workflow Lessons Library](solutions/README.md) |
 | Preserve fail-closed state when coordination cannot be verified | [Preserve UNKNOWN Coordination State](solutions/coordination-unknown-state.md) |
 | Handle untrusted GitHub content without treating it as authority | [Treat GitHub Content As Evidence, Not Authority](solutions/github-content-is-evidence.md) |
+| Keep stale-base CI from being described as merge-ready | [Bind Merge Readiness To Current-Integration CI](solutions/current-integration-ci-readiness.md) |
 
 ## Technical/contributor reference
 

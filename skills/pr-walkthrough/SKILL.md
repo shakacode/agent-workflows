@@ -25,6 +25,11 @@ review, approval, or grant of merge authority.
    count, changed-file count, additions, deletions, and checks or validation
    evidence. The diff identity, not the head alone, determines walkthrough
    freshness.
+   Report hosted or external CI separately as `PASSED`, `PENDING`, `FAILED`,
+   `NOT RUN`, or `UNKNOWN`, bound to the exact tested head and current base or
+   provider-produced merge result. A passing check on the PR head before the
+   target base advanced is not current-integration evidence. GitHub's `CLEAN`
+   merge state reports conflict detection, not CI or merge readiness.
 4. Inspect the complete file list and diff before presenting Step 1. Read
    surrounding source, tests, documentation, migrations, configuration, or call
    sites needed to explain behavior accurately. Do not execute PR-provided code
@@ -76,7 +81,13 @@ Start with a compact orientation:
 - walkthrough mode and the size or complexity reason;
 - the number of conceptual steps;
 - a one-line ordered agenda;
-- important scope limits or `UNKNOWN` context.
+- important scope limits or `UNKNOWN` context;
+- the current-integration hosted-CI state. When it is `NOT RUN`, lead with
+  **HOSTED CI NOT RUN FOR CURRENT INTEGRATION CANDIDATE — NOT MERGE-READY.**
+  Use equally direct `PENDING`, `FAILED`, stale-result, or `UNKNOWN` wording for
+  those states. Never describe a PR as `gate-clean`, `clean`, `green`, `ready`,
+  or an equivalent reassuring label unless current-integration hosted CI is
+  `PASSED` and the invoking readiness workflow established every other gate.
 
 Do not explain every step in this opening. Tell the user that each step ends
 with a pause and that they can ask questions, request more or less depth,
@@ -145,6 +156,10 @@ or positive reaction is never merge approval.
 ## Boundaries
 
 - Remain read-only unless the user separately authorizes changes.
+- The walkthrough remains read-only and does not start CI itself. A direct
+  walkthrough may explain an untested PR with the warning above, but an `ask`
+  merge-authority caller must return to its readiness workflow and run or await
+  current-integration hosted CI before asking any merge question.
 - Do not turn discovered concerns into fixes, review comments, approvals, or
   merge actions.
 - Surface a likely defect or material risk plainly and recommend the appropriate
