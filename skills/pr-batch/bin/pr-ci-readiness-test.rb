@@ -350,7 +350,9 @@ class PrCiReadinessCliTest < Minitest::Test
                    rejected_check_field: nil, check_stderr: nil, check_status: 0,
                    required_check_error: nil, full_check_error: nil, exact_actions: [],
                    exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
-                   exact_actions_total_count: nil, expected_host: nil)
+                   exact_actions_total_count: nil, expected_host: nil,
+                   exact_status_sha: :echo, exact_status_total_count: nil,
+                   exact_status_pages: nil)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(
@@ -360,7 +362,8 @@ class PrCiReadinessCliTest < Minitest::Test
           required_check_fields, rejected_check_field, check_stderr, check_status,
           required_check_error, full_check_error, exact_actions, exact_check_runs,
           exact_statuses, exact_inventory_error, exact_actions_total_count,
-          File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host
+          File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host,
+          exact_status_sha, exact_status_total_count, exact_status_pages
         )
       )
       FileUtils.chmod(0o755, gh)
@@ -376,11 +379,75 @@ class PrCiReadinessCliTest < Minitest::Test
     "printf '%s' #{JSON.generate(value).inspect}"
   end
 
+  # GitHub's documented combination rule for the combined status endpoint. The
+  # script validates this field against the returned per-context statuses.
+  def combined_status_state(statuses)
+    states = statuses.map { |row| row["state"] }
+    return "pending" if states.empty?
+    return "failure" if states.any? { |state| %w[failure error].include?(state) }
+
+    states.all? { |state| state == "success" } ? "success" : "pending"
+  end
+
+  # `GET /repos/{repo}/commits/{ref}/status` wraps the per-context rows in an
+  # envelope whose top-level `sha` echoes the commit GitHub resolved. That
+  # echo is the exact-head binding the script asserts, so the fake reproduces
+  # it by parsing the requested ref out of the URL. Tests override
+  # `exact_status_sha` with a literal SHA (mismatch) or nil (missing) to prove
+  # the assertion still fails closed.
+  def combined_status_branch(exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count,
+                             exact_status_pages)
+    if exact_status_pages
+      page_cases = exact_status_pages.each_with_index.map do |payload, index|
+        "  #{index + 1}) #{shell_json_printf(payload)} ;;"
+      end.join("\n")
+      return <<~BASH
+        if [[ "$*" = *"/status?per_page="* ]]; then
+          #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
+          page="${2##*page=}"
+          case "$page" in
+          #{page_cases}
+            *) exit 1 ;;
+          esac
+          exit 0
+        fi
+      BASH
+    end
+
+    total_count = exact_status_total_count || exact_statuses.length
+    combined_state = JSON.generate(combined_status_state(exact_statuses))
+    envelope_tail = %(,"state":#{combined_state},"total_count":#{total_count},"statuses":)
+    body =
+      if exact_status_sha == :echo
+        <<~BASH
+          ref="${2#*/commits/}"
+          ref="${ref%%/status*}"
+          printf '%s' '{"sha":"'"$ref"'"#{envelope_tail}'
+          #{shell_json_printf(exact_statuses)}
+          printf '%s' '}'
+        BASH
+      else
+        envelope = { "state" => combined_status_state(exact_statuses),
+                     "total_count" => total_count,
+                     "statuses" => exact_statuses }
+        envelope = { "sha" => exact_status_sha }.merge(envelope) unless exact_status_sha.nil?
+        shell_json_printf(envelope)
+      end
+    <<~BASH
+      if [[ "$*" = *"/status?per_page="* ]]; then
+        #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
+      #{body}
+        exit 0
+      fi
+    BASH
+  end
+
   def fake_gh_script(required_json, full_json, pr_head, pr_identity, runs, review_pages, review_error,
                      required_check_fields, rejected_check_field, check_stderr, check_status,
                      required_check_error, full_check_error, exact_actions, exact_check_runs,
                      exact_statuses, exact_inventory_error, exact_actions_total_count,
-                     pr_head_state_path, pr_identity_state_path, expected_host)
+                     pr_head_state_path, pr_identity_state_path, expected_host,
+                     exact_status_sha, exact_status_total_count, exact_status_pages)
     host_guard =
       if expected_host
         <<~BASH
@@ -608,6 +675,12 @@ class PrCiReadinessCliTest < Minitest::Test
           #{shell_json_printf('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
           exit 0
         fi
+      #{combined_status_branch(
+        exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count, exact_status_pages
+      )}
+        # The status-history list endpoint is served with its real shape: its
+        # rows carry no commit SHA. Nothing should request it -- it is kept so
+        # a regression back to it fails closed instead of passing silently.
         if [[ "$*" = *"/statuses?per_page="* ]]; then
           #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
           #{shell_json_printf(exact_statuses)}
@@ -895,7 +968,7 @@ class PrCiReadinessCliTest < Minitest::Test
       exact_statuses: [
         {
           "id" => 400, "context" => "legacy", "state" => "success",
-          "sha" => head, "target_url" => "https://example/status/400"
+          "target_url" => "https://example/status/400"
         }
       ],
       runs:
@@ -1621,7 +1694,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_commit_status_history_keeps_only_the_latest_row_per_exact_context
+  def test_duplicate_combined_status_contexts_fail_closed_case_insensitively
     head = "a" * 40
     with_fake_gh(
       required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
@@ -1630,53 +1703,11 @@ class PrCiReadinessCliTest < Minitest::Test
       exact_statuses: [
         {
           "id" => 400, "context" => "legacy", "state" => "success",
-          "sha" => head, "target_url" => "https://example/status/400"
-        },
-        {
-          "id" => 399, "context" => "legacy", "state" => "failure",
-          "sha" => head, "target_url" => "https://example/status/399"
-        },
-        {
-          "id" => 398, "context" => "legacy", "state" => "pending",
-          "sha" => head, "target_url" => "https://example/status/398"
+          "target_url" => "https://example/status/400"
         },
         {
           "id" => 397, "context" => "Legacy", "state" => "success",
-          "sha" => head, "target_url" => "https://example/status/397"
-        }
-      ]
-    ) do |env|
-      out, status = run_script(env, "123", "--repo", "owner/repo")
-      assert status.success?, out
-      data = JSON.parse(out)
-
-      assert_equal "READY", data.fetch("verdict")
-      assert_equal "READY", data.dig("scopes", "other", "state")
-      assert_equal(
-        [[400, "legacy", "success"], [397, "Legacy", "success"]],
-        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
-      )
-    end
-  end
-
-  def test_latest_unknown_commit_status_still_fails_closed_when_older_duplicate_succeeded
-    head = "a" * 40
-    with_fake_gh(
-      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
-      full_json: "[]",
-      pr_head: head,
-      exact_statuses: [
-        {
-          "id" => 500, "context" => "legacy", "state" => "mystery",
-          "sha" => head, "target_url" => "https://example/status/500"
-        },
-        {
-          "id" => 499, "context" => "legacy", "state" => "success",
-          "sha" => head, "target_url" => "https://example/status/499"
-        },
-        {
-          "id" => 498, "context" => "distinct", "state" => "success",
-          "sha" => head, "target_url" => "https://example/status/498"
+          "target_url" => "https://example/status/397"
         }
       ]
     ) do |env|
@@ -1685,12 +1716,244 @@ class PrCiReadinessCliTest < Minitest::Test
       data = JSON.parse(out)
 
       assert_equal "UNKNOWN", data.fetch("verdict")
-      assert_equal true, data.dig("scopes", "other", "complete")
+      assert_equal false, data.dig("scopes", "other", "complete")
       assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "repeated case-insensitive context"
+    end
+  end
+
+  def test_unknown_combined_commit_status_fails_closed
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses: [
+        {
+          "id" => 500, "context" => "legacy", "state" => "mystery",
+          "target_url" => "https://example/status/500"
+        },
+        {
+          "id" => 498, "context" => "distinct", "state" => "success",
+          "target_url" => "https://example/status/498"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "invalid status state"
+    end
+  end
+
+  # Regression: commit statuses used to be read from `/commits/{ref}/statuses`,
+  # whose rows carry no commit SHA, and every row was asserted against a `sha`
+  # key that never exists. Any head carrying a single commit status therefore
+  # produced an incomplete `other` scope and an UNKNOWN verdict, which made the
+  # sanctioned merge path reject every such PR.
+  def test_commit_status_bearing_head_yields_complete_other_scope_and_known_verdict
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses: [
+        { "id" => 600, "context" => "CodeRabbit", "state" => "success",
+          "target_url" => "https://example/status/600" }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      other = data.fetch("scopes").fetch("other")
+
+      refute other.key?("error"), other.inspect
+      assert_equal true, other.fetch("complete")
+      assert_equal head, other.fetch("head_sha")
       assert_equal(
-        [[500, "legacy", "mystery"], [498, "distinct", "success"]],
-        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
+        [[600, "CodeRabbit", "success"]],
+        other.fetch("rows").map { |row| row.values_at("id", "name", "state") }
       )
+      refute_equal "UNKNOWN", other.fetch("state")
+      refute_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal "READY", data.fetch("verdict")
+    end
+  end
+
+  def test_combined_commit_status_without_sha_fails_closed
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "a" * 40,
+      exact_status_sha: nil,
+      exact_statuses: [
+        { "id" => 601, "context" => "CodeRabbit", "state" => "success",
+          "target_url" => "https://example/status/601" }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      other = data.fetch("scopes").fetch("other")
+
+      assert_equal false, other.fetch("complete")
+      assert_equal "UNKNOWN", other.fetch("state")
+      assert_empty other.fetch("rows")
+      assert_includes other.fetch("error"), "combined commit status was not bound to exact head"
+      assert_includes other.fetch("error"), "found missing"
+      assert_equal "UNKNOWN", data.fetch("verdict")
+    end
+  end
+
+  def test_combined_commit_status_for_another_commit_fails_closed
+    head = "a" * 40
+    other_head = "b" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_sha: other_head,
+      exact_statuses: [
+        { "id" => 602, "context" => "CodeRabbit", "state" => "success",
+          "target_url" => "https://example/status/602" }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      other = data.fetch("scopes").fetch("other")
+
+      assert_equal false, other.fetch("complete")
+      assert_equal "UNKNOWN", other.fetch("state")
+      assert_empty other.fetch("rows")
+      assert_includes other.fetch("error"), "combined commit status was not bound to exact head #{head}"
+      assert_includes other.fetch("error"), other_head
+      assert_equal "UNKNOWN", data.fetch("verdict")
+    end
+  end
+
+  def test_partial_combined_status_page_is_unknown_not_complete
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: "a" * 40,
+      exact_status_total_count: 2,
+      exact_statuses: [
+        { "id" => 603, "context" => "CodeRabbit", "state" => "success",
+          "target_url" => "https://example/status/603" }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      other = data.fetch("scopes").fetch("other")
+
+      assert_equal false, other.fetch("complete")
+      assert_equal "UNKNOWN", other.fetch("state")
+      assert_includes other.fetch("error"), "statuses pagination was incomplete"
+      assert_equal "UNKNOWN", data.fetch("verdict")
+    end
+  end
+
+  def test_duplicate_context_reordered_onto_second_combined_status_page_fails_closed
+    head = "a" * 40
+    first_page = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    second_page = [
+      { "id" => 101, "context" => "STATUS-0", "state" => "success",
+        "target_url" => "https://example/status/101" }
+    ]
+    pages = [first_page, second_page].map do |statuses|
+      { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => statuses }
+    end
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "repeated case-insensitive context"
+    end
+  end
+
+  def test_changed_combined_state_on_second_status_page_fails_closed
+    head = "a" * 40
+    first_page = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    pages = [
+      { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => first_page },
+      {
+        "sha" => head, "state" => "pending", "total_count" => 101,
+        "statuses" => [
+          { "id" => 101, "context" => "status-100", "state" => "success",
+            "target_url" => "https://example/status/101" }
+        ]
+      }
+    ]
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "state changed during pagination"
+    end
+  end
+
+  def test_single_page_combined_state_inconsistent_with_statuses_fails_closed
+    head = "a" * 40
+    pages = [{
+      "sha" => head,
+      "state" => "success",
+      "total_count" => 1,
+      "statuses" => [
+        { "id" => 101, "context" => "status-100", "state" => "pending",
+          "target_url" => "https://example/status/101" }
+      ]
+    }]
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"),
+                      "state was inconsistent with its statuses"
     end
   end
 
@@ -1701,7 +1964,6 @@ class PrCiReadinessCliTest < Minitest::Test
         "id" => index + 1,
         "context" => "status-#{index}",
         "state" => "success",
-        "sha" => head,
         "target_url" => "https://example.test/#{index}/#{'x' * 2_000}"
       }
     end
@@ -1725,7 +1987,6 @@ class PrCiReadinessCliTest < Minitest::Test
       "id" => 1,
       "context" => "large-status",
       "state" => "success",
-      "sha" => "a" * 40,
       "target_url" => "https://example.test/#{'x' * 100_000}"
     }]
     expected_command = "printf '%s' #{JSON.generate(exact_statuses).inspect}"
@@ -1737,7 +1998,7 @@ class PrCiReadinessCliTest < Minitest::Test
       fake_gh = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "gh")
       generated_script = File.read(fake_gh, encoding: "UTF-8")
       status_branch = generated_script[
-        %r{if \[\[ "\$\*" = \*"/statuses\?per_page="\* \]\]; then.*?exit 0}m
+        %r{if \[\[ "\$\*" = \*"/status\?per_page="\* \]\]; then.*?exit 0}m
       ]
 
       assert_includes status_branch, expected_command

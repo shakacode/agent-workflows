@@ -686,34 +686,99 @@ module PrCiReadiness
       [[], false, "exact-head check-run inventory failed: #{e.message}"]
     end
 
+    # Commit statuses are read from the combined status endpoint
+    # (`/commits/{ref}/status`), not the status-history list endpoint
+    # (`/commits/{ref}/statuses`). The list endpoint's rows carry no commit
+    # SHA at all, so exact-head identity cannot be asserted per row. The
+    # combined endpoint echoes the resolved commit as a top-level `sha`, which
+    # is an independent confirmation from GitHub that the statuses returned
+    # belong to the exact head we asked about -- a missing or mismatched `sha`
+    # fails closed. The combined endpoint also returns only the most recent
+    # status per context, matching the current-context scope the history-list
+    # dedupe previously approximated. Duplicate case-insensitive contexts now
+    # fail closed because they indicate an unstable or malformed inventory.
     def fetch_exact_head_statuses(repo, head_sha)
-      rows = fetch_paginated_array(
-        "repos/#{repo}/commits/#{head_sha}/statuses?per_page=100&page=%<page>s"
-      ).map do |row|
-        ensure_exact_head!(row, head_sha, "status context", sha_key: "sha")
+      combined_state = nil
+      bind_head = lambda do |payload|
+        ensure_exact_head!(payload, head_sha, "combined commit status", sha_key: "sha")
+        page_state = payload["state"]
+        unless %w[failure pending success].include?(page_state)
+          raise Error, "combined commit status response had invalid state #{page_state.inspect}"
+        end
+
+        combined_state ||= page_state
+        unless page_state == combined_state
+          raise Error,
+                "combined commit status state changed during pagination: " \
+                "expected #{combined_state}, found #{page_state}"
+        end
+      end
+      status_rows = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/status?per_page=100&page=%<page>s",
+        "statuses",
+        validate_page: bind_head
+      )
+      states = status_rows.map { |row| row["state"] }
+      unless states.all? { |state| %w[error failure pending success].include?(state) }
+        raise Error, "combined commit status response had an invalid status state"
+      end
+
+      expected_combined_state =
+        if states.any? { |state| %w[error failure].include?(state) }
+          "failure"
+        elsif states.empty? || states.include?("pending")
+          "pending"
+        else
+          "success"
+        end
+      unless combined_state == expected_combined_state
+        raise Error,
+              "combined commit status state was inconsistent with its statuses: " \
+              "expected #{expected_combined_state}, found #{combined_state}"
+      end
+
+      seen_contexts = {}
+      rows = status_rows.map do |row|
+        context = row["context"]
+        unless context.is_a?(String) && !context.empty?
+          raise Error, "combined commit status response had an invalid context"
+        end
+
+        # GitHub's commit-status API defines context identity as case-insensitive.
+        context_identity = context.downcase
+        if seen_contexts.key?(context_identity)
+          raise Error,
+                "combined commit status response repeated case-insensitive context " \
+                "#{context.inspect} (first seen as #{seen_contexts.fetch(context_identity).inspect})"
+        end
+        seen_contexts[context_identity] = context
+
         {
           "kind" => "status",
           "id" => row["id"],
-          "name" => row["context"].to_s,
+          "name" => context,
           "state" => row["state"].to_s,
           "url" => row["target_url"].to_s,
           "head_sha" => head_sha
         }
       end
-      # GitHub returns commit status history newest first. Only the first row
-      # for an exact context is current; later duplicates are historical.
-      rows = rows.uniq { |row| row["name"] }
       [rows, true, nil]
     rescue StandardError => e
       [[], false, "exact-head status-context inventory failed: #{e.message}"]
     end
 
-    def fetch_paginated_collection(endpoint_template, key)
+    # `validate_page` runs against every raw page payload before its rows are
+    # trusted, so envelope-level identity (such as the combined status
+    # endpoint's top-level `sha`) is asserted on each page, not just the first.
+    def fetch_paginated_collection(endpoint_template, key, validate_page: nil)
       page = 1
       rows = []
       expected_total = nil
       loop do
         payload = capture_json!("gh", "api", format(endpoint_template, page:))
+        raise Error, "#{key} response was not an object" unless payload.is_a?(Hash)
+
+        validate_page&.call(payload)
         page_rows = payload.fetch(key)
         raise Error, "#{key} response was not an array" unless page_rows.is_a?(Array)
 
@@ -734,21 +799,6 @@ module PrCiReadiness
         raise Error, "#{key} pagination was incomplete: expected #{expected_total}, received #{rows.length}"
       end
 
-      rows
-    end
-
-    def fetch_paginated_array(endpoint_template)
-      page = 1
-      rows = []
-      loop do
-        page_rows = capture_json!("gh", "api", format(endpoint_template, page:))
-        raise Error, "status response was not an array" unless page_rows.is_a?(Array)
-
-        rows.concat(page_rows)
-        break if page_rows.length < 100
-
-        page += 1
-      end
       rows
     end
 
