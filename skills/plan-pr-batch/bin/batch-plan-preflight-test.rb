@@ -17,6 +17,7 @@ STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-ga
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
+  SAFE_TMP_PARENT = File.expand_path("../../..", __dir__)
   RISK_SURFACES = %w[
     ci_workflow
     developer_tooling
@@ -126,7 +127,7 @@ class BatchPlanPreflightTest < Minitest::Test
                                         config_mode: 0o600, agents_mode: 0o700,
                                         root_mode: 0o700, config_symlink: false,
                                         agents_symlink: false)
-    root = Dir.mktmpdir("workflow-control-trust-install")
+    root = Dir.mktmpdir("workflow-control-trust-install", SAFE_TMP_PARENT)
     File.chmod(root_mode, root)
     (@workflow_control_install_roots ||= []) << root
     helper = File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight")
@@ -547,7 +548,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def test_fixed_replay_helper_accepts_safe_copy_and_symlink_layouts
     copied_helper, = installed_workflow_control_helper
-    symlink_root = Dir.mktmpdir("batch-plan-preflight-symlink-install")
+    symlink_root = Dir.mktmpdir("batch-plan-preflight-symlink-install", SAFE_TMP_PARENT)
     (@workflow_control_install_roots ||= []) << symlink_root
     symlinked_helper = File.join(symlink_root, "skills/plan-pr-batch/bin/batch-plan-preflight")
     FileUtils.mkdir_p(File.dirname(symlinked_helper))
@@ -621,7 +622,7 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_path_cannot_override_the_fixed_replay_helper
-    fake_bin = Dir.mktmpdir("caller-stage-dependency-gate")
+    fake_bin = Dir.mktmpdir("caller-stage-dependency-gate", SAFE_TMP_PARENT)
     (@workflow_control_install_roots ||= []) << fake_bin
     fake_helper = File.join(fake_bin, "stage-dependency-gate")
     File.write(fake_helper, "#!#{RbConfig.ruby}\nexit 29\n")
@@ -649,7 +650,7 @@ class BatchPlanPreflightTest < Minitest::Test
     input.dig("stage_dependency_replay", "edges", 0)["state"] = "pending"
     input.dig("stage_dependency_replay", "edges", 0).delete("evidence")
 
-    fake_bin = Dir.mktmpdir("caller-ruby")
+    fake_bin = Dir.mktmpdir("caller-ruby", SAFE_TMP_PARENT)
     (@workflow_control_install_roots ||= []) << fake_bin
     stale_gate_path = File.join(fake_bin, "stale-gate.json")
     fake_ruby_marker = File.join(fake_bin, "fake-ruby-ran")
@@ -675,7 +676,7 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_ruby_and_bundler_preload_environment_cannot_run_in_replay
-    ruby_probe_dir = Dir.mktmpdir("replay-ruby-preload")
+    ruby_probe_dir = Dir.mktmpdir("replay-ruby-preload", SAFE_TMP_PARENT)
     (@workflow_control_install_roots ||= []) << ruby_probe_dir
     ruby_marker = File.join(ruby_probe_dir, "ruby-preload-ran")
     File.write(
@@ -683,7 +684,7 @@ class BatchPlanPreflightTest < Minitest::Test
       "File.write(#{ruby_marker.dump}, \"ran\")\n"
     )
 
-    bundle_probe_dir = Dir.mktmpdir("replay-bundle-preload")
+    bundle_probe_dir = Dir.mktmpdir("replay-bundle-preload", SAFE_TMP_PARENT)
     (@workflow_control_install_roots ||= []) << bundle_probe_dir
     bundle_marker = File.join(bundle_probe_dir, "bundle-preload-ran")
     bundle_gemfile = File.join(bundle_probe_dir, "Gemfile")
@@ -719,7 +720,7 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_replay_child_inherits_only_the_minimal_deterministic_environment
-    probe_dir = Dir.mktmpdir("replay-child-env")
+    probe_dir = Dir.mktmpdir("replay-child-env", SAFE_TMP_PARENT)
     (@workflow_control_install_roots ||= []) << probe_dir
     marker = File.join(probe_dir, "inherited-env.json")
     forbidden_names = %w[
