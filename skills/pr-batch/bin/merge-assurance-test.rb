@@ -247,6 +247,7 @@ class MergeAssuranceTest < Minitest::Test
     end
     assert_includes error.message, "target owner is not trusted"
 
+    skip "foreign trusted-owner case requires a non-root effective UID" if Process.euid.zero?
     unsafe_group_ancestor = stat_type.new(0, 0o775, :directory)
     error = assert_raises(MergeAssurance::Error) do
       MergeAssurance.validate_trusted_executable_ancestor!(
