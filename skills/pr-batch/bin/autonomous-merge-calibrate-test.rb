@@ -387,7 +387,61 @@ class AutonomousMergeCalibrateTest < Minitest::Test
     assert_includes stderr, "calibration PR identities must be unique"
   end
 
-  def test_filtered_malformed_metrics_do_not_contaminate_zero_and_null_boundaries
+  def test_every_pr_repository_shape_is_validated_before_repository_filtering
+    selected = pr(
+      "example/one", 1,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["app"]
+    )
+    selected["semantic_inspection"] = "reviewed"
+    base_dataset = {
+      "contract" => "autonomous-merge-calibration-dataset",
+      "version" => 1,
+      "scope" => {
+        "complete" => true,
+        "window" => "pre-filter validation fixture",
+        "repositories" => ["example/one"],
+        "reviewed_heads_decision" => {
+          "disposition" => "enforced",
+          "rationale" => "Every dataset entry must be structurally valid before filtering."
+        }
+      }
+    }
+    malformed_repository = selected.merge("repository" => "not-owner-repo", "number" => 2)
+    cases = {
+      "--repo filtering" => [
+        base_dataset.merge("prs" => [selected, "not-a-mapping"]),
+        ["--repo", "example/one"],
+        "calibration PR must be a mapping"
+      ],
+      "dataset-scope filtering" => [
+        base_dataset.merge("prs" => [selected, malformed_repository]),
+        [],
+        "calibration PR repository must use OWNER/REPO form"
+      ]
+    }
+
+    results = cases.transform_values do |dataset, arguments, expected_error|
+      stdout, stderr, status = run_calibrator(dataset, *arguments)
+      {
+        "stdout" => stdout,
+        "stderr" => stderr,
+        "status" => status,
+        "expected_error" => expected_error
+      }
+    end
+    failures = results.filter_map do |label, result|
+      next unless result.fetch("status").success? || !result.fetch("stdout").empty? ||
+                  !result.fetch("stderr").include?(result.fetch("expected_error"))
+
+      "#{label}: status=#{result.fetch('status').exitstatus}, stdout=#{result.fetch('stdout').inspect}, " \
+        "stderr=#{result.fetch('stderr').inspect}"
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_valid_filtered_metrics_do_not_contaminate_zero_and_null_boundaries
     selected = pr(
       "example/one", 1,
       files: 0, lines: 0, commits: 0, reviewed_heads: nil,
@@ -396,16 +450,19 @@ class AutonomousMergeCalibrateTest < Minitest::Test
     selected["merged_at"] = "2026-07-03T00:00:00Z"
     excluded_by_repository = pr(
       "example/two", 2,
-      files: "30", lines: -1, commits: 1, reviewed_heads: -1
+      files: 30, lines: 1_000, commits: 10, reviewed_heads: 4,
+      path_categories: ["db"]
     )
     excluded_by_date = pr(
       "example/one", 3,
-      files: "30", lines: -1, commits: 1, reviewed_heads: -1
+      files: 40, lines: 2_000, commits: 11, reviewed_heads: 5,
+      path_categories: ["docs"]
     )
     excluded_by_date["merged_at"] = "2026-06-30T00:00:00Z"
     excluded_by_count = pr(
       "example/one", 4,
-      files: "30", lines: -1, commits: 1, reviewed_heads: -1
+      files: 50, lines: 3_000, commits: 12, reviewed_heads: 6,
+      path_categories: ["app"]
     )
     excluded_by_count["merged_at"] = "2026-07-02T00:00:00Z"
     dataset = calibration_dataset(
@@ -428,6 +485,116 @@ class AutonomousMergeCalibrateTest < Minitest::Test
       report.dig("distributions", "changed_files")
     )
     assert_equal 0, report.dig("coverage", "reviewed_heads_known")
+  end
+
+  def test_malformed_records_fail_before_repository_date_and_count_filters
+    selected = pr(
+      "example/one", 1,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["app"]
+    )
+    selected["merged_at"] = "2026-07-03T00:00:00Z"
+    excluded_by_repository = pr(
+      "example/two", 2,
+      files: "30", lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["docs"]
+    )
+    excluded_by_date = pr(
+      "example/one", 3,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: [""]
+    )
+    excluded_by_date["merged_at"] = "2026-06-30T00:00:00Z"
+    excluded_by_count = pr(
+      "example/one", 4,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["docs"]
+    )
+    excluded_by_count["automation_reviewed_heads"] = -1
+    excluded_by_count["merged_at"] = "2026-07-02T00:00:00Z"
+    cases = {
+      "repository filter" => [excluded_by_repository, ["--repo", "example/one"],
+                              "calibration PR changed_files must be a nonnegative integer or null"],
+      "date filter" => [excluded_by_date, ["--since", "2026-07-01"],
+                        "calibration PR path_categories must be a list of nonempty strings"],
+      "PR-count filter" => [excluded_by_count, ["--pr-count", "1"],
+                            "calibration PR automation_reviewed_heads must be a nonnegative integer or null"]
+    }
+
+    results = cases.transform_values do |malformed, arguments, expected_error|
+      repositories = ["example/one", malformed.fetch("repository")].uniq
+      stdout, stderr, status = run_calibrator(
+        calibration_dataset([selected, malformed], repositories:),
+        *arguments
+      )
+      [stdout, stderr, status, expected_error]
+    end
+    failures = results.filter_map do |label, (stdout, stderr, status, expected_error)|
+      next unless status.success? || !stdout.empty? || !stderr.include?(expected_error)
+
+      "#{label}: status=#{status.exitstatus}, stdout=#{stdout.inspect}, stderr=#{stderr.inspect}"
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_hostile_cross_repo_record_cannot_emit_an_enforced_decision
+    selected = pr(
+      "example/one", 1,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["app"]
+    )
+    selected["semantic_inspection"] = "reviewed"
+    malformed = pr(
+      "example/two", 2,
+      files: "30", lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["docs"]
+    )
+    dataset = {
+      "contract" => "autonomous-merge-calibration-dataset",
+      "version" => 1,
+      "scope" => {
+        "complete" => true,
+        "window" => "hostile cross-repository fixture",
+        "repositories" => ["example/one", "example/two"],
+        "reviewed_heads_decision" => {
+          "disposition" => "enforced",
+          "rationale" => "Excluded malformed evidence must never reach enforcement."
+        }
+      },
+      "prs" => [selected, malformed]
+    }
+
+    stdout, stderr, status = run_calibrator(
+      dataset,
+      "--repo", "example/one",
+      "--format", "decision"
+    )
+
+    refute status.success?
+    assert_empty stdout
+    assert_includes stderr, "calibration PR changed_files must be a nonnegative integer"
+  end
+
+  def test_raw_dataset_identities_must_be_unique_before_repository_filtering
+    selected = pr(
+      "example/one", 1,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["app"]
+    )
+    duplicate = pr(
+      "example/two", 2,
+      files: 1, lines: 1, commits: 1, reviewed_heads: 1,
+      path_categories: ["docs"]
+    )
+    stdout, stderr, status = run_calibrator(
+      calibration_dataset([selected, duplicate, duplicate.dup], repositories: ["example/one", "example/two"]),
+      "--repo", "example/one"
+    )
+
+    refute status.success?
+    assert_empty stdout
+    assert_includes stderr, "calibration PR identities must be unique"
   end
 
   def test_pr_count_parses_all_candidate_timestamps_and_sorts_by_actual_instant

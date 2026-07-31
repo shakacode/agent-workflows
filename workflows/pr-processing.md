@@ -594,6 +594,7 @@ The user should not need to write a long launch prompt. If the request is short,
 - Permissions: whether the current session can run without blocking worker approval prompts.
 - Question handling: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
 - Completion states: `merged`, `ready-gates-clean`, `ready-no-merge-authority`,
+  `ready-human-review-required`, `autonomous-merge-evidence-unknown`,
   `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`,
   or `no-pr-evidence`.
 

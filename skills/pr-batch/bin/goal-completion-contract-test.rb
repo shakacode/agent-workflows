@@ -154,6 +154,8 @@ CANONICAL_READINESS_STATES = %w[
   merged
   ready-gates-clean
   ready-no-merge-authority
+  ready-human-review-required
+  autonomous-merge-evidence-unknown
   waiting-on-checks-or-review
   external-gate-failing
   blocked-user-input
@@ -195,6 +197,12 @@ def extract_markdown_section(text, heading, end_heading: /^###\s+/)
   next_heading = text.match(end_heading, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
+end
+
+def completion_state_checklist(text, heading:, end_heading:)
+  section = extract_markdown_section(text, heading, end_heading:)
+  paragraph = section.match(/(?:\*\*)?Completion states(?:\*\*)?:.*?(?=\n\n)/m)&.[](0)
+  paragraph&.scan(/`([^`]+)`/)&.flatten
 end
 
 def contract_line(text)
@@ -567,6 +575,38 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes workflow_text, "`#{state}`", "workflows/pr-processing.md"
     end
     assert_text_includes workflow_text, "UNKNOWN", "workflows/pr-processing.md"
+  end
+
+  def test_completion_state_checklists_match_canonical_readiness_vocabulary
+    surfaces = {
+      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
+      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+    }
+    mismatches = surfaces.filter_map do |label, (text, heading, end_heading)|
+      actual = completion_state_checklist(text, heading:, end_heading:)
+      next if actual == CANONICAL_READINESS_STATES
+
+      "#{label}: expected #{CANONICAL_READINESS_STATES.inspect}, got #{actual.inspect}"
+    end
+
+    assert_empty mismatches, mismatches.join("\n")
+  end
+
+  def test_completion_state_checklists_ignore_earlier_duplicate_paragraphs
+    decoy = "Completion states: #{CANONICAL_READINESS_STATES.map { |state| "`#{state}`" }.join(', ')}.\n\n"
+    surfaces = {
+      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
+      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+    }
+    false_positives = surfaces.filter_map do |label, (text, heading, end_heading)|
+      mutation = text.sub("`ready-human-review-required`, ", "")
+      raise "fixture mutation missed #{label}" if mutation == text
+
+      actual = completion_state_checklist("#{decoy}#{mutation}", heading:, end_heading:)
+      label if actual == CANONICAL_READINESS_STATES
+    end
+
+    assert_empty false_positives, "earlier duplicate paragraph masked drift in: #{false_positives.join(', ')}"
   end
 
   def test_planning_skills_link_to_canonical_readiness_vocabulary
