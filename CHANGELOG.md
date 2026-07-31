@@ -96,6 +96,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Add explicit exact-target `pr-security-preflight` risk acknowledgement so maintainer waivers can unblock a batch without broadening shared trust defaults.**
 - **Fix `upgrade-agent-workflows` with no `--consumer-root` arguments under shells that treat empty arrays as unset.**
 - **Fix `pr-security-preflight` trust config inheritance so repo-local, user-global, environment, and fail-closed packaged allowlists resolve predictably.** [PR 20](https://github.com/shakacode/agent-workflows/pull/20) by [justin808](https://github.com/justin808).
+- **Stop build-output shapes from replaying as a satisfied `measured_metric`: a terminal `size`/`sizes`/`byte`/`bytes` noun is now rejected whatever the prefix says (`page_size`, `response_size`, `payload_size`), carved out only for runtime-memory names (`heap_size`, `resident_set_size`), and terminal `count`/`counts` rejection looks through at most one bounded qualifier so `file_total_count` and `assets_total_count` are rejected like `total_file_count` while runtime names such as `module_load_count` stay valid.**
 
 ### [0.1.0] - 2026-06-24
 

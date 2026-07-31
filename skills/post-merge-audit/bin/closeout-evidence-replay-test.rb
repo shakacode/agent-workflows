@@ -1026,6 +1026,64 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_measured_metric_rejects_terminal_size_nouns_regardless_of_prefix
+    %w[page_size response_size payload_size image_size cache_size viewportSize recordSizes thumbnail_bytes].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_runtime_memory_names_with_terminal_size_nouns
+    %w[heap_size rss_size memory_size resident_set_size ram_bytes heapUsedBytes].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=100MB; candidate_value=90MB"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_looks_through_one_qualifier_before_a_structural_or_size_count
+    %w[
+      file_total_count chunk_total_count module_total_count test_total_count
+      files_overall_count modulesAggregateCount tests_unique_counts assets_total_count
+      bundle_distinct_count bytesNumberCount
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    %w[module_load_count checkout_error_count file_upload_retry_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
   def test_v2_measured_metric_classifies_size_and_count_shapes_by_terminal_position
     {
       "bundle_compressed_size" => %w[12items 3items UNKNOWN],
