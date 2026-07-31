@@ -483,15 +483,30 @@ Run:
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --repo-root . \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
+  --trusted-helper-provenance "${TRUSTED_HELPER_PROVENANCE}" \
+  --trusted-git-executable "${TRUSTED_GIT_EXECUTABLE}" \
+  --trusted-gh-executable "${TRUSTED_GH_EXECUTABLE}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 `merge-assurance` alone owns merge-authority, follow-up accounting, and
-`UNKNOWN` policy at this final boundary. Every merge caller must generate a
-fresh eligible receipt and pass it to `pr-merge-submit`; the submit helper
-requires it unconditionally. `merge_authority: none` remains a no-merge state
-and can never produce an eligible receipt. Keep this gate conceptually separate
-from batch-plan preflight.
+`UNKNOWN` policy at this final boundary. It reruns the fixed sibling autonomous
+eligibility evaluator with the coordinator-owned semantic assessment and
+independently established helper provenance, then requires the complete live
+result to equal the supplied result. Every merge caller must generate a fresh
+eligible receipt and pass it to `pr-merge-submit`; the submit helper requires
+the same replay inputs and exact coordinator-established absolute git and gh
+paths, and reruns the evaluator before mutation. The helpers resolve symlinks,
+reject unsafe executable targets and directory chains, and never discover these
+tools through `PATH`. A current-user-owned group-writable ancestor is supported
+for Homebrew layouts and explicitly trusts the other members of that group;
+world-writable or foreign-owned paths remain invalid.
+`merge_authority: none` remains a no-merge state and can never produce an
+eligible receipt. Keep this gate conceptually separate from batch-plan
+preflight.
 
 ## Goal Prompt Template
 
@@ -819,14 +834,17 @@ threads are still unresolved.
 When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
-receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base branch is controlled by a merge queue. An exact open PR on a queue-disabled
-base fails closed before mutation because GitHub's direct mutation has no atomic
-expected-base OID; migrate that base to a merge queue, then restart the readiness
-and receipt gates. Treat helper exit 2 as an `UNKNOWN` mutation or cleanup
-outcome and never retry it blindly. Queue submission is not terminal: continue
-closeout until GitHub reports the PR merged or exposes a real blocker.
+receipt and the identical repo-root, semantic-assessment, and trusted-helper
+provenance inputs plus the identical trusted absolute git and gh paths
+unconditionally. The helper replays autonomous eligibility
+before preserving read-only, idempotent observation of an exact terminal merge,
+and uses GitHub's `enqueuePullRequest` only when the base branch is controlled
+by a merge queue. An exact open PR on a queue-disabled base fails closed before
+mutation because GitHub's direct mutation has no atomic expected-base OID;
+migrate that base to a merge queue, then restart the readiness and receipt
+gates. Treat helper exit 2 as an `UNKNOWN` mutation or cleanup outcome and never
+retry it blindly. Queue submission is not terminal: continue closeout until
+GitHub reports the PR merged or exposes a real blocker.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.

@@ -10,9 +10,12 @@
 require "digest"
 require "json"
 require "optparse"
+require "pathname"
+require "rbconfig"
 require "tempfile"
 require "time"
 require "uri"
+require_relative "../lib/autonomous_merge_runtime_trust"
 
 module MergeAssurance
   class Error < StandardError; end
@@ -99,15 +102,32 @@ module MergeAssurance
   ].freeze
   MAX_EVIDENCE_AGE_SECONDS = 300
   MAX_FUTURE_SKEW_SECONDS = 30
+  AUTONOMOUS_REPLAY_TIMEOUT_SECONDS = 120
+  AUTONOMOUS_REPLAY_POLL_SECONDS = 0.01
+  TRUSTED_CHILD_ENV_KEYS = %w[
+    GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+    HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+    http_proxy https_proxy all_proxy no_proxy
+    SSL_CERT_FILE SSL_CERT_DIR
+    LANG LANGUAGE LC_ALL LC_CTYPE LC_MESSAGES TZ
+  ].freeze
+  TRUSTED_GH_CONFIG_ENV_KEYS = %w[GH_CONFIG_DIR XDG_CONFIG_HOME HOME].freeze
   TRACKER_GH_TIMEOUT_SECONDS = 60
   TRACKER_GH_TERMINATION_GRACE_SECONDS = 0.25
   TRACKER_GH_POLL_SECONDS = 0.01
 
   module_function
 
-  def assess(ci_result:, autonomous_result:, context:, now: Time.now.utc)
+  def assess(
+    ci_result:, autonomous_result:, recomputed_autonomous_result:, context:,
+    trusted_gh_executable:, now: Time.now.utc
+  )
     failures = []
     safe_context = context.is_a?(Hash) ? context : {}
+    trusted_gh = trusted_executable_path(trusted_gh_executable, "--trusted-gh-executable")
+    unless exact_json_value?(autonomous_result, recomputed_autonomous_result)
+      failures << "autonomous_result does not match trusted live replay"
+    end
     validate_context(context, failures)
     validate_ci(ci_result, safe_context, now, failures)
     validate_autonomous(autonomous_result, safe_context, failures)
@@ -118,7 +138,9 @@ module MergeAssurance
     follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
     authenticated_tracker_reads = []
     if failures.empty? && semantic_tracker
-      tracker_read = authenticate_semantic_tracker(semantic_tracker, safe_context, now, failures)
+      tracker_read = authenticate_semantic_tracker(
+        semantic_tracker, safe_context, now, failures, trusted_gh_executable: trusted_gh
+      )
       authenticated_tracker_reads << tracker_read if tracker_read
     end
 
@@ -165,6 +187,222 @@ module MergeAssurance
       "verdict" => "BLOCKED",
       "failures" => failures.uniq
     }
+  end
+
+  def replay_autonomous_result(
+    repo_root:, semantic_assessment:, trusted_helper_provenance:,
+    trusted_git_executable:, trusted_gh_executable:, context:,
+    timeout_seconds: AUTONOMOUS_REPLAY_TIMEOUT_SECONDS
+  )
+    raise Error, "AUTONOMOUS_MERGE_GIT is forbidden during trusted replay" if ENV.key?("AUTONOMOUS_MERGE_GIT")
+    raise Error, "AUTONOMOUS_MERGE_GH is forbidden during trusted replay" if ENV.key?("AUTONOMOUS_MERGE_GH")
+
+    context_failures = []
+    validate_context(context, context_failures)
+    unless context_failures.empty?
+      raise Error, "merge context cannot drive autonomous replay: #{context_failures.join('; ')}"
+    end
+
+    validate_semantic_assessment_path!(repo_root, semantic_assessment)
+    trusted_git = trusted_executable_path(trusted_git_executable, "--trusted-git-executable")
+    trusted_gh = trusted_executable_path(trusted_gh_executable, "--trusted-gh-executable")
+    helper = authenticated_autonomous_replay_helper_path(
+      repo_root:,
+      base_sha: context.dig("base", "sha"),
+      trusted_helper_provenance:,
+      trusted_git_executable: trusted_git
+    )
+    args = [
+      "--repo-root", repo_root,
+      "--trusted-base", context.dig("base", "sha"),
+      "--trusted-helper-provenance", trusted_helper_provenance,
+      "--repo", context.fetch("repo"),
+      "--pr", context.fetch("pr").to_s,
+      "--semantic-assessment", semantic_assessment
+    ]
+    environment = trusted_gh_environment(context.fetch("host")).merge(
+      "AUTONOMOUS_MERGE_GIT" => trusted_git,
+      "AUTONOMOUS_MERGE_GH" => trusted_gh
+    )
+    stdout, stderr, status, timed_out, cleanup_complete =
+      run_autonomous_replay(helper, args, environment:, timeout_seconds:)
+    raise Error, "autonomous eligibility replay timed out" if timed_out
+    raise Error, "autonomous eligibility replay cleanup failed" unless cleanup_complete
+
+    unless status&.success?
+      detail = stderr.lines.first.to_s.strip
+      suffix = detail.empty? ? "" : ": #{detail}"
+      raise Error, "autonomous eligibility replay failed#{suffix}"
+    end
+
+    replayed = JSON.parse(stdout)
+    raise Error, "autonomous eligibility replay returned a non-object" unless replayed.is_a?(Hash)
+    if contains_unknown?(replayed)
+      raise Error, "autonomous eligibility replay returned UNKNOWN"
+    end
+
+    replay_failures = []
+    validate_autonomous(replayed, context, replay_failures)
+    unless replayed["helper_provenance"] == trusted_helper_provenance
+      replay_failures << "autonomous replay helper provenance does not match coordinator expectation"
+    end
+    unless replay_failures.empty?
+      raise Error, "autonomous eligibility replay is invalid: #{replay_failures.join('; ')}"
+    end
+
+    replayed
+  rescue JSON::ParserError => e
+    raise Error, "autonomous eligibility replay returned invalid JSON: #{e.message}"
+  end
+
+  def authenticated_autonomous_replay_helper_path(
+    repo_root:, base_sha:, trusted_helper_provenance:, trusted_git_executable:
+  )
+    trusted_sources = AutonomousMergeRuntimeTrust.trusted_runtime_sources(
+      AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+    )
+    verified_helper_path = trusted_sources.fetch("helper").fetch(:path)
+    runtime_trust = AutonomousMergeRuntimeTrust.verify(
+      repo_root:,
+      base_sha:,
+      claim: trusted_helper_provenance,
+      calibration_path: AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH,
+      git_command: trusted_git_executable,
+      trusted_sources:
+    )
+    unless runtime_trust.accepted && runtime_trust.provenance == trusted_helper_provenance
+      detail = runtime_trust.errors.join("; ")
+      raise Error, "autonomous replay runtime is not trusted: #{detail}"
+    end
+
+    sibling_path = autonomous_replay_helper_path
+    unless sibling_path == verified_helper_path
+      raise Error, "autonomous replay runtime helper does not match the fixed sibling"
+    end
+
+    verified_helper_path
+  rescue AutonomousMergeRuntimeTrust::ExecutableError, SystemCallError => e
+    raise Error, "autonomous replay runtime is not trusted: #{e.message}"
+  end
+
+  def trusted_executable_path(path, label)
+    AutonomousMergeRuntimeTrust.trusted_executable_path(path, label)
+  rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+    raise Error, e.message
+  end
+
+  def validate_semantic_assessment_path!(repo_root, semantic_assessment)
+    repo_path = File.expand_path(repo_root)
+    semantic_path = File.expand_path(semantic_assessment)
+    repo_realpath = File.realpath(repo_path)
+    semantic_realpath = File.realpath(semantic_path)
+    contained_lexically = semantic_path == repo_path || semantic_path.start_with?("#{repo_path}/")
+    contained_physically = semantic_realpath == repo_realpath ||
+                           semantic_realpath.start_with?("#{repo_realpath}/")
+    return unless contained_lexically || contained_physically
+
+    raise Error, "semantic assessment must be supplied from outside the evaluated repository"
+  rescue SystemCallError => e
+    raise Error, "semantic assessment path could not be safely resolved: #{e.message}"
+  end
+
+  def validate_trusted_executable_target!(stat, label)
+    AutonomousMergeRuntimeTrust.validate_trusted_executable_target!(stat, label)
+  rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+    raise Error, e.message
+  end
+
+  def validate_trusted_executable_ancestor!(stat, label)
+    AutonomousMergeRuntimeTrust.validate_trusted_executable_ancestor!(stat, label)
+  rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+    raise Error, e.message
+  end
+
+  def trusted_gh_environment(host)
+    environment = TRUSTED_CHILD_ENV_KEYS.each_with_object({}) do |key, selected|
+      selected[key] = ENV.fetch(key) if ENV.key?(key)
+    end
+    selected_config_key = TRUSTED_GH_CONFIG_ENV_KEYS.find do |key|
+      ENV.key?(key) && !ENV.fetch(key).empty?
+    end
+    if selected_config_key
+      environment[selected_config_key] = ENV.fetch(selected_config_key)
+    end
+    environment["GH_HOST"] = host
+    environment
+  end
+
+  def autonomous_replay_helper_path
+    assurance_path = File.realpath(__FILE__)
+    expected_directory = File.dirname(assurance_path)
+    candidate = File.join(expected_directory, "autonomous-merge-eligibility")
+    stat = File.lstat(candidate)
+    unless stat.file? && File.executable?(candidate)
+      raise Error, "autonomous eligibility sibling is not a regular executable file"
+    end
+
+    resolved = File.realpath(candidate)
+    unless resolved == candidate && File.dirname(resolved) == expected_directory
+      raise Error, "autonomous eligibility sibling escapes the trusted helper directory"
+    end
+
+    resolved
+  rescue SystemCallError => e
+    raise Error, "autonomous eligibility sibling is unavailable: #{e.message}"
+  end
+
+  def run_autonomous_replay(helper, args, timeout_seconds:, environment: {})
+    unless timeout_seconds.is_a?(Numeric) && timeout_seconds.positive? && timeout_seconds.finite?
+      raise Error, "autonomous eligibility replay timeout must be positive and finite"
+    end
+
+    stdout_file = Tempfile.new("merge-assurance-autonomous-stdout")
+    stderr_file = Tempfile.new("merge-assurance-autonomous-stderr")
+    pid = Process.spawn(
+      environment,
+      RbConfig.ruby,
+      helper,
+      *args,
+      out: stdout_file.path,
+      err: stderr_file.path,
+      pgroup: true,
+      unsetenv_others: true
+    )
+    deadline = monotonic_time + timeout_seconds
+    status = nil
+    timed_out = false
+    cleanup_complete = true
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      if waited
+        status = waited[1]
+        break
+      end
+      if monotonic_time >= deadline
+        timed_out = true
+        status, cleanup_complete = terminate_tracker_process_group(pid)
+        break
+      end
+
+      sleep AUTONOMOUS_REPLAY_POLL_SECONDS
+    end
+    unless timed_out
+      group_deadline = monotonic_time + TRACKER_GH_TERMINATION_GRACE_SECONDS
+      unless wait_for_tracker_process_group_exit(pid, group_deadline)
+        _ignored_status, cleanup_complete = terminate_tracker_process_group(pid)
+        status = nil
+      end
+    end
+
+    stdout_file.rewind
+    stderr_file.rewind
+    [stdout_file.read, stderr_file.read, status, timed_out, cleanup_complete]
+  rescue SystemCallError => e
+    raise Error, "autonomous eligibility replay could not start: #{e.message}"
+  ensure
+    terminate_tracker_process_group(pid) if pid && tracker_process_group_alive?(pid)
+    stdout_file&.close!
+    stderr_file&.close!
   end
 
   def contains_unknown?(value)
@@ -713,12 +951,13 @@ module MergeAssurance
     end
   end
 
-  def authenticate_semantic_tracker(tracker, context, now, failures)
+  def authenticate_semantic_tracker(tracker, context, now, failures, trusted_gh_executable:)
     issue_number = tracker["tracker"].match(%r{/issues/([1-9]\d*)\z})&.captures&.first&.to_i
     issue = read_authenticated_issue(
       host: context["host"],
       repo: context["repo"],
-      issue: issue_number
+      issue: issue_number,
+      trusted_gh_executable:
     )
     return failures << "semantic GitHub Actions tracker authenticated read failed" unless issue
 
@@ -732,12 +971,15 @@ module MergeAssurance
     )
   end
 
-  def read_authenticated_issue(host:, repo:, issue:)
+  def read_authenticated_issue(host:, repo:, issue:, trusted_gh_executable:)
     stdout_file = Tempfile.new("merge-assurance-tracker-stdout")
     stderr_file = Tempfile.new("merge-assurance-tracker-stderr")
     pid = Process.spawn(
-      "gh", "api", "--hostname", host, "repos/#{repo}/issues/#{issue}",
-      out: stdout_file.path, err: stderr_file.path, pgroup: true
+      trusted_gh_environment(host),
+      trusted_gh_executable,
+      "api", "--hostname", host, "repos/#{repo}/issues/#{issue}",
+      out: stdout_file.path, err: stderr_file.path, pgroup: true,
+      unsetenv_others: true
     )
     deadline = monotonic_time + tracker_gh_timeout_seconds
     status = nil
@@ -978,6 +1220,21 @@ module MergeAssurance
     end
   end
 
+  def exact_json_value?(left, right)
+    return false unless left.instance_of?(right.class)
+
+    case left
+    when Hash
+      left.length == right.length &&
+        left.all? { |key, value| right.key?(key) && exact_json_value?(value, right.fetch(key)) }
+    when Array
+      left.length == right.length &&
+        left.zip(right).all? { |left_item, right_item| exact_json_value?(left_item, right_item) }
+    else
+      left == right
+    end
+  end
+
   def evidence_digest(evidence)
     "sha256:#{Digest::SHA256.hexdigest(canonical_json(evidence))}"
   end
@@ -1008,10 +1265,23 @@ module MergeAssurance
       options = parse_options(argv)
       return help if options[:help]
 
+      ci_result = read_json(options[:ci_result], "--ci-result")
+      autonomous_result = read_json(options[:autonomous_result], "--autonomous-result")
+      context = read_json(options[:context], "--context")
+      recomputed_autonomous_result = MergeAssurance.replay_autonomous_result(
+        repo_root: options[:repo_root],
+        semantic_assessment: options[:semantic_assessment],
+        trusted_helper_provenance: options[:trusted_helper_provenance],
+        trusted_git_executable: options[:trusted_git_executable],
+        trusted_gh_executable: options[:trusted_gh_executable],
+        context:
+      )
       result = MergeAssurance.assess(
-        ci_result: read_json(options[:ci_result], "--ci-result"),
-        autonomous_result: read_json(options[:autonomous_result], "--autonomous-result"),
-        context: read_json(options[:context], "--context")
+        ci_result:,
+        autonomous_result:,
+        recomputed_autonomous_result:,
+        context:,
+        trusted_gh_executable: options[:trusted_gh_executable]
       )
       puts JSON.pretty_generate(result)
       result["eligible"] ? 0 : 1
@@ -1025,17 +1295,27 @@ module MergeAssurance
     def parse_options(argv)
       options = {}
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE"
+        opts.banner = usage
         opts.on("--ci-result FILE") { |value| options[:ci_result] = value }
         opts.on("--autonomous-result FILE") { |value| options[:autonomous_result] = value }
         opts.on("--context FILE") { |value| options[:context] = value }
+        opts.on("--repo-root PATH") { |value| options[:repo_root] = value }
+        opts.on("--semantic-assessment FILE") { |value| options[:semantic_assessment] = value }
+        opts.on("--trusted-helper-provenance PROVENANCE") do |value|
+          options[:trusted_helper_provenance] = value
+        end
+        opts.on("--trusted-git-executable ABS") { |value| options[:trusted_git_executable] = value }
+        opts.on("--trusted-gh-executable ABS") { |value| options[:trusted_gh_executable] = value }
         opts.on("-h", "--help") { options[:help] = true }
       end
       remaining = parser.parse(argv)
       raise Error, "unexpected arguments: #{remaining.join(' ')}" unless remaining.empty?
 
       unless options[:help]
-        %i[ci_result autonomous_result context].each do |key|
+        %i[
+          ci_result autonomous_result context repo_root semantic_assessment
+          trusted_helper_provenance trusted_git_executable trusted_gh_executable
+        ].each do |key|
           raise Error, "--#{key.to_s.tr('_', '-')} is required" if options[key].to_s.empty?
         end
       end
@@ -1057,8 +1337,14 @@ module MergeAssurance
     end
 
     def help
-      puts "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE"
+      puts usage
       0
+    end
+
+    def usage
+      "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE " \
+        "--repo-root PATH --semantic-assessment FILE --trusted-helper-provenance PROVENANCE " \
+        "--trusted-git-executable ABS --trusted-gh-executable ABS"
     end
   end
 end

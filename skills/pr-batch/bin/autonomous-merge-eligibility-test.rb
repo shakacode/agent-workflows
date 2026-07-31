@@ -5,6 +5,7 @@ require "json"
 require "fileutils"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_runtime_trust"
@@ -14,6 +15,99 @@ FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
 
 class AutonomousMergeEligibilityTest < Minitest::Test
   HEAD_SHA = "a" * 40
+  SAFE_TMP_PARENT = File.expand_path("../../..", __dir__)
+
+  def test_live_evaluator_uses_the_injected_absolute_git_for_all_trusted_reads
+    Dir.mktmpdir("autonomous-merge-trusted-git", SAFE_TMP_PARENT) do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      executable_root = File.join(root, "trusted-tools")
+      poisoned_root = File.join(root, "poisoned-path")
+      FileUtils.mkdir_p([executable_root, poisoned_root])
+      trusted_git = File.join(executable_root, "git")
+      trusted_log = File.join(root, "trusted-git.log")
+      poisoned_marker = File.join(root, "poisoned-git-ran")
+      poisoned_gh_marker = File.join(root, "poisoned-gh-ran")
+      git_name = "git#{RbConfig::CONFIG.fetch('EXEEXT')}"
+      git_candidates = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map do |directory|
+        File.join(directory, git_name)
+      end
+      real_git_candidate = git_candidates.find { |path| File.file?(path) && File.executable?(path) }
+      refute_nil real_git_candidate, "git must be available on PATH for this test"
+      real_git = File.realpath(real_git_candidate)
+      File.write(trusted_git, <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.open(#{trusted_log.inspect}, "a") { |file| file.puts(ARGV.join("\\t")) }
+        exec(#{real_git.inspect}, *ARGV)
+      RUBY
+      File.chmod(0o755, trusted_git)
+      File.write(File.join(poisoned_root, "git"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(#{poisoned_marker.inspect}, "yes")
+        exit 99
+      RUBY
+      File.chmod(0o755, File.join(poisoned_root, "git"))
+      File.write(File.join(poisoned_root, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(#{poisoned_gh_marker.inspect}, "yes")
+        exit 99
+      RUBY
+      File.chmod(0o755, File.join(poisoned_root, "gh"))
+
+      result = invoke(
+        root:,
+        calibration_path:,
+        evaluation: evidence(base_sha:, files: files(1)),
+        environment: {
+          "AUTONOMOUS_MERGE_GIT" => trusted_git,
+          "PATH" => "#{poisoned_root}:#{ENV.fetch('PATH')}"
+        }
+      )
+
+      assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+      refute File.exist?(poisoned_marker)
+      refute File.exist?(poisoned_gh_marker)
+      assert_operator File.foreach(trusted_log).count, :>=, 5
+    end
+  end
+
+  def test_live_evaluator_rejects_relative_and_writable_git_overrides_before_execution
+    Dir.mktmpdir("autonomous-merge-untrusted-git", SAFE_TMP_PARENT) do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      marker = File.join(root, "untrusted-git-ran")
+      writable_root = File.join(root, "writable-tools")
+      FileUtils.mkdir_p(writable_root)
+      File.chmod(0o777, writable_root)
+      unsafe_git = File.join(writable_root, "git")
+      File.write(unsafe_git, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'yes')\n")
+      File.chmod(0o755, unsafe_git)
+
+      cases = {
+        "relative" => {
+          "AUTONOMOUS_MERGE_GIT" => "git",
+          "PATH" => "#{writable_root}:#{ENV.fetch('PATH')}"
+        },
+        "writable ancestor" => { "AUTONOMOUS_MERGE_GIT" => unsafe_git }
+      }
+      cases.each do |label, environment|
+        result = invoke(
+          root:,
+          calibration_path:,
+          evaluation: evidence(base_sha:, files: files(1)),
+          environment:
+        )
+
+        assert_equal "UNKNOWN", result.fetch("verdict"), label
+        assert result.fetch("evidence_failures").any? { |failure| failure.include?("AUTONOMOUS_MERGE_GIT") },
+               label
+        refute File.exist?(marker), label
+      end
+    ensure
+      File.chmod(0o700, writable_root) if writable_root && File.exist?(writable_root)
+    end
+  end
+
   def test_changed_files_value_immediately_below_portable_boundary_is_eligible
     result = evaluate { |base_sha| evidence(base_sha:, files: files(29)) }
 
@@ -155,13 +249,13 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_final_output_never_reports_a_malformed_head_sha
-    Dir.mktmpdir("autonomous-merge-invalid-head-output-test") do |root|
+    Dir.mktmpdir("autonomous-merge-invalid-head-output-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       objective = evidence(base_sha:, files: files(1)).fetch("objective")
       objective["head_sha"] = "not-a-full-sha"
 
-      Dir.mktmpdir("autonomous-merge-invalid-head-input") do |input_root|
+      Dir.mktmpdir("autonomous-merge-invalid-head-input", SAFE_TMP_PARENT) do |input_root|
         objective_path = File.join(input_root, "objective.json")
         semantic_path = File.join(input_root, "semantic.json")
         harness_path = File.join(input_root, "harness.rb")
@@ -765,7 +859,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_unestablished_helper_provenance_fails_closed
-    Dir.mktmpdir("autonomous-merge-helper-provenance-test") do |root|
+    Dir.mktmpdir("autonomous-merge-helper-provenance-test", SAFE_TMP_PARENT) do |root|
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       calibration_path = write_calibration(root)
       input = JSON.generate(evidence(base_sha:, files: files(1)))
@@ -786,7 +880,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_unverified_stdin_objective_cannot_establish_a_passing_verdict
-    Dir.mktmpdir("autonomous-merge-unverified-stdin-test") do |root|
+    Dir.mktmpdir("autonomous-merge-unverified-stdin-test", SAFE_TMP_PARENT) do |root|
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       calibration_path = write_calibration(root)
       result = invoke(
@@ -802,7 +896,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_trusted_base_claim_fails_when_any_runtime_source_is_absent_from_the_tree
-    Dir.mktmpdir("autonomous-merge-missing-runtime-test") do |root|
+    Dir.mktmpdir("autonomous-merge-missing-runtime-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       result = invoke(
@@ -817,7 +911,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_trusted_base_claim_rejects_runtime_bytes_modified_in_the_claimed_tree
-    Dir.mktmpdir("autonomous-merge-modified-runtime-test") do |root|
+    Dir.mktmpdir("autonomous-merge-modified-runtime-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       helper_path = File.join(root, "skills/pr-batch/bin/autonomous-merge-eligibility")
@@ -841,7 +935,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_installed_pack_claim_binds_the_selected_calibration_bytes
-    Dir.mktmpdir("autonomous-merge-installed-pack-digest-test") do |root|
+    Dir.mktmpdir("autonomous-merge-installed-pack-digest-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil)
       provenance = installed_pack_provenance(calibration_path)
@@ -861,7 +955,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_repo_contained_semantic_assessment_cannot_establish_a_passing_verdict
-    Dir.mktmpdir("autonomous-merge-repo-semantic-test") do |root|
+    Dir.mktmpdir("autonomous-merge-repo-semantic-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       evaluation = evidence(base_sha:, files: files(1))
@@ -875,12 +969,12 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_unavailable_or_unreadable_semantic_assessment_returns_structured_unknown
-    Dir.mktmpdir("autonomous-merge-unreadable-semantic-test") do |root|
+    Dir.mktmpdir("autonomous-merge-unreadable-semantic-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       evaluation = evidence(base_sha:, files: files(1))
 
-      Dir.mktmpdir("autonomous-merge-semantic-inputs") do |input_root|
+      Dir.mktmpdir("autonomous-merge-semantic-inputs", SAFE_TMP_PARENT) do |input_root|
         directory_path = File.join(input_root, "assessment-directory")
         missing_path = File.join(input_root, "missing-assessment.json")
         unreadable_path = File.join(input_root, "unreadable-assessment.json")
@@ -922,7 +1016,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_malformed_evaluation_and_calibration_inputs_return_structured_unknown
-    Dir.mktmpdir("autonomous-merge-eligibility-malformed-test") do |root|
+    Dir.mktmpdir("autonomous-merge-eligibility-malformed-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)
       base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
       malformed_json = invoke(root:, calibration_path:, stdin_data: "{")
@@ -1073,7 +1167,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   private
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
-             helper_provenance: :trusted_base)
+             helper_provenance: :trusted_base, environment: {})
     command = [
       "ruby",
       SCRIPT,
@@ -1092,7 +1186,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       command.concat(["--trusted-helper-provenance", resolved_provenance])
     end
     if evaluation
-      Dir.mktmpdir("autonomous-merge-live-input") do |input_root|
+      Dir.mktmpdir("autonomous-merge-live-input", SAFE_TMP_PARENT) do |input_root|
         objective_path = File.join(input_root, "objective.json")
         resolved_semantic_path = semantic_path || File.join(input_root, "semantic.json")
         fake_gh = File.join(input_root, "gh")
@@ -1103,7 +1197,10 @@ class AutonomousMergeEligibilityTest < Minitest::Test
           ["--repo", "example/repo", "--pr", "1", "--semantic-assessment", resolved_semantic_path]
         )
         stdout, stderr, status = Open3.capture3(
-          { "AUTONOMOUS_MERGE_GH" => fake_gh, "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path },
+          {
+            "AUTONOMOUS_MERGE_GH" => fake_gh,
+            "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path
+          }.merge(environment),
           *command,
           stdin_data:
         )
@@ -1112,13 +1209,13 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       end
     end
 
-    stdout, stderr, status = Open3.capture3(*command, stdin_data:)
+    stdout, stderr, status = Open3.capture3(environment, *command, stdin_data:)
     assert status.success?, stderr
     JSON.parse(stdout)
   end
 
   def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil)
-    Dir.mktmpdir("autonomous-merge-eligibility-test") do |root|
+    Dir.mktmpdir("autonomous-merge-eligibility-test", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root, reviewed_heads_mode:)
       base_sha = initialize_trusted_base(root, policy_yaml:, include_runtime: true)
       evaluation = yield(base_sha)

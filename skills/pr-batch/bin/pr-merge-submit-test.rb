@@ -5,6 +5,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 require "time"
 
@@ -20,6 +21,7 @@ class PrMergeSubmitTest < Minitest::Test
   HOST = "ghe.example:8443"
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
+  SAFE_TMP_PARENT = File.expand_path("../../..", __dir__)
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -71,6 +73,44 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "GH_HOST=#{HOST} api graphql"
     assert_equal 3, log.scan("GraphQL-Features: merge_queue").length
     refute_includes log, "--auto"
+  end
+
+  def test_submit_accepts_the_coordinator_established_git_and_gh_executables
+    result, log = run_cli(mode: "queue")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "enqueuePullRequest"
+  end
+
+  def test_submit_replay_query_and_enqueue_children_ignore_hostile_environment
+    result, log = run_cli(mode: "queue", hostile_environment: true)
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "enqueuePullRequest"
+    assert result.fetch(:sentinel_markers).values.none?, result.fetch(:sentinel_markers).inspect
+    excluded = %w[
+      PATH RUBYOPT RUBYLIB RUBYGEMS_GEMDEPS GEM_HOME GEM_PATH BUNDLE_GEMFILE
+      GEMRC GEM_SPEC_CACHE BUNDLE_PATH BUNDLE_WITH RUBY_ENGINE RUBY_SENTINEL
+      LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH
+      DYLD_FRAMEWORK_PATH UNRELATED_SENTINEL
+    ]
+    result.fetch(:gh_environments).each do |environment|
+      assert_equal HOST, environment.fetch("GH_HOST")
+      assert_equal "allowed-token", environment.fetch("GH_TOKEN")
+      assert_equal "https://proxy.example", environment.fetch("HTTPS_PROXY")
+      assert_equal "C", environment.fetch("LC_ALL")
+      assert environment.fetch("GH_CONFIG_DIR").start_with?("/")
+      excluded.each { |key| refute environment.key?(key), key }
+    end
+    autonomous_environment = result.fetch(:autonomous_environment)
+    assert_equal HOST, autonomous_environment.fetch("GH_HOST")
+    assert_equal "allowed-token", autonomous_environment.fetch("GH_TOKEN")
+    assert_equal "https://proxy.example", autonomous_environment.fetch("HTTPS_PROXY")
+    assert_equal "C", autonomous_environment.fetch("LC_ALL")
+    assert autonomous_environment.fetch("GH_CONFIG_DIR").start_with?("/")
+    assert autonomous_environment.fetch("AUTONOMOUS_MERGE_GIT").start_with?("/")
+    assert autonomous_environment.fetch("AUTONOMOUS_MERGE_GH").start_with?("/")
+    excluded.each { |key| refute autonomous_environment.key?(key), key }
   end
 
   def test_enqueue_graphql_failure_with_unresolved_state_is_unknown
@@ -492,6 +532,24 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
+  def test_trusted_git_and_gh_flags_are_required_before_any_gh_call
+    cases = {
+      git: [false, true, "--trusted-git-executable is required"],
+      gh: [true, false, "--trusted-gh-executable is required"]
+    }
+    cases.each do |name, (include_git, include_gh, expected)|
+      result, log = run_cli(
+        mode: "direct",
+        include_trusted_git_executable: include_git,
+        include_trusted_gh_executable: include_gh
+      )
+
+      refute result.fetch(:status).success?, name
+      assert_includes result.fetch(:stderr), expected, name
+      assert_empty log, name
+    end
+  end
+
   def test_unavailable_autonomous_helper_result_stops_before_any_mutation
     result, log = run_cli(mode: "direct", receipt_mode: :autonomous_unavailable)
 
@@ -501,15 +559,36 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
+  def test_submit_replays_autonomous_eligibility_and_rejects_mutated_receipt_evidence
+    result, log = run_cli(mode: "direct", receipt_mode: :autonomous_replay_mismatch)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "autonomous_result does not match trusted live replay"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_submit_binds_receipt_target_before_autonomous_replay
+    result, log = run_cli(mode: "direct", receipt_mode: :foreign_target)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "merge-assurance receipt host mismatch"
+    assert_empty result.fetch(:autonomous_environment)
+    assert_empty log
+  end
+
   def test_evidence_digest_and_envelope_binding_mismatches_stop_before_any_gh_call
     {
       digest_mismatch: "evidence digest mismatch",
-      binding_mismatch: "bindings or accounting do not match"
+      binding_mismatch: "bindings do not match its evidence context",
+      authority_binding_mismatch: "bindings do not match its evidence context",
+      base_binding_mismatch: "bindings do not match its evidence context"
     }.each do |receipt_mode, expected|
       result, log = run_cli(mode: "direct", receipt_mode:)
 
       refute result.fetch(:status).success?, receipt_mode
       assert_includes result.fetch(:stderr), expected, receipt_mode
+      assert_empty result.fetch(:autonomous_environment), receipt_mode
       assert_empty log, receipt_mode
     end
   end
@@ -661,55 +740,120 @@ class PrMergeSubmitTest < Minitest::Test
     include_merge_assurance_receipt: true,
     receipt_mode: :valid,
     after_stub_warmup: nil,
-    merge_commit_oid: MERGE_COMMIT_SHA
+    merge_commit_oid: MERGE_COMMIT_SHA,
+    hostile_environment: false,
+    include_trusted_git_executable: true,
+    include_trusted_gh_executable: true
   )
-    Dir.mktmpdir("pr-merge-submit-test") do |dir|
+    Dir.mktmpdir("pr-merge-submit-test", SAFE_TMP_PARENT) do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
-      File.write(gh_path, fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid:))
+      File.write(
+        gh_path,
+        fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid:, log_path:)
+      )
       FileUtils.chmod(0o755, gh_path)
+      git_path = File.join(dir, "trusted-git")
+      File.write(git_path, "#!#{RbConfig.ruby}\nexit 0\n")
+      FileUtils.chmod(0o755, git_path)
+      autonomous_result_path = File.join(dir, "merge-assurance-receipt.json.replayed.json")
+      autonomous_log_path = File.join(dir, "autonomous-replay.log")
+      submit_script, trusted_helper_provenance = prepare_submit_helper_layout(
+        dir, autonomous_result_path:, autonomous_log_path:
+      )
       warm_stub(dir, gh_path) if mode.include?("timeout")
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       unless receipt_mode == :missing
         write_merge_assurance_receipt(
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
-                        base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
+                        base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir,
+                        trusted_helper_provenance:
         )
       end
+      repo_root = File.join(dir, "consumer")
+      FileUtils.mkdir_p(repo_root)
+      semantic_assessment = File.join(dir, "semantic-assessment.json")
+      File.write(semantic_assessment, "{}\n")
+      arguments = cli_arguments(
+        repo, expected_head, include_expected_head, include_expected_base,
+        subject:, body:, include_merge_assurance_receipt:, receipt_path:,
+        script: submit_script, repo_root:, semantic_assessment:,
+        trusted_helper_provenance:,
+        trusted_git_executable: include_trusted_git_executable ? git_path : nil,
+        trusted_gh_executable: include_trusted_gh_executable ? gh_path : nil
+      )
+      invocation = arguments
+      sentinel_markers = {}
+      if hostile_environment
+        invocation, sentinel_markers = hostile_environment_launcher(dir, arguments)
+      end
       stdout, stderr, status = Open3.capture3(
-        cli_environment(dir, log_path, mode),
-        *cli_arguments(
-          repo, expected_head, include_expected_head, include_expected_base,
-          subject:, body:, include_merge_assurance_receipt:, receipt_path:
-        )
+        cli_environment(dir, mode),
+        *invocation
       )
       log = File.exist?(log_path) ? File.read(log_path) : ""
-      [{ stdout:, stderr:, status: }, log]
+      gh_environment_path = "#{log_path}.environments"
+      gh_environments = if File.exist?(gh_environment_path)
+                          File.readlines(gh_environment_path, chomp: true).map { |line| JSON.parse(line) }
+                        else
+                          []
+                        end
+      autonomous_environment = if File.exist?(autonomous_log_path)
+                                 JSON.parse(File.read(autonomous_log_path)).fetch("environment")
+                               else
+                                 {}
+                               end
+      [
+        {
+          stdout:, stderr:, status:, gh_environments:, autonomous_environment:,
+          sentinel_markers: sentinel_markers.transform_values { |path| File.exist?(path) }
+        },
+        log
+      ]
     end
   end
 
   def run_cli_with_interrupt(mode:, wait_for: "mergePullRequest", after_stub_warmup: nil)
-    Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
+    Dir.mktmpdir("pr-merge-submit-interrupt-test", SAFE_TMP_PARENT) do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
       File.write(
         gh_path,
-        fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST, repo: "owner/repo")
+        fake_gh(
+          mode:, head: HEAD_SHA, base: "main", url_host: HOST, repo: "owner/repo",
+          log_path:
+        )
       )
       FileUtils.chmod(0o755, gh_path)
+      git_path = File.join(dir, "trusted-git")
+      File.write(git_path, "#!#{RbConfig.ruby}\nexit 0\n")
+      FileUtils.chmod(0o755, git_path)
+      autonomous_result_path = File.join(dir, "merge-assurance-receipt.json.replayed.json")
+      autonomous_log_path = File.join(dir, "autonomous-replay.log")
+      submit_script, trusted_helper_provenance = prepare_submit_helper_layout(
+        dir, autonomous_result_path:, autonomous_log_path:
+      )
       warm_stub(dir, gh_path)
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
+                      base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir,
+                      trusted_helper_provenance:
       )
+      repo_root = File.join(dir, "consumer")
+      FileUtils.mkdir_p(repo_root)
+      semantic_assessment = File.join(dir, "semantic-assessment.json")
+      File.write(semantic_assessment, "{}\n")
       result = Open3.popen3(
-        cli_environment(dir, log_path, mode),
+        cli_environment(dir, mode),
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
-          include_merge_assurance_receipt: true, receipt_path:
+          include_merge_assurance_receipt: true, receipt_path:,
+          script: submit_script, repo_root:, semantic_assessment:,
+          trusted_helper_provenance:,
+          trusted_git_executable: git_path, trusted_gh_executable: gh_path
         )
       ) do |stdin, stdout, stderr, wait_thread|
         stdin.close
@@ -743,19 +887,19 @@ class PrMergeSubmitTest < Minitest::Test
   # deadline in this file would otherwise have to out-wait.
   #
   # The warm-up call matches no request branch in the stub, so it changes no
-  # stub state, and its log goes to a throwaway path so GH_LOG still records
+  # stub state. Clear its unconditional diagnostics so the scenario log records
   # only the gh calls the run under test actually made.
   def warm_stub(dir, gh_path)
     system(
-      { "GH_LOG" => File.join(dir, "warmup.log") },
       gh_path, "--version", out: File::NULL, err: File::NULL
     )
+    log_path = File.join(dir, "gh.log")
+    FileUtils.rm_f([log_path, "#{log_path}.environments"])
   end
 
-  def cli_environment(dir, log_path, mode)
+  def cli_environment(dir, mode)
     {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
-      "GH_LOG" => log_path,
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }
   end
@@ -767,23 +911,97 @@ class PrMergeSubmitTest < Minitest::Test
     SOLE_CALL_TIMEOUT_GH_SECONDS
   end
 
+  def hostile_environment_launcher(root, arguments)
+    poison_root = File.join(root, "poisoned-path")
+    FileUtils.mkdir_p(poison_root)
+    markers = %w[ruby git gh preload].to_h do |name|
+      [name, File.join(root, "poisoned-#{name}-ran")]
+    end
+    %w[ruby git gh].each do |name|
+      File.write(File.join(poison_root, name), <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(#{markers.fetch(name).inspect}, "yes")
+        exit 99
+      RUBY
+      File.chmod(0o755, File.join(poison_root, name))
+    end
+    preload = File.join(root, "preload.rb")
+    File.write(preload, "File.write(#{markers.fetch('preload').inspect}, 'yes')\n")
+    gh_config_dir = File.join(root, "gh-config")
+    FileUtils.mkdir_p(gh_config_dir)
+    hostile = {
+      "PATH" => "#{poison_root}:#{ENV.fetch('PATH')}",
+      "GH_HOST" => "attacker.example",
+      "GH_TOKEN" => "allowed-token",
+      "GH_CONFIG_DIR" => gh_config_dir,
+      "HTTPS_PROXY" => "https://proxy.example",
+      "LC_ALL" => "C",
+      "RUBYOPT" => "-r#{preload}",
+      "RUBYLIB" => poison_root,
+      "RUBYGEMS_GEMDEPS" => "sentinel",
+      "GEM_HOME" => poison_root,
+      "GEM_PATH" => poison_root,
+      "GEMRC" => File.join(root, "gemrc"),
+      "GEM_SPEC_CACHE" => File.join(root, "gem-spec-cache"),
+      "BUNDLE_GEMFILE" => File.join(root, "Gemfile"),
+      "BUNDLE_PATH" => File.join(root, "bundle"),
+      "BUNDLE_WITH" => "sentinel",
+      "RUBY_ENGINE" => "sentinel",
+      "RUBY_SENTINEL" => "sentinel",
+      "LD_PRELOAD" => File.join(root, "preload.so"),
+      "LD_LIBRARY_PATH" => poison_root,
+      "DYLD_INSERT_LIBRARIES" => File.join(root, "preload.dylib"),
+      "DYLD_LIBRARY_PATH" => poison_root,
+      "DYLD_FRAMEWORK_PATH" => poison_root,
+      "UNRELATED_SENTINEL" => "must-not-pass"
+    }
+    environment_path = File.join(root, "late-environment.json")
+    arguments_path = File.join(root, "late-arguments.json")
+    launcher = File.join(root, "late-launcher.rb")
+    File.write(environment_path, JSON.generate(hostile))
+    File.write(arguments_path, JSON.generate(arguments))
+    File.write(launcher, <<~RUBY)
+      require "json"
+      ENV.update(JSON.parse(File.read(#{environment_path.inspect})))
+      command = JSON.parse(File.read(#{arguments_path.inspect}))
+      script = command.shift
+      ARGV.replace(command)
+      $0 = script
+      load script
+    RUBY
+    [[RbConfig.ruby, launcher], markers]
+  end
+
   def cli_arguments(
     repo, expected_head, include_expected_head, include_expected_base,
     subject: "Fix the thing (#42)", body: nil,
-    include_merge_assurance_receipt: true, receipt_path: nil
+    include_merge_assurance_receipt: true, receipt_path: nil, script: SCRIPT,
+    repo_root: nil, semantic_assessment: nil,
+    trusted_helper_provenance: "trusted-base:#{'b' * 40}",
+    trusted_git_executable: nil, trusted_gh_executable: nil
   )
     args = [
-      SCRIPT, "42", "--repo", repo, "--host", HOST,
+      script, "42", "--repo", repo, "--host", HOST,
       "--method", "squash", "--subject", subject
     ]
     args.concat(["--body", body]) unless body.nil?
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", "main"]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
+    args.concat(["--repo-root", repo_root]) if repo_root
+    args.concat(["--semantic-assessment", semantic_assessment]) if semantic_assessment
+    if trusted_helper_provenance
+      args.concat(["--trusted-helper-provenance", trusted_helper_provenance])
+    end
+    args.concat(["--trusted-git-executable", trusted_git_executable]) if trusted_git_executable
+    args.concat(["--trusted-gh-executable", trusted_gh_executable]) if trusted_gh_executable
     args
   end
 
-  def write_merge_assurance_receipt(path, mode:, repo:, head:, base_ref:, host:, pr_number:, gh_dir:)
+  def write_merge_assurance_receipt(
+    path, mode:, repo:, head:, base_ref:, host:, pr_number:, gh_dir:,
+    trusted_helper_provenance:
+  )
     now = Time.now.utc
     base_sha = mode == :mismatched_base_sha ? "c" * 40 : "b" * 40
     checked_at = (now - 1).iso8601
@@ -822,7 +1040,7 @@ class PrMergeSubmitTest < Minitest::Test
       "verdict" => "autonomous-merge-eligible",
       "head_sha" => head,
       "policy_provenance" => "git:#{base_sha}",
-      "helper_provenance" => "trusted-base:#{base_sha}",
+      "helper_provenance" => trusted_helper_provenance,
       "helper_trust" => {
         "status" => "mechanically-verified",
         "manifest" => {
@@ -852,6 +1070,7 @@ class PrMergeSubmitTest < Minitest::Test
       "human_decision_evidence" => { "status" => "none" },
       "evidence_failures" => []
     }
+    recomputed_autonomous_result = Marshal.load(Marshal.dump(autonomous_result))
     tracker = semantic_tracker(host:, repo:, pr_number:)
     semantic = mode.to_s.start_with?("semantic")
     context = {
@@ -871,7 +1090,12 @@ class PrMergeSubmitTest < Minitest::Test
     }
     receipt = with_fake_gh(gh_dir) do
       MergeAssurance.assess(
-        ci_result:, autonomous_result:, context:, now:
+        ci_result:,
+        autonomous_result:,
+        recomputed_autonomous_result: autonomous_result,
+        context:,
+        trusted_gh_executable: File.join(gh_dir, "gh"),
+        now:
       )
     end
     raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
@@ -883,10 +1107,22 @@ class PrMergeSubmitTest < Minitest::Test
     when :autonomous_unavailable
       receipt["evidence"]["autonomous_result"] = nil
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :autonomous_replay_mismatch
+      receipt.dig("evidence", "autonomous_result", "metrics")["changed_files"] = 30
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :digest_mismatch
       receipt["evidence_digest"] = "sha256:#{'0' * 64}"
     when :binding_mismatch
       receipt["bindings"]["diff_identity"] = "f" * 64
+    when :authority_binding_mismatch
+      receipt["bindings"]["authority"] = "explicit_approval"
+    when :base_binding_mismatch
+      receipt["bindings"]["base"] = receipt["bindings"]["base"].merge("sha" => "d" * 40)
+    when :foreign_target
+      receipt["bindings"]["host"] = "attacker.example"
+      receipt.dig("evidence", "context")["host"] = "attacker.example"
+      receipt.dig("evidence", "ci_result", "context")["host"] = "attacker.example"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :stale
       receipt["issued_at"] = (now - 301).iso8601
     when :future
@@ -909,17 +1145,49 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     end
     File.write(path, JSON.generate(receipt))
+    File.write("#{path}.replayed.json", JSON.generate(recomputed_autonomous_result))
   end
 
-  def with_fake_gh(dir)
-    original_path = ENV.fetch("PATH")
-    original_log = ENV["GH_LOG"]
-    ENV["PATH"] = "#{dir}:#{original_path}"
-    ENV["GH_LOG"] = File.join(dir, "receipt-gh.log")
+  def prepare_submit_helper_layout(root, autonomous_result_path:, autonomous_log_path:)
+    pack_root = File.join(root, "runtime")
+    bin_dir = File.join(pack_root, "skills/pr-batch/bin")
+    lib_dir = File.join(pack_root, "skills/pr-batch/lib")
+    FileUtils.mkdir_p([bin_dir, lib_dir])
+    submit_script = File.join(bin_dir, "pr-merge-submit")
+    assurance_script = File.join(bin_dir, "merge-assurance")
+    FileUtils.cp(SCRIPT, submit_script)
+    FileUtils.cp(ASSURANCE_SCRIPT, assurance_script)
+    runtime_sources = AutonomousMergeRuntimeTrust.runtime_sources(
+      AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
+    ).each_with_object({}) do |(role, source), copied|
+      destination = File.join(pack_root, source.fetch(:tree_paths).first)
+      FileUtils.mkdir_p(File.dirname(destination))
+      FileUtils.cp(source.fetch(:path), destination)
+      copied[role] = source.merge(path: destination)
+    end
+    FileUtils.chmod(0o755, submit_script)
+    FileUtils.chmod(0o755, assurance_script)
+    autonomous_helper = runtime_sources.fetch("helper").fetch(:path)
+    File.write(autonomous_helper, <<~RUBY)
+      #!#{RbConfig.ruby}
+      require "json"
+      File.write(
+        #{autonomous_log_path.inspect},
+        JSON.generate(
+          "argv" => ARGV,
+          "environment" => ENV.to_h
+        )
+      )
+      STDOUT.write(File.read(#{autonomous_result_path.inspect}))
+    RUBY
+    FileUtils.chmod(0o755, autonomous_helper)
+    provenance =
+      "verified-installed-pack:#{AutonomousMergeRuntimeTrust.installed_pack_digest(runtime_sources)}"
+    [submit_script, provenance]
+  end
+
+  def with_fake_gh(_dir)
     yield
-  ensure
-    ENV["PATH"] = original_path
-    original_log ? ENV["GH_LOG"] = original_log : ENV.delete("GH_LOG")
   end
 
   def semantic_tracker(host:, repo:, pr_number:)
@@ -957,7 +1225,9 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid: MERGE_COMMIT_SHA)
+  def fake_gh(
+    mode:, head:, base:, url_host:, repo:, log_path:, merge_commit_oid: MERGE_COMMIT_SHA
+  )
     semantic_issue = semantic_issue_payload(
       host: HOST, repo: "owner/repo", pr_number: 42, head:
     )
@@ -1000,10 +1270,13 @@ class PrMergeSubmitTest < Minitest::Test
       }
     }
     <<~RUBY
-      #!/usr/bin/env ruby
+      #!#{RbConfig.ruby}
       require "json"
-      File.open(ENV.fetch("GH_LOG"), "a") do |file|
+      File.open(#{log_path.inspect}, "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
+      end
+      File.open(#{"#{log_path}.environments".inspect}, "a") do |file|
+        file.puts(JSON.generate(ENV.to_h))
       end
       warn "debug diagnostic" if #{mode.inspect} == "direct_with_stderr"
 
@@ -1026,7 +1299,7 @@ class PrMergeSubmitTest < Minitest::Test
           sleep 5
         end
         sleep 5 if #{mode.inspect} == "metadata_timeout"
-        query_count_path = ENV.fetch("GH_LOG") + ".queries"
+        query_count_path = #{"#{log_path}.queries".inspect}
         query_count = File.exist?(query_count_path) ? File.read(query_count_path).to_i : 0
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}

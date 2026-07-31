@@ -2835,14 +2835,27 @@ or durable human decision are current for the exact head, run:
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --repo-root . \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
+  --trusted-helper-provenance "${TRUSTED_HELPER_PROVENANCE}" \
+  --trusted-git-executable "${TRUSTED_GIT_EXECUTABLE}" \
+  --trusted-gh-executable "${TRUSTED_GH_EXECUTABLE}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
-policy and emits a fresh integrity-bound receipt only when the exact-head
-evidence is eligible. It is separate from batch-plan preflight. Legacy merge
-callers must now generate and pass this receipt, and `merge_authority: none`
-remains a no-merge result.
+policy. Before emitting a receipt it reruns the fixed sibling autonomous
+eligibility evaluator with the coordinator-owned semantic assessment and
+independently established helper provenance, then requires exact structural
+and value equality with the supplied result. It is separate from batch-plan
+preflight. Legacy merge callers must now provide the replay inputs, generate
+and pass this receipt, and `merge_authority: none` remains a no-merge result.
+The git and gh inputs are coordinator-established absolute paths, never values
+discovered from `PATH` or supplied result data. The helpers resolve symlinks and
+validate the real executable and ancestor chain. Current-user-owned
+group-writable ancestors intentionally trust fellow group members to support
+Homebrew Cellar layouts; world-writable and foreign-owned chains fail closed.
 
 ### Exact-Head Merge Submission
 
@@ -2860,10 +2873,17 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}" \
+  --repo-root . \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
+  --trusted-helper-provenance "${TRUSTED_HELPER_PROVENANCE}" \
+  --trusted-git-executable "${TRUSTED_GIT_EXECUTABLE}" \
+  --trusted-gh-executable "${TRUSTED_GH_EXECUTABLE}"
 ```
 
-`pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
+`pr-merge-submit` requires the fresh receipt, the same replay inputs, and the
+same coordinator-established git and gh paths unconditionally. It reruns
+autonomous eligibility, exact-compares the result, and revalidates the receipt
 bindings and freshness before any mutation.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
