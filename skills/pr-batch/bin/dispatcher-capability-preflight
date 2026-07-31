@@ -2,12 +2,27 @@
 # frozen_string_literal: true
 
 require "digest"
+require "base64"
 require "json"
+require "openssl"
+require "time"
+require "uri"
 
 ACCEPTED_BINDING_EVIDENCE = %w[operator-selected dispatcher-bound].freeze
 NEGATIVE_BINDING_EVIDENCE = %w[unbound binding-rejected binding-failed].freeze
 ACCEPTED_ATTESTATION_EVIDENCE = %w[instance-bound dispatcher-attested].freeze
 NEGATIVE_ATTESTATION_EVIDENCE = %w[unattested attestation-rejected attestation-failed].freeze
+HELPER_PATH = File.realpath(__FILE__)
+INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
+TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
+TRUST_CONFIG_PATH = File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
+TRUSTED_KEY_ID_FIELD = "agent_workflow_dispatcher_trusted_key_id"
+TRUSTED_PUBLIC_KEY_FIELD = "agent_workflow_dispatcher_trusted_public_key_pem"
+CALLER_TRUST_OVERRIDE_FIELDS = [
+  TRUSTED_KEY_ID_FIELD,
+  TRUSTED_PUBLIC_KEY_FIELD,
+  "dispatcher_trust_anchor"
+].freeze
 
 def fail_input(message)
   puts JSON.generate("status" => "invalid-input", "reason" => message)
@@ -51,6 +66,98 @@ end
 
 def unknown_sentinel?(value)
   value.is_a?(String) && value.strip.casecmp?("UNKNOWN")
+end
+
+def nested_unknown_sentinel?(value)
+  case value
+  when Hash
+    value.any? { |key, entry| nested_unknown_sentinel?(key) || nested_unknown_sentinel?(entry) }
+  when Array
+    value.any? { |entry| nested_unknown_sentinel?(entry) }
+  else
+    unknown_sentinel?(value)
+  end
+end
+
+def timestamp?(value)
+  return false unless nonempty_string?(value)
+
+  Time.iso8601(value)
+  true
+rescue ArgumentError
+  false
+end
+
+def dispatcher_trust_anchor
+  helper_uid = File.stat(HELPER_PATH).uid
+  root_stat = File.lstat(INSTALLATION_ROOT)
+  config_dir_stat = File.lstat(TRUST_CONFIG_DIR)
+  config_stat = File.lstat(TRUST_CONFIG_PATH)
+  return unless root_stat.directory? &&
+                root_stat.uid == helper_uid &&
+                (root_stat.mode & 0o022).zero? &&
+                config_dir_stat.directory? &&
+                config_dir_stat.uid == helper_uid &&
+                (config_dir_stat.mode & 0o022).zero? &&
+                config_stat.file? &&
+                config_stat.uid == helper_uid &&
+                (config_stat.mode & 0o022).zero?
+
+  record = JSON.parse(File.read(TRUST_CONFIG_PATH))
+  return unless record.is_a?(Hash) &&
+                record["type"] == "agent-workflow-dispatcher-trust-anchor" &&
+                record["version"] == 1 &&
+                nonempty_string?(record[TRUSTED_KEY_ID_FIELD]) &&
+                nonempty_string?(record[TRUSTED_PUBLIC_KEY_FIELD])
+
+  record
+rescue JSON::ParserError, SystemCallError
+  nil
+end
+
+def durable_evidence_ref?(value)
+  return false unless nonempty_string?(value)
+
+  URI.parse(value).absolute?
+rescue URI::InvalidURIError
+  false
+end
+
+def launch_observation_payload(confirmation)
+  assignment = confirmation["assignment"]
+  {
+    "type" => "dispatcher-launch-observation",
+    "version" => 1,
+    "confirmation_id" => confirmation["id"],
+    "key_id" => confirmation["key_id"],
+    "lane_id" => assignment["lane_id"],
+    "route" => assignment["route"],
+    "dispatcher" => assignment["dispatcher"],
+    "instance_id" => confirmation["instance_id"],
+    "launch_token" => assignment["launch_token"],
+    "actual_model" => confirmation["actual_model"],
+    "actual_effort" => confirmation["actual_effort"],
+    "binding_source" => confirmation["binding_source"],
+    "attestation" => confirmation["attestation"],
+    "observed_at" => confirmation["observed_at"],
+    "routing_mode" => confirmation["routing_mode"],
+    "inherited" => confirmation["inherited"],
+    "evidence_ref" => confirmation["evidence_ref"]
+  }
+end
+
+def launch_observation_signature_verified?(confirmation)
+  trust_anchor = dispatcher_trust_anchor
+  return false unless trust_anchor && confirmation["key_id"] == trust_anchor[TRUSTED_KEY_ID_FIELD]
+
+  public_key = OpenSSL::PKey.read(trust_anchor.fetch(TRUSTED_PUBLIC_KEY_FIELD))
+  return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
+
+  signature = Base64.strict_decode64(confirmation["signature"])
+  payload = JSON.generate(canonicalize(launch_observation_payload(confirmation)))
+  public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
+rescue ArgumentError, OpenSSL::PKey::PKeyError
+  false
 end
 
 def route_shape?(route)
@@ -195,11 +302,31 @@ def requested_shape?(requested)
 end
 
 def confirmation_shape?(confirmation)
-  confirmation.is_a?(Hash) &&
-    confirmation["type"] == "launch-confirmation" &&
-    confirmation["version"] == 1 &&
-    nonempty_string?(confirmation["id"]) &&
-    assignment_identity?(confirmation["assignment"])
+  return false unless confirmation.is_a?(Hash) &&
+                      confirmation["type"] == "launch-confirmation" &&
+                      nonempty_string?(confirmation["id"]) &&
+                      assignment_identity?(confirmation["assignment"]) &&
+                      !nested_unknown_sentinel?(confirmation)
+
+  return true if confirmation["version"] == 1
+  return false unless confirmation["version"] == 2
+
+  confirmation["actual_model"] == confirmation.dig("assignment", "route", "model") &&
+    confirmation["actual_effort"] == confirmation.dig("assignment", "route", "effort") &&
+    confirmation["binding_source"] == "dispatcher-bound" &&
+    confirmation["attestation"] == "instance-bound" &&
+    confirmation["instance_id"] == confirmation.dig("assignment", "instance_id") &&
+    timestamp?(confirmation["observed_at"]) &&
+    confirmation["routing_mode"] == "explicit" &&
+    confirmation["inherited"] == false &&
+    durable_evidence_ref?(confirmation["evidence_ref"]) &&
+    nonempty_string?(confirmation["key_id"]) &&
+    nonempty_string?(confirmation["signature"]) &&
+    launch_observation_signature_verified?(confirmation)
+end
+
+def confirmation_qualifies?(confirmation)
+  confirmation.is_a?(Hash) && confirmation["version"] == 2 && confirmation_shape?(confirmation)
 end
 
 def replacement_proof_authorizes?(replacement, active_assignment, replacement_assignment)
@@ -497,6 +624,9 @@ rescue JSON::ParserError
   fail_input("malformed-json")
 end
 fail_input("JSON object is required") unless input.is_a?(Hash)
+if (input.keys & CALLER_TRUST_OVERRIDE_FIELDS).any?
+  fail_input("caller input cannot override dispatcher trust")
+end
 fail_input("lane_id is required") unless input["lane_id"].is_a?(String) && !input["lane_id"].empty?
 
 requested = input["requested"]
@@ -649,7 +779,7 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
     exit
   end
 
-  output = if persisted_assignment["lifecycle"] == "confirmed-active" || confirmation
+  output = if persisted_assignment["lifecycle"] == "confirmed-active" || confirmation_qualifies?(confirmation)
              active_replay_output(
                input:,
                requested:,
@@ -722,7 +852,7 @@ if matching_assignment
   if confirmation && !assignment_identity_matches?(confirmation["assignment"], matching_assignment)
     fail_input("launch_confirmation must match the persisted assignment identity")
   end
-  output = if confirmation
+  output = if confirmation_qualifies?(confirmation)
              active_replay_output(
                input:,
                requested:,

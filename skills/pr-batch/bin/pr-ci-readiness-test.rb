@@ -143,20 +143,226 @@ class PrCiReadinessTest < Minitest::Test
     assert_includes PrCiReadiness::USAGE, '"viewer_pending_review_drafts"'
     assert_includes PrCiReadiness::USAGE, '"scope": "authenticated_viewer"'
   end
+
+  def test_versioned_exact_head_scope_contract_has_four_closed_states
+    head = "a" * 40
+    ready = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: true,
+      rows: [{ "name" => "ci", "status" => "completed", "conclusion" => "success" }],
+      checked_at: "2026-07-30T12:00:00Z"
+    )
+    not_ready = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: true,
+      rows: [{ "name" => "ci", "status" => "in_progress", "conclusion" => nil }],
+      checked_at: "2026-07-30T12:00:00Z"
+    )
+    not_applicable = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: true, rows: [],
+      checked_at: "2026-07-30T12:00:00Z"
+    )
+    unknown = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: head, complete: false,
+      rows: [], error: "query failed", checked_at: "2026-07-30T12:00:00Z"
+    )
+
+    assert_equal "READY", ready.fetch("state")
+    assert_equal "NOT_READY", not_ready.fetch("state")
+    assert_equal "NOT_APPLICABLE", not_applicable.fetch("state")
+    assert_equal "UNKNOWN", unknown.fetch("state")
+    assert_equal(
+      %w[checked_at complete head_sha rows source state],
+      ready.keys.sort
+    )
+    assert_equal "query failed", unknown.fetch("error")
+  end
+
+  def test_exact_head_evidence_contract_fails_closed_for_unknown_or_not_ready_scope
+    head = "a" * 40
+    scopes = {
+      "required_status_check_rollup" => PrCiReadiness.evidence_scope(
+        source: "github.pull_request.status_check_rollup.required", head_sha: head,
+        complete: true, rows: [{ "name" => "required", "bucket" => "pass" }],
+        checked_at: "2026-07-30T12:00:00Z"
+      ),
+      "github_actions" => PrCiReadiness.evidence_scope(
+        source: "github.actions.exact_head", head_sha: head, complete: true, rows: [],
+        checked_at: "2026-07-30T12:00:00Z"
+      ),
+      "dependabot" => PrCiReadiness.evidence_scope(
+        source: "github.dependabot.exact_head", head_sha: head, complete: false,
+        rows: [], error: "unavailable", checked_at: "2026-07-30T12:00:00Z"
+      ),
+      "other" => PrCiReadiness.evidence_scope(
+        source: "github.checks_and_statuses.exact_head.non_required", head_sha: head,
+        complete: true,
+        rows: [{ "name" => "external", "state" => "failure" }],
+        checked_at: "2026-07-30T12:00:00Z"
+      )
+    }
+
+    contract = PrCiReadiness.evidence_contract(
+      repo: "owner/repo", pr_number: 7, head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z", scopes:
+    )
+
+    assert_equal "pr-ci-readiness", contract.fetch("contract")
+    assert_equal 2, contract.fetch("version")
+    assert_equal head, contract.fetch("head_sha")
+    assert_equal "UNKNOWN", contract.fetch("verdict")
+    assert_equal scopes, contract.fetch("scopes")
+  end
+
+  def test_exact_head_inventory_partitions_dynamic_actions_dependabot_and_other_rows
+    head = "a" * 40
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [
+        { "workflow" => "external-ci", "name" => "required", "bucket" => "pass" },
+        { "workflow" => "", "name" => "required-status", "bucket" => "pass" }
+      ],
+      required_complete: true,
+      actions_rows: [
+        { "kind" => "run", "id" => 10, "name" => "CI", "status" => "completed",
+          "conclusion" => "success", "dependabot" => false },
+        { "kind" => "check_run", "id" => 11, "name" => "dynamic-matrix", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "github-actions", "dependabot" => false },
+        { "kind" => "run", "id" => 12, "name" => "Dependabot Updates", "status" => "completed",
+          "conclusion" => "success", "dependabot" => true }
+      ],
+      actions_complete: true,
+      check_runs: [
+        { "kind" => "check_run", "id" => 13, "name" => "required", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "external-ci", "dependabot" => false },
+        { "kind" => "check_run", "id" => 14, "name" => "security", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "external-ci", "dependabot" => false }
+      ],
+      check_runs_complete: true,
+      statuses: [
+        { "kind" => "status", "id" => 15, "name" => "required-status", "state" => "success" },
+        { "kind" => "status", "id" => 16, "name" => "required", "state" => "success" },
+        { "kind" => "status", "id" => 17, "name" => "legacy", "state" => "success" }
+      ],
+      statuses_complete: true
+    )
+
+    assert_equal(
+      %w[required required-status],
+      scopes.dig("required_status_check_rollup", "rows").map { |row| row["name"] }
+    )
+    assert_equal(
+      %w[CI dynamic-matrix],
+      scopes.dig("github_actions", "rows").map { |row| row["name"] }.sort
+    )
+    assert_equal(["Dependabot Updates"], scopes.dig("dependabot", "rows").map { |row| row["name"] })
+    assert_equal(
+      %w[legacy required required-status security],
+      scopes.dig("other", "rows").map { |row| row["name"] }.sort
+    )
+    assert_equal(%w[READY READY READY READY], scopes.values.map { |scope| scope.fetch("state") })
+  end
+
+  def test_required_rollup_filters_other_checks_by_producer_and_context_not_name_alone
+    head = "a" * 40
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [{ "workflow" => "required-ci", "name" => "lint", "bucket" => "pass" }],
+      required_complete: true,
+      actions_rows: [],
+      actions_complete: true,
+      check_runs: [
+        { "kind" => "check_run", "id" => 21, "name" => "lint", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "required-ci", "dependabot" => false },
+        { "kind" => "check_run", "id" => 22, "name" => "lint", "status" => "completed",
+          "conclusion" => "success", "app_slug" => "external-ci", "dependabot" => false }
+      ],
+      check_runs_complete: true,
+      statuses: [],
+      statuses_complete: true
+    )
+
+    other_ids = scopes.dig("other", "rows").map { |row| row.fetch("id") }
+    assert_equal [22], other_ids
+  end
+
+  def test_required_rows_without_positive_producer_do_not_hide_failing_same_name_evidence
+    head = "a" * 40
+    checked_at = "2026-07-30T12:00:00Z"
+    cases = [
+      {
+        label: "missing producer status",
+        required: {},
+        check_runs: [],
+        statuses: [{ "kind" => "status", "id" => 23, "name" => "lint", "state" => "failure" }]
+      },
+      {
+        label: "empty producer check",
+        required: { "workflow" => "" },
+        check_runs: [
+          { "kind" => "check_run", "id" => 24, "name" => "lint", "status" => "completed",
+            "conclusion" => "failure", "app_slug" => "", "dependabot" => false }
+        ],
+        statuses: []
+      },
+      {
+        label: "unknown producer check",
+        required: { "workflow" => "UNKNOWN" },
+        check_runs: [
+          { "kind" => "check_run", "id" => 25, "name" => "lint", "status" => "completed",
+            "conclusion" => "failure", "app_slug" => "UNKNOWN", "dependabot" => false }
+        ],
+        statuses: []
+      }
+    ]
+
+    cases.each do |item|
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha: head,
+        checked_at:,
+        required_rows: [{ "name" => "lint", "bucket" => "pass" }.merge(item.fetch(:required))],
+        required_complete: true,
+        actions_rows: [],
+        actions_complete: true,
+        check_runs: item.fetch(:check_runs),
+        check_runs_complete: true,
+        statuses: item.fetch(:statuses),
+        statuses_complete: true
+      )
+      contract = PrCiReadiness.evidence_contract(
+        repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+      )
+      other_ids = (item.fetch(:check_runs) + item.fetch(:statuses)).map { |row| row.fetch("id") }
+
+      assert_equal other_ids, scopes.dig("other", "rows").map { |row| row.fetch("id") }, item.fetch(:label)
+      assert_equal "NOT_READY", scopes.dig("other", "state"), item.fetch(:label)
+      assert_equal "NOT_READY", contract.fetch("verdict"), item.fetch(:label)
+    end
+  end
 end
 
 # CLI / Runner integration via a fake gh on PATH.
 class PrCiReadinessCliTest < Minitest::Test
   # Build a temp dir with a fake `gh` executable that emits canned `gh pr
   # checks` JSON, then run the real script with that dir prepended to PATH.
-  def with_fake_gh(required_json:, full_json:, pr_head: "head-sha", runs: {}, review_pages: {}, review_error: false,
-                   required_check_fields: nil, rejected_check_field: nil, check_stderr: nil, check_status: 0,
-                   required_check_error: nil, full_check_error: nil)
+  def with_fake_gh(required_json:, full_json:, pr_head: "a" * 40, pr_identity: nil, runs: {},
+                   review_pages: {}, review_error: false, required_check_fields: nil,
+                   rejected_check_field: nil, check_stderr: nil, check_status: 0,
+                   required_check_error: nil, full_check_error: nil, exact_actions: [],
+                   exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
+                   exact_actions_total_count: nil, expected_host: nil)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
-      File.write(gh, fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error,
-                                    required_check_fields, rejected_check_field, check_stderr, check_status,
-                                    required_check_error, full_check_error))
+      File.write(
+        gh,
+        fake_gh_script(
+          required_json, full_json, pr_head, pr_identity, runs, review_pages, review_error,
+          required_check_fields, rejected_check_field, check_stderr, check_status,
+          required_check_error, full_check_error, exact_actions, exact_check_runs,
+          exact_statuses, exact_inventory_error, exact_actions_total_count,
+          File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host
+        )
+      )
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
@@ -166,11 +372,99 @@ class PrCiReadinessCliTest < Minitest::Test
   # The fake gh handles `gh repo view ...` (so --repo is optional) and
   # `gh pr checks ...`, returning the required vs full payload based on the
   # presence of the --required flag. Non-JSON ("") models "no required checks".
-  def fake_gh_script(required_json, full_json, pr_head, runs, review_pages, review_error, required_check_fields,
-                     rejected_check_field, check_stderr, check_status, required_check_error, full_check_error)
+  def shell_json_printf(value)
+    "printf '%s' #{JSON.generate(value).inspect}"
+  end
+
+  def fake_gh_script(required_json, full_json, pr_head, pr_identity, runs, review_pages, review_error,
+                     required_check_fields, rejected_check_field, check_stderr, check_status,
+                     required_check_error, full_check_error, exact_actions, exact_check_runs,
+                     exact_statuses, exact_inventory_error, exact_actions_total_count,
+                     pr_head_state_path, pr_identity_state_path, expected_host)
+    host_guard =
+      if expected_host
+        <<~BASH
+          if [ "$GH_HOST" != #{expected_host.inspect} ]; then
+            echo "unexpected GH_HOST: $GH_HOST" >&2
+            exit 91
+          fi
+        BASH
+      else
+        ""
+      end
+    pr_head_command =
+      if pr_head.is_a?(Array)
+        cases = pr_head.each_with_index.map do |head, index|
+          "#{index}) payload=#{JSON.generate('headRefOid' => head).inspect} ;;"
+        end.join("\n")
+        <<~BASH
+          count=0
+          if [ -f #{pr_head_state_path.inspect} ]; then count=$(cat #{pr_head_state_path.inspect}); fi
+          case "$count" in
+          #{cases}
+          *) payload=#{JSON.generate('headRefOid' => pr_head.last).inspect} ;;
+          esac
+          printf '%s' "$payload"
+          printf '%s' "$((count + 1))" > #{pr_head_state_path.inspect}
+        BASH
+      else
+        <<~BASH
+          cat <<'JSON'
+          #{JSON.generate('headRefOid' => pr_head)}
+          JSON
+        BASH
+      end
+    pr_identity_command =
+      if pr_identity.is_a?(Array)
+        cases = pr_identity.each_with_index.map do |identity, index|
+          if identity.nil?
+            "#{index}) exit 1 ;;"
+          else
+            "#{index}) payload=#{JSON.generate(identity).inspect}; printf '%s' \"$payload\" ;;"
+          end
+        end.join("\n")
+        fallback =
+          if pr_identity.last.nil?
+            "exit 1"
+          else
+            "payload=#{JSON.generate(pr_identity.last).inspect}; printf '%s' \"$payload\""
+          end
+        <<~BASH
+          count=0
+          if [ -f #{pr_identity_state_path.inspect} ]; then count=$(cat #{pr_identity_state_path.inspect}); fi
+          printf '%s' "$((count + 1))" > #{pr_identity_state_path.inspect}
+          case "$count" in
+          #{cases}
+          *) #{fallback} ;;
+          esac
+        BASH
+      elsif pr_identity
+        shell_json_printf(pr_identity)
+      else
+        identity_head =
+          if pr_head.is_a?(String) && pr_head.match?(/\A[0-9a-f]{40,64}\z/i)
+            pr_head
+          else
+            "a" * 40
+          end
+        default_identity = {
+          "id" => 9_001,
+          "number" => 0,
+          "head" => {
+            "sha" => identity_head,
+            "ref" => "feature",
+            "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+          }
+        }
+        template = JSON.generate(default_identity).sub('"number":0', '"number":%s')
+        "printf #{template.inspect} \"$FAKE_PR_NUMBER\""
+      end
     run_cases = runs.map do |run_id, payload|
       run_json = JSON.generate(payload.fetch(:run))
-      jobs_json = JSON.generate("total_count" => payload.fetch(:jobs).length, "jobs" => payload.fetch(:jobs))
+      jobs_json = JSON.generate(
+        "total_count" => payload.fetch(:jobs_total_count, payload.fetch(:jobs).length),
+        "jobs" => payload.fetch(:jobs)
+      )
       jobs_case =
         if payload.fetch(:jobs_error, false)
           <<~BASH
@@ -262,14 +556,13 @@ class PrCiReadinessCliTest < Minitest::Test
 
     <<~SH
       #!/usr/bin/env bash
+      #{host_guard}
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
         printf 'owner/repo'
         exit 0
       fi
       if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-        cat <<'JSON'
-      {"headRefOid":#{pr_head.inspect}}
-      JSON
+      #{pr_head_command}
         exit 0
       fi
       if [ "$1" = "pr" ] && [ "$2" = "checks" ]; then
@@ -288,6 +581,10 @@ class PrCiReadinessCliTest < Minitest::Test
         exit #{check_status}
       fi
       if [ "$1" = "api" ]; then
+        if [[ "$2" = repos/*/pulls/* ]]; then
+        #{pr_identity_command}
+          exit 0
+        fi
         if [ "$2" = "graphql" ]; then
           if #{review_error}; then
             exit 1
@@ -298,14 +595,33 @@ class PrCiReadinessCliTest < Minitest::Test
       JSON
           exit 0
         fi
+        if [[ "$*" = *"actions/runs?head_sha="* ]]; then
+          #{exact_inventory_error == 'actions' ? 'exit 1' : ''}
+          #{shell_json_printf(
+            'total_count' => exact_actions_total_count || exact_actions.length,
+            'workflow_runs' => exact_actions
+          )}
+          exit 0
+        fi
+        if [[ "$*" = *"/check-runs?per_page="* ]]; then
+          #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
+          #{shell_json_printf('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
+          exit 0
+        fi
+        if [[ "$*" = *"/statuses?per_page="* ]]; then
+          #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
+          #{shell_json_printf(exact_statuses)}
+          exit 0
+        fi
       #{run_cases}
       fi
       exit 1
     SH
   end
 
-  def run_script(env, *)
-    Open3.capture2e(env, "ruby", SCRIPT, *)
+  def run_script(env, *args)
+    fake_env = env.merge("FAKE_PR_NUMBER" => args.first.to_s)
+    Open3.capture2e(fake_env, "ruby", SCRIPT, *args)
   end
 
   def test_check_fetch_requests_workflow_identity
@@ -320,6 +636,198 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_explicit_ghes_host_is_normalized_propagated_and_emitted
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example.com"
+    ) do |env|
+      out, status = run_script(env, "123", "--host", "GHE.EXAMPLE.COM:443")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "owner/repo", data.fetch("repo")
+      assert_equal "ghe.example.com", data.dig("context", "host")
+    end
+  end
+
+  def test_explicit_ghes_host_preserves_canonical_nondefault_port
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example:8443"
+    ) do |env|
+      out, status = run_script(env, "123", "--host", "GHE.EXAMPLE:8443")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "ghe.example:8443", data.dig("context", "host")
+    end
+  end
+
+  def test_explicit_host_rejects_port_above_canonical_range
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]"
+    ) do |env|
+      out, status = run_script(env, "123", "--host", "ghe.example:65536")
+
+      refute status.success?, out
+      assert_includes out, "invalid GitHub host"
+    end
+  end
+
+  def test_explicit_host_preserves_canonical_port_boundaries
+    [1, 65_535].each do |port|
+      host = "ghe.example:#{port}"
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+        full_json: "[]",
+        expected_host: host
+      ) do |env|
+        out, status = run_script(env, "123", "--host", host)
+
+        assert status.success?, out
+        assert_equal host, JSON.parse(out).dig("context", "host")
+      end
+    end
+  end
+
+  def test_invalid_explicit_hosts_are_rejected
+    invalid_hosts = [
+      "",
+      "https://ghe.example.com",
+      "ghe.example.com/path",
+      "user@ghe.example.com",
+      "ghe.example.com:",
+      "ghe.example.com:0",
+      "ghe.example.com:0443",
+      "ghe.example.com:abc",
+      "ghe.example.com:12x",
+      "ghe.example.com:65536",
+      "[ghe.example.com]:8443",
+      "ghe.example.com::8443",
+      ":8443",
+      "ghe.example.com:8443:1",
+      "bad..example.com",
+      "-bad.example.com",
+      "bad-.example.com",
+      "bad_host.example.com"
+    ]
+    with_fake_gh(required_json: "[]", full_json: "[]") do |env|
+      invalid_hosts.each do |host|
+        out, status = run_script(env, "123", "--repo", "owner/repo", "--host", host)
+
+        refute status.success?, host
+        assert_includes out, "invalid GitHub host", host
+      end
+    end
+  end
+
+  def test_host_defaults_to_caller_environment_then_github_dot_com
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.env.example"
+    ) do |env|
+      env["GH_HOST"] = "GHE.ENV.EXAMPLE:443"
+      out, status = run_script(env, "123")
+
+      assert status.success?, out
+      assert_equal "ghe.env.example", JSON.parse(out).dig("context", "host")
+    end
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "github.com"
+    ) do |env|
+      env["GH_HOST"] = nil
+      out, status = run_script(env, "123")
+
+      assert status.success?, out
+      assert_equal "github.com", JSON.parse(out).dig("context", "host")
+    end
+  end
+
+  def test_host_qualified_repo_cannot_conflict_with_resolved_host
+    with_fake_gh(
+      required_json: "[]",
+      full_json: "[]",
+      expected_host: "ghe.example.com"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example.com",
+        "--repo", "github.com/owner/repo"
+      )
+
+      refute status.success?
+      assert_includes out, "repo host github.com conflicts with resolved GitHub host ghe.example.com"
+    end
+  end
+
+  def test_matching_host_qualified_repo_is_normalized_for_collection
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example.com"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example.com",
+        "--repo", "GHE.EXAMPLE.COM:443/owner/repo"
+      )
+
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "owner/repo", data.fetch("repo")
+      assert_equal "ghe.example.com", data.dig("context", "host")
+    end
+  end
+
+  def test_matching_nondefault_port_host_qualified_repo_is_normalized_for_collection
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      expected_host: "ghe.example:8443"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example:8443",
+        "--repo", "GHE.EXAMPLE:8443/owner/repo"
+      )
+
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "owner/repo", data.fetch("repo")
+      assert_equal "ghe.example:8443", data.dig("context", "host")
+    end
+  end
+
+  def test_host_qualified_repo_port_cannot_conflict_with_resolved_host
+    with_fake_gh(
+      required_json: "[]",
+      full_json: "[]",
+      expected_host: "ghe.example:8443"
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123",
+        "--host", "ghe.example:8443",
+        "--repo", "ghe.example:9443/owner/repo"
+      )
+
+      refute status.success?
+      assert_includes out, "repo host ghe.example:9443 conflicts with resolved GitHub host ghe.example:8443"
+    end
+  end
+
   def test_required_checks_used_when_present
     with_fake_gh(
       required_json: '[{"name":"rspec","state":"SUCCESS","bucket":"pass","link":"x"}]',
@@ -331,6 +839,984 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", data["verdict"]
       assert_equal true, data["required_used"]
       assert_equal 123, data["pr"]
+    end
+  end
+
+  def test_cli_emits_complete_exact_head_inventory_with_dynamic_and_dependabot_rows
+    head = "a" * 40
+    action_runs = [
+      {
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "Dynamic CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "success",
+        "actor" => { "login" => "octocat" }, "html_url" => "https://example/run/100"
+      },
+      {
+        "id" => 101, "workflow_id" => 11, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "Dependabot CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "success",
+        "actor" => { "login" => "dependabot[bot]" }, "html_url" => "https://example/run/101"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      [
+        run.fetch("id").to_s,
+        {
+          run:,
+          jobs: [{
+            "id" => run.fetch("id") * 10, "name" => "#{run.fetch('name')} job",
+            "status" => "completed", "conclusion" => "success",
+            "html_url" => "#{run.fetch('html_url')}/job"
+          }]
+        }
+      ]
+    end
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: action_runs,
+      exact_check_runs: [
+        {
+          "id" => 300, "name" => "dynamic-check", "status" => "completed",
+          "conclusion" => "success", "head_sha" => head,
+          "app" => { "slug" => "github-actions" }, "html_url" => "https://example/check/300"
+        },
+        {
+          "id" => 301, "name" => "security", "status" => "completed",
+          "conclusion" => "success", "head_sha" => head,
+          "app" => { "slug" => "external-ci" }, "html_url" => "https://example/check/301"
+        }
+      ],
+      exact_statuses: [
+        {
+          "id" => 400, "context" => "legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/400"
+        }
+      ],
+      runs:
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "pr-ci-readiness", data.fetch("contract")
+      assert_equal 2, data.fetch("version")
+      assert_equal head, data.fetch("head_sha")
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal(
+        ["Dynamic CI", "Dynamic CI job", "dynamic-check"],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("name") }.sort
+      )
+      assert_equal(
+        ["Dependabot CI", "Dependabot CI job"],
+        data.dig("scopes", "dependabot", "rows").map { |row| row.fetch("name") }.sort
+      )
+      assert_equal(
+        %w[legacy security],
+        data.dig("scopes", "other", "rows").map { |row| row.fetch("name") }.sort
+      )
+      data.fetch("scopes").each_value do |scope|
+        assert_equal true, scope.fetch("complete")
+        assert_equal head, scope.fetch("head_sha")
+        refute_nil scope.fetch("checked_at")
+      end
+    end
+  end
+
+  def test_exact_head_actions_keep_only_current_run_per_workflow_and_event
+    head = "a" * 40
+    action_runs = [
+      {
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "cancelled"
+      },
+      {
+        "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "cancelled"
+      },
+      {
+        "id" => 102, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "cancelled"
+      },
+      {
+        "id" => 103, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "success"
+      },
+      {
+        "id" => 104, "workflow_id" => 10, "event" => "workflow_dispatch",
+        "run_number" => 3, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "success"
+      },
+      {
+        "id" => 105, "workflow_id" => 11, "event" => "pull_request",
+        "run_number" => 2, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "success"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      id = run.fetch("id")
+      [
+        id.to_s,
+        if id < 103
+          { run:, jobs: [], jobs_error: true }
+        else
+          {
+            run:,
+            jobs: [{
+              "id" => id * 10, "name" => "unit", "status" => "completed",
+              "conclusion" => "success"
+            }]
+          }
+        end
+      ]
+    end
+
+    results = [action_runs, action_runs.reverse].map do |ordered_runs|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        exact_actions: ordered_runs,
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        [
+          data.fetch("verdict"),
+          data.dig("scopes", "github_actions", "state"),
+          data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+        ]
+      end
+    end
+
+    assert_equal(
+      Array.new(2) { ["READY", "READY", [103, 1030, 104, 1040, 105, 1050]] },
+      results
+    )
+  end
+
+  def test_exact_head_actions_select_target_pr_before_current_run_grouping
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    other_association = {
+      "id" => 5_002, "number" => 456, "url" => "https://api.example/pulls/456",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    action_runs = [
+      {
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [target_association],
+        "status" => "completed", "conclusion" => "failure"
+      },
+      {
+        "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [other_association],
+        "status" => "completed", "conclusion" => "success"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      id = run.fetch("id")
+      [
+        id.to_s,
+        {
+          run:,
+          jobs: [{
+            "id" => id * 10, "name" => "unit", "status" => "completed",
+            "conclusion" => run.fetch("conclusion")
+          }]
+        }
+      ]
+    end
+
+    results = [action_runs, action_runs.reverse].map do |ordered_runs|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: ordered_runs,
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        [
+          data.fetch("verdict"),
+          data.dig("scopes", "github_actions", "state"),
+          data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+        ]
+      end
+    end
+
+    assert_equal(
+      Array.new(2) { ["NOT_READY", "NOT_READY", [100, 1000]] },
+      results
+    )
+  end
+
+  def test_exact_head_actions_accept_uppercase_full_sha_for_consistent_target
+    head = "A" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [target_association],
+      "status" => "completed", "conclusion" => "success"
+    }
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: target_identity,
+      exact_actions: [run],
+      runs: {
+        "100" => {
+          run:,
+          jobs: [{
+            "id" => 1000, "name" => "unit", "status" => "completed",
+            "conclusion" => "success"
+          }]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "READY", data.dig("scopes", "github_actions", "state")
+      assert_equal(
+        [100, 1000],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      )
+    end
+  end
+
+  def test_exact_head_actions_scope_empty_associations_to_target_branch_and_repository
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    action_runs = [
+      {
+        "id" => 300, "workflow_id" => 30, "event" => "push",
+        "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [], "status" => "completed", "conclusion" => "failure"
+      },
+      {
+        "id" => 301, "workflow_id" => 30, "event" => "push",
+        "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "other-feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [], "status" => "completed", "conclusion" => "success"
+      },
+      {
+        "id" => 302, "workflow_id" => 30, "event" => "push",
+        "run_number" => 9, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_003 },
+        "pull_requests" => [], "status" => "completed", "conclusion" => "success"
+      }
+    ]
+    runs = action_runs.to_h do |run|
+      id = run.fetch("id")
+      [
+        id.to_s,
+        {
+          run:,
+          jobs: [{
+            "id" => id * 10, "name" => "unit", "status" => "completed",
+            "conclusion" => run.fetch("conclusion")
+          }]
+        }
+      ]
+    end
+
+    results = [action_runs, action_runs.reverse].map do |ordered_runs|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: ordered_runs,
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        [
+          data.fetch("verdict"),
+          data.dig("scopes", "github_actions", "state"),
+          data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+        ]
+      end
+    end
+
+    assert_equal(
+      Array.new(2) { ["NOT_READY", "NOT_READY", [300, 3000]] },
+      results
+    )
+  end
+
+  def test_target_pr_identity_move_or_malformed_refetch_invalidates_every_evidence_scope
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    changed_head = ->(values) { target_identity.merge("head" => target_identity.fetch("head").merge(values)) }
+    changed_repo = lambda do |values|
+      changed_head.call("repo" => target_identity.dig("head", "repo").merge(values))
+    end
+    final_identities = {
+      "PR id moved" => target_identity.merge("id" => 5_002),
+      "PR id missing" => target_identity.reject { |key, _value| key == "id" },
+      "PR id non-positive" => target_identity.merge("id" => 0),
+      "PR number moved" => target_identity.merge("number" => 124),
+      "PR number missing" => target_identity.reject { |key, _value| key == "number" },
+      "PR number non-positive" => target_identity.merge("number" => 0),
+      "head SHA moved" => changed_head.call("sha" => "b" * 40),
+      "head SHA missing" => changed_head.call("sha" => nil),
+      "head ref moved" => changed_head.call("ref" => "other-feature"),
+      "head ref blank" => changed_head.call("ref" => "  "),
+      "head repo moved" => changed_repo.call("id" => 9_003),
+      "head repo id missing" => changed_repo.call("id" => nil),
+      "head repo id non-positive" => changed_repo.call("id" => 0),
+      "identity unavailable" => nil
+    }
+
+    accepted_invalid_identities = final_identities.filter_map do |label, final_identity|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: [target_identity, final_identity]
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        invalidated = data.fetch("verdict") == "UNKNOWN" &&
+                      data.fetch("scopes").values.all? do |scope|
+                        scope.fetch("complete") == false && scope.fetch("state") == "UNKNOWN"
+                      end
+        label unless invalidated
+      end
+    end
+
+    assert_empty accepted_invalid_identities
+  end
+
+  def test_initial_malformed_or_unavailable_target_identity_emits_unknown_evidence
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    invalid_identities = {
+      "missing PR id" => target_identity.reject { |key, _value| key == "id" },
+      "wrong PR number" => target_identity.merge("number" => 124),
+      "blank head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "  ")
+      ),
+      "39-character head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "a" * 39)
+      ),
+      "41-character head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "a" * 41)
+      ),
+      "64-character head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "a" * 64)
+      ),
+      "40-character non-hex head SHA" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("sha" => "g" * 40)
+      ),
+      "blank head ref" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge("ref" => "  ")
+      ),
+      "non-positive head repo id" => target_identity.merge(
+        "head" => target_identity.fetch("head").merge(
+          "repo" => target_identity.dig("head", "repo").merge("id" => 0)
+        )
+      ),
+      "identity unavailable" => [nil]
+    }
+
+    incomplete_initial_identities = invalid_identities.filter_map do |label, identity|
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: identity
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        next label unless status.success?
+
+        data = JSON.parse(out)
+        unknown = data.fetch("verdict") == "UNKNOWN" &&
+                  data.fetch("scopes").values.all? do |scope|
+                    scope.fetch("complete") == false && scope.fetch("state") == "UNKNOWN"
+                  end
+        label unless unknown
+      end
+    end
+
+    assert_empty incomplete_initial_identities
+  end
+
+  def test_exact_head_actions_fail_closed_for_missing_or_malformed_run_identity
+    head = "a" * 40
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "success"
+    }
+    missing = ->(key) { valid_run.reject { |candidate, _value| candidate == key } }
+    changed = ->(key, value) { valid_run.merge(key => value) }
+    invalid_runs = {
+      "missing workflow_id" => missing.call("workflow_id"),
+      "non-integer workflow_id" => changed.call("workflow_id", "20"),
+      "non-positive workflow_id" => changed.call("workflow_id", 0),
+      "missing event" => missing.call("event"),
+      "non-string event" => changed.call("event", 123),
+      "blank event" => changed.call("event", "  "),
+      "missing run_number" => missing.call("run_number"),
+      "non-integer run_number" => changed.call("run_number", "4"),
+      "non-positive run_number" => changed.call("run_number", 0),
+      "missing run_attempt" => missing.call("run_attempt"),
+      "non-integer run_attempt" => changed.call("run_attempt", "1"),
+      "non-positive run_attempt" => changed.call("run_attempt", 0),
+      "missing id" => missing.call("id"),
+      "non-integer id" => changed.call("id", "200"),
+      "non-positive id" => changed.call("id", 0),
+      "missing head_sha" => missing.call("head_sha"),
+      "wrong head_sha" => changed.call("head_sha", "b" * 40),
+      "missing head_branch" => missing.call("head_branch"),
+      "non-string head_branch" => changed.call("head_branch", 123),
+      "blank head_branch" => changed.call("head_branch", "  "),
+      "missing head_repository" => missing.call("head_repository"),
+      "non-object head_repository" => changed.call("head_repository", "owner/repo"),
+      "missing head_repository id" => changed.call("head_repository", {}),
+      "non-integer head_repository id" => changed.call("head_repository", { "id" => "9002" }),
+      "non-positive head_repository id" => changed.call("head_repository", { "id" => 0 }),
+      "missing pull_requests" => missing.call("pull_requests"),
+      "non-array pull_requests" => changed.call("pull_requests", {})
+    }
+
+    accepted_invalid_runs = invalid_runs.filter_map do |label, run|
+      run_id = run["id"]
+      runs =
+        if run_id
+          { run_id.to_s => { run:, jobs: [] } }
+        else
+          {}
+        end
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        exact_actions: [run],
+        runs:
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_invalid_runs
+  end
+
+  def test_exact_head_actions_fail_closed_for_malformed_pull_request_association
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    valid_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    missing = ->(key) { valid_association.reject { |candidate, _value| candidate == key } }
+    changed = ->(key, value) { valid_association.merge(key => value) }
+    changed_head = ->(values) { changed.call("head", valid_association.fetch("head").merge(values)) }
+    changed_repo = lambda do |values|
+      changed_head.call("repo" => valid_association.dig("head", "repo").merge(values))
+    end
+    invalid_associations = {
+      "non-object association" => "malformed",
+      "missing id" => missing.call("id"),
+      "non-integer id" => changed.call("id", "5001"),
+      "non-positive id" => changed.call("id", 0),
+      "missing number" => missing.call("number"),
+      "non-integer number" => changed.call("number", "123"),
+      "non-positive number" => changed.call("number", 0),
+      "missing URL" => missing.call("url"),
+      "non-string URL" => changed.call("url", 123),
+      "blank URL" => changed.call("url", "  "),
+      "missing head" => missing.call("head"),
+      "non-object head" => changed.call("head", "feature"),
+      "missing head SHA" => changed_head.call("sha" => nil),
+      "non-string head SHA" => changed_head.call("sha" => 123),
+      "blank head SHA" => changed_head.call("sha" => "  "),
+      "missing head ref" => changed_head.call("ref" => nil),
+      "non-string head ref" => changed_head.call("ref" => 123),
+      "blank head ref" => changed_head.call("ref" => "  "),
+      "missing head repo" => changed_head.call("repo" => nil),
+      "non-object head repo" => changed_head.call("repo" => "owner/repo"),
+      "missing head repo id" => changed_repo.call("id" => nil),
+      "non-integer head repo id" => changed_repo.call("id" => "9002"),
+      "non-positive head repo id" => changed_repo.call("id" => 0)
+    }
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "status" => "completed", "conclusion" => "success"
+    }
+
+    accepted_invalid_associations = invalid_associations.filter_map do |label, association|
+      run = valid_run.merge("pull_requests" => [association])
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: [run],
+        runs: { "200" => { run:, jobs: [] } }
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_invalid_associations
+  end
+
+  def test_exact_head_actions_fail_closed_for_malformed_association_head_sha_before_target_filtering
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    other_association = {
+      "id" => 5_002, "number" => 456, "url" => "https://api.example/pulls/456",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    invalid_shas = {
+      "short" => "short",
+      "39-character" => "a" * 39,
+      "41-character" => "a" * 41,
+      "64-character" => "a" * 64,
+      "40-character non-hex" => "g" * 40
+    }
+    invalid_associations = invalid_shas.flat_map do |sha_label, sha|
+      [
+        ["target claim with #{sha_label} SHA", target_association],
+        ["proven-other PR with #{sha_label} SHA", other_association]
+      ].map do |label, association|
+        [
+          label,
+          association.merge("head" => association.fetch("head").merge("sha" => sha))
+        ]
+      end
+    end
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "status" => "completed", "conclusion" => "success"
+    }
+
+    accepted_invalid_associations = invalid_associations.filter_map do |label, association|
+      run = valid_run.merge("pull_requests" => [association])
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: [run],
+        runs: { "200" => { run:, jobs: [] } }
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_invalid_associations
+  end
+
+  def test_exact_head_actions_fail_closed_for_contradictory_target_pull_request_association
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    changed_head = lambda do |values|
+      target_association.merge("head" => target_association.fetch("head").merge(values))
+    end
+    changed_repo = lambda do |values|
+      changed_head.call("repo" => target_association.dig("head", "repo").merge(values))
+    end
+    contradictory_associations = {
+      "target PR with conflicting head SHA" => changed_head.call("sha" => "b" * 40),
+      "target PR with conflicting head ref" => changed_head.call("ref" => "other-feature"),
+      "target PR with conflicting head repo id" => changed_repo.call("id" => 9_003),
+      "target id with another PR number" => target_association.merge("number" => 456),
+      "target number with another PR id" => target_association.merge("id" => 5_002)
+    }
+    valid_run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "status" => "completed", "conclusion" => "success"
+    }
+
+    accepted_contradictions = contradictory_associations.filter_map do |label, association|
+      run = valid_run.merge("pull_requests" => [association])
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        pr_identity: target_identity,
+        exact_actions: [run],
+        runs: { "200" => { run:, jobs: [] } }
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        scope = data.dig("scopes", "github_actions")
+        label unless data.fetch("verdict") == "UNKNOWN" &&
+                     scope.fetch("state") == "UNKNOWN" &&
+                     scope.fetch("complete") == false
+      end
+    end
+
+    assert_empty accepted_contradictions
+  end
+
+  def test_target_identity_head_movement_marks_every_evidence_scope_incomplete
+    original_head = "a" * 40
+    moved_head = "b" * 40
+    original_identity = {
+      "id" => 9_001, "number" => 123,
+      "head" => {
+        "sha" => original_head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    moved_identity = {
+      "id" => 9_001, "number" => 123,
+      "head" => {
+        "sha" => moved_head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    with_fake_gh(
+      required_json: "[]",
+      full_json: '[{"workflow":"CI","name":"advisory","bucket":"pass"}]',
+      pr_head: original_head,
+      pr_identity: [original_identity, moved_identity]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      data.fetch("scopes").each do |name, scope|
+        assert_equal false, scope.fetch("complete"), name
+        assert_equal "UNKNOWN", scope.fetch("state"), name
+        assert_includes scope.fetch("error"), "target PR identity moved during exact-head inventory", name
+        assert_includes scope.fetch("error"), original_head, name
+        assert_includes scope.fetch("error"), moved_head, name
+      end
+      assert_empty data.dig("scopes", "required_status_check_rollup", "rows")
+    end
+  end
+
+  def test_commit_status_history_keeps_only_the_latest_row_per_exact_context
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses: [
+        {
+          "id" => 400, "context" => "legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/400"
+        },
+        {
+          "id" => 399, "context" => "legacy", "state" => "failure",
+          "sha" => head, "target_url" => "https://example/status/399"
+        },
+        {
+          "id" => 398, "context" => "legacy", "state" => "pending",
+          "sha" => head, "target_url" => "https://example/status/398"
+        },
+        {
+          "id" => 397, "context" => "Legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/397"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "READY", data.dig("scopes", "other", "state")
+      assert_equal(
+        [[400, "legacy", "success"], [397, "Legacy", "success"]],
+        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
+      )
+    end
+  end
+
+  def test_latest_unknown_commit_status_still_fails_closed_when_older_duplicate_succeeded
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses: [
+        {
+          "id" => 500, "context" => "legacy", "state" => "mystery",
+          "sha" => head, "target_url" => "https://example/status/500"
+        },
+        {
+          "id" => 499, "context" => "legacy", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/499"
+        },
+        {
+          "id" => 498, "context" => "distinct", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/498"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal true, data.dig("scopes", "other", "complete")
+      assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
+      assert_equal(
+        [[500, "legacy", "mystery"], [498, "distinct", "success"]],
+        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
+      )
+    end
+  end
+
+  def test_large_exact_status_fixture_does_not_deadlock_fake_gh
+    head = "a" * 40
+    exact_statuses = Array.new(99) do |index|
+      {
+        "id" => index + 1,
+        "context" => "status-#{index}",
+        "state" => "success",
+        "sha" => head,
+        "target_url" => "https://example.test/#{index}/#{'x' * 2_000}"
+      }
+    end
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_statuses:
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal 99, data.dig("scopes", "other", "rows").length
+    end
+  end
+
+  def test_large_exact_status_fixture_uses_shell_safe_printf
+    exact_statuses = [{
+      "id" => 1,
+      "context" => "large-status",
+      "state" => "success",
+      "sha" => "a" * 40,
+      "target_url" => "https://example.test/#{'x' * 100_000}"
+    }]
+    expected_command = "printf '%s' #{JSON.generate(exact_statuses).inspect}"
+    with_fake_gh(
+      required_json: "[]",
+      full_json: "[]",
+      exact_statuses:
+    ) do |env|
+      fake_gh = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "gh")
+      generated_script = File.read(fake_gh, encoding: "UTF-8")
+      status_branch = generated_script[
+        %r{if \[\[ "\$\*" = \*"/statuses\?per_page="\* \]\]; then.*?exit 0}m
+      ]
+
+      assert_includes status_branch, expected_command
+      refute_includes status_branch, "cat <<'JSON'"
+    end
+  end
+
+  def test_partial_exact_head_actions_page_is_unknown_not_complete
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [{
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [],
+        "status" => "completed", "conclusion" => "success",
+        "actor" => { "login" => "octocat" }
+      }],
+      runs: {
+        "100" => {
+          run: {
+            "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+            "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+            "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+            "pull_requests" => [],
+            "status" => "completed", "conclusion" => "success"
+          },
+          jobs: []
+        }
+      },
+      exact_actions_total_count: 2
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal "UNKNOWN", data.dig("scopes", "github_actions", "state")
+      assert_equal false, data.dig("scopes", "github_actions", "complete")
+      assert_includes data.dig("scopes", "github_actions", "error"), "incomplete"
+    end
+  end
+
+  def test_partial_exact_head_actions_jobs_are_unknown_not_complete
+    head = "a" * 40
+    action_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 1, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "success",
+      "actor" => { "login" => "octocat" }
+    }
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [action_run],
+      runs: {
+        "100" => {
+          run: action_run,
+          jobs: [{
+            "id" => 1000, "name" => "unit", "status" => "completed",
+            "conclusion" => "success"
+          }],
+          jobs_total_count: 2
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "github_actions", "complete")
+      assert_includes data.dig("scopes", "github_actions", "error"), "incomplete"
     end
   end
 

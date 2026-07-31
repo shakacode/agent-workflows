@@ -92,6 +92,7 @@ echo "== helper tests =="
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
+ruby skills/plan-pr-batch/bin/batch-plan-preflight-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ruby skills/pause/bin/pause-prompt-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
@@ -112,6 +113,7 @@ AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contrac
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
+ruby skills/pr-batch/bin/merge-assurance-test.rb
 ruby skills/pr-batch/bin/pr-merge-submit-test.rb
 ruby skills/pr-batch/bin/stage-dependency-gate-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb

@@ -1,0 +1,1066 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Compose exact-head CI evidence, the trusted autonomous eligibility result,
+# merge authority, and follow-up accounting into one integrity-bound receipt.
+# The digest detects accidental or post-generation edits; it is not an
+# authentication mechanism. Trust comes from invoking this helper from a
+# trusted runtime.
+
+require "digest"
+require "json"
+require "optparse"
+require "tempfile"
+require "time"
+require "uri"
+
+module MergeAssurance
+  class Error < StandardError; end
+
+  CONTEXT_KEYS = %w[
+    contract version host repo pr base head_sha authority diff_identity
+    human_merge_decision walkthrough semantic_github_actions_change operations
+  ].freeze
+  SCOPE_NAMES = %w[
+    required_status_check_rollup github_actions dependabot other
+  ].freeze
+  SCOPE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
+  CI_BUCKET_READY_VALUES = %w[pass skipping].freeze
+  CI_BUCKET_NOT_READY_VALUES = %w[cancel fail pending].freeze
+  CI_STATE_READY_VALUES = %w[neutral skipped success].freeze
+  CI_STATE_NOT_READY_VALUES = %w[
+    action_required cancelled error expected failure in_progress pending queued
+    requested stale timed_out waiting
+  ].freeze
+  CI_STATUS_NOT_READY_VALUES = %w[
+    in_progress pending queued requested waiting
+  ].freeze
+  CI_CONCLUSION_READY_VALUES = %w[neutral skipped success].freeze
+  CI_CONCLUSION_NOT_READY_VALUES = %w[
+    action_required cancelled failure stale startup_failure timed_out
+  ].freeze
+  AUTHORITIES = %w[auto_merge_when_gates_pass ask explicit_approval none].freeze
+  AUTONOMOUS_VERDICTS = %w[
+    autonomous-merge-eligible human-approval-required human-approved-for-current-head
+  ].freeze
+  AUTONOMOUS_RESULT_KEYS = %w[
+    verdict head_sha policy_provenance helper_provenance helper_trust metrics
+    path_matches safe_class triggered_gates shadow_triggered_gates
+    shadow_evidence_unknown rollback_assessment human_decision_evidence
+    evidence_failures
+  ].freeze
+  AUTONOMOUS_METRIC_KEYS = %w[
+    changed_files changed_lines commits reviewed_heads
+  ].freeze
+  AUTONOMOUS_RUNTIME_MANIFEST_KEYS = %w[
+    helper
+    decision-library
+    evidence-library
+    policy-library
+    policy-glob-library
+    policy-yaml-library
+    runtime-trust-library
+    calibration-decision
+  ].freeze
+  AUTONOMOUS_PORTABLE_GATE_IDS = %w[
+    architectural-product-judgment
+    autonomous-merge-policy-change
+    changed-files-limit
+    changed-lines-limit
+    commit-count-limit
+    infrastructure-delivery
+    irreversible-external-effect
+    persistent-data-storage
+    public-compatibility
+    reviewed-heads-limit
+    security-auth-privacy
+  ].freeze
+  AUTONOMOUS_SHADOW_GATE_SHAPES = [
+    [],
+    ["reviewed-heads-limit"]
+  ].freeze
+  AUTONOMOUS_SHADOW_EVIDENCE_SHAPES = [
+    [],
+    ["submitted-review-head-missing"],
+    ["review-pagination-incomplete"],
+    %w[submitted-review-head-missing review-pagination-incomplete]
+  ].freeze
+  AUTONOMOUS_SAFE_CLASSES = %w[
+    none documentation tests formatting-comments
+  ].freeze
+  AUTONOMOUS_ROLLBACK_ASSESSMENTS = %w[
+    code-only-rollback-established forward-recovery-established not-applicable
+  ].freeze
+  AUTONOMOUS_ACCEPTED_DECISION_KEYS = %w[
+    status comment_id url approved_by source
+  ].freeze
+  AUTONOMOUS_DECISION_SOURCES = %w[
+    direct-user-task human-pr-review human-pr-comment
+  ].freeze
+  MAX_EVIDENCE_AGE_SECONDS = 300
+  MAX_FUTURE_SKEW_SECONDS = 30
+  TRACKER_GH_TIMEOUT_SECONDS = 60
+  TRACKER_GH_TERMINATION_GRACE_SECONDS = 0.25
+  TRACKER_GH_POLL_SECONDS = 0.01
+
+  module_function
+
+  def assess(ci_result:, autonomous_result:, context:, now: Time.now.utc)
+    failures = []
+    safe_context = context.is_a?(Hash) ? context : {}
+    validate_context(context, failures)
+    validate_ci(ci_result, safe_context, now, failures)
+    validate_autonomous(autonomous_result, safe_context, failures)
+    failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
+    failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
+    failures << "context contains UNKNOWN" if contains_unknown?(context)
+    validate_authority(safe_context, autonomous_result, now, failures)
+    follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
+    authenticated_tracker_reads = []
+    if failures.empty? && semantic_tracker
+      tracker_read = authenticate_semantic_tracker(semantic_tracker, safe_context, now, failures)
+      authenticated_tracker_reads << tracker_read if tracker_read
+    end
+
+    return blocked_result(failures) unless failures.empty?
+
+    evidence = {
+      "ci_result" => ci_result,
+      "autonomous_result" => autonomous_result,
+      "context" => context,
+      "authenticated_tracker_reads" => authenticated_tracker_reads
+    }
+    receipt = {
+      "contract" => "merge-assurance-receipt",
+      "version" => 1,
+      "eligible" => true,
+      "verdict" => "ELIGIBLE",
+      "issued_at" => now.utc.iso8601,
+      "bindings" => {
+        "host" => safe_context["host"],
+        "repo" => safe_context["repo"],
+        "pr" => safe_context["pr"],
+        "base" => safe_context["base"],
+        "head_sha" => safe_context["head_sha"],
+        "authority" => safe_context["authority"],
+        "diff_identity" => safe_context["diff_identity"]
+      },
+      "freshness" => {
+        "ci_checked_at" => ci_result["checked_at"],
+        "receipt_max_age_seconds" => MAX_EVIDENCE_AGE_SECONDS,
+        "future_clock_skew_seconds" => MAX_FUTURE_SKEW_SECONDS
+      },
+      "follow_up_accounting" => follow_up_accounting,
+      "evidence" => evidence
+    }
+    receipt["evidence_digest"] = evidence_digest(evidence)
+    receipt
+  end
+
+  def blocked_result(failures)
+    {
+      "contract" => "merge-assurance-result",
+      "version" => 1,
+      "eligible" => false,
+      "verdict" => "BLOCKED",
+      "failures" => failures.uniq
+    }
+  end
+
+  def contains_unknown?(value)
+    case value
+    when Hash
+      value.any? { |key, nested| contains_unknown?(key) || contains_unknown?(nested) }
+    when Array
+      value.any? { |nested| contains_unknown?(nested) }
+    when String
+      value.include?("UNKNOWN")
+    else
+      false
+    end
+  end
+
+  def validate_context(context, failures)
+    unless context.is_a?(Hash)
+      failures << "context must be an object"
+      return
+    end
+    failures << "invalid merge-assurance-context contract or version" unless
+      context["contract"] == "merge-assurance-context" && context["version"] == 1
+    unknown_keys = context.keys - CONTEXT_KEYS
+    failures << "context has unknown keys: #{unknown_keys.sort.join(', ')}" unless unknown_keys.empty?
+    failures << "context host is invalid" unless valid_host?(context["host"])
+    failures << "context repo is invalid" unless context["repo"].to_s.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    failures << "context PR is invalid" unless context["pr"].is_a?(Integer) && context["pr"].positive?
+    base = context["base"]
+    unless base.is_a?(Hash) && base.keys.sort == %w[ref sha] &&
+           valid_ref?(base["ref"]) && full_sha?(base["sha"])
+      failures << "context base binding is invalid"
+    end
+    failures << "context head_sha is invalid" unless full_sha?(context["head_sha"])
+    failures << "context authority is invalid" unless AUTHORITIES.include?(context["authority"])
+    failures << "context diff_identity must be a lowercase SHA-256" unless
+      context["diff_identity"].to_s.match?(/\A[0-9a-f]{64}\z/)
+    failures << "context operations must be an array" unless context["operations"].is_a?(Array)
+    failures << "context semantic_github_actions_change must be boolean" unless
+      [true, false].include?(context["semantic_github_actions_change"])
+  end
+
+  def validate_ci(ci_result, context, now, failures)
+    unless ci_result.is_a?(Hash)
+      failures << "ci_result must be an object"
+      return
+    end
+    failures << "invalid pr-ci-readiness contract or version" unless
+      ci_result["contract"] == "pr-ci-readiness" && ci_result["version"] == 2
+    failures << "ci_result is not READY" unless ci_result["verdict"] == "READY"
+    failures << "ci_result host binding mismatch" unless ci_result.dig("context", "host") == context["host"]
+    failures << "ci_result repo binding mismatch" unless ci_result["repo"] == context["repo"]
+    failures << "ci_result PR binding mismatch" unless ci_result["pr"] == context["pr"]
+    failures << "ci_result head binding mismatch" unless ci_result["head_sha"] == context["head_sha"]
+    scopes = ci_result["scopes"]
+    unless scopes.is_a?(Hash) && scopes.keys.sort == SCOPE_NAMES.sort
+      failures << "ci_result scopes are missing or unknown"
+      return
+    end
+    scopes.each do |name, scope|
+      unless scope.is_a?(Hash) && SCOPE_STATES.include?(scope["state"])
+        failures << "ci_result scope #{name} has invalid state"
+        next
+      end
+      failures << "ci_result scope #{name} is not complete" unless scope["complete"] == true
+      failures << "ci_result scope #{name} is not ready" unless %w[READY NOT_APPLICABLE].include?(scope["state"])
+      failures << "ci_result scope #{name} head mismatch" unless scope["head_sha"] == context["head_sha"]
+      failures << "ci_result scope #{name} rows are invalid" unless scope["rows"].is_a?(Array)
+      recomputed_state = recompute_ci_scope_state(scope)
+      unless scope["state"] == recomputed_state
+        failures << "ci_result scope #{name} declared #{scope['state']} but recomputed #{recomputed_state}"
+      end
+      validate_timestamp(scope["checked_at"], now, "ci_result scope #{name}", failures)
+    end
+    validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
+  end
+
+  def recompute_ci_scope_state(scope)
+    rows = scope["rows"]
+    normalized_rows = rows.is_a?(Array) ? rows : []
+    row_states = normalized_rows.map { |row| ci_evidence_row_state(row) }
+    if scope["complete"] != true
+      "UNKNOWN"
+    elsif !rows.is_a?(Array) || row_states.include?("UNKNOWN")
+      "UNKNOWN"
+    elsif normalized_rows.empty?
+      "NOT_APPLICABLE"
+    elsif row_states.include?("NOT_READY")
+      "NOT_READY"
+    else
+      "READY"
+    end
+  end
+
+  def ci_evidence_row_state(row)
+    return "UNKNOWN" unless row.is_a?(Hash)
+
+    outcomes = []
+    bucket_presence, bucket = ci_row_representation(row["bucket"], downcase: false)
+    return "UNKNOWN" unless append_ci_outcome(
+      outcomes, bucket_presence, bucket,
+      ready_values: CI_BUCKET_READY_VALUES,
+      not_ready_values: CI_BUCKET_NOT_READY_VALUES
+    )
+
+    state_presence, state = ci_row_representation(row["state"])
+    return "UNKNOWN" unless append_ci_outcome(
+      outcomes, state_presence, state,
+      ready_values: CI_STATE_READY_VALUES,
+      not_ready_values: CI_STATE_NOT_READY_VALUES
+    )
+
+    status_presence, status = ci_row_representation(row["status"])
+    conclusion_presence, conclusion = ci_row_representation(row["conclusion"])
+    case status_presence
+    when "absent"
+      return "UNKNOWN" unless conclusion_presence == "absent"
+    when "present"
+      if status == "completed"
+        return "UNKNOWN" unless conclusion_presence == "present"
+      elsif CI_STATUS_NOT_READY_VALUES.include?(status)
+        return "UNKNOWN" unless conclusion_presence == "absent"
+
+        outcomes << "NOT_READY"
+      else
+        return "UNKNOWN"
+      end
+    else
+      return "UNKNOWN"
+    end
+    return "UNKNOWN" unless append_ci_outcome(
+      outcomes, conclusion_presence, conclusion,
+      ready_values: CI_CONCLUSION_READY_VALUES,
+      not_ready_values: CI_CONCLUSION_NOT_READY_VALUES
+    )
+    return "UNKNOWN" if outcomes.empty? || outcomes.uniq.length != 1
+
+    outcomes.first
+  end
+
+  def ci_row_representation(value, downcase: true)
+    return ["absent", nil] if value.nil? || value == ""
+    return ["unrecognized", nil] unless value.is_a?(String)
+
+    ["present", downcase ? value.downcase : value]
+  end
+
+  def append_ci_outcome(outcomes, presence, value, ready_values:, not_ready_values:)
+    return true if presence == "absent"
+    return false unless presence == "present"
+
+    if ready_values.include?(value)
+      outcomes << "READY"
+    elsif not_ready_values.include?(value)
+      outcomes << "NOT_READY"
+    else
+      return false
+    end
+    true
+  end
+
+  def validate_autonomous(result, context, failures)
+    unless result.is_a?(Hash)
+      failures << "autonomous_result must be an object"
+      return
+    end
+    unless exact_keys?(result, AUTONOMOUS_RESULT_KEYS)
+      failures << "autonomous_result has unknown or missing fields"
+    end
+    failures << "autonomous_result head binding mismatch" unless result["head_sha"] == context["head_sha"]
+    failures << "autonomous_result verdict is unrecognized" unless AUTONOMOUS_VERDICTS.include?(result["verdict"])
+    helper_trust = result["helper_trust"]
+    unless exact_keys?(helper_trust, %w[manifest status]) &&
+           helper_trust["status"] == "mechanically-verified" &&
+           valid_autonomous_runtime_manifest?(helper_trust["manifest"])
+      failures << "autonomous_result helper trust is unavailable"
+    end
+    metrics = result["metrics"]
+    unless exact_keys?(metrics, AUTONOMOUS_METRIC_KEYS) &&
+           metrics.values.all? { |value| value.is_a?(Integer) && value >= 0 }
+      failures << "autonomous_result metrics shape is invalid"
+    end
+    path_matches_valid = result["path_matches"].is_a?(Array) &&
+                         result["path_matches"].all? { |match| valid_autonomous_path_match?(match) }
+    unless path_matches_valid
+      failures << "autonomous_result path matches shape is invalid"
+    end
+    triggered_gates_valid = valid_autonomous_gates?(result["triggered_gates"])
+    unless triggered_gates_valid
+      failures << "autonomous_result triggered gates must be canonical, unique, and sorted"
+    end
+    if path_matches_valid && triggered_gates_valid
+      path_match_gates = result.fetch("path_matches").filter_map { |match| match["gate"] }
+      unless (path_match_gates - result.fetch("triggered_gates")).empty?
+        failures << "autonomous_result path match gates are absent from triggered gates"
+      end
+    end
+    unless AUTONOMOUS_SHADOW_GATE_SHAPES.include?(result["shadow_triggered_gates"])
+      failures << "autonomous_result shadow triggered gates shape is invalid"
+    end
+    unless AUTONOMOUS_SHADOW_EVIDENCE_SHAPES.include?(result["shadow_evidence_unknown"])
+      failures << "autonomous_result shadow evidence unknown shape is invalid"
+    end
+    failures << "autonomous_result safe class is invalid" unless
+      AUTONOMOUS_SAFE_CLASSES.include?(result["safe_class"])
+    failures << "autonomous_result rollback assessment is invalid" unless
+      AUTONOMOUS_ROLLBACK_ASSESSMENTS.include?(result["rollback_assessment"])
+    if result["safe_class"] == "none" && result["rollback_assessment"] == "not-applicable"
+      failures << "autonomous_result rollback assessment requires a verified safe class"
+    end
+    unless valid_autonomous_decision_evidence?(result["human_decision_evidence"], context)
+      failures << "autonomous_result human decision evidence shape is invalid"
+    end
+    failures << "autonomous_result policy provenance binding mismatch" unless
+      valid_policy_provenance?(result["policy_provenance"], context.dig("base", "sha"))
+    failures << "autonomous_result helper provenance binding mismatch" unless
+      valid_helper_provenance?(result["helper_provenance"], context.dig("base", "sha"))
+    if !result["evidence_failures"].is_a?(Array)
+      failures << "autonomous_result evidence failures are unavailable"
+    elsif !result["evidence_failures"].empty?
+      failures << "autonomous_result evidence failures must be empty"
+    end
+    expected_verdict = expected_autonomous_verdict(
+      result["triggered_gates"],
+      result["human_decision_evidence"]
+    )
+    return if expected_verdict == result["verdict"]
+
+    failures << "autonomous_result verdict contradicts gates and decision evidence"
+  end
+
+  def expected_autonomous_verdict(triggered_gates, human_decision_evidence)
+    return unless triggered_gates.is_a?(Array) && human_decision_evidence.is_a?(Hash)
+
+    decision_status = human_decision_evidence["status"]
+    if triggered_gates.empty? && decision_status == "none"
+      "autonomous-merge-eligible"
+    elsif !triggered_gates.empty? && decision_status == "accepted"
+      "human-approved-for-current-head"
+    elsif !triggered_gates.empty? && decision_status == "none"
+      "human-approval-required"
+    end
+  end
+
+  def exact_keys?(value, expected_keys)
+    value.is_a?(Hash) &&
+      value.keys.length == expected_keys.length &&
+      (value.keys - expected_keys).empty?
+  end
+
+  def valid_autonomous_runtime_manifest?(manifest)
+    exact_keys?(manifest, AUTONOMOUS_RUNTIME_MANIFEST_KEYS) &&
+      manifest.values.all? { |path| path.is_a?(String) && !path.strip.empty? }
+  end
+
+  def valid_autonomous_gates?(gates)
+    gates.is_a?(Array) &&
+      gates.all? { |gate| canonical_autonomous_gate?(gate) } &&
+      gates == gates.uniq.sort
+  end
+
+  def canonical_autonomous_gate?(gate)
+    gate.is_a?(String) &&
+      (AUTONOMOUS_PORTABLE_GATE_IDS.include?(gate) ||
+       gate.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/))
+  end
+
+  def valid_autonomous_path_match?(match)
+    return false unless match.is_a?(Hash)
+
+    path = match["path"]
+    return false unless path.is_a?(String) && !path.strip.empty?
+
+    if exact_keys?(match, %w[gate path reason])
+      gate = match["gate"]
+      reason = match["reason"]
+      (gate == "autonomous-merge-policy-change" ||
+       gate.to_s.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/)) &&
+        reason.is_a?(String) && !reason.strip.empty?
+    elsif exact_keys?(match, %w[classification path])
+      match["classification"] == "generated"
+    else
+      false
+    end
+  end
+
+  def valid_autonomous_decision_evidence?(decision, context)
+    return false unless decision.is_a?(Hash)
+    return true if decision == { "status" => "none" }
+    return false unless exact_keys?(decision, AUTONOMOUS_ACCEPTED_DECISION_KEYS)
+    return false unless decision["status"] == "accepted"
+    return false unless decision["comment_id"].is_a?(String) &&
+                        decision["comment_id"].match?(/\A[1-9]\d*\z/)
+    return false unless %w[url approved_by].all? do |key|
+      value = decision[key]
+      value.is_a?(String) && !value.strip.empty?
+    end
+    return false unless AUTONOMOUS_DECISION_SOURCES.include?(decision["source"])
+
+    valid_autonomous_decision_url?(decision, context)
+  end
+
+  def valid_autonomous_decision_url?(decision, context)
+    return false unless context.is_a?(Hash)
+
+    context_authority = URI.parse("https://#{context['host']}")
+    evidence_url = URI.parse(decision.fetch("url"))
+    return false unless evidence_url.scheme&.casecmp?("https")
+    return false unless evidence_url.userinfo.nil? && evidence_url.query.nil?
+    return false unless context_authority.host
+    return false unless evidence_url.host&.casecmp?(context_authority.host)
+    return false unless evidence_url.port == context_authority.port
+
+    repo_parts = context["repo"].to_s.split("/", -1)
+    url_parts = evidence_url.path.split("/", -1)
+    return false unless repo_parts.length == 2 && url_parts.length == 5
+
+    owner, repo = repo_parts
+    empty, url_owner, url_repo, kind, pr = url_parts
+    return false unless empty == "" && %w[pull issues].include?(kind)
+    return false unless url_owner&.casecmp?(owner) && url_repo&.casecmp?(repo)
+    return false unless pr&.match?(/\A[1-9]\d*\z/) && pr == context["pr"].to_s
+
+    evidence_url.fragment == "issuecomment-#{decision.fetch('comment_id')}"
+  rescue KeyError, URI::Error
+    false
+  end
+
+  def valid_policy_provenance?(provenance, base_sha)
+    return false unless full_sha?(base_sha)
+
+    escaped_base = Regexp.escape(base_sha)
+    provenance.to_s.match?(
+      %r{\Agit:#{escaped_base}(?:
+        :\.agents/agent-workflow\.yml@[0-9a-f]{40,64}|
+        :\.agents/agent-workflow\.yml\(absent;\ portable-defaults\)
+      )?\z}x
+    )
+  end
+
+  def valid_helper_provenance?(provenance, base_sha)
+    provenance == "trusted-base:#{base_sha}" ||
+      provenance.to_s.match?(/\Averified-installed-pack:[0-9a-f]{64}\z/)
+  end
+
+  def validate_authority(context, autonomous_result, now, failures)
+    autonomous_verdict = autonomous_result["verdict"] if autonomous_result.is_a?(Hash)
+    case context["authority"]
+    when "auto_merge_when_gates_pass"
+      unless %w[autonomous-merge-eligible human-approved-for-current-head].include?(autonomous_verdict)
+        failures << "auto merge authority lacks a qualifying exact-head autonomous verdict"
+      end
+    when "ask"
+      unless valid_human_merge_decision?(context["human_merge_decision"], context, now)
+        failures << "ask authority requires a proven exact-current-head human merge decision"
+      end
+      unless valid_walkthrough?(context["walkthrough"], context)
+        failures << "ask authority requires a same-diff walkthrough or explicit user skip"
+      end
+    when "explicit_approval"
+      unless valid_human_merge_decision?(context["human_merge_decision"], context, now)
+        failures << "explicit approval requires a proven exact-current-head human merge decision"
+      end
+    when "none"
+      failures << "merge authority none can never produce an eligible receipt"
+    end
+  end
+
+  def valid_human_merge_decision?(decision, context, now)
+    return false unless decision.is_a?(Hash)
+    return false unless decision.keys.sort == %w[
+      base_ref contract decided_at decision diff_identity head_sha host merge_authority
+      pr provenance repo version
+    ].sort
+    return false unless decision["contract"] == "human-merge-decision" && decision["version"] == 1
+    return false unless decision["decision"] == "approved" && decision["merge_authority"] == true
+    return false unless %w[direct-user human-maintainer].include?(decision["provenance"])
+    return false unless valid_target_bindings?(decision, context)
+
+    valid_human_timestamp?(decision["decided_at"], now)
+  end
+
+  def valid_walkthrough?(walkthrough, context)
+    return false unless walkthrough.is_a?(Hash)
+    return false unless walkthrough.keys.sort == %w[
+      base_ref contract diff_identity disposition head_sha host pr provenance repo version
+    ].sort
+    return false unless walkthrough["contract"] == "pr-walkthrough" && walkthrough["version"] == 1
+    return false unless valid_target_bindings?(walkthrough, context)
+
+    case walkthrough["disposition"]
+    when "completed"
+      walkthrough["provenance"] == "pr-walkthrough"
+    when "user-skipped"
+      %w[direct-user human-maintainer].include?(walkthrough["provenance"])
+    else
+      false
+    end
+  end
+
+  def valid_target_bindings?(receipt, context)
+    receipt["host"] == context["host"] &&
+      receipt["repo"] == context["repo"] &&
+      receipt["pr"] == context["pr"] &&
+      receipt["base_ref"] == context.dig("base", "ref") &&
+      receipt["head_sha"] == context["head_sha"] &&
+      receipt["diff_identity"] == context["diff_identity"]
+  end
+
+  def validate_operations(context, now, failures)
+    operations = context["operations"].is_a?(Array) ? context["operations"] : []
+    ordinary = operations.select do |operation|
+      operation.is_a?(Hash) && operation["type"] == "ordinary-follow-up-bundle"
+    end
+    semantic_trackers = operations.select do |operation|
+      operation.is_a?(Hash) && operation["type"] == "semantic-github-actions-tracker"
+    end
+    report_only_operations = operations.select do |operation|
+      operation.is_a?(Hash) && operation["type"] == "post-merge-audit-report-only"
+    end
+    unknown_types = operations.filter_map do |operation|
+      operation["type"] if operation.is_a?(Hash) &&
+                           !%w[
+                             ordinary-follow-up-bundle
+                             semantic-github-actions-tracker
+                             post-merge-audit-report-only
+                           ].include?(operation["type"])
+    end
+    failures << "operations contain unknown types: #{unknown_types.join(', ')}" unless unknown_types.empty?
+    failures << "operations must contain objects" if operations.any? { |operation| !operation.is_a?(Hash) }
+
+    bundle_ids = []
+    approval_ids = []
+    ordinary.each_with_index do |bundle, index|
+      unless bundle.keys.sort == %w[approval bundle_id items type]
+        failures << "ordinary follow-up bundle has unknown or missing fields"
+        next
+      end
+      bundle_id = bundle["bundle_id"].to_s
+      if bundle_id.empty?
+        failures << "ordinary follow-up bundle_id is required"
+        next
+      end
+      failures << "ordinary follow-up bundle #{bundle_id} is duplicated" if bundle_ids.include?(bundle_id)
+      bundle_ids << bundle_id
+      unless bundle["items"].is_a?(Array) && !bundle["items"].empty? &&
+             bundle["items"].all? { |item| item.is_a?(String) && !item.strip.empty? }
+        failures << "ordinary follow-up bundle #{bundle_id} items are invalid"
+      end
+      approval_id = bundle.dig("approval", "approval_id")
+      if approval_id.is_a?(String) && !approval_id.strip.empty?
+        if approval_ids.include?(approval_id)
+          failures << "ordinary follow-up approval #{approval_id} is duplicated"
+        end
+        approval_ids << approval_id
+      end
+      expected_scope = index.zero? ? "first-bundle" : "additional-bundle"
+      next if valid_follow_up_approval?(
+        bundle["approval"],
+        bundle:,
+        context:,
+        scope: expected_scope,
+        now:
+      )
+
+      qualifier = index.zero? ? "explicit human approval" : "additional explicit approval"
+      failures << "ordinary follow-up bundle #{bundle_id} lacks #{qualifier}"
+    end
+
+    if context["semantic_github_actions_change"] == true
+      unless semantic_trackers.length == 1
+        failures << "semantic GitHub Actions change requires exactly one exercise tracker"
+      end
+    elsif semantic_trackers.any?
+      failures << "semantic GitHub Actions tracker is invalid for a non-semantic change"
+    end
+    semantic_trackers.each { |tracker| validate_semantic_tracker(tracker, context, failures) }
+    failures << "post-merge audit permits at most one report-only operation" if report_only_operations.length > 1
+    report_only_operations.each do |operation|
+      next if operation.keys.sort == %w[disposition provenance reason type] &&
+              operation["disposition"] == "report-only" &&
+              %w[direct-user human-maintainer].include?(operation["provenance"]) &&
+              operation["reason"].is_a?(String) && !operation["reason"].strip.empty?
+
+      failures << "post-merge audit report-only operation is invalid"
+    end
+    post_merge_audit = if report_only_operations.one?
+                         report_only_operations.first.reject { |key, _value| key == "type" }
+                       else
+                         {
+                           "disposition" => "accounted",
+                           "children" => "create-per-independent-action-after-dedupe",
+                           "parent" => "create-for-two-or-more-related-children"
+                         }
+                       end
+
+    accounting = {
+      "ordinary_follow_up_bundles" => ordinary.map do |bundle|
+        {
+          "bundle_id" => bundle["bundle_id"],
+          "items" => bundle["items"]
+        }
+      end,
+      "semantic_github_actions_tracker" => semantic_trackers.one? ? semantic_trackers.first : nil,
+      "post_merge_audit" => post_merge_audit
+    }
+    semantic_tracker = if context["semantic_github_actions_change"] == true && semantic_trackers.one?
+                         semantic_trackers.first
+                       end
+    [accounting, semantic_tracker]
+  end
+
+  def validate_semantic_tracker(tracker, context, failures)
+    required_keys = %w[
+      changed_files cleanup_instructions exercise expected_evidence source_pr tracker type
+    ]
+    allowed_keys = required_keys + ["owner"]
+    unless (tracker.keys - allowed_keys).empty? && (required_keys - tracker.keys).empty?
+      failures << "semantic GitHub Actions tracker has unknown or missing exercise fields"
+      return
+    end
+    %w[tracker source_pr exercise expected_evidence cleanup_instructions].each do |key|
+      unless tracker[key].is_a?(String) && !tracker[key].strip.empty?
+        failures << "semantic GitHub Actions tracker #{key} is required"
+      end
+    end
+    tracker_pattern = %r{
+      \Ahttps://#{Regexp.escape(context['host'].to_s)}/
+      #{Regexp.escape(context['repo'].to_s)}/issues/([1-9]\d*)\z
+    }x
+    tracker_match = tracker["tracker"].to_s.match(tracker_pattern)
+    failures << "semantic GitHub Actions tracker URL is not a same-repository issue" unless tracker_match
+    expected_source_pr = "https://#{context['host']}/#{context['repo']}/pull/#{context['pr']}"
+    failures << "semantic GitHub Actions source PR binding mismatch" unless
+      tracker["source_pr"] == expected_source_pr
+    changed_files = tracker["changed_files"]
+    unless changed_files.is_a?(Array) && !changed_files.empty? &&
+           changed_files.all? do |path|
+             path.is_a?(String) &&
+             (path.start_with?(".github/workflows/") || path.start_with?(".github/actions/"))
+           end
+      failures << "semantic GitHub Actions tracker changed_files are invalid"
+    end
+    if tracker.key?("owner") &&
+       !(tracker["owner"].is_a?(String) && !tracker["owner"].strip.empty?)
+      failures << "semantic GitHub Actions tracker owner is invalid"
+    end
+  end
+
+  def authenticate_semantic_tracker(tracker, context, now, failures)
+    issue_number = tracker["tracker"].match(%r{/issues/([1-9]\d*)\z})&.captures&.first&.to_i
+    issue = read_authenticated_issue(
+      host: context["host"],
+      repo: context["repo"],
+      issue: issue_number
+    )
+    return failures << "semantic GitHub Actions tracker authenticated read failed" unless issue
+
+    validate_authenticated_issue(
+      issue,
+      tracker:,
+      issue_number:,
+      context:,
+      now:,
+      failures:
+    )
+  end
+
+  def read_authenticated_issue(host:, repo:, issue:)
+    stdout_file = Tempfile.new("merge-assurance-tracker-stdout")
+    stderr_file = Tempfile.new("merge-assurance-tracker-stderr")
+    pid = Process.spawn(
+      "gh", "api", "--hostname", host, "repos/#{repo}/issues/#{issue}",
+      out: stdout_file.path, err: stderr_file.path, pgroup: true
+    )
+    deadline = monotonic_time + tracker_gh_timeout_seconds
+    status = nil
+    timed_out = false
+    cleanup_complete = true
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      if waited
+        status = waited[1]
+        break
+      end
+      if monotonic_time >= deadline
+        timed_out = true
+        status, cleanup_complete = terminate_tracker_process_group(pid)
+        break
+      end
+
+      sleep TRACKER_GH_POLL_SECONDS
+    end
+    unless timed_out
+      group_deadline = monotonic_time + TRACKER_GH_TERMINATION_GRACE_SECONDS
+      unless wait_for_tracker_process_group_exit(pid, group_deadline)
+        _ignored_status, cleanup_complete = terminate_tracker_process_group(pid)
+        status = nil
+      end
+    end
+    return unless cleanup_complete && !timed_out && status&.success?
+
+    stdout_file.rewind
+    parsed = JSON.parse(stdout_file.read)
+    parsed if parsed.is_a?(Hash)
+  rescue Error, JSON::ParserError, SystemCallError
+    nil
+  ensure
+    terminate_tracker_process_group(pid) if pid && tracker_process_group_alive?(pid)
+    stdout_file&.close!
+    stderr_file&.close!
+  end
+
+  def tracker_gh_timeout_seconds
+    value = Float(ENV.fetch("MERGE_ASSURANCE_GH_TIMEOUT_SECONDS", TRACKER_GH_TIMEOUT_SECONDS.to_s))
+    raise Error, "tracker gh timeout must be a positive finite number" unless value.positive? && value.finite?
+
+    value
+  rescue ArgumentError
+    raise Error, "tracker gh timeout must be a positive finite number"
+  end
+
+  def terminate_tracker_process_group(pid)
+    signal_tracker_process_group("TERM", pid)
+    deadline = monotonic_time + TRACKER_GH_TERMINATION_GRACE_SECONDS
+    status = wait_for_tracker_child(pid, deadline)
+    return [status, true] if wait_for_tracker_process_group_exit(pid, deadline)
+
+    signal_tracker_process_group("KILL", pid)
+    deadline = monotonic_time + TRACKER_GH_TERMINATION_GRACE_SECONDS
+    status ||= wait_for_tracker_child(pid, deadline)
+    [status, wait_for_tracker_process_group_exit(pid, deadline)]
+  end
+
+  def signal_tracker_process_group(signal, pid)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def wait_for_tracker_child(pid, deadline)
+    while monotonic_time < deadline
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited[1] if waited
+
+      sleep TRACKER_GH_POLL_SECONDS
+    end
+    nil
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def tracker_process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_tracker_process_group_exit(pid, deadline)
+    while monotonic_time < deadline
+      return true unless tracker_process_group_alive?(pid)
+
+      sleep TRACKER_GH_POLL_SECONDS
+    end
+    !tracker_process_group_alive?(pid)
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def validate_authenticated_issue(issue, tracker:, issue_number:, context:, now:, failures:)
+    expected_html_url = tracker["tracker"]
+    expected_api_url = if context["host"] == "github.com"
+                         "https://api.github.com/repos/#{context['repo']}/issues/#{issue_number}"
+                       else
+                         "https://#{context['host']}/api/v3/repos/#{context['repo']}/issues/#{issue_number}"
+                       end
+    metadata_valid = issue["id"].is_a?(Integer) && issue["id"].positive? &&
+                     issue["node_id"].is_a?(String) && !issue["node_id"].empty? &&
+                     issue["number"] == issue_number &&
+                     issue["url"] == expected_api_url &&
+                     issue["html_url"] == expected_html_url &&
+                     %w[open closed].include?(issue["state"]) &&
+                     issue["title"].is_a?(String) && !issue["title"].strip.empty? &&
+                     issue["body"].is_a?(String) &&
+                     !issue.key?("pull_request")
+    begin
+      Time.iso8601(issue["updated_at"].to_s)
+    rescue ArgumentError
+      metadata_valid = false
+    end
+    unless metadata_valid
+      failures << "semantic GitHub Actions tracker authenticated issue metadata is malformed or mismatched"
+      return
+    end
+
+    operation_digest = semantic_tracker_operation_digest(tracker)
+    expected_bindings = {
+      "semantic-tracker-source-pr" => tracker["source_pr"],
+      "semantic-tracker-head-sha" => context["head_sha"],
+      "semantic-tracker-diff-identity" => context["diff_identity"],
+      "semantic-tracker-operation-digest" => operation_digest
+    }
+    unless valid_semantic_tracker_body_bindings?(issue["body"], expected_bindings)
+      failures << "semantic GitHub Actions tracker issue body binding mismatch"
+      return
+    end
+
+    {
+      "contract" => "authenticated-semantic-tracker-read",
+      "version" => 1,
+      "provenance" => "gh-api",
+      "checked_at" => now.utc.iso8601,
+      "host" => context["host"],
+      "repo" => context["repo"],
+      "issue" => issue_number,
+      "tracker" => tracker["tracker"],
+      "source_pr" => tracker["source_pr"],
+      "head_sha" => context["head_sha"],
+      "diff_identity" => context["diff_identity"],
+      "operation_digest" => operation_digest,
+      "issue_metadata" => {
+        "id" => issue["id"],
+        "node_id" => issue["node_id"],
+        "url" => issue["url"],
+        "html_url" => issue["html_url"],
+        "state" => issue["state"],
+        "title" => issue["title"],
+        "updated_at" => issue["updated_at"],
+        "body_digest" => "sha256:#{Digest::SHA256.hexdigest(issue['body'])}"
+      }
+    }
+  end
+
+  def valid_semantic_tracker_body_bindings?(body, expected_bindings)
+    parsed_bindings = Hash.new { |bindings, key| bindings[key] = [] }
+    malformed = body.lines(chomp: true).any? do |raw_line|
+      line = raw_line.strip
+      next false unless line.start_with?("semantic-tracker-")
+
+      key, separator, value = line.partition(": ")
+      if separator.empty? || !expected_bindings.key?(key)
+        true
+      else
+        parsed_bindings[key] << value
+        false
+      end
+    end
+    !malformed && expected_bindings.all? do |key, expected_value|
+      parsed_bindings[key] == [expected_value]
+    end
+  end
+
+  def semantic_tracker_operation_digest(tracker)
+    keys = %w[
+      changed_files cleanup_instructions exercise expected_evidence owner source_pr tracker type
+    ]
+    operation = keys.each_with_object({}) do |key, selected|
+      selected[key] = tracker[key] if tracker.key?(key)
+    end
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(operation))}"
+  end
+
+  def valid_follow_up_approval?(approval, bundle:, context:, scope:, now: Time.now.utc)
+    return false unless approval.is_a?(Hash)
+    return false unless approval.keys.sort == %w[
+      approval_id approved_at bundle_id contract decision diff_identity head_sha
+      host items_digest pr provenance repo scope version
+    ].sort
+    return false unless approval["contract"] == "follow-up-approval" && approval["version"] == 1
+    return false unless approval["decision"] == "approved" && approval["scope"] == scope
+    return false unless %w[direct-user human-maintainer].include?(approval["provenance"])
+    return false unless approval["approval_id"].is_a?(String) && !approval["approval_id"].strip.empty?
+    return false unless approval["items_digest"] == canonical_items_digest(bundle["items"])
+    return false unless approval["bundle_id"] == bundle["bundle_id"]
+    return false unless approval["host"] == context["host"] &&
+                        approval["repo"] == context["repo"] &&
+                        approval["pr"] == context["pr"] &&
+                        approval["head_sha"] == context["head_sha"] &&
+                        approval["diff_identity"] == context["diff_identity"]
+
+    valid_human_timestamp?(approval["approved_at"], now)
+  end
+
+  def valid_human_timestamp?(raw, now)
+    Time.iso8601(raw.to_s) - now <= MAX_FUTURE_SKEW_SECONDS
+  rescue ArgumentError
+    false
+  end
+
+  def validate_timestamp(raw, now, label, failures)
+    timestamp = Time.iso8601(raw.to_s)
+    age = now - timestamp
+    failures << "#{label} evidence is stale" if age > MAX_EVIDENCE_AGE_SECONDS
+    failures << "#{label} evidence is too far in the future" if age < -MAX_FUTURE_SKEW_SECONDS
+  rescue ArgumentError
+    failures << "#{label} checked_at is invalid"
+  end
+
+  def canonical_json(value)
+    case value
+    when Hash
+      "{#{value.keys.sort.map { |key| "#{JSON.generate(key)}:#{canonical_json(value.fetch(key))}" }.join(',')}}"
+    when Array
+      "[#{value.map { |item| canonical_json(item) }.join(',')}]"
+    else
+      JSON.generate(value)
+    end
+  end
+
+  def evidence_digest(evidence)
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(evidence))}"
+  end
+
+  def canonical_items_digest(items)
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(items))}"
+  end
+
+  def valid_evidence_digest?(receipt)
+    receipt.is_a?(Hash) && receipt["evidence"].is_a?(Hash) &&
+      receipt["evidence_digest"] == evidence_digest(receipt["evidence"])
+  end
+
+  def full_sha?(value)
+    value.to_s.match?(/\A[0-9a-f]{40}\z/i)
+  end
+
+  def valid_ref?(value)
+    value.to_s.match?(/\A[^\s~^:?*\[\\]+\z/) && !value.to_s.include?("..")
+  end
+
+  def valid_host?(value)
+    value.to_s.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?\z/i)
+  end
+
+  class Runner
+    def run(argv)
+      options = parse_options(argv)
+      return help if options[:help]
+
+      result = MergeAssurance.assess(
+        ci_result: read_json(options[:ci_result], "--ci-result"),
+        autonomous_result: read_json(options[:autonomous_result], "--autonomous-result"),
+        context: read_json(options[:context], "--context")
+      )
+      puts JSON.pretty_generate(result)
+      result["eligible"] ? 0 : 1
+    rescue Error => e
+      puts JSON.pretty_generate(MergeAssurance.blocked_result([e.message]))
+      1
+    end
+
+    private
+
+    def parse_options(argv)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE"
+        opts.on("--ci-result FILE") { |value| options[:ci_result] = value }
+        opts.on("--autonomous-result FILE") { |value| options[:autonomous_result] = value }
+        opts.on("--context FILE") { |value| options[:context] = value }
+        opts.on("-h", "--help") { options[:help] = true }
+      end
+      remaining = parser.parse(argv)
+      raise Error, "unexpected arguments: #{remaining.join(' ')}" unless remaining.empty?
+
+      unless options[:help]
+        %i[ci_result autonomous_result context].each do |key|
+          raise Error, "--#{key.to_s.tr('_', '-')} is required" if options[key].to_s.empty?
+        end
+      end
+      options
+    rescue OptionParser::ParseError => e
+      raise Error, e.message
+    end
+
+    def read_json(path, flag)
+      raw = File.read(path, encoding: "UTF-8")
+      parsed = JSON.parse(raw)
+      raise Error, "#{flag} must contain a JSON object" unless parsed.is_a?(Hash)
+
+      parsed
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "#{flag} is unavailable: #{e.message}"
+    rescue JSON::ParserError => e
+      raise Error, "#{flag} is invalid JSON: #{e.message}"
+    end
+
+    def help
+      puts "Usage: merge-assurance --ci-result FILE --autonomous-result FILE --context FILE"
+      0
+    end
+  end
+end
+
+exit MergeAssurance::Runner.new.run(ARGV) if $PROGRAM_NAME == __FILE__
