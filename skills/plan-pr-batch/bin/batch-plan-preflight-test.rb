@@ -753,6 +753,24 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal [], JSON.parse(File.read(marker, encoding: "UTF-8"))
   end
 
+  def test_replay_timeout_never_reaps_before_the_final_process_group_signal
+    source = File.read(HELPER, encoding: "UTF-8")
+
+    refute_includes source, 'require "timeout"'
+    refute_includes source, "Timeout.timeout"
+    assert_includes source, "Process.waitpid2(pid, Process::WNOHANG)"
+    assert_includes source, "Process.clock_gettime(Process::CLOCK_MONOTONIC)"
+
+    terminator = source.split("  def terminate_stage_dependency_process_group", 2).fetch(1)
+                       .split("\n  def ", 2).first
+    kill_offset = terminator.index('signal_stage_dependency_process_group("KILL", pid)')
+    reap_offset = terminator.index("wait_for_stage_dependency_child(")
+    refute_nil kill_offset
+    refute_nil reap_offset
+    assert_operator kill_offset, :<, reap_offset,
+                    "the leader must remain unreaped until every group signal is complete"
+  end
+
   def test_fixed_replay_helper_timeout_nonzero_and_invalid_output_fail_closed
     timeout_probe_root = Dir.mktmpdir("replay-timeout-descendant", SAFE_TMP_PARENT)
     (@workflow_control_install_roots ||= []) << timeout_probe_root

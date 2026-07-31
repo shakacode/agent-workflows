@@ -9,7 +9,6 @@ require "openssl"
 require "rbconfig"
 require "tempfile"
 require "time"
-require "timeout"
 require "uri"
 
 module BatchPlanPreflight
@@ -69,6 +68,8 @@ module BatchPlanPreflight
     "bin",
     "stage-dependency-gate"
   )
+  STAGE_DEPENDENCY_REPLAY_POLL_SECONDS = 0.01
+  STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS = 0.25
   STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS = 5
   STAGE_DEPENDENCY_REPLAY_ENV = {
     "LANG" => "C",
@@ -752,31 +753,54 @@ module BatchPlanPreflight
   end
 
   def wait_for_stage_dependency_gate(pid)
-    Timeout.timeout(STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS) do
-      return Process.wait2(pid).last
+    deadline = monotonic_time + STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited.last if waited
+      break if monotonic_time >= deadline
+
+      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
     end
-  rescue Timeout::Error
-    begin
-      Process.kill("TERM", -pid)
-      Timeout.timeout(0.25) { Process.wait(pid) }
-    rescue Errno::ESRCH, Errno::ECHILD
-      nil
-    rescue Timeout::Error
-      nil
-    end
-    if stage_dependency_process_group_alive?(pid)
-      begin
-        Process.kill("KILL", -pid)
-      rescue Errno::ESRCH
-        nil
-      end
-    end
-    begin
-      Process.wait(pid)
-    rescue Errno::ECHILD
-      nil
-    end
+
+    terminate_stage_dependency_process_group(pid)
     :timeout
+  rescue Errno::ECHILD
+    :timeout
+  end
+
+  def terminate_stage_dependency_process_group(pid)
+    signal_stage_dependency_process_group("TERM", pid)
+    sleep_until_stage_dependency_deadline(
+      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    )
+    signal_stage_dependency_process_group("KILL", pid)
+
+    wait_for_stage_dependency_child(
+      pid,
+      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    )
+    wait_for_stage_dependency_process_group_exit(
+      pid,
+      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    )
+  end
+
+  def signal_stage_dependency_process_group(signal, pid)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def wait_for_stage_dependency_child(pid, deadline)
+    while monotonic_time < deadline
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited.last if waited
+
+      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
+    end
+    nil
+  rescue Errno::ECHILD
+    nil
   end
 
   def stage_dependency_process_group_alive?(pid)
@@ -786,6 +810,28 @@ module BatchPlanPreflight
     false
   rescue Errno::EPERM
     true
+  end
+
+  def wait_for_stage_dependency_process_group_exit(pid, deadline)
+    while monotonic_time < deadline
+      return true unless stage_dependency_process_group_alive?(pid)
+
+      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
+    end
+    !stage_dependency_process_group_alive?(pid)
+  end
+
+  def sleep_until_stage_dependency_deadline(deadline)
+    loop do
+      remaining = deadline - monotonic_time
+      return if remaining <= 0
+
+      sleep [STAGE_DEPENDENCY_REPLAY_POLL_SECONDS, remaining].min
+    end
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 
   def complete_stage_dependency_gate?(gate, plan, lane_ids)
