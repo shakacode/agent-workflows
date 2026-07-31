@@ -173,6 +173,53 @@
       "id": "ror-a-17-1-wave-a-20260729",
       "edges": []
     },
+    "stage_dependency_replay": {
+      "contract": "stage-dependency-gate",
+      "version": 1,
+      "lanes": [
+        {
+          "id": "lane-4584-ssr-bundle-http",
+          "maker": "maker-lane-4584-ssr-bundle-http",
+          "checker": "checker-ror-a-17-1-wave-a",
+          "head_sha": "1111111111111111111111111111111111111111",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "preparation": {}
+        },
+        {
+          "id": "lane-4736-rsc-error-redact",
+          "maker": "maker-lane-4736-rsc-error-redact",
+          "checker": "checker-ror-a-17-1-wave-a",
+          "head_sha": "2222222222222222222222222222222222222222",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "preparation": {}
+        },
+        {
+          "id": "lane-4753-guardrail-hook",
+          "maker": "maker-lane-4753-guardrail-hook",
+          "checker": "checker-ror-a-17-1-wave-a",
+          "head_sha": "3333333333333333333333333333333333333333",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "preparation": {}
+        },
+        {
+          "id": "lane-4756-ci-mergebase",
+          "maker": "maker-lane-4756-ci-mergebase",
+          "checker": "checker-ror-a-17-1-wave-a",
+          "head_sha": "4444444444444444444444444444444444444444",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "preparation": {}
+        },
+        {
+          "id": "lane-4813-changelog-171",
+          "maker": "maker-lane-4813-changelog-171",
+          "checker": "checker-ror-a-17-1-wave-a",
+          "head_sha": "5555555555555555555555555555555555555555",
+          "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "preparation": {}
+        }
+      ],
+      "edges": []
+    },
     "stage_dependency_gate": {
       "contract": "stage-dependency-gate",
       "version": 1,

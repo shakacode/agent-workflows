@@ -336,7 +336,9 @@ Plan a PR batch
      owns schema, collision, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
-     `lane_lifecycle_receipts` array. Advance max-one groups only from the
+     `lane_lifecycle_receipts` array, plus the exact top-level
+     `stage_dependency_replay` live input for fixed-sibling recomputation and
+     exact completed-result comparison. Advance max-one groups only from the
      helper's exact signed workflow-control completion receipt bound to the
      batch, dependency plan, lane, wave, canonical durable-state reference, and
      completed/recorded chronology. The receipt's RSA-SHA256 signature covers
