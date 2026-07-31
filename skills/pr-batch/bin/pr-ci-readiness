@@ -697,28 +697,69 @@ module PrCiReadiness
     # status per context, which is exactly what the history-list dedupe below
     # was approximating, so scope contents are unchanged.
     def fetch_exact_head_statuses(repo, head_sha)
+      combined_state = nil
       bind_head = lambda do |payload|
         ensure_exact_head!(payload, head_sha, "combined commit status", sha_key: "sha")
+        page_state = payload["state"]
+        unless %w[failure pending success].include?(page_state)
+          raise Error, "combined commit status response had invalid state #{page_state.inspect}"
+        end
+
+        combined_state ||= page_state
+        unless page_state == combined_state
+          raise Error,
+                "combined commit status state changed during pagination: " \
+                "expected #{combined_state}, found #{page_state}"
+        end
       end
-      rows = fetch_paginated_collection(
+      status_rows = fetch_paginated_collection(
         "repos/#{repo}/commits/#{head_sha}/status?per_page=100&page=%<page>s",
         "statuses",
         validate_page: bind_head
-      ).map do |row|
+      )
+      states = status_rows.map { |row| row["state"] }
+      unless states.all? { |state| %w[error failure pending success].include?(state) }
+        raise Error, "combined commit status response had an invalid status state"
+      end
+
+      expected_combined_state =
+        if states.any? { |state| %w[error failure].include?(state) }
+          "failure"
+        elsif states.empty? || states.include?("pending")
+          "pending"
+        else
+          "success"
+        end
+      unless combined_state == expected_combined_state
+        raise Error,
+              "combined commit status state was inconsistent with its statuses: " \
+              "expected #{expected_combined_state}, found #{combined_state}"
+      end
+
+      seen_contexts = {}
+      rows = status_rows.map do |row|
+        context = row["context"]
+        unless context.is_a?(String) && !context.empty?
+          raise Error, "combined commit status response had an invalid context"
+        end
+
+        context_identity = context.downcase
+        if seen_contexts.key?(context_identity)
+          raise Error,
+                "combined commit status response repeated case-insensitive context " \
+                "#{context.inspect} (first seen as #{seen_contexts.fetch(context_identity).inspect})"
+        end
+        seen_contexts[context_identity] = context
+
         {
           "kind" => "status",
           "id" => row["id"],
-          "name" => row["context"].to_s,
+          "name" => context,
           "state" => row["state"].to_s,
           "url" => row["target_url"].to_s,
           "head_sha" => head_sha
         }
       end
-      # Defense in depth: the combined endpoint already collapses each context
-      # to its current status, so this is a no-op against GitHub today. It is
-      # retained so a duplicated context could never inflate the scope, and it
-      # keeps the newest-first row for a context if one ever appears twice.
-      rows = rows.uniq { |row| row["name"] }
       [rows, true, nil]
     rescue StandardError => e
       [[], false, "exact-head status-context inventory failed: #{e.message}"]

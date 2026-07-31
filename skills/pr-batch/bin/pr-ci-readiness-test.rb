@@ -351,7 +351,8 @@ class PrCiReadinessCliTest < Minitest::Test
                    required_check_error: nil, full_check_error: nil, exact_actions: [],
                    exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
                    exact_actions_total_count: nil, expected_host: nil,
-                   exact_status_sha: :echo, exact_status_total_count: nil)
+                   exact_status_sha: :echo, exact_status_total_count: nil,
+                   exact_status_pages: nil)
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(
@@ -362,7 +363,7 @@ class PrCiReadinessCliTest < Minitest::Test
           required_check_error, full_check_error, exact_actions, exact_check_runs,
           exact_statuses, exact_inventory_error, exact_actions_total_count,
           File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host,
-          exact_status_sha, exact_status_total_count
+          exact_status_sha, exact_status_total_count, exact_status_pages
         )
       )
       FileUtils.chmod(0o755, gh)
@@ -394,7 +395,25 @@ class PrCiReadinessCliTest < Minitest::Test
   # it by parsing the requested ref out of the URL. Tests override
   # `exact_status_sha` with a literal SHA (mismatch) or nil (missing) to prove
   # the assertion still fails closed.
-  def combined_status_branch(exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count)
+  def combined_status_branch(exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count,
+                             exact_status_pages)
+    if exact_status_pages
+      page_cases = exact_status_pages.each_with_index.map do |payload, index|
+        "#{index + 1}) #{shell_json_printf(payload)} ;;"
+      end.join("\n")
+      return <<~BASH
+        if [[ "$*" = *"/status?per_page="* ]]; then
+          #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
+          page="${2##*page=}"
+          case "$page" in
+          #{page_cases}
+          *) exit 1 ;;
+          esac
+          exit 0
+        fi
+      BASH
+    end
+
     total_count = exact_status_total_count || exact_statuses.length
     combined_state = JSON.generate(combined_status_state(exact_statuses))
     envelope_tail = %(,"state":#{combined_state},"total_count":#{total_count},"statuses":)
@@ -428,7 +447,7 @@ class PrCiReadinessCliTest < Minitest::Test
                      required_check_error, full_check_error, exact_actions, exact_check_runs,
                      exact_statuses, exact_inventory_error, exact_actions_total_count,
                      pr_head_state_path, pr_identity_state_path, expected_host,
-                     exact_status_sha, exact_status_total_count)
+                     exact_status_sha, exact_status_total_count, exact_status_pages)
     host_guard =
       if expected_host
         <<~BASH
@@ -656,7 +675,9 @@ class PrCiReadinessCliTest < Minitest::Test
           #{shell_json_printf('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
           exit 0
         fi
-      #{combined_status_branch(exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count)}
+      #{combined_status_branch(
+        exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count, exact_status_pages
+      )}
         # The status-history list endpoint is served with its real shape: its
         # rows carry no commit SHA. Nothing should request it -- it is kept so
         # a regression back to it fails closed instead of passing silently.
@@ -1673,7 +1694,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_commit_status_history_keeps_only_the_latest_row_per_exact_context
+  def test_duplicate_combined_status_contexts_fail_closed_case_insensitively
     head = "a" * 40
     with_fake_gh(
       required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
@@ -1685,14 +1706,6 @@ class PrCiReadinessCliTest < Minitest::Test
           "target_url" => "https://example/status/400"
         },
         {
-          "id" => 399, "context" => "legacy", "state" => "failure",
-          "target_url" => "https://example/status/399"
-        },
-        {
-          "id" => 398, "context" => "legacy", "state" => "pending",
-          "target_url" => "https://example/status/398"
-        },
-        {
           "id" => 397, "context" => "Legacy", "state" => "success",
           "target_url" => "https://example/status/397"
         }
@@ -1702,16 +1715,15 @@ class PrCiReadinessCliTest < Minitest::Test
       assert status.success?, out
       data = JSON.parse(out)
 
-      assert_equal "READY", data.fetch("verdict")
-      assert_equal "READY", data.dig("scopes", "other", "state")
-      assert_equal(
-        [[400, "legacy", "success"], [397, "Legacy", "success"]],
-        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
-      )
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "repeated case-insensitive context"
     end
   end
 
-  def test_latest_unknown_commit_status_still_fails_closed_when_older_duplicate_succeeded
+  def test_unknown_combined_commit_status_fails_closed
     head = "a" * 40
     with_fake_gh(
       required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
@@ -1721,10 +1733,6 @@ class PrCiReadinessCliTest < Minitest::Test
         {
           "id" => 500, "context" => "legacy", "state" => "mystery",
           "target_url" => "https://example/status/500"
-        },
-        {
-          "id" => 499, "context" => "legacy", "state" => "success",
-          "target_url" => "https://example/status/499"
         },
         {
           "id" => 498, "context" => "distinct", "state" => "success",
@@ -1737,12 +1745,10 @@ class PrCiReadinessCliTest < Minitest::Test
       data = JSON.parse(out)
 
       assert_equal "UNKNOWN", data.fetch("verdict")
-      assert_equal true, data.dig("scopes", "other", "complete")
+      assert_equal false, data.dig("scopes", "other", "complete")
       assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
-      assert_equal(
-        [[500, "legacy", "mystery"], [498, "distinct", "success"]],
-        data.dig("scopes", "other", "rows").map { |row| row.values_at("id", "name", "state") }
-      )
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "invalid status state"
     end
   end
 
@@ -1856,6 +1862,69 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "UNKNOWN", other.fetch("state")
       assert_includes other.fetch("error"), "statuses pagination was incomplete"
       assert_equal "UNKNOWN", data.fetch("verdict")
+    end
+  end
+
+  def test_duplicate_context_reordered_onto_second_combined_status_page_fails_closed
+    head = "a" * 40
+    first_page = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    second_page = [
+      { "id" => 101, "context" => "STATUS-0", "state" => "success",
+        "target_url" => "https://example/status/101" }
+    ]
+    pages = [first_page, second_page].map do |statuses|
+      { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => statuses }
+    end
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "repeated case-insensitive context"
+    end
+  end
+
+  def test_changed_combined_state_on_second_status_page_fails_closed
+    head = "a" * 40
+    first_page = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    pages = [
+      { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => first_page },
+      {
+        "sha" => head, "state" => "pending", "total_count" => 101,
+        "statuses" => [
+          { "id" => 101, "context" => "status-100", "state" => "success",
+            "target_url" => "https://example/status/101" }
+        ]
+      }
+    ]
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "state changed during pagination"
     end
   end
 
