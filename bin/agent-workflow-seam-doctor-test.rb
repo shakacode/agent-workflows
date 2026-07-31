@@ -24,6 +24,7 @@ module AgentWorkflowSeamDoctorTestHelpers
     "merge_ledger" => "n/a",
     "ci_parity_environment" => "n/a",
     "hosted_ci_trigger" => "n/a",
+    "hosted_qa_gate" => "n/a",
     "ci_change_detector" => "n/a"
   }.freeze
 
@@ -1050,6 +1051,22 @@ class AgentWorkflowSeamDoctorFenceContentTest < Minitest::Test
 
       refute status.success?
       assert_equal 1, out.scan("<hosted CI runner image>").length
+    end
+  end
+
+  def test_executable_hosted_qa_placeholder_fails
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, <<~MARKDOWN)
+        ```bash
+        echo <hosted QA acceptance criteria>
+        ```
+      MARKDOWN
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "<hosted QA acceptance criteria>"
     end
   end
 

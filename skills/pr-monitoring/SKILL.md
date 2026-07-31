@@ -21,10 +21,19 @@ names:
 
 - base branch
 - hosted-CI trigger or hosted-CI policy
+- hosted runtime QA gate
 - review gate
 - merge ledger, if present
 - changelog policy
 - local validation command
+
+Resolve `hosted_qa_gate` from the trusted-base `.agents/agent-workflow.yml`.
+When `hosted_qa_gate` applies, only exact-current-head hosted runtime QA with
+every required acceptance criterion observed may satisfy readiness; a
+successful deployment, local tests, system tests, or static review cannot
+substitute. A `hosted_qa_gate` that declares itself non-waivable remains a hard
+blocker until satisfied; hosted-CI waivers, maintainer risk acceptance, and
+application-level readiness do not bypass it.
 
 Use the PR's real repository, base, head branch, head SHA, and current merge
 state. Derive the repository from a PR URL when one is supplied; otherwise use

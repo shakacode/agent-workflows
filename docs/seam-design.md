@@ -95,10 +95,15 @@ script means that capability is n/a in that repo.
 - `merge_ledger`
 - `ci_parity_environment`
 - `hosted_ci_trigger`
+- `hosted_qa_gate`
 - `ci_change_detector`
 
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
+`hosted_qa_gate` states which changes require an exact-head deployed runtime,
+the acceptance criteria and unhappy paths that must be exercised there, and
+whether maintainers may waive the gate. A non-waivable value is fail-closed:
+deployment success without runtime exercise is not a QA pass.
 
 `autonomous_merge` is an optional closed mapping. When absent, the shared
 workflow uses its portable thresholds and common hard-risk categories. When

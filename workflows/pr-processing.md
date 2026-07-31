@@ -963,6 +963,15 @@ the QA Evidence `Scope checked` field and, when the coordination backend has a
 supported lane note or metadata field, in final lane state. Do not invent new
 backend schema.
 
+Resolve `hosted_qa_gate` from the trusted-base `.agents/agent-workflow.yml`
+before selecting QA depth or reporting readiness. When `hosted_qa_gate`
+applies, only exact-current-head hosted runtime QA with every required
+acceptance criterion observed may satisfy readiness; a successful deployment,
+local tests, system tests, or static review cannot substitute. A
+`hosted_qa_gate` that declares itself non-waivable remains a hard blocker until
+satisfied; hosted-CI waivers, maintainer risk acceptance, and application-level
+readiness do not bypass it.
+
 Coordinate QA with the same primitives as other batch lanes:
 
 - The coordinator declares the QA lane in private batch state when the backend is
@@ -2590,6 +2599,10 @@ Also verify:
 - No AI reviewer finding remains untriaged as a confirmed blocker; do not wait for AI approval objects or positive AI issue comments as special gates.
 - No requested adversarial review has unresolved `BLOCKING` or `DISCUSS` findings.
 - Required checks are green, or the user has explicitly accepted an auditable waiver for hosted CI.
+- The trusted-base `hosted_qa_gate` is resolved. When applicable, its exact-head
+  hosted acceptance criteria have replayable `qa-evidence v2` with status
+  `satisfied`; `blocked`, `waived`, `in_progress`, `unknown`, missing, or stale
+  hosted evidence blocks readiness when the gate is non-waivable.
 - The PR body or latest agent comment includes exact local validation commands and results.
 - The merge ledger has no `UNKNOWN` fields and reports `complete_allowed: true`.
 
