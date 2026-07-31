@@ -24,7 +24,15 @@ REPLACEMENT_FENCING_RULE = "Replacement fencing returns `blocked-replacement-fen
 DISPATCH_PERSISTENCE_RULE = "Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch."
 EVIDENCE_VOCABULARY_RULE = "Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed."
 REPLACEMENT_PROOF_RULE = "A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences."
-REPLAY_OUTCOME_RULE = "A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction."
+LAUNCH_CONFIRMATION_V2_RULE = "A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction."
+LAUNCH_CONFIRMATION_V1_HISTORY_RULE = "Version 1 confirmations are history-only and cannot activate a launch-pending assignment."
+SIGNED_LAUNCH_OBSERVATION_RULE = "A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload."
+SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE = "The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature."
+FIXED_DISPATCHER_TRUST_RULE = "The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it."
+DISPATCHER_TRUST_SCHEMA_RULE = "The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`."
+DISPATCHER_TRUST_PROVENANCE_RULE = "Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed."
+LAUNCH_CONFIRMATION_V1_MIGRATION_RULE = "During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies."
+OBSOLETE_V1_ACTIVATION_RULE = "only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`"
 DECISION_RESOLUTION_RULE = "Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`."
 SELF_CONTAINED_PERSISTENCE_RULE = "Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch."
 INDEPENDENT_ADVERSARIAL_QA_ROUTE = "Independent adversarial QA: Sol/xhigh"
@@ -149,8 +157,9 @@ class ModelRoutingContractTest < Minitest::Test
     guide = read_repo_file("docs/agent-workflows-model-routing.md")
     docs = read_repo_file("docs/pr-batch-skills.md")
     context = read_repo_file("CONTEXT.md")
+    triage = read_repo_file("skills/triage/SKILL.md")
     [guide, docs, context, read_repo_file("skills/plan-pr-batch/SKILL.md"), read_repo_file("skills/pr-batch/SKILL.md"),
-     read_repo_file("skills/triage/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
+     triage, read_repo_file("workflows/pr-processing.md")].each do |text|
       assert_includes text, "dispatch-decision-request v1"
       assert_includes text, "dispatcher-capability-preflight"
       assert_includes text, PROSPECTIVE_INSTANCE_ID_RULE
@@ -160,9 +169,39 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes text, DISPATCH_PERSISTENCE_RULE
       assert_includes text, EVIDENCE_VOCABULARY_RULE
       assert_includes text, REPLACEMENT_PROOF_RULE
-      assert_includes text, REPLAY_OUTCOME_RULE
       assert_includes text, DECISION_RESOLUTION_RULE
       assert_includes text, SELF_CONTAINED_PERSISTENCE_RULE
+    end
+
+    [
+      guide,
+      docs,
+      context,
+      triage,
+      read_repo_file("skills/plan-pr-batch/SKILL.md"),
+      read_repo_file("skills/pr-batch/SKILL.md"),
+      read_repo_file("workflows/pr-processing.md")
+    ].each do |text|
+      assert_includes text, LAUNCH_CONFIRMATION_V2_RULE
+      assert_includes text, LAUNCH_CONFIRMATION_V1_HISTORY_RULE
+      refute_includes text, OBSOLETE_V1_ACTIVATION_RULE
+    end
+    [
+      guide,
+      docs,
+      context,
+      triage,
+      read_repo_file("skills/pr-batch/SKILL.md"),
+      read_repo_file("workflows/pr-processing.md")
+    ].each do |text|
+      assert_includes text, SIGNED_LAUNCH_OBSERVATION_RULE
+      assert_includes text, SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE
+      assert_includes text, FIXED_DISPATCHER_TRUST_RULE
+      assert_includes text, DISPATCHER_TRUST_SCHEMA_RULE
+      assert_includes text, DISPATCHER_TRUST_PROVENANCE_RULE
+      assert_includes text, LAUNCH_CONFIRMATION_V1_MIGRATION_RULE
+      refute_includes text, "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM"
+      refute_includes text, "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID"
     end
 
     portable_call = '"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"'

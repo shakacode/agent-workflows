@@ -1,14 +1,17 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Submit one authorized, merge-ready PR against the reviewed GitHub host, base,
-# and head when GitHub may require a merge queue. Readiness and merge authority
-# remain caller responsibilities; this helper only makes the mutation bounded.
+# Submit one merge-assured PR against the reviewed GitHub host, base, base SHA,
+# and head when GitHub may require a merge queue. Every run requires a fresh,
+# integrity-bound eligible merge-assurance receipt before mutation.
 
 require "json"
 require "optparse"
 require "tempfile"
+require "time"
 require "uri"
+
+load File.expand_path("merge-assurance", __dir__) unless defined?(MergeAssurance)
 
 module PrMergeSubmit
   class Error < StandardError; end
@@ -20,22 +23,10 @@ module PrMergeSubmit
     end
   end
 
-  QUEUE_CONTROL_PATTERN = /merge strategy for .+ is set by the merge queue/i
   GRAPHQL_FEATURE_HEADER = "GraphQL-Features: merge_queue"
   METHODS = %w[merge rebase squash].freeze
 
   module_function
-
-  def queue_controlled?(output)
-    output.match?(QUEUE_CONTROL_PATTERN)
-  end
-
-  def queue_controlled_errors?(errors)
-    errors = Array(errors)
-    errors.any? && errors.all? do |error|
-      error.is_a?(Hash) && queue_controlled?(error["message"].to_s)
-    end
-  end
 
   def parse_json!(raw, context)
     payload = JSON.parse(raw)
@@ -64,6 +55,7 @@ module PrMergeSubmit
             id
             headRefOid
             baseRefName
+            baseRefOid
             state
             isDraft
             url
@@ -99,33 +91,6 @@ module PrMergeSubmit
       }
     GRAPHQL
 
-    MERGE_MUTATION = <<~GRAPHQL
-      mutation(
-        $pullRequestId: ID!,
-        $expectedHeadOid: GitObjectID!,
-        $mergeMethod: PullRequestMergeMethod!,
-        $commitHeadline: String,
-        $commitBody: String
-      ) {
-        mergePullRequest(input: {
-          pullRequestId: $pullRequestId,
-          expectedHeadOid: $expectedHeadOid,
-          mergeMethod: $mergeMethod,
-          commitHeadline: $commitHeadline,
-          commitBody: $commitBody
-        }) {
-          pullRequest {
-            headRefOid
-            baseRefName
-            merged
-            mergedAt
-            url
-            mergeCommit { oid }
-          }
-        }
-      }
-    GRAPHQL
-
     def run(argv)
       @pending_signal = nil
       @cancellation_signal = nil
@@ -138,10 +103,12 @@ module PrMergeSubmit
       return print_help if options[:help]
 
       validate_options!(options)
+      @merge_assurance_receipt = load_merge_assurance_receipt!(options)
       pull_request = fetch_pr(options)
       result = if exact_merge?(pull_request, options)
                  already_merged_result(pull_request, options)
                else
+                 validate_receipt_live_bindings!(pull_request, options)
                  validate_pr!(pull_request, options)
                  submit(pull_request, options)
                end
@@ -163,11 +130,13 @@ module PrMergeSubmit
     def parse_options(argv)
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
-        expected_head: nil, expected_base: nil, help: false, pr: nil
+        expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
+        help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
-                      "--expected-head SHA --expected-base BRANCH --method METHOD [options]"
+                      "--expected-head SHA --expected-base BRANCH --method METHOD " \
+                      "--merge-assurance-receipt FILE [options]"
         opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
         opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
         opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
@@ -176,11 +145,18 @@ module PrMergeSubmit
         opts.on("--expected-base BRANCH", "Exact PR base branch already cleared by readiness gates") do |value|
           options[:expected_base] = value
         end
-        opts.on("--method METHOD", METHODS, "Direct merge method: merge, rebase, or squash") do |value|
+        opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
+          options[:merge_assurance_receipt] = value
+        end
+        opts.on("--method METHOD", METHODS, "Requested method; merge queue configuration controls the actual method") do |value|
           options[:method] = value
         end
-        opts.on("--subject SUBJECT", "Direct merge commit subject") { |value| options[:subject] = value }
-        opts.on("--body BODY", "Direct merge commit body") { |value| options[:body] = value }
+        opts.on("--subject SUBJECT", "Legacy direct-merge subject; unused for queue submission") do |value|
+          options[:subject] = value
+        end
+        opts.on("--body BODY", "Legacy direct-merge body; unused for queue submission") do |value|
+          options[:body] = value
+        end
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
       end
       remaining = parser.parse(argv)
@@ -198,14 +174,13 @@ module PrMergeSubmit
 
         #{usage_parser}
 
-        The helper reads GitHub's live isMergeQueueEnabled value for the target
-        PR. It uses enqueuePullRequest for a queue-controlled base and the
-        repository's normal direct merge mutation otherwise. If queue enforcement
-        changes between the read and direct mutation, only GitHub's explicit
-        queue-control error permits one exact-head enqueue retry. The helper never
-        enables auto-merge or treats an unrelated failure as queue evidence. It
-        reconciles ambiguous mutation responses against live exact-head state;
-        exit 2 means the outcome remains UNKNOWN and must not be retried blindly.
+        The helper observes an exact terminal merge without mutation, preserves
+        exact existing queue membership, and uses enqueuePullRequest only when
+        GitHub reports the base is queue-controlled. An open PR whose base has no
+        merge queue fails closed because GitHub exposes no atomic expected-base
+        OID for direct merge. The helper never enables auto-merge. It reconciles
+        ambiguous enqueue responses against live exact-head state; exit 2 means
+        the outcome remains UNKNOWN and must not be retried blindly.
       HELP
       0
     end
@@ -213,9 +188,11 @@ module PrMergeSubmit
     def usage_parser
       OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
-                      "--expected-head SHA --expected-base BRANCH --method METHOD [options]"
-        opts.separator "        --subject SUBJECT  Direct merge commit subject"
-        opts.separator "        --body BODY        Direct merge commit body"
+                      "--expected-head SHA --expected-base BRANCH --method METHOD " \
+                      "--merge-assurance-receipt FILE [options]"
+        opts.separator "        --subject SUBJECT  Legacy direct-merge subject; unused for queue submission"
+        opts.separator "        --body BODY        Legacy direct-merge body; unused for queue submission"
+        opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
       end
     end
 
@@ -232,9 +209,197 @@ module PrMergeSubmit
         raise Error, "--expected-base must be a valid branch name"
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
+      raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
 
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
+    end
+
+    RECEIPT_KEYS = %w[
+      bindings contract eligible evidence evidence_digest follow_up_accounting
+      freshness issued_at verdict version
+    ].freeze
+    RECEIPT_BINDING_KEYS = %w[
+      authority base diff_identity head_sha host pr repo
+    ].freeze
+    RECEIPT_EVIDENCE_KEYS = %w[
+      authenticated_tracker_reads autonomous_result ci_result context
+    ].freeze
+    AUTHENTICATED_TRACKER_READ_KEYS = %w[
+      checked_at contract diff_identity head_sha host issue issue_metadata
+      operation_digest provenance repo source_pr tracker version
+    ].freeze
+    AUTHENTICATED_TRACKER_METADATA_KEYS = %w[
+      body_digest html_url id node_id state title updated_at url
+    ].freeze
+
+    def load_merge_assurance_receipt!(options)
+      raw = File.read(options[:merge_assurance_receipt], encoding: "UTF-8")
+      receipt = PrMergeSubmit.parse_json!(raw, "merge-assurance receipt")
+      unless receipt.keys.sort == RECEIPT_KEYS.sort &&
+             receipt["contract"] == "merge-assurance-receipt" &&
+             receipt["version"] == 1 &&
+             receipt["eligible"] == true &&
+             receipt["verdict"] == "ELIGIBLE"
+        raise Error, "merge-assurance receipt is not an eligible v1 receipt"
+      end
+      unless receipt["bindings"].is_a?(Hash) &&
+             receipt["bindings"].keys.sort == RECEIPT_BINDING_KEYS.sort
+        raise Error, "merge-assurance receipt bindings are malformed"
+      end
+      unless MergeAssurance.valid_evidence_digest?(receipt)
+        raise Error, "merge-assurance receipt evidence digest mismatch"
+      end
+
+      evidence = receipt["evidence"]
+      now = Time.now.utc
+      validate_receipt_evidence!(receipt, evidence)
+      validate_receipt_freshness!(receipt, now)
+      reassessed = MergeAssurance.assess(
+        ci_result: evidence["ci_result"],
+        autonomous_result: evidence["autonomous_result"],
+        context: evidence["context"],
+        now:
+      )
+      unless reassessed["eligible"] == true
+        raise Error, "merge-assurance receipt evidence does not currently qualify: " \
+                     "#{Array(reassessed['failures']).join('; ')}"
+      end
+      unless receipt["bindings"] == reassessed["bindings"] &&
+             receipt["follow_up_accounting"] == reassessed["follow_up_accounting"]
+        raise Error, "merge-assurance receipt bindings or accounting do not match its evidence"
+      end
+      unless comparable_tracker_reads(evidence) == comparable_tracker_reads(reassessed["evidence"])
+        raise Error, "merge-assurance receipt authenticated tracker read does not match the current issue"
+      end
+
+      expected_freshness = reassessed["freshness"]
+      unless receipt["freshness"] == expected_freshness
+        raise Error, "merge-assurance receipt freshness contract is malformed"
+      end
+
+      validate_receipt_option_bindings!(receipt, options)
+      receipt
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def validate_receipt_evidence!(receipt, evidence)
+      unless evidence.is_a?(Hash) && evidence.keys.sort == RECEIPT_EVIDENCE_KEYS.sort &&
+             evidence["context"].is_a?(Hash) &&
+             evidence["authenticated_tracker_reads"].is_a?(Array)
+        raise Error, "merge-assurance receipt evidence is malformed"
+      end
+      if MergeAssurance.contains_unknown?(evidence["authenticated_tracker_reads"])
+        raise Error, "merge-assurance receipt evidence contains UNKNOWN"
+      end
+
+      context = evidence["context"]
+      semantic_trackers = Array(context["operations"]).select do |operation|
+        operation.is_a?(Hash) && operation["type"] == "semantic-github-actions-tracker"
+      end
+      reads = evidence["authenticated_tracker_reads"]
+      expected_read_count = context["semantic_github_actions_change"] == true ? 1 : 0
+      unless semantic_trackers.length == expected_read_count && reads.length == expected_read_count
+        raise Error, "merge-assurance receipt authenticated tracker read count is malformed"
+      end
+      return if expected_read_count.zero?
+
+      validate_authenticated_tracker_read!(
+        reads.first,
+        tracker: semantic_trackers.first,
+        context:,
+        issued_at: receipt["issued_at"]
+      )
+    end
+
+    def validate_authenticated_tracker_read!(read, tracker:, context:, issued_at:)
+      issue_number = tracker["tracker"].to_s.match(%r{/issues/([1-9]\d*)\z})&.captures&.first&.to_i
+      expected_api_url = if context["host"] == "github.com"
+                           "https://api.github.com/repos/#{context['repo']}/issues/#{issue_number}"
+                         else
+                           "https://#{context['host']}/api/v3/repos/#{context['repo']}/issues/#{issue_number}"
+                         end
+      metadata = read["issue_metadata"] if read.is_a?(Hash)
+      valid = read.is_a?(Hash) &&
+              read.keys.sort == AUTHENTICATED_TRACKER_READ_KEYS.sort &&
+              read["contract"] == "authenticated-semantic-tracker-read" &&
+              read["version"] == 1 &&
+              read["provenance"] == "gh-api" &&
+              read["checked_at"] == issued_at &&
+              read["host"] == context["host"] &&
+              read["repo"] == context["repo"] &&
+              read["issue"] == issue_number &&
+              read["tracker"] == tracker["tracker"] &&
+              read["source_pr"] == tracker["source_pr"] &&
+              read["head_sha"] == context["head_sha"] &&
+              read["diff_identity"] == context["diff_identity"] &&
+              read["operation_digest"] == MergeAssurance.semantic_tracker_operation_digest(tracker) &&
+              valid_authenticated_tracker_metadata?(
+                metadata,
+                api_url: expected_api_url,
+                html_url: tracker["tracker"]
+              )
+      raise Error, "merge-assurance receipt authenticated tracker read is malformed or mismatched" unless valid
+    end
+
+    def valid_authenticated_tracker_metadata?(metadata, api_url:, html_url:)
+      return false unless metadata.is_a?(Hash) &&
+                          metadata.keys.sort == AUTHENTICATED_TRACKER_METADATA_KEYS.sort
+      return false unless metadata["id"].is_a?(Integer) && metadata["id"].positive?
+      return false unless metadata["node_id"].is_a?(String) && !metadata["node_id"].empty?
+      return false unless metadata["url"] == api_url && metadata["html_url"] == html_url
+      return false unless %w[open closed].include?(metadata["state"])
+      return false unless metadata["title"].is_a?(String) && !metadata["title"].strip.empty?
+      return false unless metadata["body_digest"].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
+
+      Time.iso8601(metadata["updated_at"].to_s)
+      true
+    rescue ArgumentError
+      false
+    end
+
+    def comparable_tracker_reads(evidence)
+      Array(evidence["authenticated_tracker_reads"]).map do |read|
+        read.reject { |key, _value| key == "checked_at" }
+      end
+    end
+
+    def validate_receipt_freshness!(receipt, now = Time.now.utc)
+      issued_at = Time.iso8601(receipt["issued_at"].to_s)
+      age = now - issued_at
+      raise Error, "merge-assurance receipt is stale (maximum age is exactly 300 seconds)" if
+        age > MergeAssurance::MAX_EVIDENCE_AGE_SECONDS
+      raise Error, "merge-assurance receipt is future-dated beyond exactly 30 seconds of clock skew" if
+        age < -MergeAssurance::MAX_FUTURE_SKEW_SECONDS
+    rescue ArgumentError
+      raise Error, "merge-assurance receipt issued_at is invalid"
+    end
+
+    def validate_receipt_option_bindings!(receipt, options)
+      bindings = receipt.fetch("bindings")
+      raise Error, "merge-assurance receipt host mismatch" unless bindings["host"] == options[:host]
+      raise Error, "merge-assurance receipt repo mismatch" unless bindings["repo"] == options[:repo]
+      raise Error, "merge-assurance receipt PR mismatch" unless bindings["pr"] == options[:pr].to_i
+      raise Error, "merge-assurance receipt head mismatch" unless
+        bindings["head_sha"].to_s.casecmp?(options[:expected_head])
+      raise Error, "merge-assurance receipt base ref mismatch" unless
+        bindings.dig("base", "ref") == options[:expected_base]
+    end
+
+    def validate_receipt_live_bindings!(pull_request, options)
+      bindings = @merge_assurance_receipt.fetch("bindings")
+      unless pull_request["headRefOid"].to_s.casecmp?(bindings["head_sha"])
+        raise Error, "PR head moved: receipt binds #{bindings['head_sha']}, found #{pull_request['headRefOid']}"
+      end
+      unless pull_request["baseRefName"] == bindings.dig("base", "ref")
+        raise Error, "PR base moved: receipt binds #{bindings.dig('base', 'ref')}, found #{pull_request['baseRefName']}"
+      end
+      unless pull_request["baseRefOid"].to_s.casecmp?(bindings.dig("base", "sha").to_s)
+        raise Error, "merge-assurance receipt base SHA mismatch: expected " \
+                     "#{bindings.dig('base', 'sha')}, found #{pull_request['baseRefOid']}"
+      end
+      validate_receipt_option_bindings!(@merge_assurance_receipt, options)
     end
 
     # gh treats a field value beginning with "@" as a file path to read, so a
@@ -283,7 +448,11 @@ module PrMergeSubmit
     end
 
     def submit(pull_request, options)
-      return existing_queue_result(pull_request, options) if pull_request["isInMergeQueue"] == true
+      if pull_request["isInMergeQueue"] == true
+        return existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
+
+        raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof"
+      end
       unless pull_request["isInMergeQueue"] == false && pull_request["mergeQueueEntry"].nil?
         raise UnknownOutcome, "PR merge-queue membership is inconsistent or UNKNOWN"
       end
@@ -293,48 +462,8 @@ module PrMergeSubmit
         raise Error, "PR merge-queue state is missing or UNKNOWN"
       end
 
-      direct_stdout, direct_stderr, direct_status = run_gh(
-        *direct_merge_args(pull_request, options), host: options[:host], mutation: true
-      )
-      direct_output = failure_output(direct_stdout, direct_stderr)
-      unless direct_status.success?
-        direct_errors = PrMergeSubmit.graphql_errors(direct_stdout)
-        return reconcile_direct_graphql_errors!(options, direct_errors) if direct_errors
-
-        return reconcile_mutation_outcome!(options, "direct merge submission", direct_output)
-      end
-
-      direct_payload = begin
-        PrMergeSubmit.parse_json!(direct_stdout, "direct merge")
-      rescue Error => e
-        return reconcile_mutation_outcome!(
-          options, "direct merge", failure_output(e.message, direct_stderr)
-        )
-      end
-      direct_errors = Array(direct_payload["errors"])
-      if direct_errors.any?
-        return reconcile_direct_graphql_errors!(options, direct_errors)
-      end
-
-      merged_pull_request = direct_payload.dig("data", "mergePullRequest", "pullRequest")
-      begin
-        validate_merged_pr!(merged_pull_request, options)
-      rescue Error => e
-        return reconcile_mutation_outcome!(
-          options, "direct merge response validation", failure_output(e.message, direct_stderr)
-        )
-      end
-      direct_result(merged_pull_request, options, direct_stderr)
-    end
-
-    def enqueue_after_queue_race(options, direct_output, pull_request: nil)
-      refreshed_pull_request = pull_request || fetch_pr(options)
-      validate_pr!(refreshed_pull_request, options)
-      unless refreshed_pull_request["isMergeQueueEnabled"] == true
-        raise Error, "GitHub reported queue control but the refreshed PR queue state is not enabled"
-      end
-
-      enqueue_result(refreshed_pull_request, options, direct_output:)
+      raise UnknownOutcome, "direct merge is unsupported because GitHub has no atomic expected-base OID; " \
+                            "configure the base branch to use a merge queue"
     end
 
     def validate_pr!(pull_request, options, require_open: true)
@@ -344,51 +473,20 @@ module PrMergeSubmit
       unless pull_request["baseRefName"] == options[:expected_base]
         raise Error, "PR base moved: expected #{options[:expected_base]}, found #{pull_request['baseRefName']}"
       end
-      return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+
+      if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+        validate_receipt_base_sha!(pull_request) if @merge_assurance_receipt
+        return
+      end
 
       raise Error, "PR head moved: expected #{options[:expected_head]}, found #{pull_request['headRefOid']}"
     end
 
-    def direct_merge_args(pull_request, options)
-      args = [
-        "api", "graphql",
-        "-H", GRAPHQL_FEATURE_HEADER,
-        "-f", "query=#{MERGE_MUTATION}",
-        "-f", "pullRequestId=#{pull_request.fetch('id')}",
-        "-f", "expectedHeadOid=#{options[:expected_head]}",
-        "-f", "mergeMethod=#{options[:method].upcase}"
-      ]
-      args.concat(["-f", "commitHeadline=#{options[:subject]}"]) if options[:subject]
-      args.concat(["-f", "commitBody=#{options[:body]}"]) if options[:body]
-      args
-    end
+    def validate_receipt_base_sha!(pull_request)
+      expected = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      return if pull_request["baseRefOid"].to_s.casecmp?(expected.to_s)
 
-    def validate_merged_pr!(pull_request, options)
-      raise Error, "direct merge submission returned no pull request" unless pull_request.is_a?(Hash)
-
-      validate_url_host!(pull_request["url"], options[:host])
-      raise Error, "direct merge did not report a merged PR" unless pull_request["merged"] == true
-      unless pull_request["baseRefName"] == options[:expected_base]
-        raise Error, "PR base moved during direct merge: expected #{options[:expected_base]}, found #{pull_request['baseRefName']}"
-      end
-      return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
-
-      raise Error, "PR head moved during direct merge: expected #{options[:expected_head]}, found #{pull_request['headRefOid']}"
-    end
-
-    def direct_result(pull_request, options, diagnostics)
-      {
-        "pr" => options[:pr].to_i,
-        "repo" => options[:repo],
-        "url" => pull_request["url"],
-        "expected_head" => options[:expected_head],
-        "expected_base" => options[:expected_base],
-        "submission" => "direct",
-        "method" => options[:method],
-        "merged_at" => pull_request["mergedAt"],
-        "merge_commit" => pull_request.dig("mergeCommit", "oid"),
-        "diagnostics" => diagnostics.strip
-      }.reject { |_key, value| value.nil? || value == "" }
+      raise Error, "merge-assurance receipt base SHA mismatch: expected #{expected}, found #{pull_request['baseRefOid']}"
     end
 
     def already_merged_result(pull_request, options)
@@ -406,16 +504,16 @@ module PrMergeSubmit
       }.reject { |_key, value| value.nil? || value == "" }
     end
 
-    def existing_queue_result(pull_request, options, direct_output: nil, reconciled: false)
+    def existing_queue_result(pull_request, options, reconciled: false)
       entry = pull_request["mergeQueueEntry"]
       unless entry.is_a?(Hash) && entry["id"]
         raise UnknownOutcome, "PR reports merge-queue membership without a complete queue entry"
       end
 
-      queue_result(pull_request, entry, options, direct_output:, reconciled:)
+      queue_result(pull_request, entry, options, reconciled:)
     end
 
-    def enqueue_result(pull_request, options, direct_output: nil)
+    def enqueue_result(pull_request, options)
       stdout, stderr, status = run_gh(
         "api", "graphql",
         "-H", GRAPHQL_FEATURE_HEADER,
@@ -427,14 +525,12 @@ module PrMergeSubmit
       )
       unless status.success?
         errors = PrMergeSubmit.graphql_errors(stdout)
-        return reconcile_enqueue_graphql_errors!(options, errors, direct_output:) if errors
+        return reconcile_enqueue_graphql_errors!(options, errors) if errors
 
         return reconcile_mutation_outcome!(
           options,
           "merge-queue submission",
-          failure_output(stdout, stderr),
-          route: :merge_queue,
-          direct_output:
+          failure_output(stdout, stderr)
         )
       end
 
@@ -444,14 +540,12 @@ module PrMergeSubmit
         return reconcile_mutation_outcome!(
           options,
           "merge-queue submission",
-          failure_output(e.message, stderr),
-          route: :merge_queue,
-          direct_output:
+          failure_output(e.message, stderr)
         )
       end
       errors = payload["errors"]
       if Array(errors).any?
-        return reconcile_enqueue_graphql_errors!(options, errors, direct_output:)
+        return reconcile_enqueue_graphql_errors!(options, errors)
       end
 
       entry = payload.dig("data", "enqueuePullRequest", "mergeQueueEntry")
@@ -459,13 +553,15 @@ module PrMergeSubmit
         return reconcile_mutation_outcome!(
           options,
           "merge-queue submission",
-          "response contained no queue entry",
-          route: :merge_queue,
-          direct_output:
+          "response contained no queue entry"
         )
       end
 
       post_enqueue_pull_request = fetch_pr_for_reconciliation!(options, "merge-queue post-submission verification")
+      if exact_merge?(post_enqueue_pull_request, options)
+        return queue_result(post_enqueue_pull_request, entry, options)
+      end
+
       begin
         validate_pr!(post_enqueue_pull_request, options, require_open: false)
       rescue Error => e
@@ -474,18 +570,13 @@ module PrMergeSubmit
       end
 
       if exact_queue?(post_enqueue_pull_request, options)
-        return existing_queue_result(post_enqueue_pull_request, options, direct_output:)
-      end
-      if exact_merge?(post_enqueue_pull_request, options)
-        return queue_result(
-          post_enqueue_pull_request, entry, options, direct_output:, reconciled: !direct_output.nil?
-        )
+        return existing_queue_result(post_enqueue_pull_request, options)
       end
 
       raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
     end
 
-    def queue_result(pull_request, entry, options, direct_output: nil, reconciled: false)
+    def queue_result(pull_request, entry, options, reconciled: false)
       post_submission_state = pull_request["merged"] == true ? "MERGED" : pull_request["state"]
 
       result = {
@@ -503,72 +594,43 @@ module PrMergeSubmit
       result["merge_queue_entry"] = entry if entry
       result["merge_commit"] = pull_request.dig("mergeCommit", "oid") if pull_request["merged"] == true
       result["reconciled_after_failure"] = true if reconciled
-      result["direct_attempt"] = direct_output.strip if direct_output
       result
     end
 
-    def reconcile_mutation_outcome!(options, context, diagnostics, route: :direct, direct_output: nil)
+    def reconcile_mutation_outcome!(options, context, diagnostics)
       pull_request = fetch_pr_for_reconciliation!(options, "#{context} outcome")
       if exact_merge?(pull_request, options)
-        result = already_merged_result(pull_request, options).merge(
-          "reconciled_after_failure" => true,
-          "attempted_submission" => route.to_s,
-          "diagnostics" => diagnostics
-        )
-        result["direct_attempt"] = direct_output.strip if direct_output
-        return result
-      end
-      if exact_queue?(pull_request, options)
-        return existing_queue_result(pull_request, options, direct_output:, reconciled: true)
-      end
-
-      reject_mismatched_queue!(pull_request, options) if route == :merge_queue
-
-      raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
-    end
-
-    def reconcile_enqueue_graphql_errors!(options, errors, direct_output: nil)
-      diagnostics = JSON.generate(errors)
-      pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
-      return existing_queue_result(pull_request, options, direct_output:, reconciled: true) if exact_queue?(pull_request, options)
-
-      if exact_merge?(pull_request, options)
-        result = already_merged_result(pull_request, options).merge(
+        return already_merged_result(pull_request, options).merge(
           "reconciled_after_failure" => true,
           "attempted_submission" => "merge_queue",
           "diagnostics" => diagnostics
         )
-        result["direct_attempt"] = direct_output.strip if direct_output
-        return result
+      end
+      if exact_queue?(pull_request, options)
+        return existing_queue_result(pull_request, options, reconciled: true)
+      end
+
+      reject_mismatched_queue!(pull_request, options)
+
+      raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
+    end
+
+    def reconcile_enqueue_graphql_errors!(options, errors)
+      diagnostics = JSON.generate(errors)
+      pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
+      return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
+
+      if exact_merge?(pull_request, options)
+        return already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => "merge_queue",
+          "diagnostics" => diagnostics
+        )
       end
 
       reject_mismatched_queue!(pull_request, options)
       raise UnknownOutcome, "merge-queue submission outcome could not be proven after GraphQL errors; " \
                             "do not retry blindly: #{diagnostics}"
-    end
-
-    def reconcile_direct_graphql_errors!(options, errors)
-      diagnostics = JSON.generate(errors)
-      pull_request = fetch_pr_for_reconciliation!(options, "direct merge GraphQL error outcome")
-      if exact_merge?(pull_request, options)
-        return already_merged_result(pull_request, options).merge(
-          "reconciled_after_failure" => true,
-          "attempted_submission" => "direct",
-          "diagnostics" => diagnostics
-        )
-      end
-      return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
-
-      if pull_request["state"] == "OPEN" && pull_request["isInMergeQueue"] == false
-        if PrMergeSubmit.queue_controlled_errors?(errors)
-          return enqueue_after_queue_race(options, diagnostics, pull_request:)
-        end
-
-        raise UnknownOutcome, "direct merge submission outcome could not be proven after GraphQL errors; " \
-                              "do not retry blindly: #{diagnostics}"
-      end
-
-      raise UnknownOutcome, "direct merge GraphQL error outcome could not be proven: #{diagnostics}"
     end
 
     def fetch_pr_for_reconciliation!(options, context)
@@ -578,17 +640,31 @@ module PrMergeSubmit
     end
 
     def exact_merge?(pull_request, options)
-      pull_request["merged"] == true && exact_target?(pull_request, options)
+      pull_request["state"] == "MERGED" &&
+        pull_request["merged"] == true &&
+        pull_request["url"] == "https://#{options[:host]}/#{options[:repo]}/pull/#{options[:pr]}" &&
+        pull_request["baseRefName"] == options[:expected_base] &&
+        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
+        valid_merge_commit_oid?(pull_request.dig("mergeCommit", "oid"))
+    end
+
+    def valid_merge_commit_oid?(oid)
+      oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/i)
     end
 
     def exact_queue?(pull_request, options)
-      pull_request["isInMergeQueue"] == true && exact_target?(pull_request, options) &&
+      pull_request["state"] == "OPEN" &&
+        pull_request["merged"] == false &&
+        pull_request["mergeCommit"].nil? &&
+        pull_request["isInMergeQueue"] == true && exact_target?(pull_request, options) &&
         pull_request["mergeQueueEntry"].is_a?(Hash) && pull_request.dig("mergeQueueEntry", "id")
     end
 
     def exact_target?(pull_request, options)
       pull_request["baseRefName"] == options[:expected_base] &&
-        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+        pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
+        (!@merge_assurance_receipt ||
+          pull_request["baseRefOid"].to_s.casecmp?(@merge_assurance_receipt.dig("bindings", "base", "sha").to_s))
     end
 
     def reject_mismatched_queue!(pull_request, options)
@@ -606,6 +682,7 @@ module PrMergeSubmit
     end
 
     def run_gh(*args, host:, mutation: false)
+      validate_receipt_freshness!(@merge_assurance_receipt) if mutation && @merge_assurance_receipt
       timeout_seconds = gh_timeout_seconds
       if @cancellation_signal && (mutation || !@mutation_attempted)
         cancellation_signal = @cancellation_signal

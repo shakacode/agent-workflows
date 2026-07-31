@@ -79,17 +79,46 @@ rescue Date::Error, KeyError, TypeError
   abort "calibration PR merged_at must be an ISO 8601 timestamp"
 end
 
-def validate_calibration_pr_identity!(pull_request)
+def validate_calibration_pr_repository!(pull_request)
   abort "calibration PR must be a mapping" unless pull_request.is_a?(Hash)
 
   repository = pull_request["repository"]
   unless repository.is_a?(String) && repository.match?(%r{\A[^/\s]+/[^/\s]+\z})
     abort "calibration PR repository must use OWNER/REPO form"
   end
+  repository
+end
+
+def validate_calibration_pr_identity!(pull_request)
+  repository = validate_calibration_pr_repository!(pull_request)
   unless pull_request["number"].is_a?(Integer) && pull_request["number"].positive?
     abort "calibration PR number must be a positive integer"
   end
   [repository, pull_request.fetch("number")]
+end
+
+def validate_calibration_pr!(pull_request, scope_complete:)
+  identity = validate_calibration_pr_identity!(pull_request)
+  merged_at = parse_calibration_pr_merged_at!(pull_request)
+  PR_COUNT_FIELDS.each do |field|
+    value = pull_request[field]
+    unless value.nil? || (value.is_a?(Integer) && value >= 0)
+      abort "calibration PR #{field} must be a nonnegative integer or null"
+    end
+  end
+  if scope_complete
+    COMPLETE_SCOPE_REQUIRED_PR_COUNTS.each do |field|
+      unless pull_request[field].is_a?(Integer)
+        abort "calibration PR #{field} must be a nonnegative integer when dataset scope is complete"
+      end
+    end
+  end
+  categories = pull_request["path_categories"]
+  unless categories.is_a?(Array) &&
+         categories.all? { |category| category.is_a?(String) && !category.strip.empty? }
+    abort "calibration PR path_categories must be a list of nonempty strings"
+  end
+  [identity, merged_at]
 end
 
 def requested_window_covered?(scope, options)
@@ -124,26 +153,21 @@ end
 scope = dataset.fetch("scope")
 prs = dataset.fetch("prs")
 abort "calibration PRs must be a list" unless prs.is_a?(Array)
+declared_scope_complete = scope["complete"] == true
 window_covered = requested_window_covered?(scope, options)
-effective_scope_complete = scope["complete"] == true && window_covered
+effective_scope_complete = declared_scope_complete && window_covered
 
-repositories = options[:repositories].empty? ? scope.fetch("repositories") : options[:repositories]
-unless options[:repositories].any?
-  abort "calibration PR must be a mapping" unless prs.all? { |pr| pr.is_a?(Hash) }
-  unless prs.all? { |pr| pr["repository"].is_a?(String) }
-    abort "calibration PR repository must use OWNER/REPO form"
-  end
-end
-prs = prs.select { |pr| pr.is_a?(Hash) && repositories.include?(pr["repository"]) }
-candidate_identities = {}
+raw_identities = {}
 merged_at_instants = {}.compare_by_identity
 prs.each do |pr|
-  identity = validate_calibration_pr_identity!(pr)
-  abort "calibration PR identities must be unique" if candidate_identities.key?(identity)
+  identity, merged_at = validate_calibration_pr!(pr, scope_complete: declared_scope_complete)
+  abort "calibration PR identities must be unique" if raw_identities.key?(identity)
 
-  candidate_identities[identity] = true
-  merged_at_instants[pr] = parse_calibration_pr_merged_at!(pr)
+  raw_identities[identity] = true
+  merged_at_instants[pr] = merged_at
 end
+repositories = options[:repositories].empty? ? scope.fetch("repositories") : options[:repositories]
+prs = prs.select { |pr| repositories.include?(pr.fetch("repository")) }
 if options[:since]
   prs = prs.select do |pr|
     merged_at_instants.fetch(pr).to_date >= options[:since]
@@ -153,33 +177,6 @@ if options[:pr_count]
   prs = prs.group_by { |pr| pr.fetch("repository") }.flat_map do |_repo, repo_prs|
     repo_prs.sort_by { |pr| merged_at_instants.fetch(pr) }.reverse.first(options[:pr_count])
   end
-end
-
-def validate_calibration_pr!(pull_request, scope_complete:)
-  validate_calibration_pr_identity!(pull_request)
-  parse_calibration_pr_merged_at!(pull_request)
-  PR_COUNT_FIELDS.each do |field|
-    value = pull_request[field]
-    unless value.nil? || (value.is_a?(Integer) && value >= 0)
-      abort "calibration PR #{field} must be a nonnegative integer or null"
-    end
-  end
-  if scope_complete
-    COMPLETE_SCOPE_REQUIRED_PR_COUNTS.each do |field|
-      unless pull_request[field].is_a?(Integer)
-        abort "calibration PR #{field} must be a nonnegative integer when dataset scope is complete"
-      end
-    end
-  end
-  categories = pull_request["path_categories"]
-  unless categories.is_a?(Array) &&
-         categories.all? { |category| category.is_a?(String) && !category.strip.empty? }
-    abort "calibration PR path_categories must be a list of nonempty strings"
-  end
-end
-
-prs.each do |pr|
-  validate_calibration_pr!(pr, scope_complete: effective_scope_complete)
 end
 prs.sort_by! { |pr| [pr.fetch("repository"), pr.fetch("number")] }
 

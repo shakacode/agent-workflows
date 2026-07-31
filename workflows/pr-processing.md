@@ -481,6 +481,13 @@ comments, docs, typo fixes, formatting-only changes, and non-semantic actionlint
 cleanup as exempt only when the PR evidence states that classification and local
 validation. This is a standing exception to the default follow-up tracking
 policy because some GitHub Actions behavior can only be proven from `main`.
+Before `merge-assurance`, update that issue body with exactly one line for each
+authenticated binding: `semantic-tracker-source-pr`, `semantic-tracker-head-sha`,
+`semantic-tracker-diff-identity`, and `semantic-tracker-operation-digest`. The
+digest is `sha256:` plus SHA-256 of canonical recursively key-sorted JSON over
+the tracker operation's `changed_files`, `cleanup_instructions`, `exercise`,
+`expected_evidence`, optional `owner`, `source_pr`, `tracker`, and `type`;
+create the issue first so its final tracker URL participates in that digest.
 
 When adding or broadening a repo-wide lint, CI, release, review, or merge gate,
 include at least one stale-base race control in the PR evidence. This is a
@@ -587,6 +594,7 @@ The user should not need to write a long launch prompt. If the request is short,
 - Permissions: whether the current session can run without blocking worker approval prompts.
 - Question handling: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
 - Completion states: `merged`, `ready-gates-clean`, `ready-no-merge-authority`,
+  `ready-human-review-required`, `autonomous-merge-evidence-unknown`,
   `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`,
   or `no-pr-evidence`.
 
@@ -620,6 +628,27 @@ path evidence stay serial discovery lanes until their real paths are known.
 Prefer a smaller first wave when coordination, CI, approval, or quota health is
 uncertain. Put additional file-disjoint work into later wave prompts instead of
 overfilling the active worker set.
+
+### Batch Plan Preflight
+
+Before dispatcher selection or any worker launch, resolve
+`PLAN_PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
+repo-local pinned-copy chain and run the plan's v1 envelope through:
+
+```bash
+PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"
+"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight" \
+  < path/to/batch-plan-preflight-v1.json
+```
+
+This machine gate owns schema and launch scheduling, including collision,
+backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
+serialization enforcement. Do not reproduce those matrices in dispatcher or
+merge checks. Preserve real PR verified `pr-file-touch-map` results unchanged;
+encode explicit pre-PR paths as typed `planned-path-evidence` v1 records with
+durable evidence references. A rejected result launches nothing; an accepted
+result permits only `launch.eligible_lane_ids` and leaves
+`launch.held_lane_ids` unlaunched.
 
 ### Model And Effort Routing
 
@@ -749,7 +778,7 @@ If the runtime cannot apply the planned pair, record `UNKNOWN` and stop before
 spawning instead of silently inheriting or substituting.
 
 Dispatch preflight: JSON-in/JSON-out; select only bound+attested requested tuple or first explicitly authorized ordered fallback; otherwise one dispatch-decision-request v1. Resolve `PR_BATCH_SKILL_DIR` through the explicit env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` before launch. Its input supplies the lane state, requested route/dispatcher, explicit route and dispatch authority, and ordered candidates. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. Its output records requested/actual route and dispatcher, reason, authority, `resume_goal`, one active assignment/launch token, or the durable decision request with canonical viable fallback choices. It selects and records only: it never launches workers or mutates a coordination backend. Do not infer authority from generic subagent wording or inherit the coordinator route. Preserve supplied lane state; a replacement requires the prior instance stopped and reconciled. In Goal mode, an authorized `selected` result resumes automatically only after durable persistence; `blocked-user-input` stops on the same persisted decision request.
-Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
 
 Resolve `base_branch` from repo configuration or inline `AGENTS.md` configuration;
 unknown configuration remains `UNKNOWN` before a branch is created.
@@ -2531,9 +2560,15 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-gh pr checks <PR> --required
-gh pr checks <PR>
+# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
+  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
 ```
+
+The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
+evidence for required status checks, GitHub Actions, Dependabot, and other
+checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
+must migrate to the scoped v2 result.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -2791,11 +2826,30 @@ merge-authority attestation is missing or uncertain yields `UNKNOWN`. Re-run
 the evaluator immediately before `pr-merge-submit`; any head or base movement
 restarts ordinary readiness and eligibility evaluation.
 
+### Merge Assurance Gate
+
+After ordinary readiness, autonomous eligibility, and any required walkthrough
+or durable human decision are current for the exact head, run:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+  --ci-result "${CI_RESULT_PATH}" \
+  --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
+  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+```
+
+This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
+policy and emits a fresh integrity-bound receipt only when the exact-head
+evidence is eligible. It is separate from batch-plan preflight. Legacy merge
+callers must now generate and pass this receipt, and `merge_authority: none`
+remains a no-merge result.
+
 ### Exact-Head Merge Submission
 
-After the readiness gate passes and merge authority is explicit, use the same
-canonical GitHub host, base branch, and current head SHA that passed the gate
-for the final mutation. Resolve
+After the readiness gate passes, merge authority is explicit, and
+`merge-assurance` emits a fresh eligible receipt, use the same canonical GitHub
+host, base branch, and current head SHA that passed the gate for the final
+mutation. Resolve
 `PR_BATCH_SKILL_DIR` through the normal installed/shared or repo-pinned helper
 chain, then run:
 
@@ -2806,42 +2860,41 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --subject "<consumer-required direct-merge subject>"
+  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
+`pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
+bindings and freshness before any mutation.
+
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
-uses `enqueuePullRequest` for a queue-controlled base and invokes GitHub's
-`mergePullRequest` with the consumer's ordinary direct merge method, subject,
-and expected head otherwise. Every API call is bound to the explicit host, and
-the returned PR URL must match it.
-If queue enforcement changes between that read and the direct mutation, only
-GitHub's explicit queue-control error permits one refreshed exact-head enqueue
-retry. The helper never invokes the queue-aware `gh pr merge` path, never enables
-auto-merge, never retries an unrelated direct-merge
-error as a queue operation, and fails closed when the head moved, queue state is
-missing, or GitHub returns no queue entry.
+preserves read-only, idempotent observation when the exact reviewed PR is
+already merged, preserves an exact existing queue entry, and uses
+`enqueuePullRequest` only for an exact open PR on a queue-controlled base. An
+open PR on a queue-disabled base exits 2 before any `mergePullRequest` mutation:
+GitHub exposes an atomic expected-head field but no atomic expected-base OID for
+direct merge. Migrate the base branch to a merge queue, then restart ordinary
+readiness, autonomous eligibility, and merge-assurance receipt generation.
+Every API call is bound to the explicit host, and the returned PR URL must match
+it. The helper never invokes `gh pr merge`, never enables auto-merge, and fails
+closed when the head moved, queue state is missing, or GitHub returns no queue
+entry.
 
 Submission is restart-safe for an exact head already merged or already present
-in the queue. After an ambiguous mutation response, the helper re-reads the PR
+in the queue. After an ambiguous enqueue response, the helper re-reads the PR
 and reports success only when that exact expected head and base are proven
 merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
 reconcile live state rather than retrying blindly. If post-enqueue verification
 detects a retarget or head change, the helper exits 2 without automatic cleanup:
 GitHub's dequeue mutation accepts only the PR ID, so it cannot prove that a
 later live queue entry is the one created by this submission rather than a
-concurrent actor's replacement.
-
-GitHub's merge and enqueue mutations expose an atomic expected-head field but
-not an expected-base field. The helper therefore verifies the exact expected
-base immediately before and after its mutation and reports any retarget as a
-blocker; merge authority must not be exercised while another actor is
-retargeting the PR. Manual reconciliation is required because GitHub exposes
-neither an atomic base precondition nor an entry-bound dequeue mutation.
+concurrent actor's replacement. A pre/post base check cannot substitute for the
+missing atomic expected-base precondition, so direct merge remains unsupported.
 
 For a queued merge, GitHub's queue configuration controls the actual merge
 method and commit-title/body formatting. Before submission, verify the PR title
 and live repository queue settings satisfy any consumer squash-title policy;
-the direct-only `--subject` cannot override a queue-generated commit title.
+legacy direct-method or subject options cannot override a queue-generated commit
+title.
 Treat `submission: merge_queue` as in-progress evidence, not as merged state.
 An idempotent rerun that finds the exact reviewed head and base already merged
 reports `submission: already_merged` with `merge_provenance: UNKNOWN`; it must

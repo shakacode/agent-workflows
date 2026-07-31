@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add machine-enforced batch-plan preflight and merge-assurance receipt gates, including scoped exact-head CI evidence and a historical React on Rails Wave A fixture replay that proves an unsafe plan is rejected before dispatch.**
 - **Add `$pr-walkthrough`, a read-only exact-diff PR tour that builds a complete conceptual change map, explains one change and its rationale at a time, pauses for questions before continuing, adapts depth for large or complex PRs, tracks diff coverage, and keeps understanding separate from review or merge approval.**
 - **Add a portable, fail-closed `qa-evidence v2` gate for user-visible UI changes: durable reviewer-visible before/after links, non-blank paint inspection, interaction clips or measured substitutes, unfixed negative controls for visual fixes, and repo-seam performance evidence that distinguishes bundle hygiene from a measured metric. GitHub-only runs use an authenticated GitHub UI uploader when available and otherwise remain explicitly blocked on human attachment; configured trackers such as Linear or repo artifact stores can host evidence when every reviewer has access. Historical `qa-evidence v1` receipts remain replayable, while current UI audits can require v2 explicitly.** [issue 261](https://github.com/shakacode/agent-workflows/issues/261).
 - **Add an explicit, fail-closed policy-only downstream fleet registry and rollout mode, starting with the complete consumer `repo_prefix` inventory. The mode plans or fans out dedicated PRs that stage only existing `.agents/agent-workflow.yml` files and only the registered keys, leaving scaffold wrappers, pointers, trust configuration, and unrelated policy untouched.**
@@ -43,6 +44,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Require qualifying dispatcher `launch-confirmation v2` evidence to activate a pending worker while retaining v1 for history-only replay, migrate CI consumers to scoped `pr-ci-readiness` v2, and require every merge caller to generate and pass a fresh merge-assurance receipt; `merge_authority: none` remains no-merge.**
 - **Make `merge_authority: ask` automatically run the exact-diff `$pr-walkthrough` after ordinary readiness is clean—full and interactive for large or complex PRs, concise for smaller cohesive PRs—then refresh the diff identity/readiness before asking the one explicit merge question.**
 - **Emit a small managed PR-description summary for completed-batch audit status, keep its update separate from the comment-once receipt transaction, and reduce the durable comment to a concise replay-evidence header while retaining legacy receipt replay compatibility.**
 - **Allow consumer seams to set an optional validated `repo_prefix` for consistent batch titles and thread handles, while preserving a deterministic repository-name fallback for existing consumers.**
