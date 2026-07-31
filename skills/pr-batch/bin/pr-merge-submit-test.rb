@@ -5,6 +5,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 require "time"
 
@@ -501,6 +502,15 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
+  def test_submit_replays_autonomous_eligibility_and_rejects_mutated_receipt_evidence
+    result, log = run_cli(mode: "direct", receipt_mode: :autonomous_replay_mismatch)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "autonomous_result does not match trusted live replay"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
   def test_evidence_digest_and_envelope_binding_mismatches_stop_before_any_gh_call
     {
       digest_mismatch: "evidence digest mismatch",
@@ -668,6 +678,7 @@ class PrMergeSubmitTest < Minitest::Test
       gh_path = File.join(dir, "gh")
       File.write(gh_path, fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid:))
       FileUtils.chmod(0o755, gh_path)
+      submit_script = prepare_submit_helper_layout(dir)
       warm_stub(dir, gh_path) if mode.include?("timeout")
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
@@ -677,11 +688,25 @@ class PrMergeSubmitTest < Minitest::Test
                         base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
         )
       end
+      repo_root = File.join(dir, "consumer")
+      FileUtils.mkdir_p(repo_root)
+      semantic_assessment = File.join(dir, "semantic-assessment.json")
+      File.write(semantic_assessment, "{}\n")
+      trusted_helper_provenance =
+        "trusted-base:#{receipt_mode == :mismatched_base_sha ? 'c' * 40 : 'b' * 40}"
       stdout, stderr, status = Open3.capture3(
-        cli_environment(dir, log_path, mode),
+        cli_environment(
+          dir,
+          log_path,
+          mode,
+          autonomous_result_path: "#{receipt_path}.replayed.json",
+          autonomous_log_path: File.join(dir, "autonomous-replay.log")
+        ),
         *cli_arguments(
           repo, expected_head, include_expected_head, include_expected_base,
-          subject:, body:, include_merge_assurance_receipt:, receipt_path:
+          subject:, body:, include_merge_assurance_receipt:, receipt_path:,
+          script: submit_script, repo_root:, semantic_assessment:,
+          trusted_helper_provenance:
         )
       )
       log = File.exist?(log_path) ? File.read(log_path) : ""
@@ -698,6 +723,7 @@ class PrMergeSubmitTest < Minitest::Test
         fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST, repo: "owner/repo")
       )
       FileUtils.chmod(0o755, gh_path)
+      submit_script = prepare_submit_helper_layout(dir)
       warm_stub(dir, gh_path)
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
@@ -705,11 +731,22 @@ class PrMergeSubmitTest < Minitest::Test
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
                       base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
       )
+      repo_root = File.join(dir, "consumer")
+      FileUtils.mkdir_p(repo_root)
+      semantic_assessment = File.join(dir, "semantic-assessment.json")
+      File.write(semantic_assessment, "{}\n")
       result = Open3.popen3(
-        cli_environment(dir, log_path, mode),
+        cli_environment(
+          dir,
+          log_path,
+          mode,
+          autonomous_result_path: "#{receipt_path}.replayed.json",
+          autonomous_log_path: File.join(dir, "autonomous-replay.log")
+        ),
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
-          include_merge_assurance_receipt: true, receipt_path:
+          include_merge_assurance_receipt: true, receipt_path:,
+          script: submit_script, repo_root:, semantic_assessment:
         )
       ) do |stdin, stdout, stderr, wait_thread|
         stdin.close
@@ -752,12 +789,17 @@ class PrMergeSubmitTest < Minitest::Test
     )
   end
 
-  def cli_environment(dir, log_path, mode)
-    {
+  def cli_environment(
+    dir, log_path, mode, autonomous_result_path: nil, autonomous_log_path: nil
+  )
+    environment = {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
       "GH_LOG" => log_path,
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }
+    environment["FAKE_AUTONOMOUS_RESULT"] = autonomous_result_path if autonomous_result_path
+    environment["FAKE_AUTONOMOUS_LOG"] = autonomous_log_path if autonomous_log_path
+    environment
   end
 
   def gh_timeout_seconds_for(mode)
@@ -770,16 +812,23 @@ class PrMergeSubmitTest < Minitest::Test
   def cli_arguments(
     repo, expected_head, include_expected_head, include_expected_base,
     subject: "Fix the thing (#42)", body: nil,
-    include_merge_assurance_receipt: true, receipt_path: nil
+    include_merge_assurance_receipt: true, receipt_path: nil, script: SCRIPT,
+    repo_root: nil, semantic_assessment: nil,
+    trusted_helper_provenance: "trusted-base:#{'b' * 40}"
   )
     args = [
-      SCRIPT, "42", "--repo", repo, "--host", HOST,
+      script, "42", "--repo", repo, "--host", HOST,
       "--method", "squash", "--subject", subject
     ]
     args.concat(["--body", body]) unless body.nil?
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", "main"]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
+    args.concat(["--repo-root", repo_root]) if repo_root
+    args.concat(["--semantic-assessment", semantic_assessment]) if semantic_assessment
+    if trusted_helper_provenance
+      args.concat(["--trusted-helper-provenance", trusted_helper_provenance])
+    end
     args
   end
 
@@ -852,6 +901,7 @@ class PrMergeSubmitTest < Minitest::Test
       "human_decision_evidence" => { "status" => "none" },
       "evidence_failures" => []
     }
+    recomputed_autonomous_result = Marshal.load(Marshal.dump(autonomous_result))
     tracker = semantic_tracker(host:, repo:, pr_number:)
     semantic = mode.to_s.start_with?("semantic")
     context = {
@@ -871,7 +921,11 @@ class PrMergeSubmitTest < Minitest::Test
     }
     receipt = with_fake_gh(gh_dir) do
       MergeAssurance.assess(
-        ci_result:, autonomous_result:, context:, now:
+        ci_result:,
+        autonomous_result:,
+        recomputed_autonomous_result: autonomous_result,
+        context:,
+        now:
       )
     end
     raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
@@ -882,6 +936,9 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :autonomous_unavailable
       receipt["evidence"]["autonomous_result"] = nil
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :autonomous_replay_mismatch
+      receipt.dig("evidence", "autonomous_result", "metrics")["changed_files"] = 30
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :digest_mismatch
       receipt["evidence_digest"] = "sha256:#{'0' * 64}"
@@ -909,6 +966,33 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     end
     File.write(path, JSON.generate(receipt))
+    File.write("#{path}.replayed.json", JSON.generate(recomputed_autonomous_result))
+  end
+
+  def prepare_submit_helper_layout(root)
+    bin_dir = File.join(root, "runtime/skills/pr-batch/bin")
+    FileUtils.mkdir_p(bin_dir)
+    submit_script = File.join(bin_dir, "pr-merge-submit")
+    assurance_script = File.join(bin_dir, "merge-assurance")
+    FileUtils.cp(SCRIPT, submit_script)
+    FileUtils.cp(ASSURANCE_SCRIPT, assurance_script)
+    FileUtils.chmod(0o755, submit_script)
+    FileUtils.chmod(0o755, assurance_script)
+    autonomous_helper = File.join(bin_dir, "autonomous-merge-eligibility")
+    File.write(autonomous_helper, <<~RUBY)
+      #!#{RbConfig.ruby}
+      require "json"
+      File.write(
+        ENV.fetch("FAKE_AUTONOMOUS_LOG"),
+        JSON.generate(
+          "argv" => ARGV,
+          "autonomous_merge_gh_present" => ENV.key?("AUTONOMOUS_MERGE_GH")
+        )
+      )
+      STDOUT.write(File.read(ENV.fetch("FAKE_AUTONOMOUS_RESULT")))
+    RUBY
+    FileUtils.chmod(0o755, autonomous_helper)
+    submit_script
   end
 
   def with_fake_gh(dir)

@@ -2834,14 +2834,20 @@ or durable human decision are current for the exact head, run:
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --repo-root . \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
+  --trusted-helper-provenance "${TRUSTED_HELPER_PROVENANCE}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
-policy and emits a fresh integrity-bound receipt only when the exact-head
-evidence is eligible. It is separate from batch-plan preflight. Legacy merge
-callers must now generate and pass this receipt, and `merge_authority: none`
-remains a no-merge result.
+policy. Before emitting a receipt it reruns the fixed sibling autonomous
+eligibility evaluator with the coordinator-owned semantic assessment and
+independently established helper provenance, then requires exact structural
+and value equality with the supplied result. It is separate from batch-plan
+preflight. Legacy merge callers must now provide the replay inputs, generate
+and pass this receipt, and `merge_authority: none` remains a no-merge result.
 
 ### Exact-Head Merge Submission
 
@@ -2859,11 +2865,15 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}" \
+  --repo-root . \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
+  --trusted-helper-provenance "${TRUSTED_HELPER_PROVENANCE}"
 ```
 
-`pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings and freshness before any mutation.
+`pr-merge-submit` requires the fresh receipt and the same replay inputs
+unconditionally. It reruns autonomous eligibility, exact-compares the result,
+and revalidates the receipt bindings and freshness before any mutation.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 preserves read-only, idempotent observation when the exact reviewed PR is

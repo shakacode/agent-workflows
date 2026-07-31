@@ -4,6 +4,7 @@
 require "fileutils"
 require "json"
 require "minitest/autorun"
+require "open3"
 require "rbconfig"
 require "tmpdir"
 
@@ -56,7 +57,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_auto_mode_emits_integrity_bound_eligible_receipt
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context("auto_merge_when_gates_pass"),
@@ -83,10 +84,207 @@ class MergeAssuranceTest < Minitest::Test
     assert MergeAssurance.valid_evidence_digest?(result)
   end
 
+  def test_autonomous_result_must_exactly_match_recomputed_owning_evaluator_result
+    supplied = autonomous_result("autonomous-merge-eligible")
+    supplied.fetch("metrics")["changed_files"] = 30
+    recomputed = Marshal.load(Marshal.dump(supplied))
+    recomputed["verdict"] = "human-approval-required"
+    recomputed["triggered_gates"] = ["changed-files-limit"]
+
+    result = assess_with_replay(
+      ci_result: ready_ci,
+      autonomous_result: supplied,
+      recomputed_autonomous_result: recomputed,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"), "autonomous_result does not match trusted live replay"
+  end
+
+  def test_cli_replays_fixed_sibling_and_rejects_a_supplied_result_with_omitted_threshold_gate
+    supplied = autonomous_result("autonomous-merge-eligible")
+    supplied.fetch("metrics")["changed_files"] = 30
+    recomputed = Marshal.load(Marshal.dump(supplied))
+    recomputed["verdict"] = "human-approval-required"
+    recomputed["triggered_gates"] = ["changed-files-limit"]
+
+    execution = run_replay_cli(supplied:, recomputed:)
+
+    refute execution.fetch(:status).success?
+    assert_includes(
+      execution.fetch(:result).fetch("failures"),
+      "autonomous_result does not match trusted live replay"
+    )
+    assert_equal(
+      [
+        "--repo-root", execution.fetch(:repo_root),
+        "--trusted-base", BASE_SHA,
+        "--trusted-helper-provenance", "trusted-base:#{BASE_SHA}",
+        "--repo", "owner/repo",
+        "--pr", "42",
+        "--semantic-assessment", execution.fetch(:semantic_assessment)
+      ],
+      execution.fetch(:helper_call).fetch("argv")
+    )
+    refute execution.fetch(:helper_call).fetch("autonomous_merge_gh_present")
+  end
+
+  def test_replay_comparison_covers_every_threshold_gate_family_and_reviewed_head_mode
+    cases = {
+      "changed-files" => ["changed_files", 30, ["changed-files-limit"], []],
+      "changed-lines" => ["changed_lines", 1_000, ["changed-lines-limit"], []],
+      "commits" => ["commits", 10, ["commit-count-limit"], []],
+      "reviewed-heads-enforced" => ["reviewed_heads", 4, ["reviewed-heads-limit"], []],
+      "reviewed-heads-shadow" => ["reviewed_heads", 4, [], ["reviewed-heads-limit"]]
+    }
+
+    eligible_mismatches = cases.filter_map do |label, (metric, value, triggered, shadow)|
+      supplied = autonomous_result("autonomous-merge-eligible")
+      supplied.fetch("metrics")[metric] = value
+      recomputed = Marshal.load(Marshal.dump(supplied))
+      recomputed["triggered_gates"] = triggered
+      recomputed["shadow_triggered_gates"] = shadow
+      recomputed["verdict"] = "human-approval-required" unless triggered.empty?
+      result = assess_with_replay(
+        ci_result: ready_ci,
+        autonomous_result: supplied,
+        recomputed_autonomous_result: recomputed,
+        context: context("auto_merge_when_gates_pass")
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mismatches
+  end
+
+  def test_exact_boundary_results_without_threshold_gates_remain_eligible
+    exact_boundary = autonomous_result("autonomous-merge-eligible")
+    exact_boundary["metrics"] = {
+      "changed_files" => 29,
+      "changed_lines" => 999,
+      "commits" => 9,
+      "reviewed_heads" => 3
+    }
+
+    result = assess_with_replay(
+      ci_result: ready_ci,
+      autonomous_result: exact_boundary,
+      context: context("auto_merge_when_gates_pass")
+    )
+
+    assert result.fetch("eligible")
+  end
+
+  def test_cli_accepts_exact_trusted_base_and_verified_installed_pack_replays
+    results = [
+      autonomous_result("autonomous-merge-eligible"),
+      autonomous_result("autonomous-merge-eligible").merge(
+        "helper_provenance" => "verified-installed-pack:#{'d' * 64}"
+      )
+    ].map do |autonomous|
+      run_replay_cli(
+        supplied: autonomous,
+        recomputed: autonomous,
+        provenance: autonomous.fetch("helper_provenance")
+      )
+    end
+
+    assert(results.all? { |execution| execution.fetch(:status).success? })
+    assert(results.all? { |execution| execution.fetch(:result).fetch("eligible") })
+  end
+
+  def test_cli_fixed_sibling_replay_is_layout_independent
+    statuses = %i[flat symlink native_plugin_cache].to_h do |layout|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      execution = run_replay_cli(supplied: autonomous, recomputed: autonomous, layout:)
+      [layout, execution.fetch(:status).success?]
+    end
+
+    assert_equal(
+      { flat: true, symlink: true, native_plugin_cache: true },
+      statuses
+    )
+  end
+
+  def test_cli_replay_fails_closed_for_missing_malformed_unknown_and_mismatched_provenance
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    failures = {
+      missing: "autonomous eligibility sibling is unavailable",
+      malformed: "autonomous eligibility replay returned invalid JSON",
+      unknown: "autonomous eligibility replay returned UNKNOWN",
+      nonzero: "autonomous eligibility replay failed"
+    }.to_h do |mode, expected|
+      execution = run_replay_cli(supplied: autonomous, recomputed: autonomous, helper_mode: mode)
+      [mode, [execution.fetch(:status).success?, execution.fetch(:result).fetch("failures"), expected]]
+    end
+    mismatched = run_replay_cli(
+      supplied: autonomous,
+      recomputed: autonomous,
+      provenance: "verified-installed-pack:#{'d' * 64}"
+    )
+
+    failures.each_value do |success, messages, expected|
+      refute success
+      assert messages.any? { |message| message.include?(expected) }, messages.inspect
+    end
+    refute mismatched.fetch(:status).success?
+    assert mismatched.fetch(:result).fetch("failures").any? do |message|
+      message.include?("helper provenance does not match coordinator expectation")
+    end
+  end
+
+  def test_cli_replay_rejects_semantic_assessment_inside_repo_and_test_command_override
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    semantic = run_replay_cli(
+      supplied: autonomous,
+      recomputed: autonomous,
+      semantic_inside_repo: true,
+      helper_mode: :semantic_rejection
+    )
+    override = run_replay_cli(
+      supplied: autonomous,
+      recomputed: autonomous,
+      extra_env: { "AUTONOMOUS_MERGE_GH" => "/tmp/fake-gh" }
+    )
+
+    refute semantic.fetch(:status).success?
+    assert semantic.fetch(:result).fetch("failures").any? do |message|
+      message.include?("autonomous eligibility replay returned UNKNOWN")
+    end
+    refute override.fetch(:status).success?
+    assert override.fetch(:result).fetch("failures").any? do |message|
+      message.include?("AUTONOMOUS_MERGE_GH is forbidden")
+    end
+    assert_empty override.fetch(:helper_call)
+  end
+
+  def test_autonomous_replay_timeout_terminates_the_helper_process_group
+    Dir.mktmpdir("merge-assurance-autonomous-timeout") do |root|
+      helper = File.join(root, "autonomous-merge-eligibility")
+      File.write(helper, <<~RUBY)
+        #!#{RbConfig.ruby}
+        trap("TERM") { exit 0 }
+        sleep 2
+      RUBY
+      File.chmod(0o755, helper)
+
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      _stdout, _stderr, _status, timed_out, cleanup_complete =
+        MergeAssurance.run_autonomous_replay(helper, [], timeout_seconds: 0.05)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert timed_out
+      assert cleanup_complete
+      assert_operator elapsed, :<, 1
+    end
+  end
+
   def test_ci_evidence_host_must_match_merge_context
     ci_result = ready_ci
     ci_result["context"]["host"] = "github.example"
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result:,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context("auto_merge_when_gates_pass"),
@@ -123,7 +321,7 @@ class MergeAssuranceTest < Minitest::Test
       scope = ci_result.fetch("scopes").fetch("github_actions")
       scope["state"] = declared
       scope["rows"] = [row]
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result:,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context("auto_merge_when_gates_pass"),
@@ -181,7 +379,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_invalid_rows = invalid_rows.filter_map do |label, row|
       ci_result = ready_ci
       ci_result.fetch("scopes").fetch("github_actions")["rows"] = [row]
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result:,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context("auto_merge_when_gates_pass"),
@@ -219,7 +417,7 @@ class MergeAssuranceTest < Minitest::Test
     skipping_ci.fetch("scopes").fetch("github_actions")["rows"] = [
       { "name" => "lint", "bucket" => "skipping", "state" => "SKIPPED" }
     ]
-    skipping_result = MergeAssurance.assess(
+    skipping_result = assess_with_replay(
       ci_result: skipping_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context("auto_merge_when_gates_pass"),
@@ -257,7 +455,7 @@ class MergeAssuranceTest < Minitest::Test
     auto = autonomous_result("autonomous-merge-eligible")
     auto["helper_trust"]["manifest"]["note"] = "nested UNKNOWN evidence"
 
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: auto,
       context: context("auto_merge_when_gates_pass"),
@@ -280,7 +478,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_mutations = mutations.filter_map do |name, (field, value)|
       autonomous = autonomous_result("autonomous-merge-eligible")
       autonomous[field] = value
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -308,7 +506,7 @@ class MergeAssuranceTest < Minitest::Test
     ]
     verdicts = accepted.map do |fields|
       autonomous = autonomous_result("autonomous-merge-eligible").merge(fields)
-      MergeAssurance.assess(
+      assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -333,7 +531,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_invalid_manifests = invalid_manifests.filter_map do |label, manifest|
       autonomous = autonomous_result("autonomous-merge-eligible")
       autonomous["helper_trust"]["manifest"] = manifest
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -348,7 +546,7 @@ class MergeAssuranceTest < Minitest::Test
   def test_autonomous_result_requires_exactly_empty_evidence_failures
     autonomous = autonomous_result("autonomous-merge-eligible")
     autonomous["evidence_failures"] = ["live force-push evidence is incomplete"]
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous,
       context: context("auto_merge_when_gates_pass"),
@@ -387,7 +585,7 @@ class MergeAssuranceTest < Minitest::Test
 
     eligible_contradictions = contradictions.filter_map do |fields|
       autonomous = autonomous_result(fields.fetch("verdict")).merge(fields)
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -407,19 +605,19 @@ class MergeAssuranceTest < Minitest::Test
       "commits" => 1_000,
       "reviewed_heads" => 100
     }
-    autonomous_result_receipt = MergeAssurance.assess(
+    autonomous_result_receipt = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous,
       context: context("auto_merge_when_gates_pass"),
       now: NOW
     )
-    helper_approved_receipt = MergeAssurance.assess(
+    helper_approved_receipt = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approved-for-current-head"),
       context: context("auto_merge_when_gates_pass"),
       now: NOW
     )
-    external_approval_receipt = MergeAssurance.assess(
+    external_approval_receipt = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approval-required"),
       context: context("explicit_approval", human_merge_decision: human_merge_decision),
@@ -446,7 +644,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_mutations = mutations.filter_map do |label, mutation|
       autonomous = autonomous_result("autonomous-merge-eligible")
       mutation.call(autonomous)
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -484,7 +682,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_invalid_matches = invalid_path_matches.filter_map do |label, path_matches|
       autonomous = autonomous_result("human-approval-required")
       autonomous["path_matches"] = path_matches
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("explicit_approval", human_merge_decision: human_merge_decision),
@@ -503,7 +701,7 @@ class MergeAssuranceTest < Minitest::Test
       "path" => "config/security.yml",
       "reason" => "repository policy matched the security path"
     }]
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous,
       context: context("auto_merge_when_gates_pass"),
@@ -521,13 +719,13 @@ class MergeAssuranceTest < Minitest::Test
       "classification" => "generated",
       "path" => "dist/generated.js"
     }]
-    generated_result = MergeAssurance.assess(
+    generated_result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: generated,
       context: context("auto_merge_when_gates_pass"),
       now: NOW
     )
-    conservative_result = MergeAssurance.assess(
+    conservative_result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approved-for-current-head"),
       context: context("auto_merge_when_gates_pass"),
@@ -549,7 +747,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_invalid_gates = invalid_gates.filter_map do |label, gates|
       autonomous = autonomous_result("human-approval-required")
       autonomous["triggered_gates"] = gates
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("explicit_approval", human_merge_decision: human_merge_decision),
@@ -580,7 +778,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_mutations = mutations.filter_map do |label, mutation|
       autonomous = autonomous_result("autonomous-merge-eligible")
       mutation.call(autonomous)
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -605,7 +803,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_mutations = mutations.filter_map do |label, mutation|
       autonomous = autonomous_result("autonomous-merge-eligible")
       mutation.call(autonomous)
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -661,7 +859,7 @@ class MergeAssuranceTest < Minitest::Test
       autonomous = autonomous_result(verdict)
       autonomous["triggered_gates"] = gates
       autonomous["human_decision_evidence"] = decision
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous,
         context: context("auto_merge_when_gates_pass"),
@@ -730,7 +928,7 @@ class MergeAssuranceTest < Minitest::Test
       ci_result.fetch("context")["host"] = host
       autonomous = autonomous_result("human-approved-for-current-head")
       autonomous["human_decision_evidence"] = decision
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result:,
         autonomous_result: autonomous,
         context: merge_context,
@@ -782,7 +980,7 @@ class MergeAssuranceTest < Minitest::Test
       ci_result["repo"] = repo
       autonomous = autonomous_result("human-approved-for-current-head")
       autonomous.fetch("human_decision_evidence")["url"] = url
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result:,
         autonomous_result: autonomous,
         context: merge_context,
@@ -795,13 +993,13 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_ask_requires_exact_head_human_decision_and_same_diff_walkthrough
-    missing = MergeAssurance.assess(
+    missing = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approval-required"),
       context: context("ask"),
       now: NOW
     )
-    eligible = MergeAssurance.assess(
+    eligible = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approval-required"),
       context: context(
@@ -824,13 +1022,13 @@ class MergeAssuranceTest < Minitest::Test
     unbound_walkthrough = walkthrough("completed", "pr-walkthrough").reject do |key, _value|
       binding_keys.include?(key)
     end
-    decision_result = MergeAssurance.assess(
+    decision_result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approval-required"),
       context: context("explicit_approval", human_merge_decision: unbound_decision),
       now: NOW
     )
-    walkthrough_result = MergeAssurance.assess(
+    walkthrough_result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approval-required"),
       context: context(
@@ -863,13 +1061,13 @@ class MergeAssuranceTest < Minitest::Test
       mutations.fetch(name).call(decision)
       walkthrough_receipt = walkthrough("completed", "pr-walkthrough")
       mutations.fetch(name).call(walkthrough_receipt)
-      decision_result = MergeAssurance.assess(
+      decision_result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("human-approval-required"),
         context: context("explicit_approval", human_merge_decision: decision),
         now: NOW
       )
-      walkthrough_result = MergeAssurance.assess(
+      walkthrough_result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("human-approval-required"),
         context: context(
@@ -889,7 +1087,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_ordinary_follow_up_requires_human_approval_and_second_bundle_requires_additional_approval
-    unapproved = MergeAssurance.assess(
+    unapproved = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -898,7 +1096,7 @@ class MergeAssuranceTest < Minitest::Test
       ),
       now: NOW
     )
-    missing_additional = MergeAssurance.assess(
+    missing_additional = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -910,7 +1108,7 @@ class MergeAssuranceTest < Minitest::Test
       ),
       now: NOW
     )
-    approved = MergeAssurance.assess(
+    approved = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -935,7 +1133,7 @@ class MergeAssuranceTest < Minitest::Test
   def test_follow_up_approval_rejects_items_changed_after_approval
     bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
     bundle["items"] << "scope added after approval"
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context("auto_merge_when_gates_pass", operations: [bundle]),
@@ -957,7 +1155,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_reuses = mutations.filter_map do |field, value|
       bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
       bundle.fetch("approval")[field] = value
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context("auto_merge_when_gates_pass", operations: [bundle]),
@@ -973,7 +1171,7 @@ class MergeAssuranceTest < Minitest::Test
     first = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
     additional = ordinary_follow_up("bundle-2", approval_scope: "additional-bundle")
     additional.fetch("approval")["approval_id"] = first.dig("approval", "approval_id")
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -991,7 +1189,7 @@ class MergeAssuranceTest < Minitest::Test
     second = ordinary_follow_up("bundle-2", approval_scope: "additional-bundle")
     third = ordinary_follow_up("bundle-3", approval_scope: "additional-bundle")
     third["approval"] = second["approval"]
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1012,7 +1210,7 @@ class MergeAssuranceTest < Minitest::Test
     eligible_mutations = mutations.filter_map do |field, value|
       bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
       bundle.fetch("approval")[field] = value
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context("auto_merge_when_gates_pass", operations: [bundle]),
@@ -1031,13 +1229,13 @@ class MergeAssuranceTest < Minitest::Test
       bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
       bundle.fetch("approval")["approved_at"] = timestamp
       [
-        MergeAssurance.assess(
+        assess_with_replay(
           ci_result: ready_ci,
           autonomous_result: autonomous_result("human-approval-required"),
           context: context("explicit_approval", human_merge_decision: decision),
           now: NOW
         ).fetch("eligible"),
-        MergeAssurance.assess(
+        assess_with_replay(
           ci_result: ready_ci,
           autonomous_result: autonomous_result("autonomous-merge-eligible"),
           context: context("auto_merge_when_gates_pass", operations: [bundle]),
@@ -1051,7 +1249,7 @@ class MergeAssuranceTest < Minitest::Test
 
   def test_follow_up_approval_bindings_are_covered_by_receipt_evidence_digest
     bundle = ordinary_follow_up("bundle-1", approval_scope: "first-bundle")
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context("auto_merge_when_gates_pass", operations: [bundle]),
@@ -1069,7 +1267,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_semantic_github_actions_change_requires_exactly_one_complete_mandatory_tracker
-    missing = MergeAssurance.assess(
+    missing = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1078,7 +1276,7 @@ class MergeAssuranceTest < Minitest::Test
       ),
       now: NOW
     )
-    duplicate = MergeAssurance.assess(
+    duplicate = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1088,7 +1286,7 @@ class MergeAssuranceTest < Minitest::Test
       ),
       now: NOW
     )
-    eligible = MergeAssurance.assess(
+    eligible = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1118,7 +1316,7 @@ class MergeAssuranceTest < Minitest::Test
 
   def test_authenticated_issue_read_fails_closed_on_auth_failure
     ENV["FAKE_GH_EXIT_STATUS"] = "1"
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1133,7 +1331,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_caller_authored_tracker_verification_is_rejected
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1150,7 +1348,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_semantic_tracker_rejects_reviewer_reproduction_with_unbound_urls
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1170,7 +1368,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_semantic_tracker_uses_authenticated_read_without_caller_authored_provenance
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1195,7 +1393,7 @@ class MergeAssuranceTest < Minitest::Test
       reset_fake_gh_calls
       ENV["FAKE_GH_EXIT_STATUS"] = exit_status
       ENV["FAKE_GH_RESPONSE"] = response
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context(
@@ -1239,7 +1437,7 @@ class MergeAssuranceTest < Minitest::Test
       issue = fake_issue
       mutate.call(issue)
       ENV["FAKE_GH_RESPONSE"] = JSON.generate(issue)
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context(
@@ -1281,7 +1479,7 @@ class MergeAssuranceTest < Minitest::Test
 
   def test_semantic_tracker_fails_closed_when_gh_is_unavailable
     File.rename(@fake_gh, "#{@fake_gh}.unavailable")
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1303,7 +1501,7 @@ class MergeAssuranceTest < Minitest::Test
     ENV["FAKE_GH_CHILD_PID"] = child_pid_path
     ENV["MERGE_ASSURANCE_GH_TIMEOUT_SECONDS"] = "0.5"
     started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1328,7 +1526,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_authenticated_tracker_evidence_is_covered_by_receipt_digest
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1347,7 +1545,7 @@ class MergeAssuranceTest < Minitest::Test
 
   def test_merge_authority_none_does_not_read_semantic_tracker
     ENV["FAKE_GH_EXIT_STATUS"] = "1"
-    result = MergeAssurance.assess(
+    result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1362,13 +1560,13 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_post_merge_audit_defaults_to_accounted_and_report_only_is_a_typed_operation
-    default_result = MergeAssurance.assess(
+    default_result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context("auto_merge_when_gates_pass"),
       now: NOW
     )
-    report_only_result = MergeAssurance.assess(
+    report_only_result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context(
@@ -1395,13 +1593,13 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_explicit_approval_requires_only_current_head_human_decision_and_none_never_qualifies
-    explicit = MergeAssurance.assess(
+    explicit = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approval-required"),
       context: context("explicit_approval", human_merge_decision: human_merge_decision),
       now: NOW
     )
-    none = MergeAssurance.assess(
+    none = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
       context: context("none"),
@@ -1415,13 +1613,13 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_human_authority_modes_require_a_known_current_autonomous_helper_result_without_applying_auto_policy
-    malformed = MergeAssurance.assess(
+    malformed = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("unexpected-verdict"),
       context: context("explicit_approval", human_merge_decision: human_merge_decision),
       now: NOW
     )
-    known_human_gate = MergeAssurance.assess(
+    known_human_gate = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("human-approval-required"),
       context: context("explicit_approval", human_merge_decision: human_merge_decision),
@@ -1434,6 +1632,123 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   private
+
+  def run_replay_cli(
+    supplied:, recomputed:, provenance: "trusted-base:#{BASE_SHA}",
+    helper_mode: :result, layout: :flat, semantic_inside_repo: false, extra_env: {}
+  )
+    Dir.mktmpdir("merge-assurance-replay") do |root|
+      real_skill_dir = case layout
+                       when :native_plugin_cache
+                         File.join(root, "agent-home/plugins/cache/scw/1.0.0/skills/pr-batch")
+                       when :symlink
+                         File.join(root, "source/skills/pr-batch")
+                       else
+                         File.join(root, "skills/pr-batch")
+                       end
+      bin_dir = File.join(real_skill_dir, "bin")
+      FileUtils.mkdir_p(bin_dir)
+      real_merge_script = File.join(bin_dir, "merge-assurance")
+      FileUtils.cp(SCRIPT, real_merge_script)
+      helper = File.join(bin_dir, "autonomous-merge-eligibility")
+      unless helper_mode == :missing
+        File.write(helper, <<~RUBY)
+          #!#{RbConfig.ruby}
+          require "json"
+          File.write(
+            ENV.fetch("FAKE_AUTONOMOUS_CALL"),
+            JSON.generate(
+              "argv" => ARGV,
+              "autonomous_merge_gh_present" => ENV.key?("AUTONOMOUS_MERGE_GH")
+            )
+          )
+          case ENV.fetch("FAKE_AUTONOMOUS_MODE")
+          when "malformed"
+            STDOUT.write("not-json")
+          when "unknown", "semantic_rejection"
+            STDOUT.write(JSON.generate("verdict" => "UNKNOWN"))
+          when "nonzero"
+            exit 9
+          else
+            STDOUT.write(File.read(ENV.fetch("FAKE_AUTONOMOUS_RESULT")))
+          end
+        RUBY
+        File.chmod(0o755, helper)
+      end
+      merge_script = real_merge_script
+      if layout == :symlink
+        linked_skills = File.join(root, "agent-home/skills")
+        FileUtils.mkdir_p(linked_skills)
+        File.symlink(real_skill_dir, File.join(linked_skills, "pr-batch"))
+        merge_script = File.join(linked_skills, "pr-batch/bin/merge-assurance")
+      end
+
+      repo_root = File.join(root, "consumer")
+      FileUtils.mkdir_p(repo_root)
+      semantic_assessment = if semantic_inside_repo
+                              File.join(repo_root, "semantic-assessment.json")
+                            else
+                              File.join(root, "semantic-assessment.json")
+                            end
+      File.write(semantic_assessment, "{}\n")
+      ci_path = write_json_fixture(root, "ci.json", fresh_ready_ci)
+      supplied_path = write_json_fixture(root, "autonomous.json", supplied)
+      context_path = write_json_fixture(root, "context.json", context("auto_merge_when_gates_pass"))
+      recomputed_path = write_json_fixture(root, "recomputed.json", recomputed)
+      helper_call_path = File.join(root, "helper-call.json")
+      env = {
+        "FAKE_AUTONOMOUS_CALL" => helper_call_path,
+        "FAKE_AUTONOMOUS_RESULT" => recomputed_path,
+        "FAKE_AUTONOMOUS_MODE" => helper_mode.to_s
+      }.merge(extra_env)
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        merge_script,
+        "--ci-result", ci_path,
+        "--autonomous-result", supplied_path,
+        "--context", context_path,
+        "--repo-root", repo_root,
+        "--semantic-assessment", semantic_assessment,
+        "--trusted-helper-provenance", provenance
+      )
+      return {
+        status:,
+        result: JSON.parse(stdout),
+        stderr:,
+        repo_root:,
+        semantic_assessment:,
+        helper_call: File.exist?(helper_call_path) ? JSON.parse(File.read(helper_call_path)) : {}
+      }
+    end
+  end
+
+  def write_json_fixture(root, name, value)
+    path = File.join(root, name)
+    File.write(path, "#{JSON.generate(value)}\n")
+    path
+  end
+
+  def fresh_ready_ci
+    ready = ready_ci
+    checked_at = Time.now.utc.iso8601
+    ready["checked_at"] = checked_at
+    ready.fetch("scopes").each_value { |scope| scope["checked_at"] = checked_at }
+    ready
+  end
+
+  def assess_with_replay(
+    ci_result:, autonomous_result:, context:,
+    recomputed_autonomous_result: autonomous_result, now: NOW
+  )
+    MergeAssurance.assess(
+      ci_result:,
+      autonomous_result:,
+      recomputed_autonomous_result:,
+      context:,
+      now:
+    )
+  end
 
   def fake_gh_call_count
     return 0 unless File.exist?(@fake_gh_calls)
@@ -1462,7 +1777,7 @@ class MergeAssuranceTest < Minitest::Test
       issue = fake_issue
       issue["body"] = "#{issue['body']}\n#{yield(key, expected_line)}"
       ENV["FAKE_GH_RESPONSE"] = JSON.generate(issue)
-      result = MergeAssurance.assess(
+      result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
         context: context(
