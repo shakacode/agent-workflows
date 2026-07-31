@@ -131,12 +131,14 @@ module PrMergeSubmit
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
         expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
+        repo_root: nil, semantic_assessment: nil, trusted_helper_provenance: nil,
         help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --repo-root PATH " \
+                      "--semantic-assessment FILE --trusted-helper-provenance PROVENANCE [options]"
         opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
         opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
         opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
@@ -147,6 +149,15 @@ module PrMergeSubmit
         end
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
+        end
+        opts.on("--repo-root PATH", "Repository containing the exact trusted base") do |value|
+          options[:repo_root] = value
+        end
+        opts.on("--semantic-assessment FILE", "External coordinator-owned semantic assessment") do |value|
+          options[:semantic_assessment] = value
+        end
+        opts.on("--trusted-helper-provenance PROVENANCE", "Coordinator-established runtime identity") do |value|
+          options[:trusted_helper_provenance] = value
         end
         opts.on("--method METHOD", METHODS, "Requested method; merge queue configuration controls the actual method") do |value|
           options[:method] = value
@@ -189,10 +200,14 @@ module PrMergeSubmit
       OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --repo-root PATH " \
+                      "--semantic-assessment FILE --trusted-helper-provenance PROVENANCE [options]"
         opts.separator "        --subject SUBJECT  Legacy direct-merge subject; unused for queue submission"
         opts.separator "        --body BODY        Legacy direct-merge body; unused for queue submission"
         opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
+        opts.separator "        --repo-root PATH  Repository containing the exact trusted base"
+        opts.separator "        --semantic-assessment FILE  External coordinator-owned assessment"
+        opts.separator "        --trusted-helper-provenance PROVENANCE  Expected runtime identity"
       end
     end
 
@@ -210,6 +225,13 @@ module PrMergeSubmit
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
       raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
+      raise Error, "--repo-root is required" if options[:repo_root].to_s.empty?
+      if options[:semantic_assessment].to_s.empty?
+        raise Error, "--semantic-assessment is required"
+      end
+      if options[:trusted_helper_provenance].to_s.empty?
+        raise Error, "--trusted-helper-provenance is required"
+      end
 
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
@@ -255,9 +277,16 @@ module PrMergeSubmit
       now = Time.now.utc
       validate_receipt_evidence!(receipt, evidence)
       validate_receipt_freshness!(receipt, now)
+      recomputed_autonomous_result = MergeAssurance.replay_autonomous_result(
+        repo_root: options[:repo_root],
+        semantic_assessment: options[:semantic_assessment],
+        trusted_helper_provenance: options[:trusted_helper_provenance],
+        context: evidence["context"]
+      )
       reassessed = MergeAssurance.assess(
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
+        recomputed_autonomous_result:,
         context: evidence["context"],
         now:
       )
@@ -282,6 +311,8 @@ module PrMergeSubmit
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    rescue MergeAssurance::Error => e
+      raise Error, e.message
     end
 
     def validate_receipt_evidence!(receipt, evidence)
