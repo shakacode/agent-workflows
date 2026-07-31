@@ -762,14 +762,30 @@ module BatchPlanPreflight
     rescue Errno::ESRCH, Errno::ECHILD
       nil
     rescue Timeout::Error
+      nil
+    end
+    if stage_dependency_process_group_alive?(pid)
       begin
         Process.kill("KILL", -pid)
-        Process.wait(pid)
-      rescue Errno::ESRCH, Errno::ECHILD
+      rescue Errno::ESRCH
         nil
       end
     end
+    begin
+      Process.wait(pid)
+    rescue Errno::ECHILD
+      nil
+    end
     :timeout
+  end
+
+  def stage_dependency_process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
   end
 
   def complete_stage_dependency_gate?(gate, plan, lane_ids)

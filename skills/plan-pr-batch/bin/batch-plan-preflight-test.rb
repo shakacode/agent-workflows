@@ -754,9 +754,27 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_fixed_replay_helper_timeout_nonzero_and_invalid_output_fail_closed
+    timeout_probe_root = Dir.mktmpdir("replay-timeout-descendant", SAFE_TMP_PARENT)
+    (@workflow_control_install_roots ||= []) << timeout_probe_root
+    descendant_pid_path = File.join(timeout_probe_root, "descendant.pid")
+    descendant_heartbeat_path = File.join(timeout_probe_root, "descendant.heartbeat")
+    timeout_helper = installed_preflight_with_stage_helper(<<~RUBY)
+      child_pid = fork do
+        Signal.trap("TERM", "IGNORE")
+        File.write(#{descendant_pid_path.dump}, Process.pid.to_s)
+        File.open(#{descendant_heartbeat_path.dump}, "a") do |heartbeat|
+          loop do
+            heartbeat.write(".")
+            heartbeat.flush
+            sleep 0.02
+          end
+        end
+      end
+      Process.wait(child_pid)
+    RUBY
     cases = {
       "timeout" => [
-        installed_preflight_with_stage_helper("sleep 10"),
+        timeout_helper,
         "stage-dependency-replay-timeout"
       ],
       "nonzero" => [
@@ -769,12 +787,29 @@ class BatchPlanPreflightTest < Minitest::Test
       ]
     }
 
-    cases.each do |label, (helper, expected_code)|
-      result, _stderr, status = evaluate(input_for, helper: helper)
+    descendant_pid = nil
+    begin
+      cases.each do |label, (helper, expected_code)|
+        result, _stderr, status = evaluate(input_for, helper: helper)
 
-      refute status.success?, label
-      assert_equal [expected_code], result.fetch("violations").map { |item| item.fetch("code") }, label
-      assert_empty result.dig("launch", "eligible_lane_ids"), label
+        refute status.success?, label
+        assert_equal [expected_code], result.fetch("violations").map { |item| item.fetch("code") }, label
+        assert_empty result.dig("launch", "eligible_lane_ids"), label
+        next unless label == "timeout"
+
+        descendant_pid = Integer(File.read(descendant_pid_path))
+        heartbeat_size_before = File.size(descendant_heartbeat_path)
+        sleep 0.2
+        heartbeat_size_after = File.size(descendant_heartbeat_path)
+        assert_equal heartbeat_size_before, heartbeat_size_after,
+                     "timeout cleanup must stop TERM-resistant descendants"
+      end
+    ensure
+      begin
+        Process.kill("KILL", descendant_pid) if descendant_pid
+      rescue Errno::ESRCH
+        nil
+      end
     end
   end
 
