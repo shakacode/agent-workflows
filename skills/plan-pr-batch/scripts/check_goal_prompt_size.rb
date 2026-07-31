@@ -31,6 +31,10 @@ OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort ro
 MODEL_EFFORT_DISPATCH_LINE = "- Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh"
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
+COORDINATION_DEPENDENCY_PROMPT_LINE =
+  "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
+  "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
+  "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam."
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
@@ -121,7 +125,7 @@ SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
-  merge_authority:<none|ask|auto_merge_when_gates_pass>.
+  merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>; wave: <cap/items>.
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{LAUNCH_ASSURANCE_PROMPT_LINE}
@@ -516,7 +520,7 @@ required_all_prompt_phrases = [
   "ready-no-merge-authority",
   "document confidence data in the PR description",
   "Verify live GitHub before edits",
-  "Coordination:",
+  COORDINATION_DEPENDENCY_PROMPT_LINE,
   "register before launch when supported",
   "push holder/generation check",
   "facts are UNKNOWN"
