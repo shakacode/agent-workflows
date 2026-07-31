@@ -5,6 +5,7 @@ require "json"
 require "fileutils"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_runtime_trust"
@@ -14,6 +15,55 @@ FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
 
 class AutonomousMergeEligibilityTest < Minitest::Test
   HEAD_SHA = "a" * 40
+
+  def test_live_evaluator_uses_the_injected_absolute_git_for_all_trusted_reads
+    Dir.mktmpdir("autonomous-merge-trusted-git") do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      executable_root = File.join(root, "trusted-tools")
+      poisoned_root = File.join(root, "poisoned-path")
+      FileUtils.mkdir_p([executable_root, poisoned_root])
+      trusted_git = File.join(executable_root, "git")
+      trusted_log = File.join(root, "trusted-git.log")
+      poisoned_marker = File.join(root, "poisoned-git-ran")
+      poisoned_gh_marker = File.join(root, "poisoned-gh-ran")
+      real_git = File.realpath(`command -v git`.strip)
+      File.write(trusted_git, <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.open(#{trusted_log.inspect}, "a") { |file| file.puts(ARGV.join("\\t")) }
+        exec(#{real_git.inspect}, *ARGV)
+      RUBY
+      File.chmod(0o755, trusted_git)
+      File.write(File.join(poisoned_root, "git"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(#{poisoned_marker.inspect}, "yes")
+        exit 99
+      RUBY
+      File.chmod(0o755, File.join(poisoned_root, "git"))
+      File.write(File.join(poisoned_root, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(#{poisoned_gh_marker.inspect}, "yes")
+        exit 99
+      RUBY
+      File.chmod(0o755, File.join(poisoned_root, "gh"))
+
+      result = invoke(
+        root:,
+        calibration_path:,
+        evaluation: evidence(base_sha:, files: files(1)),
+        environment: {
+          "AUTONOMOUS_MERGE_GIT" => trusted_git,
+          "PATH" => "#{poisoned_root}:#{ENV.fetch('PATH')}"
+        }
+      )
+
+      assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+      refute File.exist?(poisoned_marker)
+      refute File.exist?(poisoned_gh_marker)
+      assert_operator File.foreach(trusted_log).count, :>=, 5
+    end
+  end
+
   def test_changed_files_value_immediately_below_portable_boundary_is_eligible
     result = evaluate { |base_sha| evidence(base_sha:, files: files(29)) }
 
@@ -1073,7 +1123,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   private
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
-             helper_provenance: :trusted_base)
+             helper_provenance: :trusted_base, environment: {})
     command = [
       "ruby",
       SCRIPT,
@@ -1103,7 +1153,10 @@ class AutonomousMergeEligibilityTest < Minitest::Test
           ["--repo", "example/repo", "--pr", "1", "--semantic-assessment", resolved_semantic_path]
         )
         stdout, stderr, status = Open3.capture3(
-          { "AUTONOMOUS_MERGE_GH" => fake_gh, "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path },
+          {
+            "AUTONOMOUS_MERGE_GH" => fake_gh,
+            "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path
+          }.merge(environment),
           *command,
           stdin_data:
         )
@@ -1112,7 +1165,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       end
     end
 
-    stdout, stderr, status = Open3.capture3(*command, stdin_data:)
+    stdout, stderr, status = Open3.capture3(environment, *command, stdin_data:)
     assert status.success?, stderr
     JSON.parse(stdout)
   end

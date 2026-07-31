@@ -112,11 +112,12 @@ module AutonomousMergeRuntimeTrust
   def verify_trusted_base(repo_root:, base_sha:, claim:, sources:)
     errors = []
     manifest = {}
+    git_command = ENV.fetch("AUTONOMOUS_MERGE_GIT", "git")
     sources.each do |role, source|
       runtime_bytes = File.binread(source.fetch(:path))
       matches = source.fetch(:tree_paths).filter_map do |tree_path|
         tree_bytes, status = Open3.capture2(
-          "git", "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
+          git_command, "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
           binmode: true
         )
         tree_path if status.success? && tree_bytes == runtime_bytes

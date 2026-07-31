@@ -20,38 +20,39 @@ class MergeAssuranceTest < Minitest::Test
   def setup
     @fake_gh_dir = Dir.mktmpdir("merge-assurance-gh")
     @fake_gh_calls = File.join(@fake_gh_dir, "calls")
+    @fake_gh_environment = File.join(@fake_gh_dir, "environment.json")
+    @fake_gh_response = File.join(@fake_gh_dir, "response.json")
+    @fake_gh_exit_status = File.join(@fake_gh_dir, "exit-status")
+    @fake_gh_hang = File.join(@fake_gh_dir, "hang")
+    @fake_gh_child_pid = File.join(@fake_gh_dir, "hung-child.pid")
     @original_path = ENV.fetch("PATH")
     ENV["PATH"] = @fake_gh_dir
-    ENV["FAKE_GH_CALLS"] = @fake_gh_calls
-    ENV["FAKE_GH_EXIT_STATUS"] = "0"
-    ENV["FAKE_GH_RESPONSE"] = JSON.generate(fake_issue)
+    File.write(@fake_gh_exit_status, "0")
+    File.write(@fake_gh_response, JSON.generate(fake_issue))
     @fake_gh = File.join(@fake_gh_dir, "gh")
     File.write(@fake_gh, <<~RUBY)
       #!#{RbConfig.ruby}
-      File.open(ENV.fetch("FAKE_GH_CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
-      if ENV["FAKE_GH_HANG"] == "1"
+      require "json"
+      File.open(#{@fake_gh_calls.inspect}, "a") { |file| file.puts(ARGV.join("\t")) }
+      File.write(#{@fake_gh_environment.inspect}, JSON.generate(ENV.to_h))
+      if File.exist?(#{@fake_gh_hang.inspect})
         child_pid = fork do
           trap("TERM", "IGNORE")
-          File.write(ENV.fetch("FAKE_GH_CHILD_PID"), Process.pid.to_s)
+          File.write(#{@fake_gh_child_pid.inspect}, Process.pid.to_s)
           sleep 2
         end
         trap("TERM", "IGNORE")
         sleep 2
         Process.wait(child_pid)
       end
-      STDOUT.write(ENV.fetch("FAKE_GH_RESPONSE"))
-      exit Integer(ENV.fetch("FAKE_GH_EXIT_STATUS"))
+      STDOUT.write(File.read(#{@fake_gh_response.inspect}))
+      exit Integer(File.read(#{@fake_gh_exit_status.inspect}))
     RUBY
     File.chmod(0o755, @fake_gh)
   end
 
   def teardown
     ENV["PATH"] = @original_path
-    ENV.delete("FAKE_GH_CALLS")
-    ENV.delete("FAKE_GH_EXIT_STATUS")
-    ENV.delete("FAKE_GH_RESPONSE")
-    ENV.delete("FAKE_GH_HANG")
-    ENV.delete("FAKE_GH_CHILD_PID")
     ENV.delete("MERGE_ASSURANCE_GH_TIMEOUT_SECONDS")
     FileUtils.remove_entry(@fake_gh_dir)
   end
@@ -128,7 +129,130 @@ class MergeAssuranceTest < Minitest::Test
       ],
       execution.fetch(:helper_call).fetch("argv")
     )
-    refute execution.fetch(:helper_call).fetch("autonomous_merge_gh_present")
+    assert execution.fetch(:helper_call).fetch("autonomous_merge_gh_present")
+    assert_equal(
+      execution.fetch(:trusted_gh_executable),
+      execution.dig(:helper_call, "environment", "AUTONOMOUS_MERGE_GH")
+    )
+  end
+
+  def test_cli_replay_does_not_resolve_the_sibling_interpreter_from_path
+    supplied = autonomous_result("autonomous-merge-eligible")
+    recomputed = Marshal.load(Marshal.dump(supplied))
+    recomputed["verdict"] = "human-approval-required"
+    recomputed["triggered_gates"] = ["changed-files-limit"]
+
+    execution = run_replay_cli(
+      supplied:,
+      recomputed:,
+      poisoned_ruby: true
+    )
+
+    refute execution.fetch(:status).success?
+    assert_includes(
+      execution.fetch(:result).fetch("failures"),
+      "autonomous_result does not match trusted live replay"
+    )
+    refute execution.fetch(:poisoned_ruby_ran)
+  end
+
+  def test_cli_accepts_coordinator_established_absolute_git_and_gh_executables
+    autonomous = autonomous_result("autonomous-merge-eligible")
+
+    execution = run_replay_cli(supplied: autonomous, recomputed: autonomous)
+
+    assert execution.fetch(:status).success?, execution.fetch(:stderr)
+    assert_equal(
+      execution.fetch(:trusted_git_executable),
+      execution.dig(:helper_call, "environment", "AUTONOMOUS_MERGE_GIT")
+    )
+    assert_equal(
+      execution.fetch(:trusted_gh_executable),
+      execution.dig(:helper_call, "environment", "AUTONOMOUS_MERGE_GH")
+    )
+  end
+
+  def test_trusted_executable_validation_supports_a_safe_homebrew_style_symlink
+    Dir.mktmpdir("merge-assurance-homebrew") do |root|
+      cellar = File.join(root, "opt/homebrew/Cellar")
+      target_dir = File.join(cellar, "gh/2.96.0/bin")
+      link_dir = File.join(root, "opt/homebrew/bin")
+      FileUtils.mkdir_p([target_dir, link_dir])
+      File.chmod(0o775, cellar)
+      target = File.join(target_dir, "gh")
+      File.write(target, "#!#{RbConfig.ruby}\nexit 0\n")
+      File.chmod(0o755, target)
+      link = File.join(link_dir, "gh")
+      File.symlink(target, link)
+
+      assert_equal(
+        File.realpath(target),
+        MergeAssurance.trusted_executable_path(link, "--trusted-gh-executable")
+      )
+    end
+  end
+
+  def test_trusted_executable_validation_rejects_nonabsolute_and_writable_targets_and_ancestors
+    failures = {}
+    failures[:nonabsolute] = assert_raises(MergeAssurance::Error) do
+      MergeAssurance.trusted_executable_path("bin/gh", "--trusted-gh-executable")
+    end
+    Dir.mktmpdir("merge-assurance-unsafe-executable") do |root|
+      writable_target = File.join(root, "writable-gh")
+      File.write(writable_target, "#!#{RbConfig.ruby}\nexit 0\n")
+      File.chmod(0o777, writable_target)
+      failures[:writable_target] = assert_raises(MergeAssurance::Error) do
+        MergeAssurance.trusted_executable_path(writable_target, "--trusted-gh-executable")
+      end
+
+      unsafe_ancestor = File.join(root, "world-writable")
+      FileUtils.mkdir_p(unsafe_ancestor)
+      File.chmod(0o777, unsafe_ancestor)
+      nested_target = File.join(unsafe_ancestor, "gh")
+      File.write(nested_target, "#!#{RbConfig.ruby}\nexit 0\n")
+      File.chmod(0o755, nested_target)
+      failures[:writable_ancestor] = assert_raises(MergeAssurance::Error) do
+        MergeAssurance.trusted_executable_path(nested_target, "--trusted-gh-executable")
+      end
+
+      escaping_link = File.join(root, "escaping-gh")
+      File.symlink(writable_target, escaping_link)
+      failures[:unsafe_symlink_target] = assert_raises(MergeAssurance::Error) do
+        MergeAssurance.trusted_executable_path(escaping_link, "--trusted-gh-executable")
+      end
+    end
+
+    assert_includes failures.fetch(:nonabsolute).message, "must be an absolute path"
+    assert_includes failures.fetch(:writable_target).message, "target is group- or world-writable"
+    assert_includes failures.fetch(:writable_ancestor).message, "ancestor is world-writable"
+    assert_includes failures.fetch(:unsafe_symlink_target).message, "target is group- or world-writable"
+  end
+
+  def test_trusted_executable_validation_rejects_foreign_owners_and_unsafe_group_ancestors
+    stat_type = Struct.new(:uid, :mode, :kind) do
+      def file?
+        kind == :file
+      end
+
+      def directory?
+        kind == :directory
+      end
+    end
+    foreign_target = stat_type.new(Process.euid + 10_000, 0o755, :file)
+    error = assert_raises(MergeAssurance::Error) do
+      MergeAssurance.validate_trusted_executable_target!(
+        foreign_target, "--trusted-gh-executable"
+      )
+    end
+    assert_includes error.message, "target owner is not trusted"
+
+    unsafe_group_ancestor = stat_type.new(0, 0o775, :directory)
+    error = assert_raises(MergeAssurance::Error) do
+      MergeAssurance.validate_trusted_executable_ancestor!(
+        unsafe_group_ancestor, "--trusted-gh-executable"
+      )
+    end
+    assert_includes error.message, "ancestor is group-writable by a foreign owner"
   end
 
   def test_replay_comparison_covers_every_threshold_gate_family_and_reviewed_head_mode
@@ -235,7 +359,7 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
-  def test_cli_replay_rejects_semantic_assessment_inside_repo_and_test_command_override
+  def test_cli_replay_rejects_semantic_assessment_inside_repo_and_inherited_tool_overrides
     autonomous = autonomous_result("autonomous-merge-eligible")
     semantic = run_replay_cli(
       supplied: autonomous,
@@ -243,21 +367,25 @@ class MergeAssuranceTest < Minitest::Test
       semantic_inside_repo: true,
       helper_mode: :semantic_rejection
     )
-    override = run_replay_cli(
-      supplied: autonomous,
-      recomputed: autonomous,
-      extra_env: { "AUTONOMOUS_MERGE_GH" => "/tmp/fake-gh" }
-    )
+    overrides = %w[AUTONOMOUS_MERGE_GIT AUTONOMOUS_MERGE_GH].to_h do |key|
+      [key, run_replay_cli(
+        supplied: autonomous,
+        recomputed: autonomous,
+        extra_env: { key => "/tmp/forbidden-tool" }
+      )]
+    end
 
     refute semantic.fetch(:status).success?
     assert semantic.fetch(:result).fetch("failures").any? do |message|
       message.include?("autonomous eligibility replay returned UNKNOWN")
     end
-    refute override.fetch(:status).success?
-    assert override.fetch(:result).fetch("failures").any? do |message|
-      message.include?("AUTONOMOUS_MERGE_GH is forbidden")
+    overrides.each do |key, override|
+      refute override.fetch(:status).success?
+      assert override.fetch(:result).fetch("failures").any? do |message|
+        message.include?("#{key} is forbidden")
+      end
+      assert_empty override.fetch(:helper_call)
     end
-    assert_empty override.fetch(:helper_call)
   end
 
   def test_autonomous_replay_timeout_terminates_the_helper_process_group
@@ -1315,7 +1443,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_authenticated_issue_read_fails_closed_on_auth_failure
-    ENV["FAKE_GH_EXIT_STATUS"] = "1"
+    File.write(@fake_gh_exit_status, "1")
     result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
@@ -1382,6 +1510,63 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal [true, 1], [result.fetch("eligible"), fake_gh_call_count]
   end
 
+  def test_semantic_tracker_uses_the_trusted_gh_with_an_exact_sanitized_environment
+    poison_root = Dir.mktmpdir("merge-assurance-poisoned-gh")
+    poisoned_gh_marker = File.join(poison_root, "poisoned-gh-ran")
+    preload_marker = File.join(poison_root, "ruby-preload-ran")
+    preload = File.join(poison_root, "preload.rb")
+    File.write(preload, <<~RUBY)
+      File.write(#{preload_marker.inspect}, "yes") if File.basename($PROGRAM_NAME) == "gh"
+    RUBY
+    File.write(File.join(poison_root, "gh"), <<~RUBY)
+      #!#{RbConfig.ruby}
+      File.write(#{poisoned_gh_marker.inspect}, "yes")
+      exit 99
+    RUBY
+    File.chmod(0o755, File.join(poison_root, "gh"))
+    hostile = {
+      "PATH" => "#{poison_root}:#{@original_path}",
+      "GH_HOST" => "attacker.example",
+      "GH_TOKEN" => "allowed-token",
+      "RUBYOPT" => "-r#{preload}",
+      "RUBYLIB" => poison_root,
+      "RUBYGEMS_GEMDEPS" => "sentinel",
+      "GEM_HOME" => poison_root,
+      "BUNDLE_GEMFILE" => File.join(poison_root, "Gemfile"),
+      "LD_PRELOAD" => File.join(poison_root, "preload.so"),
+      "DYLD_INSERT_LIBRARIES" => File.join(poison_root, "preload.dylib"),
+      "UNRELATED_SENTINEL" => "must-not-pass"
+    }
+
+    with_environment(hostile) do
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        recomputed_autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context(
+          "auto_merge_when_gates_pass",
+          semantic_github_actions_change: true,
+          operations: [semantic_tracker]
+        ),
+        trusted_gh_executable: @fake_gh,
+        now: NOW
+      )
+
+      assert result.fetch("eligible")
+    end
+    child_environment = JSON.parse(File.read(@fake_gh_environment))
+
+    refute File.exist?(poisoned_gh_marker)
+    refute File.exist?(preload_marker)
+    assert_equal "github.com", child_environment.fetch("GH_HOST")
+    assert_equal "allowed-token", child_environment.fetch("GH_TOKEN")
+    hostile.keys.grep_v(/\A(?:GH_HOST|GH_TOKEN)\z/).each do |key|
+      refute child_environment.key?(key), key
+    end
+  ensure
+    FileUtils.remove_entry(poison_root) if poison_root && File.exist?(poison_root)
+  end
+
   def test_semantic_tracker_authenticated_read_fails_closed_on_unavailable_or_malformed_evidence
     cases = {
       "unavailable" => ["1", "{}"],
@@ -1391,8 +1576,8 @@ class MergeAssuranceTest < Minitest::Test
     }
     eligible_cases = cases.filter_map do |name, (exit_status, response)|
       reset_fake_gh_calls
-      ENV["FAKE_GH_EXIT_STATUS"] = exit_status
-      ENV["FAKE_GH_RESPONSE"] = response
+      File.write(@fake_gh_exit_status, exit_status)
+      File.write(@fake_gh_response, response)
       result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
@@ -1436,7 +1621,7 @@ class MergeAssuranceTest < Minitest::Test
       reset_fake_gh_calls
       issue = fake_issue
       mutate.call(issue)
-      ENV["FAKE_GH_RESPONSE"] = JSON.generate(issue)
+      File.write(@fake_gh_response, JSON.generate(issue))
       result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
@@ -1479,26 +1664,28 @@ class MergeAssuranceTest < Minitest::Test
 
   def test_semantic_tracker_fails_closed_when_gh_is_unavailable
     File.rename(@fake_gh, "#{@fake_gh}.unavailable")
-    result = assess_with_replay(
-      ci_result: ready_ci,
-      autonomous_result: autonomous_result("autonomous-merge-eligible"),
-      context: context(
-        "auto_merge_when_gates_pass",
-        semantic_github_actions_change: true,
-        operations: [semantic_tracker]
-      ),
-      now: NOW
-    )
+    error = assert_raises(MergeAssurance::Error) do
+      assess_with_replay(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context(
+          "auto_merge_when_gates_pass",
+          semantic_github_actions_change: true,
+          operations: [semantic_tracker]
+        ),
+        now: NOW
+      )
+    end
 
-    assert_equal [false, 0], [result.fetch("eligible"), fake_gh_call_count]
+    assert_includes error.message, "--trusted-gh-executable could not be safely resolved"
+    assert_equal 0, fake_gh_call_count
   end
 
   def test_semantic_tracker_read_timeout_terminates_the_entire_process_group
-    child_pid_path = File.join(@fake_gh_dir, "hung-child.pid")
+    child_pid_path = @fake_gh_child_pid
     system(@fake_gh, "--version", out: File::NULL, err: File::NULL)
     reset_fake_gh_calls
-    ENV["FAKE_GH_HANG"] = "1"
-    ENV["FAKE_GH_CHILD_PID"] = child_pid_path
+    File.write(@fake_gh_hang, "yes")
     ENV["MERGE_ASSURANCE_GH_TIMEOUT_SECONDS"] = "0.5"
     started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     result = assess_with_replay(
@@ -1544,7 +1731,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_merge_authority_none_does_not_read_semantic_tracker
-    ENV["FAKE_GH_EXIT_STATUS"] = "1"
+    File.write(@fake_gh_exit_status, "1")
     result = assess_with_replay(
       ci_result: ready_ci,
       autonomous_result: autonomous_result("autonomous-merge-eligible"),
@@ -1635,9 +1822,21 @@ class MergeAssuranceTest < Minitest::Test
 
   def run_replay_cli(
     supplied:, recomputed:, provenance: "trusted-base:#{BASE_SHA}",
-    helper_mode: :result, layout: :flat, semantic_inside_repo: false, extra_env: {}
+    helper_mode: :result, layout: :flat, semantic_inside_repo: false, extra_env: {},
+    poisoned_ruby: false
   )
     Dir.mktmpdir("merge-assurance-replay") do |root|
+      supplied_path = write_json_fixture(root, "autonomous.json", supplied)
+      recomputed_path = write_json_fixture(root, "recomputed.json", recomputed)
+      helper_call_path = File.join(root, "helper-call.json")
+      trusted_bin = File.join(root, "trusted-bin")
+      FileUtils.mkdir_p(trusted_bin)
+      trusted_git_executable = File.join(trusted_bin, "git")
+      trusted_gh_executable = File.join(trusted_bin, "gh")
+      [trusted_git_executable, trusted_gh_executable].each do |executable|
+        File.write(executable, "#!#{RbConfig.ruby}\nexit 0\n")
+        File.chmod(0o755, executable)
+      end
       real_skill_dir = case layout
                        when :native_plugin_cache
                          File.join(root, "agent-home/plugins/cache/scw/1.0.0/skills/pr-batch")
@@ -1653,16 +1852,17 @@ class MergeAssuranceTest < Minitest::Test
       helper = File.join(bin_dir, "autonomous-merge-eligibility")
       unless helper_mode == :missing
         File.write(helper, <<~RUBY)
-          #!#{RbConfig.ruby}
+          #!#{poisoned_ruby ? '/usr/bin/env ruby' : RbConfig.ruby}
           require "json"
           File.write(
-            ENV.fetch("FAKE_AUTONOMOUS_CALL"),
+            #{helper_call_path.inspect},
             JSON.generate(
               "argv" => ARGV,
-              "autonomous_merge_gh_present" => ENV.key?("AUTONOMOUS_MERGE_GH")
+              "autonomous_merge_gh_present" => ENV.key?("AUTONOMOUS_MERGE_GH"),
+              "environment" => ENV.to_h
             )
           )
-          case ENV.fetch("FAKE_AUTONOMOUS_MODE")
+          case #{helper_mode.to_s.inspect}
           when "malformed"
             STDOUT.write("not-json")
           when "unknown", "semantic_rejection"
@@ -1670,7 +1870,7 @@ class MergeAssuranceTest < Minitest::Test
           when "nonzero"
             exit 9
           else
-            STDOUT.write(File.read(ENV.fetch("FAKE_AUTONOMOUS_RESULT")))
+            STDOUT.write(File.read(#{recomputed_path.inspect}))
           end
         RUBY
         File.chmod(0o755, helper)
@@ -1692,15 +1892,20 @@ class MergeAssuranceTest < Minitest::Test
                             end
       File.write(semantic_assessment, "{}\n")
       ci_path = write_json_fixture(root, "ci.json", fresh_ready_ci)
-      supplied_path = write_json_fixture(root, "autonomous.json", supplied)
       context_path = write_json_fixture(root, "context.json", context("auto_merge_when_gates_pass"))
-      recomputed_path = write_json_fixture(root, "recomputed.json", recomputed)
-      helper_call_path = File.join(root, "helper-call.json")
-      env = {
-        "FAKE_AUTONOMOUS_CALL" => helper_call_path,
-        "FAKE_AUTONOMOUS_RESULT" => recomputed_path,
-        "FAKE_AUTONOMOUS_MODE" => helper_mode.to_s
-      }.merge(extra_env)
+      poisoned_ruby_marker = File.join(root, "poisoned-ruby-ran")
+      if poisoned_ruby
+        poisoned_bin = File.join(root, "poisoned-bin")
+        FileUtils.mkdir_p(poisoned_bin)
+        File.write(File.join(poisoned_bin, "ruby"), <<~RUBY)
+          #!#{RbConfig.ruby}
+          File.write(#{poisoned_ruby_marker.inspect}, "yes")
+          STDOUT.write(File.read(#{supplied_path.inspect}))
+        RUBY
+        File.chmod(0o755, File.join(poisoned_bin, "ruby"))
+        extra_env = extra_env.merge("PATH" => "#{poisoned_bin}:#{ENV.fetch('PATH')}")
+      end
+      env = extra_env
       stdout, stderr, status = Open3.capture3(
         env,
         RbConfig.ruby,
@@ -1710,7 +1915,9 @@ class MergeAssuranceTest < Minitest::Test
         "--context", context_path,
         "--repo-root", repo_root,
         "--semantic-assessment", semantic_assessment,
-        "--trusted-helper-provenance", provenance
+        "--trusted-helper-provenance", provenance,
+        "--trusted-git-executable", trusted_git_executable,
+        "--trusted-gh-executable", trusted_gh_executable
       )
       return {
         status:,
@@ -1718,7 +1925,10 @@ class MergeAssuranceTest < Minitest::Test
         stderr:,
         repo_root:,
         semantic_assessment:,
-        helper_call: File.exist?(helper_call_path) ? JSON.parse(File.read(helper_call_path)) : {}
+        trusted_git_executable: File.realpath(trusted_git_executable),
+        trusted_gh_executable: File.realpath(trusted_gh_executable),
+        helper_call: File.exist?(helper_call_path) ? JSON.parse(File.read(helper_call_path)) : {},
+        poisoned_ruby_ran: File.exist?(poisoned_ruby_marker)
       }
     end
   end
@@ -1746,6 +1956,7 @@ class MergeAssuranceTest < Minitest::Test
       autonomous_result:,
       recomputed_autonomous_result:,
       context:,
+      trusted_gh_executable: @fake_gh,
       now:
     )
   end
@@ -1771,12 +1982,22 @@ class MergeAssuranceTest < Minitest::Test
     File.delete(@fake_gh_calls) if File.exist?(@fake_gh_calls)
   end
 
+  def with_environment(overrides)
+    original = overrides.to_h { |key, _value| [key, ENV.key?(key) ? ENV.fetch(key) : nil] }
+    ENV.update(overrides)
+    yield
+  ensure
+    original&.each do |key, value|
+      value.nil? ? ENV.delete(key) : ENV[key] = value
+    end
+  end
+
   def eligible_semantic_binding_mutations
     semantic_binding_lines.filter_map do |key, expected_line|
       reset_fake_gh_calls
       issue = fake_issue
       issue["body"] = "#{issue['body']}\n#{yield(key, expected_line)}"
-      ENV["FAKE_GH_RESPONSE"] = JSON.generate(issue)
+      File.write(@fake_gh_response, JSON.generate(issue))
       result = assess_with_replay(
         ci_result: ready_ci,
         autonomous_result: autonomous_result("autonomous-merge-eligible"),
