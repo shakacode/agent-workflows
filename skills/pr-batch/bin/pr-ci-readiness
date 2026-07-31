@@ -694,8 +694,9 @@ module PrCiReadiness
     # is an independent confirmation from GitHub that the statuses returned
     # belong to the exact head we asked about -- a missing or mismatched `sha`
     # fails closed. The combined endpoint also returns only the most recent
-    # status per context, which is exactly what the history-list dedupe below
-    # was approximating, so scope contents are unchanged.
+    # status per context, matching the current-context scope the history-list
+    # dedupe previously approximated. Duplicate case-insensitive contexts now
+    # fail closed because they indicate an unstable or malformed inventory.
     def fetch_exact_head_statuses(repo, head_sha)
       combined_state = nil
       bind_head = lambda do |payload|
@@ -743,6 +744,7 @@ module PrCiReadiness
           raise Error, "combined commit status response had an invalid context"
         end
 
+        # GitHub's commit-status API defines context identity as case-insensitive.
         context_identity = context.downcase
         if seen_contexts.key?(context_identity)
           raise Error,

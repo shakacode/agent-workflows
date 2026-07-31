@@ -380,7 +380,7 @@ class PrCiReadinessCliTest < Minitest::Test
   end
 
   # GitHub's documented combination rule for the combined status endpoint. The
-  # script never reads this field, but the fixture stays faithful to the API.
+  # script validates this field against the returned per-context statuses.
   def combined_status_state(statuses)
     states = statuses.map { |row| row["state"] }
     return "pending" if states.empty?
@@ -399,7 +399,7 @@ class PrCiReadinessCliTest < Minitest::Test
                              exact_status_pages)
     if exact_status_pages
       page_cases = exact_status_pages.each_with_index.map do |payload, index|
-        "#{index + 1}) #{shell_json_printf(payload)} ;;"
+        "  #{index + 1}) #{shell_json_printf(payload)} ;;"
       end.join("\n")
       return <<~BASH
         if [[ "$*" = *"/status?per_page="* ]]; then
@@ -407,7 +407,7 @@ class PrCiReadinessCliTest < Minitest::Test
           page="${2##*page=}"
           case "$page" in
           #{page_cases}
-          *) exit 1 ;;
+            *) exit 1 ;;
           esac
           exit 0
         fi
@@ -1925,6 +1925,35 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal false, data.dig("scopes", "other", "complete")
       assert_empty data.dig("scopes", "other", "rows")
       assert_includes data.dig("scopes", "other", "error"), "state changed during pagination"
+    end
+  end
+
+  def test_single_page_combined_state_inconsistent_with_statuses_fails_closed
+    head = "a" * 40
+    pages = [{
+      "sha" => head,
+      "state" => "success",
+      "total_count" => 1,
+      "statuses" => [
+        { "id" => 101, "context" => "status-100", "state" => "pending",
+          "target_url" => "https://example/status/101" }
+      ]
+    }]
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"),
+                      "state was inconsistent with its statuses"
     end
   end
 
