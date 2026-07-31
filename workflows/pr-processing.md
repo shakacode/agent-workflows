@@ -17,7 +17,8 @@ a provider operation that the current invocation created locally and whose
 exact `begin --json` result it retained. Otherwise stop here and run the active
 host home's absolute `bin/agent-workflows-resolve begin` path. Never resolve this bootstrap through
 `PATH`. Bind `PR_BATCH_SKILL_DIR` only to the parent of
-`assets.skills.pr_batch`. Set
+`assets.skills.pr_batch`. Bind `PLAN_PR_BATCH_SKILL_DIR` only to the parent of
+`assets.skills.plan_pr_batch`. Set
 `AGENT_WORKFLOWS_OPERATION` only from the current begin result, never from
 inherited shell state. Bind `AGENT_WORKFLOWS_RUNNER` as a shell array containing
 every element of that result's `runner` array in order; never omit its
@@ -662,12 +663,11 @@ overfilling the active worker set.
 
 ### Batch Plan Preflight
 
-Before dispatcher selection or any worker launch, resolve
-`PLAN_PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
-repo-local pinned-copy chain and run the plan's v1 envelope through:
+Before dispatcher selection or any worker launch, use the operation-bound
+`PLAN_PR_BATCH_SKILL_DIR` and run the plan's v1 envelope through:
 
 ```bash
-PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"
+: "${PLAN_PR_BATCH_SKILL_DIR:?set from assets.skills.plan_pr_batch}"
 "${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight" \
   < path/to/batch-plan-preflight-v1.json
 ```
