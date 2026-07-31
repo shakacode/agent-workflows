@@ -13,8 +13,8 @@ GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
-COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort:<model/class>/<effort>."
-LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance:parent <exact model>/<effort>@<source>;checker <exact model>/<effort>@<source>;exact-policy UNKNOWN blocks."
+COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/<effort>."
+LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_route=<model/effort@binding|UNKNOWN>;" \
                                   "lanes=<host+worker_route>;no guesses."
@@ -24,13 +24,13 @@ PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
   "exactly one target/lane per worker"
 CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "- #{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
-  "shared context in-lane;serial/UNKNOWN apart.".freeze
-WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes:<initial model/class>/<effort>-><lane ids>;escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST;max <N>."
+  "shared context in-lane;serial/UNKNOWN apart".freeze
+WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
-MODEL_EFFORT_DISPATCH_LINE = "- Bind on-host;unbound->stop;no inheritance/substitution;exact-policy parent mismatch/UNKNOWN->relaunch;checker mismatch/UNKNOWN->reserve fresh"
-DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token;active->no launch;input->decision;fence->stop/reconcile."
-DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>:route policy <hard|preferred>;requested <dispatcher>@<route>;fallbacks <dispatcher>@<route>->...|none;auth dispatch/route <y|n>/<y|n>."
+MODEL_EFFORT_DISPATCH_LINE = "- Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh"
+DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
+DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam."
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
@@ -111,8 +111,8 @@ GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
 TEXT
 GOAL_PROMPT_BASE_RESOLUTION_LINE = "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
                                    "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
-GOAL_PROMPT_FALLBACK_LINE = "- Resolve `$pr-batch`;autoload/self-contained: load persisted state pre-preflight;" \
-                            "persist output pre-resume/launch;preflight issue/PR only."
+GOAL_PROMPT_FALLBACK_LINE = "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
+                            "persist output before resume/launch; preflight issue/PR only."
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
@@ -121,7 +121,7 @@ SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
-  merge_authority:<none | ask | auto_merge_when_gates_pass>.
+  merge_authority:<none|ask|auto_merge_when_gates_pass>.
   Batch size target: <codex|claude|generic>; wave: <cap/items>.
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{LAUNCH_ASSURANCE_PROMPT_LINE}
@@ -491,7 +491,7 @@ required_codex_prompt_phrases = [
 required_all_prompt_phrases = [
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
-  "Thread handle:<batch-short>-<lane>-<word>",
+  "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
   "exact model/effort+binding",
   "Preflight: issue/PR=>pr-security-preflight;",
