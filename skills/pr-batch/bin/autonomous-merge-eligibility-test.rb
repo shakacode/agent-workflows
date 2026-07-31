@@ -27,7 +27,13 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       trusted_log = File.join(root, "trusted-git.log")
       poisoned_marker = File.join(root, "poisoned-git-ran")
       poisoned_gh_marker = File.join(root, "poisoned-gh-ran")
-      real_git = File.realpath(`command -v git`.strip)
+      git_name = "git#{RbConfig::CONFIG.fetch('EXEEXT')}"
+      git_candidates = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map do |directory|
+        File.join(directory, git_name)
+      end
+      real_git_candidate = git_candidates.find { |path| File.file?(path) && File.executable?(path) }
+      refute_nil real_git_candidate, "git must be available on PATH for this test"
+      real_git = File.realpath(real_git_candidate)
       File.write(trusted_git, <<~RUBY)
         #!#{RbConfig.ruby}
         File.open(#{trusted_log.inspect}, "a") { |file| file.puts(ARGV.join("\\t")) }
