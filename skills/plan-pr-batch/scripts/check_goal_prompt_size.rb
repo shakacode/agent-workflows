@@ -11,7 +11,7 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
-BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wave:"
+BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/<effort>."
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
@@ -26,7 +26,7 @@ CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
 PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
   "one target/lane/worker"
 CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
-  "- #{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
+  "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
   "shared=>in-lane;serial/UNKNOWN apart".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
@@ -40,10 +40,14 @@ COORDINATION_DEPENDENCY_PROMPT_LINE =
   "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam."
-STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
+STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                              "live=<replay/ref>; " \
+                              "live=<replay/ref>;" \
                               "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
+TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
+                                     "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
+                                     "live=<replay/ref>; " \
+                                     "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v3: current-head CI/configured-reviewers " \
                              "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m " \
@@ -107,10 +111,13 @@ OVERSIZED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
   Dispatch docs: route policy preferred; requested remote@fastest-low-cost/low; fallbacks remote@balanced/medium; auth dispatch/route y/y.
   Dispatch release: route policy hard; requested remote@balanced/medium; fallbacks none; auth dispatch/route n/n.
 TEXT
-GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
-                             "block=>stop; no raw GitHub/override"
+GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;" \
+                             "block=>stop;no raw GitHub/override"
+TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
+  "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
+  "block=>stop; no raw GitHub/override"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
-  - Target:PR #N:URL|Issue #N:URL|Ad-hoc:`adhoc:<yyyymmdd>-<short-slug>`
+  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
     Original:trusted ad-hoc prompt|n/a.
     Goal:one-line outcome.
     Notes:scope/branch/dependency.
@@ -124,7 +131,7 @@ TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 TEXT
 GOAL_PROMPT_BASE_RESOLUTION_LINE =
-  "- Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN"
+  "Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN"
 TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
@@ -140,7 +147,7 @@ REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
-  Batch size target: <codex|claude|generic>; wave: <cap/items>
+  Batch size target: <codex|claude|generic>;wave: <cap/items>
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{LAUNCH_ASSURANCE_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
@@ -675,7 +682,7 @@ end
 end
 require_occurrence_count(
   triage_prompt_contract_text,
-  GOAL_PROMPT_PREFLIGHT_LINE,
+  TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE,
   1,
   "triage generated-prompt preflight contract"
 )
@@ -705,7 +712,7 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  STAGE_DEPENDENCY_SCOPE_LINE,
+  TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE,
   1,
   "triage generated-prompt stage-dependency scope"
 )
