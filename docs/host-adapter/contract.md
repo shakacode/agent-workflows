@@ -221,8 +221,8 @@ binding:
   supporting assets.
 - `runner` is the complete argv prefix for capability execution. Its absolute
   environment launcher removes Ruby/Bundler injection state before starting the
-  bound absolute Ruby interpreter. Consumers preserve every element in order
-  and append only the capability and its arguments.
+  operation's private Ruby interpreter snapshot. Consumers preserve every
+  element in order and append only the capability and its arguments.
 
 Registry loading requires every named skill to be a regular non-symlink
 instruction file at its declared location beneath the verified tree. Missing,
@@ -255,10 +255,24 @@ invoked as:
 "${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility -- ARGS...
 ```
 
-The runner revalidates the operation against its private canonical Git store,
-the active native and companion providers, and the recorded launcher/runtime/
-capability bundle source path, device, inode, size, mode, content, exact member
-set, runtime digest, and bound Git/GitHub executable immediately before
+The resolver copies the Ruby executable already running `begin` into the
+private operation root with mode `0500`. It verifies that the source identity
+and content stay stable across the copy and that the copied bytes match. This
+accommodates host-managed toolchains whose installation file is group-writable
+while preventing later replacement of that launcher from changing an existing
+operation. The runner and lifecycle validator require the exact private path,
+inode, hash, size, and mode recorded at publication. This snapshots only the
+Ruby executable file: dynamically loaded libraries, standard-library files,
+encoding data, and native extensions remain external inputs from the active
+Ruby installation and must be trusted for the operation lifetime.
+The lifecycle and runner continue to recognize schema-one operations, which
+bound the host interpreter directly, so an upgrade can list, run, and release
+already-published handles. New operations use the private-interpreter format.
+
+The runner also revalidates the operation against its private canonical Git
+store, the active native and companion providers, and the recorded launcher/
+runtime/capability bundle source path, device, inode, size, mode, content, exact
+member set, runtime digest, and bound Git/GitHub executable immediately before
 execution. It refuses provider movement after begin. Before the outer launcher
 starts any child, it rejects a capability marked `requires_current_provider`
 unless the operation is managed and current. Pinned operations therefore need
@@ -299,9 +313,10 @@ resolver or paths beneath returned `assets.root`. Derive helper directories
 only from the applicable returned `assets.skills` entry. Bind
 `AGENT_WORKFLOWS_RUNNER` as a shell array containing every element of the begin
 result's `runner` array in order; the absolute environment/interpreter prefix is
-part of the security boundary. Registered semantic capabilities run only
-through that runner; an unavailable registered capability is a hard stop, not permission to
-execute its source helper.
+part of the security boundary, and the interpreter path names the operation's
+private snapshot rather than the mutable host installation. Registered semantic
+capabilities run only through that runner; an unavailable registered capability
+is a hard stop, not permission to execute its source helper.
 
 Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command wrappers
 remain authoritative local policy. They do not replace bound shared files.

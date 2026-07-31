@@ -565,6 +565,31 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_empty operation_directories
   end
 
+  def test_lifecycle_lists_and_releases_a_schema_one_operation_after_runtime_upgrade
+    operation = begin_current_operation
+    root = operation_root(operation.fetch("operation"))
+    metadata_path = File.join(root, "operation.json")
+    metadata = JSON.parse(File.binread(metadata_path))
+    external_interpreter = File.realpath(RbConfig.ruby)
+    stat = File.stat(external_interpreter)
+    metadata["schema_version"] = 1
+    metadata["interpreter"] = {
+      "path" => external_interpreter,
+      "device" => stat.dev,
+      "inode" => stat.ino,
+      "size" => stat.size,
+      "sha256" => Digest::SHA256.file(external_interpreter).hexdigest
+    }
+    FileUtils.rm(File.join(root, "interpreter"))
+    AgentWorkflowsOperation::SecurePaths.write_json!(metadata_path, metadata)
+
+    inventory = fixture_resolver.list!
+    handles = inventory.fetch("operations").map { |entry| entry.fetch("handle") }
+    assert_equal [operation.fetch("operation")], handles
+    assert_equal "released", fixture_resolver.release!(handle: operation.fetch("operation")).fetch("status")
+    assert_empty operation_directories
+  end
+
   def test_installation_trust_anchor_appearing_after_begin_requires_a_new_operation
     operation = begin_current_operation
     write_dispatcher_trust(OpenSSL::PKey::RSA.generate(1024))
@@ -1238,7 +1263,9 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_includes trusted_env_paths, operation.fetch("runner").first
     assert_includes operation.fetch("runner"), "RUBYOPT"
     assert_includes operation.fetch("runner"), "RUBYLIB"
-    assert_includes operation.fetch("runner"), File.realpath(RbConfig.ruby)
+    root = operation_root(operation.fetch("operation"))
+    assert_includes operation.fetch("runner"), File.join(root, "interpreter")
+    assert_equal 0o500, File.stat(File.join(root, "interpreter")).mode & 0o777
     assert_equal File.join(@target, "bin/agent-workflows-run"), operation.fetch("runner")[-3]
     assert_equal ["--operation", operation.fetch("operation")], operation.fetch("runner").last(2)
     output, error, status = Open3.capture3(
@@ -1248,6 +1275,39 @@ class AgentWorkflowsOperationTest < Minitest::Test
 
     assert status.success?, "#{output}#{error}"
     assert_equal "fixture-helper --probe\n", output
+  end
+
+  def test_begin_snapshots_a_group_world_writable_active_interpreter
+    hosted_interpreter = File.join(@tmp, "hosted-ruby")
+    FileUtils.cp(File.realpath(RbConfig.ruby), hosted_interpreter)
+    FileUtils.chmod(0o777, hosted_interpreter)
+
+    operation = stub_singleton_method(RbConfig, :ruby, -> { hosted_interpreter }) { begin_current_operation }
+    interpreter = File.join(operation_root(operation.fetch("operation")), "interpreter")
+
+    assert_includes operation.fetch("runner"), interpreter
+    assert_equal 0o500, File.stat(interpreter).mode & 0o777
+    assert_equal Digest::SHA256.file(hosted_interpreter).hexdigest, Digest::SHA256.file(interpreter).hexdigest
+    output, error, status = Open3.capture3(
+      { "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex }, *operation.fetch("runner"),
+      "pr-merge-submit", "--", "--probe"
+    )
+
+    assert status.success?, "#{output}#{error}"
+    assert_equal "fixture-helper --probe\n", output
+  end
+
+  def test_installed_runner_rejects_an_operation_interpreter_swap
+    operation = begin_current_operation
+    interpreter = File.join(operation_root(operation.fetch("operation")), "interpreter")
+    replacement = "#{interpreter}.replacement"
+    File.write(replacement, File.binread(interpreter))
+    FileUtils.chmod(0o500, replacement)
+    File.rename(replacement, interpreter)
+
+    error = run_error(operation)
+    assert_includes error.message, "bound Ruby interpreter"
+    assert_includes error.message, "inode"
   end
 
   def test_copied_ruby_entrypoints_ignore_hostile_path_and_ruby_injection

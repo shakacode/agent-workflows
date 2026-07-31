@@ -293,6 +293,9 @@ test_pinned_install_refuses_capacity_without_changing_the_receipt() {
           refresh.call(recorded, File.join(root, "capabilities", name, recorded.fetch("path")))
         end
       end
+      interpreter = File.join(root, "interpreter")
+      payload.fetch("interpreter")["path"] = interpreter
+      refresh.call(payload.fetch("interpreter"), interpreter)
       refresh.call(payload.fetch("launcher"), File.join(root, "launcher"))
       File.write(destination, JSON.pretty_generate(payload) + "\n")
       File.chmod(0o600, destination)
@@ -341,6 +344,9 @@ test_pinned_install_refuses_capacity_without_changing_the_receipt() {
           refresh.call(recorded, File.join(root, "capabilities", name, recorded.fetch("path")))
         end
       end
+      interpreter = File.join(root, "interpreter")
+      payload.fetch("interpreter")["path"] = interpreter
+      refresh.call(payload.fetch("interpreter"), interpreter)
       refresh.call(payload.fetch("launcher"), File.join(root, "launcher"))
       File.write(destination, JSON.pretty_generate(payload) + "\n")
       File.chmod(0o600, destination)

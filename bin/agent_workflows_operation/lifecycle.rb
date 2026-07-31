@@ -161,7 +161,11 @@ module AgentWorkflowsOperation
     end
 
     def verify_operation_tree!(root, metadata)
-      expected_top = %w[capabilities launcher operation.json runtime]
+      expected_top = if metadata.fetch("schema_version") == 1
+                       %w[capabilities launcher operation.json runtime]
+                     else
+                       %w[capabilities interpreter launcher operation.json runtime]
+                     end
       unless Dir.children(root).sort == expected_top
         raise LifecycleError, "operation contains unknown or missing top-level state"
       end
@@ -170,13 +174,26 @@ module AgentWorkflowsOperation
       capabilities = metadata["capabilities"]
       unless runtime.is_a?(Hash) && !runtime.empty? &&
              capabilities.is_a?(Hash) && !capabilities.empty? &&
+             metadata["interpreter"].is_a?(Hash) &&
              metadata["launcher"].is_a?(Hash)
         raise LifecycleError, "operation executable bindings are incomplete"
       end
 
       verify_bound_directory!(File.join(root, "runtime"), runtime, mode: 0o400)
       verify_capability_bundles!(File.join(root, "capabilities"), capabilities)
+      verify_interpreter!(root, metadata)
       verify_bound_file!(File.join(root, "launcher"), metadata.fetch("launcher"), mode: 0o500)
+    end
+
+    def verify_interpreter!(root, metadata)
+      return if metadata.fetch("schema_version") == 1
+
+      interpreter = metadata.fetch("interpreter")
+      unless interpreter.fetch("path") == File.join(root, "interpreter")
+        raise LifecycleError, "operation interpreter path differs from its private snapshot"
+      end
+
+      verify_bound_file!(File.join(root, "interpreter"), interpreter, mode: 0o500)
     end
 
     def verify_capability_bundles!(directory, bindings)

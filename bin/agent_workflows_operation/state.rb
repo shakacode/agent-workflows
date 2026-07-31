@@ -41,10 +41,13 @@ module AgentWorkflowsOperation
           File.join(snapshot.tree, "bin/agent-workflows-operation-launcher"),
           launcher_path
         )
+        interpreter_path = File.join(stage, "interpreter")
+        interpreter = copy_current_interpreter!(interpreter_path).merge(
+          "path" => File.join(operations, handle, "interpreter")
+        )
         capability_state = registry.capabilities.to_h do |name, capability|
           [name, copy_capability_bundle!(snapshot, capabilities, capability)]
         end
-        interpreter = external_executable_identity!(RbConfig.ruby, "Ruby interpreter")
         environment = external_executable_identity!(trusted_env_executable!, "environment launcher")
         tools = {
           "git" => external_executable_identity!(store_git_executable, "Git executable")
@@ -53,7 +56,7 @@ module AgentWorkflowsOperation
           tools["gh"] = external_executable_identity!(provider.fetch("gh_executable"), "gh executable")
         end
         metadata = {
-          "schema_version" => 1,
+          "schema_version" => 2,
           "operation" => handle,
           "revision" => snapshot.revision,
           "freshness" => freshness,
@@ -93,7 +96,7 @@ module AgentWorkflowsOperation
       metadata_path = File.join(operation_root, "operation.json")
       SecurePaths.verify_private_file!(metadata_path, mode: 0o600)
       metadata = JSON.parse(File.binread(metadata_path))
-      unless metadata.is_a?(Hash) && metadata["schema_version"] == 1 && metadata["operation"] == handle
+      unless metadata.is_a?(Hash) && [1, 2].include?(metadata["schema_version"]) && metadata["operation"] == handle
         raise RunnerError, "operation metadata does not bind the requested handle"
       end
 
@@ -131,8 +134,12 @@ module AgentWorkflowsOperation
       stat = File.lstat(source)
       raise ResolverError, "canonical operation executable is not a regular file: #{source}" unless stat.file? && !stat.symlink?
 
+      write_private_executable!(File.binread(source), destination)
+    end
+
+    def write_private_executable!(content, destination)
       File.open(destination, File::WRONLY | File::CREAT | File::EXCL, 0o500) do |file|
-        file.write(File.binread(source))
+        file.write(content)
         file.flush
         file.fsync
       end
@@ -285,6 +292,38 @@ module AgentWorkflowsOperation
     def trusted_env_executable!
       %w[/usr/bin/env /bin/env].find { |path| File.file?(path) && File.executable?(path) } ||
         raise(ResolverError, "trusted absolute env executable is unavailable")
+    end
+
+    def copy_current_interpreter!(destination)
+      source = File.realpath(RbConfig.ruby)
+      File.open(source, "rb") do |file|
+        before = file.stat
+        unless before.file? && (before.uid == Process.uid || before.uid.zero?) && (before.mode & 0o111).positive?
+          raise ResolverError, "Ruby interpreter must be an owned executable regular file"
+        end
+
+        content = file.read
+        digest = Digest::SHA256.hexdigest(content)
+        write_private_executable!(content, destination)
+        file.rewind
+        after_digest = Digest::SHA256.hexdigest(file.read)
+        after = File.stat(source)
+        before_identity = [
+          before.dev, before.ino, before.size, before.uid, before.gid, before.mode,
+          before.mtime, before.ctime
+        ]
+        after_identity = [
+          after.dev, after.ino, after.size, after.uid, after.gid, after.mode,
+          after.mtime, after.ctime
+        ]
+        stable = before_identity == after_identity
+        stable &&= digest == after_digest && digest == Digest::SHA256.file(destination).hexdigest
+        raise ResolverError, "Ruby interpreter changed during operation begin" unless stable
+      end
+
+      executable_identity(destination)
+    rescue SystemCallError => e
+      raise ResolverError, "Ruby interpreter is unavailable: #{e.message}"
     end
 
     def external_executable_identity!(path, label)

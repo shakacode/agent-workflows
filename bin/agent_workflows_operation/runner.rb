@@ -37,7 +37,7 @@ module AgentWorkflowsOperation
         verify_runtime!(operation_root, metadata, snapshot)
         verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
         command = [
-          verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter"),
+          verify_bound_interpreter!(operation_root, metadata),
           "--disable=gems",
           launcher,
           "--target", target,
@@ -67,7 +67,7 @@ module AgentWorkflowsOperation
         verify_capability_bundle!(bundle, recorded, definition, snapshot)
         executable_record = recorded.fetch("runtime").fetch(recorded.fetch("executable_role"))
         executable = File.join(bundle, executable_record.fetch("path"))
-        ruby = verify_external_executable!(metadata.fetch("interpreter"), "bound Ruby interpreter")
+        ruby = verify_bound_interpreter!(operation_root, metadata)
         verify_external_executable!(metadata.fetch("environment"), "bound environment launcher")
         verify_external_executable!(metadata.fetch("tools").fetch("git"), "bound Git executable")
         gh = metadata.fetch("tools")["gh"]
@@ -297,6 +297,23 @@ module AgentWorkflowsOperation
       path
     rescue SystemCallError, KeyError => e
       raise RunnerError, "#{label} is unavailable: #{e.message}"
+    end
+
+    def verify_bound_interpreter!(operation_root, metadata)
+      recorded = metadata.fetch("interpreter")
+      if metadata.fetch("schema_version") == 1
+        return verify_external_executable!(recorded, "bound Ruby interpreter")
+      end
+
+      path = File.join(operation_root, "interpreter")
+      unless recorded.fetch("path") == path
+        raise RunnerError, "bound Ruby interpreter path differs from the operation snapshot"
+      end
+
+      verify_executable_identity!(path, recorded, "bound Ruby interpreter")
+      path
+    rescue KeyError => e
+      raise RunnerError, "bound Ruby interpreter is unavailable: #{e.message}"
     end
 
     def validated_operation!(handle, capability)
