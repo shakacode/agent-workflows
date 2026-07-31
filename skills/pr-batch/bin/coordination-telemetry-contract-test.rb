@@ -7,14 +7,17 @@ require "json"
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
+PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "coordinator_route=<model/effort@binding|UNKNOWN>;" \
-                       "lanes=<host+worker_route>;no guesses."
+                       "lanes=<lane-id:host+worker-route,...>;no guesses"
 HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
   "otherwise `blocked-user-input` for other required user input."
 BATCH_AUDIT_COMMAND = "agent-coord batch-audit --batch-id <id> --json"
+AUDIT_CAPABILITY = "telemetry-completeness audit capability"
+AUDIT_UNAVAILABLE = "telemetry audit: unavailable"
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -40,11 +43,21 @@ def read_repo_file(path)
 end
 
 def extract_section(text, heading)
-  heading_index = text.index(heading)
-  raise "missing heading #{heading.inspect}" unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[ \t]*$/)
+  raise "missing heading #{heading.inspect}" unless heading_match
 
-  body_start = heading_index + heading.length
-  next_heading = text.match(/^###\s+/, body_start)
+  heading_level = heading[/\A#+/].length
+  body_start = heading_match.end(0)
+  cursor = body_start
+  next_heading = nil
+  while (candidate = text.match(/^(#+)\s+/, cursor))
+    if candidate[1].length <= heading_level
+      next_heading = candidate
+      break
+    end
+
+    cursor = candidate.end(0)
+  end
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
@@ -79,6 +92,25 @@ def extract_json_fence(text, heading)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
+  def test_extract_section_stops_at_the_next_equal_or_higher_heading
+    fixture = <<~MARKDOWN
+      ## Target
+      target body
+      ### Nested
+      nested body
+      ## Sibling
+      sibling body
+    MARKDOWN
+
+    section = extract_section(fixture, "## Target")
+
+    assert_includes section, "target body"
+    assert_includes section, "### Nested"
+    assert_includes section, "nested body"
+    refute_includes section, "## Sibling"
+    refute_includes section, "sibling body"
+  end
+
   def test_operational_signal_dry_run_maps_each_checkpoint_to_the_typed_contract
     workflow = read_repo_file(WORKFLOW_PATH)
     telemetry = extract_section(workflow, "### Coordination Telemetry And Provenance")
@@ -167,13 +199,28 @@ class CoordinationTelemetryContractTest < Minitest::Test
   def test_authoritative_closeout_surfaces_use_exact_batch_audit_command
     {
       WORKFLOW_PATH => 2,
-      COORDINATION_DOC_PATH => 1
+      COORDINATION_DOC_PATH => 1,
+      PR_BATCH_SKILL_PATH => 1
     }.each do |path, expected_count|
       text = read_repo_file(path).gsub(/\s+/, " ")
       assert_equal expected_count, text.scan("`#{BATCH_AUDIT_COMMAND}`").length,
                    "#{path} must use the exact executable and batch-audit subcommand"
       refute_match(/(?<!agent-coord )batch-audit --batch-id <id> --json/, text,
                    "#{path} contains a weak batch-audit command without the executable")
+    end
+  end
+
+  def test_batch_audit_fails_closed_only_for_an_advertised_capability
+    {
+      WORKFLOW_PATH => 2,
+      COORDINATION_DOC_PATH => 1,
+      PR_BATCH_SKILL_PATH => 1
+    }.each do |path, expected_unavailable_count|
+      text = read_repo_file(path).gsub(/\s+/, " ")
+      assert_includes text, AUDIT_CAPABILITY,
+                      "#{path} must gate the audit on the backend's advertised capability"
+      assert_equal expected_unavailable_count, text.scan("`#{AUDIT_UNAVAILABLE}`").length,
+                   "#{path} must record unavailable audit capability at each closeout surface"
     end
   end
 end

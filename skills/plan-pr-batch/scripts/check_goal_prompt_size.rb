@@ -15,16 +15,19 @@ BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wa
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/<effort>."
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
+OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_route=<model/effort@binding|UNKNOWN>;" \
-                                  "lanes=<host+worker_route>;no guesses."
+                                  "lanes=<lane-id:host+worker-route,...>;no guesses"
+FINAL_CLOSEOUT_PROMPT_LINE =
+  "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
-  "Current wave: each target/disjoint lane exactly once"
+  "Current wave:each target/disjoint lane exactly once"
 PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
-  "exactly one target/lane per worker"
+  "one target/lane/worker"
 CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "- #{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
-  "shared context in-lane;serial/UNKNOWN apart".freeze
+  "shared=>in-lane;serial/UNKNOWN apart".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
@@ -107,16 +110,27 @@ TEXT
 GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
                              "block=>stop; no raw GitHub/override"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
+  - Target:PR #N:URL|Issue #N:URL|Ad-hoc:`adhoc:<yyyymmdd>-<short-slug>`
+    Original:trusted ad-hoc prompt|n/a.
+    Goal:one-line outcome.
+    Notes:scope/branch/dependency.
+    Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale.
+TEXT
+TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
     Original: trusted ad-hoc prompt; else n/a.
     Goal: one-line outcome.
     Notes: scope/branch/dependency.
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 TEXT
-GOAL_PROMPT_BASE_RESOLUTION_LINE = "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
-                                   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
-GOAL_PROMPT_FALLBACK_LINE = "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
-                            "persist output before resume/launch; preflight issue/PR only."
+GOAL_PROMPT_BASE_RESOLUTION_LINE =
+  "- Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN"
+TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
+  "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
+  "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
+GOAL_PROMPT_FALLBACK_LINE =
+  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
+  "persist output before resume/launch; preflight issue/PR only."
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
@@ -126,7 +140,7 @@ REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
-  Batch size target: <codex|claude|generic>; wave: <cap/items>.
+  Batch size target: <codex|claude|generic>; wave: <cap/items>
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{LAUNCH_ASSURANCE_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
@@ -495,6 +509,7 @@ required_codex_prompt_phrases = [
 required_all_prompt_phrases = [
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
+  OBJECTIVE_PROMPT_LINE,
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
   "exact model/effort+binding",
@@ -523,7 +538,8 @@ required_all_prompt_phrases = [
   COORDINATION_DEPENDENCY_PROMPT_LINE,
   "register before launch when supported",
   "push holder/generation check",
-  "facts are UNKNOWN"
+  "facts are UNKNOWN",
+  FINAL_CLOSEOUT_PROMPT_LINE
 ]
 
 host_aware_batch_sizing_phrase_checks = {
@@ -665,13 +681,13 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  GOAL_PROMPT_ITEM_SHAPE,
+  TRIAGE_GOAL_PROMPT_ITEM_SHAPE,
   1,
   "triage generated-prompt complete item shape"
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  GOAL_PROMPT_BASE_RESOLUTION_LINE,
+  TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE,
   1,
   "triage generated-prompt base-resolution contract"
 )

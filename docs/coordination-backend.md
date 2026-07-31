@@ -158,11 +158,13 @@ evidence. Public claim comments are not a typed event transport.
 
 Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
 own those lifecycle events; workers do not duplicate them. After terminal
-releases, the coordinator runs the backend's read-only telemetry-completeness
-check. An `agent-coord` compatible backend exposes this as
-`agent-coord batch-audit --batch-id <id> --json`; incomplete or `UNKNOWN`
-coverage blocks telemetry
-closeout, while backend `n/a` skips the check.
+releases, run a read-only check only when the active backend advertises a
+telemetry-completeness audit capability. An `agent-coord` compatible backend
+exposes this as `agent-coord batch-audit --batch-id <id> --json`; when
+advertised, an incomplete result, command failure, or `UNKNOWN` readback blocks
+telemetry closeout. If the active backend does not advertise the capability or
+its advertisement is `UNKNOWN`, record `telemetry audit: unavailable` in the
+durable handoff and continue; backend `n/a` skips the check.
 
 ## Typed Dependency Facts
 

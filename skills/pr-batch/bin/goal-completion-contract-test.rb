@@ -81,7 +81,9 @@ COMPACT_CONTRACT_INVARIANTS = [
 GMCC_ALIGNMENT_SENTENCE = "`GMCC-v3` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
-CANONICAL_CLOSEOUT_PROMPT_LINE = "Final: canonical closeout;"
+OBJECTIVE_PROMPT_LINE = "Objective:..."
+CANONICAL_CLOSEOUT_PROMPT_LINE =
+  "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 BATCH_COORDINATOR_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
 OBSOLETE_PARENT_AUDIT_OWNERSHIP = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
 PROMPT_ONLY_ARCHIVE_RULE = "Do not archive if an unhanded-off question or planner-owned `UNKNOWN` remains. A durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive."
@@ -838,6 +840,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
+      assert_text_includes text, OBJECTIVE_PROMPT_LINE, label
       assert_text_includes text, CANONICAL_CLOSEOUT_PROMPT_LINE, label
     end
   end

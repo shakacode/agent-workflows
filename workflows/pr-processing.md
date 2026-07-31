@@ -1159,36 +1159,36 @@ Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URL/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
 Repo:OWNER/REPO
-Goal:...
+Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
-Batch size target: <codex|claude|generic>; wave: <cap/items>.
+Batch size target: <codex|claude|generic>; wave: <cap/items>
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
-Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model/effort@binding|UNKNOWN>;lanes=<host+worker_route>;no guesses.
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model/effort@binding|UNKNOWN>;lanes=<lane-id:host+worker-route,...>;no guesses
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
-Batch QA Lane:<apply owner/scope+QA Evidence|none+rationale>
+Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
 Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original: trusted ad-hoc prompt; else n/a.
-  Goal: one-line outcome.
-  Notes: scope/branch/dependency.
-  Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+- Target:PR #N:URL|Issue #N:URL|Ad-hoc:`adhoc:<yyyymmdd>-<short-slug>`
+  Original:trusted ad-hoc prompt|n/a.
+  Goal:one-line outcome.
+  Notes:scope/branch/dependency.
+  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale.
 
 Execution rules:
-- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
+- Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- Current wave: each target/disjoint lane exactly once;exactly one target/lane per worker;shared context in-lane;serial/UNKNOWN apart
-- Workers: owned paths/envelope only;contradiction/ambiguity,scope/risk growth,weaker verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
+- Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
+- Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-- merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval;release+gates pass;document confidence data in the PR description
+- merge only when `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in the PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-Final: canonical closeout;
+Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```
 
@@ -1536,13 +1536,15 @@ event transport.
 Backends may auto-emit the lifecycle events `claim.acquired`, `claim.released`,
 and `phase.changed` from claim, release, and phase-transition operations. Do
 not duplicate those lifecycle events with explicit typed-signal writes; the
-four operational signals above are additive. At batch closeout, use the
-backend's read-only telemetry-completeness check after terminal releases. For
-an `agent-coord` compatible backend this is
-`agent-coord batch-audit --batch-id <id> --json`: incomplete or `UNKNOWN`
-lifecycle coverage blocks telemetry closeout
-until the coordinator repairs or explicitly carries the gap. Backend `n/a`
-skips this check.
+four operational signals above are additive. At batch closeout, use a read-only
+check after terminal releases only when the active backend advertises a
+telemetry-completeness audit capability. For an `agent-coord` compatible
+backend this is `agent-coord batch-audit --batch-id <id> --json`. When
+advertised, incomplete lifecycle coverage, command failure, or `UNKNOWN`
+readback blocks telemetry closeout until the coordinator repairs or explicitly
+carries the gap. If the active backend does not advertise the capability or
+its advertisement is `UNKNOWN`, record `telemetry audit: unavailable` in the
+durable handoff and continue. Backend `n/a` skips this check.
 
 ### Worker Rules
 
@@ -2196,13 +2198,15 @@ The closeout lane is:
     their live GitHub/CI status, and inspect late review/check comments that
     arrived around or after merge. Route release-relevant findings into the next
     post-merge audit intake.
-12. When a private backend is active, run its read-only
-    telemetry-completeness check after terminal claim releases. For an
-    `agent-coord` compatible backend, run
-    `agent-coord batch-audit --batch-id <id> --json`.
-    An incomplete result or `UNKNOWN` backend/readback state blocks telemetry
-    closeout and must be repaired or carried as an exact final blocker; backend
-    `n/a` skips this step.
+12. After terminal claim releases, run a read-only check only when the active
+    private backend advertises a telemetry-completeness audit capability. For
+    an `agent-coord` compatible backend, run
+    `agent-coord batch-audit --batch-id <id> --json`. When advertised, an
+    incomplete result, command failure, or `UNKNOWN` readback blocks telemetry
+    closeout and must be repaired or carried as an exact final blocker. If the
+    active backend does not advertise the capability or its advertisement is
+    `UNKNOWN`, record `telemetry audit: unavailable` in the durable handoff and
+    continue; backend `n/a` skips this step.
 13. Once every batch target has a final state, the batch coordinator must run
     its completed-batch audit before its final handoff. Each completed-batch
     audit is owned by its batch coordinator. A parent orchestration agent only
