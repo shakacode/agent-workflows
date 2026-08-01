@@ -6,6 +6,8 @@ require "open3"
 require "optparse"
 
 module HumanSecurityReviewGate
+  class InfrastructureError < StandardError; end
+
   HIGH_RISK_PATHS = [
     %r{\A(?:\.agents|\.claude-plugin|\.codex-plugin)/},
     %r{\A\.github/},
@@ -26,9 +28,9 @@ module HumanSecurityReviewGate
     stdout, stderr, status = Open3.capture3(executable, "api", endpoint)
     return JSON.parse(stdout) if status.success?
 
-    abort "HUMAN_SECURITY_REVIEW_ERROR GitHub API failed for #{endpoint}: #{stderr.strip}"
+    raise InfrastructureError, "GitHub API failed for #{endpoint}: #{stderr.strip}"
   rescue JSON::ParserError => e
-    abort "HUMAN_SECURITY_REVIEW_ERROR invalid GitHub API response for #{endpoint}: #{e.message}"
+    raise InfrastructureError, "invalid GitHub API response for #{endpoint}: #{e.message}"
   end
 
   def high_risk_path?(path)
@@ -40,13 +42,13 @@ module HumanSecurityReviewGate
     1.upto(MAX_PAGES) do |page|
       separator = endpoint.include?("?") ? "&" : "?"
       batch = gh_json(executable, "#{endpoint}#{separator}per_page=#{PAGE_SIZE}&page=#{page}")
-      abort "HUMAN_SECURITY_REVIEW_ERROR expected an array from #{endpoint}" unless batch.is_a?(Array)
+      raise InfrastructureError, "expected an array from #{endpoint}" unless batch.is_a?(Array)
 
       records.concat(batch)
       return records if batch.length < PAGE_SIZE
     end
 
-    abort "HUMAN_SECURITY_REVIEW_ERROR GitHub API coverage exceeded #{MAX_PAGES} pages for #{endpoint}"
+    raise InfrastructureError, "GitHub API coverage exceeded #{MAX_PAGES} pages for #{endpoint}"
   end
 
   def run(argv)
@@ -57,8 +59,10 @@ module HumanSecurityReviewGate
       parser.on("--expected-head SHA") { |value| options[:expected_head] = value }
     end.parse!(argv)
 
-    repo = options.fetch(:repo)
-    number = options.fetch(:pr)
+    repo = options[:repo]
+    number = options[:pr]
+    raise OptionParser::MissingArgument, "--repo" if repo.nil?
+    raise OptionParser::MissingArgument, "--pr" if number.nil?
     raise OptionParser::InvalidArgument, "--repo must be OWNER/REPO" unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
     raise OptionParser::InvalidArgument, "--pr must be positive" unless number.positive?
 
@@ -68,15 +72,16 @@ module HumanSecurityReviewGate
     author = pull_request.dig("user", "login")
     unless head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-f]{40}\z/) &&
            author.is_a?(String) && !author.empty?
-      abort "HUMAN_SECURITY_REVIEW_ERROR pull request identity is missing or malformed"
+      raise InfrastructureError, "pull request identity is missing or malformed"
     end
+
     expected_head = options[:expected_head]
     if expected_head && !expected_head.match?(/\A[0-9a-f]{40}\z/)
       raise OptionParser::InvalidArgument, "--expected-head must be a full commit SHA"
     end
 
     if expected_head && expected_head != head_sha
-      abort "HUMAN_SECURITY_REVIEW_ERROR pull request head changed: expected #{expected_head}, found #{head_sha}"
+      raise InfrastructureError, "pull request head changed: expected #{expected_head}, found #{head_sha}"
     end
 
     files = gh_paginated_json(gh, "repos/#{repo}/pulls/#{number}/files")
@@ -119,7 +124,10 @@ module HumanSecurityReviewGate
     warn "HUMAN_SECURITY_REVIEW_REQUIRED head=#{head_sha}"
     risky_paths.each { |path| warn "- #{path}" }
     1
-  rescue KeyError, OptionParser::ParseError => e
+  rescue InfrastructureError, KeyError => e
+    warn "HUMAN_SECURITY_REVIEW_ERROR #{e.message}"
+    70
+  rescue OptionParser::ParseError => e
     warn "HUMAN_SECURITY_REVIEW_ERROR #{e.message}"
     64
   end

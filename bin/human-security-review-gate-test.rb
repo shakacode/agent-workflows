@@ -261,6 +261,7 @@ class HumanSecurityReviewGateTest < Minitest::Test
     output, status = run_gate
 
     refute_predicate status, :success?
+    assert_equal 70, status.exitstatus
     assert_includes output, "HUMAN_SECURITY_REVIEW_ERROR"
     refute_includes output, "HUMAN_SECURITY_REVIEW_REQUIRED head="
   end
@@ -274,8 +275,18 @@ class HumanSecurityReviewGateTest < Minitest::Test
     output, status = run_gate("--expected-head", "b" * 40)
 
     refute_predicate status, :success?
+    assert_equal 70, status.exitstatus
     assert_includes output, "HUMAN_SECURITY_REVIEW_ERROR"
     assert_includes output, "head changed"
+  end
+
+  def test_github_api_failure_has_a_distinct_infrastructure_exit_status
+    output, status = run_gate
+
+    refute_predicate status, :success?
+    assert_equal 70, status.exitstatus
+    assert_includes output, "HUMAN_SECURITY_REVIEW_ERROR"
+    refute_includes output, "HUMAN_SECURITY_REVIEW_REQUIRED"
   end
 
   private

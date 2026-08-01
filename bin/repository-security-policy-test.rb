@@ -4,6 +4,8 @@
 require "minitest/autorun"
 require "yaml"
 
+load File.expand_path("human-security-review-gate", __dir__)
+
 class RepositorySecurityPolicyTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
 
@@ -35,6 +37,7 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_includes workflow, '--expected-head "$HEAD_SHA"'
     assert_includes workflow, "pulls?state=open&per_page=100"
     assert_match(/^  statuses: write$/m, workflow)
+    assert_match(/^concurrency:\n  group: human-security-review\n  cancel-in-progress: false$/m, workflow)
     assert_includes workflow, "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA"
     assert_includes workflow, "context=human-security-review/exact-head"
   end
@@ -56,6 +59,44 @@ class RepositorySecurityPolicyTest < Minitest::Test
 
     protected_patterns.each do |pattern|
       assert_match(%r{^#{Regexp.escape(pattern)}\s+@shakacode/admins$}m, owners)
+    end
+  end
+
+  def test_runtime_gate_covers_every_declared_protected_surface
+    policy = YAML.safe_load_file(File.join(ROOT, ".agents/agent-workflow.yml"), aliases: false)
+    policy_patterns = policy.dig("autonomous_merge", "human_review_paths").map { |entry| entry.fetch("pattern") }
+    policy_samples = {
+      "AGENTS.md" => "AGENTS.md",
+      ".agents/**" => ".agents/agent-workflow.yml",
+      ".claude-plugin/**" => ".claude-plugin/plugin.json",
+      ".codex-plugin/**" => ".codex-plugin/plugin.json",
+      ".github/**" => ".github/workflows/validate.yml",
+      "bin/**" => "bin/install-agent-workflows",
+      "skills/**" => "skills/verify/SKILL.md",
+      "workflows/**" => "workflows/pr-processing.md",
+      "**/*.sh" => "test/example.sh",
+      "**/*.bash" => "test/example.bash"
+    }
+    owners = File.readlines(File.join(ROOT, ".github/CODEOWNERS"), chomp: true).filter_map do |line|
+      line.split.first unless line.empty? || line.start_with?("#")
+    end
+    owner_samples = {
+      "/AGENTS.md" => "AGENTS.md",
+      "/.agents/" => ".agents/agent-workflow.yml",
+      "/.claude-plugin/" => ".claude-plugin/plugin.json",
+      "/.codex-plugin/" => ".codex-plugin/plugin.json",
+      "/.github/" => ".github/workflows/validate.yml",
+      "/bin/" => "bin/install-agent-workflows",
+      "/skills/" => "skills/verify/SKILL.md",
+      "/workflows/" => "workflows/pr-processing.md",
+      "**/*.sh" => "test/example.sh",
+      "**/*.bash" => "test/example.bash"
+    }
+
+    assert_empty policy_patterns - policy_samples.keys
+    assert_empty owners - owner_samples.keys
+    (policy_samples.values + owner_samples.values).uniq.each do |path|
+      assert HumanSecurityReviewGate.high_risk_path?(path), "runtime gate did not protect #{path}"
     end
   end
 
