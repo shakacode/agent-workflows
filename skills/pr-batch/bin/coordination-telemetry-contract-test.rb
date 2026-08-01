@@ -92,23 +92,23 @@ def extract_json_fence(text, heading)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
-  def test_extract_section_stops_at_the_next_equal_or_higher_heading
+  def test_extract_section_stops_at_a_parent_heading
     fixture = <<~MARKDOWN
-      ## Target
+      ### Target
       target body
-      ### Nested
+      #### Nested
       nested body
-      ## Sibling
-      sibling body
+      ## Parent
+      parent body
     MARKDOWN
 
-    section = extract_section(fixture, "## Target")
+    section = extract_section(fixture, "### Target")
 
     assert_includes section, "target body"
-    assert_includes section, "### Nested"
+    assert_includes section, "#### Nested"
     assert_includes section, "nested body"
-    refute_includes section, "## Sibling"
-    refute_includes section, "sibling body"
+    refute_includes section, "## Parent"
+    refute_includes section, "parent body"
   end
 
   def test_operational_signal_dry_run_maps_each_checkpoint_to_the_typed_contract
