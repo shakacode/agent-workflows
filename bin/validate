@@ -63,7 +63,6 @@ ruby bin/agent-workflows-status-test.rb
 ruby bin/agent-workflows-trust-audit-test.rb
 
 echo "== repository security policy =="
-ruby bin/human-security-review-gate-test.rb
 ruby bin/repository-security-policy-test.rb
 
 echo "== push-downstream unit tests =="

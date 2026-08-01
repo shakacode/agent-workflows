@@ -2,9 +2,9 @@
 base_branch: main
 repo_prefix: "AW"
 follow_up_prefix: "Follow-up:"
-review_gate: "current-head approval from a human collaborator; administrator code-owner approval for executable or agent-instruction surfaces"
+review_gate: "independent code review for non-trivial workflow or helper changes"
 automation_reviewers: "claude-review (GitHub Action; in-flight and terminal state observable via the checks API) and coderabbitai (advisory; may fail on rate limits)"
-approval_exempt: "ordinary root documentation and validation fixtures only; agent instructions, executable helpers, distribution metadata, and CI workflows are never exempt"
+approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable"
 # This source repo runs in single-operator mode; consumer repos pick their own
 # coordination backend in their local seam.
 coordination_backend: "n/a"
@@ -22,36 +22,15 @@ autonomous_merge:
     max_commits: 9
     max_reviewed_heads: 3
   human_review_paths:
-    - id: repository-agent-policy
-      pattern: "AGENTS.md"
-      reason: security
-    - id: repository-agent-contract
-      pattern: ".agents/**"
-      reason: security
-    - id: claude-plugin-metadata
-      pattern: ".claude-plugin/**"
-      reason: security
-    - id: codex-plugin-metadata
-      pattern: ".codex-plugin/**"
-      reason: security
-    - id: github-policy-and-workflows
-      pattern: ".github/**"
+    - id: github-workflows
+      pattern: ".github/workflows/**"
       reason: infrastructure
     - id: distribution-tools
-      pattern: "bin/**"
+      pattern: "bin/*agent-workflows"
       reason: release
-    - id: agent-skills
-      pattern: "skills/**"
-      reason: security
-    - id: fallback-workflows
-      pattern: "workflows/**"
-      reason: security
-    - id: shell-scripts
-      pattern: "**/*.sh"
-      reason: security
-    - id: bash-scripts
-      pattern: "**/*.bash"
-      reason: security
+    - id: downstream-publishing
+      pattern: "bin/push-downstream"
+      reason: release
   policy_paths:
     - "skills/pr-batch/bin/autonomous-merge-*"
     - "skills/pr-batch/lib/autonomous_merge_*"

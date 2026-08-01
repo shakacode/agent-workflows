@@ -49,9 +49,8 @@ default.
 - Installer, status, upgrade, trust-audit, and seam-doctor helpers under `bin/`.
 - Security preflight for public issue and PR batches so untrusted GitHub text
   cannot quietly become agent instructions.
-- An exact-head human approval boundary for executable helpers, agent
-  instructions, plugin metadata, and repository automation; automated reviews
-  remain advisory. See
+- Full-SHA GitHub Action pins, automated update proposals, and an explicit
+  development-versus-stable trust model. See
   [Repository Supply-Chain Policy](docs/repository-supply-chain.md).
 - Site-ready Markdown docs under the
   [ShakaCode Agent Workflow Playbook](docs/README.md).
