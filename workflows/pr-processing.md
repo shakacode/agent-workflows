@@ -2869,32 +2869,37 @@ bindings and freshness before any mutation.
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 preserves read-only, idempotent observation when the exact reviewed PR is
 already merged, preserves an exact existing queue entry, and uses
-`enqueuePullRequest` only for an exact open PR on a queue-controlled base. An
-open PR on a queue-disabled base exits 2 before any `mergePullRequest` mutation:
-GitHub exposes an atomic expected-head field but no atomic expected-base OID for
-direct merge. Migrate the base branch to a merge queue, then restart ordinary
-readiness, autonomous eligibility, and merge-assurance receipt generation.
+`enqueuePullRequest` only for an exact open PR on a queue-controlled base. On a
+queue-disabled base it uses `mergePullRequest` with GitHub's atomic
+`expectedHeadOid`. Immediately before that mutation, the helper revalidates the
+fresh receipt, exact head, base branch, and receipt-bound base SHA against live
+metadata. GitHub does not expose an atomic expected-base OID for direct merge,
+so the base may advance after this final read; that does not authorize a
+different PR head, and closeout must still verify the landed commit and base.
 Every API call is bound to the explicit host, and the returned PR URL must match
 it. The helper never invokes `gh pr merge`, never enables auto-merge, and fails
-closed when the head moved, queue state is missing, or GitHub returns no queue
-entry.
+closed when the head moved, queue state is missing, the direct response cannot
+prove the exact merge, or GitHub returns no queue entry.
 
 Submission is restart-safe for an exact head already merged or already present
-in the queue. After an ambiguous enqueue response, the helper re-reads the PR
-and reports success only when that exact expected head and base are proven
-merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
-reconcile live state rather than retrying blindly. If post-enqueue verification
-detects a retarget or head change, the helper exits 2 without automatic cleanup:
-GitHub's dequeue mutation accepts only the PR ID, so it cannot prove that a
-later live queue entry is the one created by this submission rather than a
-concurrent actor's replacement. A pre/post base check cannot substitute for the
-missing atomic expected-base precondition, so direct merge remains unsupported.
+in the queue. After an ambiguous direct or enqueue response, the helper re-reads
+the PR and reports success only when that exact expected head and base are
+proven merged or queued. If direct submission discovers that queue enforcement
+changed after the metadata read, only an explicit queue-control GraphQL error
+permits one exact-head enqueue retry; unrelated or mixed errors remain
+`UNKNOWN`. Exit 2 reports an `UNKNOWN` mutation outcome: stop and reconcile live
+state rather than retrying blindly. If post-enqueue verification detects a
+retarget or head change, the helper exits 2 without automatic cleanup: GitHub's
+dequeue mutation accepts only the PR ID, so it cannot prove that a later live
+queue entry is the one created by this submission rather than a concurrent
+actor's replacement.
 
-For a queued merge, GitHub's queue configuration controls the actual merge
-method and commit-title/body formatting. Before submission, verify the PR title
-and live repository queue settings satisfy any consumer squash-title policy;
-legacy direct-method or subject options cannot override a queue-generated commit
-title.
+For a direct merge, `--method`, `--subject`, and `--body` control the requested
+merge shape. For a queued merge, GitHub's queue configuration controls the
+actual merge method and commit-title/body formatting. Before submission, verify
+the PR title and live repository queue settings satisfy any consumer
+squash-title policy; direct-method or subject options cannot override a
+queue-generated commit title.
 Treat `submission: merge_queue` as in-progress evidence, not as merged state.
 An idempotent rerun that finds the exact reviewed head and base already merged
 reports `submission: already_merged` with `merge_provenance: UNKNOWN`; it must
