@@ -37,6 +37,7 @@ module AgentWorkflowsOperation
         repository,
         "-c", "protocol.file.allow=always",
         "fetch",
+        "--update-shallow",
         "--no-tags",
         "--force",
         "--no-recurse-submodules",

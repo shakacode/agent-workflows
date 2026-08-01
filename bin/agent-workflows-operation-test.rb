@@ -325,6 +325,17 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_equal @revision, resolver.begin!.fetch("revision")
   end
 
+  def test_local_import_accepts_a_shallow_provider_checkout
+    shallow_source = File.join(@tmp, "shallow-source")
+    system("git", "clone", "--quiet", "--depth", "1", "file://#{@source}", shallow_source, exception: true)
+    assert_equal "true", Open3.capture2("git", "-C", shallow_source, "rev-parse", "--is-shallow-repository").first.strip
+
+    snapshot = fixture_resolver.store.import_local!(shallow_source, @revision)
+
+    assert_equal @revision, snapshot.revision
+    assert_path_exists File.join(snapshot.tree, "operation-capabilities.json")
+  end
+
   def test_unknown_provider_profile_fails_before_fetch_or_publication
     metadata = read_metadata
     metadata["provider_profile"] = "surprise"
