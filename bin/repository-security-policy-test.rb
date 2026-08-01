@@ -8,9 +8,21 @@ class RepositorySecurityPolicyTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
 
   def test_github_actions_are_pinned_to_full_commit_shas
-    mutable_uses = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).flat_map do |path|
+    reference_sets = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).map do |path|
       workflow = YAML.safe_load_file(path, aliases: true)
-      workflow_uses(workflow).filter_map do |location, reference|
+      [path, workflow_uses(workflow)]
+    end
+    action_paths = Dir.glob([
+                              File.join(ROOT, "action.{yml,yaml}"),
+                              File.join(ROOT, ".github/actions/**/action.{yml,yaml}")
+                            ])
+    reference_sets.concat(action_paths.map do |path|
+      action = YAML.safe_load_file(path, aliases: true)
+      [path, composite_uses(action)]
+    end)
+
+    mutable_uses = reference_sets.flat_map do |path, references|
+      references.filter_map do |location, reference|
         next if reference.is_a?(String) && reference.match?(/@[0-9a-f]{40}\z/)
 
         "#{path.delete_prefix("#{ROOT}/")}:#{location}: #{reference.inspect}"
@@ -32,6 +44,16 @@ class RepositorySecurityPolicyTest < Minitest::Test
       ["jobs.validate.steps.0.uses", "owner/action@v1"],
       ["jobs.release.uses", "owner/workflow@v1"]
     ], workflow_uses(workflow)
+  end
+
+  def test_action_reference_scanner_reads_composite_action_structure
+    action = YAML.safe_load(<<~YAML, aliases: true)
+      runs:
+        using: composite
+        steps: [{ uses : owner/action@v1, with: { uses: node20 } }]
+    YAML
+
+    assert_equal [["runs.steps.0.uses", "owner/action@v1"]], composite_uses(action)
   end
 
   def test_routine_pull_requests_do_not_use_the_broad_custom_human_gate
@@ -68,14 +90,24 @@ class RepositorySecurityPolicyTest < Minitest::Test
       next [] unless job.is_a?(Hash)
 
       references = job.key?("uses") ? [["jobs.#{job_name}.uses", job["uses"]]] : []
-      steps = job["steps"]
-      next references unless steps.is_a?(Array)
+      references + step_uses(job["steps"], "jobs.#{job_name}.steps")
+    end
+  end
 
-      references + steps.each_with_index.filter_map do |step, index|
-        next unless step.is_a?(Hash) && step.key?("uses")
+  def composite_uses(action)
+    runs = action.is_a?(Hash) ? action["runs"] : nil
+    return [] unless runs.is_a?(Hash)
 
-        ["jobs.#{job_name}.steps.#{index}.uses", step["uses"]]
-      end
+    step_uses(runs["steps"], "runs.steps")
+  end
+
+  def step_uses(steps, path)
+    return [] unless steps.is_a?(Array)
+
+    steps.each_with_index.filter_map do |step, index|
+      next unless step.is_a?(Hash) && step.key?("uses")
+
+      ["#{path}.#{index}.uses", step["uses"]]
     end
   end
 end
