@@ -111,6 +111,25 @@ class CoordinationTelemetryContractTest < Minitest::Test
     refute_includes section, "parent body"
   end
 
+  def test_extract_section_stops_at_an_equal_level_sibling_heading
+    fixture = <<~MARKDOWN
+      ### Target
+      target body
+      #### Nested
+      nested body
+      ### Sibling
+      sibling body
+    MARKDOWN
+
+    section = extract_section(fixture, "### Target")
+
+    assert_includes section, "target body"
+    assert_includes section, "#### Nested"
+    assert_includes section, "nested body"
+    refute_includes section, "### Sibling"
+    refute_includes section, "sibling body"
+  end
+
   def test_operational_signal_dry_run_maps_each_checkpoint_to_the_typed_contract
     workflow = read_repo_file(WORKFLOW_PATH)
     telemetry = extract_section(workflow, "### Coordination Telemetry And Provenance")
