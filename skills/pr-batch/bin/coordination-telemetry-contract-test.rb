@@ -20,7 +20,18 @@ BATCH_AUDIT_ARGUMENTS = "batch-audit --batch-id <id> --json"
 BATCH_AUDIT_COMMAND = "#{BATCH_AUDIT_EXECUTABLE} #{BATCH_AUDIT_ARGUMENTS}".freeze
 AUDIT_COMPATIBLE_CAPABILITY = "`agent-coord`-compatible telemetry-completeness audit capability"
 AUDIT_COMMAND_BINDING = "bound to the exact command `#{BATCH_AUDIT_COMMAND}`".freeze
+AUDIT_UNSUPPORTED_CAPABILITY = "does not advertise that compatible capability"
+AUDIT_UNKNOWN_ADVERTISEMENT = "its advertisement is `UNKNOWN`"
 AUDIT_UNAVAILABLE = "telemetry audit: unavailable"
+AUDIT_REQUIRED_CONTINUATION = "durable handoff and continue"
+AUDIT_SECTION_REQUIRED_CONCEPTS = {
+  "compatible capability" => AUDIT_COMPATIBLE_CAPABILITY,
+  "exact command binding" => AUDIT_COMMAND_BINDING,
+  "unsupported capability condition" => AUDIT_UNSUPPORTED_CAPABILITY,
+  "UNKNOWN advertisement condition" => AUDIT_UNKNOWN_ADVERTISEMENT,
+  "unavailable outcome" => "`#{AUDIT_UNAVAILABLE}`",
+  "required continuation" => AUDIT_REQUIRED_CONTINUATION
+}.freeze
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -102,6 +113,43 @@ def batch_audit_invocation_executables(text)
   end
 end
 
+def registered_batch_manifest
+  docs = read_repo_file(COORDINATION_DOC_PATH)
+  extract_json_fence(docs, "## Batch Provenance Manifest")
+end
+
+def assert_nonblank_string(value, label)
+  assert_instance_of String, value, "#{label} must be a string"
+  refute_empty value.strip, "#{label} must not be blank"
+end
+
+def assert_manifest_route_provenance(manifest)
+  coordinator_route = manifest.fetch("coordinator_route")
+  assert_equal %w[binding_source effort model], coordinator_route.keys.sort
+  coordinator_route.each do |key, value|
+    assert_nonblank_string(value, "coordinator_route.#{key}")
+  end
+
+  lanes = manifest.fetch("lanes")
+  refute_empty lanes
+  lanes.each_with_index do |lane, lane_index|
+    assert_nonblank_string(lane.fetch("host"), "lanes[#{lane_index}].host")
+
+    worker_route = lane.fetch("worker_route")
+    assert_equal %w[binding_source effort model], worker_route.keys.sort
+    worker_route.each do |key, value|
+      assert_nonblank_string(value, "lanes[#{lane_index}].worker_route.#{key}")
+    end
+  end
+end
+
+def assert_batch_audit_section_contract(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  AUDIT_SECTION_REQUIRED_CONCEPTS.each do |concept, phrase|
+    assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
+  end
+end
+
 class CoordinationTelemetryContractTest < Minitest::Test
   def test_extract_section_stops_at_a_parent_heading
     fixture = <<~MARKDOWN
@@ -159,29 +207,10 @@ class CoordinationTelemetryContractTest < Minitest::Test
   end
 
   def test_registered_batch_manifest_dry_run_carries_pack_and_route_provenance
-    docs = read_repo_file(COORDINATION_DOC_PATH)
-    manifest = extract_json_fence(docs, "## Batch Provenance Manifest")
+    manifest = registered_batch_manifest
 
     assert_match(/\A[0-9a-f]{40}\z|\AUNKNOWN\z/, manifest.fetch("pack_sha"))
-    coordinator_route = manifest.fetch("coordinator_route")
-    assert_equal %w[binding_source effort model], coordinator_route.keys.sort
-    coordinator_route.each do |key, value|
-      assert_instance_of String, value, "coordinator_route.#{key} must be a string"
-      refute_empty value, "coordinator_route.#{key} must not be empty"
-    end
-    refute_empty manifest.fetch("lanes")
-    manifest.fetch("lanes").each do |lane|
-      host = lane.fetch("host")
-      assert_instance_of String, host, "lane host must be a string"
-      refute_empty host, "lane host must not be empty"
-
-      worker_route = lane.fetch("worker_route")
-      assert_equal %w[binding_source effort model], worker_route.keys.sort
-      worker_route.each do |key, value|
-        assert_instance_of String, value, "worker_route.#{key} must be a string"
-        refute_empty value, "worker_route.#{key} must not be empty"
-      end
-    end
+    assert_manifest_route_provenance(manifest)
 
     [
       "workflows/pr-processing.md",
@@ -189,6 +218,39 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "skills/pr-batch/SKILL.md"
     ].each do |path|
       assert_includes read_repo_file(File.join(ROOT, path)), MANIFEST_PROMPT_LINE
+    end
+  end
+
+  def test_registered_batch_manifest_route_provenance_accepts_literal_unknown
+    manifest = registered_batch_manifest
+    manifest.fetch("coordinator_route")["model"] = "UNKNOWN"
+    manifest.fetch("lanes").each do |lane|
+      lane["host"] = "UNKNOWN"
+      lane.fetch("worker_route")["binding_source"] = "UNKNOWN"
+    end
+
+    assert_manifest_route_provenance(manifest)
+  end
+
+  def test_registered_batch_manifest_route_provenance_rejects_whitespace_only_values
+    mutations = {
+      "coordinator_route.model" => lambda do |manifest|
+        manifest.fetch("coordinator_route")["model"] = " \t\n"
+      end,
+      "lanes[0].host" => lambda do |manifest|
+        manifest.fetch("lanes").first["host"] = " \t\n"
+      end,
+      "lanes[0].worker_route.binding_source" => lambda do |manifest|
+        manifest.fetch("lanes").first.fetch("worker_route")["binding_source"] = " \t\n"
+      end
+    }
+
+    mutations.each do |label, mutate|
+      manifest = registered_batch_manifest
+      mutate.call(manifest)
+
+      error = assert_raises(Minitest::Assertion) { assert_manifest_route_provenance(manifest) }
+      assert_includes error.message, "#{label} must not be blank"
     end
   end
 
@@ -265,14 +327,31 @@ class CoordinationTelemetryContractTest < Minitest::Test
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
-        section = extract_section(text, heading).gsub(/\s+/, " ")
-        assert_includes section, AUDIT_COMPATIBLE_CAPABILITY,
-                        "#{path} #{heading} must gate blocking on an agent-coord-compatible audit"
-        assert_includes section, AUDIT_COMMAND_BINDING,
-                        "#{path} #{heading} must bind compatibility to the exact audit command"
-        assert_includes section, "`#{AUDIT_UNAVAILABLE}`",
-                        "#{path} #{heading} must record the unavailable outcome locally"
+        section = extract_section(text, heading)
+        assert_batch_audit_section_contract(section, "#{path} #{heading}")
       end
+    end
+  end
+
+  def test_batch_audit_section_contract_rejects_each_missing_required_concept
+    expected_concepts = [
+      "compatible capability",
+      "exact command binding",
+      "unsupported capability condition",
+      "UNKNOWN advertisement condition",
+      "unavailable outcome",
+      "required continuation"
+    ]
+    assert_equal expected_concepts, AUDIT_SECTION_REQUIRED_CONCEPTS.keys
+
+    complete_fixture = AUDIT_SECTION_REQUIRED_CONCEPTS.values.join(" | ")
+    AUDIT_SECTION_REQUIRED_CONCEPTS.each do |concept, phrase|
+      incomplete_fixture = complete_fixture.sub(phrase, "")
+
+      error = assert_raises(Minitest::Assertion) do
+        assert_batch_audit_section_contract(incomplete_fixture, "negative fixture")
+      end
+      assert_includes error.message, "must include the #{concept}"
     end
   end
 end
