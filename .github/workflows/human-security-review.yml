@@ -76,6 +76,10 @@ jobs:
                 state=failure
                 description="Current-head human approval is required"
                 ;;
+              2)
+                state=failure
+                description="Head commit is shared by multiple open pull requests"
+                ;;
               *)
                 state=error
                 description="Human security review could not be verified"

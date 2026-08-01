@@ -25,6 +25,8 @@ invalidates that reviewer's earlier approval. Renames are checked at both the
 old and new path so moving a protected file cannot bypass the gate.
 The trusted workflow publishes `human-security-review/exact-head` directly on
 the evaluated head commit and rejects an event/live-head mismatch before review.
+Because GitHub commit statuses are keyed by commit SHA rather than pull request,
+the gate fails closed while two open pull requests share the same head commit.
 GitHub's native required-review and code-owner rules are the immediate approval
 boundary. The custom status is defense in depth: pull-request updates evaluate
 immediately through `pull_request_target`, while a trusted-base five-minute

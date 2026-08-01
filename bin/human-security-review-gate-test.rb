@@ -88,6 +88,24 @@ class HumanSecurityReviewGateTest < Minitest::Test
     assert_includes output, HEAD_SHA
   end
 
+  def test_shared_head_between_open_pull_requests_fails_closed
+    write_response("repos/shakacode/agent-workflows/pulls/7", {
+                     "head" => { "sha" => HEAD_SHA },
+                     "user" => { "login" => "author" }
+                   })
+    write_response("repos/shakacode/agent-workflows/pulls?state=open&per_page=100&page=1", [
+                     { "number" => 7, "head" => { "sha" => HEAD_SHA } },
+                     { "number" => 8, "head" => { "sha" => HEAD_SHA } }
+                   ])
+
+    output, status = run_gate
+
+    assert_equal 2, status.exitstatus
+    assert_includes output, "HUMAN_SECURITY_REVIEW_AMBIGUOUS"
+    assert_includes output, "#7"
+    assert_includes output, "#8"
+  end
+
   def test_later_changes_requested_review_revokes_an_earlier_approval
     write_response("repos/shakacode/agent-workflows/pulls/7", {
                      "head" => { "sha" => HEAD_SHA },
@@ -297,6 +315,12 @@ class HumanSecurityReviewGateTest < Minitest::Test
   end
 
   def run_gate(*extra_args)
+    open_pulls_endpoint = "repos/shakacode/agent-workflows/pulls?state=open&per_page=100&page=1"
+    open_pulls_path = File.join(@responses, "#{open_pulls_endpoint.gsub(/[^A-Za-z0-9._-]/, '_')}.json")
+    unless File.exist?(open_pulls_path)
+      write_response(open_pulls_endpoint, [{ "number" => 7, "head" => { "sha" => HEAD_SHA } }])
+    end
+
     Open3.capture2e(
       {
         "AGENT_WORKFLOWS_GH_EXECUTABLE" => @fake_gh,

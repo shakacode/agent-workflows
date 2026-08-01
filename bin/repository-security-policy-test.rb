@@ -40,6 +40,8 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_match(/^concurrency:\n  group: human-security-review\n  cancel-in-progress: false$/m, workflow)
     assert_includes workflow, "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA"
     assert_includes workflow, "context=human-security-review/exact-head"
+    assert_match(/^              2\)$/m, workflow)
+    assert_includes workflow, "Head commit is shared by multiple open pull requests"
   end
 
   def test_execution_and_agent_instruction_surfaces_have_human_code_owners

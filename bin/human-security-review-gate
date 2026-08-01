@@ -84,6 +84,23 @@ module HumanSecurityReviewGate
       raise InfrastructureError, "pull request head changed: expected #{expected_head}, found #{head_sha}"
     end
 
+    open_pulls = gh_paginated_json(gh, "repos/#{repo}/pulls?state=open")
+    shared_head_numbers = open_pulls.filter_map do |open_pull|
+      next unless open_pull.dig("head", "sha") == head_sha
+
+      open_number = open_pull["number"]
+      unless open_number.is_a?(Integer) && open_number.positive?
+        raise InfrastructureError, "open pull request identity is missing or malformed"
+      end
+
+      open_number
+    end.uniq.sort
+    if shared_head_numbers.length > 1
+      pull_list = shared_head_numbers.map { |open_number| "##{open_number}" }.join(",")
+      warn "HUMAN_SECURITY_REVIEW_AMBIGUOUS head=#{head_sha} open_pull_requests=#{pull_list}"
+      return 2
+    end
+
     files = gh_paginated_json(gh, "repos/#{repo}/pulls/#{number}/files")
     changed_paths = files.flat_map do |file|
       [file.fetch("filename"), file["previous_filename"]]
