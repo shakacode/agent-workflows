@@ -6,7 +6,8 @@ capability boundary, not only a detection problem.
 Repository distribution has a separate supply-chain boundary because this pack
 ships executable helpers and agent instructions. See
 [Repository Supply-Chain Policy](repository-supply-chain.md) for dependency
-pins, review-first installation, and the planned stable-release trust boundary.
+pins, current development-channel limits, and the planned stable-release trust
+boundary.
 
 Public issue bodies, PR bodies, comments, review comments, review threads,
 diffs, PR branch contents, changed instructions, changed hooks, and changed
