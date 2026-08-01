@@ -24,10 +24,14 @@ class RepositorySecurityPolicyTest < Minitest::Test
     workflow = YAML.safe_load(<<~YAML, aliases: true)
       jobs:
         validate:
-          steps: [{ uses : owner/action@v1 }]
+          steps: [{ uses : owner/action@v1, with: { uses: node20 } }]
+        release: { uses: owner/workflow@v1 }
     YAML
 
-    assert_equal [["jobs.validate.steps.0.uses", "owner/action@v1"]], workflow_uses(workflow)
+    assert_equal [
+      ["jobs.validate.steps.0.uses", "owner/action@v1"],
+      ["jobs.release.uses", "owner/workflow@v1"]
+    ], workflow_uses(workflow)
   end
 
   def test_routine_pull_requests_do_not_use_the_broad_custom_human_gate
@@ -56,18 +60,22 @@ class RepositorySecurityPolicyTest < Minitest::Test
 
   private
 
-  def workflow_uses(node, path = [])
-    case node
-    when Hash
-      node.flat_map do |key, value|
-        child_path = path + [key]
-        matches = key.to_s == "uses" ? [[child_path.join("."), value]] : []
-        matches + workflow_uses(value, child_path)
+  def workflow_uses(workflow)
+    jobs = workflow.is_a?(Hash) ? workflow["jobs"] : nil
+    return [] unless jobs.is_a?(Hash)
+
+    jobs.flat_map do |job_name, job|
+      next [] unless job.is_a?(Hash)
+
+      references = job.key?("uses") ? [["jobs.#{job_name}.uses", job["uses"]]] : []
+      steps = job["steps"]
+      next references unless steps.is_a?(Array)
+
+      references + steps.each_with_index.filter_map do |step, index|
+        next unless step.is_a?(Hash) && step.key?("uses")
+
+        ["jobs.#{job_name}.steps.#{index}.uses", step["uses"]]
       end
-    when Array
-      node.each_with_index.flat_map { |value, index| workflow_uses(value, path + [index]) }
-    else
-      []
     end
   end
 end
