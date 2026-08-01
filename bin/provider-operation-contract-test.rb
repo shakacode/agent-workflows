@@ -124,6 +124,12 @@ class ProviderOperationContractTest < Minitest::Test
     refute_includes workflow, "PR_BATCH_SKILL_DIR"
   end
 
+  def test_coordination_backend_resolves_the_pr_batch_skill_directory_from_the_skill_file
+    documentation = read("docs/coordination-backend.md")
+
+    assert_includes documentation, "parent directory of the operation-returned `assets.skills.pr_batch` path"
+  end
+
   def test_walkthrough_routes_use_the_bound_named_asset_without_picker_fallback
     %w[
       skills/plan-pr-batch/SKILL.md
@@ -452,6 +458,15 @@ class ProviderOperationContractTest < Minitest::Test
 
     assert_includes installer, "install -m 0755 \"$source\" \"$temporary\""
     assert_includes installer, "ln -s \"$source\" \"$temporary\""
+    assert_includes installer, "File.rename(ARGV.fetch(0), ARGV.fetch(1))"
+    assert_equal 2, installer.scan('publish_entry_copy "$install_content_root/bin/$helper" "$destination"').length
+    assert_equal 2, installer.scan('publish_entry_symlink "$repo_root/bin/$helper" "$destination"').length
+    remaining_copy_start = installer.index('for helper in "${bin_helpers[@]}"')
+    remaining_copy_end = installer.index(
+      'publish_entry_copy "$install_content_root/bin/$helper" "$destination"',
+      remaining_copy_start
+    )
+    refute_includes installer[remaining_copy_start..remaining_copy_end], 'rm -f "$destination"'
     assert_operator installer.index("publish_entry_copy \"$install_content_root/bin/$helper\" \"$destination\""), :<,
                     installer.index("\"$install_content_root/bin/agent_workflows_operation/\"")
     assert_operator installer.index("publish_entry_symlink \"$repo_root/bin/$helper\" \"$destination\""), :<,

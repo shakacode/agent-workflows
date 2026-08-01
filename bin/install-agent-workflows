@@ -587,7 +587,7 @@ publish_entry_copy() {
     rm -f "$temporary"
     return 1
   fi
-  if ! mv -f "$temporary" "$destination"; then
+  if ! ruby -e 'File.rename(ARGV.fetch(0), ARGV.fetch(1))' "$temporary" "$destination"; then
     rm -f "$temporary"
     return 1
   fi
@@ -600,7 +600,7 @@ publish_entry_symlink() {
   if ! ln -s "$source" "$temporary"; then
     return 1
   fi
-  if ! mv -f "$temporary" "$destination"; then
+  if ! ruby -e 'File.rename(ARGV.fetch(0), ARGV.fetch(1))' "$temporary" "$destination"; then
     rm -f "$temporary"
     return 1
   fi
@@ -905,14 +905,11 @@ if [[ "$mode" = "copy" ]]; then
   for helper in "${bin_helpers[@]}"; do
     [[ " ${atomic_entry_helpers[*]} " != *" $helper "* ]] || continue
     destination="$target/bin/$helper"
-    if [[ -L "$destination" ]]; then
-      rm -f "$destination"
-    fi
-    if [[ -e "$destination" && ! -f "$destination" ]]; then
+    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-file path: $destination" >&2
       exit 1
     fi
-    install -m 0755 "$install_content_root/bin/$helper" "$destination"
+    publish_entry_copy "$install_content_root/bin/$helper" "$destination"
   done
 else
   if [[ -L "$target/bin/agent_doctor" ]] &&
@@ -967,7 +964,7 @@ else
       echo "Refusing to replace non-symlink path: $destination" >&2
       exit 1
     fi
-    ln -sfn "$repo_root/bin/$helper" "$destination"
+    publish_entry_symlink "$repo_root/bin/$helper" "$destination"
   done
 fi
 

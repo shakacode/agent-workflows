@@ -107,7 +107,8 @@ backend metadata may persist the record but cannot waive it.
 A backend may store the trusted plan, but it is not required: backend `n/a`
 uses the same durable coordinator-owned local plan file, and storage remains a
 consumer/coordinator seam rather than helper state. Resolve `PR_BATCH_SKILL_DIR`
-through the operation-returned `assets.skills.pr_batch` path or precise stop chain, then run
+as the parent directory of the operation-returned `assets.skills.pr_batch` path,
+or use the precise stop chain, then run
 `"${PR_BATCH_SKILL_DIR}/bin/stage-dependency-gate"`
 `--trusted-plan "${STAGE_DEPENDENCY_PLAN_PATH}"`
 `--trusted-plan-id "${STAGE_DEPENDENCY_PLAN_ID}"` with live JSON on stdin.

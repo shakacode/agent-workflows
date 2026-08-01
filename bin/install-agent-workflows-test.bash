@@ -1615,6 +1615,36 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_file "$target/.agent-workflows-install.json"
 }
 
+test_helper_publication_replaces_directory_symlinks_without_writing_through() {
+  local tmp mode target helper external
+  tmp="$(mktemp -d)"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-$mode"
+    mkdir -p "$target/bin"
+    for helper in agent-workflows-run agent-workflows-trust-audit; do
+      external="$tmp/$mode-$helper-external"
+      mkdir -p "$external"
+      ln -s "$external" "$target/bin/$helper"
+    done
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" >"$tmp/$mode.out"
+
+    for helper in agent-workflows-run agent-workflows-trust-audit; do
+      external="$tmp/$mode-$helper-external"
+      assert_dir_empty "$external"
+      if [[ "$mode" = copy ]]; then
+        [[ -f "$target/bin/$helper" && ! -L "$target/bin/$helper" ]] ||
+          fail "copy publication did not replace the $helper directory symlink"
+      else
+        assert_symlink "$target/bin/$helper"
+        [[ "$(readlink "$target/bin/$helper")" = "$ROOT/bin/$helper" ]] ||
+          fail "symlink publication did not replace the $helper directory symlink"
+      fi
+    done
+  done
+}
+
 test_symlink_mode_replaces_docs_directory_symlink() {
   local tmp target external_docs
   tmp="$(mktemp -d)"
@@ -2539,6 +2569,7 @@ main() {
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
+    test_helper_publication_replaces_directory_symlinks_without_writing_through
     test_symlink_mode_replaces_docs_directory_symlink
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation

@@ -356,23 +356,23 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
     FileUtils.mkdir_p(fake_bin)
     ready = File.join(@tmp, "rsync-ready")
     proceed = File.join(@tmp, "rsync-proceed")
-    real_mv, real_mv_status = Open3.capture2("sh", "-c", "command -v mv")
-    assert real_mv_status.success?
-    real_mv = real_mv.strip
+    real_rsync, real_rsync_status = Open3.capture2("sh", "-c", "command -v rsync")
+    assert real_rsync_status.success?
+    real_rsync = real_rsync.strip
     File.write(
-      File.join(fake_bin, "mv"),
+      File.join(fake_bin, "rsync"),
       <<~BASH
         #!/usr/bin/env bash
         set -euo pipefail
         destination="${!#}"
-        if [[ "$destination" = "${QA_TARGET:?}/bin/agent-workflows-resolve" ]]; then
+        if [[ "$destination" = "${QA_TARGET:?}/bin/agent_workflows_operation/" ]]; then
           : >"${QA_READY:?}"
           while [[ ! -e "${QA_PROCEED:?}" ]]; do sleep 0.01; done
         fi
-        exec "${QA_REAL_MV:?}" "$@"
+        exec "${QA_REAL_RSYNC:?}" "$@"
       BASH
     )
-    FileUtils.chmod(0o755, File.join(fake_bin, "mv"))
+    FileUtils.chmod(0o755, File.join(fake_bin, "rsync"))
     install_output = File.join(@tmp, "entry-order-install.out")
     resolver_output = File.join(@tmp, "entry-order-resolver.out")
     environment = {
@@ -380,7 +380,7 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
       "QA_TARGET" => install_target,
       "QA_READY" => ready,
       "QA_PROCEED" => proceed,
-      "QA_REAL_MV" => real_mv
+      "QA_REAL_RSYNC" => real_rsync
     }
     installer_pid = Process.spawn(
       environment,
