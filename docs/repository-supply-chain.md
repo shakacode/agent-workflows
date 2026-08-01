@@ -35,19 +35,25 @@ For an explicit local review, use the two-step form:
 
 ```bash
 git -C "$HOME/src/agent-workflows" fetch origin main
+reviewed_sha=$(git -C "$HOME/src/agent-workflows" rev-parse --verify 'origin/main^{commit}')
 if [ -n "$(git -C "$HOME/src/agent-workflows" status --porcelain=v1 --untracked-files=all)" ]; then
   printf '%s\n' 'Refusing to upgrade from a checkout with unreviewed local changes.' >&2
   exit 1
 fi
-if ! git -C "$HOME/src/agent-workflows" merge-base --is-ancestor HEAD origin/main; then
+if ! git -C "$HOME/src/agent-workflows" merge-base --is-ancestor HEAD "$reviewed_sha"; then
   printf '%s\n' 'Refusing to upgrade from a checkout with local or diverged commits.' >&2
   exit 1
 fi
-git -C "$HOME/src/agent-workflows" diff --stat HEAD..origin/main
-git -C "$HOME/src/agent-workflows" log --oneline HEAD..origin/main
-git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD..origin/main
+git -C "$HOME/src/agent-workflows" diff --stat HEAD.."$reviewed_sha"
+git -C "$HOME/src/agent-workflows" log --oneline HEAD.."$reviewed_sha"
+git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD.."$reviewed_sha"
 # After reviewing the complete diff, fast-forward the same checkout yourself.
-git -C "$HOME/src/agent-workflows" merge --ff-only origin/main
+git -C "$HOME/src/agent-workflows" merge --ff-only "$reviewed_sha"
+if [ "$(git -C "$HOME/src/agent-workflows" rev-parse HEAD)" != "$reviewed_sha" ] ||
+   [ -n "$(git -C "$HOME/src/agent-workflows" status --porcelain=v1 --untracked-files=all)" ]; then
+  printf '%s\n' 'Refusing to install because the reviewed checkout changed.' >&2
+  exit 1
+fi
 upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --no-fetch
 ```
 
