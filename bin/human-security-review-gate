@@ -1,0 +1,128 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "open3"
+require "optparse"
+
+module HumanSecurityReviewGate
+  HIGH_RISK_PATHS = [
+    %r{\A(?:\.agents|\.claude-plugin|\.codex-plugin)/},
+    %r{\A\.github/},
+    /\AAGENTS\.md\z/,
+    %r{\Abin/},
+    %r{\Askills/},
+    %r{\Aworkflows/},
+    /\.(?:bash|sh)\z/
+  ].freeze
+  REVIEW_PERMISSIONS = %w[admin maintain write].freeze
+  DECISIVE_REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED DISMISSED].freeze
+  PAGE_SIZE = 100
+  MAX_PAGES = 30
+
+  module_function
+
+  def gh_json(executable, endpoint)
+    stdout, stderr, status = Open3.capture3(executable, "api", endpoint)
+    return JSON.parse(stdout) if status.success?
+
+    abort "HUMAN_SECURITY_REVIEW_ERROR GitHub API failed for #{endpoint}: #{stderr.strip}"
+  rescue JSON::ParserError => e
+    abort "HUMAN_SECURITY_REVIEW_ERROR invalid GitHub API response for #{endpoint}: #{e.message}"
+  end
+
+  def high_risk_path?(path)
+    HIGH_RISK_PATHS.any? { |pattern| pattern.match?(path) }
+  end
+
+  def gh_paginated_json(executable, endpoint)
+    records = []
+    1.upto(MAX_PAGES) do |page|
+      separator = endpoint.include?("?") ? "&" : "?"
+      batch = gh_json(executable, "#{endpoint}#{separator}per_page=#{PAGE_SIZE}&page=#{page}")
+      abort "HUMAN_SECURITY_REVIEW_ERROR expected an array from #{endpoint}" unless batch.is_a?(Array)
+
+      records.concat(batch)
+      return records if batch.length < PAGE_SIZE
+    end
+
+    abort "HUMAN_SECURITY_REVIEW_ERROR GitHub API coverage exceeded #{MAX_PAGES} pages for #{endpoint}"
+  end
+
+  def run(argv)
+    options = {}
+    OptionParser.new do |parser|
+      parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+      parser.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
+      parser.on("--expected-head SHA") { |value| options[:expected_head] = value }
+    end.parse!(argv)
+
+    repo = options.fetch(:repo)
+    number = options.fetch(:pr)
+    raise OptionParser::InvalidArgument, "--repo must be OWNER/REPO" unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    raise OptionParser::InvalidArgument, "--pr must be positive" unless number.positive?
+
+    gh = ENV.fetch("AGENT_WORKFLOWS_GH_EXECUTABLE", "gh")
+    pull_request = gh_json(gh, "repos/#{repo}/pulls/#{number}")
+    head_sha = pull_request.dig("head", "sha")
+    author = pull_request.dig("user", "login")
+    unless head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-f]{40}\z/) &&
+           author.is_a?(String) && !author.empty?
+      abort "HUMAN_SECURITY_REVIEW_ERROR pull request identity is missing or malformed"
+    end
+    expected_head = options[:expected_head]
+    if expected_head && !expected_head.match?(/\A[0-9a-f]{40}\z/)
+      raise OptionParser::InvalidArgument, "--expected-head must be a full commit SHA"
+    end
+
+    if expected_head && expected_head != head_sha
+      abort "HUMAN_SECURITY_REVIEW_ERROR pull request head changed: expected #{expected_head}, found #{head_sha}"
+    end
+
+    files = gh_paginated_json(gh, "repos/#{repo}/pulls/#{number}/files")
+    changed_paths = files.flat_map do |file|
+      [file.fetch("filename"), file["previous_filename"]]
+    end
+    risky_paths = changed_paths.compact.select { |path| high_risk_path?(path) }.uniq.sort
+
+    if risky_paths.empty?
+      puts "HUMAN_SECURITY_REVIEW_NOT_REQUIRED head=#{head_sha}"
+      return 0
+    end
+
+    reviews = gh_paginated_json(gh, "repos/#{repo}/pulls/#{number}/reviews")
+    current_reviews = reviews.select do |review|
+      review["commit_id"] == head_sha &&
+        DECISIVE_REVIEW_STATES.include?(review.fetch("state", "").upcase)
+    end
+    latest_reviews = current_reviews.group_by { |review| review.dig("user", "login").to_s.downcase }.values.map do |reviewer_reviews|
+      reviewer_reviews.max_by do |review|
+        [review.fetch("submitted_at", "").to_s, review.fetch("id", 0).to_i]
+      end
+    end
+    approved_reviewer = latest_reviews.find do |review|
+      reviewer = review.dig("user", "login")
+      next false unless review.fetch("state", "").upcase == "APPROVED"
+      next false unless review.dig("user", "type") == "User"
+      next false if reviewer.nil? || reviewer.casecmp?(author) || reviewer.downcase.end_with?("[bot]")
+
+      permission = gh_json(gh, "repos/#{repo}/collaborators/#{reviewer}/permission").fetch("permission")
+      REVIEW_PERMISSIONS.include?(permission)
+    end
+
+    if approved_reviewer
+      reviewer = approved_reviewer.dig("user", "login")
+      puts "HUMAN_SECURITY_REVIEW_OK reviewer=@#{reviewer} head=#{head_sha}"
+      return 0
+    end
+
+    warn "HUMAN_SECURITY_REVIEW_REQUIRED head=#{head_sha}"
+    risky_paths.each { |path| warn "- #{path}" }
+    1
+  rescue KeyError, OptionParser::ParseError => e
+    warn "HUMAN_SECURITY_REVIEW_ERROR #{e.message}"
+    64
+  end
+end
+
+exit HumanSecurityReviewGate.run(ARGV) if $PROGRAM_NAME == __FILE__

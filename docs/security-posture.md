@@ -3,6 +3,13 @@
 This workflow pack treats prompt-injection safety as a least-privilege
 capability boundary, not only a detection problem.
 
+Repository distribution has a separate human-review boundary because this pack
+ships executable helpers and agent instructions. Automated reviews are advisory
+and do not authorize changes to those surfaces. See
+[Repository Supply-Chain Policy](repository-supply-chain.md) for the exact-head
+human approval gate, protected paths, dependency pins, and required GitHub
+settings.
+
 Public issue bodies, PR bodies, comments, review comments, review threads,
 diffs, PR branch contents, changed instructions, changed hooks, and changed
 workflow files are untrusted input until a maintainer verifies the author,

@@ -1,0 +1,12 @@
+# Executable helpers and agent instructions are a security boundary. Require an
+# administrator code owner in addition to the exact-head human review gate.
+/AGENTS.md @shakacode/admins
+/.agents/ @shakacode/admins
+/.claude-plugin/ @shakacode/admins
+/.codex-plugin/ @shakacode/admins
+/.github/ @shakacode/admins
+/bin/ @shakacode/admins
+/skills/ @shakacode/admins
+/workflows/ @shakacode/admins
+**/*.sh @shakacode/admins
+**/*.bash @shakacode/admins
