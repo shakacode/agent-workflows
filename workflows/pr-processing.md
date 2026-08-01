@@ -1186,6 +1186,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+Apply Batch QA Lane;include QA Evidence.
 merge only when `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in the PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
@@ -1537,14 +1538,15 @@ Backends may auto-emit the lifecycle events `claim.acquired`, `claim.released`,
 and `phase.changed` from claim, release, and phase-transition operations. Do
 not duplicate those lifecycle events with explicit typed-signal writes; the
 four operational signals above are additive. At batch closeout, use a read-only
-check after terminal releases only when the active backend advertises a
-telemetry-completeness audit capability. For an `agent-coord` compatible
-backend this is `agent-coord batch-audit --batch-id <id> --json`. When
-advertised, incomplete lifecycle coverage, command failure, or `UNKNOWN`
-readback blocks telemetry closeout until the coordinator repairs or explicitly
-carries the gap. If the active backend does not advertise the capability or
-its advertisement is `UNKNOWN`, record `telemetry audit: unavailable` in the
-durable handoff and continue. Backend `n/a` skips this check.
+check after terminal releases only when the active backend advertises an
+`agent-coord`-compatible telemetry-completeness audit capability bound to the
+exact command `agent-coord batch-audit --batch-id <id> --json`. When that
+compatible capability is advertised, incomplete lifecycle coverage, command
+failure, or `UNKNOWN` readback blocks telemetry closeout until the coordinator
+repairs or explicitly carries the gap. If the active backend does not advertise
+that compatible capability or its advertisement is `UNKNOWN`, record
+`telemetry audit: unavailable` in the durable handoff and continue. Backend
+`n/a` skips this check.
 
 ### Worker Rules
 
@@ -2199,14 +2201,15 @@ The closeout lane is:
     arrived around or after merge. Route release-relevant findings into the next
     post-merge audit intake.
 12. After terminal claim releases, run a read-only check only when the active
-    private backend advertises a telemetry-completeness audit capability. For
-    an `agent-coord` compatible backend, run
-    `agent-coord batch-audit --batch-id <id> --json`. When advertised, an
-    incomplete result, command failure, or `UNKNOWN` readback blocks telemetry
-    closeout and must be repaired or carried as an exact final blocker. If the
-    active backend does not advertise the capability or its advertisement is
-    `UNKNOWN`, record `telemetry audit: unavailable` in the durable handoff and
-    continue; backend `n/a` skips this step.
+    private backend advertises an `agent-coord`-compatible telemetry-completeness
+    audit capability bound to the exact command
+    `agent-coord batch-audit --batch-id <id> --json`. When that compatible
+    capability is advertised, an incomplete result, command failure, or
+    `UNKNOWN` readback blocks telemetry closeout and must be repaired or carried
+    as an exact final blocker. If the active backend does not advertise that
+    compatible capability or its advertisement is `UNKNOWN`, record
+    `telemetry audit: unavailable` in the durable handoff and continue; backend
+    `n/a` skips this step.
 13. Once every batch target has a final state, the batch coordinator must run
     its completed-batch audit before its final handoff. Each completed-batch
     audit is owned by its batch coordinator. A parent orchestration agent only

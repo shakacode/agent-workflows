@@ -545,6 +545,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+Apply Batch QA Lane;include QA Evidence.
 merge only when `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in the PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
@@ -791,13 +792,14 @@ distinct), hosted-CI request and waitback when uncertainty remains, and any
 authorized ready/merge action, required QA Evidence verification, and the late
 post-merge bot-finding sweep before final batch handoff. Once every batch target
 has a final state, run a read-only check after terminal releases only when the
-active backend advertises a telemetry-completeness audit capability. For an
-`agent-coord` compatible backend, run
-`agent-coord batch-audit --batch-id <id> --json`. When advertised, incomplete
-coverage, command failure, or `UNKNOWN` readback blocks telemetry closeout. If
-the active backend does not advertise the capability or its advertisement is
-`UNKNOWN`, record `telemetry audit: unavailable` in the durable handoff and
-continue; backend `n/a` skips the check. Once every batch target has a
+active backend advertises an `agent-coord`-compatible telemetry-completeness
+audit capability bound to the exact command
+`agent-coord batch-audit --batch-id <id> --json`. When that compatible
+capability is advertised, incomplete coverage, command failure, or `UNKNOWN`
+readback blocks telemetry closeout. If the active backend does not advertise
+that compatible capability or its advertisement is `UNKNOWN`, record
+`telemetry audit: unavailable` in the durable handoff and continue; backend
+`n/a` skips the check. Once every batch target has a
 final state, the batch coordinator must run its completed-batch audit before
 its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff. The qualifying checker must
 match launch assurance and be independent from every maker; an unverified,

@@ -19,6 +19,7 @@ OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_route=<model/effort@binding|UNKNOWN>;" \
                                   "lanes=<lane-id:host+worker-route,...>;no guesses"
+BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence."
 FINAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
@@ -529,6 +530,7 @@ required_all_prompt_phrases = [
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
   LAUNCH_ASSURANCE_PROMPT_LINE,
   MANIFEST_PROVENANCE_PROMPT_LINE,
+  BATCH_QA_PROMPT_LINE,
   CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE,
   WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
   MODEL_EFFORT_DISPATCH_LINE,
@@ -661,6 +663,7 @@ end
   require_occurrence_count(template, GOAL_MODE_COMPACT_CONTRACT, 1, "#{label} compact completion contract")
   require_occurrence_count(template, STAGE_DEPENDENCY_PROMPT_LINE, 1, "#{label} stage-dependency contract")
   require_occurrence_count(template, STAGE_DEPENDENCY_SCOPE_LINE, 1, "#{label} stage-dependency scope")
+  require_occurrence_count(template, BATCH_QA_PROMPT_LINE, 1, "#{label} Batch QA contract")
   require_occurrence_count(
     template,
     CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE,
@@ -680,6 +683,12 @@ end
     "#{label} synchronized current-wave assignment contract"
   )
 end
+require_occurrence_count(
+  triage_prompt_contract_text,
+  MANIFEST_PROVENANCE_PROMPT_LINE,
+  1,
+  "triage generated-prompt manifest provenance contract"
+)
 require_occurrence_count(
   triage_prompt_contract_text,
   TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE,
@@ -863,16 +872,16 @@ first_ready_item = <<~ITEM.chomp
   - Target: Issue #1: https://github.com/shakacode/react_on_rails/issues/1
     Original: n/a.
     Goal: Add size guard.
-    Notes: implementation lane.
-    Done when: requested authority state with current-head evidence.
+    Notes: implementation.
+    Done when: authority state with head evidence.
 ITEM
 
 second_ready_item = <<~ITEM.chomp
   - Target: Issue #2: https://github.com/shakacode/react_on_rails/issues/2
     Original: n/a.
-    Goal: Review dispatcher routing.
-    Notes: QA lane; hard route.
-    Done when: requested authority state with current-head evidence.
+    Goal: Review routing.
+    Notes: QA hard route.
+    Done when: authority state with head evidence.
 ITEM
 
 mixed_route_ready_items = [first_ready_item, second_ready_item].join("\n")

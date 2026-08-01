@@ -15,8 +15,11 @@ HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
   "otherwise `blocked-user-input` for other required user input."
-BATCH_AUDIT_COMMAND = "agent-coord batch-audit --batch-id <id> --json"
-AUDIT_CAPABILITY = "telemetry-completeness audit capability"
+BATCH_AUDIT_EXECUTABLE = "agent-coord"
+BATCH_AUDIT_ARGUMENTS = "batch-audit --batch-id <id> --json"
+BATCH_AUDIT_COMMAND = "#{BATCH_AUDIT_EXECUTABLE} #{BATCH_AUDIT_ARGUMENTS}".freeze
+AUDIT_COMPATIBLE_CAPABILITY = "`agent-coord`-compatible telemetry-completeness audit capability"
+AUDIT_COMMAND_BINDING = "bound to the exact command `#{BATCH_AUDIT_COMMAND}`".freeze
 AUDIT_UNAVAILABLE = "telemetry audit: unavailable"
 
 EXPECTED_OPERATIONAL_SIGNALS = {
@@ -91,6 +94,14 @@ def extract_json_fence(text, heading)
   JSON.parse(text[body_start...body_end])
 end
 
+def batch_audit_invocation_executables(text)
+  text.to_enum(:scan, /#{Regexp.escape(BATCH_AUDIT_ARGUMENTS)}/).map do
+    invocation = Regexp.last_match
+    prefix = text[0...invocation.begin(0)]
+    prefix[/(\S+)[ \t]+\z/, 1]&.delete_prefix("`")
+  end
+end
+
 class CoordinationTelemetryContractTest < Minitest::Test
   def test_extract_section_stops_at_a_parent_heading
     fixture = <<~MARKDOWN
@@ -152,11 +163,24 @@ class CoordinationTelemetryContractTest < Minitest::Test
     manifest = extract_json_fence(docs, "## Batch Provenance Manifest")
 
     assert_match(/\A[0-9a-f]{40}\z|\AUNKNOWN\z/, manifest.fetch("pack_sha"))
-    assert_equal %w[binding_source effort model], manifest.fetch("coordinator_route").keys.sort
+    coordinator_route = manifest.fetch("coordinator_route")
+    assert_equal %w[binding_source effort model], coordinator_route.keys.sort
+    coordinator_route.each do |key, value|
+      assert_instance_of String, value, "coordinator_route.#{key} must be a string"
+      refute_empty value, "coordinator_route.#{key} must not be empty"
+    end
     refute_empty manifest.fetch("lanes")
     manifest.fetch("lanes").each do |lane|
-      assert_includes lane, "host"
-      assert_equal %w[binding_source effort model], lane.fetch("worker_route").keys.sort
+      host = lane.fetch("host")
+      assert_instance_of String, host, "lane host must be a string"
+      refute_empty host, "lane host must not be empty"
+
+      worker_route = lane.fetch("worker_route")
+      assert_equal %w[binding_source effort model], worker_route.keys.sort
+      worker_route.each do |key, value|
+        assert_instance_of String, value, "worker_route.#{key} must be a string"
+        refute_empty value, "worker_route.#{key} must not be empty"
+      end
     end
 
     [
@@ -222,24 +246,33 @@ class CoordinationTelemetryContractTest < Minitest::Test
       PR_BATCH_SKILL_PATH => 1
     }.each do |path, expected_count|
       text = read_repo_file(path).gsub(/\s+/, " ")
+      executables = batch_audit_invocation_executables(text)
+
+      assert_equal expected_count, executables.length,
+                   "#{path} must expose every batch-audit invocation to executable-token validation"
+      assert_equal Array.new(expected_count, BATCH_AUDIT_EXECUTABLE), executables,
+                   "#{path} must use only the exact agent-coord executable token"
       assert_equal expected_count, text.scan("`#{BATCH_AUDIT_COMMAND}`").length,
                    "#{path} must use the exact executable and batch-audit subcommand"
-      refute_match(/(?<!agent-coord )batch-audit --batch-id <id> --json/, text,
-                   "#{path} contains a weak batch-audit command without the executable")
     end
   end
 
   def test_batch_audit_fails_closed_only_for_an_advertised_capability
     {
-      WORKFLOW_PATH => 2,
-      COORDINATION_DOC_PATH => 1,
-      PR_BATCH_SKILL_PATH => 1
-    }.each do |path, expected_unavailable_count|
-      text = read_repo_file(path).gsub(/\s+/, " ")
-      assert_includes text, AUDIT_CAPABILITY,
-                      "#{path} must gate the audit on the backend's advertised capability"
-      assert_equal expected_unavailable_count, text.scan("`#{AUDIT_UNAVAILABLE}`").length,
-                   "#{path} must record unavailable audit capability at each closeout surface"
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"],
+      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+    }.each do |path, headings|
+      text = read_repo_file(path)
+      headings.each do |heading|
+        section = extract_section(text, heading).gsub(/\s+/, " ")
+        assert_includes section, AUDIT_COMPATIBLE_CAPABILITY,
+                        "#{path} #{heading} must gate blocking on an agent-coord-compatible audit"
+        assert_includes section, AUDIT_COMMAND_BINDING,
+                        "#{path} #{heading} must bind compatibility to the exact audit command"
+        assert_includes section, "`#{AUDIT_UNAVAILABLE}`",
+                        "#{path} #{heading} must record the unavailable outcome locally"
+      end
     end
   end
 end
