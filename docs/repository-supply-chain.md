@@ -37,9 +37,10 @@ For an explicit local review, use the two-step form:
 git -C "$HOME/src/agent-workflows" fetch origin main
 git -C "$HOME/src/agent-workflows" diff --stat HEAD..origin/main
 git -C "$HOME/src/agent-workflows" log --oneline HEAD..origin/main
-# Review the complete diff, then fast-forward the checkout yourself.
+git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD..origin/main
+# After reviewing the complete diff, fast-forward the same checkout yourself.
 git -C "$HOME/src/agent-workflows" merge --ff-only origin/main
-upgrade-agent-workflows --host codex --no-fetch
+upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --no-fetch
 ```
 
 Native plugin updates remain controlled by the host marketplace. Do not enable

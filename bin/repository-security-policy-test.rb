@@ -32,6 +32,10 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_includes policy, "Stable release promotion, not ordinary pull-request development"
     assert_includes policy, "agent-workflows/issues/296"
     assert_includes policy, "Automated reviews remain advisory"
+    assert_includes policy, 'git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD..origin/main'
+    reviewed_upgrade = 'upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --no-fetch'
+
+    assert_includes policy, reviewed_upgrade
   end
 
   def test_dependabot_proposes_pinned_action_updates_for_review
