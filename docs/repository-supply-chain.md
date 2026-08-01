@@ -31,11 +31,15 @@ anchor, while remembering that a revision receipt is not a release attestation.
 
 `upgrade-agent-workflows` fetches and fast-forwards the recorded source branch by
 default. That is convenient development behavior, not a reviewed stable update.
-For an explicit local review, use the two-step form:
+Without a trusted released baseline, the conservative local-review fallback must
+inspect the complete target tree, not merely the changes from the checkout's
+current `HEAD`. This is deliberately a high-assurance opt-in path; routine
+development upgrades remain unchanged.
 
 ```bash
 git -C "$HOME/src/agent-workflows" fetch origin main
 reviewed_sha=$(git -C "$HOME/src/agent-workflows" rev-parse --verify 'origin/main^{commit}')
+empty_tree=$(git -C "$HOME/src/agent-workflows" hash-object -t tree /dev/null)
 if [ -n "$(git -C "$HOME/src/agent-workflows" status --porcelain=v1 --untracked-files=all)" ]; then
   printf '%s\n' 'Refusing to upgrade from a checkout with unreviewed local changes.' >&2
   exit 1
@@ -44,17 +48,17 @@ if ! git -C "$HOME/src/agent-workflows" merge-base --is-ancestor HEAD "$reviewed
   printf '%s\n' 'Refusing to upgrade from a checkout with local or diverged commits.' >&2
   exit 1
 fi
-git -C "$HOME/src/agent-workflows" diff --stat HEAD.."$reviewed_sha"
-git -C "$HOME/src/agent-workflows" log --oneline HEAD.."$reviewed_sha"
-git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD.."$reviewed_sha"
-# After reviewing the complete diff, fast-forward the same checkout yourself.
+git -C "$HOME/src/agent-workflows" show --no-patch --format=fuller "$reviewed_sha"
+git -C "$HOME/src/agent-workflows" --no-pager diff --stat "$empty_tree" "$reviewed_sha"
+git -C "$HOME/src/agent-workflows" --no-pager diff --no-ext-diff --no-textconv "$empty_tree" "$reviewed_sha"
+# After reviewing the complete target tree, fast-forward the same checkout yourself.
 git -C "$HOME/src/agent-workflows" merge --ff-only "$reviewed_sha"
 if [ "$(git -C "$HOME/src/agent-workflows" rev-parse HEAD)" != "$reviewed_sha" ] ||
    [ -n "$(git -C "$HOME/src/agent-workflows" status --porcelain=v1 --untracked-files=all)" ]; then
   printf '%s\n' 'Refusing to install because the reviewed checkout changed.' >&2
   exit 1
 fi
-upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --no-fetch
+upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --mode copy --no-fetch
 ```
 
 Native plugin updates remain controlled by the host marketplace. Do not enable

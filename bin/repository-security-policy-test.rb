@@ -34,14 +34,14 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_includes policy, "Automated reviews remain advisory"
     assert_includes policy,
                     'reviewed_sha=$(git -C "$HOME/src/agent-workflows" rev-parse --verify \'origin/main^{commit}\')'
+    assert_includes policy, 'empty_tree=$(git -C "$HOME/src/agent-workflows" hash-object -t tree /dev/null)'
     assert_includes policy, "status --porcelain=v1 --untracked-files=all"
     assert_includes policy, 'merge-base --is-ancestor HEAD "$reviewed_sha"'
-    assert_includes policy, 'git -C "$HOME/src/agent-workflows" diff --stat HEAD.."$reviewed_sha"'
-    assert_includes policy, 'git -C "$HOME/src/agent-workflows" log --oneline HEAD.."$reviewed_sha"'
-    assert_includes policy, 'git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD.."$reviewed_sha"'
+    assert_includes policy, 'diff --stat "$empty_tree" "$reviewed_sha"'
+    assert_includes policy, 'diff --no-ext-diff --no-textconv "$empty_tree" "$reviewed_sha"'
     assert_includes policy, 'git -C "$HOME/src/agent-workflows" merge --ff-only "$reviewed_sha"'
     assert_includes policy, '"$(git -C "$HOME/src/agent-workflows" rev-parse HEAD)" != "$reviewed_sha"'
-    reviewed_upgrade = 'upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --no-fetch'
+    reviewed_upgrade = 'upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --mode copy --no-fetch'
 
     assert_includes policy, reviewed_upgrade
   end
