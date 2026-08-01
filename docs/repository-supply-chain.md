@@ -39,6 +39,10 @@ if [ -n "$(git -C "$HOME/src/agent-workflows" status --porcelain=v1 --untracked-
   printf '%s\n' 'Refusing to upgrade from a checkout with unreviewed local changes.' >&2
   exit 1
 fi
+if ! git -C "$HOME/src/agent-workflows" merge-base --is-ancestor HEAD origin/main; then
+  printf '%s\n' 'Refusing to upgrade from a checkout with local or diverged commits.' >&2
+  exit 1
+fi
 git -C "$HOME/src/agent-workflows" diff --stat HEAD..origin/main
 git -C "$HOME/src/agent-workflows" log --oneline HEAD..origin/main
 git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD..origin/main
