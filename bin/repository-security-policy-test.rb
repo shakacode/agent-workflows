@@ -59,7 +59,9 @@ class RepositorySecurityPolicyTest < Minitest::Test
   def test_repository_local_references_are_bound_by_the_checkout
     assert acceptable_action_reference?("./.github/actions/example")
     assert acceptable_action_reference?("owner/action@0123456789abcdef0123456789abcdef01234567")
+    assert acceptable_action_reference?("docker://alpine@sha256:#{'a' * 64}")
     refute acceptable_action_reference?("owner/action@v1")
+    refute acceptable_action_reference?("docker://alpine:latest")
   end
 
   def test_routine_pull_requests_do_not_use_the_broad_custom_human_gate
@@ -89,7 +91,11 @@ class RepositorySecurityPolicyTest < Minitest::Test
   private
 
   def acceptable_action_reference?(reference)
-    reference.is_a?(String) && (reference.start_with?("./") || reference.match?(/@[0-9a-f]{40}\z/))
+    return false unless reference.is_a?(String)
+
+    reference.start_with?("./") ||
+      reference.match?(/@[0-9a-f]{40}\z/) ||
+      reference.match?(%r{\Adocker://[^\s@]+@sha256:[0-9a-fA-F]{64}\z})
   end
 
   def workflow_uses(workflow)
