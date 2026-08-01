@@ -856,13 +856,15 @@ When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base branch is controlled by a merge queue. An exact open PR on a queue-disabled
-base fails closed before mutation because GitHub's direct mutation has no atomic
-expected-base OID; migrate that base to a merge queue, then restart the readiness
-and receipt gates. Treat helper exit 2 as an `UNKNOWN` mutation or cleanup
-outcome and never retry it blindly. Queue submission is not terminal: continue
-closeout until GitHub reports the PR merged or exposes a real blocker.
+of an exact terminal merge, uses GitHub's `enqueuePullRequest` when the base is
+queue-controlled, and uses `mergePullRequest` otherwise. Direct submission is
+atomically bound to the authorized head with `expectedHeadOid`; the fresh
+receipt's base SHA is rechecked in live metadata immediately before mutation.
+If queue enforcement changes after that read, only GitHub's explicit
+queue-control error permits one exact-head enqueue retry. Treat helper exit 2 as
+an `UNKNOWN` mutation or cleanup outcome and never retry it blindly. Queue
+submission is not terminal: continue closeout until GitHub reports the PR
+merged or exposes a real blocker.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.
