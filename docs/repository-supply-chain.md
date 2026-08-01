@@ -35,6 +35,10 @@ For an explicit local review, use the two-step form:
 
 ```bash
 git -C "$HOME/src/agent-workflows" fetch origin main
+if [ -n "$(git -C "$HOME/src/agent-workflows" status --porcelain=v1 --untracked-files=all)" ]; then
+  printf '%s\n' 'Refusing to upgrade from a checkout with unreviewed local changes.' >&2
+  exit 1
+fi
 git -C "$HOME/src/agent-workflows" diff --stat HEAD..origin/main
 git -C "$HOME/src/agent-workflows" log --oneline HEAD..origin/main
 git -C "$HOME/src/agent-workflows" diff --no-ext-diff HEAD..origin/main
