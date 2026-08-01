@@ -9,16 +9,25 @@ class RepositorySecurityPolicyTest < Minitest::Test
 
   def test_github_actions_are_pinned_to_full_commit_shas
     mutable_uses = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).flat_map do |path|
-      File.readlines(path, chomp: true).filter_map do |line|
-        match = line.match(/^\s*-?\s*uses:\s*([^\s#]+)(?:\s*#.*)?$/)
-        next unless match
+      workflow = YAML.safe_load_file(path, aliases: true)
+      workflow_uses(workflow).filter_map do |location, reference|
+        next if reference.is_a?(String) && reference.match?(/@[0-9a-f]{40}\z/)
 
-        reference = match[1]
-        "#{path.delete_prefix("#{ROOT}/")}: #{reference}" unless reference.match?(/@[0-9a-f]{40}\z/)
+        "#{path.delete_prefix("#{ROOT}/")}:#{location}: #{reference.inspect}"
       end
     end
 
     assert_empty mutable_uses, "mutable GitHub Actions references:\n#{mutable_uses.join("\n")}"
+  end
+
+  def test_action_reference_scanner_reads_yaml_structure
+    workflow = YAML.safe_load(<<~YAML, aliases: true)
+      jobs:
+        validate:
+          steps: [{ uses : owner/action@v1 }]
+    YAML
+
+    assert_equal [["jobs.validate.steps.0.uses", "owner/action@v1"]], workflow_uses(workflow)
   end
 
   def test_routine_pull_requests_do_not_use_the_broad_custom_human_gate
@@ -32,18 +41,7 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_includes policy, "Stable release promotion, not ordinary pull-request development"
     assert_includes policy, "agent-workflows/issues/296"
     assert_includes policy, "Automated reviews remain advisory"
-    assert_includes policy,
-                    'reviewed_sha=$(git -C "$HOME/src/agent-workflows" rev-parse --verify \'origin/main^{commit}\')'
-    assert_includes policy, 'empty_tree=$(git -C "$HOME/src/agent-workflows" hash-object -t tree /dev/null)'
-    assert_includes policy, "status --porcelain=v1 --untracked-files=all"
-    assert_includes policy, 'merge-base --is-ancestor HEAD "$reviewed_sha"'
-    assert_includes policy, 'diff --stat "$empty_tree" "$reviewed_sha"'
-    assert_includes policy, 'diff --no-ext-diff --no-textconv "$empty_tree" "$reviewed_sha"'
-    assert_includes policy, 'git -C "$HOME/src/agent-workflows" merge --ff-only "$reviewed_sha"'
-    assert_includes policy, '"$(git -C "$HOME/src/agent-workflows" rev-parse HEAD)" != "$reviewed_sha"'
-    reviewed_upgrade = 'upgrade-agent-workflows --host codex --source "$HOME/src/agent-workflows" --mode copy --no-fetch'
-
-    assert_includes policy, reviewed_upgrade
+    assert_includes policy, "There is no supported human-reviewed install or upgrade path today"
   end
 
   def test_dependabot_proposes_pinned_action_updates_for_review
@@ -54,5 +52,22 @@ class RepositorySecurityPolicyTest < Minitest::Test
 
     refute_nil action_updates
     assert_equal "weekly", action_updates.dig("schedule", "interval")
+  end
+
+  private
+
+  def workflow_uses(node, path = [])
+    case node
+    when Hash
+      node.flat_map do |key, value|
+        child_path = path + [key]
+        matches = key.to_s == "uses" ? [[child_path.join("."), value]] : []
+        matches + workflow_uses(value, child_path)
+      end
+    when Array
+      node.each_with_index.flat_map { |value, index| workflow_uses(value, path + [index]) }
+    else
+      []
+    end
   end
 end
