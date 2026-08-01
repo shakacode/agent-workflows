@@ -336,6 +336,149 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_path_exists File.join(snapshot.tree, "operation-capabilities.json")
   end
 
+  def test_secure_git_times_out_and_terminates_its_process_group
+    leader_pid_path = File.join(@tmp, "hanging-git-leader.pid")
+    child_pid_path = File.join(@tmp, "hanging-git-child.pid")
+    hanging_git = File.join(@tmp, "hanging-git")
+    File.write(
+      hanging_git,
+      <<~SH
+        #!/bin/sh
+        trap '' TERM
+        echo $$ > #{Shellwords.escape(leader_pid_path)}
+        sh -c 'trap "" TERM; echo $$ > #{Shellwords.escape(child_pid_path)}; while :; do sleep 1; done' &
+        wait
+      SH
+    )
+    FileUtils.chmod(0o755, hanging_git)
+    secure_git_class = Class.new(AgentWorkflowsOperation::SecureGit) do
+      define_method(:initialize) do |executable:, timeout:|
+        @executable = executable
+        @timeout = timeout
+      end
+    end
+    secure_git = secure_git_class.new(executable: hanging_git, timeout: 1)
+
+    error = assert_raises(AgentWorkflowsOperation::GitError) do
+      secure_git.run!(@served_repo, "status", private_home: @tmp)
+    end
+    assert_includes error.message, "timed out"
+    assert(wait_until { File.file?(leader_pid_path) && File.file?(child_pid_path) })
+    leader_pid = Integer(File.read(leader_pid_path), 10)
+    child_pid = Integer(File.read(child_pid_path), 10)
+    assert(wait_until { !process_alive?(leader_pid) }, "timed-out Git leader survived")
+    assert(wait_until { !process_alive?(child_pid) }, "timed-out Git descendant survived")
+  end
+
+  def test_secure_git_guardian_retains_the_exclusive_lease_after_resolver_crash
+    ready = File.join(@tmp, "guarded-git-ready")
+    finish = File.join(@tmp, "guarded-git-finish")
+    guarded_git = File.join(@tmp, "guarded-git")
+    File.write(
+      guarded_git,
+      <<~SH
+        #!/bin/sh
+        echo "$$ $PPID" > #{Shellwords.escape(ready)}
+        while [ ! -f #{Shellwords.escape(finish)} ]; do sleep 0.02; done
+      SH
+    )
+    FileUtils.chmod(0o755, guarded_git)
+    secure_git_class = Class.new(AgentWorkflowsOperation::SecureGit) do
+      define_method(:initialize) do |executable:, timeout:|
+        @executable = executable
+        @timeout = timeout
+      end
+    end
+    state = AgentWorkflowsOperation::State.new(target: @target)
+    lease = AgentWorkflowsOperation::LifecycleLease.new(target: @target, root: state.root, timeout: 0.2)
+    resolver_pid = fork do
+      lease.with_exclusive do
+        secure_git = secure_git_class.new(executable: guarded_git, timeout: 5)
+        secure_git.run!(@served_repo, "status", private_home: @tmp)
+      end
+    end
+    assert(wait_until(timeout: 5) { File.file?(ready) })
+    git_pid, guardian_pid = File.read(ready).split.map { |value| Integer(value, 10) }
+
+    Process.kill("KILL", resolver_pid)
+    Process.wait(resolver_pid)
+    resolver_pid = nil
+    error = assert_raises(AgentWorkflowsOperation::LifecycleBusyError) do
+      lease.with_exclusive { flunk "orphaned Git must remain protected by the guardian's lease" }
+    end
+    assert_includes error.message, "LIFECYCLE_BUSY"
+    assert process_alive?(guardian_pid)
+    assert process_alive?(git_pid)
+    assert_equal guardian_pid, Process.getpgid(guardian_pid)
+
+    File.write(finish, "done\n")
+    assert(wait_until(timeout: 5) do
+      lease.with_exclusive { true }
+    rescue AgentWorkflowsOperation::LifecycleBusyError
+      false
+    end)
+    assert(wait_until { !process_alive?(git_pid) })
+  ensure
+    File.write(finish, "done\n") if finish && !File.exist?(finish)
+    Process.kill("KILL", resolver_pid) if resolver_pid && process_alive?(resolver_pid)
+  end
+
+  def test_secure_git_guardian_times_out_an_output_flood_after_resolver_crash
+    ready = File.join(@tmp, "flooding-git-ready")
+    flooding_git = File.join(@tmp, "flooding-git")
+    File.write(
+      flooding_git,
+      <<~RUBY
+        #!#{RbConfig.ruby}
+        Signal.trap("PIPE", "IGNORE")
+        Signal.trap("TERM", "IGNORE")
+        File.write(#{ready.dump}, "\#{Process.pid} \#{Process.ppid}\n")
+        output = "x" * 65_536
+        loop do
+          STDERR.write(output)
+        rescue Errno::EPIPE, IOError
+          nil
+        end
+      RUBY
+    )
+    FileUtils.chmod(0o755, flooding_git)
+    secure_git_class = Class.new(AgentWorkflowsOperation::SecureGit) do
+      define_method(:initialize) do |executable:, timeout:|
+        @executable = executable
+        @timeout = timeout
+      end
+    end
+    state = AgentWorkflowsOperation::State.new(target: @target)
+    lease = AgentWorkflowsOperation::LifecycleLease.new(target: @target, root: state.root, timeout: 0.2)
+    resolver_pid = fork do
+      lease.with_exclusive do
+        secure_git = secure_git_class.new(executable: flooding_git, timeout: 1)
+        secure_git.run!(@served_repo, "status", private_home: @tmp)
+      end
+    end
+    assert(wait_until(timeout: 5) { File.file?(ready) })
+    git_pid, guardian_pid = File.read(ready).split.map { |value| Integer(value, 10) }
+
+    Process.kill("KILL", resolver_pid)
+    Process.wait(resolver_pid)
+    resolver_pid = nil
+    assert_raises(AgentWorkflowsOperation::LifecycleBusyError) do
+      lease.with_exclusive { flunk "the output flood must remain guarded before its deadline" }
+    end
+
+    assert(wait_until(timeout: 5) do
+      lease.with_exclusive { true }
+    rescue AgentWorkflowsOperation::LifecycleBusyError
+      false
+    end)
+    assert(wait_until { !process_alive?(git_pid) })
+    assert(wait_until { !process_alive?(guardian_pid) })
+  ensure
+    Process.kill("KILL", -git_pid) if git_pid && process_alive?(git_pid)
+    Process.kill("KILL", guardian_pid) if guardian_pid && process_alive?(guardian_pid)
+    Process.kill("KILL", resolver_pid) if resolver_pid && process_alive?(resolver_pid)
+  end
+
   def test_unknown_provider_profile_fails_before_fetch_or_publication
     metadata = read_metadata
     metadata["provider_profile"] = "surprise"
@@ -824,7 +967,34 @@ class AgentWorkflowsOperationTest < Minitest::Test
     Process.kill("KILL", runner_pid) if runner_pid && process_alive?(runner_pid)
   end
 
-  def test_runner_crash_keeps_inherited_shared_lease_until_capability_finishes
+  def test_guardian_keeps_the_lease_when_a_signaled_capability_delays_exit
+    operation = begin_current_operation
+    ready = File.join(@tmp, "delayed-signal-ready")
+    finish = File.join(@tmp, "delayed-signal-finish")
+    runner_pid = Process.spawn(
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--hold-ignore-term", ready, finish,
+      out: File::NULL, err: File::NULL
+    )
+    assert(wait_until(timeout: 5) { File.file?(ready) })
+
+    Process.kill("TERM", runner_pid)
+    assert(wait_until { File.file?("#{finish}.terminated") })
+    result = nil
+    releaser = Thread.new { result = fixture_resolver.release!(handle: operation.fetch("operation")) }
+    sleep 0.15
+    assert releaser.alive?, "release must wait while the signaled capability is still alive"
+
+    File.write(finish, "done\n")
+    Process.wait(runner_pid)
+    releaser.join(5)
+    refute releaser.alive?
+    assert_equal "released", result.fetch("status")
+  ensure
+    File.write(finish, "done\n") if finish && !File.exist?(finish)
+    Process.kill("KILL", runner_pid) if runner_pid && process_alive?(runner_pid)
+  end
+
+  def test_runner_crash_keeps_live_capability_under_a_shared_lease_until_it_finishes
     operation = begin_current_operation
     ready = File.join(@tmp, "crash-runner-ready")
     finish = File.join(@tmp, "crash-runner-finish")
@@ -841,7 +1011,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     result = nil
     releaser = Thread.new { result = fixture_resolver.release!(handle: operation.fetch("operation")) }
     sleep 0.15
-    assert releaser.alive?, "the live capability must retain the inherited shared lease after runner crash"
+    assert releaser.alive?, "the live capability must remain protected by a shared lease after runner crash"
     File.write(finish, "done\n")
     releaser.join(5)
     refute releaser.alive?
@@ -849,6 +1019,42 @@ class AgentWorkflowsOperationTest < Minitest::Test
   ensure
     File.write(finish, "done\n") if finish && !File.exist?(finish)
     Process.kill("KILL", runner_pid) if runner_pid && process_alive?(runner_pid)
+  end
+
+  def test_operation_launcher_crash_keeps_live_capability_under_a_guardian_lease
+    skip "process ancestry inspection requires procfs" unless File.directory?("/proc/self")
+
+    operation = begin_current_operation
+    ready = File.join(@tmp, "launcher-crash-ready")
+    finish = File.join(@tmp, "launcher-crash-finish")
+    runner_pid = Process.spawn(
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--hold", ready, finish,
+      out: File::NULL, err: File::NULL
+    )
+    assert(wait_until(timeout: 5) { File.file?(ready) })
+    capability_guardian = Integer(File.read(ready), 10)
+    operation_launcher = process_parent(capability_guardian)
+    refute_equal runner_pid, operation_launcher
+
+    Process.kill("KILL", operation_launcher)
+    assert(wait_until { !process_alive?(operation_launcher) })
+    result = nil
+    releaser = Thread.new { result = fixture_resolver.release!(handle: operation.fetch("operation")) }
+    sleep 0.15
+    assert releaser.alive?, "the guardian must retain the shared lease after operation-launcher failure"
+
+    File.write(finish, "done\n")
+    releaser.join(5)
+    refute releaser.alive?
+    assert_equal "released", result.fetch("status")
+  ensure
+    File.write(finish, "done\n") if finish && !File.exist?(finish)
+    Process.kill("KILL", runner_pid) if runner_pid && process_alive?(runner_pid)
+    begin
+      Process.wait(runner_pid) if runner_pid
+    rescue Errno::ECHILD
+      nil
+    end
   end
 
   def test_installed_entrypoints_acquire_the_lease_before_loading_mutable_runtime
@@ -1349,6 +1555,36 @@ class AgentWorkflowsOperationTest < Minitest::Test
     refute_path_exists sentinel
   end
 
+  def test_installed_runner_passes_only_explicit_ambient_environment
+    operation = begin_current_operation
+    output, error, status = Open3.capture3(
+      {
+        "AGENT_WORKFLOWS_HOSTILE_AMBIENT" => "present",
+        "GH_TOKEN" => "fixture-token",
+        "LD_PRELOAD" => "",
+        "HTTPS_PROXY" => "http://proxy.example.test:8443",
+        "SSL_CERT_FILE" => "/tmp/fixture-ca.pem"
+      },
+      *operation.fetch("runner"), "pr-merge-submit", "--", "--environment-probe",
+      "AGENT_WORKFLOWS_HOSTILE_AMBIENT", "GH_TOKEN", "LD_PRELOAD", "HTTPS_PROXY", "SSL_CERT_FILE"
+    )
+
+    assert status.success?, "#{output}#{error}"
+    assert_equal(
+      {
+        "AGENT_WORKFLOWS_HOSTILE_AMBIENT" => nil,
+        "GH_TOKEN" => "fixture-token",
+        "LD_PRELOAD" => nil,
+        "HTTPS_PROXY" => "http://proxy.example.test:8443",
+        "SSL_CERT_FILE" => "/tmp/fixture-ca.pem"
+      },
+      JSON.parse(output)
+    )
+    runner = operation.fetch("runner")
+    assert_includes runner.each_cons(2).to_a, ["-u", "LD_PRELOAD"]
+    assert_operator runner.index("LD_PRELOAD"), :<, runner.index(File.join(operation_root(operation.fetch("operation")), "interpreter"))
+  end
+
   def test_autonomous_evaluator_uses_provider_runtime_and_consumer_base_policy
     consumer = File.join(@tmp, "consumer")
     FileUtils.mkdir_p(File.join(consumer, ".agents"))
@@ -1382,7 +1618,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     semantic_path = File.join(@tmp, "semantic.json")
     File.write(objective_path, JSON.generate(objective))
     File.write(semantic_path, JSON.generate(provider_operation_semantic_assessment))
-    write_autonomous_fake_gh(@fake_gh)
+    write_autonomous_fake_gh(@fake_gh, objective_path)
     operation = begin_current_operation
 
     output, error, status = Open3.capture3(
@@ -1856,6 +2092,22 @@ class AgentWorkflowsOperationTest < Minitest::Test
     false
   end
 
+  def process_parent(pid)
+    status = File.read("/proc/#{pid}/status")
+    match = status.match(/^PPid:\s+(\d+)$/)
+    Integer(match[1], 10)
+  end
+
+  def wait_until(timeout: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    until yield
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.02
+    end
+    true
+  end
+
   def native_provider_root
     File.join(@target, "plugins/cache/agent-workflows/scw/0.1.0")
   end
@@ -1889,14 +2141,21 @@ class AgentWorkflowsOperationTest < Minitest::Test
         #!/usr/bin/env ruby
         # frozen_string_literal: true
 
-        if ARGV.first == "--hold"
+        require "json"
+
+        if ["--hold", "--hold-ignore-term"].include?(ARGV.first)
+          ignore_term = ARGV.first == "--hold-ignore-term"
           ready, finish = ARGV.drop(1)
           Signal.trap("TERM") do
             File.write("\#{finish}.terminated", "terminated\\n")
-            exit 143
+            exit 143 unless ignore_term
           end
-          File.write(ready, "ready\n")
+          File.write(ready, "\#{Process.ppid}\\n")
           sleep 0.01 until File.exist?(finish)
+          exit 0
+        end
+        if ARGV.first == "--environment-probe"
+          puts JSON.generate(ARGV.drop(1).to_h { |name| [name, ENV[name]] })
           exit 0
         end
         puts(["fixture-helper", *ARGV].join(" "))
@@ -1970,12 +2229,12 @@ class AgentWorkflowsOperationTest < Minitest::Test
     end
   end
 
-  def write_autonomous_fake_gh(path)
+  def write_autonomous_fake_gh(path, objective_path)
     File.write(path, <<~RUBY)
       #!#{RbConfig.ruby}
       require "json"
 
-      objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      objective = JSON.parse(File.read(#{objective_path.dump}))
       request = ARGV.fetch(-1)
       response = case request
                  when "repos/example/repo/pulls/1"

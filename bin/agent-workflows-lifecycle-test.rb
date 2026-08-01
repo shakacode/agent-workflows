@@ -71,6 +71,49 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
     assert_includes error.message, "LIFECYCLE_STATE_UNSAFE"
   end
 
+  def test_lifecycle_lease_descriptor_is_closed_before_exec
+    skip "descriptor inspection requires procfs" unless File.directory?("/proc/self/fd")
+
+    lease_with_timeout(0.1).with_shared do |file|
+      assert file.close_on_exec?
+      descriptor = "/proc/self/fd/#{file.fileno}"
+      status = AgentWorkflowsOperation::ProcessSupervisor.wait!(
+        environment: { "PATH" => "/usr/bin:/bin" },
+        command: [RbConfig.ruby, "-e", "exit(File.exist?(ARGV.fetch(0)) ? 1 : 0)", descriptor]
+      )
+      assert status.success?
+    end
+  end
+
+  def test_process_guardian_preserves_exit_and_signal_statuses
+    environment = { "PATH" => "/usr/bin:/bin" }
+    exited = AgentWorkflowsOperation::ProcessSupervisor.wait!(
+      environment:,
+      command: [RbConfig.ruby, "-e", "exit 23"]
+    )
+    terminated = AgentWorkflowsOperation::ProcessSupervisor.wait!(
+      environment:,
+      command: [RbConfig.ruby, "-e", 'Process.kill("TERM", Process.pid); sleep']
+    )
+    killed = AgentWorkflowsOperation::ProcessSupervisor.wait!(
+      environment:,
+      command: [RbConfig.ruby, "-e", 'Process.kill("KILL", Process.pid)']
+    )
+    piped = AgentWorkflowsOperation::ProcessSupervisor.wait!(
+      environment:,
+      command: [
+        RbConfig.ruby,
+        "-e",
+        'Signal.trap("PIPE", "SYSTEM_DEFAULT"); Process.kill("PIPE", Process.pid); sleep 1'
+      ]
+    )
+
+    assert_equal 23, exited.exitstatus
+    assert_equal Signal.list.fetch("TERM"), terminated.termsig
+    assert_equal Signal.list.fetch("KILL"), killed.termsig
+    assert_equal Signal.list.fetch("PIPE"), piped.termsig
+  end
+
   def test_capacity_constants_ignore_environment
     ENV["AGENT_WORKFLOWS_MAX_LIVE_OPERATIONS"] = "999"
     ENV["AGENT_WORKFLOWS_MAX_RETAINED_REVISIONS"] = "999"

@@ -43,7 +43,7 @@ module AgentWorkflowsOperation
 
         sleep POLL_SECONDS
       end
-      file.close_on_exec = false
+      file.close_on_exec = true
       yield file
     ensure
       file&.flock(File::LOCK_UN)

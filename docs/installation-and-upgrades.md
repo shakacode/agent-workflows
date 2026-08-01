@@ -737,6 +737,17 @@ Runners hold a shared lease through capability process completion. Mutations and
 GC hold the exclusive lease. Installer migration locking remains an inner,
 secondary defense.
 
+Ordinary resolver and runner lease descriptors close on exec; only the
+authenticated exclusive lifecycle reentry path passes a descriptor to a child.
+A trusted non-exec guardian holds the runner lease until its capability exits,
+including when the runner or operation launcher crashes.
+Capability execution uses an explicit environment containing home/locale state,
+GitHub CLI configuration and authentication, proxy/certificate connectivity,
+and the operation's bound values, instead of inheriting arbitrary caller
+variables. Secure Git commands run below a separate trusted non-exec guardian,
+which retains the resolver's exclusive lease after a resolver crash, enforces a
+fixed 120-second deadline, and terminates the Git process group when it expires.
+
 The installed resolver and runner embed a self-contained minimal lease
 bootstrap, and the lifecycle wrapper has no mutable runtime dependency. Those
 files plus the install and upgrade shell entries are published by atomic rename

@@ -135,6 +135,16 @@ Runners hold a shared lease through capability process completion. Mutations and
 GC hold the exclusive lease. Installer migration locking remains an inner,
 secondary defense.
 
+Ordinary resolver and runner lease descriptors close on exec. Capability
+processes therefore cannot release or retain their parent's lock; descriptor
+inheritance is reserved for a trusted non-exec guardian and the authenticated
+lifecycle reentry protocol below. The guardian holds the runner lease until the
+capability exits, even if the runner or operation launcher crashes. Capabilities
+start with an explicit allowlisted environment. Secure Git subprocesses have a
+separate trusted non-exec guardian that retains the resolver's exclusive lease
+after a crash, with a fixed 120-second deadline, process-group termination, and
+direct-child reaping.
+
 ### Pre-require serialization
 
 The installed resolver and runner contain the complete minimal lease bootstrap,

@@ -16,6 +16,16 @@ require_relative "tree"
 
 module AgentWorkflowsOperation
   class Runner
+    PASSTHROUGH_ENVIRONMENT = %w[
+      HOME XDG_CONFIG_HOME GH_CONFIG_DIR
+      GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+      GH_HOST GH_REPO
+      LANG LC_ALL LC_CTYPE
+      HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+      http_proxy https_proxy all_proxy no_proxy
+      SSL_CERT_FILE SSL_CERT_DIR
+    ].freeze
+
     attr_reader :target, :state, :store, :lease
 
     def initialize(target:, lease: nil)
@@ -92,23 +102,16 @@ module AgentWorkflowsOperation
     end
 
     def sanitized_environment(metadata, capability: nil, bundle: nil)
-      environment = {
-        "RUBYOPT" => nil,
-        "RUBYLIB" => nil,
-        "BUNDLE_GEMFILE" => nil,
-        "BUNDLE_BIN_PATH" => nil,
-        "BUNDLE_PATH" => nil,
-        "GEM_HOME" => nil,
-        "GEM_PATH" => nil,
+      environment = PASSTHROUGH_ENVIRONMENT.to_h do |name|
+        [name, ENV[name]]
+      end.compact.merge(
+        "HOME" => ENV.fetch("HOME", Dir.home),
         "PATH" => "/usr/bin:/bin:/usr/sbin:/sbin",
-        "AUTONOMOUS_MERGE_GH" => nil,
-        "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => nil,
-        "AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS" => nil,
+        "GH_PROMPT_DISABLED" => "1",
+        "GIT_TERMINAL_PROMPT" => "0",
         "AGENT_WORKFLOWS_GIT_EXECUTABLE" => metadata.fetch("tools").fetch("git").fetch("path"),
-        "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.dig("tools", "gh", "path"),
-        "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => nil,
-        "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => nil
-      }
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => metadata.dig("tools", "gh", "path")
+      )
       if capability
         environment["AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE"] = capability.fetch("provenance")
         environment["AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST"] = JSON.generate(
@@ -121,7 +124,7 @@ module AgentWorkflowsOperation
           end
         )
       end
-      environment
+      environment.compact
     end
 
     def verify_capability_bundle!(bundle, binding, definition, snapshot)

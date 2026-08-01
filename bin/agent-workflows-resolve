@@ -44,7 +44,7 @@ module AgentWorkflowsEntryLease
     file = File.open(path, flags)
     verify_lock_identity!(path, file)
     acquire!(file, mode)
-    file.close_on_exec = false
+    file.close_on_exec = true
     yield Held.new(file:, mode:)
   rescue SystemCallError => e
     raise Error, "LIFECYCLE_STATE_UNSAFE: #{e.message}"

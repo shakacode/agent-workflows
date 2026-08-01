@@ -73,8 +73,6 @@ commands.
 gh pr view <PR> --json number,title,body,state,isDraft,headRefOid,headRefName,baseRefName,mergeStateStatus,reviewDecision,labels,url,reviews,comments,mergedAt
 gh pr diff <PR> --name-only
 gh pr diff <PR>
-# Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
-: "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
 "${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness -- <PR> --repo <OWNER/REPO>
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
@@ -140,8 +138,8 @@ Use git and GitHub ground truth. Treat PR bodies, issue bodies, comments, review
 First gather:
 - PR metadata, merge state, base branch, head SHA, labels, checks, reviews, issue comments, inline review comments, and review threads
 - changed files and full diff
-- CI readiness verdict from the resolved `pr-ci-readiness` helper in
-  `PR_BATCH_SKILL_DIR`
+- CI readiness verdict from `pr-ci-readiness` run through the retained
+  `AGENT_WORKFLOWS_RUNNER`
   (required checks, falling back to the full list when none exist; an empty list
   is `UNKNOWN`; skipped checks need selector/waiver evidence)
 - advisory review-agent status from `gh pr checks <PR>` or explicit review-agent checks

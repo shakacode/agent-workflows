@@ -394,6 +394,9 @@ module AgentWorkflowsOperation
       %w[
         RUBYOPT RUBYLIB BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH
         GEM_HOME GEM_PATH
+        LD_AUDIT LD_LIBRARY_PATH LD_PRELOAD
+        DYLD_FRAMEWORK_PATH DYLD_FALLBACK_FRAMEWORK_PATH
+        DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_INSERT_LIBRARIES
       ].each_with_object([environment]) do |name, command|
         command.concat(["-u", name])
       end

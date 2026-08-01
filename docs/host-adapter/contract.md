@@ -220,8 +220,13 @@ binding:
 - `assets.related_workflows` and `assets.docs` expose validated named
   supporting assets.
 - `runner` is the complete argv prefix for capability execution. Its absolute
-  environment launcher removes Ruby/Bundler injection state before starting the
-  operation's private Ruby interpreter snapshot. Consumers preserve every
+  environment launcher removes Ruby/Bundler and common dynamic-loader injection
+  state before starting the operation's private Ruby interpreter snapshot.
+  The runner then starts the capability with an explicit environment rather
+  than inheriting the caller's remaining variables. It preserves only home and
+  locale settings, GitHub CLI configuration/authentication variables, explicit
+  proxy and certificate paths, and the operation's bound tool and provenance
+  values. Consumers preserve every
   element in order and append only the capability and its arguments.
 
 Registry loading requires every named skill to be a regular non-symlink
@@ -369,6 +374,17 @@ and GC share one bounded POSIX `flock` lifecycle lease at a stable private inode
 Runners hold a shared lease through capability process completion. Mutations and
 GC hold the exclusive lease. Installer migration locking remains an inner,
 secondary defense.
+
+Ordinary resolver and runner leases are close-on-exec, so capability and Git
+children cannot inherit or modify their lock. Only the exclusive lifecycle
+wrapper deliberately passes a descriptor, and that path requires the separate
+token and liveness proof below. A trusted non-exec guardian retains the runner's
+lease while it supervises each capability, so a runner or operation-launcher
+crash cannot leave a live capability unprotected. Secure Git subprocesses use a
+separate trusted non-exec guardian that retains the resolver's exclusive lease
+if the resolver crashes. It enforces a fixed 120-second deadline; timeout
+handling terminates the complete Git process group, reaps the direct Git child,
+and waits for that process group to disappear before releasing the lease.
 
 Resolver and runner entry files contain their minimal lease bootstrap. The
 lifecycle wrapper is fully self-contained. Those files and the install and

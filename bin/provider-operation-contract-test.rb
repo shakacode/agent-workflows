@@ -117,6 +117,13 @@ class ProviderOperationContractTest < Minitest::Test
     end
   end
 
+  def test_adversarial_review_routes_readiness_only_through_the_bound_runner
+    workflow = read("workflows/adversarial-pr-review.md")
+
+    assert_includes workflow, '"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness --'
+    refute_includes workflow, "PR_BATCH_SKILL_DIR"
+  end
+
   def test_walkthrough_routes_use_the_bound_named_asset_without_picker_fallback
     %w[
       skills/plan-pr-batch/SKILL.md
