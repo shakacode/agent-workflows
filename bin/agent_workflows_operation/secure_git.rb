@@ -104,6 +104,7 @@ module AgentWorkflowsOperation
         private_home: private_home,
         binary: true
       )
+      validate_archive!(archive, destination)
       Gem::Package::TarReader.new(StringIO.new(archive)) do |tar|
         tar.each do |entry|
           extract_archive_entry!(entry, destination)
@@ -189,14 +190,26 @@ module AgentWorkflowsOperation
       stderr_writer.close
       timeout_writer.close
       [stdout_reader, stderr_reader].each(&:binmode) if binary
-      readers = [Thread.new { stdout_reader.read }, Thread.new { stderr_reader.read }]
+      readers = [stdout_reader, stderr_reader].map do |stream|
+        Thread.new do
+          stream.read
+        rescue IOError
+          ""
+        end
+      end
+      timed_out = timeout_reader.read(1) == "T"
+      if timed_out
+        Process.detach(guardian)
+        guardian = nil
+        stop_readers!(readers, [stdout_reader, stderr_reader])
+        raise GitError, "secure Git command timed out after #{@timeout} seconds"
+      end
+
       _pid, status = Process.wait2(guardian)
       guardian = nil
-      timed_out = timeout_reader.read == "T"
-      readers.each(&:join)
-      raise GitError, "secure Git command timed out after #{@timeout} seconds" if timed_out
+      stop_readers!(readers, [stdout_reader, stderr_reader])
 
-      [readers[0].value, readers[1].value, status]
+      [readers[0].value.to_s, readers[1].value.to_s, status]
     ensure
       [stdout_reader, stdout_writer, stderr_reader, stderr_writer, timeout_reader, timeout_writer].compact.each do |stream|
         stream.close unless stream.closed?
@@ -247,11 +260,17 @@ module AgentWorkflowsOperation
         sleep POLL_SECONDS
       end
 
-      terminate_process_group!(pid, status)
+      status, group_alive = terminate_process_group!(pid, status)
       begin
         timeout.write("T")
       rescue Errno::EPIPE, IOError
         nil
+      end
+      timeout.close unless timeout.closed?
+      while group_alive
+        status ||= reap_nonblock(pid)
+        group_alive = process_group_alive?(pid)
+        sleep POLL_SECONDS if group_alive
       end
       exit! TIMEOUT_EXIT_STATUS
     end
@@ -266,22 +285,18 @@ module AgentWorkflowsOperation
         sleep POLL_SECONDS
       end
       signal_process_group("KILL", pid) if process_group_alive?(pid)
-      while process_group_alive?(pid)
+      kill_deadline = monotonic_time + TERMINATION_GRACE_SECONDS
+      while process_group_alive?(pid) && monotonic_time < kill_deadline
         status ||= reap_nonblock(pid)
         sleep POLL_SECONDS
       end
-      reap_blocking(pid) unless status
+      status ||= reap_nonblock(pid)
+      [status, process_group_alive?(pid)]
     end
 
     def reap_nonblock(pid)
       waited = Process.waitpid2(pid, Process::WNOHANG)
       waited&.last
-    rescue Errno::ECHILD
-      nil
-    end
-
-    def reap_blocking(pid)
-      Process.waitpid2(pid).last
     rescue Errno::ECHILD
       nil
     end
@@ -310,6 +325,21 @@ module AgentWorkflowsOperation
       Process.kill(signal, -pid)
     rescue Errno::ESRCH
       nil
+    end
+
+    def stop_readers!(readers, streams)
+      deadline = monotonic_time + TERMINATION_GRACE_SECONDS
+      readers.each do |reader|
+        remaining = deadline - monotonic_time
+        reader.join(remaining) if remaining.positive?
+      end
+      streams.each { |stream| stream.close unless stream.closed? }
+      readers.each do |reader|
+        next unless reader.alive?
+
+        reader.kill
+        reader.join
+      end
     end
 
     def monotonic_time
@@ -354,18 +384,84 @@ module AgentWorkflowsOperation
       validate_archive_path!(relative)
       path = File.join(destination, relative)
       if entry.directory?
-        FileUtils.mkdir_p(path, mode: 0o700)
+        ensure_archive_directory!(destination, relative)
       elsif entry.file?
-        FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
+        ensure_archive_parent!(destination, relative)
         File.open(path, File::WRONLY | File::CREAT | File::EXCL, entry.header.mode & 0o777) do |file|
           IO.copy_stream(entry, file)
         end
         File.chmod(entry.header.mode & 0o777, path)
       elsif entry.header.typeflag == "2"
-        FileUtils.mkdir_p(File.dirname(path), mode: 0o700)
+        ensure_archive_parent!(destination, relative)
         File.symlink(entry.header.linkname, path)
       else
         raise GitError, "canonical Git archive contains unsupported entry type for #{relative}"
+      end
+    end
+
+    def validate_archive!(archive, destination)
+      entries = {}
+      Gem::Package::TarReader.new(StringIO.new(archive)) do |tar|
+        tar.each do |entry|
+          next if entry.header.typeflag == "g" && entry.full_name == "pax_global_header"
+
+          relative = entry.full_name.delete_suffix("/")
+          next if relative.empty?
+
+          validate_archive_path!(relative)
+          type = archive_entry_type(entry, relative)
+          raise GitError, "canonical Git archive contains a duplicate path: #{relative}" if entries.key?(relative)
+
+          validate_archive_symlink!(entry, destination, relative) if type == :symlink
+          entries[relative] = type
+        end
+      end
+      entries.each_key do |relative|
+        components = relative.split("/")
+        1.upto(components.length - 1) do |length|
+          ancestor = components.first(length).join("/")
+          next unless entries.key?(ancestor) && entries.fetch(ancestor) != :directory
+
+          raise GitError, "canonical Git archive path traverses a non-directory entry: #{relative}"
+        end
+      end
+    end
+
+    def archive_entry_type(entry, relative)
+      return :directory if entry.directory?
+      return :file if entry.file?
+      return :symlink if entry.header.typeflag == "2"
+
+      raise GitError, "canonical Git archive contains unsupported entry type for #{relative}"
+    end
+
+    def validate_archive_symlink!(entry, destination, relative)
+      path = File.join(destination, relative)
+      resolved = File.expand_path(entry.header.linkname, File.dirname(path))
+      return if resolved == destination || resolved.start_with?("#{destination}/")
+
+      raise GitError, "canonical Git archive symlink escapes the snapshot: #{relative}"
+    end
+
+    def ensure_archive_parent!(destination, relative)
+      parent = File.dirname(relative)
+      return if parent == "."
+
+      ensure_archive_directory!(destination, parent)
+    end
+
+    def ensure_archive_directory!(destination, relative)
+      current = destination
+      relative.split("/").each do |component|
+        current = File.join(current, component)
+        if File.exist?(current) || File.symlink?(current)
+          stat = File.lstat(current)
+          unless stat.directory? && !stat.symlink?
+            raise GitError, "canonical Git archive path traverses a non-directory entry: #{relative}"
+          end
+        else
+          Dir.mkdir(current, 0o700)
+        end
       end
     end
 

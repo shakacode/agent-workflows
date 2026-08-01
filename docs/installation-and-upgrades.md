@@ -589,7 +589,9 @@ Upgrade behavior:
 The command prints `UPGRADE_COMPLETE` on success and `ROLLBACK_COMPLETE` when it
 restores the prior install after a failed upgrade. Rollback restores the prior
 delivery mode and skill layout. `upgrade-agent-workflows` never installs or
-updates the native plugin itself.
+updates the native plugin itself. Once reinstall and consumer seam validation
+succeed, transaction-backup cleanup cannot roll the completed install back; a
+cleanup failure exits nonzero and preserves the residual backup for inspection.
 
 ## Verification After Upgrade
 
@@ -701,6 +703,9 @@ pinned source can be replayed without network access.
   `--host codex` or `--host claude`.
 - `Refusing to replace non-symlink path`: symlink mode will not overwrite a real
   file or directory. Use copy mode or remove the conflicting path deliberately.
+- `Refusing unsafe trusted directory`: helper publication requires a real,
+  owner-controlled `bin` directory that is not group- or world-writable in both
+  copy and symlink modes.
 - `DELIVERY_MODE_CONFLICT`: keep one skill delivery route. Disable/remove the
   native `scw` plugin before a flat install, or use
   `--delivery-mode plugin-companion`. If exact paths are listed, they were
@@ -744,7 +749,9 @@ including when the runner or operation launcher crashes.
 Capability execution uses an explicit environment containing home/locale state,
 GitHub CLI configuration and authentication, proxy/certificate connectivity,
 and the operation's bound values, instead of inheriting arbitrary caller
-variables. Secure Git commands run below a separate trusted non-exec guardian,
+variables. Managed-source Git validation and fetches use a fixed 120-second
+deadline with process-group termination. Secure Git commands used for operation
+snapshots run below a separate trusted non-exec guardian,
 which retains the resolver's exclusive lease after a resolver crash, enforces a
 fixed 120-second deadline, and terminates the Git process group when it expires.
 

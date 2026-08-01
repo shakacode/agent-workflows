@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "open3"
+require "tempfile"
 require "tmpdir"
 
 module AgentWorkflowsSourceContract
@@ -16,6 +16,9 @@ module AgentWorkflowsSourceContract
     "ssh://git@github.com/#{REPOSITORY}.git"
   ].freeze
   GIT_CANDIDATES = %w[/usr/bin/git /usr/local/bin/git /opt/homebrew/bin/git].freeze
+  COMMAND_TIMEOUT_SECONDS = 120
+  TERMINATION_GRACE_SECONDS = 0.5
+  POLL_SECONDS = 0.02
 
   module_function
 
@@ -39,21 +42,112 @@ module AgentWorkflowsSourceContract
     }
   end
 
-  def git(source, *arguments)
-    stdout, stderr, status = Open3.capture3(
-      environment(File.dirname(File.realpath(source))),
+  def git(source, *arguments, timeout: COMMAND_TIMEOUT_SECONDS)
+    command = [
       git_executable,
       "-c", "core.hooksPath=/dev/null",
       "-c", "protocol.file.allow=never",
       "-C", source,
-      *arguments,
-      unsetenv_others: true
+      *arguments
+    ]
+    stdout, stderr, status = capture_git(
+      environment(File.dirname(File.realpath(source))),
+      command,
+      timeout:
     )
     return stdout.strip if status.success?
 
     detail = stderr.to_s.strip
     detail = "exit #{status.exitstatus}" if detail.empty?
     raise "secure Git command failed: #{detail}"
+  end
+
+  def capture_git(environment, command, timeout:)
+    stdout = Tempfile.new("agent-workflows-git-stdout")
+    stderr = Tempfile.new("agent-workflows-git-stderr")
+    [stdout, stderr].each(&:binmode)
+    pid = Process.spawn(
+      environment,
+      *command,
+      unsetenv_others: true,
+      pgroup: true,
+      in: File::NULL,
+      out: stdout,
+      err: stderr
+    )
+    status = wait_for_git(pid, timeout)
+    unless status
+      status = terminate_git_process_group(pid)
+      begin
+        Process.detach(pid) unless status
+      rescue Errno::ECHILD
+        nil
+      end
+      raise "secure Git command timed out after #{timeout} seconds"
+    end
+
+    stdout.rewind
+    stderr.rewind
+    [stdout.read, stderr.read, status]
+  ensure
+    stdout&.close!
+    stderr&.close!
+  end
+
+  def wait_for_git(pid, timeout)
+    deadline = monotonic_time + timeout
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited.last if waited
+      return nil if monotonic_time >= deadline
+
+      sleep POLL_SECONDS
+    end
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def terminate_git_process_group(pid)
+    signal_git_process_group("TERM", pid)
+    status = nil
+    deadline = monotonic_time + TERMINATION_GRACE_SECONDS
+    while git_process_group_alive?(pid) && monotonic_time < deadline
+      status ||= reap_git(pid)
+      sleep POLL_SECONDS
+    end
+    return status unless git_process_group_alive?(pid)
+
+    signal_git_process_group("KILL", pid)
+    deadline = monotonic_time + TERMINATION_GRACE_SECONDS
+    while git_process_group_alive?(pid) && monotonic_time < deadline
+      status ||= reap_git(pid)
+      sleep POLL_SECONDS
+    end
+    status ||= reap_git(pid)
+    status
+  end
+
+  def reap_git(pid)
+    Process.waitpid2(pid, Process::WNOHANG)&.last
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def git_process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  end
+
+  def signal_git_process_group(signal, pid)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 
   def validate_root!(source)

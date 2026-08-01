@@ -370,6 +370,11 @@ ensure_real_directory() {
 
 ensure_trusted_directory() {
   local directory="$1"
+  local replace_symlink="${2:-false}"
+  if [[ -L "$directory" && "$replace_symlink" != "true" ]]; then
+    echo "Refusing unsafe trusted directory: $directory" >&2
+    exit 1
+  fi
   ensure_real_directory "$directory"
 
   if ! ruby -e '
@@ -596,7 +601,9 @@ publish_entry_copy() {
 publish_entry_symlink() {
   local source="$1"
   local destination="$2"
-  local temporary="$target/bin/.$(basename "$destination").link.$$.$RANDOM"
+  local temporary
+  temporary="$(mktemp "$target/bin/.$(basename "$destination").link.XXXXXXXX")"
+  rm -f "$temporary"
   if ! ln -s "$source" "$temporary"; then
     return 1
   fi
@@ -870,9 +877,9 @@ if [[ "$delivery_status" -ne 0 ]]; then
   '
   exit 1
 fi
+ensure_trusted_directory "$target/bin"
 if [[ "$mode" = "copy" ]]; then
-  ensure_trusted_directory "$target/bin"
-  ensure_trusted_directory "$target/bin/agent_workflows_operation"
+  ensure_trusted_directory "$target/bin/agent_workflows_operation" true
 fi
 AGENT_WORKFLOWS_INSTALL_HOST="$host" seed_source_snapshot
 prepare_metadata

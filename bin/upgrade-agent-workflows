@@ -39,6 +39,7 @@ backup_identity=""
 backup_ready=false
 target_existed=false
 completed=false
+backup_cleanup_attempted=false
 
 default_target_for_host() {
   case "$1" in
@@ -187,13 +188,21 @@ backup_identity_matches() {
 }
 
 cleanup_backup() {
+  local cleanup_status
   [[ -n "$backup_dir" ]] || return 0
+  backup_cleanup_attempted=true
   if ! backup_identity_matches; then
     echo "CLEANUP_FAILED backup identity changed: $backup_dir" >&2
     return 1
   fi
 
-  rm -rf -- "$backup_dir"
+  if rm -rf -- "$backup_dir"; then
+    :
+  else
+    cleanup_status=$?
+    echo "CLEANUP_FAILED backup removal failed: $backup_dir" >&2
+    return "$cleanup_status"
+  fi
   if [[ -e "$backup_dir" || -L "$backup_dir" ]]; then
     echo "CLEANUP_FAILED backup remains: $backup_dir" >&2
     return 1
@@ -269,7 +278,7 @@ finish_upgrade() {
       restore_failed=true
     fi
   fi
-  if [[ "$restore_failed" != "true" ]]; then
+  if [[ "$restore_failed" != "true" && "$backup_cleanup_attempted" != "true" ]]; then
     cleanup_backup
     cleanup_status=$?
     if [[ "$cleanup_status" -ne 0 && "$final_status" -eq 0 ]]; then
@@ -523,8 +532,8 @@ if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
   done
 fi
 
-cleanup_backup
 completed=true
+cleanup_backup
 
 new_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
 echo "UPGRADE_COMPLETE $(short_revision "$old_revision") $(short_revision "$new_revision") target=$target source=$source"

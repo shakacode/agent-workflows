@@ -3,6 +3,7 @@
 
 require "fileutils"
 require "minitest/autorun"
+require "rbconfig"
 require "tmpdir"
 
 require_relative "agent_workflows_source_contract"
@@ -156,6 +157,49 @@ class AgentWorkflowsSourceContractTest < Minitest::Test
     )
   end
 
+  def test_secure_git_command_timeout_terminates_the_process_group
+    Dir.mktmpdir("agent-workflows-source-timeout") do |root|
+      leader_path = File.join(root, "leader.pid")
+      child_path = File.join(root, "child.pid")
+      fake_git = File.join(root, "git")
+      File.write(
+        fake_git,
+        <<~RUBY
+          #!#{RbConfig.ruby}
+          Signal.trap("TERM", "IGNORE")
+          File.write(#{leader_path.dump}, Process.pid.to_s)
+          child = fork do
+            Signal.trap("TERM", "IGNORE")
+            File.write(#{child_path.dump}, Process.pid.to_s)
+            sleep
+          end
+          Process.wait(child)
+        RUBY
+      )
+      FileUtils.chmod(0o755, fake_git)
+      original = AgentWorkflowsSourceContract.method(:git_executable)
+      AgentWorkflowsSourceContract.define_singleton_method(:git_executable) { fake_git }
+
+      error = assert_raises(RuntimeError) do
+        AgentWorkflowsSourceContract.git(root, "status", timeout: 0.2)
+      end
+
+      assert_includes error.message, "timed out"
+      assert(wait_until { File.file?(leader_path) && File.file?(child_path) })
+      leader = Integer(File.read(leader_path), 10)
+      child = Integer(File.read(child_path), 10)
+      assert(wait_until { !process_alive?(leader) })
+      assert(wait_until { !process_alive?(child) })
+    ensure
+      AgentWorkflowsSourceContract.define_singleton_method(:git_executable, original) if original
+      begin
+        Process.kill("KILL", -leader) if leader
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
   def test_no_fetch_upgrade_never_follows_an_arbitrary_upstream
     with_repository do |root|
       system(AgentWorkflowsSourceContract.git_executable, "-C", root, "branch", "--set-upstream-to", "origin/main", exception: true)
@@ -166,5 +210,22 @@ class AgentWorkflowsSourceContractTest < Minitest::Test
       error = assert_raises(RuntimeError) { AgentWorkflowsSourceContract.fast_forward_main!(root, fetch: false) }
       assert_includes error.message, "--no-fetch"
     end
+  end
+
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  end
+
+  def wait_until(timeout: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    until yield
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.02
+    end
+    true
   end
 end

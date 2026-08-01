@@ -865,8 +865,11 @@ module PrMergeSubmit
       stdout_file = Tempfile.new("pr-merge-submit-stdout")
       stderr_file = Tempfile.new("pr-merge-submit-stderr")
       interrupted_signal = nil
-      gh = ENV.fetch("AGENT_WORKFLOWS_GH_EXECUTABLE")
-      abort "AGENT_WORKFLOWS_GH_EXECUTABLE must be absolute" unless gh.start_with?("/")
+      gh = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
+      unless gh&.start_with?("/") && File.file?(gh) && File.executable?(gh)
+        raise Error, "provider operation GitHub executable binding is missing or invalid"
+      end
+
       pid = Process.spawn(
         { "GH_HOST" => host }, gh, *args,
         out: stdout_file.path, err: stderr_file.path, pgroup: true
@@ -913,8 +916,8 @@ module PrMergeSubmit
       stderr = failure_output(stderr, diagnostic) if diagnostic
       status = FailedStatus.new if interrupted_signal || timed_out
       [stdout, stderr, status || FailedStatus.new]
-    rescue Errno::ENOENT
-      raise Error, "gh is not installed or not on PATH"
+    rescue Errno::EACCES, Errno::ENOENT => e
+      raise Error, "provider operation GitHub executable became unavailable: #{e.message}"
     ensure
       stdout_file&.close!
       stderr_file&.close!

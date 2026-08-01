@@ -401,6 +401,41 @@ test_copy_mode_refuses_unsafe_bootstrap_directories() {
   done
 }
 
+test_symlink_mode_refuses_unsafe_bin_before_publication() {
+  local tmp target external output status unsafe
+
+  for unsafe in writable symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    external="$tmp/external-bin"
+    mkdir -p "$target" "$external"
+    printf 'sentinel\n' >"$external/sentinel"
+    if [[ "$unsafe" = "writable" ]]; then
+      mkdir -p "$target/bin"
+      chmod 0777 "$target/bin"
+      printf 'sentinel\n' >"$target/bin/sentinel"
+    else
+      ln -s "$external" "$target/bin"
+    fi
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "symlink mode accepted unsafe $unsafe bin directory"
+    assert_contains "$output" "Refusing unsafe trusted directory"
+    assert_file "$external/sentinel"
+    if [[ "$unsafe" = "writable" ]]; then
+      assert_file "$target/bin/sentinel"
+    else
+      assert_symlink "$target/bin"
+    fi
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+      fail "unsafe symlink-mode bin directory committed metadata"
+  done
+}
+
 test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
   local tmp target output status configuration_before sentinel_before
   tmp="$(mktemp -d)"
@@ -1950,6 +1985,60 @@ test_successful_upgrade_removes_transaction_backup() {
   assert_dir_empty "$backup_parent"
 }
 
+test_post_install_backup_cleanup_failure_does_not_roll_back() {
+  local tmp source target backup_parent fake_bin real_rm output status expected installed backup cleanup_calls
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  fake_bin="$tmp/fake bin"
+  real_rm="$(command -v rm)"
+  mkdir -p "$source" "$backup_parent" "$fake_bin"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  printf '0.1.1\n' >"$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  expected="$(git -C "$source" rev-parse HEAD)"
+  cat >"$fake_bin/rm" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+last="${@: -1}"
+if [[ "$*" = "-rf -- "* && "$last" = "${QA_BACKUP_PARENT:?}/"* ]]; then
+  victim="$(find "$last/target" -type f -print -quit)"
+  [[ -z "$victim" ]] || "${QA_REAL_RM:?}" -f -- "$victim"
+  if [[ ! -e "${QA_CLEANUP_MARKER:?}" ]]; then
+    : >"$QA_CLEANUP_MARKER"
+    printf 'attempt\n' >>"${QA_CLEANUP_CALLS:?}"
+    exit 42
+  fi
+  printf 'attempt\n' >>"${QA_CLEANUP_CALLS:?}"
+fi
+exec "${QA_REAL_RM:?}" "$@"
+BASH
+  chmod +x "$fake_bin/rm"
+
+  set +e
+  output="$(QA_BACKUP_PARENT="$backup_parent" QA_REAL_RM="$real_rm" \
+    QA_CLEANUP_MARKER="$tmp/cleanup-failed-once" QA_CLEANUP_CALLS="$tmp/cleanup-calls" TMPDIR="$backup_parent" \
+    PATH="$fake_bin:$PATH" "$source/bin/upgrade-agent-workflows" \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 42 ]] || fail "expected cleanup exit 42, got $status: $output"
+  assert_contains "$output" "CLEANUP_FAILED"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  installed="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$installed" = "$expected" ]] || fail "cleanup failure rolled back installed revision"
+  backup="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  [[ -n "$backup" ]] || fail "cleanup failure did not preserve residual backup evidence"
+  cleanup_calls="$(wc -l <"$tmp/cleanup-calls" | tr -d ' ')"
+  [[ "$cleanup_calls" -eq 1 ]] || fail "cleanup retried after failure: $cleanup_calls attempts"
+}
+
 test_upgrade_fetches_linked_worktree_source() {
   local tmp source source_git publisher origin target output expected_revision installed_revision
   tmp="$(mktemp -d)"
@@ -2553,6 +2642,7 @@ main() {
     test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot
     test_pinned_install_refuses_capacity_without_changing_the_receipt
     test_copy_mode_refuses_unsafe_bootstrap_directories
+    test_symlink_mode_refuses_unsafe_bin_before_publication
     test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
     test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
     test_copy_mode_refuses_an_exact_unmarked_doctor_copy_with_unsafe_modes
@@ -2581,6 +2671,7 @@ main() {
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
     test_successful_upgrade_removes_transaction_backup
+    test_post_install_backup_cleanup_failure_does_not_roll_back
     test_upgrade_fetches_linked_worktree_source
     test_upgrade_rejects_a_declared_broken_git_checkout
     test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout

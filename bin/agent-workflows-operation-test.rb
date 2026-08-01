@@ -325,6 +325,33 @@ class AgentWorkflowsOperationTest < Minitest::Test
     assert_equal @revision, resolver.begin!.fetch("revision")
   end
 
+  def test_pinned_snapshot_is_opened_after_initial_gc
+    metadata = read_metadata
+    metadata["provider_profile"] = "pinned"
+    metadata["delivery_mode"] = "flat"
+    metadata["mode"] = "copy"
+    metadata.delete("gh_executable")
+    write_metadata(metadata)
+    prepare_pinned_flat_install
+    resolver = fixture_resolver
+    resolver.store.import_local!(@source, @revision)
+    events = []
+    original_gc = resolver.lifecycle.method(:gc!)
+    resolver.lifecycle.define_singleton_method(:gc!) do |**arguments|
+      events << :gc
+      original_gc.call(**arguments)
+    end
+    original_open = resolver.method(:open_pinned_snapshot!)
+    resolver.define_singleton_method(:open_pinned_snapshot!) do
+      events << :open_pinned_snapshot
+      original_open.call
+    end
+
+    resolver.begin!
+
+    assert_operator events.index(:gc), :<, events.index(:open_pinned_snapshot)
+  end
+
   def test_local_import_accepts_a_shallow_provider_checkout
     shallow_source = File.join(@tmp, "shallow-source")
     system("git", "clone", "--quiet", "--depth", "1", "file://#{@source}", shallow_source, exception: true)
@@ -368,6 +395,117 @@ class AgentWorkflowsOperationTest < Minitest::Test
     child_pid = Integer(File.read(child_pid_path), 10)
     assert(wait_until { !process_alive?(leader_pid) }, "timed-out Git leader survived")
     assert(wait_until { !process_alive?(child_pid) }, "timed-out Git descendant survived")
+  end
+
+  def test_secure_git_does_not_wait_for_an_escaped_output_writer
+    child_pid_path = File.join(@tmp, "escaped-git-child.pid")
+    escaped_git = File.join(@tmp, "escaped-git")
+    File.write(
+      escaped_git,
+      <<~RUBY
+        #!#{RbConfig.ruby}
+        child = fork do
+          Process.setsid
+          File.write(#{child_pid_path.dump}, Process.pid.to_s)
+          loop do
+            STDOUT.write("still open\\n")
+            STDOUT.flush
+            sleep 0.02
+          rescue Errno::EPIPE, IOError
+            exit! 0
+          end
+        end
+        Process.detach(child)
+      RUBY
+    )
+    FileUtils.chmod(0o755, escaped_git)
+    secure_git_class = Class.new(AgentWorkflowsOperation::SecureGit) do
+      define_method(:initialize) do |executable:|
+        @executable = executable
+        @timeout = 5
+      end
+    end
+    secure_git = secure_git_class.new(executable: escaped_git)
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    secure_git.run!(@served_repo, "status", private_home: @tmp)
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_operator elapsed, :<, 2.0
+    assert(wait_until { File.file?(child_pid_path) })
+  ensure
+    if child_pid_path && File.file?(child_pid_path)
+      child_pid = Integer(File.read(child_pid_path), 10)
+      Process.kill("KILL", child_pid) if process_alive?(child_pid)
+    end
+  end
+
+  def test_secure_git_post_kill_cleanup_has_a_bounded_sentry_handoff
+    secure_git_class = Class.new(AgentWorkflowsOperation::SecureGit) do
+      attr_reader :signals
+
+      define_method(:initialize) do
+        @timeout = 1
+        @clock = 0.0
+        @signals = []
+      end
+      define_method(:monotonic_time) { @clock += 0.2 }
+      define_method(:process_group_alive?) { |_pid| true }
+      define_method(:reap_nonblock) { |_pid| nil }
+      define_method(:signal_process_group) { |signal, _pid| @signals << signal }
+      define_method(:sleep) { |_duration| nil }
+    end
+    secure_git = secure_git_class.new
+
+    status, group_alive = secure_git.send(:terminate_process_group!, 12_345, nil)
+
+    assert_nil status
+    assert group_alive
+    assert_equal %w[TERM KILL], secure_git.signals
+  end
+
+  def test_secure_git_rejects_an_escaping_symlink_before_extraction
+    require "rubygems/package"
+    require "stringio"
+
+    outside = File.join(@tmp, "outside-archive")
+    destination = File.join(@tmp, "archive-destination")
+    FileUtils.mkdir_p([outside, destination])
+    archive = StringIO.new("".b)
+    Gem::Package::TarWriter.new(archive) do |tar|
+      tar.add_symlink("escape", outside, 0o777)
+      tar.add_file_simple("escape/written-outside", 0o600, 7) { |file| file.write("escaped") }
+    end
+    secure_git = AgentWorkflowsOperation::SecureGit.allocate
+    secure_git.define_singleton_method(:run!) { |*| archive.string }
+
+    error = assert_raises(AgentWorkflowsOperation::GitError) do
+      secure_git.archive!(@served_repo, @revision, destination, private_home: @tmp)
+    end
+
+    assert_includes error.message, "symlink escapes"
+    refute_path_exists File.join(outside, "written-outside")
+  end
+
+  def test_secure_git_preserves_an_in_tree_archive_symlink
+    require "rubygems/package"
+    require "stringio"
+
+    destination = File.join(@tmp, "safe-archive-destination")
+    FileUtils.mkdir_p(destination)
+    archive = StringIO.new("".b)
+    Gem::Package::TarWriter.new(archive) do |tar|
+      tar.mkdir("target", 0o700)
+      tar.add_file_simple("target/file", 0o600, 4) { |file| file.write("safe") }
+      tar.add_symlink("link", "target/file", 0o777)
+    end
+    secure_git = AgentWorkflowsOperation::SecureGit.allocate
+    secure_git.define_singleton_method(:run!) { |*| archive.string }
+
+    secure_git.archive!(@served_repo, @revision, destination, private_home: @tmp)
+
+    assert_equal "target/file", File.readlink(File.join(destination, "link"))
+    assert_equal "safe", File.binread(File.join(destination, "link"))
   end
 
   def test_secure_git_guardian_retains_the_exclusive_lease_after_resolver_crash

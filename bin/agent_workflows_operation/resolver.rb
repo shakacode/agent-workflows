@@ -24,14 +24,13 @@ module AgentWorkflowsOperation
     def begin!(degraded: false)
       lease.with_exclusive do
         profile = installed_profile
-        pinned_snapshot = open_pinned_snapshot! if profile == "pinned"
 
-        inventory = lifecycle.gc!
+        inventory = initial_inventory!(profile)
         lifecycle.enforce_operation_capacity!(inventory)
         lifecycle.enforce_revision_capacity!(inventory)
         begin
-          snapshot = if pinned_snapshot
-                       pinned_snapshot
+          snapshot = if profile == "pinned"
+                       open_pinned_snapshot!
                      elsif degraded
                        revision = installed_revision
                        store.open!(revision)
@@ -81,6 +80,19 @@ module AgentWorkflowsOperation
     end
 
     private
+
+    def initial_inventory!(profile)
+      lifecycle.gc!
+    rescue LifecycleError => e
+      raise e unless profile == "pinned"
+
+      # Preserve the actionable pinned-provider diagnosis when the initial
+      # inventory fails because its protected snapshot is corrupt. A healthy
+      # snapshot means the lifecycle failure came from some other state and
+      # must retain its original classification.
+      open_pinned_snapshot!
+      raise e
+    end
 
     def fetch_current_store!
       store.fetch_current!
