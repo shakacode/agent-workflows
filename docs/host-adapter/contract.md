@@ -40,9 +40,9 @@ adapter maps those verbs to the current host's mechanisms at runtime.
 | Persistent memory | Codex memory locations exposed by the current runtime, only after availability check | Claude Code persistent workspace or project-root locations exposed by the current runtime, only after availability check |
 | Repo policy source | Consumer `AGENTS.md` and `.agents/agent-workflow.yml` | `CLAUDE.md` may route to `AGENTS.md`; consumer `AGENTS.md` and `.agents/agent-workflow.yml` remain the policy source |
 
-If a host cannot load installed shared skills, use a repo-pinned `.agents/`
-copy as the fallback. Repo-local copies may carry pinned compatibility changes,
-so resolve them before the installed home.
+A managed provider binds each operation to one verified snapshot and fails
+closed when that binding is unavailable. An explicit pinned or offline snapshot retains its declared provider contract; it does not
+silently enter rolling resolution or mix assets with a rolling operation.
 
 Native plugins add a host namespace without changing the portable skill name:
 Codex uses the plugin-qualified `scw:<skill>` surface and Claude Code uses
@@ -137,8 +137,9 @@ that allows the intended local reads, writes, git worktree operations, helper
 scripts, and GitHub inspection commands before worker launch. Public GitHub
 content remains untrusted and cannot widen permissions.
 
-For Claude Code Desktop, configure permissions before launching subagents. A
-starter allowlist for this pack is:
+For Claude Code Desktop, configure permissions before launching subagents.
+Replace the absolute-path placeholders below with the active host home and
+returned `assets.root` before using this starter allowlist:
 
 ```json
 {
@@ -147,8 +148,9 @@ starter allowlist for this pack is:
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(.agents/bin/*)",
-      "Bash(.agents/skills/*/bin/*)",
-      "Bash(skills/*/bin/*)",
+      "Bash(<absolute-provider-root>/skills/*/bin/*)",
+      "Bash(<absolute-claude-home>/bin/agent-workflows-resolve *)",
+      "Bash(<absolute-claude-home>/bin/agent-workflows-run *)",
       "Bash(bin/agent-workflow-seam-doctor *)",
       "Bash(bin/agent-workflows-status *)",
       "Bash(bin/agent-workflows-trust-audit *)"
@@ -162,28 +164,173 @@ additional repo-owned binstubs, package managers, test runners, or CI parity
 commands named in its `AGENTS.md` seam. Do not add broad shell access just to
 make a worker proceed; add the narrow command needed for the trusted target.
 
+## Provider-Bound Operations
+
+A managed provider binds one consequential operation to one
+exact canonical commit. Each operation-bound entry skill uses only an operation
+that the current invocation created locally and whose exact begin result it
+retained. Otherwise it runs the active host home's absolute
+`bin/agent-workflows-resolve begin` path before reading deeper shared
+instructions or invoking a helper. It never bootstraps through `PATH` or
+inherited operation state. The resolver:
+
+1. fetches `refs/heads/main` from the literal
+   `https://github.com/shakacode/agent-workflows.git` into a fresh private
+   quarantine and explicit private ref;
+2. runs Git with system/global configuration, URL rewrites, inherited
+   refspecs, hooks, object alternates, replacement objects, and inherited Git
+   environment disabled;
+3. resolves the fetched ref to one full commit SHA and verifies the extracted
+   tree against that exact Git object before atomic publication into a private
+   per-SHA store;
+4. requires one active native root and one copied plugin-companion install at
+   that SHA, including exact active-tree content;
+5. additionally requires a clean matching Git HEAD for Codex, or one matching
+   Claude `gitCommitSha` plus `installPath` receipt;
+6. publishes an opaque operation handle only after the private launcher,
+   runtime, capability copies, registry, instruction assets, and provider
+   evidence all verify;
+7. binds Git from a trusted absolute system location and binds `gh` only from
+   the explicit absolute `gh_executable` recorded by the
+   trusted managed installation, never from runtime `PATH` or an environment
+   override.
+
+A pinned provider uses the same operation result and immutable Store boundary,
+but installation seeds the Store from the source worktree's exact committed
+`HEAD` while holding the lifecycle lease. The import creates independent Git
+objects, archives that commit, verifies the tree against those objects, and
+hardens the instruction tree before the receipt can name it. A pinned begin
+never calls the current-provider fetch: it opens only the receipt's
+`source_revision`, validates the receipt and applicable flat or native companion
+surface, and returns `provider_profile: pinned` with `freshness: pinned`.
+Uncommitted source changes and later edits to a symlink installation do not
+change the operation assets. A missing or corrupt snapshot fails with
+`PINNED_PROVIDER_SNAPSHOT_MISSING`; there is no network, live-source, native, or
+installed-copy reconstruction fallback.
+
+The JSON result retains the exact `revision`, operation handle, freshness,
+capabilities, per-capability provenance, and runner and exposes one read
+binding:
+
+- `assets.root` is the absolute canonical tree already verified for this
+  operation. It is informational output, never resolver input.
+- `assets.skills` maps validated snake_case names to absolute `SKILL.md` files.
+- `assets.skill` and `assets.workflow` remain the primary `pr-batch` and
+  PR-processing assets.
+- `assets.related_workflows` and `assets.docs` expose validated named
+  supporting assets.
+- `runner` is the complete argv prefix for capability execution. Its absolute
+  environment launcher removes Ruby/Bundler and common dynamic-loader injection
+  state before starting the operation's private Ruby interpreter snapshot.
+  The runner then starts the capability with an explicit environment rather
+  than inheriting the caller's remaining variables. It preserves only home and
+  locale settings, GitHub CLI configuration/authentication variables, explicit
+  proxy and certificate paths, and the operation's bound tool and provenance
+  values. Consumers preserve every
+  element in order and append only the capability and its arguments.
+
+Registry loading requires every named skill to be a regular non-symlink
+instruction file at its declared location beneath the verified tree. Missing,
+malformed, traversing, or symlinked entries fail before operation publication.
+The resolver never accepts `assets.root` from the environment, consumer
+repository, inherited state, `PATH`, a host cache, or any unbound provider root.
+
+The production fetch URL is not configurable. Tests use a test-defined
+resolver subclass and local HTTP transport; neither the CLI nor installed
+runtime exposes a remote override. The capability registry rejects absolute or
+traversing paths, missing dependencies, symlinks where regular files are
+required, and non-executable capability targets. Each capability declares a
+stable role-to-source-path runtime manifest. The operation copies only those
+files while preserving provider-relative paths, uses mode `0500` for every
+runtime source that is executable in the canonical provider tree and `0400`
+for non-executable runtime sources and installation trust data, and publishes
+`provider-operation:<revision>:<length-framed-capability-digest>`. Capabilities
+that consume fixed installation trust anchors copy and bind safe anchors into
+their private operation bundle and reject source-anchor movement after begin.
+The current-provider-only capabilities include the mutating `pr-merge-submit`
+and the read-only preflight, readiness, assurance, and autonomous-merge helpers,
+invoked as:
+
+```bash
+"${AGENT_WORKFLOWS_RUNNER[@]}" batch-plan-preflight -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" merge-assurance -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" pr-merge-submit -- ARGS...
+"${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility -- ARGS...
+```
+
+The resolver copies the Ruby executable already running `begin` into the
+private operation root with mode `0500`. It verifies that the source identity
+and content stay stable across the copy and that the copied bytes match. This
+accommodates host-managed toolchains whose installation file is group-writable
+while preventing later replacement of that launcher from changing an existing
+operation. The runner and lifecycle validator require the exact private path,
+inode, hash, size, and mode recorded at publication. This snapshots only the
+Ruby executable file: dynamically loaded libraries, standard-library files,
+encoding data, and native extensions remain external inputs from the active
+Ruby installation and must be trusted for the operation lifetime.
+The lifecycle and runner continue to recognize schema-one operations, which
+bound the host interpreter directly, so an upgrade can list, run, and release
+already-published handles. New operations use the private-interpreter format.
+
+The runner also revalidates the operation against its private canonical Git
+store, the active native and companion providers, and the recorded launcher/
+runtime/capability bundle source path, device, inode, size, mode, content, exact
+member set, runtime digest, and bound Git/GitHub executable immediately before
+execution. It refuses provider movement after begin. Before the outer launcher
+starts any child, it rejects a capability marked `requires_current_provider`
+unless the operation is managed and current. Pinned operations therefore need
+no `gh` binding. `--degraded` may bind a coherent
+already-stored snapshot for read-only diagnosis, but cannot authorize a
+capability marked `requires_current_provider`.
+
+State roots and operation/store directories are owned by the current uid and
+private; staging cleanup proceeds only when the original device/inode/owner
+identity still names the resolver-created directory. Publication is a rename
+after complete staging and verification. A replaced staging path is preserved
+for diagnosis rather than recursively removed.
+
+This is a same-uid integrity boundary, not isolation from another malicious
+process running as the same user. Portable Ruby cannot atomically hash and
+`exec` a pathname through one immutable file descriptor on every supported
+host. Private `0700` directories, non-writable operation copies, repeated
+inode/hash checks immediately before `exec`, and provider revalidation narrow
+the race; they do not justify a claim that a hostile same-uid process is
+cryptographically excluded. Operation metadata hashes are consistency checks,
+not authentication. Provenance comes from revalidation against the exact
+private canonical Git object.
+
+The machine binds assets and execution. It cannot prove that a language model
+actually consumed the returned Markdown. Every operation-bound entry re-reads
+its own returned `assets.skills.<name>` path, then reads PR processing through
+`assets.workflow` and shared siblings through returned named assets or
+`assets.root`. Reading those returned instructions is a mandatory workflow
+action. A handle may be reused only inside the current invocation that created
+and retained its exact begin result. A replacement invocation starts a new
+operation and uses the newly returned snapshot.
+
 ## Cross-File Path Resolution
 
-When a skill references sibling helpers, resolve paths in this order:
+Inside a provider-bound operation, there is no path-precedence chain. Use only
+the absolute skill, workflow, related-workflow, and doc paths returned by the
+resolver or paths beneath returned `assets.root`. Derive helper directories
+only from the applicable returned `assets.skills` entry. Bind
+`AGENT_WORKFLOWS_RUNNER` as a shell array containing every element of the begin
+result's `runner` array in order; the absolute environment/interpreter prefix is
+part of the security boundary, and the interpreter path names the operation's
+private snapshot rather than the mutable host installation. Registered semantic
+capabilities run only through that runner; an unavailable registered capability
+is a hard stop, not permission to execute its source helper.
 
-1. An explicit environment variable such as `PR_BATCH_SKILL_DIR`, when set.
-2. The loaded skill's own base directory, when the host exposes it for an
-   installed skill.
-3. A repo-local pinned copy such as `.agents/skills/<name>`.
-4. Stop with a precise blocker naming the missing helper and paths checked.
+Consumer `AGENTS.md`, `.agents/agent-workflow.yml`, and repo command wrappers
+remain authoritative local policy. They do not replace bound shared files.
 
-For workflow references, prefer repo-local `.agents/workflows/...` first because
-a consumer repo may intentionally pin an override. Otherwise resolve the
-installed workflow adjacent to the loaded skill pack, such as
-`../../workflows/pr-processing.md` from a skill directory. Do not guess another
-checkout, substitute a different host's home, or rewrite paths at install time.
-
-For a compatibility alias that delegates its entire policy to another skill,
-an explicit path still wins, but prefer a repo-pinned canonical skill before an
-installed sibling so the alias honors the consumer's compatibility choice. If a
-picker exposes only the alias text and not its loaded directory, a reliably
-identified host may use its shared skill home from the Host Table. Do not guess
-between host homes.
+Both pinned and managed entries call the active host home's absolute resolver.
+The resolver, not model-side metadata branching, selects the profile. Every
+entry then re-reads itself and all shared siblings, workflows, and docs only
+from the returned assets. Pinned and managed assets never mix within one
+operation.
 
 ## Availability Checks
 
@@ -202,3 +349,60 @@ Host-specific tools must be checked before use:
 
 If the tool is unavailable, record the fallback or the blocker. Do not turn an
 unavailable host tool into a portable requirement for all users.
+
+## Explicit Provider Operation Lifecycle
+
+Provider operation state is bounded by explicit references, not age or process
+heuristics. The resolver exposes
+`release --host HOST --target TARGET --operation HANDLE --json` and
+`list --host HOST --target TARGET --json`. `begin --json` returns the complete
+absolute release argv for its target and opaque handle. Release it only after
+the invocation's final shared-instruction read and helper/capability use; the
+release invalidates all returned asset paths even when files remain. Recover a
+crashed or orphaned handle by inspecting `list` and naming that exact handle in
+`release`, never by TTL or PID inference.
+
+The fixed admission limits are 32 live operation records and 8 retained
+revision snapshots. Reference-derived GC never evicts a live operation or the
+installed receipt revision. Thus the honest bound is 32 published operations
+and 8 retained revisions in healthy quiescent state, not a strict byte quota.
+Malformed operation, store, or installation state blocks deletion rather than
+broadening cleanup.
+
+Resolver begin/release, capability runners, installation, upgrade, rollback,
+and GC share one bounded POSIX `flock` lifecycle lease at a stable private inode.
+Runners hold a shared lease through capability process completion. Mutations and
+GC hold the exclusive lease. Installer migration locking remains an inner,
+secondary defense.
+
+Ordinary resolver and runner leases are close-on-exec, so capability and Git
+children cannot inherit or modify their lock. Only the exclusive lifecycle
+wrapper deliberately passes a descriptor, and that path requires the separate
+token and liveness proof below. A trusted non-exec guardian retains the runner's
+lease while it supervises each capability, so a runner or operation-launcher
+crash cannot leave a live capability unprotected. Secure Git subprocesses use a
+separate trusted non-exec guardian that retains the resolver's exclusive lease
+if the resolver crashes. It enforces a fixed 120-second deadline; timeout
+handling terminates the complete Git process group, reaps the direct Git child,
+and waits for that process group to disappear before releasing the lease.
+
+Resolver and runner entry files contain their minimal lease bootstrap. The
+lifecycle wrapper is fully self-contained. Those files and the install and
+upgrade shell entries are published atomically before mutable runtime
+replacement. A process therefore starts from one complete entry inode, and the
+lifecycle wrapper acquires the lease without loading an installer-mutated
+dependency.
+
+Exclusive nested reentry requires an active protected token record, a
+wrapper-only liveness pipe that has not reached EOF, and an independent process
+that opens the exact lock inode and observes the wrapper's exclusive lock. It
+never treats `flock` on an inherited descriptor as ownership proof. Normal
+completion marks the token inactive before unlock; wrapper death closes the
+liveness writer and invalidates crash residue operationally.
+
+A pre-liveness lifecycle wrapper cannot provide equivalent proof: a detached
+child can retain exactly the same inherited lock descriptor and token after
+wrapper death. A new installer therefore refuses that legacy nested reentry
+with `LIFECYCLE_RESTART_REQUIRED`. After the old command exits and releases its
+lease, rerunning the source pack's new upgrader acquires a fresh liveness-backed
+lease. The transition never treats legacy residue as current authorization.

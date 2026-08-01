@@ -7,6 +7,29 @@ argument-hint: '[issue URL or number]'
 
 # Evaluate Issue
 
+## Bound Provider Operation
+
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.evaluate_issue`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
+
 Decide whether an issue or proposed fix deserves implementation now. Do not treat every valid observation as a priority.
 
 Memorable invocation:
@@ -18,7 +41,17 @@ Is this issue worth fixing?
 
 Use this before assigning implementation work when candidate issues may be low-value, speculative, over-scoped, or better handled with a no-PR evidence comment. If the user named exact issues or PRs, evaluate them directly; if the user gave filters or an unverified batch scope, let `$plan-pr-batch` resolve exact targets first, then evaluate unclear candidates before `$pr-batch` worker launch.
 
-If you update this skill, keep `.agents/workflows/evaluate-issue.md` aligned for agents without skill support.
+If you update this skill, keep returned `assets.related_workflows.evaluate_issue` aligned for agents without skill support.
+
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
 
 ## Core Principle
 

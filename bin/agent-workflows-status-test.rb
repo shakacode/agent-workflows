@@ -12,6 +12,7 @@ require "rbconfig"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
+load SCRIPT
 
 class AgentWorkflowsStatusTest < Minitest::Test
   def setup
@@ -30,10 +31,15 @@ class AgentWorkflowsStatusTest < Minitest::Test
   end
 
   def run_status(env, *)
-    Open3.capture2e({ "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex }.merge(env), "ruby", SCRIPT, *)
+    path = [@fake_codex_dir, ENV.fetch("PATH", "")].join(File::PATH_SEPARATOR)
+    Open3.capture2e({ "PATH" => path }.merge(env), "ruby", SCRIPT, *)
   end
 
   def write_metadata(target, metadata)
+    metadata = {
+      "codex_executable" => @fake_codex,
+      "codex_executable_resolved" => File.realpath(@fake_codex)
+    }.merge(metadata)
     File.write(File.join(target, ".agent-workflows-install.json"), "#{JSON.pretty_generate(metadata)}\n")
   end
 
@@ -62,6 +68,105 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_status_payload_surfaces_explicit_and_legacy_provider_profiles
+    legacy = AgentWorkflowsStatus.status_payload(
+      "UP_TO_DATE", target: "/tmp/target", source: "/tmp/source", host: "codex"
+    )
+    managed = AgentWorkflowsStatus.status_payload(
+      "UP_TO_DATE", target: "/tmp/target", source: "/tmp/source", host: "codex",
+                    metadata: {
+                      "provider_profile" => "managed",
+                      "gh_executable" => "/usr/bin/gh"
+                    }
+    )
+
+    assert_equal "pinned", legacy.fetch("provider_profile")
+    assert_equal "managed", managed.fetch("provider_profile")
+    assert_equal "/usr/bin/gh", managed.fetch("gh_executable")
+  end
+
+  def test_unknown_provider_profile_is_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_metadata(target, "provider_profile" => "surprise", "source" => target)
+
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+
+      assert_equal 3, status.exitstatus, out
+      payload = JSON.parse(out)
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "unsupported provider profile"
+    end
+  end
+
+  def test_managed_profile_without_explicit_gh_binding_is_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_metadata(target, "provider_profile" => "managed", "source" => target)
+
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+
+      assert_equal 3, status.exitstatus, out
+      payload = JSON.parse(out)
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "explicit absolute gh"
+    end
+  end
+
+  def test_legacy_pinned_companion_status_resolves_validated_codex_from_path
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_codex_native_state(target)
+        File.write(
+          File.join(target, ".agent-workflows-install.json"),
+          "#{JSON.pretty_generate(
+            'version' => '9.9.9',
+            'source' => source,
+            'source_revision' => '',
+            'provider_profile' => 'pinned',
+            'delivery_mode' => 'plugin-companion'
+          )}\n"
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", JSON.parse(out).fetch("status")
+      end
+    end
+  end
+
+  def test_pinned_companion_status_rejects_a_partial_codex_binding_without_path_fallback
+    %w[codex_executable codex_executable_resolved].each do |missing_key|
+      Dir.mktmpdir("agent-workflows-status-test") do |target|
+        Dir.mktmpdir("agent-workflows-status-source") do |source|
+          File.write(File.join(source, "VERSION"), "9.9.9\n")
+          write_codex_native_state(target)
+          metadata = {
+            "version" => "9.9.9",
+            "source" => source,
+            "source_revision" => "",
+            "provider_profile" => "pinned",
+            "delivery_mode" => "plugin-companion",
+            "codex_executable" => @fake_codex,
+            "codex_executable_resolved" => File.realpath(@fake_codex)
+          }
+          metadata.delete(missing_key)
+          File.write(
+            File.join(target, ".agent-workflows-install.json"),
+            "#{JSON.pretty_generate(metadata)}\n"
+          )
+
+          out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+          assert_equal 3, status.exitstatus, out
+          payload = JSON.parse(out)
+          assert_equal "CHECK_FAILED", payload.fetch("status")
+          assert_includes payload.fetch("reason"), "receipt is incomplete"
+        end
+      end
+    end
+  end
+
   def test_up_to_date_with_non_git_source
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
@@ -73,6 +178,124 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal 0, status.exitstatus, out
         assert_includes out, "UP_TO_DATE"
       end
+    end
+  end
+
+  def test_linked_git_worktree_uses_commit_revision
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        git_dir = File.join(File.dirname(source), "#{File.basename(source)}.git")
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        system("git", "-C", source, "init", "--quiet", "--separate-git-dir", git_dir, exception: true)
+        system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+        system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+        system("git", "-C", source, "add", ".", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "fixture", exception: true)
+        revision, revision_status = Open3.capture2("git", "-C", source, "rev-parse", "HEAD")
+        assert revision_status.success?, revision
+        revision = revision.strip
+        write_metadata(
+          target,
+          "version" => "older-version",
+          "source" => source,
+          "source_revision" => revision
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        assert_equal revision, payload.fetch("available_revision")
+      end
+    end
+  end
+
+  def test_managed_status_reads_version_from_the_same_canonical_commit_as_revision
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "1.0.0\n")
+        system("git", "-C", source, "init", "--quiet", "--initial-branch=main", exception: true)
+        system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+        system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+        system("git", "-C", source, "add", "VERSION", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "canonical", exception: true)
+        canonical = AgentWorkflowsSourceContract.git(source, "rev-parse", "HEAD")
+        system(
+          "git", "-C", source, "remote", "add", "origin", AgentWorkflowsSourceContract::CANONICAL_URL,
+          exception: true
+        )
+        system(
+          "git", "-C", source, "update-ref", AgentWorkflowsSourceContract::REMOTE_REF, canonical,
+          exception: true
+        )
+        system("git", "-C", source, "switch", "--quiet", "-c", "feature", exception: true)
+        File.write(File.join(source, "VERSION"), "9.9.9-feature\n")
+        system("git", "-C", source, "commit", "--quiet", "-am", "feature", exception: true)
+        write_metadata(
+          target,
+          "version" => "0.9.0",
+          "source" => source,
+          "source_revision" => "0" * 40,
+          "provider_profile" => "managed",
+          "provider_repository" => AgentWorkflowsSourceContract::REPOSITORY,
+          "provider_ref" => AgentWorkflowsSourceContract::REF,
+          "gh_executable" => "/bin/true",
+          "delivery_mode" => "plugin-companion"
+        )
+        original = AgentWorkflowsStatus.method(:delivery_state)
+        AgentWorkflowsStatus.define_singleton_method(:delivery_state) { |**| [{}, nil] }
+
+        payload = AgentWorkflowsStatus.build_payload(
+          host: "claude", target:, source:, delivery_mode: nil, fetch: false, json: true
+        )
+
+        assert_equal "UPGRADE_AVAILABLE", payload.fetch("status")
+        assert_equal canonical, payload.fetch("available_revision")
+        assert_equal "1.0.0", payload.fetch("available_version")
+        refute_equal "9.9.9-feature", payload.fetch("available_version")
+
+        original_version_reader = AgentWorkflowsSourceContract.method(:version_at_revision!)
+        AgentWorkflowsSourceContract.define_singleton_method(:version_at_revision!) do |*|
+          raise "canonical VERSION is unavailable"
+        end
+        failed = AgentWorkflowsStatus.build_payload(
+          host: "claude", target:, source:, delivery_mode: nil, fetch: false, json: true
+        )
+        assert_equal "CHECK_FAILED", failed.fetch("status")
+        assert_nil failed.fetch("available_version")
+      ensure
+        if defined?(original_version_reader) && original_version_reader
+          AgentWorkflowsSourceContract.define_singleton_method(:version_at_revision!, original_version_reader)
+        end
+        AgentWorkflowsStatus.define_singleton_method(:delivery_state, original)
+      end
+    end
+  end
+
+  def test_declared_broken_git_checkout_does_not_fall_back_to_version
+    Dir.mktmpdir("agent-workflows-status-source") do |source|
+      File.write(File.join(source, "VERSION"), "9.9.9\n")
+      File.write(File.join(source, ".git"), "gitdir: /definitely/missing\n")
+
+      revision, error = AgentWorkflowsStatus.available_revision(source, {}, fetch: false)
+
+      assert_nil revision
+      assert_includes error, "declared Git source is invalid"
+    end
+  end
+
+  def test_plain_pack_nested_in_another_checkout_uses_version
+    Dir.mktmpdir("agent-workflows-status-parent") do |parent|
+      system("git", "-C", parent, "init", "--quiet", exception: true)
+      source = File.join(parent, "plain-pack")
+      FileUtils.mkdir_p(source)
+      File.write(File.join(source, "VERSION"), "9.9.9\n")
+
+      revision, error = AgentWorkflowsStatus.available_revision(source, {}, fetch: false)
+
+      assert_nil error
+      assert_equal "version:9.9.9", revision
     end
   end
 

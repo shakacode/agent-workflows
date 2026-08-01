@@ -52,6 +52,8 @@ class MergeAssuranceTest < Minitest::Test
     ENV.delete("FAKE_GH_HANG")
     ENV.delete("FAKE_GH_CHILD_PID")
     ENV.delete("MERGE_ASSURANCE_GH_TIMEOUT_SECONDS")
+    ENV.delete("AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE")
+    ENV.delete("AGENT_WORKFLOWS_GH_EXECUTABLE")
     FileUtils.remove_entry(@fake_gh_dir)
   end
 
@@ -1182,6 +1184,35 @@ class MergeAssuranceTest < Minitest::Test
     )
 
     assert_equal [true, 1], [result.fetch("eligible"), fake_gh_call_count]
+  end
+
+  def test_provider_operation_uses_bound_github_executable_instead_of_path
+    shadow_dir = File.join(@fake_gh_dir, "shadow")
+    shadow_calls = File.join(shadow_dir, "calls")
+    FileUtils.mkdir_p(shadow_dir)
+    File.write(
+      File.join(shadow_dir, "gh"),
+      "#!/bin/sh\nprintf 'shadow\\n' >> #{shadow_calls.dump}\nexit 99\n"
+    )
+    File.chmod(0o755, File.join(shadow_dir, "gh"))
+    ENV["PATH"] = shadow_dir
+    ENV["AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE"] = "provider-operation:#{'a' * 40}:#{'b' * 64}"
+    ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"] = @fake_gh
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker]
+      ),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+    assert_equal 1, fake_gh_call_count
+    refute_path_exists shadow_calls
   end
 
   def test_semantic_tracker_authenticated_read_fails_closed_on_unavailable_or_malformed_evidence

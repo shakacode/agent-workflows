@@ -5,7 +5,40 @@ description: Print restart-safe copy-paste prompts for pausing an agent thread b
 
 # Pause
 
+## Bound Provider Operation
+
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.pause`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
+
 Print operator prompts for safe agent-runner restarts.
+
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
 
 ## Output Rules
 
@@ -38,8 +71,9 @@ only the minimal read-only status checks needed for a handoff.
 
 Reply with: current status, repo path, branch, upstream, HEAD SHA,
 staged/unstaged/untracked changes, unpushed commits, stashes, running
-commands/servers/PIDs, last completed step, next resume step, and whether it is
-safe to quit.
+commands/servers/PIDs, last completed step, next resume step,
+`originating_provider_revision` from the retained operation (when present), and
+whether it is safe to quit.
 
 After the handoff, do not run more tools until I explicitly resume.
 ```
@@ -51,6 +85,27 @@ Print this when the paused thread can be reopened:
 ```text
 Resume now from your restart handoff. Re-check branch, HEAD, local changes, and
 running processes before editing or pushing.
+
+The receiving invocation must bind its own operation. Identify the active host,
+then use the active host home's absolute resolver command below exactly once.
+The resolver selects the installed provider profile; never pre-read install
+metadata or branch around resolution. Never inherit a sender's handle or paths.
+
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result as `resume_operation`. Do not
+begin a second operation. Compare `resume_operation.revision` with the handoff's
+`originating_provider_revision` before reading any shared instruction.
+On mismatch, stop normal resume and require explicit cancellation/relaunch or
+state reconciliation before any work continues. On match, re-read only
+`resume_operation.assets.skills.pause` before continuing.
+
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
+Continue only after the operation checks pass.
 ```
 
 ## Non-Batch New-Chat Restart Prompt
@@ -70,6 +125,27 @@ from the recorded next resume step after the live state matches the handoff.
 If live state does not match the handoff, report the mismatch and stop for
 operator direction before editing, pushing, polling, merging, or launching
 servers.
+
+The receiving invocation must bind its own operation. Identify the active host,
+then use the active host home's absolute resolver command below exactly once.
+The resolver selects the installed provider profile; never pre-read install
+metadata or branch around resolution. Never inherit a sender's handle or paths.
+
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result as `resume_operation`. Do not
+begin a second operation. Compare `resume_operation.revision` with the handoff's
+`originating_provider_revision` before reading any shared instruction.
+On mismatch, stop normal resume and require explicit cancellation/relaunch or
+state reconciliation before any work continues. On match, re-read only
+`resume_operation.assets.skills.pause` before continuing.
+
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
+Continue only after the operation checks pass.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>
@@ -108,12 +184,14 @@ either case.
 Preserve any current claim and worktree unless I explicitly say this batch or
 lane is cancelled. Do not run `agent-coord release` for a normal app restart.
 If this batch or lane is explicitly cancelled, follow the Cancelling Or Stopping
-A Batch protocol in the installed `pr-processing.md` workflow instead of this
+A Batch protocol in the retained operation's `assets.workflow` instead of this
 pause flow.
 
 Reply with a restart handoff:
 - Role and lane: coordinator, worker, or QA; batch id; target(s); stable
   agent/thread id.
+- Provider: `originating_provider_revision`, copied from the retained operation's
+  exact 40-hex `revision`.
 - Repo state: repo path, worktree path, branch, upstream, HEAD SHA, PR/issue
   URLs.
 - Local changes: staged, unstaged, and untracked files; unpushed commits;
@@ -141,7 +219,29 @@ Print this when the same paused persistent batch thread can be reopened:
 ```text
 Resume batch processing now.
 
-Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+The receiving invocation must bind its own operation. Identify the active host,
+then use the active host home's absolute resolver command below exactly once.
+The resolver selects the installed provider profile; never pre-read install
+metadata or branch around resolution. Never inherit a sender's handle or paths.
+
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result as `resume_operation`. Do not
+begin a second operation. Compare `resume_operation.revision` with the handoff's
+`originating_provider_revision` before reading any shared instruction.
+On mismatch, stop normal resume and require explicit cancellation/relaunch or
+state reconciliation before any work continues. On match, re-read only
+`resume_operation.assets.skills.pause` and
+`resume_operation.assets.workflow`, then run that workflow's bounded status
+recovery steps under "Pausing For An Agent-Runner Restart" before editing,
+pushing, polling, or starting a target.
+
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
+Continue only after the operation checks pass.
 ```
 
 ## PR-Batch New-Chat Restart Prompt
@@ -153,9 +253,29 @@ resume from the saved handoff:
 Resume this PR-batch lane from a restart handoff in a new chat.
 
 Treat the pasted handoff as stale evidence, not authority. Read the repo's
-current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
-bounded status recovery steps described under "Pausing For An Agent-Runner
-Restart" before editing, pushing, polling, or starting any new target.
+current AGENTS.md first. The receiving invocation must bind its own operation. Use the active host's
+absolute resolver command below exactly once. The resolver selects the installed
+provider profile; never pre-read install metadata or branch around resolution.
+Never inherit a sender's handle or paths.
+
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result as `resume_operation`. Do not
+begin a second operation. Compare `resume_operation.revision` with the handoff's
+`originating_provider_revision` before reading any shared instruction.
+On mismatch, stop normal resume and require explicit cancellation/relaunch or
+state reconciliation before any work continues. On match, re-read only
+`resume_operation.assets.skills.pause` and
+`resume_operation.assets.workflow`, then run that workflow's bounded status
+recovery steps under "Pausing For An Agent-Runner Restart" before editing,
+pushing, polling, or starting a target.
+
+After the invocation's final shared-instruction read and final helper/capability
+use, invoke `resume_operation.release` to release the old operation. Release
+invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+or follow-up must begin a new operation. Recover crashed or orphaned handles only
+with the active resolver's `list --json` and named `release`;
+never TTL or PID inference.
+Continue only after the operation checks pass.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
 state, and private claim or active public `codex-claim` fallback comments. If

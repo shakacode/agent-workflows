@@ -1,7 +1,6 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require "base64"
 require "json"
 require "date"
 require "digest"
@@ -57,6 +56,18 @@ module BatchPlanPreflight
     wave
   ].freeze
   LIFECYCLE_FUTURE_SKEW_SECONDS = 300
+
+  def self.strict_base64_decode(value)
+    unless value.is_a?(String) && !value.empty? &&
+           value.match?(%r{\A(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?\z})
+      raise ArgumentError, "invalid Base64"
+    end
+
+    decoded = value.unpack1("m0")
+    raise ArgumentError, "noncanonical Base64" unless [decoded].pack("m0") == value
+
+    decoded
+  end
   HELPER_PATH = File.realpath(__FILE__)
   INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
   WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
@@ -327,7 +338,7 @@ module BatchPlanPreflight
     )
     return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
 
-    signature = Base64.strict_decode64(receipt["signature"])
+    signature = strict_base64_decode(receipt["signature"])
     payload = JSON.generate(canonicalize(receipt.reject { |key, _value| key == "signature" }))
     public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
   rescue ArgumentError, TypeError, OpenSSL::PKey::PKeyError

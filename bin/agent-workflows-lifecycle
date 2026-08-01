@@ -1,0 +1,391 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require "optparse"
+require "securerandom"
+
+FD_ENV = "AGENT_WORKFLOWS_LIFECYCLE_FD"
+TOKEN_ENV = "AGENT_WORKFLOWS_LIFECYCLE_TOKEN"
+TARGET_ENV = "AGENT_WORKFLOWS_LIFECYCLE_TARGET"
+LIVENESS_FD_ENV = "AGENT_WORKFLOWS_LIFECYCLE_LIVENESS_FD"
+STATE_DIRECTORY = ".agent-workflows-operation-state"
+LOCK_NAME = "lifecycle.lock"
+TOKEN_RECORD_NAME = "lifecycle-token.json"
+LOCK_TIMEOUT_SECONDS = 10
+LOCK_POLL_SECONDS = 0.05
+PLATFORM_DIRECTORY_ALIASES = {
+  "/tmp" => "/private/tmp",
+  "/var" => "/private/var"
+}.freeze
+CHILD_ENVIRONMENT = %w[
+  RUBYOPT RUBYLIB BUNDLE_GEMFILE BUNDLE_BIN_PATH BUNDLE_PATH GEM_HOME GEM_PATH
+].to_h { |name| [name, "AGENT_WORKFLOWS_LIFECYCLE_CHILD_#{name}"] }.freeze
+
+class LifecycleError < StandardError; end
+
+def safe_ancestor?(stat)
+  return true if [0, Process.uid].include?(stat.uid) && (stat.mode & 0o022).zero?
+
+  stat.uid.zero? && (stat.mode & 0o1000).positive?
+end
+
+def platform_directory_alias?(path, index, link_target = File.readlink(path))
+  index.zero? &&
+    PLATFORM_DIRECTORY_ALIASES[path] == File.expand_path(link_target, File.dirname(path))
+end
+
+def verify_target_ancestors!(target)
+  raise LifecycleError, "provider target is not a directory: #{target}" unless File.directory?(target)
+
+  components = target.split(File::SEPARATOR).reject(&:empty?)
+  current = File::SEPARATOR
+  components.each_with_index do |component, index|
+    current = File.join(current, component)
+    stat = File.lstat(current)
+    if stat.symlink?
+      next if platform_directory_alias?(current, index)
+
+      raise LifecycleError, "provider target traverses a symlink: #{current}"
+    end
+    raise LifecycleError, "provider target ancestor is not a directory: #{current}" unless stat.directory?
+    next if safe_ancestor?(stat)
+
+    raise LifecycleError, "provider target ancestor has unsafe ownership or mode: #{current}"
+  end
+  stat = File.lstat(target)
+  raise LifecycleError, "provider target must be owned by uid #{Process.uid}: #{target}" unless stat.uid == Process.uid
+  raise LifecycleError, "provider target must not be group/world writable: #{target}" unless (stat.mode & 0o022).zero?
+rescue SystemCallError => e
+  raise LifecycleError, "unable to validate provider target: #{e.message}"
+end
+
+def verify_private_directory!(path)
+  stat = File.lstat(path)
+  raise LifecycleError, "private state path is a symlink: #{path}" if stat.symlink?
+  raise LifecycleError, "private state path is not a directory: #{path}" unless stat.directory?
+  raise LifecycleError, "private state path has wrong owner: #{path}" unless stat.uid == Process.uid
+  raise LifecycleError, "private state directory must have mode 0700: #{path}" unless (stat.mode & 0o777) == 0o700
+
+  stat
+rescue SystemCallError => e
+  raise LifecycleError, "unable to validate private state directory #{path}: #{e.message}"
+end
+
+def ensure_private_directory!(path)
+  Dir.mkdir(path, 0o700) unless File.exist?(path) || File.symlink?(path)
+  verify_private_directory!(path)
+rescue Errno::EEXIST
+  verify_private_directory!(path)
+rescue SystemCallError => e
+  raise LifecycleError, "unable to create private state directory #{path}: #{e.message}"
+end
+
+def state_root!(target)
+  verify_target_ancestors!(target)
+  File.join(target, STATE_DIRECTORY).tap { |path| ensure_private_directory!(path) }
+end
+
+def verify_private_file!(path, mode:)
+  stat = File.lstat(path)
+  raise LifecycleError, "private state file is a symlink: #{path}" if stat.symlink?
+  raise LifecycleError, "private state path is not a file: #{path}" unless stat.file?
+  raise LifecycleError, "private state file has wrong owner: #{path}" unless stat.uid == Process.uid
+  unless (stat.mode & 0o777) == mode
+    raise LifecycleError, "private state file must have mode #{format('%04o', mode)}: #{path}"
+  end
+
+  stat
+rescue SystemCallError => e
+  raise LifecycleError, "unable to validate private state file #{path}: #{e.message}"
+end
+
+def write_json!(path, payload)
+  parent = File.dirname(path)
+  verify_private_directory!(parent)
+  temporary = File.join(parent, ".#{File.basename(path)}.#{SecureRandom.hex(12)}")
+  File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+    file.write(JSON.pretty_generate(payload))
+    file.write("\n")
+    file.flush
+    file.fsync
+  end
+  File.chmod(0o600, temporary)
+  File.rename(temporary, path)
+  verify_private_file!(path, mode: 0o600)
+rescue SystemCallError => e
+  FileUtils.rm_f(temporary) if defined?(temporary)
+  raise LifecycleError, "unable to publish private state file #{path}: #{e.message}"
+end
+
+def with_exclusive_lease(target)
+  root = state_root!(target)
+  path = File.join(root, LOCK_NAME)
+  flags = File::RDWR | File::CREAT
+  flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+  file = File.open(path, flags, 0o600)
+  path_stat = verify_private_file!(path, mode: 0o600)
+  descriptor_stat = file.stat
+  unless [path_stat.dev, path_stat.ino, path_stat.uid, path_stat.ftype] ==
+         [descriptor_stat.dev, descriptor_stat.ino, descriptor_stat.uid, descriptor_stat.ftype]
+    raise LifecycleError, "LIFECYCLE_STATE_UNSAFE: lifecycle lock identity changed"
+  end
+
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + LOCK_TIMEOUT_SECONDS
+  until file.flock(File::LOCK_EX | File::LOCK_NB)
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      raise LifecycleError, "LIFECYCLE_BUSY: timed out acquiring the provider lifecycle lease"
+    end
+
+    sleep LOCK_POLL_SECONDS
+  end
+  file.close_on_exec = false
+  yield file
+ensure
+  file&.flock(File::LOCK_UN)
+  file&.close
+end
+
+def valid_inherited_fd?(text)
+  text.to_s.match?(/\A[0-9]+\z/) && Integer(text, 10) >= 3
+end
+
+def token_record_path(root)
+  File.join(root, TOKEN_RECORD_NAME)
+end
+
+def read_token_record!(root)
+  path = token_record_path(root)
+  flags = File::RDONLY
+  flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+  file = File.open(path, flags)
+  path_stat = verify_private_file!(path, mode: 0o600)
+  descriptor_stat = file.stat
+  unless [path_stat.dev, path_stat.ino, path_stat.uid, path_stat.ftype] ==
+         [descriptor_stat.dev, descriptor_stat.ino, descriptor_stat.uid, descriptor_stat.ftype]
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: lifecycle token record identity changed"
+  end
+
+  JSON.parse(file.read)
+ensure
+  file&.close
+end
+
+def lock_held_by_another_process?(lock_path, inherited_descriptor)
+  expected_identity = inherited_descriptor.stat.then { |stat| [stat.dev, stat.ino, stat.uid, stat.ftype] }
+  reader, writer = IO.pipe
+  pid = fork do
+    reader.close
+    inherited_descriptor.close
+    flags = File::RDWR
+    flags |= File::NOFOLLOW if defined?(File::NOFOLLOW)
+    probe = File.open(lock_path, flags)
+    probe_identity = probe.stat.then { |stat| [stat.dev, stat.ino, stat.uid, stat.ftype] }
+    raise "lifecycle lock path changed before independent probe" unless probe_identity == expected_identity
+
+    acquired = probe.flock(File::LOCK_EX | File::LOCK_NB)
+    writer.write(acquired ? "available" : "held")
+    probe.flock(File::LOCK_UN) if acquired
+    probe.close
+    writer.close
+    exit! 0
+  rescue StandardError => e
+    begin
+      writer.write("error:#{e.class}:#{e.message}")
+    rescue IOError, SystemCallError
+      nil
+    end
+    begin
+      writer.close
+    rescue IOError, SystemCallError
+      nil
+    end
+    exit! 1
+  end
+  writer.close
+  result = reader.read
+  reader.close
+  _pid, status = Process.wait2(pid)
+  unless status.success? && %w[held available].include?(result)
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: independent lifecycle lock probe failed: #{result}"
+  end
+
+  result == "held"
+end
+
+def validate_reentry!(target)
+  fd_text = ENV[FD_ENV]
+  token = ENV[TOKEN_ENV]
+  recorded_target = ENV[TARGET_ENV]
+  liveness_fd_text = ENV[LIVENESS_FD_ENV]
+  if valid_inherited_fd?(fd_text) &&
+     token.to_s.match?(/\A[0-9a-f]{64}\z/) &&
+     recorded_target == target &&
+     liveness_fd_text.to_s.empty?
+    raise LifecycleError,
+          "LIFECYCLE_REENTRY_REJECTED: LIFECYCLE_RESTART_REQUIRED: " \
+          "legacy lifecycle proof cannot authorize reentry; " \
+          "after this command exits, rerun the source pack's upgrade command"
+  end
+  unless valid_inherited_fd?(fd_text) &&
+         valid_inherited_fd?(liveness_fd_text) &&
+         token.to_s.match?(/\A[0-9a-f]{64}\z/) &&
+         recorded_target == target
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: inherited lifecycle token is missing or does not bind this target"
+  end
+
+  root = state_root!(target)
+  lock_path = File.join(root, LOCK_NAME)
+  lock_stat = verify_private_file!(lock_path, mode: 0o600)
+  descriptor = File.for_fd(Integer(fd_text, 10), autoclose: false)
+  descriptor_stat = descriptor.stat
+  unless [lock_stat.dev, lock_stat.ino, lock_stat.uid, lock_stat.ftype] ==
+         [descriptor_stat.dev, descriptor_stat.ino, descriptor_stat.uid, descriptor_stat.ftype]
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: inherited descriptor does not name the target lifecycle lock"
+  end
+
+  liveness = IO.for_fd(Integer(liveness_fd_text, 10), autoclose: false)
+  liveness_stat = liveness.stat
+  record = read_token_record!(root)
+  expected = {
+    "schema_version" => 1,
+    "status" => "active",
+    "target" => target,
+    "token" => token,
+    "lock" => { "device" => lock_stat.dev, "inode" => lock_stat.ino },
+    "liveness" => { "device" => liveness_stat.dev, "inode" => liveness_stat.ino }
+  }
+  unless liveness_stat.pipe? && liveness_stat.uid == Process.uid && record == expected
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: inherited lifecycle token is stale or forged"
+  end
+
+  if IO.select([liveness], nil, nil, 0)
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: originating lifecycle wrapper is no longer active"
+  end
+  unless lock_held_by_another_process?(lock_path, descriptor)
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: lifecycle lock is not held by the originating wrapper"
+  end
+  unless read_token_record!(root) == expected && !IO.select([liveness], nil, nil, 0)
+    raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: lifecycle proof changed during validation"
+  end
+
+  true
+rescue ArgumentError, JSON::ParserError, SystemCallError => e
+  raise LifecycleError, "LIFECYCLE_REENTRY_REJECTED: #{e.message}"
+end
+
+def lifecycle_token_record(target:, token:, lock:, liveness:, status:)
+  {
+    "schema_version" => 1,
+    "status" => status,
+    "target" => target,
+    "token" => token,
+    "lock" => { "device" => lock.stat.dev, "inode" => lock.stat.ino },
+    "liveness" => { "device" => liveness.stat.dev, "inode" => liveness.stat.ino }
+  }
+end
+
+def prepare_target!(target)
+  return if File.directory?(target)
+  raise LifecycleError, "provider target is an unsafe existing path" if File.exist?(target) || File.symlink?(target)
+
+  parent = File.dirname(target)
+  FileUtils.mkdir_p(parent, mode: 0o700)
+  verify_target_ancestors!(parent)
+  Dir.mkdir(target, 0o700)
+end
+
+def restored_child_environment
+  CHILD_ENVIRONMENT.each_with_object({}) do |(name, transport), environment|
+    environment[name] = ENV.fetch(transport, "")
+    environment[transport] = nil
+  end
+end
+
+def wait_for_child(environment:, command:)
+  child = nil
+  pending = []
+  signals = %w[HUP INT TERM]
+  prior_traps = signals.to_h do |signal|
+    [signal, Signal.trap(signal) { child ? forward_signal(signal, child) : pending << signal }]
+  end
+  child = Process.spawn(environment, *command, pgroup: true)
+  pending.each { |signal| forward_signal(signal, child) }
+  _pid, status = Process.wait2(child)
+  status
+ensure
+  prior_traps&.each { |signal, handler| Signal.trap(signal, handler) }
+end
+
+def forward_signal(signal, process_group)
+  Process.kill(signal, -process_group)
+rescue Errno::ESRCH
+  nil
+end
+
+action = ARGV.shift
+options = {}
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: agent-workflows-lifecycle exec-exclusive|validate-exclusive --target DIR [-- COMMAND...]"
+  opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
+end
+parser.order!
+ARGV.shift if ARGV.first == "--"
+abort "action must be exec-exclusive or validate-exclusive" unless %w[exec-exclusive validate-exclusive].include?(action)
+abort "--target is required" unless options[:target]
+
+target = options.fetch(:target)
+begin
+  if action == "validate-exclusive"
+    validate_reentry!(target)
+    puts "LIFECYCLE_REENTRY_OK"
+    exit 0
+  end
+  abort "COMMAND is required" if ARGV.empty?
+
+  if ENV[FD_ENV] || ENV[TOKEN_ENV] || ENV[TARGET_ENV] || ENV[LIVENESS_FD_ENV]
+    validate_reentry!(target)
+    exec(*ARGV)
+  end
+
+  prepare_target!(target)
+  root = state_root!(target)
+  status = with_exclusive_lease(target) do |file|
+    token = SecureRandom.hex(32)
+    liveness_reader, liveness_writer = IO.pipe
+    liveness_reader.close_on_exec = false
+    liveness_writer.close_on_exec = true
+    active_record = lifecycle_token_record(
+      target:, token:, lock: file, liveness: liveness_reader, status: "active"
+    )
+    write_json!(token_record_path(root), active_record)
+    file.close_on_exec = false
+    ENV[FD_ENV] = file.fileno.to_s
+    ENV[TOKEN_ENV] = token
+    ENV[TARGET_ENV] = target
+    ENV[LIVENESS_FD_ENV] = liveness_reader.fileno.to_s
+    begin
+      wait_for_child(
+        environment: restored_child_environment,
+        command: ARGV
+      )
+    ensure
+      begin
+        inactive_record = active_record.merge("status" => "inactive")
+        write_json!(token_record_path(root), inactive_record)
+      ensure
+        ENV.delete(FD_ENV)
+        ENV.delete(TOKEN_ENV)
+        ENV.delete(TARGET_ENV)
+        ENV.delete(LIVENESS_FD_ENV)
+        liveness_writer.close
+        liveness_reader.close
+      end
+    end
+  end
+  exit(status.exitstatus || 128 + status.termsig)
+rescue LifecycleError, SystemCallError => e
+  warn e.message
+  exit 1
+end

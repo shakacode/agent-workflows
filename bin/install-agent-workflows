@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion]
+Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH] [--codex-executable-resolved ABSOLUTE_PATH] [--no-fetch]
 
 Installs this shared workflow pack into an agent home.
 
@@ -22,6 +22,9 @@ Installed paths:
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
+  <target>/bin/agent-workflows-lifecycle
+  <target>/bin/agent-workflows-resolve
+  <target>/bin/agent-workflows-run
   <target>/bin/agent_doctor/*
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
@@ -30,20 +33,40 @@ USAGE
 }
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+install_content_root="$repo_root"
+original_args=("$@")
 host="codex"
 target=""
 mode="copy"
 delivery_mode=""
+provider_profile=""
+gh_executable=""
+codex_executable=""
+codex_executable_resolved=""
+expected_codex_executable_resolved=""
+managed_fetch=true
+pinned_source_revision=""
+copy_chmod="Du+rwx,Dgo+rx,Fu+rw,Fgo+r,a+X"
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
-doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
 delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
   agent-workflows-delivery-state
   agent-workflows-doctor
+  agent-workflows-lifecycle
+  agent-workflows-resolve
+  agent-workflows-run
   agent-workflows-status
   agent-workflows-trust-audit
+  agent_workflows_source_contract.rb
+  install-agent-workflows
+  upgrade-agent-workflows
+)
+atomic_entry_helpers=(
+  agent-workflows-lifecycle
+  agent-workflows-resolve
+  agent-workflows-run
   install-agent-workflows
   upgrade-agent-workflows
 )
@@ -174,18 +197,30 @@ prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at
-  version="$(metadata_value version)"
-  source_revision="$(metadata_value source_revision)"
+  if [[ -f "$install_content_root/VERSION" && ! -L "$install_content_root/VERSION" ]]; then
+    version="$(tr -d '\r\n' < "$install_content_root/VERSION")"
+  else
+    version="unknown"
+  fi
+  source_revision="${pinned_source_revision:-$(metadata_value source_revision)}"
   source_branch="$(metadata_value source_branch)"
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   ruby -rjson -e '
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at = ARGV
+    path, host, mode, delivery_mode, provider_profile, gh_executable,
+      codex_executable, codex_executable_resolved,
+      source, version, revision, branch, remote, installed_at = ARGV
     metadata = {
       "host" => host,
       "mode" => mode,
       "delivery_mode" => delivery_mode,
+      "provider_profile" => provider_profile,
+      "gh_executable" => gh_executable.empty? ? nil : gh_executable,
+      "codex_executable" => codex_executable.empty? ? nil : codex_executable,
+      "codex_executable_resolved" => codex_executable_resolved.empty? ? nil : codex_executable_resolved,
+      "provider_repository" => provider_profile == "managed" ? "shakacode/agent-workflows" : nil,
+      "provider_ref" => provider_profile == "managed" ? "refs/heads/main" : nil,
       "source" => File.expand_path(source),
       "version" => version,
       "source_revision" => revision,
@@ -194,7 +229,66 @@ prepare_metadata() {
       "installed_at" => installed_at
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$provider_profile" "$gh_executable" \
+    "$codex_executable" "$codex_executable_resolved" \
+    "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+}
+
+seed_source_snapshot() {
+  local inside top_level resolved_revision source_error
+  if ! inside="$(git -C "$repo_root" rev-parse --is-inside-work-tree 2>&1)" ||
+     [[ "$inside" != "true" ]] ||
+     ! top_level="$(git -C "$repo_root" rev-parse --show-toplevel 2>&1)" ||
+     [[ "$(cd "$top_level" && pwd -P)" != "$repo_root" ]]; then
+    source_error="${provider_profile^^}_PROVIDER_SOURCE_INVALID"
+    echo "$source_error: installation requires this source root to be an exact Git worktree." >&2
+    exit 1
+  fi
+  if [[ -z "$pinned_source_revision" ]]; then
+    pinned_source_revision="$(git -C "$repo_root" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null || true)"
+  fi
+  resolved_revision="$(git -C "$repo_root" rev-parse --verify --quiet "$pinned_source_revision^{commit}" 2>/dev/null || true)"
+  if [[ ! "$pinned_source_revision" =~ ^[0-9a-f]{40}$ || "$resolved_revision" != "$pinned_source_revision" ]]; then
+    source_error="${provider_profile^^}_PROVIDER_SOURCE_INVALID"
+    echo "$source_error: installation requires an available committed source revision." >&2
+    exit 1
+  fi
+
+  "${lifecycle_ruby[@]}" -I"$repo_root/bin" \
+    -ragent_workflows_operation/lifecycle -e '
+      target, source, revision = ARGV
+      state = AgentWorkflowsOperation::State.new(target: target)
+      store = AgentWorkflowsOperation::Store.new(state_root: state.root)
+      destination = File.join(state.root, "store", revision)
+      candidate_preexisted = File.exist?(destination) || File.symlink?(destination)
+      store.import_local!(source, revision)
+      lifecycle = AgentWorkflowsOperation::Lifecycle.new(host: ENV.fetch("AGENT_WORKFLOWS_INSTALL_HOST"),
+                                                         target: target, state: state, store: store)
+      begin
+        metadata = File.join(target, ".agent-workflows-install.json")
+        installed_revision = if File.file?(metadata) && !File.symlink?(metadata)
+                               JSON.parse(File.binread(metadata))["source_revision"]
+                             end
+        installed_revision = nil unless installed_revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+        inventory = lifecycle.gc!(
+          additional_protected: [revision],
+          installed_revision: installed_revision
+        )
+        lifecycle.enforce_operation_capacity!(inventory)
+        lifecycle.enforce_revision_capacity!(inventory, revision)
+      rescue AgentWorkflowsOperation::CapacityError
+        referenced = inventory && (
+          inventory.fetch(:installed_revision) == revision ||
+          inventory.fetch(:operations).any? { |operation| operation.revision == revision }
+        )
+        unless candidate_preexisted || referenced
+          identity = AgentWorkflowsOperation::SecurePaths.owned_identity(destination)
+          AgentWorkflowsOperation::SecurePaths.cleanup_owned_directory!(destination, identity)
+        end
+        raise
+      end
+    ' "$target" "$repo_root" "$pinned_source_revision"
+  install_content_root="$target/.agent-workflows-operation-state/store/$pinned_source_revision/tree"
 }
 
 commit_metadata() {
@@ -274,6 +368,27 @@ ensure_real_directory() {
   mkdir -p "$directory"
 }
 
+ensure_trusted_directory() {
+  local directory="$1"
+  local replace_symlink="${2:-false}"
+  if [[ -L "$directory" && "$replace_symlink" != "true" ]]; then
+    echo "Refusing unsafe trusted directory: $directory" >&2
+    exit 1
+  fi
+  ensure_real_directory "$directory"
+
+  if ! ruby -e '
+    path = ARGV.fetch(0)
+    stat = File.lstat(path)
+    exit 1 unless stat.directory? && !stat.symlink?
+    exit 1 unless stat.uid == Process.uid
+    exit 1 unless (stat.mode & 0o022).zero?
+  ' "$directory"; then
+    echo "Refusing unsafe trusted directory: $directory" >&2
+    exit 1
+  fi
+}
+
 copy_children_preserving_unrelated() {
   local source_dir="$1"
   local target_dir="$2"
@@ -284,12 +399,13 @@ copy_children_preserving_unrelated() {
     [[ -e "$source_path" ]] || continue
     destination="$target_dir/$(basename "$source_path")"
     rm -rf "$destination"
-    rsync -a "$source_path" "$target_dir/"
+    rsync -a --chmod="$copy_chmod" "$source_path" "$target_dir/"
   done
 }
 
 workflow_doctor_copy_matches_source() {
-  ruby "$doctor_ownership_helper" compare "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+  ruby "$repo_root/bin/agent_doctor/install_ownership.rb" \
+    compare-portable "$install_content_root/bin/agent_doctor" "$target/bin/agent_doctor"
 }
 
 workflow_doctor_symlink_matches_recorded_source() {
@@ -334,7 +450,7 @@ prepare_workflow_doctor_copy_destination() {
     exit 1
   fi
   if [[ -f "$marker" ]]; then
-    if ruby "$doctor_ownership_helper" verify "$destination" "$marker"; then return; fi
+    if ruby "$install_content_root/bin/agent_doctor/install_ownership.rb" verify "$destination" "$marker"; then return; fi
     echo "Refusing invalid workflow doctor ownership marker: $marker" >&2
     exit 1
   fi
@@ -353,7 +469,7 @@ write_workflow_doctor_managed_marker() {
   local destination="$target/bin/agent_doctor"
   local marker="$destination/$doctor_managed_marker"
   local marker_value temporary_marker
-  marker_value="$(ruby "$doctor_ownership_helper" marker "$destination")"
+  marker_value="$(ruby "$install_content_root/bin/agent_doctor/install_ownership.rb" marker "$destination")"
   temporary_marker="$(mktemp "$destination/$doctor_managed_marker.XXXXXX")"
   printf '%s\n' "$marker_value" > "$temporary_marker"
   chmod 0644 "$temporary_marker"
@@ -411,10 +527,10 @@ copy_pack_docs() {
       echo "Refusing to replace non-file path: $destination" >&2
       exit 1
     fi
-    install -m 0644 "$repo_root/docs/$doc_name" "$destination"
+    install -m 0644 "$install_content_root/docs/$doc_name" "$destination"
   done
 
-  copy_children_preserving_unrelated "$repo_root/docs/solutions" "$docs_target/solutions"
+  copy_children_preserving_unrelated "$install_content_root/docs/solutions" "$docs_target/solutions"
 }
 
 link_pack_docs() {
@@ -454,7 +570,7 @@ copy_pack_license() {
     echo "Refusing to replace non-file path: $destination" >&2
     exit 1
   fi
-  install -m 0644 "$repo_root/LICENSE" "$destination"
+  install -m 0644 "$install_content_root/LICENSE" "$destination"
 }
 
 link_pack_license() {
@@ -465,6 +581,36 @@ link_pack_license() {
     exit 1
   fi
   ln -sfn "$repo_root/LICENSE" "$destination"
+}
+
+publish_entry_copy() {
+  local source="$1"
+  local destination="$2"
+  local temporary
+  temporary="$(mktemp "$target/bin/.$(basename "$destination").XXXXXXXX")"
+  if ! install -m 0755 "$source" "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! ruby -e 'File.rename(ARGV.fetch(0), ARGV.fetch(1))' "$temporary" "$destination"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
+publish_entry_symlink() {
+  local source="$1"
+  local destination="$2"
+  local temporary
+  temporary="$(mktemp "$target/bin/.$(basename "$destination").link.XXXXXXXX")"
+  rm -f "$temporary"
+  if ! ln -s "$source" "$temporary"; then
+    return 1
+  fi
+  if ! ruby -e 'File.rename(ARGV.fetch(0), ARGV.fetch(1))' "$temporary" "$destination"; then
+    rm -f "$temporary"
+    return 1
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -484,6 +630,26 @@ while [[ $# -gt 0 ]]; do
     --delivery-mode)
       delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
       shift 2
+      ;;
+    --provider-profile)
+      provider_profile="${2:?--provider-profile requires pinned or managed}"
+      shift 2
+      ;;
+    --gh-executable)
+      gh_executable="${2:?--gh-executable requires an absolute path}"
+      shift 2
+      ;;
+    --codex-executable)
+      codex_executable="${2:?--codex-executable requires an absolute path}"
+      shift 2
+      ;;
+    --codex-executable-resolved)
+      expected_codex_executable_resolved="${2:?--codex-executable-resolved requires an absolute path}"
+      shift 2
+      ;;
+    --no-fetch)
+      managed_fetch=false
+      shift
       ;;
     -h|--help)
       usage
@@ -522,11 +688,106 @@ if [[ -z "$delivery_mode" ]]; then
   delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
   validate_delivery_mode "Installed metadata delivery_mode"
 fi
+if [[ -z "$provider_profile" ]]; then
+  provider_profile="$(installed_metadata_value provider_profile 2>/dev/null || printf 'pinned\n')"
+fi
+if [[ -z "$gh_executable" ]]; then
+  gh_executable="$(installed_metadata_value gh_executable 2>/dev/null || true)"
+fi
+case "$provider_profile" in
+  pinned|managed) ;;
+  *)
+    echo "--provider-profile must be pinned or managed, got: $provider_profile" >&2
+    exit 64
+    ;;
+esac
+if [[ "$provider_profile" = "managed" && ( "$delivery_mode" != "plugin-companion" || "$mode" != "copy" ) ]]; then
+  echo "Managed provider profile requires copy mode with plugin-companion delivery." >&2
+  exit 64
+fi
+if [[ "$provider_profile" = "managed" ]]; then
+  if [[ "$gh_executable" != /* ]]; then
+    echo "Managed provider profile requires --gh-executable with an explicit absolute path." >&2
+    exit 64
+  fi
+  if ! ruby -e '
+    path = File.realpath(ARGV.fetch(0))
+    stat = File.stat(path)
+    abort unless stat.file? && (stat.uid == Process.uid || stat.uid.zero?)
+    abort unless (stat.mode & 0o022).zero? && (stat.mode & 0o111).positive?
+  ' "$gh_executable"; then
+    echo "Managed provider profile requires a trusted executable --gh-executable path." >&2
+    exit 64
+  fi
+  gh_executable="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$gh_executable")"
+  if ! pinned_source_revision="$(ruby -I"$repo_root/bin" -ragent_workflows_source_contract -e \
+    'puts AgentWorkflowsSourceContract.validate_managed_install!(ARGV.fetch(0), fetch: ARGV.fetch(1) == "true")' \
+    "$repo_root" "$managed_fetch")"; then
+    echo "Managed provider source must be a clean canonical main checkout equal to origin/main." >&2
+    exit 64
+  fi
+fi
+if [[ "$host" = "codex" ]]; then
+  if [[ "$provider_profile" = "managed" && "$codex_executable" != /* ]]; then
+    echo "Managed Codex provider requires --codex-executable with an explicit absolute path." >&2
+    exit 64
+  fi
+  if [[ -z "$codex_executable" ]]; then
+    codex_executable="$(command -v codex 2>/dev/null || true)"
+  fi
+  if [[ -n "$codex_executable" ]]; then
+    set +e
+    codex_binding="$(
+      ruby "$delivery_state_script" --validate-executable \
+        "$codex_executable" "$expected_codex_executable_resolved" 2>&1
+    )"
+    codex_binding_status=$?
+    set -e
+    if [[ "$codex_binding_status" -ne 0 || -z "$codex_binding" ]]; then
+      if [[ -n "$expected_codex_executable_resolved" ]]; then
+        echo "Codex executable resolution changed; reinstall or explicitly rebind it: $codex_executable" >&2
+        exit 64
+      fi
+      echo "Codex executable binding is unsafe or unavailable: $codex_executable" >&2
+      exit 64
+    fi
+    codex_executable="${codex_binding%%$'\t'*}"
+    codex_executable_resolved="${codex_binding#*$'\t'}"
+  fi
+fi
 
+lifecycle_wrapper="$repo_root/bin/agent-workflows-lifecycle"
+lifecycle_environment="/usr/bin/env"
+[[ -x "$lifecycle_environment" ]] || lifecycle_environment="/bin/env"
+lifecycle_ruby=(
+  "$lifecycle_environment"
+  -u RUBYOPT -u RUBYLIB -u BUNDLE_GEMFILE -u BUNDLE_BIN_PATH
+  -u BUNDLE_PATH -u GEM_HOME -u GEM_PATH
+  ruby --disable=gems
+)
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYOPT="${RUBYOPT:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYLIB="${RUBYLIB:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_GEMFILE="${BUNDLE_GEMFILE:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_BIN_PATH="${BUNDLE_BIN_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_PATH="${BUNDLE_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_HOME="${GEM_HOME:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_PATH="${GEM_PATH:-}"
+if [[ -n "${AGENT_WORKFLOWS_LIFECYCLE_FD:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TOKEN:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TARGET:-}" ]]; then
+  "${lifecycle_ruby[@]}" "$lifecycle_wrapper" validate-exclusive --target "$target" >/dev/null
+else
+  exec "${lifecycle_ruby[@]}" "$lifecycle_wrapper" \
+    exec-exclusive --target "$target" -- "$0" "${original_args[@]}"
+fi
 pending_migration_receipt="$target/.agent-workflows-migration-staging"
+delivery_codex_args=()
+if [[ "$host" = "codex" && -n "$codex_executable" ]]; then
+  delivery_codex_args=(--codex-executable "$codex_executable" --codex-resolved "$codex_executable_resolved")
+fi
 if [[ ! -f "$pending_migration_receipt" ]]; then
   set +e
-  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
@@ -538,7 +799,6 @@ if [[ ! -f "$pending_migration_receipt" ]]; then
     exit 1
   fi
 fi
-
 mkdir -p "$target"
 install_lock="$target/.agent-workflows-install.lock"
 if ! mkdir "$install_lock" 2>/dev/null; then
@@ -606,7 +866,7 @@ trap release_install_transaction EXIT
 # The pre-lock check avoids mutating an obviously unsafe target. This second
 # check is authoritative and holds the advisory install lock through commit.
 set +e
-delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --json 2>&1)"
 delivery_status=$?
 set -e
 if [[ "$delivery_status" -ne 0 ]]; then
@@ -617,34 +877,46 @@ if [[ "$delivery_status" -ne 0 ]]; then
   '
   exit 1
 fi
+ensure_trusted_directory "$target/bin"
+if [[ "$mode" = "copy" ]]; then
+  ensure_trusted_directory "$target/bin/agent_workflows_operation" true
+fi
+AGENT_WORKFLOWS_INSTALL_HOST="$host" seed_source_snapshot
 prepare_metadata
 
 if [[ "$mode" = "copy" ]]; then
-  ensure_real_directory "$target/bin"
   prepare_workflow_doctor_copy_destination
   copy_pack_license
   if [[ "$delivery_mode" = "flat" ]]; then
     ensure_real_directory "$target/skills"
-    copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
+    copy_children_preserving_unrelated "$install_content_root/skills" "$target/skills"
   fi
   ensure_real_directory "$target/workflows"
   ensure_real_directory "$target/docs"
-  copy_children_preserving_unrelated "$repo_root/workflows" "$target/workflows"
+  copy_children_preserving_unrelated "$install_content_root/workflows" "$target/workflows"
   copy_pack_docs "$target/docs"
-  rsync -a --delete --exclude="/$doctor_managed_marker" --exclude='/.agent-stack-managed' \
-    "$repo_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
-  ruby -e 'File.chmod(File.stat(ARGV.fetch(0)).mode & 0o7777, ARGV.fetch(1))' "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
+  rsync -a --delete --chmod="$copy_chmod" --exclude="/$doctor_managed_marker" --exclude='/.agent-stack-managed' \
+    "$install_content_root/bin/agent_doctor/" "$target/bin/agent_doctor/"
+  chmod 0755 "$target/bin/agent_doctor"
   write_workflow_doctor_managed_marker
-  for helper in "${bin_helpers[@]}"; do
+  for helper in "${atomic_entry_helpers[@]}"; do
     destination="$target/bin/$helper"
-    if [[ -L "$destination" ]]; then
-      rm -f "$destination"
-    fi
-    if [[ -e "$destination" && ! -f "$destination" ]]; then
+    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-file path: $destination" >&2
       exit 1
     fi
-    install -m 0755 "$repo_root/bin/$helper" "$destination"
+    publish_entry_copy "$install_content_root/bin/$helper" "$destination"
+  done
+  rsync -a --delete --chmod="$copy_chmod" \
+    "$install_content_root/bin/agent_workflows_operation/" "$target/bin/agent_workflows_operation/"
+  for helper in "${bin_helpers[@]}"; do
+    [[ " ${atomic_entry_helpers[*]} " != *" $helper "* ]] || continue
+    destination="$target/bin/$helper"
+    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-file path: $destination" >&2
+      exit 1
+    fi
+    publish_entry_copy "$install_content_root/bin/$helper" "$destination"
   done
 else
   if [[ -L "$target/bin/agent_doctor" ]] &&
@@ -659,6 +931,10 @@ else
   fi
   link_pack_license
   mkdir -p "$target/bin"
+  if [[ -e "$target/bin/agent_workflows_operation" && ! -L "$target/bin/agent_workflows_operation" ]]; then
+    echo "Refusing to replace non-symlink path: $target/bin/agent_workflows_operation" >&2
+    exit 1
+  fi
   if [[ -e "$target/workflows" && ! -L "$target/workflows" ]]; then
     echo "Refusing to replace non-symlink path: $target/workflows" >&2
     exit 1
@@ -679,19 +955,29 @@ else
   ln -sfn "$repo_root/workflows" "$target/workflows"
   link_pack_docs "$target/docs"
   ln -sfn "$repo_root/bin/agent_doctor" "$target/bin/agent_doctor"
-  for helper in "${bin_helpers[@]}"; do
+  for helper in "${atomic_entry_helpers[@]}"; do
     destination="$target/bin/$helper"
     if [[ -e "$destination" && ! -L "$destination" ]]; then
       echo "Refusing to replace non-symlink path: $destination" >&2
       exit 1
     fi
-    ln -sfn "$repo_root/bin/$helper" "$destination"
+    publish_entry_symlink "$repo_root/bin/$helper" "$destination"
+  done
+  ln -sfn "$repo_root/bin/agent_workflows_operation" "$target/bin/agent_workflows_operation"
+  for helper in "${bin_helpers[@]}"; do
+    [[ " ${atomic_entry_helpers[*]} " != *" $helper "* ]] || continue
+    destination="$target/bin/$helper"
+    if [[ -e "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-symlink path: $destination" >&2
+      exit 1
+    fi
+    publish_entry_symlink "$repo_root/bin/$helper" "$destination"
   done
 fi
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   set +e
-  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then
@@ -708,7 +994,7 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
   )"
 
   set +e
-  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
+  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" "${delivery_codex_args[@]}" --json 2>&1)"
   delivery_status=$?
   set -e
   if [[ "$delivery_status" -ne 0 ]]; then

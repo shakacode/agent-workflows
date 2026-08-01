@@ -1,6 +1,16 @@
 # Post-Merge Audit Prompts
 
-Use these prompts with `.agents/skills/post-merge-audit/SKILL.md` when auditing merged agent batch work, comparing Codex and Claude findings, or turning audit findings into GitHub issues.
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
+Use these prompts with returned `assets.skills.post_merge_audit` when auditing merged agent batch work, comparing Codex and Claude findings, or turning audit findings into GitHub issues.
 
 For a verified Codex GPT-5.6 batch, preserve this route profile:
 
@@ -21,12 +31,21 @@ For a verified Claude batch, preserve this provisional route profile
 - Independent adversarial QA: Opus 4.8/xhigh
 - Routine deterministic QA: Opus 4.8/high
 
+## Recipient Provider Binding
+
+Every recipient of a copied prompt must bind locally in that invocation. Use the
+active host home's absolute `bin/agent-workflows-resolve begin` command exactly
+once and retain that exact JSON result. The resolver selects the installed provider profile;
+never pre-read install metadata or branch around resolution. Never inherit a sender's handle or paths. Use shared instructions only from returned `assets.*`.
+A registered current-only capability requires `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the returned runner.
+
 ## Coordination Rules
 
 These prompts intentionally repeat the worked-issue scope state machine from
-`.agents/skills/post-merge-audit/SKILL.md` so copy-paste audits stay
+returned `assets.skills.post_merge_audit` so copy-paste audits stay
 self-contained. Keep state-machine changes mirrored across this workflow,
-`SKILL.md`, and `.agents/workflows/pr-processing.md`.
+`SKILL.md`, and returned `assets.workflow`.
 
 - Use one exact audit id, base, and head for every agent, for example `audit: <YYYY-MM-DD>-post-rc`.
 - Format `<AUDIT_ID>` as `<YYYY-MM-DD>-<short-purpose>`, for example `<YYYY-MM-DD>-post-rc` or `<YYYY-MM-DD>-agent-batch-audit`.
@@ -144,13 +163,13 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   `worked_issue_scope: UNKNOWN (access)` with the exact command/error. Use
   structured public `codex-claim` comments (GitHub comments containing a
   `codex-claim` HTML comment with key/value fields in the "Public claim
-  comment" format from `.agents/workflows/pr-processing.md`) as advisory
+  comment" format from returned `assets.workflow`) as advisory
   recovery evidence when available before reducing unknown scope to merged PRs.
   If the batch id itself is unknown, scope advisory public-claim discovery to
   issues and open PRs active within the audit time window; use claim `batch:`
   fields to surface candidate ids until the user confirms one.
 - For private coordination backend setup and CLI discovery, see
-  `docs/coordination-backend.md`.
+  returned `assets.docs.coordination_backend`.
 
 Suggested hidden fingerprint:
 
@@ -199,6 +218,17 @@ and the other run as an advisory auditor. Do not
 share one agent's output with the other until both are done.
 
 ```text
+This receiving invocation must bind its own provider before using shared assets.
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result. The resolver selects the installed provider profile;
+never pre-read install metadata or branch around resolution. Never inherit a sender's handle or paths. Use shared instructions only from returned `assets.*`.
+Retain the begin result's complete `release` argv. Invoke it only after this
+recipient's final shared-instruction read and final helper/capability use; that
+release invalidates every returned `assets.*` path even if files remain. A
+restart or follow-up must begin a new operation and release the old operation
+when safely finished. Recover an orphan only through `list --json` and named
+`release`; never TTL or PID inference.
+
 Run an independent post-merge audit of merged PRs (and, when a batch id is known, its worked-issue scope)
 for the requested audit mode.
 
@@ -255,8 +285,8 @@ First, produce the exact worked-issue scope, merged-PR range, and audit mode:
   ask only if that resolution is ambiguous
 - when batch work is in scope but the batch id and hint are `UNKNOWN`, run bounded
   `agent-coord doctor --json`, then broad `agent-coord status` through the
-  resolved `pr-batch` bounded helper only as an audit/discovery read to list candidate
-  batch/run ids and lanes. Record
+  bounded helper beneath returned `assets.skills.pr_batch` only as an
+  audit/discovery read to list candidate batch/run ids and lanes. Record
   `worked_issue_scope: UNKNOWN (needs batch confirmation)` and ask me to confirm
   a candidate batch/run id before treating any candidate lane list as the
   worked-issue scope.
@@ -337,9 +367,10 @@ collect any QA lane and QA Evidence block for that batch. Do not use missing QA
 state to shrink the worked-issue scope; report it as a QA coverage finding or
 `UNKNOWN` fact instead. When the handoff includes `qa-evidence v1`,
 `qa-evidence v2`, or
-`priority-finding-dispositions v1` markers, resolve
-`POST_MERGE_AUDIT_SKILL_DIR` with the env-var / loaded-skill / repo-local chain,
-then run `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` separately
+`priority-finding-dispositions v1` markers, bind
+`POST_MERGE_AUDIT_SKILL_DIR` to the parent of returned
+`assets.skills.post_merge_audit`, then run
+`"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` separately
 for each PR body, handoff comment, or saved evidence file with
 `--expected-head-sha <full-merged-head-SHA>`. Add
 `--require-priority-dispositions` when the audit relies on fixed, waived, or
@@ -387,10 +418,10 @@ Then audit each known worked issue, QA lane, or advisory `codex-claim` row for:
   fields were handled when required
 - classify each worked issue as `in_progress`, `realized`, `partial`,
   `missed`, `regressed`, `stalled`, or `unknown`, using
-  `.agents/workflows/continuous-evaluation-loop.md` for the intent-achievement
+  returned `assets.related_workflows.continuous_evaluation_loop` for the intent-achievement
   definitions; classify QA lanes with the QA-coverage result `satisfied`,
   `blocked`, `waived`, `in_progress`, `not_applicable`, or `unknown`, using the
-  Batch QA Lane section in `.agents/workflows/pr-processing.md`
+  Batch QA Lane section in returned `assets.workflow`
 - for healthy `in_progress` worked-issue lanes, evidenced `realized` outcomes,
   evidenced `satisfied` or `waived` QA lanes, and evidenced `not_applicable` QA
   omissions, record no action in the worked-issue/QA table; treat required QA
@@ -408,11 +439,11 @@ Also audit each included merged PR for:
 - risky behavior change
 - missing or weak validation
 - missing lockfile content-diff evidence when committed lockfiles changed, using
-  the Handoff Contract in `.agents/skills/pr-batch/SKILL.md`
+  the Handoff Contract in returned `assets.skills.pr_batch`
 - weak closing evidence in any PR whose body or linked issue uses analysis,
   benchmark, or investigation evidence to support a `close` or
   `document/work around` disposition: apply the full gate from the "Evaluate the
-  fix plan separately" step in `.agents/skills/evaluate-issue/SKILL.md`,
+  fix plan separately" step in returned `assets.skills.evaluate_issue`,
   including reproducible artifact or justified missing-artifact caveat, internal
   consistency, production-environment caveats, and refutable-conclusion handling
 - cross-PR interactions
@@ -429,7 +460,7 @@ Also audit each included merged PR for:
 - untriaged Must Fix, SHOULD-FIX, DISCUSS, Changes Requested, compatibility, security, regression, or missing-changelog review findings
 - missing, stale, insufficiently scoped, head/range-ambiguous, release-blocking,
   or still-`UNKNOWN` QA coverage/scope evidence required by
-  `.agents/workflows/pr-processing.md`; do not treat private coordination
+  returned `assets.workflow`; do not treat private coordination
   claim/heartbeat `UNKNOWN` as blocking when the documented fallback evidence is
   complete and names a concrete QA owner and branch/worktree
 - changes touching CI, packaged/commercial code, build config, code generators,
@@ -611,15 +642,27 @@ After creation, return:
 Use this when Codex is coordinating a PR and the user wants an independent Claude review before final readiness.
 
 ```text
+This receiving invocation must bind its own provider before using shared assets.
+Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+exactly once and retain that exact JSON result. The resolver selects the installed provider profile;
+never pre-read install metadata or branch around resolution. Never inherit a sender's handle or paths. Use shared instructions only from returned `assets.*`.
+Retain the begin result's complete `release` argv. Invoke it only after this
+recipient's final shared-instruction read and final helper/capability use; that
+release invalidates every returned `assets.*` path even if files remain. A
+restart or follow-up must begin a new operation and release the old operation
+when safely finished. Recover an orphan only through `list --json` and named
+`release`; never TTL or PID inference.
+
 Please run an adversarial PR review before this PR is marked ready or merged:
 
 <PR_URL>
 
-If this Claude Code environment provides the repo-local skill, run:
+If this Claude Code environment exposes the returned
+`assets.skills.adversarial_pr_review` entry, invoke it:
 
 /adversarial-pr-review <PR_URL>
 
-Otherwise, use `.agents/workflows/adversarial-pr-review.md`. If `/pr-review-toolkit:review-pr` is available, you may use it as one input, but it is not sufficient by itself.
+Otherwise, use returned `assets.related_workflows.adversarial_pr_review`. If `/pr-review-toolkit:review-pr` is available, you may use it as one input, but it is not sufficient by itself.
 
 Focus on correctness bugs, missing tests, compatibility changes, missing changelog entries, release risk, late or stale review comments, changed agent instructions, and mismatches with AGENTS.md. Classify findings as:
 - BLOCKING

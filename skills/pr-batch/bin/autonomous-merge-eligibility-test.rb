@@ -14,6 +14,143 @@ FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
 
 class AutonomousMergeEligibilityTest < Minitest::Test
   HEAD_SHA = "a" * 40
+
+  def test_provider_operation_provenance_verifies_the_exact_runtime_manifest
+    Dir.mktmpdir("provider-operation-runtime") do |root|
+      calibration_path = write_calibration(root)
+      sources = AutonomousMergeRuntimeTrust.runtime_sources(calibration_path)
+      digest = AutonomousMergeRuntimeTrust.installed_pack_digest(sources)
+      revision = "b" * 40
+      manifest = sources.transform_values do |source|
+        {
+          "path" => source.fetch(:path),
+          "source" => source.fetch(:tree_paths).first,
+          "sha256" => Digest::SHA256.file(source.fetch(:path)).hexdigest
+        }
+      end
+      claim = "provider-operation:#{revision}:#{digest}"
+
+      with_environment(
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => claim,
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => JSON.generate(manifest),
+        "AGENT_WORKFLOWS_GIT_EXECUTABLE" => File.realpath("/usr/bin/git"),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.realpath("/usr/bin/true")
+      ) do
+        result = AutonomousMergeRuntimeTrust.verify(
+          repo_root: root,
+          base_sha: "c" * 40,
+          claim:,
+          calibration_path:
+        )
+
+        assert result.accepted, result.errors.join("; ")
+        assert_equal claim, result.provenance
+        assert_equal manifest.transform_values { |entry| entry.fetch("source") }, result.manifest
+      end
+    end
+  end
+
+  def test_provider_operation_provenance_rejects_a_missing_or_replaced_role
+    Dir.mktmpdir("provider-operation-runtime") do |root|
+      calibration_path = write_calibration(root)
+      sources = AutonomousMergeRuntimeTrust.runtime_sources(calibration_path)
+      digest = AutonomousMergeRuntimeTrust.installed_pack_digest(sources)
+      manifest = sources.transform_values do |source|
+        {
+          "path" => source.fetch(:path),
+          "source" => source.fetch(:tree_paths).first,
+          "sha256" => Digest::SHA256.file(source.fetch(:path)).hexdigest
+        }
+      end
+      manifest.delete("evidence-library")
+      claim = "provider-operation:#{'b' * 40}:#{digest}"
+
+      with_environment(
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => claim,
+        "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => JSON.generate(manifest),
+        "AGENT_WORKFLOWS_GIT_EXECUTABLE" => File.realpath("/usr/bin/git"),
+        "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.realpath("/usr/bin/true")
+      ) do
+        result = AutonomousMergeRuntimeTrust.verify(
+          repo_root: root,
+          base_sha: "c" * 40,
+          claim:,
+          calibration_path:
+        )
+
+        refute result.accepted
+        assert_includes result.errors.join("; "), "manifest roles"
+      end
+    end
+  end
+
+  def test_provider_operation_provenance_rejects_each_tamper_boundary
+    Dir.mktmpdir("provider-operation-runtime") do |root|
+      calibration_path = write_calibration(root)
+      sources = AutonomousMergeRuntimeTrust.runtime_sources(calibration_path)
+      digest = AutonomousMergeRuntimeTrust.installed_pack_digest(sources)
+      manifest = sources.transform_values do |source|
+        {
+          "path" => source.fetch(:path),
+          "source" => source.fetch(:tree_paths).first,
+          "sha256" => Digest::SHA256.file(source.fetch(:path)).hexdigest
+        }
+      end
+      revision = "b" * 40
+      first_role, second_role = sources.keys.first(2)
+      cases = {
+        "malformed JSON" => ["{", "provider-operation manifest is missing or malformed", digest],
+        "malformed entry" => [
+          JSON.generate(deep_copy(manifest).tap { |copy| copy.fetch(first_role).delete("sha256") }),
+          "manifest entry is malformed",
+          digest
+        ],
+        "path replacement" => [
+          JSON.generate(deep_copy(manifest).tap do |copy|
+            copy.fetch(first_role)["path"] = sources.fetch(second_role).fetch(:path)
+          end),
+          "path does not match",
+          digest
+        ],
+        "digest replacement" => [
+          JSON.generate(deep_copy(manifest).tap { |copy| copy.fetch(first_role)["sha256"] = "0" * 64 }),
+          "digest does not match",
+          digest
+        ],
+        "source replacement" => [
+          JSON.generate(deep_copy(manifest).tap { |copy| copy.fetch(first_role)["source"] = "outside/runtime" }),
+          "source is not a canonical runtime path",
+          digest
+        ],
+        "aggregate digest replacement" => [
+          JSON.generate(manifest),
+          "runtime digest mismatch",
+          "0" * 64
+        ]
+      }
+
+      cases.each do |label, (raw_manifest, expected_error, claimed_digest)|
+        claim = "provider-operation:#{revision}:#{claimed_digest}"
+        with_environment(
+          "AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE" => claim,
+          "AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST" => raw_manifest,
+          "AGENT_WORKFLOWS_GIT_EXECUTABLE" => File.realpath("/usr/bin/git"),
+          "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.realpath("/usr/bin/true")
+        ) do
+          result = AutonomousMergeRuntimeTrust.verify(
+            repo_root: root,
+            base_sha: "c" * 40,
+            claim:,
+            calibration_path:
+          )
+
+          refute result.accepted, label
+          assert_includes result.errors.join("; "), expected_error, label
+        end
+      end
+    end
+  end
+
   def test_changed_files_value_immediately_below_portable_boundary_is_eligible
     result = evaluate { |base_sha| evidence(base_sha:, files: files(29)) }
 
@@ -1336,5 +1473,19 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       evidence: #{evidence}
       ...
     YAML
+  end
+
+  def with_environment(values)
+    original = values.to_h { |name, _| [name, ENV[name]] }
+    values.each { |name, value| ENV[name] = value }
+    yield
+  ensure
+    original.each do |name, value|
+      value ? ENV[name] = value : ENV.delete(name)
+    end
+  end
+
+  def deep_copy(value)
+    JSON.parse(JSON.generate(value))
   end
 end

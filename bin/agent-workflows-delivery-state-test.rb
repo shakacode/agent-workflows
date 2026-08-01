@@ -16,12 +16,17 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     @fake_codex = File.join(@fake_codex_dir, "codex")
     File.write(@fake_codex, <<~RUBY)
       #!#{RbConfig.ruby}
-      state = ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
+      state_root = ENV.fetch("CODEX_HOME")
+      state = File.exist?(File.join(state_root, ".qa-codex-state")) ?
+        File.read(File.join(state_root, ".qa-codex-state")).strip : "enabled"
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
       case state
       when "enabled"
-        version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
-        source = ENV.fetch("QA_CODEX_PLUGIN_SOURCE", "https://github.com/shakacode/agent-workflows.git")
+        version_path = File.join(state_root, ".qa-codex-version")
+        source_path = File.join(state_root, ".qa-codex-source")
+        version = File.exist?(version_path) ? File.read(version_path).strip : "0.1.0"
+        source = File.exist?(source_path) ? File.read(source_path).strip :
+          "https://github.com/shakacode/agent-workflows.git"
         puts "PLUGIN STATUS VERSION PATH"
         puts "scw@agent-workflows  installed, enabled  \#{version}  \#{source}"
       when "disabled"
@@ -57,21 +62,30 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     codex_version: nil,
     codex_source: nil
   )
-    env = {
-      "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => codex_executable,
-      "QA_CODEX_PLUGIN_STATE" => codex_state
-    }
-    env["QA_CODEX_PLUGIN_VERSION"] = codex_version if codex_version
-    env["QA_CODEX_PLUGIN_SOURCE"] = codex_source if codex_source
-    Open3.capture3(env, "ruby", SCRIPT, *args)
+    target = args[args.index("--target") + 1] if args.include?("--target")
+    if target
+      FileUtils.mkdir_p(target)
+      File.write(File.join(target, ".qa-codex-state"), codex_state)
+      File.write(File.join(target, ".qa-codex-version"), codex_version) if codex_version
+      File.write(File.join(target, ".qa-codex-source"), codex_source) if codex_source
+    end
+    Open3.capture3(
+      "ruby", SCRIPT, *args,
+      "--codex-executable", codex_executable,
+      "--codex-timeout", "10"
+    )
   end
 
   def run_state_with_env(env, *args)
-    defaults = {
-      "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex,
-      "QA_CODEX_PLUGIN_STATE" => "enabled"
-    }
-    Open3.capture3(defaults.merge(env), "ruby", SCRIPT, *args)
+    target = args[args.index("--target") + 1]
+    File.write(File.join(target, ".qa-codex-state"), env.fetch("QA_CODEX_PLUGIN_STATE", "enabled"))
+    timeout = env.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", "10")
+    Open3.capture3(
+      env,
+      "ruby", SCRIPT, *args,
+      "--codex-executable", @fake_codex,
+      "--codex-timeout", timeout
+    )
   end
 
   def write_manifest(root, host:)
@@ -169,6 +183,56 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       refute status.success?, out
       assert_equal "unknown", JSON.parse(out).dig("native", "state")
+    end
+  end
+
+  def test_claude_commit_receipt_accepts_a_versionless_plugin_manifest
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "claude")
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/commit")
+      FileUtils.mkdir_p(File.join(target, "plugins"))
+      File.write(
+        File.join(target, "settings.json"),
+        "#{JSON.pretty_generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n"
+      )
+      revision = "a" * 40
+      receipt_path = File.join(target, "plugins/installed_plugins.json")
+      receipt = {
+        "version" => 2,
+        "plugins" => {
+          "scw@agent-workflows" => [{
+            "scope" => "user",
+            "installPath" => plugin_root,
+            "version" => "unknown",
+            "gitCommitSha" => revision
+          }]
+        }
+      }
+      File.write(receipt_path, "#{JSON.pretty_generate(receipt)}\n")
+      write_manifest(plugin_root, host: "claude")
+      manifest_path = File.join(plugin_root, ".claude-plugin/plugin.json")
+      manifest = JSON.parse(File.binread(manifest_path))
+      manifest.delete("version")
+      File.write(manifest_path, "#{JSON.pretty_generate(manifest)}\n")
+
+      out, err, status = run_state(
+        "check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      assert status.success?, "#{out}#{err}"
+      assert_equal "active", JSON.parse(out).dig("native", "state")
+
+      receipt["plugins"]["scw@agent-workflows"].first.delete("gitCommitSha")
+      File.write(receipt_path, "#{JSON.pretty_generate(receipt)}\n")
+      out, _err, status = run_state(
+        "check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?, out
+      assert_equal "unknown", JSON.parse(out).dig("native", "state")
+      assert_includes JSON.parse(out).dig("native", "reason"), "valid gitCommitSha"
     end
   end
 
@@ -500,6 +564,112 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       refute status.success?, out
       assert_equal "unknown", payload.dig("native", "state")
       assert_includes payload.fetch("reason"), "timed out"
+    end
+  end
+
+  def test_codex_binding_ignores_hostile_ambient_overrides_and_whitelists_child_environment
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex")
+      write_codex_native_state(target)
+      executable = File.join(tmp, "bound-codex")
+      sentinel = File.join(tmp, "ambient-sentinel")
+      File.write(executable, <<~SH)
+        #!/bin/sh
+        /usr/bin/env > "$CODEX_HOME/captured-environment"
+        printf 'scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git\\n'
+      SH
+      FileUtils.chmod(0o755, executable)
+
+      hostile = {
+        "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => sentinel,
+        "AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS" => "0.001",
+        "QA_SECRET" => "must-not-pass",
+        "RUBYLIB" => "/tmp/hostile",
+        "BUNDLE_GEMFILE" => "/tmp/hostile",
+        "GIT_CONFIG_GLOBAL" => "/tmp/hostile",
+        "HTTPS_PROXY" => "http://hostile.invalid"
+      }
+      out, err, status = Open3.capture3(
+        hostile,
+        "ruby", "--disable=gems", SCRIPT,
+        "check", "--host", "codex", "--target", target, "--source", File.expand_path("..", __dir__),
+        "--delivery-mode", "plugin-companion", "--codex-executable", executable, "--json"
+      )
+
+      assert status.success?, "#{out}#{err}"
+      environment = File.read(File.join(target, "captured-environment"))
+      assert_includes environment, "CODEX_HOME=#{target}"
+      assert_includes environment, "HOME="
+      assert_includes environment, "PATH="
+      refute_includes environment, "QA_SECRET"
+      refute_includes environment, "RUBYLIB"
+      refute_includes environment, "BUNDLE_GEMFILE"
+      refute_includes environment, "GIT_CONFIG_GLOBAL"
+      refute_includes environment, "HTTPS_PROXY"
+      refute_path_exists sentinel
+    end
+  end
+
+  def test_codex_executable_validation_rejects_relative_nonexec_writable_and_changed_paths
+    load SCRIPT unless defined?(AgentWorkflowsDeliveryState)
+    assert_raises(ArgumentError) { AgentWorkflowsDeliveryState.validate_executable("codex") }
+
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      nonexec = File.join(tmp, "nonexec")
+      File.write(nonexec, "#!/bin/sh\n")
+      FileUtils.chmod(0o644, nonexec)
+      assert_raises(ArgumentError) { AgentWorkflowsDeliveryState.validate_executable(nonexec) }
+
+      writable = File.join(tmp, "writable")
+      File.write(writable, "#!/bin/sh\n")
+      FileUtils.chmod(0o777, writable)
+      assert_raises(ArgumentError) { AgentWorkflowsDeliveryState.validate_executable(writable) }
+
+      first = File.join(tmp, "first")
+      second = File.join(tmp, "second")
+      link = File.join(tmp, "codex")
+      [first, second].each do |path|
+        File.write(path, "#!/bin/sh\n")
+        FileUtils.chmod(0o755, path)
+      end
+      File.symlink(first, link)
+      _invocation, resolved = AgentWorkflowsDeliveryState.validate_executable(link)
+      FileUtils.rm_f(link)
+      File.symlink(second, link)
+      assert_raises(ArgumentError) do
+        AgentWorkflowsDeliveryState.validate_executable(link, expected_resolved: resolved)
+      end
+    end
+  end
+
+  def test_codex_child_path_starts_with_the_validated_invocation_directory
+    load SCRIPT unless defined?(AgentWorkflowsDeliveryState)
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "codex-home")
+      invocation_dir = File.join(tmp, "invocation")
+      resolved_dir = File.join(tmp, "resolved")
+      executable = File.join(resolved_dir, "codex-real")
+      invocation = File.join(invocation_dir, "codex")
+      FileUtils.mkdir_p([target, invocation_dir, resolved_dir])
+      File.write(executable, <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(File.join(ENV.fetch("CODEX_HOME"), "captured-path"), ENV.fetch("PATH"))
+        puts "PLUGIN STATUS VERSION PATH"
+        puts "scw@agent-workflows  installed, enabled  0.1.0  https://github.com/shakacode/agent-workflows.git"
+      RUBY
+      FileUtils.chmod(0o755, executable)
+      File.symlink(executable, invocation)
+
+      state = AgentWorkflowsDeliveryState.codex_plugin_cli_state(
+        target,
+        codex_executable: invocation,
+        codex_resolved: executable
+      )
+
+      assert_equal "enabled", state.fetch("state"), state.inspect
+      path = File.read(File.join(target, "captured-path")).split(File::PATH_SEPARATOR)
+      assert_equal invocation_dir, path.first
+      refute_includes path, resolved_dir
     end
   end
 

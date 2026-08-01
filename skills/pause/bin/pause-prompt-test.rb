@@ -28,6 +28,12 @@ def extract_fenced_prompt(text, heading)
   text[body_start...fence_end]
 end
 
+def extract_restart_prompts(text)
+  text.scan(/^```text\s*$\n(.*?)^```\s*$/m)
+      .map(&:first)
+      .select { |body| body.lstrip.start_with?("Resume", "Restart") }
+end
+
 class PausePromptTest < Minitest::Test
   def setup
     @docs = read_repo_file(DOCS_PATH)
@@ -82,5 +88,31 @@ class PausePromptTest < Minitest::Test
     assert_includes @skill, "<PASTE_RESTART_HANDOFF_HERE>"
     assert_includes @skill, "not inspect the repo"
     assert_includes @skill, "pause current work"
+  end
+
+  def test_every_restart_prompt_binds_one_profile_agnostic_operation
+    surfaces = {
+      "skills/pause/SKILL.md" => [@skill, 4],
+      "docs/agent-runner-restarts.md" => [@docs, 4],
+      "workflows/pr-processing.md" => [@workflow, 1]
+    }
+
+    surfaces.each do |path, (text, expected_count)|
+      prompts = extract_restart_prompts(text)
+      assert_equal expected_count, prompts.length, path
+
+      prompts.each.with_index(1) do |prompt, index|
+        label = "#{path} prompt #{index}"
+        assert_equal 1, prompt.scan("agent-workflows-resolve begin").length, label
+        assert_includes prompt, "`resume_operation.revision`", label
+        assert_includes prompt, "`originating_provider_revision`", label
+        assert_includes prompt, "`resume_operation.assets.skills.pause`", label
+        refute_match(/(?<!resume_operation\.)\bassets\./, prompt)
+        assert_operator prompt.index("`resume_operation.revision`"), :<,
+                        prompt.index("`resume_operation.assets.skills.pause`"), label
+        refute_includes prompt, "Managed provider branch:", label
+        refute_includes prompt, "Pinned or offline provider branch:", label
+      end
+    end
   end
 end

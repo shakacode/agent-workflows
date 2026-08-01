@@ -5,6 +5,7 @@ require "json"
 require "optparse"
 require "open3"
 require "rbconfig"
+require_relative "agent_workflows_source_contract"
 
 module AgentWorkflowsStatus
   METADATA_NAME = ".agent-workflows-install.json"
@@ -110,9 +111,20 @@ module AgentWorkflowsStatus
   def available_revision(source, metadata, fetch:)
     return [nil, "missing source root: #{source}"] unless File.directory?(source)
 
-    unless File.directory?(File.join(source, ".git"))
+    git_marker = File.join(source, ".git")
+    unless File.exist?(git_marker) || File.symlink?(git_marker)
       version = version_for(source)
       return ["version:#{version}", nil]
+    end
+    inside_work_tree, probe_error = git_output(source, "rev-parse", "--is-inside-work-tree")
+    unless inside_work_tree == "true"
+      reason = probe_error.to_s.empty? ? "not a working tree" : probe_error
+      return [nil, "declared Git source is invalid: #{reason}"]
+    end
+    top_level, top_level_error = git_output(source, "rev-parse", "--show-toplevel")
+    return [nil, "declared Git source root check failed: #{top_level_error}"] if top_level_error
+    unless File.realpath(top_level) == File.realpath(source)
+      return [nil, "declared Git source resolves to another worktree root: #{top_level}"]
     end
 
     ref =
@@ -131,12 +143,49 @@ module AgentWorkflowsStatus
     [revision, nil]
   end
 
+  def managed_available_revision(source, metadata, fetch:)
+    AgentWorkflowsSourceContract.validate_managed_metadata!(metadata)
+    root = AgentWorkflowsSourceContract.validate_root!(source)
+    AgentWorkflowsSourceContract.validate_origin!(root)
+    revision = if fetch
+                 AgentWorkflowsSourceContract.fetch!(root)
+               else
+                 AgentWorkflowsSourceContract.cached_revision!(root)
+               end
+    [revision, nil]
+  rescue RuntimeError, SystemCallError => e
+    [nil, e.message]
+  end
+
   def short_revision(value)
     value.to_s.start_with?("version:") ? value : value.to_s[0, 12]
   end
 
-  def delivery_state(host:, target:, source:, delivery_mode:)
+  def codex_binding(helper, metadata, allow_path_fallback:)
+    invocation = metadata["codex_executable"].to_s
+    resolved = metadata["codex_executable_resolved"].to_s
+    return [invocation, resolved] unless invocation.empty? || resolved.empty?
+    if invocation.empty? != resolved.empty?
+      raise "pinned Codex executable receipt is incomplete; reinstall the provider"
+    end
+    return [invocation, resolved] unless allow_path_fallback
+
+    output, _error, status = Open3.capture3(RbConfig.ruby, helper, "--resolve-codex-executable")
+    return ["", ""] unless status.success?
+
+    output.strip.split("\t", 2)
+  end
+
+  def delivery_state(host:, target:, source:, delivery_mode:, metadata:, allow_path_fallback:)
+    codex_arguments = []
     helper = File.expand_path("agent-workflows-delivery-state", __dir__)
+    if host == "codex"
+      invocation, resolved = codex_binding(helper, metadata, allow_path_fallback:)
+      codex_arguments = [
+        "--codex-executable", invocation.to_s,
+        "--codex-resolved", resolved.to_s
+      ]
+    end
     output, error, status = Open3.capture3(
       RbConfig.ruby,
       helper,
@@ -145,15 +194,16 @@ module AgentWorkflowsStatus
       "--target", target,
       "--source", source,
       "--delivery-mode", delivery_mode,
+      *codex_arguments,
       "--json"
     )
     payload = JSON.parse(output)
     [payload, status.success? ? nil : payload["reason"]]
-  rescue SystemCallError, JSON::ParserError, TypeError => e
+  rescue RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
     [nil, "delivery-state check failed: #{error}#{e.message}"]
   end
 
-  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
+  def status_payload(status, target:, source:, host:, metadata: {}, available_version: nil, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
     {
       "status" => status,
       "host" => host,
@@ -161,12 +211,14 @@ module AgentWorkflowsStatus
       "source" => source,
       "installed_version" => metadata["version"],
       "installed_revision" => metadata["source_revision"],
-      "available_version" => source && File.directory?(source) ? version_for(source) : nil,
+      "available_version" => available_version,
       "available_revision" => available_revision,
       "checked_remote" => checked_remote,
       "reason" => reason,
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
+      "provider_profile" => metadata.fetch("provider_profile", "pinned"),
+      "gh_executable" => metadata["gh_executable"],
       "native" => delivery_state&.fetch("native", nil),
       "flat" => delivery_state&.fetch("flat", nil)
     }
@@ -175,11 +227,11 @@ module AgentWorkflowsStatus
   def text_for(payload)
     case payload.fetch("status")
     when "UP_TO_DATE"
-      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
+      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} provider_profile=#{payload['provider_profile']} target=#{payload['target']}\n"
     when "UPGRADE_AVAILABLE"
       installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
       available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
-      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
+      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} provider_profile=#{payload['provider_profile']} target=#{payload['target']}\n"
     when "NOT_INSTALLED"
       "NOT_INSTALLED target=#{payload['target']}\n"
     when "CHECK_FAILED"
@@ -202,9 +254,33 @@ module AgentWorkflowsStatus
       return status_payload("NOT_INSTALLED", target:, source: options[:source], host:)
     end
 
+    profile = metadata.fetch("provider_profile", "pinned")
+    unless %w[pinned managed].include?(profile)
+      return status_payload(
+        "CHECK_FAILED", target:, source: options[:source], host:, metadata:,
+                        reason: "unsupported provider profile: #{profile.inspect}"
+      )
+    end
+    if profile == "managed" && !metadata["gh_executable"].to_s.start_with?("/")
+      return status_payload(
+        "CHECK_FAILED", target:, source: options[:source], host:, metadata:,
+                        reason: "managed provider profile requires an explicit absolute gh executable"
+      )
+    end
+    if profile == "managed" && host == "codex" &&
+       (!metadata["codex_executable"].to_s.start_with?("/") ||
+        !metadata["codex_executable_resolved"].to_s.start_with?("/"))
+      return status_payload(
+        "CHECK_FAILED", target:, source: options[:source], host:, metadata:,
+                        reason: "managed Codex provider requires a recorded executable binding; reinstall with --codex-executable"
+      )
+    end
+
     source = File.expand_path(options[:source] || metadata["source"].to_s)
     delivery_mode = requested_delivery_mode || metadata.fetch("delivery_mode", "flat")
-    delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:)
+    delivery, delivery_error = delivery_state(
+      host:, target:, source:, delivery_mode:, metadata:, allow_path_fallback: profile == "pinned"
+    )
     if delivery_error
       return status_payload(
         "CHECK_FAILED",
@@ -216,7 +292,12 @@ module AgentWorkflowsStatus
         delivery_state: delivery
       )
     end
-    revision, error = available_revision(source, metadata, fetch: options.fetch(:fetch))
+    revision, error =
+      if profile == "managed"
+        managed_available_revision(source, metadata, fetch: options.fetch(:fetch))
+      else
+        available_revision(source, metadata, fetch: options.fetch(:fetch))
+      end
     if error
       return status_payload(
         "CHECK_FAILED",
@@ -230,9 +311,14 @@ module AgentWorkflowsStatus
       )
     end
 
+    available_version =
+      if profile == "managed"
+        AgentWorkflowsSourceContract.version_at_revision!(source, revision)
+      else
+        version_for(source)
+      end
     installed_revision = metadata["source_revision"].to_s
     installed_version = metadata["version"].to_s
-    available_version = version_for(source)
     status = if !installed_revision.empty? && installed_revision == revision
                "UP_TO_DATE"
              elsif revision.to_s.start_with?("version:") && installed_version == available_version
@@ -247,6 +333,7 @@ module AgentWorkflowsStatus
       source:,
       host:,
       metadata:,
+      available_version:,
       available_revision: revision,
       checked_remote: options.fetch(:fetch),
       delivery_state: delivery

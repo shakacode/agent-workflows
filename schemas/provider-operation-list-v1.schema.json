@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shakacode/agent-workflows/schemas/provider-operation-list-v1.schema.json",
+  "title": "Agent Workflows provider operation list result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "host",
+    "target",
+    "limits",
+    "counts",
+    "installed_revision",
+    "operations",
+    "retained_revisions"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "host": { "enum": ["codex", "claude"] },
+    "target": { "type": "string", "pattern": "^/" },
+    "limits": {
+      "type": "object",
+      "required": ["live_operations", "retained_revisions"],
+      "properties": {
+        "live_operations": { "const": 32 },
+        "retained_revisions": { "const": 8 }
+      },
+      "additionalProperties": false
+    },
+    "counts": {
+      "type": "object",
+      "required": ["live_operations", "retained_revisions"],
+      "properties": {
+        "live_operations": { "type": "integer", "minimum": 0 },
+        "retained_revisions": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "installed_revision": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["handle", "revision"],
+        "properties": {
+          "handle": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "retained_revisions": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

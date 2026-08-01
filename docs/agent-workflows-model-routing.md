@@ -1,7 +1,7 @@
 # Cost-Aware Agent Model Routing
 
 Use this guide with `$plan-pr-batch`, `$pr-batch`, and the canonical
-[PR Processing Workflow](../workflows/pr-processing.md). It separates the
+`assets.workflow`. It separates the
 high-leverage coordinator from the higher-volume worker fleet, starts workers on
 the least expensive safe route, and escalates only with evidence.
 
@@ -292,10 +292,10 @@ regression, not a success.
 
 ## Dispatcher Capability Preflight
 
-Before dispatch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var,
-loaded-skill, and repo-local pinned-copy chain, then call
-`"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` with one JSON
-object on standard input. It writes one JSON result to standard output and does
+Before dispatch, retain the complete operation-returned `runner` command as the
+`AGENT_WORKFLOWS_RUNNER` shell array, then call
+`"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --` with one
+JSON object on standard input. It writes one JSON result to standard output and does
 not launch a worker or mutate a coordination backend. The caller supplies the
 lane state, requested route/dispatcher, explicit route and dispatch authority,
 and ordered candidates with binding and attestation evidence.

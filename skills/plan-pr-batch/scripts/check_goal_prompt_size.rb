@@ -93,19 +93,21 @@ TEXT
 GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
                              "block=>stop; no raw GitHub/override"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
-  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-    Original: trusted ad-hoc prompt; else n/a.
+  - Target: PR #N URL | Issue #N URL | Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+    Original: trusted ad-hoc|n/a.
     Goal: one-line outcome.
-    Notes: scope/branch/dependency.
-    Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+    Notes: scope/branch/deps.
+    Done: requested authority final state; PR/no-PR evidence/no-fix rationale.
 TEXT
 GOAL_PROMPT_BASE_RESOLUTION_LINE = "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
                                    "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE = "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
                             "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
-                              "chg=>redo/stop;gate fail=>stop;ask iff same clean"
-ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
+ASK_WALKTHROUGH_PROMPT_LINE =
+  "- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. " \
+  "require assets.skills.pr_walkthrough;large|complex=>full;refresh;chg=>redo/stop;gate fail=>stop;" \
+  "ask iff same clean"
+ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done:"].freeze
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
@@ -124,7 +126,29 @@ TEXT
 CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
   Resume batch processing now.
 
-  Re-read your restart handoff and run the bounded status recovery steps described under "Pausing For An Agent-Runner Restart" in the installed `pr-processing.md` workflow before editing, pushing, polling, or starting any new target.
+  The receiving invocation must bind its own operation. Identify the active host,
+  then use the active host home's absolute resolver command below exactly once.
+  The resolver selects the installed provider profile; never pre-read install
+  metadata or branch around resolution. Never inherit a sender's handle or paths.
+
+  Run the active host home's absolute `bin/agent-workflows-resolve begin` command
+  exactly once and retain that exact JSON result as `resume_operation`. Do not
+  begin a second operation. Compare `resume_operation.revision` with the handoff's
+  `originating_provider_revision` before reading any shared instruction.
+  On mismatch, stop normal resume and require explicit cancellation/relaunch or
+  state reconciliation before any work continues. On match, re-read only
+  `resume_operation.assets.skills.pause` and
+  `resume_operation.assets.workflow`, then run that workflow's bounded status
+  recovery steps under "Pausing For An Agent-Runner Restart" before editing,
+  pushing, polling, or starting a target.
+
+  After the invocation's final shared-instruction read and final helper/capability
+  use, invoke `resume_operation.release` to release the old operation. Release
+  invalidates every returned `resume_operation.assets.*` path even if files remain. A later restart
+  or follow-up must begin a new operation. Recover crashed or orphaned handles only
+  with the active resolver's `list --json` and named `release`;
+  never TTL or PID inference.
+  Continue only after the operation checks pass.
 TEXT
 
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
@@ -470,7 +494,7 @@ required_skill_rule_phrases = [
   "bulky detail stays in the Batch Plan",
   "Keep bulky evidence",
   "outside the prompt",
-  "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
+  'AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby "${PLAN_PR_BATCH_SKILL_DIR}/scripts/check_goal_prompt_size.rb"'
 ]
 
 required_codex_prompt_phrases = [
@@ -506,7 +530,7 @@ required_all_prompt_phrases = [
   "respect coordination claims and dependencies",
   "register before launch when supported",
   "push holder/generation check",
-  "facts are UNKNOWN"
+  "unverified=>UNKNOWN"
 ]
 
 host_aware_batch_sizing_phrase_checks = {
@@ -797,7 +821,7 @@ bulky_items = (1..12).map do |number|
       Original: Trusted direct request for prompt-size fixture coverage.
       Goal: #{'Preserve the entire audit narrative, linked evidence, and duplicated context. ' * 5}
       Notes: #{'Bulky verification detail that belongs in the Batch Plan. ' * 8}
-      Done when: #{'All copied evidence is repeated in the goal prompt. ' * 4}
+      Done: #{'All copied evidence is repeated in the goal prompt. ' * 4}
   ITEM
 end.join("\n")
 
@@ -806,7 +830,7 @@ first_ready_item = <<~ITEM.chomp
     Original: n/a.
     Goal: Add size guard.
     Notes: implementation lane.
-    Done when: requested authority state with current-head evidence.
+    Done: requested authority state with current-head evidence.
 ITEM
 
 second_ready_item = <<~ITEM.chomp
@@ -814,7 +838,7 @@ second_ready_item = <<~ITEM.chomp
     Original: n/a.
     Goal: Review dispatcher routing.
     Notes: QA lane; hard route.
-    Done when: requested authority state with current-head evidence.
+    Done: requested authority state with current-head evidence.
 ITEM
 
 mixed_route_ready_items = [first_ready_item, second_ready_item].join("\n")

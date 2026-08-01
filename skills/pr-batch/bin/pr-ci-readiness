@@ -346,6 +346,7 @@ module PrCiReadiness
   # All subprocess calls use array args (no shell).
   class Runner
     def run(argv)
+      @gh_executable = resolve_gh_executable!
       opts = parse_args(argv)
       if opts[:help]
         puts USAGE
@@ -367,6 +368,19 @@ module PrCiReadiness
     end
 
     private
+
+    def resolve_gh_executable!
+      provenance = ENV["AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE"]
+      executable = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
+      return executable || "gh" unless provenance
+
+      unless provenance.match?(/\Aprovider-operation:[0-9a-f]{40}:[0-9a-f]{64}\z/) &&
+             executable&.start_with?("/") && File.file?(executable) && File.executable?(executable)
+        raise Error, "provider operation GitHub executable binding is missing or invalid"
+      end
+
+      executable
+    end
 
     def parse_args(argv)
       opts = {
@@ -444,7 +458,7 @@ module PrCiReadiness
     REPO_FORMAT = %r{\A[^/\s]+/[^/\s]+\z}
 
     def resolve_repo!(repo)
-      repo ||= capture_required!("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").strip
+      repo ||= capture_required!(@gh_executable, "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").strip
       parts = repo.split("/", -1)
       resolved_host = @gh_env.fetch("GH_HOST")
       host_qualified = parts.length == 3 &&
@@ -775,7 +789,7 @@ module PrCiReadiness
       rows = []
       expected_total = nil
       loop do
-        payload = capture_json!("gh", "api", format(endpoint_template, page:))
+        payload = capture_json!(@gh_executable, "api", format(endpoint_template, page:))
         raise Error, "#{key} response was not an object" unless payload.is_a?(Hash)
 
         validate_page&.call(payload)
@@ -952,7 +966,7 @@ module PrCiReadiness
     # no checks exist. JSON output and the established no-checks diagnostic are
     # therefore known-good; other command/query failures remain distinguishable.
     def fetch_checks(repo, pr_number, required:)
-      cmd = ["gh", "pr", "checks", pr_number.to_s, "--repo", repo]
+      cmd = [@gh_executable, "pr", "checks", pr_number.to_s, "--repo", repo]
       cmd << "--required" if required
       cmd += ["--json", "name,state,bucket,link,workflow"]
       out, err, status = Open3.capture3(@gh_env, *cmd)
@@ -1068,7 +1082,7 @@ module PrCiReadiness
     end
 
     def fetch_reviews_page(owner, name, pr_number, cursor)
-      cmd = ["gh", "api", "graphql", "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "pr=#{pr_number}"]
+      cmd = [@gh_executable, "api", "graphql", "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "pr=#{pr_number}"]
       cmd += ["-f", "endCursor=#{cursor}"] unless cursor.nil?
       cmd += ["-f", "query=#{REVIEW_DRAFTS_QUERY}"]
       data = capture_json!(*cmd)
@@ -1142,7 +1156,7 @@ module PrCiReadiness
     end
 
     def fetch_pr_head_oid(repo, pr_number)
-      data = capture_json!("gh", "pr", "view", pr_number.to_s, "--repo", repo, "--json", "headRefOid")
+      data = capture_json!(@gh_executable, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "headRefOid")
       head = data.fetch("headRefOid", "").to_s
       raise Error, "could not resolve PR headRefOid for ##{pr_number}" if head.empty?
 
@@ -1150,7 +1164,7 @@ module PrCiReadiness
     end
 
     def fetch_target_pr_identity(repo, pr_number)
-      data = capture_json!("gh", "api", "repos/#{repo}/pulls/#{pr_number}")
+      data = capture_json!(@gh_executable, "api", "repos/#{repo}/pulls/#{pr_number}")
       raise Error, "target PR response was not an object" unless data.is_a?(Hash)
 
       id = data["id"]
@@ -1202,7 +1216,7 @@ module PrCiReadiness
     end
 
     def fetch_actions_run(repo, run_id)
-      capture_json!("gh", "api", "repos/#{repo}/actions/runs/#{run_id}")
+      capture_json!(@gh_executable, "api", "repos/#{repo}/actions/runs/#{run_id}")
     end
 
     def fetch_actions_jobs(repo, run_id)
@@ -1211,7 +1225,7 @@ module PrCiReadiness
       page = 1
       expected_total = nil
       loop do
-        data = capture_json!("gh", "api", "repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=#{per_page}&page=#{page}")
+        data = capture_json!(@gh_executable, "api", "repos/#{repo}/actions/runs/#{run_id}/jobs?per_page=#{per_page}&page=#{page}")
         page_jobs = data.fetch("jobs", [])
         page_total = data["total_count"]
         unless page_jobs.is_a?(Array) && page_total.is_a?(Integer) && page_total >= 0
@@ -1335,11 +1349,12 @@ module PrCiReadiness
     end
 
     def gh_smoke
-      return "gh smoke: skipped (gh not installed)" unless system("command -v gh > /dev/null 2>&1")
+      return "gh smoke: skipped (gh not installed)" unless File.file?(@gh_executable) ||
+                                                           system("command -v gh > /dev/null 2>&1")
 
       repo, status = Open3.capture2(
         @gh_env,
-        "gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"
+        @gh_executable, "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"
       )
       return "gh smoke: skipped (gh not authenticated)" unless status.success? && !repo.strip.empty?
 

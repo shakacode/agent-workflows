@@ -1,0 +1,528 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "minitest/autorun"
+
+class ProviderOperationContractTest < Minitest::Test
+  ROOT = File.expand_path("..", __dir__)
+  ENTRY_SKILLS = %w[
+    address_review
+    adversarial_pr_review
+    autoreview
+    benchmark_verification
+    evaluate_issue
+    pause
+    plan_issue_triage
+    plan_pr_batch
+    post_merge_audit
+    pr_batch
+    pr_monitoring
+    pr_walkthrough
+    run_ci
+    spec
+    tdd
+    triage
+    update_changelog
+    verify
+  ].freeze
+  OPERATION_BOUND_SURFACES = (
+    ENTRY_SKILLS.map { |name| "skills/#{name.tr('_', '-')}/SKILL.md" } +
+    %w[
+      workflows/address-review.md
+      workflows/adversarial-pr-review.md
+      workflows/continuous-evaluation-loop.md
+      workflows/evaluate-issue.md
+      workflows/post-merge-audit.md
+      workflows/pr-processing.md
+      workflows/tdd.md
+    ]
+  ).freeze
+  FORBIDDEN_PROVIDER_FALLBACKS = {
+    "consumer shared-skill/workflow copy" => %r{\.agents/(?:skills|workflows)/},
+    "host-tree relative workflow link" => %r{\.\./\.\./workflows/},
+    "unbound shared asset path" => %r{`(?:\.\.?/)*(?:docs|skills|workflows)/[a-z]},
+    "relative shared asset link" => %r{\]\(\.\.?/(?:\.\.?/)*(?:docs|skills|workflows)/},
+    "installed/shared fallback" => %r{installed/shared}i,
+    "installed workflow fallback" => /installed `pr-processing\.md`|installed workflow/i,
+    "installed/repo-local skill fallback" => /installed or repo-local `[^`]*skill|repo-local skill/i,
+    "loaded-skill fallback" => /loaded[- ]skill/i,
+    "repo-pinned fallback" => /repo[- ]pinned/i,
+    "repo-local path fallback" => %r{live/repo-local fallback}i,
+    "live-plugin fallback" => /live plugin/i,
+    "another-checkout fallback" => /another checkout|other checkout/i,
+    "unnamed PR-processing asset" => /(?:resolved|operation-provided) `pr-processing\.md`/i,
+    "environment skill-directory fallback" => /PR_BATCH_SKILL_DIR.{0,80}environment variable/im,
+    "same-directory workflow link" => /\]\(pr-processing\.md(?:#|\))/,
+    "bare shared workflow filename" => %r{(?<![\w/])pr-processing\.md(?![\w/])}
+  }.freeze
+
+  def test_registry_declares_every_operation_bound_entry_skill
+    registry = JSON.parse(read("operation-capabilities.json"))
+    declared = registry.dig("assets", "skills")
+
+    assert_instance_of Hash, declared
+    assert_equal ENTRY_SKILLS, declared.keys.sort
+  end
+
+  def test_registry_declares_the_complete_autonomous_merge_runtime_bundle
+    registry = JSON.parse(read("operation-capabilities.json"))
+    capability = registry.dig("capabilities", "autonomous-merge-eligibility")
+
+    refute_nil capability
+    assert_equal false, capability.fetch("mutation")
+    assert_equal true, capability.fetch("requires_current_provider")
+    assert_equal(
+      {
+        "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+        "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
+        "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+        "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
+        "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
+        "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
+        "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
+        "calibration-decision" =>
+          "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+      },
+      capability.fetch("runtime")
+    )
+  end
+
+  def test_canonical_workflow_runs_autonomous_merge_only_through_the_bound_runner
+    workflow = read("workflows/pr-processing.md")
+
+    assert_includes workflow, '"${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility'
+    refute_includes workflow, "TRUSTED_RUNTIME_ROOT"
+    refute_includes workflow, "TRUSTED_PR_BATCH_SKILL_DIR"
+    refute_includes workflow, "verified-installed-pack:"
+    refute_includes workflow, "trusted-base materialization"
+    refute_match(%r{git archive.*skills/pr-batch}m, workflow)
+  end
+
+  def test_pr_monitoring_requires_bound_readiness_without_raw_github_fallback
+    monitoring = read("skills/pr-monitoring/SKILL.md")
+
+    assert_includes monitoring, '"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness --'
+    assert_includes monitoring, "stop with a provider-contract"
+    refute_match(/pr-ci-readiness.*(?:unavailable|missing).*fall back.*gh pr checks/im, monitoring)
+  end
+
+  def test_readiness_workflows_keep_raw_github_checks_diagnostic_only
+    %w[workflows/adversarial-pr-review.md workflows/pr-processing.md].each do |path|
+      text = read(path)
+      assert_match(/pr-ci-readiness.*owns (?:the )?readiness/im, text, path)
+      refute_match(%r{`pr-ci-readiness`\s*/\s*`gh pr checks`}i, text, path)
+      refute_match(/when `gh pr checks` can answer the readiness question/i, text, path)
+      refute_match(/All GitHub checks.*`gh pr checks/im, text, path)
+    end
+  end
+
+  def test_adversarial_review_routes_readiness_only_through_the_bound_runner
+    workflow = read("workflows/adversarial-pr-review.md")
+
+    assert_includes workflow, '"${AGENT_WORKFLOWS_RUNNER[@]}" pr-ci-readiness --'
+    refute_includes workflow, "PR_BATCH_SKILL_DIR"
+  end
+
+  def test_coordination_backend_resolves_the_pr_batch_skill_directory_from_the_skill_file
+    documentation = read("docs/coordination-backend.md")
+
+    assert_includes documentation, "parent directory of the operation-returned `assets.skills.pr_batch` path"
+  end
+
+  def test_walkthrough_routes_use_the_bound_named_asset_without_picker_fallback
+    %w[
+      skills/plan-pr-batch/SKILL.md
+      skills/pr-batch/SKILL.md
+      skills/pr-monitoring/SKILL.md
+      skills/triage/SKILL.md
+      workflows/pr-processing.md
+    ].each do |path|
+      text = read(path)
+      assert_includes text, "assets.skills.pr_walkthrough", path
+      refute_includes text, "$pr-walkthrough", path
+      refute_match(/pr-walkthrough.*when available/i, text, path)
+    end
+  end
+
+  def test_registry_covers_actual_outgoing_operation_bound_skill_routes
+    registry = JSON.parse(read("operation-capabilities.json"))
+    declared = registry.dig("assets", "skills").keys.map { |name| name.tr("_", "-") }
+    shared_skill_names = Dir.glob(File.join(ROOT, "skills/*/SKILL.md")).map do |path|
+      File.basename(File.dirname(path))
+    end
+    routed = ENTRY_SKILLS.flat_map do |name|
+      text = read("skills/#{name.tr('_', '-')}/SKILL.md")
+      text.scan(/\$([a-z][a-z0-9-]+)/).flatten +
+        text.scan(%r{`/([a-z][a-z0-9-]+)`}).flatten
+    end.uniq & shared_skill_names
+
+    assert_empty routed - declared, "unbound outgoing routes: #{(routed - declared).sort.join(', ')}"
+    assert_includes routed, "run-ci"
+  end
+
+  def test_registry_covers_every_skill_route_in_the_canonical_operation_workflow
+    registry = JSON.parse(read("operation-capabilities.json"))
+    declared = registry.dig("assets", "skills").keys
+    workflow = read("workflows/pr-processing.md")
+    shared = Dir.glob(File.join(ROOT, "skills/*/SKILL.md")).to_h do |path|
+      name = File.basename(File.dirname(path))
+      [name, name.tr("-", "_")]
+    end
+    picker_routes = workflow.scan(/\$([a-z][a-z0-9-]+)/).flatten & shared.keys
+    named_routes = workflow.scan(/(?:\b[a-z_]+_operation\.)?assets\.skills\.([a-z][a-z0-9_]*)/).flatten
+    required = (picker_routes.map { |name| shared.fetch(name) } + named_routes).uniq
+
+    assert_empty required - declared, "unbound canonical workflow routes: #{(required - declared).sort.join(', ')}"
+  end
+
+  def test_every_operation_bound_entry_skill_carries_the_bootstrap_contract
+    failures = ENTRY_SKILLS.flat_map do |name|
+      path = "skills/#{name.tr('_', '-')}/SKILL.md"
+      text = read(path)
+      required_fragments = [
+        "## Bound Provider Operation",
+        "current invocation",
+        "active host home",
+        "absolute `bin/agent-workflows-resolve begin`",
+        "Never bootstrap through `PATH`",
+        "inherited operation",
+        "`assets.skills.#{name}`",
+        "`assets.workflow`",
+        "`assets.root`",
+        "Consumer `AGENTS.md`",
+        "stop"
+      ]
+      required_fragments.filter_map do |fragment|
+        "#{path}: missing #{fragment.inspect}" unless text.include?(fragment)
+      end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_every_operation_bound_surface_carries_the_explicit_closeout_contract
+    failures = OPERATION_BOUND_SURFACES.flat_map do |path|
+      text = read(path)
+      [
+        "final shared-instruction read",
+        "final helper/capability use",
+        "invalidates every returned `assets.*` path",
+        "begin a new operation",
+        "release the old operation",
+        "`list --json`",
+        "named `release`",
+        "never TTL or PID inference"
+      ].filter_map { |fragment| "#{path}: missing #{fragment.inspect}" unless text.include?(fragment) }
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_every_entry_delegates_profile_selection_to_the_absolute_resolver
+    failures = ENTRY_SKILLS.flat_map do |name|
+      path = "skills/#{name.tr('_', '-')}/SKILL.md"
+      text = read(path)
+      %w[provider_profile current pinned].filter_map do |fragment|
+        "#{path}: missing #{fragment}" unless text.include?(fragment)
+      end + [
+        ("#{path}: missing resolver-owned profile selection" unless text.include?("resolver selects the installed provider profile")),
+        ("#{path}: still branches on install metadata" if text.include?("persisted install metadata field")),
+        ("#{path}: still carries a managed-only branch" if text.include?("Managed profile only:")),
+        ("#{path}: still tells pinned installs not to resolve" if text.include?("Pinned profile: never fetch or run"))
+      ].compact
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_generated_restart_fixture_uses_the_structural_provider_contract
+    source = read("skills/plan-pr-batch/scripts/check_goal_prompt_size.rb")
+    fixture = source.match(/CANONICAL_RESUME_SNIPPET = <<~TEXT\.chomp\n(.*?)^TEXT$/m)&.captures&.first
+
+    refute_nil fixture
+    assert_restart_provider_contract(fixture, "generated canonical resume fixture")
+  end
+
+  def test_copy_paste_surfaces_require_recipient_local_binding
+    %w[
+      workflows/address-review.md
+      workflows/adversarial-pr-review.md
+      workflows/post-merge-audit.md
+    ].each do |path|
+      text = read(path)
+      assert_includes text, "Every recipient of a copied prompt must bind locally", path
+      assert_includes text, "absolute `bin/agent-workflows-resolve begin`", path
+      assert_includes text, "Never inherit a sender's handle or paths", path
+      assert_match(/resolver selects the installed provider profile/i, text, path)
+      refute_includes text, "Read active-host install metadata", path
+      refute_match(/a `pinned` recipient must stop/i, text, path)
+    end
+    triage = read("skills/plan-issue-triage/SKILL.md")
+    assert_includes triage, "This receiving invocation must bind its own provider"
+    assert_includes triage, "Never inherit operation handles"
+  end
+
+  def test_plan_issue_triage_copied_prompt_binds_one_local_operation
+    prompt = fenced_prompt_after(
+      read("skills/plan-issue-triage/SKILL.md"),
+      "## Prompt Template"
+    )
+    assert_equal 1, prompt.scan("agent-workflows-resolve begin").length
+    assert_includes prompt, "`triage_operation.assets.skills.evaluate_issue`"
+    assert_includes prompt, "`triage_operation.assets.skills.plan_pr_batch`"
+    refute_match(/(?<!triage_operation\.)\bassets\./, prompt)
+    assert_equal ["triage_operation"], prompt.scan(/\b([a-z_]+_operation)\.assets\./).flatten.uniq
+    refute_includes prompt, "Managed provider branch:"
+    refute_includes prompt, "Pinned or offline provider branch:"
+  end
+
+  def test_every_asset_consuming_copy_paste_prompt_binds_inside_the_received_body
+    paths = %w[
+      workflows/address-review.md
+      workflows/adversarial-pr-review.md
+      workflows/post-merge-audit.md
+    ]
+    failures = paths.flat_map do |path|
+      fenced_text_blocks(read(path)).flat_map.with_index do |body, index|
+        next [] unless body.include?("assets.")
+
+        required = [
+          "This receiving invocation must bind its own provider",
+          "final shared-instruction read",
+          "final helper/capability use",
+          "invalidates every returned `assets.*` path",
+          "release the old operation",
+          "`list --json`",
+          "named\n`release`",
+          "never TTL or PID inference"
+        ]
+        required.filter_map do |fragment|
+          "#{path}: fenced prompt #{index + 1} missing #{fragment.inspect}" unless body.include?(fragment)
+        end
+      end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_every_restart_or_replacement_prompt_has_structural_provider_fencing
+    paths = %w[skills/pause/SKILL.md docs/agent-runner-restarts.md workflows/pr-processing.md]
+    paths.each do |path|
+      prompts = fenced_text_blocks(read(path)).select do |body|
+        body.lstrip.start_with?("Resume", "Restart")
+      end
+      refute_empty prompts, path
+      prompts.each.with_index(1) do |body, index|
+        assert_restart_provider_contract(body, "#{path}: restart prompt #{index}")
+        assert_includes body, "release the old operation", "#{path}: restart prompt #{index}"
+        assert_includes body, "`list --json`", "#{path}: restart prompt #{index}"
+      end
+    end
+  end
+
+  def test_public_provider_docs_use_neutral_profile_terminology
+    paths = %w[
+      docs/installation-and-upgrades.md
+      docs/host-adapter/contract.md
+      docs/plans/2026-07-25-bound-provider-snapshot-design.md
+    ]
+    failures = paths.filter_map do |path|
+      "#{path}: contains organization-specific rolling terminology" if read(path).match?(/ShakaCode (?:rolling-main|rolling channel)/i)
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_operation_bound_surfaces_do_not_offer_mixed_provider_fallbacks
+    failures = OPERATION_BOUND_SURFACES.flat_map do |path|
+      text = read(path)
+      FORBIDDEN_PROVIDER_FALLBACKS.filter_map do |label, pattern|
+        "#{path}: contains #{label}" if text.match?(pattern)
+      end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_operation_bound_surfaces_do_not_instruct_direct_capability_execution
+    registry = JSON.parse(read("operation-capabilities.json"))
+    capability_names = registry.fetch("capabilities").keys
+    paths = (
+      OPERATION_BOUND_SURFACES +
+      registry.dig("assets", "skills").values +
+      registry.dig("assets", "related_workflows").values +
+      registry.dig("assets", "docs").values
+    ).uniq
+    direct_capability = %r{`bin/(?:#{capability_names.map { |name| Regexp.escape(name) }.join('|')})`}
+    failures = paths.filter_map do |path|
+      "#{path}: instructs direct registered-capability execution" if read(path).match?(direct_capability)
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_transitive_registered_docs_and_references_use_named_assets
+    registry = JSON.parse(read("operation-capabilities.json"))
+    skill_paths = registry.dig("assets", "skills").values.flat_map do |entry|
+      Dir.glob(File.join(ROOT, File.dirname(entry), "**/*.{md,txt}")).map do |path|
+        path.delete_prefix("#{ROOT}/")
+      end
+    end
+    paths = skill_paths +
+            registry.dig("assets", "related_workflows").values +
+            registry.dig("assets", "docs").values
+    failures = paths.flat_map do |path|
+      text = read(path)
+      FORBIDDEN_PROVIDER_FALLBACKS.filter_map do |label, pattern|
+        "#{path}: contains #{label}" if text.match?(pattern)
+      end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_consumer_policy_and_command_seams_remain_local
+    workflow = read("workflows/pr-processing.md")
+
+    assert_includes workflow, "Consumer `AGENTS.md`"
+    assert_includes workflow, "`.agents/agent-workflow.yml`"
+    assert_match(%r{\.agents/bin}, workflow)
+  end
+
+  def test_public_contract_documents_the_generic_bound_snapshot_model
+    contract = read("docs/host-adapter/contract.md")
+    design_path = "docs/plans/2026-07-25-bound-provider-snapshot-design.md"
+    assert_path_exists File.join(ROOT, design_path)
+    design = read(design_path)
+
+    [contract, design].each do |text|
+      assert_includes text, "managed provider"
+      assert_includes text, "explicit pinned or offline snapshot"
+      assert_includes text, "`assets.root`"
+      assert_includes text, "`assets.skills`"
+      assert_includes text, "current invocation"
+    end
+    refute_match(/professional consumer/i, contract)
+    refute_match(/professional consumer/i, design)
+  end
+
+  def test_public_contract_documents_bounded_explicit_lifecycle
+    paths = %w[
+      docs/host-adapter/contract.md
+      docs/installation-and-upgrades.md
+      docs/plans/2026-07-25-bound-provider-snapshot-design.md
+    ]
+    failures = paths.flat_map do |path|
+      text = read(path)
+      [
+        "`release --host HOST --target TARGET --operation HANDLE --json`",
+        "`list --host HOST --target TARGET --json`",
+        "32",
+        "8",
+        "healthy quiescent state",
+        "never evicts a live operation",
+        "lifecycle lease"
+      ].filter_map { |fragment| "#{path}: missing #{fragment}" unless text.include?(fragment) }
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  def test_entry_scripts_embed_the_same_self_contained_lease_before_loading_mutable_runtime
+    entries = %w[bin/agent-workflows-resolve bin/agent-workflows-run].to_h do |path|
+      text = read(path)
+      module_source = text.match(/module AgentWorkflowsEntryLease\n.*?^end\n/m)&.to_s
+
+      refute_empty module_source, path
+      assert_operator text.index(module_source), :<, text.index("AgentWorkflowsEntryLease.with"), path
+      assert_operator text.index("AgentWorkflowsEntryLease.with"), :<,
+                      text.index("require_relative \"agent_workflows_operation/"), path
+      refute_includes text[0...text.index("AgentWorkflowsEntryLease.with")], "require_relative", path
+      [path, module_source]
+    end
+
+    assert_equal entries.fetch("bin/agent-workflows-resolve"), entries.fetch("bin/agent-workflows-run")
+  end
+
+  def test_lifecycle_entry_is_self_contained
+    lifecycle = read("bin/agent-workflows-lifecycle")
+
+    refute_includes lifecycle, "require_relative"
+    assert_includes lifecycle, "with_exclusive_lease(target)"
+    assert_includes lifecycle, "validate_reentry!(target)"
+  end
+
+  def test_installer_atomically_publishes_complete_entries_before_mutable_runtime
+    installer = read("bin/install-agent-workflows")
+
+    assert_includes installer, "install -m 0755 \"$source\" \"$temporary\""
+    assert_includes installer, "ln -s \"$source\" \"$temporary\""
+    assert_includes installer, "File.rename(ARGV.fetch(0), ARGV.fetch(1))"
+    assert_equal 2, installer.scan('publish_entry_copy "$install_content_root/bin/$helper" "$destination"').length
+    assert_equal 2, installer.scan('publish_entry_symlink "$repo_root/bin/$helper" "$destination"').length
+    remaining_copy_start = installer.index('for helper in "${bin_helpers[@]}"')
+    remaining_copy_end = installer.index(
+      'publish_entry_copy "$install_content_root/bin/$helper" "$destination"',
+      remaining_copy_start
+    )
+    refute_includes installer[remaining_copy_start..remaining_copy_end], 'rm -f "$destination"'
+    assert_operator installer.index("publish_entry_copy \"$install_content_root/bin/$helper\" \"$destination\""), :<,
+                    installer.index("\"$install_content_root/bin/agent_workflows_operation/\"")
+    assert_operator installer.index("publish_entry_symlink \"$repo_root/bin/$helper\" \"$destination\""), :<,
+                    installer.index("ln -sfn \"$repo_root/bin/agent_workflows_operation\"")
+    %w[
+      agent-workflows-lifecycle
+      agent-workflows-resolve
+      agent-workflows-run
+      install-agent-workflows
+      upgrade-agent-workflows
+    ].each do |entry|
+      assert_match(/atomic_entry_helpers=\(.*?^\s+#{Regexp.escape(entry)}$/m, installer)
+    end
+  end
+
+  def test_public_contract_explains_bootstrap_and_stale_reentry_proofs
+    paths = %w[
+      docs/host-adapter/contract.md
+      docs/installation-and-upgrades.md
+      docs/plans/2026-07-25-bound-provider-snapshot-design.md
+    ]
+    failures = paths.flat_map do |path|
+      text = read(path)
+      %w[atomic wrapper-only independent inherited inactive EOF].filter_map do |fragment|
+        "#{path}: missing #{fragment.inspect}" unless text.include?(fragment)
+      end
+    end
+
+    assert_empty failures, failures.join("\n")
+  end
+
+  private
+
+  def assert_restart_provider_contract(prompt, label)
+    assert_equal 1, prompt.scan("agent-workflows-resolve begin").length, label
+    assert_equal ["resume_operation"], prompt.scan(/\b([a-z_]+_operation)\.revision\b/).flatten.uniq, label
+    assert_equal ["resume_operation"], prompt.scan(/\b([a-z_]+_operation)\.assets\./).flatten.uniq, label
+    refute_match(/(?<!resume_operation\.)\bassets\./, prompt, label)
+    assert_operator prompt.index("resume_operation.revision"), :<,
+                    prompt.index("resume_operation.assets"), label
+    refute_includes prompt, "Managed provider branch:", label
+    refute_includes prompt, "Pinned or offline provider branch:", label
+  end
+
+  def fenced_prompt_after(text, heading)
+    heading_start = text.index(heading)
+    raise "missing heading #{heading.inspect}" unless heading_start
+
+    fenced_text_blocks(text[heading_start..]).fetch(0)
+  end
+
+  def fenced_text_blocks(text)
+    text.scan(/^(`{3,4})text\s*$\n(.*?)^\1\s*$/m).map(&:last)
+  end
+
+  def read(relative)
+    File.binread(File.join(ROOT, relative))
+  end
+end

@@ -24,14 +24,16 @@ jobs:
         id: gem-cache
         run: echo "dir=$(gem env gemdir)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache RuboCop gems
+      - name: Cache validation gems
         uses: actions/cache@v4
         with:
           path: ${{ steps.gem-cache.outputs.dir }}
-          key: ${{ runner.os }}-ruby-3.4-rubocop-${{ hashFiles('.rubocop-version') }}
+          key: ${{ runner.os }}-ruby-3.4-validation-${{ hashFiles('.rubocop-version', '.json-schemer-version') }}
 
-      - name: Install RuboCop
-        run: gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document
+      - name: Install validation gems
+        run: |
+          gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document
+          gem install json_schemer -v "$(tr -d '[:space:]' < .json-schemer-version)" --no-document
 
       - name: Run pack validation (bin/validate)
         run: bin/validate

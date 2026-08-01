@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--consumer-root DIR] [--dry-run] [--no-fetch]
+Usage: upgrade-agent-workflows [--host codex|claude|auto] [--target DIR] [--source DIR] [--mode copy|symlink] [--delivery-mode flat|plugin-companion] [--provider-profile pinned|managed] [--gh-executable ABSOLUTE_PATH] [--codex-executable ABSOLUTE_PATH] [--consumer-root DIR] [--dry-run] [--no-fetch]
 
 Updates the source clone, reinstalls this shared workflow pack into an agent
 home, and optionally validates one or more consumer repository seams.
@@ -16,15 +16,30 @@ USAGE
 }
 
 script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+original_args=("$@")
 host="codex"
 target=""
 source=""
 mode=""
 delivery_mode=""
+provider_profile=""
+gh_executable=""
+codex_executable=""
+codex_executable_explicit=false
+recorded_codex_executable=""
+recorded_codex_executable_resolved=""
 dry_run=false
 fetch=true
 consumer_roots=()
 metadata_name=".agent-workflows-install.json"
+declared_git_source=false
+backup_dir=""
+backup_target_dir=""
+backup_identity=""
+backup_ready=false
+target_existed=false
+completed=false
+backup_cleanup_attempted=false
 
 default_target_for_host() {
   case "$1" in
@@ -116,9 +131,34 @@ short_revision() {
   printf '%s\n' "${value:0:12}"
 }
 
-update_source_clone() {
-  [[ -d "$source/.git" ]] || return 0
+validate_declared_git_source() {
+  if [[ ! -e "$source/.git" && ! -L "$source/.git" ]]; then
+    declared_git_source=false
+    return 0
+  fi
+  declared_git_source=true
 
+  local inside_work_tree top_level revision
+  if ! inside_work_tree="$(git -C "$source" rev-parse --is-inside-work-tree 2>&1)" ||
+     [[ "$inside_work_tree" != "true" ]]; then
+    echo "CHECK_FAILED declared Git source is invalid: $inside_work_tree" >&2
+    return 3
+  fi
+  if ! top_level="$(git -C "$source" rev-parse --show-toplevel 2>&1)"; then
+    echo "CHECK_FAILED declared Git source root check failed: $top_level" >&2
+    return 3
+  fi
+  if [[ "$(cd "$top_level" && pwd -P)" != "$(cd "$source" && pwd -P)" ]]; then
+    echo "CHECK_FAILED declared Git source resolves to another worktree root: $top_level" >&2
+    return 3
+  fi
+  if ! revision="$(git -C "$source" rev-parse --verify --quiet 'HEAD^{commit}' 2>&1)"; then
+    echo "CHECK_FAILED declared Git source commit check failed: $revision" >&2
+    return 3
+  fi
+}
+
+update_source_clone() {
   git -C "$source" fetch --quiet --prune origin
   local branch upstream
   branch="$(git -C "$source" branch --show-current 2>/dev/null || true)"
@@ -132,25 +172,120 @@ update_source_clone() {
   fi
 }
 
+read_directory_identity() {
+  ruby -e '
+    stat = File.lstat(ARGV.fetch(0))
+    exit 1 unless stat.directory? && stat.uid == Process.euid
+    puts [stat.dev, stat.ino, stat.uid].join(":")
+  ' "$1"
+}
+
+backup_identity_matches() {
+  local current_identity
+  [[ -n "$backup_dir" && -n "$backup_identity" ]] || return 1
+  current_identity="$(read_directory_identity "$backup_dir" 2>/dev/null)" || return 1
+  [[ "$current_identity" = "$backup_identity" ]]
+}
+
+cleanup_backup() {
+  local cleanup_status
+  [[ -n "$backup_dir" ]] || return 0
+  backup_cleanup_attempted=true
+  if ! backup_identity_matches; then
+    echo "CLEANUP_FAILED backup identity changed: $backup_dir" >&2
+    return 1
+  fi
+
+  if rm -rf -- "$backup_dir"; then
+    :
+  else
+    cleanup_status=$?
+    echo "CLEANUP_FAILED backup removal failed: $backup_dir" >&2
+    return "$cleanup_status"
+  fi
+  if [[ -e "$backup_dir" || -L "$backup_dir" ]]; then
+    echo "CLEANUP_FAILED backup remains: $backup_dir" >&2
+    return 1
+  fi
+  backup_dir=""
+  backup_target_dir=""
+  backup_identity=""
+}
+
 backup_target() {
+  trap 'finish_upgrade "$?"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   backup_dir="$(mktemp -d)"
+  backup_identity="$(read_directory_identity "$backup_dir")"
   backup_target_dir="$backup_dir/target"
-  target_existed=false
+  mkdir -p "$backup_target_dir"
   if [[ -d "$target" ]]; then
     target_existed=true
-    mkdir -p "$backup_target_dir"
-    rsync -a "$target/" "$backup_target_dir/"
+    rsync -a --exclude='/.agent-workflows-operation-state' "$target/" "$backup_target_dir/"
   fi
+  backup_ready=true
 }
 
 restore_target() {
+  local restore_status
+  if [[ "$backup_ready" != "true" ]]; then
+    return 0
+  fi
+  if ! backup_identity_matches; then
+    echo "ROLLBACK_FAILED backup identity changed: $backup_dir" >&2
+    return 1
+  fi
+
   if [[ "${target_existed:-false}" = "true" ]]; then
     mkdir -p "$target"
-    rsync -a --delete "$backup_target_dir/" "$target/"
+  elif [[ ! -d "$target" ]]; then
+    if [[ -e "$target" || -L "$target" ]]; then
+      echo "ROLLBACK_FAILED target is not a directory: $target" >&2
+      return 1
+    fi
+    mkdir -p "$target"
+  fi
+  if rsync -a --delete --exclude='/.agent-workflows-operation-state' "$backup_target_dir/" "$target/"; then
+    :
   else
-    rm -rf "$target"
+    restore_status=$?
+    echo "ROLLBACK_FAILED restore_status=$restore_status recovery_path=$backup_dir" >&2
+    return "$restore_status"
+  fi
+  if [[ "$target_existed" != "true" ]]; then
+    rmdir "$target" 2>/dev/null || true
   fi
   echo "ROLLBACK_COMPLETE target=$target"
+}
+
+finish_upgrade() {
+  local original_status="$1"
+  local final_status="$original_status"
+  local restore_status cleanup_status
+  local restore_failed=false
+
+  trap - EXIT HUP INT TERM
+  set +e
+  if [[ "$completed" != "true" ]]; then
+    restore_target
+    restore_status=$?
+    if [[ "$restore_status" -ne 0 && "$final_status" -eq 0 ]]; then
+      final_status="$restore_status"
+    fi
+    if [[ "$restore_status" -ne 0 ]]; then
+      restore_failed=true
+    fi
+  fi
+  if [[ "$restore_failed" != "true" && "$backup_cleanup_attempted" != "true" ]]; then
+    cleanup_backup
+    cleanup_status=$?
+    if [[ "$cleanup_status" -ne 0 && "$final_status" -eq 0 ]]; then
+      final_status="$cleanup_status"
+    fi
+  fi
+  exit "$final_status"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -173,6 +308,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     --delivery-mode)
       delivery_mode="${2:?--delivery-mode requires flat or plugin-companion}"
+      shift 2
+      ;;
+    --provider-profile)
+      provider_profile="${2:?--provider-profile requires pinned or managed}"
+      shift 2
+      ;;
+    --gh-executable)
+      gh_executable="${2:?--gh-executable requires an absolute path}"
+      shift 2
+      ;;
+    --codex-executable)
+      codex_executable="${2:?--codex-executable requires an absolute path}"
+      codex_executable_explicit=true
       shift 2
       ;;
     --consumer-root)
@@ -243,12 +391,55 @@ fi
 if [[ -z "$delivery_mode" ]]; then
   delivery_mode="$(metadata_value "$metadata_path" delivery_mode 2>/dev/null || printf 'flat\n')"
 fi
+if [[ -z "$provider_profile" ]]; then
+  provider_profile="$(metadata_value "$metadata_path" provider_profile 2>/dev/null || printf 'pinned\n')"
+fi
+if [[ -z "$gh_executable" ]]; then
+  gh_executable="$(metadata_value "$metadata_path" gh_executable 2>/dev/null || true)"
+fi
+recorded_codex_executable="$(metadata_value "$metadata_path" codex_executable 2>/dev/null || true)"
+recorded_codex_executable_resolved="$(
+  metadata_value "$metadata_path" codex_executable_resolved 2>/dev/null || true
+)"
+if [[ -z "$codex_executable" ]]; then
+  codex_executable="$recorded_codex_executable"
+fi
+case "$provider_profile" in
+  pinned|managed) ;;
+  *)
+    echo "--provider-profile must be pinned or managed, got: $provider_profile" >&2
+    exit 64
+    ;;
+esac
 
 status_script="$source/bin/agent-workflows-status"
 install_script="$source/bin/install-agent-workflows"
 
 if [[ ! -x "$status_script" || ! -x "$install_script" ]]; then
   echo "CHECK_FAILED missing agent-workflows scripts in source: $source" >&2
+  exit 3
+fi
+
+if [[ "$host" = "codex" ]]; then
+  if { [[ -n "$recorded_codex_executable" ]] && [[ -z "$recorded_codex_executable_resolved" ]]; } ||
+     { [[ -z "$recorded_codex_executable" ]] && [[ -n "$recorded_codex_executable_resolved" ]]; }; then
+    echo "CHECK_FAILED recorded Codex executable binding is incomplete; reinstall or explicitly rebind it." >&2
+    exit 3
+  fi
+  if [[ "$codex_executable_explicit" = "true" && -n "$recorded_codex_executable" &&
+        "$codex_executable" != "$recorded_codex_executable" ]]; then
+    echo "CHECK_FAILED requested Codex executable differs from the recorded binding; reinstall or explicitly rebind it." >&2
+    exit 3
+  fi
+  if [[ -n "$recorded_codex_executable" ]] &&
+     ! ruby "$source/bin/agent-workflows-delivery-state" --validate-executable \
+       "$recorded_codex_executable" "$recorded_codex_executable_resolved" >/dev/null; then
+    echo "CHECK_FAILED recorded Codex executable resolution changed; reinstall or explicitly rebind it." >&2
+    exit 3
+  fi
+fi
+
+if ! validate_declared_git_source; then
   exit 3
 fi
 
@@ -269,15 +460,71 @@ fi
 
 old_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
 
-if [[ "$fetch" = "true" ]]; then
+lifecycle_wrapper="$script_root/bin/agent-workflows-lifecycle"
+lifecycle_environment="/usr/bin/env"
+[[ -x "$lifecycle_environment" ]] || lifecycle_environment="/bin/env"
+lifecycle_ruby=(
+  "$lifecycle_environment"
+  -u RUBYOPT -u RUBYLIB -u BUNDLE_GEMFILE -u BUNDLE_BIN_PATH
+  -u BUNDLE_PATH -u GEM_HOME -u GEM_PATH
+  ruby --disable=gems
+)
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYOPT="${RUBYOPT:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_RUBYLIB="${RUBYLIB:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_GEMFILE="${BUNDLE_GEMFILE:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_BIN_PATH="${BUNDLE_BIN_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_BUNDLE_PATH="${BUNDLE_PATH:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_HOME="${GEM_HOME:-}"
+export AGENT_WORKFLOWS_LIFECYCLE_CHILD_GEM_PATH="${GEM_PATH:-}"
+if [[ -n "${AGENT_WORKFLOWS_LIFECYCLE_FD:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TOKEN:-}" ||
+      -n "${AGENT_WORKFLOWS_LIFECYCLE_TARGET:-}" ]]; then
+  "${lifecycle_ruby[@]}" "$lifecycle_wrapper" validate-exclusive --target "$target" >/dev/null
+else
+  exec "${lifecycle_ruby[@]}" "$lifecycle_wrapper" \
+    exec-exclusive --target "$target" -- "$0" "${original_args[@]}"
+fi
+if [[ "$provider_profile" = "managed" && "$declared_git_source" = "true" ]]; then
+  managed_fetch_arg=true
+  [[ "$fetch" = "true" ]] || managed_fetch_arg=false
+  if ! ruby -I"$source/bin" -ragent_workflows_source_contract -e \
+    'AgentWorkflowsSourceContract.fast_forward_main!(ARGV.fetch(0), fetch: ARGV.fetch(1) == "true")' \
+    "$source" "$managed_fetch_arg"; then
+    echo "CHECK_FAILED managed upgrade requires clean canonical main and the exact canonical ref." >&2
+    exit 3
+  fi
+  if ! validate_declared_git_source; then
+    exit 3
+  fi
+elif [[ "$fetch" = "true" && "$declared_git_source" = "true" ]]; then
   update_source_clone
+  if ! validate_declared_git_source; then
+    exit 3
+  fi
 fi
 
 backup_target
-completed=false
-trap 'status=$?; if [[ "$completed" != "true" ]]; then restore_target; fi; exit "$status"' ERR
 
-"$install_script" --host "$host" --target "$target" --mode "$mode" --delivery-mode "$delivery_mode"
+install_args=(
+  --host "$host"
+  --target "$target"
+  --mode "$mode"
+  --delivery-mode "$delivery_mode"
+  --provider-profile "$provider_profile"
+)
+if [[ -n "$gh_executable" ]]; then
+  install_args+=(--gh-executable "$gh_executable")
+fi
+if [[ -n "$codex_executable" ]]; then
+  install_args+=(--codex-executable "$codex_executable")
+fi
+if [[ -n "$recorded_codex_executable_resolved" ]]; then
+  install_args+=(--codex-executable-resolved "$recorded_codex_executable_resolved")
+fi
+if [[ "$provider_profile" = "managed" || "$fetch" != "true" ]]; then
+  install_args+=(--no-fetch)
+fi
+"$install_script" "${install_args[@]}"
 
 if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
   for consumer_root in "${consumer_roots[@]}"; do
@@ -286,7 +533,7 @@ if [[ "${#consumer_roots[@]}" -gt 0 ]]; then
 fi
 
 completed=true
-trap - ERR
+cleanup_backup
 
 new_revision="$(metadata_value "$metadata_path" source_revision 2>/dev/null || printf 'unknown\n')"
 echo "UPGRADE_COMPLETE $(short_revision "$old_revision") $(short_revision "$new_revision") target=$target source=$source"

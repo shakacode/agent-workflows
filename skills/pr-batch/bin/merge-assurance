@@ -17,6 +17,20 @@ require "uri"
 module MergeAssurance
   class Error < StandardError; end
 
+  def github_cli
+    provenance = ENV["AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE"]
+    executable = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
+    return executable || "gh" unless provenance
+
+    unless provenance.match?(/\Aprovider-operation:[0-9a-f]{40}:[0-9a-f]{64}\z/) &&
+           executable&.start_with?("/") && File.file?(executable) && File.executable?(executable)
+      raise Error, "provider operation GitHub executable binding is missing or invalid"
+    end
+
+    executable
+  end
+  module_function :github_cli
+
   CONTEXT_KEYS = %w[
     contract version host repo pr base head_sha authority diff_identity
     human_merge_decision walkthrough semantic_github_actions_change operations
@@ -736,7 +750,7 @@ module MergeAssurance
     stdout_file = Tempfile.new("merge-assurance-tracker-stdout")
     stderr_file = Tempfile.new("merge-assurance-tracker-stderr")
     pid = Process.spawn(
-      "gh", "api", "--hostname", host, "repos/#{repo}/issues/#{issue}",
+      github_cli, "api", "--hostname", host, "repos/#{repo}/issues/#{issue}",
       out: stdout_file.path, err: stderr_file.path, pgroup: true
     )
     deadline = monotonic_time + tracker_gh_timeout_seconds

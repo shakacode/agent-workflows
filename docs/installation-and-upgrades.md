@@ -70,6 +70,14 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin install scw@agent-workflows
 ```
 
+The Claude plugin deliberately omits an explicit `version`. Claude therefore
+uses the Git commit SHA as the plugin version, so every commit on the
+marketplace's tracked branch is updateable without maintaining duplicate
+release numbers. Enable auto-update for the `agent-workflows` marketplace in
+Claude's **Plugins → Marketplaces** UI; third-party marketplace auto-update is
+disabled by default. A running session keeps the version it loaded until
+`/reload-plugins` or the next launch.
+
 For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
 
@@ -105,6 +113,55 @@ bin/install-agent-workflows --host claude --delivery-mode plugin-companion
 bin/install-agent-workflows --host codex --delivery-mode plugin-companion
 ```
 
+Install metadata persists `provider_profile` as `pinned` or `managed`. New and
+legacy installs default to `pinned`; a missing legacy field is interpreted as
+`pinned`. Pinned installs never fetch a current snapshot and never expose
+current-provider mutations. During installation, the installer imports the
+source worktree's exact committed `HEAD` into the private per-SHA Store and
+verifies the archived tree against the imported Git objects before committing
+the receipt. The installer runs reference-aware Store GC and admits that
+candidate under the retained-revision limit before committing metadata; a
+capacity refusal removes only a newly imported, unreferenced candidate and
+preserves the prior receipt. Uncommitted source changes are deliberately excluded. A pinned
+`begin` opens only that receipt revision, returns `freshness: pinned`, and
+supplies the same immutable named assets and lifecycle handle as managed
+operations without requiring `gh` or network access. Missing or corrupt legacy
+Store state fails with `PINNED_PROVIDER_SNAPSHOT_MISSING` and requires reinstall
+or upgrade; it is never reconstructed from mutable installed files.
+
+Select `--provider-profile managed` only with
+`--mode copy --delivery-mode plugin-companion --gh-executable
+/absolute/path/to/gh`. Codex additionally requires `--codex-executable
+/absolute/path/to/codex`. Verify both absolute paths explicitly; the installer
+resolves and validates them, then persists them as trusted install
+configuration.
+Managed operations never derive `gh` authority from runtime `PATH` or
+`AGENT_WORKFLOWS_GH_EXECUTABLE`, and native Codex proof never derives its
+executable or timeout from `AGENT_WORKFLOWS_CODEX_*`. The recorded Codex
+invocation and resolved target must still agree, remain executable, and have
+safe ownership, modes, and ancestors. Native inspection runs with a minimal
+child environment whose `PATH` begins with the recorded invocation directory
+while the validated resolved target is executed. Upgrades replay both recorded
+paths and stop with reinstall/rebind guidance if resolution changes.
+Managed installs also require an exact clean canonical
+`shakacode/agent-workflows` `main` checkout whose `HEAD` equals cached
+`origin/main`; feature, detached, dirty, ahead, behind, fork, and local-origin
+sources fail before target mutation.
+Managed installation refreshes the hardcoded canonical `main` ref by default.
+After validation, it imports that exact fetched commit into the same immutable
+per-SHA Store used by pinned installs and copies companion assets from the
+snapshot, not from the mutable source worktree.
+Use `--no-fetch` only for an intentionally offline install after independently
+establishing that cached `origin/main` is current; this explicit mode cannot
+prove where a locally mutable cached ref originated.
+Status and upgrade surface and replay this profile. Unknown values fail closed.
+Managed status reads both the available revision and `VERSION` from the same
+canonical commit rather than mixing canonical revision state with the live
+checkout.
+Install receipts likewise read both `source_revision` and `version` from the
+verified immutable Store snapshot, so dirty pinned worktrees and
+post-validation managed worktree changes cannot alter receipt identity.
+
 Native plugin installation does not install helper binaries on `PATH`, write
 `<target>/.agent-workflows-install.json`, or participate in status and upgrade
 behavior by itself. Companion mode supplies those pieces while leaving native
@@ -114,6 +171,39 @@ The installer and status helper detect enabled native `scw` state separately
 from cached-but-disabled plugin files. They fail closed when native state is
 enabled but its install receipt/cache cannot be verified, or when native and
 installer-managed flat skills would coexist.
+
+For every provider profile, begin before reading deeper shared workflows or
+running helpers. A managed native plugin and copied companion install must be at
+the same canonical `main` SHA:
+
+```bash
+"${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve" begin --host codex --json
+# or
+"${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve" begin --host claude --json
+```
+
+Do not look up this bootstrap resolver through `PATH`.
+The returned opaque handle binds the operation-provided skill, workflow, docs,
+and registered capability launcher. Its `runner` value is a complete argv
+prefix, including the trusted absolute environment sanitizer and Ruby
+interpreter. Preserve every element in order and append only
+`CAPABILITY -- ARGS`; do not execute only the installed runner-script element,
+resolve any prefix through `PATH`, or run a snapshot executable directly. A
+pinned or degraded begin cannot authorize a registered capability marked
+`requires_current_provider`. The outer installed runner checks that condition
+before starting the private launcher or capability child. Ordinary repository
+mutations remain governed by repository policy and user authority rather than
+provider freshness.
+
+If alignment fails, follow the complete host-specific update/reinstall/reload
+action printed by the resolver. A provider update in a running session always
+requires a host reload and a new session; the operation never assumes that
+already-loaded skill text changed in place.
+
+Claude rolling operations additionally require the native installation receipt
+to expose one full `gitCommitSha` and matching `installPath`. Generic companion
+installation remains compatible with older receipt shapes, but they cannot
+prove an exact rolling-operation provider revision.
 
 Validate both native manifests, the Claude marketplace, and the complete shared
 skill tree from the source pack root with:
@@ -130,6 +220,11 @@ Clone the source pack once:
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
 cd "$HOME/src/agent-workflows"
 ```
+
+Pinned installation requires that source path to be the exact root of a Git
+worktree with a resolved committed `HEAD`. An unpacked directory without Git
+objects cannot seed a verifiable pinned Store snapshot and fails with
+`PINNED_PROVIDER_SOURCE_INVALID`.
 
 Install for Codex:
 
@@ -443,9 +538,12 @@ Stable status tokens:
 | `NOT_INSTALLED` | 2 | Target has no `.agent-workflows-install.json`. |
 | `CHECK_FAILED` | 3 | The check could not safely determine status. |
 
-Use `--json` for machine-readable output. Use `--fetch` only when you want a
-network check against `origin`; without `--fetch`, status compares against the
-current local source clone. Status also reports `delivery_mode`, native plugin
+Use `--json` for machine-readable output. For managed profiles, `--fetch`
+fetches only canonical `refs/heads/main` into cached `origin/main`; without
+`--fetch`, status compares against that cached ref without network access.
+Checkout `HEAD`, the current branch, and configured upstream are never the
+managed availability authority. Pinned profiles retain their recorded-source
+behavior. Status also reports `delivery_mode`, native plugin
 evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
@@ -478,7 +576,10 @@ upgrade-agent-workflows --host codex --dry-run
 Upgrade behavior:
 
 1. Resolve target and source from arguments or install metadata.
-2. Fetch and fast-forward the source clone unless `--no-fetch` is set.
+2. For a managed profile, require clean canonical `main`, fetch the exact
+   canonical main ref, and fast-forward only local `main`. `--no-fetch` requires
+   local `main` to equal cached `origin/main`. Pinned profiles retain their
+   recorded-source update behavior.
 3. Back up the target install.
 4. Reinstall with the recorded or requested artifact and delivery modes.
 5. Run `agent-workflow-seam-doctor --root <consumer> --shared <source>` for
@@ -488,7 +589,9 @@ Upgrade behavior:
 The command prints `UPGRADE_COMPLETE` on success and `ROLLBACK_COMPLETE` when it
 restores the prior install after a failed upgrade. Rollback restores the prior
 delivery mode and skill layout. `upgrade-agent-workflows` never installs or
-updates the native plugin itself.
+updates the native plugin itself. Once reinstall and consumer seam validation
+succeed, transaction-backup cleanup cannot roll the completed install back; a
+cleanup failure exits nonzero and preserves the residual backup for inspection.
 
 ## Verification After Upgrade
 
@@ -581,9 +684,12 @@ stale workflow instructions or that explicitly need the new process.
 ## Network And Privacy
 
 `agent-workflows-status` does not contact the network unless `--fetch` is
-provided. `upgrade-agent-workflows` fetches and fast-forwards the source clone by
-default. Use `--no-fetch` when the source clone has already been updated or when
-the session must avoid network access.
+provided. For managed installs, status and upgrade use the hardcoded canonical
+GitHub repository and exact `main` refspec rather than checkout branch,
+upstream, Git configuration rewrites, or ambient Git environment. Upgrade
+fetches and fast-forwards canonical `main` by default. Use `--no-fetch` only
+when local `main` already equals the cached canonical `origin/main`, or when a
+pinned source can be replayed without network access.
 
 ## Troubleshooting
 
@@ -597,6 +703,9 @@ the session must avoid network access.
   `--host codex` or `--host claude`.
 - `Refusing to replace non-symlink path`: symlink mode will not overwrite a real
   file or directory. Use copy mode or remove the conflicting path deliberately.
+- `Refusing unsafe trusted directory`: helper publication requires a real,
+  owner-controlled `bin` directory that is not group- or world-writable in both
+  copy and symlink modes.
 - `DELIVERY_MODE_CONFLICT`: keep one skill delivery route. Disable/remove the
   native `scw` plugin before a flat install, or use
   `--delivery-mode plugin-companion`. If exact paths are listed, they were
@@ -607,3 +716,64 @@ the session must avoid network access.
   `LC_ALL=C`, common in CI and headless agents). The pack Ruby tools now read
   text as UTF-8 regardless of locale; run `upgrade-agent-workflows --host <host>`
   to pick up the fix.
+
+## Explicit Provider Operation Lifecycle
+
+Provider operation state is bounded by explicit references, not age or process
+heuristics. The resolver exposes
+`release --host HOST --target TARGET --operation HANDLE --json` and
+`list --host HOST --target TARGET --json`. `begin --json` returns the complete
+absolute release argv for its target and opaque handle. Release it only after
+the invocation's final shared-instruction read and helper/capability use; the
+release invalidates all returned asset paths even when files remain. Recover a
+crashed or orphaned handle by inspecting `list` and naming that exact handle in
+`release`, never by TTL or PID inference.
+
+The fixed admission limits are 32 live operation records and 8 retained
+revision snapshots. Reference-derived GC never evicts a live operation or the
+installed managed revision. Thus the honest bound is 32 published operations
+and 8 retained revisions in healthy quiescent state, not a strict byte quota.
+Malformed operation, store, or installation state blocks deletion rather than
+broadening cleanup.
+
+Resolver begin/release, capability runners, installation, upgrade, rollback,
+and GC share one bounded POSIX `flock` lifecycle lease at a stable private inode.
+Runners hold a shared lease through capability process completion. Mutations and
+GC hold the exclusive lease. Installer migration locking remains an inner,
+secondary defense.
+
+Ordinary resolver and runner lease descriptors close on exec; only the
+authenticated exclusive lifecycle reentry path passes a descriptor to a child.
+A trusted non-exec guardian holds the runner lease until its capability exits,
+including when the runner or operation launcher crashes.
+Capability execution uses an explicit environment containing home/locale state,
+GitHub CLI configuration and authentication, proxy/certificate connectivity,
+and the operation's bound values, instead of inheriting arbitrary caller
+variables. Managed-source Git validation and fetches use a fixed 120-second
+deadline with process-group termination. Secure Git commands used for operation
+snapshots run below a separate trusted non-exec guardian,
+which retains the resolver's exclusive lease after a resolver crash, enforces a
+fixed 120-second deadline, and terminates the Git process group when it expires.
+
+The installed resolver and runner embed a self-contained minimal lease
+bootstrap, and the lifecycle wrapper has no mutable runtime dependency. Those
+files plus the install and upgrade shell entries are published by atomic rename
+before the installer replaces any runtime module. A command therefore starts
+from one complete entry inode and acquires the lifecycle lease without first
+loading an installer-mutated helper or runtime file.
+
+Nested installer reentry requires three independent proofs: a matching active
+mode-`0600` token record, a wrapper-only liveness pipe that has not reached EOF,
+and a separate probe process that opens the exact lock inode and confirms that
+an exclusive nonblocking lock is still denied. Validation never calls `flock`
+on the inherited descriptor. The wrapper marks the token inactive before
+unlocking; a hard wrapper crash instead closes the wrapper-only pipe writer, so
+retained child descriptors and active-looking crash residue cannot authorize
+reentry.
+
+An upgrade nested under a lifecycle wrapper from before the liveness protocol
+fails closed with `LIFECYCLE_RESTART_REQUIRED`; accepting its descriptor and
+token would also accept indistinguishable detached crash residue. Let that
+command exit, then rerun the new upgrader from the updated source pack. The
+second invocation starts outside the old wrapper and acquires a fresh
+liveness-backed lease before mutation.

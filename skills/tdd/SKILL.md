@@ -5,7 +5,30 @@ description: Drive a portable red-green-refactor workflow for features, bug fixe
 
 # Test-Driven Development
 
-<!-- Keep this skill in sync with `workflows/tdd.md`. -->
+## Bound Provider Operation
+
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.tdd`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
+
+<!-- Keep this skill in sync with the bound provider operation's `assets.related_workflows.tdd`. -->
 
 Memorable invocation: `$tdd`
 
@@ -14,6 +37,16 @@ Use this skill to move in small, verified behavior slices:
 ```text
 RED -> GREEN -> REFACTOR -> repeat
 ```
+
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
 
 ## Core Loop
 

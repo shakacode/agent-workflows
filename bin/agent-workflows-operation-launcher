@@ -1,0 +1,30 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+
+require_relative "runtime/runner"
+
+options = {}
+parser = OptionParser.new do |opts|
+  opts.on("--target DIR") { |value| options[:target] = File.expand_path(value) }
+  opts.on("--operation HANDLE") { |value| options[:operation] = value }
+end
+parser.order!
+capability = ARGV.shift
+ARGV.shift if ARGV.first == "--"
+
+abort "--target and --operation are required" unless options[:target] && options[:operation]
+abort "CAPABILITY is required" unless capability
+
+begin
+  status = AgentWorkflowsOperation::Runner.new(target: options.fetch(:target)).run!(
+    handle: options.fetch(:operation),
+    capability: capability,
+    arguments: ARGV
+  )
+  exit(status.exitstatus || 128 + status.termsig)
+rescue AgentWorkflowsOperation::Error => e
+  warn e.message
+  exit 1
+end

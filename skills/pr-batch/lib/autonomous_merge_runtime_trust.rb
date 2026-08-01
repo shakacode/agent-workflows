@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "json"
 require "open3"
 
 module AutonomousMergeRuntimeTrust
@@ -72,6 +73,8 @@ module AutonomousMergeRuntimeTrust
     return rejected(claim, unreadable) unless unreadable.empty?
 
     case claim
+    when /\Aprovider-operation:([0-9a-f]{40}):([0-9a-f]{64})\z/
+      verify_provider_operation(claim:, expected_digest: Regexp.last_match(2), sources:)
     when /\Atrusted-base:([0-9a-f]{40})\z/
       claimed_sha = Regexp.last_match(1)
       return rejected(claim, ["trusted helper claim does not match resolved base"]) unless claimed_sha == base_sha
@@ -88,6 +91,47 @@ module AutonomousMergeRuntimeTrust
     end
   rescue SystemCallError => e
     rejected(claim, ["runtime trust verification failed: #{e.message}"])
+  end
+
+  def verify_provider_operation(claim:, expected_digest:, sources:)
+    unless ENV["AGENT_WORKFLOWS_PROVIDER_OPERATION_PROVENANCE"] == claim
+      return rejected(claim, ["provider-operation provenance was not supplied by the operation runner"])
+    end
+
+    raw_manifest = ENV.fetch("AGENT_WORKFLOWS_PROVIDER_OPERATION_MANIFEST")
+    manifest = JSON.parse(raw_manifest)
+    unless manifest.is_a?(Hash) && manifest.keys.sort == sources.keys.sort
+      return rejected(claim, ["provider-operation manifest roles do not match the evaluator runtime"])
+    end
+
+    errors = []
+    verified = {}
+    sources.each do |role, source|
+      entry = manifest.fetch(role)
+      unless entry.is_a?(Hash) && entry.keys.sort == %w[path sha256 source]
+        errors << "#{role} provider-operation manifest entry is malformed"
+        next
+      end
+      expected_path = File.realpath(source.fetch(:path))
+      manifest_path = File.realpath(entry.fetch("path"))
+      errors << "#{role} provider-operation path does not match executing runtime" unless manifest_path == expected_path
+      digest = Digest::SHA256.file(expected_path).hexdigest
+      errors << "#{role} provider-operation digest does not match executing bytes" unless entry.fetch("sha256") == digest
+      unless source.fetch(:tree_paths).include?(entry.fetch("source"))
+        errors << "#{role} provider-operation source is not a canonical runtime path"
+      end
+      verified[role] = entry.fetch("source")
+    rescue KeyError, SystemCallError, TypeError => e
+      errors << "#{role} provider-operation runtime cannot be verified: #{e.message}"
+    end
+    return rejected(claim, errors) unless errors.empty?
+
+    actual_digest = installed_pack_digest(sources)
+    return rejected(claim, ["provider-operation runtime digest mismatch"]) unless expected_digest == actual_digest
+
+    accepted(claim, verified)
+  rescue JSON::ParserError, KeyError => e
+    rejected(claim, ["provider-operation manifest is missing or malformed: #{e.message}"])
   end
 
   def installed_pack_digest(sources)
@@ -115,8 +159,21 @@ module AutonomousMergeRuntimeTrust
     sources.each do |role, source|
       runtime_bytes = File.binread(source.fetch(:path))
       matches = source.fetch(:tree_paths).filter_map do |tree_path|
+        git = ENV.fetch("AGENT_WORKFLOWS_GIT_EXECUTABLE", "git")
         tree_bytes, status = Open3.capture2(
-          "git", "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
+          {
+            "GIT_CONFIG_GLOBAL" => "/dev/null",
+            "GIT_CONFIG_NOSYSTEM" => "1",
+            "GIT_CONFIG_SYSTEM" => "/dev/null",
+            "GIT_NO_REPLACE_OBJECTS" => "1",
+            "GIT_OPTIONAL_LOCKS" => "0",
+            "GIT_TERMINAL_PROMPT" => "0",
+            "LANG" => "C",
+            "LC_ALL" => "C",
+            "PATH" => "/usr/bin:/bin:/usr/sbin:/sbin"
+          },
+          git, "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
+          unsetenv_others: true,
           binmode: true
         )
         tree_path if status.success? && tree_bytes == runtime_bytes

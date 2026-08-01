@@ -6,7 +6,40 @@ argument-hint: '[classification-sweep BASE_REF..TARGET_REF|release|rc|beta|versi
 
 # Update Changelog
 
+## Bound Provider Operation
+
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.update_changelog`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
+
 You are helping to add an entry to the repo's changelog. Resolve the changelog path and configured base branch from `.agents/agent-workflow.yml` (`changelog` and `base_branch`), then independently resolve the PR target and compare-link branches for the current mode from repo policy before fetching or editing.
+
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
 
 ## Arguments
 
@@ -111,8 +144,8 @@ BASE_REF="${BASE_REF:?set BASE_REF, e.g. v17.0.0.rc.1}"
 BASE_BRANCH="${BASE_BRANCH:?set BASE_BRANCH from .agents/agent-workflow.yml base_branch}"
 TARGET_REF="${TARGET_REF:?set TARGET_REF, e.g. v17.0.0.rc.2 or origin/${BASE_BRANCH}}"
 PR_TARGET_BRANCH="${PR_TARGET_BRANCH:-${BASE_BRANCH}}"
-# Resolve UPDATE_CHANGELOG_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy before using this fallback.
-UPDATE_CHANGELOG_SKILL_DIR="${UPDATE_CHANGELOG_SKILL_DIR:-.agents/skills/update-changelog}"
+# Set UPDATE_CHANGELOG_SKILL_DIR to the parent directory of the path in assets.skills.update_changelog.
+: "${UPDATE_CHANGELOG_SKILL_DIR:?set from assets.skills.update_changelog}"
 
 # JSON array of {pr, sha, subject}; pr is an integer, or the string "UNKNOWN".
 "${UPDATE_CHANGELOG_SKILL_DIR}/bin/changelog-merged-prs" "${BASE_REF}..${TARGET_REF}" --target-branch "${PR_TARGET_BRANCH}"

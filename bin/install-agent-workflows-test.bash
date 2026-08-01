@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PACK_ROOT="$ROOT"
 FAKE_CODEX_DIR="$(mktemp -d)"
 TEST_SOURCE_ROOT=""
 cleanup() {
@@ -10,23 +11,15 @@ cleanup() {
 }
 trap cleanup EXIT
 export AGENT_WORKFLOWS_CODEX_EXECUTABLE="$FAKE_CODEX_DIR/codex"
-cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
-#!/usr/bin/env ruby
-abort "unexpected arguments: #{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
-case ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
-when "enabled"
-  version = ENV.fetch("QA_CODEX_PLUGIN_VERSION", "0.1.0")
-  source = ENV.fetch("QA_CODEX_PLUGIN_SOURCE", "https://github.com/shakacode/agent-workflows.git")
-  puts "PLUGIN STATUS VERSION PATH"
-  puts "scw@agent-workflows  installed, enabled  #{version}  #{source}"
-when "disabled"
-  puts "PLUGIN STATUS VERSION PATH"
-  puts "scw@agent-workflows  installed, disabled  0.1.0  /fake/scw"
-else
-  warn "invalid Codex TOML"
-  exit 2
-end
-RUBY
+export PATH="$FAKE_CODEX_DIR:$PATH"
+cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'SH'
+#!/bin/sh
+[ "$*" = "plugin list --marketplace agent-workflows" ] || exit 2
+version=0.1.0
+[ ! -f "$CODEX_HOME/.qa-codex-version" ] || version="$(cat "$CODEX_HOME/.qa-codex-version")"
+printf 'PLUGIN STATUS VERSION PATH\n'
+printf 'scw@agent-workflows  installed, enabled  %s  https://github.com/shakacode/agent-workflows.git\n' "$version"
+SH
 chmod +x "$AGENT_WORKFLOWS_CODEX_EXECUTABLE"
 
 fail() {
@@ -54,6 +47,11 @@ assert_not_contains() {
   [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain '$needle', got: $haystack"
 }
 
+assert_dir_empty() {
+  local path="$1"
+  [[ -z "$(find "$path" -mindepth 1 -print -quit)" ]] || fail "expected empty directory: $path"
+}
+
 write_native_scw_state() {
   local host="$1"
   local target="$2"
@@ -79,11 +77,13 @@ write_native_scw_state() {
 new_source_repo() {
   local source_dir="$1"
   rsync -a --exclude .git "$ROOT/" "$source_dir/"
-  git -C "$source_dir" init --quiet
+  git -C "$source_dir" init --quiet --initial-branch=main
   git -C "$source_dir" config user.email "agent-workflows-test@example.com"
   git -C "$source_dir" config user.name "Agent Workflows Test"
   git -C "$source_dir" add .
   git -C "$source_dir" commit --quiet -m "initial"
+  git -C "$source_dir" remote add origin https://github.com/shakacode/agent-workflows.git
+  git -C "$source_dir" update-ref refs/remotes/origin/main HEAD
 }
 
 new_source_repo_with_legacy_model_routing_history() {
@@ -178,6 +178,11 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
+  assert_file "$target/bin/agent-workflows-lifecycle"
+  assert_file "$target/bin/agent-workflows-resolve"
+  assert_file "$target/bin/agent-workflows-run"
+  assert_file "$target/bin/agent_workflows_operation/resolver.rb"
+  assert_file "$target/bin/agent_workflows_operation/runner.rb"
   assert_file "$target/bin/agent_doctor/process_runner.rb"
   assert_file "$target/bin/agent_doctor/timeout_budget.rb"
   assert_file "$target/bin/agent_doctor/workflows_cli.rb"
@@ -190,11 +195,245 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
+  assert_file "$target/.agent-workflows-operation-state/lifecycle.lock"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
-  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["provider_profile"] == "pinned" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+}
+
+test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot() {
+  local tmp source revision target operation mode asset committed_skill committed_version receipt_version
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  revision="$(git -C "$source" rev-parse HEAD)"
+  committed_skill="$(git -C "$source" show "$revision:skills/pr-batch/SKILL.md")"
+  committed_version="$(git -C "$source" show "$revision:VERSION")"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-$mode"
+    printf 'dirty live source\n' > "$source/skills/pr-batch/SKILL.md"
+    printf 'dirty-live-%s\n' "$mode" >"$source/VERSION"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/.agent-workflows-operation-state/store/$revision" ]] ||
+      fail "$mode install did not seed its committed revision"
+    if [[ "$mode" = "copy" ]]; then
+      [[ "$(cat "$target/skills/pr-batch/SKILL.md")" = "$committed_skill" ]] ||
+        fail "copy install selected uncommitted launcher content"
+    fi
+    operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+    asset="$(printf '%s' "$operation" | ruby -rjson -e 'puts JSON.parse(STDIN.read).dig("assets", "skills", "pr_batch")')"
+    [[ "$(cat "$asset")" != "dirty live source" ]] ||
+      fail "$mode pinned operation selected uncommitted live source content"
+    receipt_version="$(ruby -rjson -e \
+      'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("version")' \
+      "$target/.agent-workflows-install.json")"
+    [[ "$receipt_version" = "$committed_version" ]] ||
+      fail "$mode pinned receipt selected uncommitted VERSION: $receipt_version"
+    ruby -rjson -e '
+      payload = JSON.parse(STDIN.read)
+      revision = ARGV.fetch(0)
+      abort payload.inspect unless payload["provider_profile"] == "pinned" &&
+                                   payload["freshness"] == "pinned" &&
+                                   payload["revision"] == revision &&
+                                   payload.dig("assets", "root").include?("/store/#{revision}/tree") &&
+                                   payload["runner"].is_a?(Array) &&
+                                   payload["release"].is_a?(Array)
+    ' "$revision" <<<"$operation"
+    git -C "$source" checkout --quiet -- skills/pr-batch/SKILL.md VERSION
+  done
+}
+
+test_pinned_install_refuses_capacity_without_changing_the_receipt() {
+  local tmp source target installed operation handle operation_root label revision candidate output status
+  local index new_handle
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/initial.out"
+  installed="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  handle="$(ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("operation")' <<<"$operation")"
+  operation_root="$target/.agent-workflows-operation-state/operations/$handle"
+
+  for label in b c d e f g h; do
+    printf '%s\n' "$label" >"$source/VERSION"
+    git -C "$source" add VERSION
+    git -C "$source" commit --quiet -m "revision $label"
+    revision="$(git -C "$source" rev-parse HEAD)"
+    ruby -I"$source/bin" -ragent_workflows_operation/state -ragent_workflows_operation/store -e '
+      target, source, revision = ARGV
+      state = AgentWorkflowsOperation::State.new(target: target)
+      AgentWorkflowsOperation::Store.new(state_root: state.root).import_local!(source, revision)
+    ' "$target" "$source" "$revision"
+    new_handle="$(printf '%s' "$label" | sha256sum | cut -d' ' -f1)"
+    cp -a "$operation_root" "$target/.agent-workflows-operation-state/operations/$new_handle"
+    rm "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json"
+    ruby -rjson -rdigest -e '
+      source, destination, handle, revision = ARGV
+      payload = JSON.parse(File.read(source))
+      payload["operation"] = handle
+      payload["revision"] = revision
+      root = File.dirname(destination)
+      refresh = lambda do |recorded, path|
+        stat = File.stat(path)
+        recorded.update("device" => stat.dev, "inode" => stat.ino, "size" => stat.size,
+                        "sha256" => Digest::SHA256.file(path).hexdigest)
+      end
+      payload.fetch("runtime").each { |name, recorded| refresh.call(recorded, File.join(root, "runtime", name)) }
+      payload.fetch("capabilities").each do |name, binding|
+        binding.fetch("runtime").each_value do |recorded|
+          refresh.call(recorded, File.join(root, "capabilities", name, recorded.fetch("path")))
+        end
+      end
+      interpreter = File.join(root, "interpreter")
+      payload.fetch("interpreter")["path"] = interpreter
+      refresh.call(payload.fetch("interpreter"), interpreter)
+      refresh.call(payload.fetch("launcher"), File.join(root, "launcher"))
+      File.write(destination, JSON.pretty_generate(payload) + "\n")
+      File.chmod(0o600, destination)
+    ' "$operation_root/operation.json" \
+      "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json" \
+      "$new_handle" "$revision"
+  done
+
+  printf 'i\n' >"$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "revision i"
+  candidate="$(git -C "$source" rev-parse HEAD)"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "pinned install admitted a ninth protected revision"
+  assert_contains "$output" "STATE_CAPACITY_REACHED"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")" = "$installed" ]] ||
+    fail "capacity refusal changed the installed receipt"
+  [[ ! -e "$target/.agent-workflows-operation-state/store/$candidate" ]] ||
+    fail "capacity refusal retained its unreferenced candidate"
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("revision")' <<<"$operation")" = "$installed" ]] ||
+    fail "capacity refusal made the prior receipt unusable"
+
+  for index in $(seq 1 23); do
+    new_handle="$(printf 'operation-%s' "$index" | sha256sum | cut -d' ' -f1)"
+    cp -a "$operation_root" "$target/.agent-workflows-operation-state/operations/$new_handle"
+    rm "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json"
+    ruby -rjson -rdigest -e '
+      source, destination, handle = ARGV
+      payload = JSON.parse(File.read(source))
+      payload["operation"] = handle
+      root = File.dirname(destination)
+      refresh = lambda do |recorded, path|
+        stat = File.stat(path)
+        recorded.update("device" => stat.dev, "inode" => stat.ino, "size" => stat.size,
+                        "sha256" => Digest::SHA256.file(path).hexdigest)
+      end
+      payload.fetch("runtime").each { |name, recorded| refresh.call(recorded, File.join(root, "runtime", name)) }
+      payload.fetch("capabilities").each do |name, binding|
+        binding.fetch("runtime").each_value do |recorded|
+          refresh.call(recorded, File.join(root, "capabilities", name, recorded.fetch("path")))
+        end
+      end
+      interpreter = File.join(root, "interpreter")
+      payload.fetch("interpreter")["path"] = interpreter
+      refresh.call(payload.fetch("interpreter"), interpreter)
+      refresh.call(payload.fetch("launcher"), File.join(root, "launcher"))
+      File.write(destination, JSON.pretty_generate(payload) + "\n")
+      File.chmod(0o600, destination)
+    ' "$operation_root/operation.json" \
+      "$target/.agent-workflows-operation-state/operations/$new_handle/operation.json" \
+      "$new_handle"
+  done
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "pinned install admitted a candidate with 32 live operations"
+  assert_contains "$output" "32/32 live operations"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")" = "$installed" ]] ||
+    fail "operation-capacity refusal changed the installed receipt"
+  [[ ! -e "$target/.agent-workflows-operation-state/store/$candidate" ]] ||
+    fail "operation-capacity refusal retained its unreferenced candidate"
+
+  "$target/bin/agent-workflows-resolve" release --host codex --target "$target" \
+    --operation "$new_handle" --json >/dev/null
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("revision")' <<<"$operation")" = "$installed" ]] ||
+    fail "operation-capacity refusal made the prior receipt unusable after a named release"
+}
+
+test_copy_mode_refuses_unsafe_bootstrap_directories() {
+  local tmp target output status unsafe
+
+  for unsafe in bin runtime; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    mkdir -p "$target/bin/agent_workflows_operation"
+    printf 'sentinel\n' > "$target/bin/agent_workflows_operation/sentinel"
+    if [[ "$unsafe" = "bin" ]]; then
+      chmod 0777 "$target/bin"
+    else
+      chmod 0777 "$target/bin/agent_workflows_operation"
+    fi
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "copy mode accepted unsafe $unsafe bootstrap directory"
+    assert_contains "$output" "Refusing unsafe trusted directory"
+    assert_file "$target/bin/agent_workflows_operation/sentinel"
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+      fail "unsafe $unsafe bootstrap directory committed metadata"
+  done
+}
+
+test_symlink_mode_refuses_unsafe_bin_before_publication() {
+  local tmp target external output status unsafe
+
+  for unsafe in writable symlink; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    external="$tmp/external-bin"
+    mkdir -p "$target" "$external"
+    printf 'sentinel\n' >"$external/sentinel"
+    if [[ "$unsafe" = "writable" ]]; then
+      mkdir -p "$target/bin"
+      chmod 0777 "$target/bin"
+      printf 'sentinel\n' >"$target/bin/sentinel"
+    else
+      ln -s "$external" "$target/bin"
+    fi
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "symlink mode accepted unsafe $unsafe bin directory"
+    assert_contains "$output" "Refusing unsafe trusted directory"
+    assert_file "$external/sentinel"
+    if [[ "$unsafe" = "writable" ]]; then
+      assert_file "$target/bin/sentinel"
+    else
+      assert_symlink "$target/bin"
+    fi
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+      fail "unsafe symlink-mode bin directory committed metadata"
+  done
 }
 
 test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
@@ -240,6 +479,52 @@ test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy() {
     fail "adopted doctor copy differs from its source"
 }
 
+test_copy_mode_refuses_an_exact_unmarked_doctor_copy_with_unsafe_modes() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target/bin"
+  rsync -a "$ROOT/bin/agent_doctor" "$target/bin/"
+  chmod 0777 "$target/bin/agent_doctor"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "copy mode adopted an unsafe unmarked doctor copy"
+  assert_contains "$output" "Refusing unmanaged workflow doctor directory"
+  [[ ! -e "$target/bin/agent_doctor/.agent-workflows-managed" ]] ||
+    fail "copy mode marked an unsafe doctor directory"
+}
+
+test_new_installer_control_helper_can_read_an_older_committed_snapshot() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source" "$target/bin"
+  new_source_repo "$source"
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.binread(path)
+    text.sub!(/\n    def compare_portable.*?^    end\n/m, "\n")
+    text.sub!(/\n  when "compare-portable"\n    .*\n/, "\n")
+    text.sub!(" | compare-portable LEFT RIGHT", "")
+    File.binwrite(path, text)
+  ' "$source/bin/agent_doctor/install_ownership.rb"
+  git -C "$source" add bin/agent_doctor/install_ownership.rb
+  git -C "$source" commit --quiet -m "simulate older committed ownership helper"
+  rsync -a "$source/bin/agent_doctor" "$target/bin/"
+  install -m 0755 "$PACK_ROOT/bin/agent_doctor/install_ownership.rb" \
+    "$source/bin/agent_doctor/install_ownership.rb"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  grep -Eq '^agent-workflows-doctor-v1:[0-9a-f]{64}$' "$target/bin/agent_doctor/.agent-workflows-managed" ||
+    fail "new installer control helper could not adopt content from an older committed snapshot"
+}
+
 test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
   local tmp source target
   tmp="$(mktemp -d)"
@@ -248,6 +533,8 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
   mkdir -p "$source"
   new_source_repo "$source"
   printf 'obsolete managed module\n' > "$source/bin/agent_doctor/obsolete.rb"
+  git -C "$source" add bin/agent_doctor/obsolete.rb
+  git -C "$source" commit --quiet -m "add obsolete managed module"
   write_native_scw_state codex "$target"
 
   "$source/bin/install-agent-workflows" --host codex --target "$target" \
@@ -288,17 +575,24 @@ test_native_plugin_plus_default_flat_install_fails_before_mutation() {
 }
 
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
-  local tmp target consumer host output
+  local tmp target consumer host output gh
+  local -a codex_args
 
   for host in codex claude; do
     tmp="$(mktemp -d)"
     target="$tmp/$host-home"
     consumer="$tmp/consumer"
+    gh="$tmp/gh"
+    printf '#!/bin/sh\nexit 0\n' >"$gh"
+    chmod 0755 "$gh"
     write_native_scw_state "$host" "$target"
     mkdir -p "$target/skills/personal"
     printf 'personal\n' > "$target/skills/personal/SKILL.md"
 
+    codex_args=()
+    [[ "$host" != "codex" ]] || codex_args=(--codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE")
     "$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" --delivery-mode plugin-companion \
+      --provider-profile managed --gh-executable "$gh" "${codex_args[@]}" --no-fetch \
       >"$tmp/install.out"
 
     [[ ! -e "$target/skills/pr-batch" ]] || fail "$host companion install wrote flat skills"
@@ -313,8 +607,10 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/bin/agent-workflows-delivery-state"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
-      abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
-    ' "$target/.agent-workflows-install.json"
+      abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" &&
+                                    metadata["mode"] == "copy" && metadata["provider_profile"] == "managed" &&
+                                    metadata["gh_executable"] == ARGV.fetch(1)
+    ' "$target/.agent-workflows-install.json" "$gh"
 
     write_consumer_agents "$consumer"
     cat >> "$consumer/.agents/agent-workflow.yml" <<'YAML'
@@ -325,6 +621,82 @@ YAML
     output="$("$target/bin/agent-workflow-seam-doctor" --root "$consumer" 2>&1)"
     assert_contains "$output" "PASS agent workflow seam is complete"
   done
+}
+
+test_managed_profile_requires_explicit_absolute_gh_binding() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  write_native_scw_state codex "$target"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion --provider-profile managed 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 64 ]] || fail "managed install without explicit gh returned $status: $output"
+  assert_contains "$output" "requires --gh-executable with an explicit absolute path"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "failed managed install wrote metadata"
+}
+
+test_managed_install_copies_the_validated_commit_when_the_worktree_changes_after_validation() {
+  local tmp source target gh enable mutated document committed_content committed_version receipt_version
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  gh="$tmp/gh"
+  enable="$tmp/enable-mutation"
+  mutated="$tmp/mutation-complete"
+  document="docs/coordination-backend.md"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  committed_content="$(cat "$source/$document")"
+  committed_version="$(cat "$source/VERSION")"
+
+  ruby -e '
+    path, enable, mutated, document, version = ARGV
+    source = File.read(path)
+    marker = "require_relative \"agent_doctor/timeout_budget\"\n"
+    injection = <<~RUBY
+
+      if ENV["AGENT_WORKFLOWS_LIFECYCLE_FD"] && File.exist?(#{enable.dump}) && !File.exist?(#{mutated.dump})
+        File.write(#{document.dump}, "MUTATED WORKTREE CONTENT\\n")
+        File.write(#{version.dump}, "MUTATED WORKTREE VERSION\\n")
+        File.write(#{mutated.dump}, "done\\n")
+      end
+    RUBY
+    abort "delivery-state marker missing" unless source.sub!(marker, marker + injection)
+    File.write(path, source)
+  ' "$source/bin/agent-workflows-delivery-state" "$enable" "$mutated" "$source/$document" "$source/VERSION"
+  git -C "$source" add bin/agent-workflows-delivery-state
+  git -C "$source" commit --quiet -m "instrument post-validation mutation"
+  git -C "$source" update-ref refs/remotes/origin/main HEAD
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+  touch "$enable"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+    --codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" --no-fetch >"$tmp/managed.out"
+
+  assert_file "$mutated"
+  grep -qxF "MUTATED WORKTREE CONTENT" "$source/$document" ||
+    fail "race fixture did not mutate the source worktree"
+  [[ "$(cat "$target/$document")" = "$committed_content" ]] ||
+    fail "managed install copied mutable worktree content instead of the validated commit"
+  receipt_version="$(ruby -rjson -e \
+    'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("version")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$receipt_version" = "$committed_version" ]] ||
+    fail "managed receipt selected post-validation VERSION: $receipt_version"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    expected = `git -C #{ARGV.fetch(1).dump} rev-parse HEAD`.strip
+    abort metadata.inspect unless metadata["source_revision"] == expected
+  ' "$target/.agent-workflows-install.json" "$source"
 }
 
 test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills() {
@@ -897,8 +1269,8 @@ test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() 
 
     set +e
     if [[ "$host" = codex ]]; then
-      output="$(QA_CODEX_PLUGIN_VERSION="0.2.0" \
-        "$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+      printf '0.2.0\n' > "$target/.qa-codex-version"
+      output="$("$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
       status=$?
     else
       output="$("$source/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
@@ -1117,8 +1489,8 @@ test_install_removes_legacy_copy_from_git_worktree_source() {
   assert_file "$target/docs/agent-workflows-model-routing.md"
 }
 
-test_install_removes_matching_legacy_copy_from_non_git_source() {
-  local tmp current_source previous_source target
+test_pinned_install_rejects_non_git_source_before_legacy_cleanup() {
+  local tmp current_source previous_source target output status
 
   tmp="$(mktemp -d)"
   current_source="$tmp/current-source"
@@ -1133,12 +1505,16 @@ test_install_removes_matching_legacy_copy_from_non_git_source() {
     File.write(path, JSON.pretty_generate({"mode" => "copy", "source" => source, "source_revision" => "unknown"}) + "\n")
   ' "$target/.agent-workflows-install.json" "$previous_source"
 
-  "$current_source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
-    >/tmp/install-agent-workflows-test.out
+  set +e
+  output="$("$current_source/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+  status=$?
+  set -e
 
-  [[ ! -e "$target/docs/model-routing.md" ]] || \
-    fail "copy mode retained a matching legacy model-routing file from a non-git source"
-  assert_file "$target/docs/agent-workflows-model-routing.md"
+  [[ "$status" -ne 0 ]] || fail "pinned install accepted a source without committed Git HEAD"
+  assert_contains "$output" "PINNED_PROVIDER_SOURCE_INVALID"
+  assert_file "$target/docs/model-routing.md"
+  [[ ! -e "$target/docs/agent-workflows-model-routing.md" ]] ||
+    fail "failed pinned install mutated docs before source validation"
 }
 
 test_installed_prompt_guard_ignores_unowned_docs() {
@@ -1272,6 +1648,36 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/bin/agent-workflows-trust-audit"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not symlink stack-specific helper"
   assert_file "$target/.agent-workflows-install.json"
+}
+
+test_helper_publication_replaces_directory_symlinks_without_writing_through() {
+  local tmp mode target helper external
+  tmp="$(mktemp -d)"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-$mode"
+    mkdir -p "$target/bin"
+    for helper in agent-workflows-run agent-workflows-trust-audit; do
+      external="$tmp/$mode-$helper-external"
+      mkdir -p "$external"
+      ln -s "$external" "$target/bin/$helper"
+    done
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode "$mode" >"$tmp/$mode.out"
+
+    for helper in agent-workflows-run agent-workflows-trust-audit; do
+      external="$tmp/$mode-$helper-external"
+      assert_dir_empty "$external"
+      if [[ "$mode" = copy ]]; then
+        [[ -f "$target/bin/$helper" && ! -L "$target/bin/$helper" ]] ||
+          fail "copy publication did not replace the $helper directory symlink"
+      else
+        assert_symlink "$target/bin/$helper"
+        [[ "$(readlink "$target/bin/$helper")" = "$ROOT/bin/$helper" ]] ||
+          fail "symlink publication did not replace the $helper directory symlink"
+      fi
+    done
+  done
 }
 
 test_symlink_mode_replaces_docs_directory_symlink() {
@@ -1558,26 +1964,333 @@ test_upgrade_reinstalls_new_source_revision() {
   assert_contains "$output" "UP_TO_DATE"
 }
 
-test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
-  local tmp source target
+test_successful_upgrade_removes_transaction_backup() {
+  local tmp source target backup_parent output
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  mkdir -p "$source" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  printf '0.1.1\n' >"$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+
+  output="$(TMPDIR="$backup_parent" "$source/bin/upgrade-agent-workflows" \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  assert_dir_empty "$backup_parent"
+}
+
+test_post_install_backup_cleanup_failure_does_not_roll_back() {
+  local tmp source target backup_parent fake_bin real_rm output status expected installed backup cleanup_calls
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  fake_bin="$tmp/fake bin"
+  real_rm="$(command -v rm)"
+  mkdir -p "$source" "$backup_parent" "$fake_bin"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  printf '0.1.1\n' >"$source/VERSION"
+  git -C "$source" add VERSION
+  git -C "$source" commit --quiet -m "bump version"
+  expected="$(git -C "$source" rev-parse HEAD)"
+  cat >"$fake_bin/rm" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+last="${@: -1}"
+if [[ "$*" = "-rf -- "* && "$last" = "${QA_BACKUP_PARENT:?}/"* ]]; then
+  victim="$(find "$last/target" -type f -print -quit)"
+  [[ -z "$victim" ]] || "${QA_REAL_RM:?}" -f -- "$victim"
+  if [[ ! -e "${QA_CLEANUP_MARKER:?}" ]]; then
+    : >"$QA_CLEANUP_MARKER"
+    printf 'attempt\n' >>"${QA_CLEANUP_CALLS:?}"
+    exit 42
+  fi
+  printf 'attempt\n' >>"${QA_CLEANUP_CALLS:?}"
+fi
+exec "${QA_REAL_RM:?}" "$@"
+BASH
+  chmod +x "$fake_bin/rm"
+
+  set +e
+  output="$(QA_BACKUP_PARENT="$backup_parent" QA_REAL_RM="$real_rm" \
+    QA_CLEANUP_MARKER="$tmp/cleanup-failed-once" QA_CLEANUP_CALLS="$tmp/cleanup-calls" TMPDIR="$backup_parent" \
+    PATH="$fake_bin:$PATH" "$source/bin/upgrade-agent-workflows" \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 42 ]] || fail "expected cleanup exit 42, got $status: $output"
+  assert_contains "$output" "CLEANUP_FAILED"
+  assert_not_contains "$output" "ROLLBACK_COMPLETE"
+  installed="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$installed" = "$expected" ]] || fail "cleanup failure rolled back installed revision"
+  backup="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  [[ -n "$backup" ]] || fail "cleanup failure did not preserve residual backup evidence"
+  cleanup_calls="$(wc -l <"$tmp/cleanup-calls" | tr -d ' ')"
+  [[ "$cleanup_calls" -eq 1 ]] || fail "cleanup retried after failure: $cleanup_calls attempts"
+}
+
+test_upgrade_fetches_linked_worktree_source() {
+  local tmp source source_git publisher origin target output expected_revision installed_revision
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  source_git="$tmp/source.git"
+  publisher="$tmp/publisher"
+  origin="$tmp/origin.git"
+  target="$tmp/codex-home"
+  mkdir -p "$source" "$publisher"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  git init --quiet --bare --initial-branch=main "$origin"
+  git -C "$source" init --quiet --initial-branch=main --separate-git-dir "$source_git"
+  git -C "$source" config user.email "agent-workflows-test@example.com"
+  git -C "$source" config user.name "Agent Workflows Test"
+  git -C "$source" add .
+  git -C "$source" commit --quiet -m "initial"
+  git -C "$source" remote add origin "$origin"
+  git -C "$source" push --quiet --set-upstream origin main
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  git clone --quiet "$origin" "$publisher"
+  git -C "$publisher" config user.email "agent-workflows-test@example.com"
+  git -C "$publisher" config user.name "Agent Workflows Test"
+  printf '0.1.1\n' > "$publisher/VERSION"
+  git -C "$publisher" add VERSION
+  git -C "$publisher" commit --quiet -m "bump version"
+  git -C "$publisher" push --quiet
+  expected_revision="$(git -C "$publisher" rev-parse HEAD)"
+
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  installed_revision="$(ruby -rjson -e '
+    puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")
+  ' "$target/.agent-workflows-install.json")"
+
+  assert_contains "$output" "UPGRADE_COMPLETE"
+  [[ "$(git -C "$source" rev-parse HEAD)" = "$expected_revision" ]] ||
+    fail "linked source did not fast-forward"
+  [[ "$installed_revision" = "$expected_revision" ]] ||
+    fail "linked source upgrade installed $installed_revision instead of $expected_revision"
+}
+
+test_upgrade_rejects_a_declared_broken_git_checkout() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  printf 'gitdir: /definitely/missing\n' > "$source/.git"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "broken declared Git source returned $status: $output"
+  assert_contains "$output" "CHECK_FAILED declared Git source is invalid"
+  assert_not_contains "$output" "UPGRADE_COMPLETE"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "broken declared Git source installed workflow metadata"
+}
+
+test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  printf 'gitdir: /definitely/missing\n' > "$source/.git"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "broken declared Git source without fetch returned $status: $output"
+  assert_contains "$output" "CHECK_FAILED declared Git source is invalid"
+  assert_not_contains "$output" "UPGRADE_COMPLETE"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "broken declared Git source without fetch installed workflow metadata"
+}
+
+test_upgrade_rejects_plain_standalone_pinned_source() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "upgrade accepted a plain pinned source"
+  assert_contains "$output" "PINNED_PROVIDER_SOURCE_INVALID"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "failed plain-source upgrade installed workflow metadata"
+}
+
+test_upgrade_rejects_plain_pinned_source_nested_in_a_git_checkout() {
+  local tmp parent source target output status
+  tmp="$(mktemp -d)"
+  parent="$tmp/parent"
+  source="$parent/plain-pack"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  rsync -a --exclude .git "$ROOT/" "$source/"
+  git -C "$parent" init --quiet
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "upgrade accepted nested plain pinned source"
+  assert_contains "$output" "PINNED_PROVIDER_SOURCE_INVALID"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "failed nested plain-source upgrade installed workflow metadata"
+}
+
+test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  git -C "$source" update-ref -d HEAD
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "declared Git source without HEAD returned $status: $output"
+  assert_contains "$output" "CHECK_FAILED declared Git source commit check failed"
+  assert_not_contains "$output" "UPGRADE_COMPLETE"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] ||
+    fail "declared Git source without HEAD installed workflow metadata"
+}
+
+test_upgrade_can_select_and_then_replay_companion_delivery_mode() {
+  local tmp source target gh
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  gh="$tmp/gh"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
   mkdir -p "$source"
   new_source_repo "$source"
 
   "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
   write_native_scw_state codex "$target"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
-    --delivery-mode plugin-companion --no-fetch >"$tmp/upgrade-one.out"
+    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+    --codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" --no-fetch >"$tmp/upgrade-one.out"
   "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
     --no-fetch >"$tmp/upgrade-two.out"
 
   [[ ! -e "$target/skills/pr-batch" ]] || fail "upgrade did not preserve companion delivery mode"
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
-    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
-  ' "$target/.agent-workflows-install.json"
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" &&
+                                  metadata["provider_profile"] == "managed" &&
+                                  metadata["gh_executable"] == ARGV.fetch(1)
+  ' "$target/.agent-workflows-install.json" "$gh"
+}
+
+test_managed_upgrade_fetches_once_before_reinstalling_the_established_revision() {
+  local tmp source target gh fetch_log
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  gh="$tmp/gh"
+  fetch_log="$tmp/fetch.log"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  ruby -e '
+    path = ARGV.fetch(0)
+    source = File.read(path)
+    marker = "  def fetch!(source)\n"
+    replacement = <<~RUBY
+      def fetch!(source)
+        File.open(ENV.fetch("AGENT_WORKFLOWS_TEST_FETCH_LOG"), "a") { |file| file.puts("fetch") }
+        return cached_revision!(source)
+    RUBY
+    abort "fetch marker missing" unless source.sub!(marker, replacement.lines.map { |line| "  #{line}" }.join.sub(/\A  /, ""))
+    File.write(path, source)
+  ' "$source/bin/agent_workflows_operation/source_contract.rb"
+  git -C "$source" add bin/agent_workflows_operation/source_contract.rb
+  git -C "$source" commit --quiet -m "instrument managed fetch"
+  git -C "$source" update-ref refs/remotes/origin/main HEAD
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+  AGENT_WORKFLOWS_TEST_FETCH_LOG="$fetch_log" \
+    "$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+      --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+      --codex-executable "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" >"$tmp/upgrade.out"
+
+  [[ "$(wc -l <"$fetch_log" | tr -d ' ')" = "1" ]] ||
+    fail "managed upgrade fetched more than once: $(cat "$fetch_log")"
+}
+
+test_upgrade_rejects_a_changed_recorded_codex_resolution() {
+  local tmp source target gh invocation first second output status recorded
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  gh="$tmp/gh"
+  invocation="$tmp/bin/codex"
+  first="$tmp/first/codex"
+  second="$tmp/second/codex"
+  printf '#!/bin/sh\nexit 0\n' >"$gh"
+  chmod 0755 "$gh"
+  mkdir -p "$source" "$(dirname "$invocation")" "$(dirname "$first")" "$(dirname "$second")"
+  new_source_repo "$source"
+  cp "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" "$first"
+  cp "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" "$second"
+  chmod 0755 "$first" "$second"
+  ln -s "$first" "$invocation"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  write_native_scw_state codex "$target"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion --provider-profile managed --gh-executable "$gh" \
+    --codex-executable "$invocation" --no-fetch >"$tmp/managed.out"
+  recorded="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("codex_executable_resolved")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "$first" ]] || fail "managed install did not record the first Codex target"
+  unlink "$invocation"
+  ln -s "$second" "$invocation"
+
+  set +e
+  output="$("$source/bin/upgrade-agent-workflows" --host codex --target "$target" --source "$source" \
+    --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "upgrade silently rebound the recorded Codex executable"
+  assert_contains "$output" "resolution changed"
+  assert_contains "$output" "reinstall"
+  recorded="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("codex_executable_resolved")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "$first" ]] || fail "failed upgrade rewrote the recorded Codex target"
 }
 
 test_upgrade_dry_run_checks_requested_delivery_mode() {
@@ -1638,7 +2351,7 @@ test_upgrade_reports_missing_source_as_check_failed() {
 }
 
 test_upgrade_rolls_back_when_consumer_seam_fails() {
-  local tmp source target consumer before after output status
+  local tmp source target consumer before after output status operation
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
@@ -1663,6 +2376,182 @@ test_upgrade_rolls_back_when_consumer_seam_fails() {
   assert_contains "$output" "ROLLBACK_COMPLETE"
   after="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' "$target/.agent-workflows-install.json")"
   [[ "$before" == "$after" ]] || fail "expected rollback to $before, got $after"
+  operation="$("$target/bin/agent-workflows-resolve" begin --host codex --target "$target" --json)"
+  ruby -rjson -e '
+    payload = JSON.parse(STDIN.read)
+    abort payload.inspect unless payload["provider_profile"] == "pinned" &&
+                                 payload["freshness"] == "pinned" &&
+                                 payload["revision"] == ARGV.fetch(0)
+  ' "$before" <<<"$operation"
+}
+
+test_failed_upgrade_preserves_operation_state_and_removes_transaction_backup() {
+  local tmp source target consumer backup_parent state before after output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  backup_parent="$tmp/upgrade backups"
+  state="$target/.agent-workflows-operation-state"
+  mkdir -p "$source" "$consumer" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  before="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  mkdir -p "$state"
+  printf 'preserve-before\n' >"$state/preserve-before"
+  printf 'removed-before\n' >"$state/removed-before"
+  cat >"$source/bin/agent-workflow-seam-doctor" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${QA_OPERATION_STATE:?}"
+rm "$state/removed-before"
+printf 'created-after\n' >"$state/created-after"
+exit 19
+BASH
+  chmod +x "$source/bin/agent-workflow-seam-doctor"
+  git -C "$source" add bin/agent-workflow-seam-doctor
+  git -C "$source" commit --quiet -m "inject seam failure"
+
+  set +e
+  output="$(QA_OPERATION_STATE="$state" TMPDIR="$backup_parent" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 19 ]] || fail "expected seam failure exit 19, got $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  after="$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("source_revision")' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$before" = "$after" ]] || fail "rollback did not restore ordinary installer-owned state"
+  [[ "$(cat "$state/preserve-before")" = "preserve-before" ]] ||
+    fail "rollback changed operation state that predated the backup"
+  [[ ! -e "$state/removed-before" ]] ||
+    fail "rollback restored operation state removed after the backup"
+  [[ "$(cat "$state/created-after")" = "created-after" ]] ||
+    fail "rollback removed operation state created after the backup"
+  assert_dir_empty "$backup_parent"
+}
+
+test_failed_restore_preserves_transaction_backup_for_manual_recovery() {
+  local tmp source target consumer backup_parent fake_bin real_rsync output status backup
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  backup_parent="$tmp/upgrade backups"
+  fake_bin="$tmp/fake bin"
+  real_rsync="$(command -v rsync)"
+  mkdir -p "$source" "$consumer" "$backup_parent" "$fake_bin"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  cat >"$source/bin/agent-workflow-seam-doctor" <<'BASH'
+#!/usr/bin/env bash
+exit 19
+BASH
+  chmod +x "$source/bin/agent-workflow-seam-doctor"
+  git -C "$source" add bin/agent-workflow-seam-doctor
+  git -C "$source" commit --quiet -m "inject seam failure"
+  cat >"$fake_bin/rsync" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${@: -2:1}"
+if [[ "$source_path" = "${QA_BACKUP_PARENT:?}/"*"/target/" ]]; then
+  printf 'partial restore\n' >"${QA_TARGET:?}/partial-restore-sentinel"
+  echo "injected restore failure" >&2
+  exit 41
+fi
+exec "${QA_REAL_RSYNC:?}" "$@"
+BASH
+  chmod +x "$fake_bin/rsync"
+
+  set +e
+  output="$(QA_BACKUP_PARENT="$backup_parent" QA_TARGET="$target" QA_REAL_RSYNC="$real_rsync" \
+    TMPDIR="$backup_parent" PATH="$fake_bin:$PATH" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" \
+    --consumer-root "$consumer" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 19 ]] || fail "restore failure replaced original exit 19 with $status: $output"
+  backup="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  [[ -n "$backup" ]] || fail "failed restore deleted its only recovery backup: $output"
+  assert_contains "$output" "ROLLBACK_FAILED restore_status=41 recovery_path=$backup"
+  [[ -f "$backup/target/.agent-workflows-install.json" ]] ||
+    fail "preserved recovery path does not contain the original installed target"
+  [[ -f "$target/partial-restore-sentinel" ]] ||
+    fail "restore failure fixture did not prove a partial restore"
+}
+
+test_upgrade_refuses_substituted_backup_identity_without_deleting_it() {
+  local tmp source target backup_parent output status replacement original
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  mkdir -p "$source" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  mv "$source/bin/install-agent-workflows" "$source/bin/install-agent-workflows.real"
+  cat >"$source/bin/install-agent-workflows" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+backup="$(find "${QA_BACKUP_PARENT:?}" -mindepth 1 -maxdepth 1 -type d \
+  -exec test -d '{}/target' ';' -print -quit)"
+[[ -n "$backup" ]]
+mv "$backup" "$backup.original"
+mkdir "$backup"
+printf 'replacement\n' >"$backup/replacement-sentinel"
+exit 23
+BASH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$(QA_BACKUP_PARENT="$backup_parent" TMPDIR="$backup_parent" \
+    "$source/bin/upgrade-agent-workflows" --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 23 ]] || fail "expected injected installer exit 23, got $status: $output"
+  assert_contains "$output" "ROLLBACK_FAILED backup identity changed"
+  replacement="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d ! -name '*.original' -print -quit)"
+  original="$(find "$backup_parent" -mindepth 1 -maxdepth 1 -type d -name '*.original' -print -quit)"
+  [[ -f "$replacement/replacement-sentinel" ]] ||
+    fail "cleanup deleted the substituted backup directory"
+  [[ -d "$original/target" ]] || fail "cleanup deleted the original backup after substitution"
+}
+
+test_upgrade_signal_after_backup_creation_cleans_transaction_backup() {
+  local tmp source target backup_parent output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  backup_parent="$tmp/upgrade backups"
+  mkdir -p "$source" "$backup_parent"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --target "$target" >"$tmp/install.out"
+  cat >"$source/bin/install-agent-workflows" <<'BASH'
+#!/usr/bin/env bash
+set -euo pipefail
+kill -TERM "$PPID"
+exit 0
+BASH
+  chmod +x "$source/bin/install-agent-workflows"
+
+  set +e
+  output="$(TMPDIR="$backup_parent" "$source/bin/upgrade-agent-workflows" \
+    --target "$target" --source "$source" --no-fetch 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 143 ]] || fail "expected TERM exit 143, got $status: $output"
+  assert_contains "$output" "ROLLBACK_COMPLETE"
+  assert_dir_empty "$backup_parent"
 }
 
 test_failed_upgrade_restores_companion_delivery_mode_and_layout() {
@@ -1726,6 +2615,8 @@ main() {
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
     test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_managed_profile_requires_explicit_absolute_gh_binding
+    test_managed_install_copies_the_validated_commit_when_the_worktree_changes_after_validation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode
@@ -1748,20 +2639,27 @@ main() {
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
+    test_default_flat_installs_seed_and_resolve_the_exact_committed_snapshot
+    test_pinned_install_refuses_capacity_without_changing_the_receipt
+    test_copy_mode_refuses_unsafe_bootstrap_directories
+    test_symlink_mode_refuses_unsafe_bin_before_publication
     test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
     test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
+    test_copy_mode_refuses_an_exact_unmarked_doctor_copy_with_unsafe_modes
+    test_new_installer_control_helper_can_read_an_older_committed_snapshot
     test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade
     test_install_namespaces_model_routing_doc_and_preserves_generic_collision
     test_install_preserves_exact_content_generic_collision_without_source_evidence
     test_install_removes_legacy_managed_model_routing_path
     test_install_removes_legacy_copy_from_git_worktree_source
-    test_install_removes_matching_legacy_copy_from_non_git_source
+    test_pinned_install_rejects_non_git_source_before_legacy_cleanup
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
+    test_helper_publication_replaces_directory_symlinks_without_writing_through
     test_symlink_mode_replaces_docs_directory_symlink
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation
@@ -1772,11 +2670,25 @@ main() {
     test_status_reports_not_installed_and_check_failed_explicitly
     test_status_reports_upgrade_available_between_source_commits
     test_upgrade_reinstalls_new_source_revision
+    test_successful_upgrade_removes_transaction_backup
+    test_post_install_backup_cleanup_failure_does_not_roll_back
+    test_upgrade_fetches_linked_worktree_source
+    test_upgrade_rejects_a_declared_broken_git_checkout
+    test_upgrade_without_fetch_rejects_a_declared_broken_git_checkout
+    test_upgrade_rejects_plain_standalone_pinned_source
+    test_upgrade_rejects_plain_pinned_source_nested_in_a_git_checkout
+    test_upgrade_rejects_a_declared_git_checkout_without_a_resolved_head
     test_upgrade_can_select_and_then_replay_companion_delivery_mode
+    test_managed_upgrade_fetches_once_before_reinstalling_the_established_revision
+    test_upgrade_rejects_a_changed_recorded_codex_resolution
     test_upgrade_dry_run_checks_requested_delivery_mode
     test_upgrade_without_consumer_roots_succeeds
     test_upgrade_reports_missing_source_as_check_failed
     test_upgrade_rolls_back_when_consumer_seam_fails
+    test_failed_upgrade_preserves_operation_state_and_removes_transaction_backup
+    test_failed_restore_preserves_transaction_backup_for_manual_recovery
+    test_upgrade_refuses_substituted_backup_identity_without_deleting_it
+    test_upgrade_signal_after_backup_creation_cleans_transaction_backup
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
   )

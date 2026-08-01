@@ -1,9 +1,19 @@
 # TDD Workflow
 
-Use this workflow when skill invocation is unavailable. The authoritative
-companion skill is at `skills/tdd/SKILL.md` in the source pack.
+## Explicit Operation Closeout
 
-<!-- Keep this workflow in sync with `skills/tdd/SKILL.md`. -->
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
+
+Use this workflow when skill invocation is unavailable. The authoritative
+companion skill is returned `assets.skills.tdd`.
+
+<!-- Keep this workflow in sync with the bound provider operation's `assets.skills.tdd`. -->
 
 Use this workflow to move in small, verified behavior slices:
 

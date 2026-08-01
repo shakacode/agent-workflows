@@ -47,6 +47,27 @@ class PrMergeSubmitTest < Minitest::Test
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
   MUTATION_TIMEOUT_ATTEMPTS = 3
 
+  def test_run_gh_rejects_missing_and_non_executable_provider_bindings
+    runner = PrMergeSubmit::Runner.new
+    original = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"]
+    Dir.mktmpdir("pr-merge-submit-binding") do |dir|
+      non_executable = File.join(dir, "gh")
+      File.write(non_executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o644, non_executable)
+      [File.join(dir, "missing-gh"), non_executable].each do |path|
+        ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"] = path
+
+        error = assert_raises(PrMergeSubmit::Error) do
+          runner.send(:run_gh, "--version", host: HOST)
+        end
+
+        assert_includes error.message, "binding is missing or invalid"
+      end
+    end
+  ensure
+    ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"] = original
+  end
+
   def test_open_queue_disabled_pr_merges_the_same_head_directly
     result, log = run_cli(mode: "direct")
 
@@ -923,6 +944,7 @@ class PrMergeSubmitTest < Minitest::Test
   def cli_environment(dir, log_path, mode)
     {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
+      "AGENT_WORKFLOWS_GH_EXECUTABLE" => File.join(dir, "gh"),
       "GH_LOG" => log_path,
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }

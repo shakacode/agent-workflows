@@ -116,7 +116,7 @@ module AutonomousMergeEvidence
   end
 
   def gh_api(path)
-    command = ENV.fetch("AUTONOMOUS_MERGE_GH", "gh")
+    command = ENV["AGENT_WORKFLOWS_GH_EXECUTABLE"] || ENV.fetch("AUTONOMOUS_MERGE_GH", "gh")
     stdout, stderr, status = Open3.capture3(command, "api", path)
     unless status.success?
       detail = stderr.lines.first.to_s.strip

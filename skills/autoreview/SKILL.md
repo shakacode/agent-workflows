@@ -5,6 +5,29 @@ description: 'Run a structured second-model code review as a closeout gate on a 
 
 # Auto Review
 
+## Bound Provider Operation
+
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.autoreview`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
+
 Run a structured second-model review as a **closeout check** before commit, push, or ship,
 then loop until the review reports no accepted/actionable findings. This is code review, not
 PR merge/approval routing.
@@ -20,7 +43,7 @@ clean" loop on top.
   it, such as `/code-review` or `/code-review ultra`. Treat these as environment-specific, not
   repo-local commands.
 - For PR-comment triage (reacting to review comments already on a GitHub PR), use
-  `.agents/skills/address-review/SKILL.md`; Claude Code exposes it as `/address-review`.
+  returned `assets.skills.address_review`; Claude Code exposes it as `/address-review`.
 <!-- host-branch: available-tool end -->
 
 Use when:
@@ -29,6 +52,16 @@ Use when:
   or a final review before commit/ship
 - after non-trivial code edits, before the final commit/push/PR
 - reviewing a local working tree, a branch, or a single landed commit after fixes
+
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
 
 ## Contract
 
@@ -73,12 +106,11 @@ git ls-files --others --exclude-standard
 ```
 
 <!-- host-branch: available-tool start -->
-Use these states when deciding the target. If available, resolve
-`AUTOREVIEW_SKILL_DIR` to the installed or repo-local directory containing this
-`SKILL.md`, then run the read-only helper:
+Use these states when deciding the target. Bind `AUTOREVIEW_SKILL_DIR` to the
+parent of returned `assets.skills.autoreview`, then run the read-only helper:
 
 ```bash
-AUTOREVIEW_SKILL_DIR="${AUTOREVIEW_SKILL_DIR:-.agents/skills/autoreview}"
+: "${AUTOREVIEW_SKILL_DIR:?set from assets.skills.autoreview}"
 "${AUTOREVIEW_SKILL_DIR}/bin/autoreview-target-state" --text
 ```
 
@@ -246,7 +278,7 @@ Do not run another review solely to improve the report wording. If the final rev
 with no accepted/actionable findings, report that run as clean.
 
 When machine-readable findings are requested, emit the same receipt and consequential-finding
-validation using `docs/review-finding-schema.md`. The additive receipt does not require another
+validation using returned `assets.docs.review_finding_schema`. The additive receipt does not require another
 review engine for ordinary clean reviews and does not transfer commit, push, PR, or merge
 ownership to review tooling.
 Populate optional receipt `provenance.model`, `provenance.effort`, and `provenance.usage` only from host-reported evidence for the actual review run.

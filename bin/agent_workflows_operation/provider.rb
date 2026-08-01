@@ -1,0 +1,435 @@
+# frozen_string_literal: true
+
+require "json"
+
+require_relative "errors"
+require_relative "secure_paths"
+require_relative "tree"
+require_relative "source_contract"
+
+module AgentWorkflowsOperation
+  class Provider
+    PROFILES = %w[managed pinned].freeze
+    COMPANION_BIN_FILES = %w[
+      bin/agent-workflow-seam-doctor
+      bin/agent-workflows-delivery-state
+      bin/agent-workflows-doctor
+      bin/agent-workflows-lifecycle
+      bin/agent-workflows-resolve
+      bin/agent-workflows-run
+      bin/agent-workflows-status
+      bin/agent-workflows-trust-audit
+      bin/install-agent-workflows
+      bin/upgrade-agent-workflows
+      bin/agent_workflows_source_contract.rb
+    ].freeze
+    COMPANION_DOC_FILES = %w[
+      docs/agent-workflows-model-routing.md
+      docs/coordination-backend.md
+      docs/review-finding-schema.md
+    ].freeze
+
+    CODEX_UPDATE = <<~GUIDANCE.strip
+      Run `codex plugin marketplace upgrade agent-workflows`, then
+      `codex plugin remove scw@agent-workflows` and
+      `codex plugin add scw@agent-workflows`. Reinstall companion assets from
+      that exact canonical main checkout with
+      `bin/install-agent-workflows --host codex --mode copy --delivery-mode plugin-companion --provider-profile managed --gh-executable /absolute/path/to/gh --codex-executable /absolute/path/to/codex`.
+      Fully restart Codex and start a new session before retrying.
+    GUIDANCE
+    CLAUDE_UPDATE = <<~GUIDANCE.strip
+      Run `/plugin marketplace update agent-workflows`, then
+      `/plugin update scw@agent-workflows`. Reinstall companion assets from
+      that exact canonical main checkout with
+      `bin/install-agent-workflows --host claude --mode copy --delivery-mode plugin-companion --provider-profile managed --gh-executable /absolute/path/to/gh`.
+      Run `/reload-plugins` and start a new session before retrying.
+    GUIDANCE
+
+    attr_reader :host, :target, :snapshot
+
+    def initialize(host:, target:, snapshot:)
+      @host = host
+      @target = target
+      @snapshot = snapshot
+      raise ProviderError, "host must be codex or claude" unless %w[codex claude].include?(host)
+    end
+
+    def verify!(expected_revision: snapshot.revision)
+      metadata = install_metadata!
+      profile = profile_from!(metadata)
+      return verify_pinned!(metadata, expected_revision) if profile == "pinned"
+
+      verify_managed!(metadata, expected_revision)
+    end
+
+    def verify_managed!(metadata, expected_revision)
+      verify_companion_metadata!(metadata)
+      begin
+        AgentWorkflowsSourceContract.validate_managed_metadata!(metadata)
+      rescue RuntimeError => e
+        fail_update!(e.message)
+      end
+      companion_revision = metadata["source_revision"]
+      native = native_state!(metadata)
+      roots = Array(native["roots"])
+      unless native["state"] == "active" && roots.length == 1
+        fail_update!("active native provider is unavailable or ambiguous")
+      end
+      native_root = File.realpath(roots.fetch(0))
+      native_revision = host == "codex" ? verify_codex_native!(native_root) : verify_claude_native!(native_root)
+
+      unless native_revision == companion_revision
+        fail_update!(
+          "native and companion provider revisions do not match " \
+          "(native #{native_revision}, companion #{companion_revision})"
+        )
+      end
+      unless native_revision == expected_revision
+        fail_update!(
+          "installed provider is stale (installed #{native_revision}, canonical main #{expected_revision})"
+        )
+      end
+
+      verify_native_tree!(native_root)
+      verify_codex_clean!(native_root) if host == "codex"
+      verify_companion_files!
+      gh_executable = metadata["gh_executable"]
+      unless gh_executable.is_a?(String) && gh_executable.start_with?("/")
+        raise ProviderError,
+              "MANAGED_TOOL_BINDING_REQUIRED: install metadata must declare an explicit absolute gh executable"
+      end
+      if host == "codex" &&
+         (!metadata["codex_executable"].to_s.start_with?("/") ||
+          !metadata["codex_executable_resolved"].to_s.start_with?("/"))
+        raise ProviderError,
+              "MANAGED_TOOL_BINDING_REQUIRED: reinstall with an explicit --codex-executable"
+      end
+
+      {
+        "profile" => "managed",
+        "host" => host,
+        "target" => target,
+        "native_root" => native_root,
+        "native_revision" => native_revision,
+        "companion_revision" => companion_revision,
+        "gh_executable" => gh_executable
+      }
+    end
+
+    def installed_revision!
+      metadata = install_metadata!
+      profile = profile_from!(metadata)
+      if profile == "managed"
+        verify_companion_metadata!(metadata)
+        begin
+          AgentWorkflowsSourceContract.validate_managed_metadata!(metadata)
+        rescue RuntimeError => e
+          fail_update!(e.message)
+        end
+      elsif metadata["host"] != host
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: install metadata belongs to another host"
+      end
+      revision = metadata["source_revision"]
+      unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+        if profile == "pinned"
+          raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: source_revision is not a full commit SHA"
+        end
+
+        fail_update!("companion source_revision is not a full commit SHA")
+      end
+
+      revision
+    end
+
+    def profile!
+      profile_from!(install_metadata!)
+    end
+
+    private
+
+    def verify_pinned!(metadata, expected_revision)
+      revision = metadata["source_revision"]
+      unless metadata["host"] == host && revision.to_s.match?(/\A[0-9a-f]{40}\z/) &&
+             revision == expected_revision
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: installed host or source revision does not match the snapshot"
+      end
+
+      mode = metadata["mode"]
+      delivery = metadata["delivery_mode"]
+      unless %w[copy symlink].include?(mode) && %w[flat plugin-companion].include?(delivery)
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: installed mode or delivery mode is unsupported"
+      end
+
+      if delivery == "plugin-companion"
+        unless mode == "copy"
+          raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: plugin companion delivery requires copy mode"
+        end
+
+        native = native_state!(metadata, allow_path_fallback: true)
+        roots = Array(native["roots"])
+        unless native["state"] == "active" && roots.length == 1
+          raise ProviderError, "PINNED_PROVIDER_MISMATCH: active native provider is unavailable or ambiguous"
+        end
+
+        native_root = File.realpath(roots.fetch(0))
+        native_revision = host == "codex" ? verify_codex_native!(native_root) : verify_claude_native!(native_root)
+        unless native_revision == revision
+          raise ProviderError,
+                "PINNED_PROVIDER_MISMATCH: native and companion revisions differ " \
+                "(native #{native_revision}, companion #{revision})"
+        end
+        verify_native_tree!(native_root)
+        verify_codex_clean!(native_root) if host == "codex"
+        verify_companion_files!
+      else
+        if mode == "copy"
+          verify_companion_files!
+          verify_flat_skill_copies!
+        else
+          verify_flat_symlink_surface!(metadata)
+        end
+        native = native_state!
+        unless native["state"] == "inactive"
+          raise ProviderError,
+                "PINNED_PROVIDER_MISMATCH: flat delivery requires the native provider to be inactive"
+        end
+      end
+
+      {
+        "profile" => "pinned",
+        "host" => host,
+        "target" => target,
+        "installed_revision" => revision,
+        "delivery_mode" => delivery,
+        "mode" => mode
+      }
+    rescue ProviderError => e
+      raise e if e.message.start_with?("PINNED_PROVIDER_")
+
+      raise ProviderError, "PINNED_PROVIDER_MISMATCH: #{e.message}"
+    end
+
+    def profile_from!(metadata)
+      profile = metadata.fetch("provider_profile", "pinned")
+      return profile if PROFILES.include?(profile)
+
+      raise ProviderError, "unsupported provider profile: #{profile.inspect}"
+    end
+
+    def companion_metadata!
+      metadata = install_metadata!
+      verify_companion_metadata!(metadata)
+      metadata
+    end
+
+    def verify_companion_metadata!(metadata)
+      unless metadata["host"] == host &&
+             metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
+        fail_update!("companion metadata must record this host, mode copy, and plugin-companion delivery")
+      end
+      revision = metadata["source_revision"]
+      fail_update!("companion source_revision is invalid") unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+    end
+
+    def install_metadata!
+      path = File.join(target, ".agent-workflows-install.json")
+      stat = File.lstat(path)
+      unless stat.file? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0o022).zero?
+        fail_update!("companion install metadata is missing, unsafe, or writable by another user")
+      end
+      metadata = JSON.parse(File.binread(path))
+      fail_update!("install metadata root must be an object") unless metadata.is_a?(Hash)
+
+      metadata
+    rescue Errno::ENOENT, JSON::ParserError => e
+      fail_update!("companion install metadata is unavailable: #{e.message}")
+    end
+
+    def native_state!(metadata = nil, allow_path_fallback: false)
+      load_delivery_state!
+      options = {}
+      if host == "codex"
+        metadata ||= install_metadata!
+        invocation = metadata["codex_executable"]
+        resolved = metadata["codex_executable_resolved"]
+        if invocation.to_s.empty? != resolved.to_s.empty?
+          raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: Codex executable binding is incomplete"
+        end
+
+        if allow_path_fallback && invocation.to_s.empty? && resolved.to_s.empty?
+          invocation, resolved = AgentWorkflowsDeliveryState.resolve_codex_executable
+        end
+        options = {
+          codex_executable: invocation,
+          codex_resolved: resolved
+        }.compact
+      end
+      AgentWorkflowsDeliveryState.native_state(host, target, **options)
+    rescue StandardError => e
+      fail_update!("native provider state could not be verified: #{e.message}")
+    end
+
+    def load_delivery_state!
+      return if defined?(AgentWorkflowsDeliveryState)
+
+      delivery_state = File.join(target, "bin/agent-workflows-delivery-state")
+      timeout_budget = File.join(target, "bin/agent_doctor/timeout_budget.rb")
+      unless @verified_symlink_surface
+        verify_companion_file!("bin/agent-workflows-delivery-state")
+        verify_companion_file!("bin/agent_doctor/timeout_budget.rb")
+      end
+      raise ProviderError, "verified delivery-state dependency disappeared" unless File.file?(timeout_budget)
+
+      load delivery_state
+    end
+
+    def verify_codex_native!(root)
+      git_directory = File.join(root, ".git")
+      git_stat = File.lstat(git_directory)
+      unless git_stat.directory? && !git_stat.symlink? && git_stat.uid == Process.uid
+        fail_update!("Codex native cache .git directory is missing or unsafe")
+      end
+      alternates = File.join(git_directory, "objects/info/alternates")
+      if File.exist?(alternates) || File.symlink?(alternates)
+        fail_update!("Codex native cache must not use Git object alternates")
+      end
+
+      head = snapshot_git.repository_head!(root)
+      fail_update!("Codex native cache HEAD is not a full commit SHA") unless head.match?(/\A[0-9a-f]{40}\z/)
+
+      head
+    rescue Errno::ENOENT, GitError => e
+      fail_update!("Codex native cache Git proof failed: #{e.message}")
+    end
+
+    def verify_codex_clean!(root)
+      status = snapshot_git.repository_status!(root)
+      fail_update!("Codex native cache Git checkout is not clean") unless status.empty?
+    rescue GitError => e
+      fail_update!("Codex native cache Git status failed: #{e.message}")
+    end
+
+    def verify_claude_native!(root)
+      receipt_path = File.join(target, "plugins/installed_plugins.json")
+      payload = JSON.parse(File.binread(receipt_path))
+      receipts = payload.dig("plugins", "scw@agent-workflows")
+      receipts = Array(receipts).select { |receipt| receipt.is_a?(Hash) }
+      fail_update!("Claude native plugin receipt is missing or ambiguous") unless receipts.length == 1
+
+      receipt = receipts.fetch(0)
+      receipt_root = File.realpath(receipt.fetch("installPath"))
+      fail_update!("Claude receipt installPath does not match the active provider root") unless receipt_root == root
+      revision = receipt["gitCommitSha"]
+      fail_update!("Claude receipt gitCommitSha is invalid") unless revision.to_s.match?(/\A[0-9a-f]{40}\z/)
+
+      revision
+    rescue Errno::ENOENT, JSON::ParserError, KeyError, TypeError => e
+      fail_update!("Claude native plugin receipt could not be verified: #{e.message}")
+    end
+
+    def verify_native_tree!(root)
+      Tree.verify_against_git!(
+        git: snapshot_git,
+        repository: snapshot.repository,
+        revision: snapshot.revision,
+        root: root,
+        private_home: File.join(snapshot.root, "home"),
+        ignore_git: host == "codex"
+      )
+    rescue StoreError => e
+      fail_update!("active native provider content does not match canonical main: #{e.message}")
+    end
+
+    def verify_companion_files!
+      prefixes = %w[bin/agent_doctor/ bin/agent_workflows_operation/ docs/solutions/ workflows/]
+      managed = snapshot_manifest.keys.select do |relative|
+        prefixes.any? { |prefix| relative.start_with?(prefix) }
+      end
+      (managed + COMPANION_BIN_FILES + COMPANION_DOC_FILES + ["LICENSE"]).uniq.each do |relative|
+        verify_companion_file!(relative)
+      end
+    end
+
+    def verify_flat_skill_copies!
+      skill_names = snapshot_manifest.keys.filter_map do |relative|
+        match = relative.match(%r{\Askills/([^/]+)/})
+        match[1] if match
+      end.uniq
+      skill_names.each do |name|
+        prefix = "skills/#{name}/"
+        expected = snapshot_manifest.each_with_object({}) do |(relative, entry), result|
+          result[relative.delete_prefix(prefix)] = entry if relative.start_with?(prefix)
+        end
+        actual = Tree.filesystem_entries(File.join(target, "skills", name), ignore_git: false)
+        unless actual == expected
+          raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat skill copy differs from receipt: #{name}"
+        end
+      end
+    rescue StoreError => e
+      raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat skill copies are unavailable: #{e.message}"
+    end
+
+    def verify_flat_symlink_surface!(metadata)
+      source = metadata["source"]
+      unless source.is_a?(String) && source.start_with?("/")
+        raise ProviderError, "PINNED_PROVIDER_RECEIPT_INVALID: symlink install source is invalid"
+      end
+
+      links = COMPANION_BIN_FILES + [
+        "bin/agent_doctor",
+        "bin/agent_workflows_operation",
+        "workflows",
+        "LICENSE"
+      ] + COMPANION_DOC_FILES
+      links.concat(snapshot_manifest.keys.grep(%r{\Adocs/solutions/}))
+      skill_names = snapshot_manifest.keys.filter_map do |relative|
+        match = relative.match(%r{\Askills/([^/]+)/})
+        match[1] if match
+      end.uniq
+      skill_names.each do |name|
+        links << "skills/#{name}"
+      end
+      links.uniq.each do |relative|
+        installed = File.join(target, relative)
+        expected = File.join(source, relative)
+        unless File.symlink?(installed) && File.expand_path(File.readlink(installed), File.dirname(installed)) == expected
+          raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat link differs from receipt: #{relative}"
+        end
+      end
+      @verified_symlink_surface = true
+    rescue SystemCallError => e
+      raise ProviderError, "PINNED_PROVIDER_MISMATCH: installed flat skill links are unavailable: #{e.message}"
+    end
+
+    def verify_companion_file!(relative)
+      Tree.verify_file_against_git!(
+        git: snapshot_git,
+        repository: snapshot.repository,
+        revision: snapshot.revision,
+        root: target,
+        relative: relative,
+        private_home: File.join(snapshot.root, "home"),
+        manifest: snapshot_manifest
+      )
+    rescue StoreError => e
+      fail_update!("companion bootstrap content does not match canonical main: #{e.message}")
+    end
+
+    def snapshot_git
+      @snapshot_git ||= SecureGit.new
+    end
+
+    def snapshot_manifest
+      @snapshot_manifest ||= snapshot_git.ls_tree!(
+        snapshot.repository,
+        snapshot.revision,
+        private_home: File.join(snapshot.root, "home")
+      )
+    end
+
+    def fail_update!(reason)
+      guidance = host == "codex" ? CODEX_UPDATE : CLAUDE_UPDATE
+      raise ProviderError, "PROVIDER_UPDATE_REQUIRED: #{reason}.\n#{guidance}"
+    end
+  end
+end

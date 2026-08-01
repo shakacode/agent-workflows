@@ -30,7 +30,7 @@ The preflight resolves trust in this order:
 2. repo-local `.agents/trusted-github-actors.yml`
 3. `$AGENT_WORKFLOWS_TRUST_CONFIG`
 4. user-global `~/.agents/trusted-github-actors.yml`
-5. packaged `skills/pr-batch/trusted-github-actors.yml`
+5. packaged `trusted-github-actors.yml` beneath the parent of `assets.skills.pr_batch`
 
 A present empty file is an intentional policy and does not fall through. An
 absent file falls through to the next layer, except a missing

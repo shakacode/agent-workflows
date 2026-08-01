@@ -62,19 +62,21 @@ class AutonomousMergeContractTest < Minitest::Test
     end
   end
 
-  def test_canonical_workflow_binds_helper_to_trusted_base_and_exact_current_head
+  def test_canonical_workflow_binds_provider_runtime_and_consumer_policy_separately
     workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
 
     assert_includes workflow, "autonomous-merge-eligibility"
     assert_includes workflow, "--trusted-base"
     assert_includes workflow, "human-approved-for-current-head"
     assert_includes workflow, "shadow_triggered_gates"
-    assert_includes workflow, "trusted-base materialization"
-    assert_includes workflow, "verified installed Agent Workflows pack"
-    assert_includes workflow, "--trusted-helper-provenance"
+    assert_includes workflow, '"${AGENT_WORKFLOWS_RUNNER[@]}" autonomous-merge-eligibility'
+    assert_includes workflow, "provider-operation:<provider-revision>:<runtime-digest>"
+    assert_includes workflow, "consumer base contributes policy only"
+    refute_includes workflow, "TRUSTED_RUNTIME_ROOT"
+    refute_includes workflow, "--trusted-helper-provenance"
     assert_includes workflow, "autonomous_merge_runtime_trust.rb"
     assert_match(/stdin\s+evaluation JSON is diagnostic-only/, workflow)
-    assert_includes workflow, "mechanically recomputes a length-framed manifest"
+    assert_includes workflow, "role-length-framed runtime digest"
     assert_includes workflow, "remain coordinator procedures"
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
   end

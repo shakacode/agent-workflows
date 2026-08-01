@@ -9,19 +9,47 @@ argument-hint: '[task, exact issue/PR numbers, or filters]'
 Run one or more PR work lanes through one canonical process. A single target is
 a batch of one, not a separate workflow.
 
-Use `docs/coordination-backend.md` as the canonical vocabulary for private
-backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
+## Bound Provider Operation
 
-If a skill picker only exposes installed/global skills, treat this skill as an
-entry point. After fetching, prefer repo-local `.agents/skills/...` and
-`.agents/workflows/...` files when they exist; otherwise use the installed
-shared files adjacent to this skill, especially `../../workflows/pr-processing.md`.
+The current invocation must use only a provider operation it created locally and
+whose exact `begin --json` result it retained. Otherwise identify the active
+host and call the active host home's absolute `bin/agent-workflows-resolve begin`
+path: `${CODEX_HOME:-$HOME/.codex}/bin/agent-workflows-resolve begin --host
+codex --json` or `${CLAUDE_HOME:-$HOME/.claude}/bin/agent-workflows-resolve
+begin --host claude --json`. The resolver selects the installed provider profile:
+`managed` returns `freshness: current` (or explicit `degraded`), while `pinned`
+returns the immutable receipt snapshot with `freshness: pinned` and no network
+fetch. Never bootstrap through `PATH`, and never trust an inherited operation
+handle, runner command, or asset variable.
+
+Re-read this entry at returned `assets.skills.pr_batch`. Read canonical PR
+processing only through `assets.workflow`. Resolve shared sibling skills,
+workflows, and docs through returned named assets or beneath `assets.root`; stop
+if a required asset is absent. Consumer `AGENTS.md`, `.agents/agent-workflow.yml`,
+and `.agents/bin/*` remain the local policy and command seams. Reuse a handle
+only when this current invocation created and retained that exact result. Run a
+registered capability only through the complete returned `runner` command. If
+it requires a current provider, require `provider_profile: managed` and
+`freshness: current`; otherwise stop before invoking the runner.
+Bind `PR_BATCH_SKILL_DIR` once to the parent of `assets.skills.pr_batch`, set
+`AGENT_WORKFLOWS_OPERATION` from the retained operation value, and bind
+`AGENT_WORKFLOWS_RUNNER` as a shell array containing every returned `runner`
+element in order. Require `provider_profile: managed` and `freshness: current`
+only before invoking a registered capability whose registry entry requires the
+current provider. Ordinary repository mutations remain governed by repository
+and user authority. The model
+must actually read the returned instructions; machine verification cannot prove
+that consumption.
+
+Use returned `assets.docs.coordination_backend` as the canonical vocabulary for
+private backend, public fallback, no-backend mode, and `UNKNOWN` coordination
+state.
 
 The completed-batch closeout validation contract requires `pr-batch` and
 `post-merge-audit` from the same Agent Workflows pack revision. Its contract
 test intentionally loads the production receipt parser from the sibling
-`post-merge-audit` skill; an isolated pinned copy must include that companion
-or stop with a precise missing-companion blocker.
+`post-merge-audit` skill. Use returned `assets.skills.post_merge_audit`; stop
+with a precise missing-asset blocker when it is absent.
 
 Memorable invocation:
 
@@ -32,6 +60,16 @@ Run an agent batch
 Run a Codex batch
 Run a Claude batch
 ```
+
+## Explicit Operation Closeout
+
+Retain the complete returned `release` argv. Invoke it only after this
+invocation's final shared-instruction read and final helper/capability use.
+Release invalidates every returned `assets.*` path, even if files happen to
+remain. A restart or follow-up must begin a new operation and release the old operation
+once it is safely finished. Recover crashed or orphaned handles only
+through the active host resolver's `list --json` plus a named `release`;
+never TTL or PID inference.
 
 ## Single-Target Mode
 
@@ -61,7 +99,7 @@ facts remain fail-closed and stop before mutation.
   subagents, disclose the inline single-worker fallback and apply every same
   gate; stop instead when the user explicitly required a subagent.
 - **Model/effort route**: use the canonical cost-aware staged routing from
-  `pr-processing.md`. Start on the fastest or balanced worker route justified by
+  returned `assets.workflow`. Start on the fastest or balanced worker route justified by
   ambiguity, risk, blast radius, reversibility, and verification difficulty—not
   merely the cheapest model—and require the canonical evidence before a stronger
   route or replacement.
@@ -83,7 +121,7 @@ facts remain fail-closed and stop before mutation.
   - Independent adversarial QA: Opus 4.8/xhigh
   - Routine deterministic QA: Opus 4.8/high
 - **Batch plan preflight**: before dispatcher selection or worker launch, run
-  the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
+  `"${AGENT_WORKFLOWS_RUNNER[@]}" batch-plan-preflight --` with a v1 envelope. It
   owns schema and launch scheduling, including the required active wave and
   max-one serialization. Preserve real PR verified `pr-file-touch-map` results
   unchanged; encode explicit pre-PR paths as typed `planned-path-evidence` v1
@@ -91,7 +129,8 @@ facts remain fail-closed and stop before mutation.
   acceptance permits only the returned eligible lanes.
 - **Dispatcher capability preflight**: before launch, pass the requested
   route/dispatcher, explicit authority, ordered candidates, and preserved lane
-  state to `bin/dispatcher-capability-preflight`. It records a bound, attested
+  state to `"${AGENT_WORKFLOWS_RUNNER[@]}" dispatcher-capability-preflight --`.
+  It records a bound, attested
   exact tuple or first explicitly authorized fallback; it never launches or
   mutates coordination. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice. Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. `selected` resumes Goal mode; `blocked-user-input`
   carries one `dispatch-decision-request v1` with canonical viable fallback choices and stops.
@@ -109,23 +148,21 @@ checks, and the canonical terminal state and handoff evidence.
 Resolve the target repo's `base_branch` from `.agents/agent-workflow.yml` when present, otherwise from the `AGENTS.md`
 **Agent Workflow Configuration** seam. If neither declares it, report
 `base_branch: UNKNOWN` and stop before branching. Run
-`git fetch --prune origin <base-branch>`, then use the
-repo-local `.agents/workflows/pr-processing.md` when present or the installed
-`../../workflows/pr-processing.md` as the deeper operating model for each issue,
-PR, review-fix pass, or merge-readiness item. If the target scope is not
-verified yet, use the installed or repo-local `plan-pr-batch` skill first.
-When invoking this skill's helper scripts, resolve `PR_BATCH_SKILL_DIR` in this
-order: explicit environment variable; the loaded skill's base directory when the
-host exposes it; repo-local `.agents/skills/pr-batch`; then stop with a precise
-blocker if the helper is still missing.
+`git fetch --prune origin <base-branch>`, then use only the
+operation-provided `assets.workflow` as the deeper operating model for each
+issue, PR, review-fix pass, or merge-readiness item. If the target scope is not
+verified yet, use returned `assets.skills.plan_pr_batch` first. Invoke
+non-registered analysis helpers only from the operation-derived
+`PR_BATCH_SKILL_DIR`; never re-resolve that directory from an environment
+override or any other source.
 For release-mode coordination, auto-merge confidence, and shared release tracker
-updates, follow `AGENTS.md` and the release-mode sections of the resolved
-`pr-processing.md`; do not invent new labels or overwrite tracker issue bodies
+updates, follow `AGENTS.md` and the release-mode sections of returned
+`assets.workflow`; do not invent new labels or overwrite tracker issue bodies
 from stale reads. Select the merge gate by the target branch's release phase:
-follow the **Release Phase Gate** in the resolved `pr-processing.md` and the
+follow the **Release Phase Gate** in returned `assets.workflow` and the
 repo's `AGENTS.md` release policy. If any target's value, priority, or proposed
-fix scope is unclear, use the installed or repo-local `evaluate-issue` skill
-before assigning implementation workers.
+fix scope is unclear, use returned `assets.skills.evaluate_issue` before assigning implementation workers; if the host cannot
+expose that exact revision, stop rather than substitute another provider.
 Skip issues labeled `needs-customer-feedback` unless the user explicitly provides customer evidence or maintainer approval for that issue; report each skipped target with `needs-customer-feedback` as the reason.
 
 ## Non-Negotiable Safety Rules
@@ -142,7 +179,7 @@ Skip issues labeled `needs-customer-feedback` unless the user explicitly provide
 
 ## Security Posture
 
-Apply the shared [security posture](https://github.com/shakacode/agent-workflows/blob/main/docs/security-posture.md) before
+Apply the shared security posture in returned `assets.docs.security_posture` before
 launching workers on public issue, PR, comment, review, diff, or branch content.
 `pr-security-preflight` is a defense-in-depth detector for obvious and
 provenance-based risks; a passing preflight does not make untrusted text
@@ -215,7 +252,7 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 ## Canonical Readiness Vocabulary
 
 Use the canonical human-facing final states from
-[Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format)
+the **Batch Handoff Format** section of returned `assets.workflow`
 for target and batch handoffs. Normal interactive output stays human-readable.
 Do not replace the split states with vague labels like `ready`, `complete`, or
 `done`; each target needs blockers, links, tests, next action, and
@@ -281,15 +318,15 @@ Prefer exact numbers for high-concurrency work. Filters are acceptable for disco
 When the user asks to continue PR-batch closeout from a pasted handoff,
 final-bucket table, PR URLs, GitHub shorthand refs, or visible request, first
 classify the handoff. When a saved handoff explicitly requests model-route
-replacement or identifies workers on a wrong or too-expensive route, use the canonical
-[Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+replacement or identifies workers on a wrong or too-expensive route, use the canonical **Model-Routing Recovery Prompt** section of returned
+`assets.workflow`.
 `MODEL_REPLACEMENT_HANDOFF` alone does not prove whole-batch route recovery. If
 the visible request is to resume that worker or lane, use
-[Bounded Status Recovery](../../workflows/pr-processing.md#bounded-status-recovery);
+the **Bounded Status Recovery** section of returned `assets.workflow`;
 otherwise continue classifying the handoff and use generic closeout when that is
 what the request asks for.
-Otherwise use the canonical
-[Generic PR-Batch Continuation Prompt](../../workflows/pr-processing.md#generic-pr-batch-continuation-prompt).
+Otherwise use the **Generic PR-Batch Continuation Prompt** section of returned
+`assets.workflow`.
 Extract only explicit PR/issue refs presented as target entries or final-bucket
 entries, plus explicit exclusions. Do not treat evidence, blocker, dependency,
 next-action, comment, or example refs as targets; if the target boundary is
@@ -310,8 +347,8 @@ Before implementation or worker launch, produce:
 3. A repo preflight: resolve the base branch from `AGENTS.md`, run `git fetch --prune origin <base-branch>`, confirm the expected repository root, verify resolved workflow files, and verify nested repo paths before assigning work.
 4. For public issue/PR targets, a security preflight: run the following and report `SECURITY_PREFLIGHT_OK`, including any acknowledged findings, or stop on `SECURITY_PREFLIGHT_BLOCKED` with the exact finding.
    ```bash
-   # Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
-   PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+   # Set PR_BATCH_SKILL_DIR to the parent directory of the path in assets.skills.pr_batch.
+   : "${PR_BATCH_SKILL_DIR:?set from assets.skills.pr_batch}"
    "${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo <OWNER/REPO> <ISSUE_OR_PR...>
    ```
    Add `--fail-on-high-risk-files` when high-risk workflow, script, hook, or
@@ -326,7 +363,7 @@ Before implementation or worker launch, produce:
    - likely outcome: implementation PR, combined investigation PR, no-PR evidence comment, or product-decision blocker
    - assigned machine or worker
 6. The selected `merge_authority` value and how it affects final closeout.
-7. The Batch QA Lane decision from `.agents/workflows/pr-processing.md`:
+7. The Batch QA Lane decision from returned `assets.workflow`:
    required lane/owner/scope or `not required` with rationale, plus final QA
    Evidence expectations.
 8. A permission and trust preflight result.
@@ -364,7 +401,7 @@ If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the Cod
 ## Handoff Contract
 
 For workflow/build/dependency/lockfile gate changes, include the `AGENTS.md` /
-resolved `pr-processing.md` audit evidence for new-gate stale-base
+returned `assets.workflow` audit evidence for new-gate stale-base
 controls. For lockfile changes, include Dependabot ecosystem and
 directory/directories compatibility plus the lockfile content-diff note:
 
@@ -379,17 +416,16 @@ whose committed lockfiles change.
 ## Stage-Typed Dependencies
 
 For every batch, consume the planner/triage `stage-dependency-plan` v1 file and
-separate `stage-dependency-gate` v1 live replay defined in the resolved
-`pr-processing.md` **Stage-Typed Dependency Gate** section. Do not reduce typed
+separate `stage-dependency-gate` v1 live replay defined in the **Stage-Typed Dependency Gate** section of returned
+`assets.workflow`. Do not reduce typed
 edges to generic `depends_on` readiness. Take `STAGE_DEPENDENCY_PLAN_PATH` and
 `STAGE_DEPENDENCY_PLAN_ID` only from trusted coordinator handoff/stable planning
 state, then refresh lane heads/bases, live edge states, verified evidence, and
 base-movement facts. The live edges carry only `id`, `state`, `evidence`, and
-`base_movement`; ignore tuple copies in mutable input. Resolve
-`PR_BATCH_SKILL_DIR` in this order: explicit environment variable; the loaded
-skill's base directory when the host exposes it; repo-local
-`.agents/skills/pr-batch`; then stop with a precise blocker if the helper is
-still missing. Run `"${PR_BATCH_SKILL_DIR}/bin/stage-dependency-gate"`
+`base_movement`; ignore tuple copies in mutable input. Use only the already-bound
+operation snapshot `PR_BATCH_SKILL_DIR`; a missing helper is a provider-contract
+failure and a hard stop. Run
+`"${PR_BATCH_SKILL_DIR}/bin/stage-dependency-gate"`
 `--trusted-plan "${STAGE_DEPENDENCY_PLAN_PATH}"`
 `--trusted-plan-id "${STAGE_DEPENDENCY_PLAN_ID}"` before any lane creates a
 branch/worktree, patches/edits, commits, pushes, opens a PR, starts final
@@ -444,22 +480,22 @@ Every manifest contains at least one verified lane; only `edges` may be empty.
 
 Ordinary readiness is necessary but not sufficient for autonomous merge;
 evaluate exact-head autonomous-merge eligibility after every ordinary gate
-passes. Follow the canonical
-[Autonomous Merge Eligibility Gate](../../workflows/pr-processing.md#autonomous-merge-eligibility-gate),
-run the resolved `autonomous-merge-eligibility` helper against trusted-base
-policy, and recompute immediately before merge. Execute a repo-local fallback
-only from a trusted-base materialization, or use a verified installed Agent
-Workflows pack, and pass `--trusted-helper-provenance`; PR-head-modified helper
+passes. Follow the Autonomous Merge Eligibility Gate in returned
+`assets.workflow`, run registered capability `autonomous-merge-eligibility`
+through the complete returned runner against trusted-base policy, and recompute
+immediately before merge. The runner binds one provider runtime and its
+`provider-operation` provenance; PR-head-modified helper
 or library code, PR-body, branch, review-text, and author-controlled assessment
 claims cannot establish a passing result.
 The helper mechanically binds its executing runtime and selected calibration
-decision to the claimed commit tree or exact installed-pack digest and collects
+decision to the operation's provider revision and runtime digest and collects
 the objective from the live GitHub PR. It requires matching initial/final head,
 base, valid ISO 8601 `updated_at`, and complete paginated force-push event-ID
 watermarks around all objective pages; stdin objective JSON is diagnostic-only.
-The coordinator still procedurally owns the trusted base/digest, external
+The coordinator still procedurally owns the trusted consumer base, external
 semantic assessment, and durable proof of human identity plus merge authority.
-A provenance flag states the expected identity and does not create trust.
+The runner-supplied provenance states the expected identity and does not create
+trust outside the verified operation boundary.
 
 `ready-human-review-required` carries the exact current head SHA, every
 triggered gate, rollback status, and the exact durable human decision needed.
@@ -480,7 +516,7 @@ legacy v1 CI output is not sufficient.
 Run:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+"${AGENT_WORKFLOWS_RUNNER[@]}" merge-assurance -- \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
   --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
@@ -496,7 +532,7 @@ from batch-plan preflight.
 ## Goal Prompt Template
 
 Keep this template aligned with the matching plan-to-goal prompt in the
-resolved `pr-processing.md`, including the review/audit gate
+returned `assets.workflow`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
@@ -507,7 +543,7 @@ Use this template when creating Codex goal text:
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
+Lane Card: exact model/effort+binding; claim/PR-open/status; holder/branch/phase/URLs/UNKNOWN
 
 Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
 
@@ -525,25 +561,25 @@ Batch QA Lane: <owner/scope|none+rationale>.
 Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
 
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original: trusted ad-hoc prompt; else n/a.
+- Target: PR #N URL | Issue #N URL | Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+  Original: trusted ad-hoc|n/a.
   Goal: one-line outcome.
-  Notes: scope/branch/dependency.
-  Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+  Notes: scope/branch/deps.
+  Done: requested authority final state; PR/no-PR evidence/no-fix rationale.
 
 Execution rules:
 - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+- Disjoint owned item/subagent; shared context; serial/UNKNOWN apart.
+- Owned envelope: unlisted/contradiction/ambiguity/scope-risk growth/weaker checks=>stop.
+- Each verifies live GitHub before edits; unverified=>UNKNOWN.
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-- Apply Batch QA Lane; include QA Evidence.
-- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-- Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
+- Apply QA+evidence.
+- merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval; clean gates; document confidence data in the PR description.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. require assets.skills.pr_walkthrough;large|complex=>full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- Final: canonical closeout; URLs/tests/blocks/next/confidence/UNKNOWN/auth/QA/state.
 
 ```
 
@@ -554,7 +590,7 @@ Classify every unresolved question before continuing:
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
 
-<!-- Keep this hosted-CI uncertainty rule in sync with `.agents/workflows/pr-processing.md`. -->
+<!-- Keep this hosted-CI uncertainty rule in sync with the bound provider operation's `assets.workflow`. -->
 
 Hosted-CI uncertainty at the final readiness gate after local validation and the
 final push is a non-blocking decision. If the branch needs remote confirmation,
@@ -582,12 +618,11 @@ Before merge or final readiness, scan the PR description for the decision log an
 
 ## Maintainer Attention Contract
 
-Use `AGENTS.md` and the canonical
-[Maintainer Attention Contract](../../workflows/pr-processing.md#maintainer-attention-contract)
-section in `.agents/workflows/pr-processing.md`. Keep this skill as a routing
-entry point: worker goals should carry the contract before target assignment,
-and the goal prompt template above repeats the key worker-facing rules. The
-detailed policy belongs in the canonical workflow.
+Use `AGENTS.md` and the **Maintainer Attention Contract** section of returned
+`assets.workflow`. Keep this skill as a routing entry point: worker goals should
+carry the contract before target assignment, and the goal prompt template above
+repeats the key worker-facing rules. The detailed policy belongs in the
+canonical workflow.
 
 ## Batch Handoff Format
 
@@ -599,17 +634,17 @@ detailed policy belongs in the canonical workflow.
 > audit issue. Close superseded process issues on
 > sight; closure follows the work, not whoever opened the tracker.
 
-<!-- Keep this handoff summary in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+<!-- Keep this summary aligned with `### Batch Handoff Format` in the bound operation's `assets.workflow`. -->
 
-Use the canonical Batch Handoff Format in
-`.agents/workflows/pr-processing.md`. In short, split final batch handoffs into
+Use the canonical Batch Handoff Format in returned `assets.workflow`. In short,
+split final batch handoffs into
 **Immediate maintainer attention** for true blockers and questions only, and
 **FYI / decisions made** for decisions, validations, review state, hosted-CI
 requests already handled, no-PR rationales, autonomous nit outcomes,
 confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
 merge-ledger summaries.
 
-<!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+<!-- Keep this rule aligned with `### Batch Handoff Format` in the bound provider operation's `assets.workflow`. -->
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
@@ -627,8 +662,8 @@ backend must say so in the declaration.
 When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
 ready/merge claim, include replayable `qa-evidence v2` and
 `priority-finding-dispositions v1` markers as defined by the repository-resolved
-workflow contract selected through its `AGENTS.md` seam, or state why replay is
-not applicable.
+workflow contract in returned `assets.workflow`, or state why replay is not
+applicable.
 Historical `qa-evidence v1` remains replayable but must not be emitted for new
 closeout evidence. Every current user-visible UI change requires durable
 before/after evidence, explicit `interaction_change` and `visual_fix`
@@ -656,15 +691,15 @@ coverage/scope evidence is missing, stale, scope-mismatched, `blocked`,
 lane whose private coordination claim/heartbeat is `UNKNOWN` while documented QA
 evidence is otherwise complete.
 Record the selected `merge_authority` value in the handoff and use the canonical
-split final states from `.agents/workflows/pr-processing.md`.
+split final states from returned `assets.workflow`.
 
 End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
 
 ## Coordination State
 
-Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as the
-canonical source for coordination state and worker rules. Keep this skill as a
-routing entry point; do not duplicate the full protocol here.
+Use returned `assets.workflow` as the canonical source for coordination state
+and worker rules. Keep this skill as a routing entry point; do not duplicate the
+full protocol here.
 
 In short: exact lane assignments beat labels; a selected private backend is the
 source of truth when bounded health and target-scoped status probes pass; claim
@@ -678,12 +713,11 @@ for backend reconciliation. An issue/PR lane claim also mirrors to the seam's
 claim label (`agent_claimed_label`, default `agent-claimed`; apply on claim,
 remove on release for this lane's own claim; hint not lock; skip when backend
 n/a), and selection/triage skip claimed items — see the canonical rule in
-`pr-processing.md`.
+returned `assets.workflow`.
 
 ## Worker Rules
 
-Follow the canonical
-[Worker Rules](../../workflows/pr-processing.md#worker-rules) and keep one target
+Follow the canonical **Worker Rules** section of returned `assets.workflow` and keep one target
 or one disjoint lane per worker. Every file-editing worker runs in its own
 worktree so two workers never share one working directory — Codex or
 multi-machine workers use `git worktree add`; in-process Claude Code
@@ -720,44 +754,45 @@ coordinator immediately rather than authorizing worker re-planning.
 
 When the goal, targets, scope, and lane identity stay stable but a worker needs
 a different model/effort role, use
-[Worker Model Replacement And Escalation](../../workflows/pr-processing.md#worker-model-replacement-and-escalation)
+the **Worker Model Replacement And Escalation** section of returned `assets.workflow`
 instead of cancelling the batch. Stop the old worker, capture or reconstruct its
 `MODEL_REPLACEMENT_HANDOFF`, reconcile the claim holder/generation/instance, and
 start the replacement only after fencing prevents overlap. For already-running
-batches that need the staged route policy, use the canonical
-[Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
+batches that need the staged route policy, use the canonical **Model-Routing Recovery Prompt** section of returned
+`assets.workflow`.
 
 ### Normal Agent-Runner Restart
 
 For an ordinary agent-runner restart where the same lanes should resume
-afterward, use the canonical
-[Pausing For An Agent-Runner Restart](../../workflows/pr-processing.md#pausing-for-an-agent-runner-restart)
-prompt and its companion
-[Bounded Status Recovery](../../workflows/pr-processing.md#bounded-status-recovery)
+afterward, use the canonical **Pausing For An Agent-Runner Restart** section of returned
+`assets.workflow` and its companion **Bounded Status Recovery** section
 resume steps. Preserve claims and worktrees, and do not release or cancel a lane
 unless the coordinator explicitly cancels it.
 
 ### Cancellation Or Relaunch
 
 To stop an in-flight batch — for example to relaunch it with updated skills,
-workflow rules, or targets — follow the canonical
-[Cancelling Or Stopping A Batch](../../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
+workflow rules, or targets — follow the canonical **Cancelling Or Stopping A Batch** section of returned
+`assets.workflow`
 protocol instead of waiting out claim leases. In short: a coordinator or maintainer
 marks the batch or specific lanes cancelled in the selected private backend (see
-[coordination-backend.md](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md)
+coordination contract in returned `assets.docs.coordination_backend`
 → **Cancellation**); workers drain at their next safe checkpoint, finishing an
 in-flight target only when abandoning would leave remote state inconsistent,
 then release the coordination claim and exit; wedged workers are stopped at the
-process level. Restarting with updated skills requires launching fresh workers
-from a checkout that already has the updated `.agents/skills/...` and
-`.agents/workflows/...` files — a still-running worker keeps its old skill text.
+process level. Within the same invocation, retain and reuse only its exact
+operation result. A replacement invocation starts a new operation and uses only
+that newly returned snapshot.
 
 ## Coordinator Closeout Lane
 
-Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
+Use the **Planning-Chat Lifecycle** section of returned `assets.workflow`: a
+prompt-only chat may hand off stable planning state; a planning parent
+supervises worker execution and performs narrow read-only cross-batch
+reconciliation; batch coordinators execute and own live lanes and closeout.
 
 For the complete numbered sequence, follow the canonical closeout lane in
-`.agents/workflows/pr-processing.md` instead of stopping at PR creation. The
+returned `assets.workflow` instead of stopping at PR creation. The
 coordinator owns the live re-fetch, current-head checks and review-thread triage,
 per-PR merge-ledger run, stale release-mode classification updates and the finalized PR-body
 `Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
@@ -797,10 +832,12 @@ When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
 target is merged + closed out (or a true blocker / no-PR with evidence), not
 "stopped at a recommendation." When `merge_authority` is `ask` and gates are
 clean, automatically start the exact-diff PR walkthrough before approval: use
-`$pr-walkthrough` when available, use full interactive mode for large or complex
-PRs and concise interactive mode for smaller cohesive PRs, and do not repeat a
-walkthrough completed for the same diff identity. Honor an explicit request to
-skip it. After it completes or is skipped, refresh the diff identity and
+the instructions at returned `assets.skills.pr_walkthrough`, stopping with a
+precise provider-contract failure if that named asset is absent. Use full
+interactive mode for large or complex PRs and concise interactive mode for
+smaller cohesive PRs, and do not repeat a walkthrough completed for the same
+diff identity. Honor an explicit request to skip it. After it completes or is
+skipped, refresh the diff identity and
 ordinary readiness. If the diff identity changed, invalidate the walkthrough
 and readiness evidence, then restart the walkthrough or stop. If an ordinary
 gate newly fails, stop. Ask one final merge decision only when the refreshed
@@ -817,10 +854,11 @@ block, not the normal-handoff note) for the maintainer to merge. Do not merge
 without authorization. Either way, do not surface merge readiness while review
 threads are still unresolved.
 When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
-then submit the reviewed host, base, and exact head through the canonical
-`pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
-receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge, uses GitHub's `enqueuePullRequest` when the base is
+then submit the reviewed host, base, and exact head through
+`"${AGENT_WORKFLOWS_RUNNER[@]}" pr-merge-submit --` exactly as described by the
+operation-provided workflow, passing that receipt unconditionally. Never execute
+the helper by filesystem path. It preserves read-only, idempotent observation of
+an exact terminal merge, uses GitHub's `enqueuePullRequest` when the base is
 queue-controlled, and uses `mergePullRequest` otherwise. Direct submission is
 atomically bound to the authorized head with `expectedHeadOid`; the fresh
 receipt's base SHA is rechecked in live metadata immediately before mutation.
@@ -860,13 +898,13 @@ defaults to durable PR summary or decision-log evidence unless existing
 repository policy selects a tracker. If policy requires tracking, use its
 already-resolved existing destination and contract; missing or ambiguous tracker
 configuration becomes `ask user`. Coordinated mode never creates a new
-follow-up issue. Follow `workflows/pr-processing.md` and the child
+follow-up issue. Follow returned `assets.workflow` and the child
 workflow's verification, audit, and independent-current-head-review
 requirements; this does not expand task, security, behavior, scope, release
 policy, or merge authority.
 
-For Goal-mode closeout, follow the canonical
-[Goal Mode Completion Contract](../../workflows/pr-processing.md#goal-mode-completion-contract).
+For Goal-mode closeout, follow the canonical **Goal Mode Completion Contract** section of returned
+`assets.workflow`.
 In short, `waiting-on-checks-or-review` is per-target progress, not an overall
 terminal state; keep polling, triaging, and fixing, or report NOT COMPLETE /
 blocked with exact resume instructions only after a watch window or real
@@ -875,4 +913,4 @@ external blocker.
 Converge the review loop instead of chasing it: each push re-triggers every configured
 review bot on the new head, so resolve advisory threads in-thread (reply + resolve)
 **without a commit**, and reserve pushes for batched confirmed blockers. See
-[Review-Loop Convergence](../../workflows/pr-processing.md#review-loop-convergence-push-amplification).
+the **Review-Loop Convergence** section of returned `assets.workflow`.
