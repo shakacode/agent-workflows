@@ -1861,6 +1861,7 @@ class AgentWorkflowsOperationTest < Minitest::Test
     @revision = commit_all("fixture source")
     @served_repo = File.join(@tmp, "served.git")
     system("git", "clone", "--quiet", "--bare", @source, @served_repo, exception: true)
+    system("git", "--git-dir", @served_repo, "config", "receive.autogc", "false", exception: true)
     start_http_server
   end
 
