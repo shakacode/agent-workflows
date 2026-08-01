@@ -12,10 +12,10 @@ class RepositorySecurityPolicyTest < Minitest::Test
       workflow = YAML.safe_load_file(path, aliases: true)
       [path, workflow_uses(workflow)]
     end
-    action_paths = Dir.glob([
-                              File.join(ROOT, "action.{yml,yaml}"),
-                              File.join(ROOT, ".github/actions/**/action.{yml,yaml}")
-                            ])
+    action_paths = Dir.glob(File.join(ROOT, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).reject do |path|
+      relative_parts = path.delete_prefix("#{ROOT}/").split("/")
+      (relative_parts & %w[.codex .git .tmp tmp]).any?
+    end
     reference_sets.concat(action_paths.map do |path|
       action = YAML.safe_load_file(path, aliases: true)
       [path, composite_uses(action)]
@@ -23,7 +23,7 @@ class RepositorySecurityPolicyTest < Minitest::Test
 
     mutable_uses = reference_sets.flat_map do |path, references|
       references.filter_map do |location, reference|
-        next if reference.is_a?(String) && reference.match?(/@[0-9a-f]{40}\z/)
+        next if acceptable_action_reference?(reference)
 
         "#{path.delete_prefix("#{ROOT}/")}:#{location}: #{reference.inspect}"
       end
@@ -56,6 +56,12 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_equal [["runs.steps.0.uses", "owner/action@v1"]], composite_uses(action)
   end
 
+  def test_repository_local_references_are_bound_by_the_checkout
+    assert acceptable_action_reference?("./.github/actions/example")
+    assert acceptable_action_reference?("owner/action@0123456789abcdef0123456789abcdef01234567")
+    refute acceptable_action_reference?("owner/action@v1")
+  end
+
   def test_routine_pull_requests_do_not_use_the_broad_custom_human_gate
     refute File.exist?(File.join(ROOT, ".github/workflows/human-security-review.yml"))
     refute File.exist?(File.join(ROOT, "bin/human-security-review-gate"))
@@ -81,6 +87,10 @@ class RepositorySecurityPolicyTest < Minitest::Test
   end
 
   private
+
+  def acceptable_action_reference?(reference)
+    reference.is_a?(String) && (reference.start_with?("./") || reference.match?(/@[0-9a-f]{40}\z/))
+  end
 
   def workflow_uses(workflow)
     jobs = workflow.is_a?(Hash) ? workflow["jobs"] : nil
