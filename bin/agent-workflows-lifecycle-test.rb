@@ -313,7 +313,9 @@ class AgentWorkflowsLifecycleTest < Minitest::Test
     FileUtils.mkdir_p(fake_bin)
     ready = File.join(@tmp, "rsync-ready")
     proceed = File.join(@tmp, "rsync-proceed")
-    real_mv = `command -v mv`.strip
+    real_mv, real_mv_status = Open3.capture2("sh", "-c", "command -v mv")
+    assert real_mv_status.success?
+    real_mv = real_mv.strip
     File.write(
       File.join(fake_bin, "mv"),
       <<~BASH
