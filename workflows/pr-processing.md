@@ -1164,7 +1164,7 @@ merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
-Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model/effort@binding|UNKNOWN>;lanes=<lane-id:host+model/effort@binding>,...;UNKNOWN=field;no guesses
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model>/<effort>@<binding>;lanes=<lane-id:host+model/effort@binding>,...;UNKNOWN=field;no guesses
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
@@ -2039,7 +2039,8 @@ hatch**, not a single kill switch:
   that worker emits one lane-scoped typed `human_intervention` event with
   `kind: drain` when the active private coordination backend advertises
   typed-event support. The coordinator/operator must not emit a duplicate for
-  that cooperative path.
+  that cooperative path. The cooperative worker path remains worker-owned at
+  that checkpoint; the coordinator/operator neither re-emits nor duplicates it.
 - **Hard escape hatch.** For a wedged or unresponsive worker that is not reaching a
   checkpoint, use this sequence:
   1. Ensure cancellation is recorded in the backend, or record that backend state
@@ -2050,9 +2051,15 @@ hatch**, not a single kill switch:
      coordination backend advertises typed-event support. For either drain path,
      backend `n/a` skips the emission; unadvertised or unsupported typed-event
      capability records `typed event transport: unavailable` and remains
-     nonblocking. After advertised support, an emission failure, degradation, or
-     rejection records best-effort `UNKNOWN` evidence and never blocks safe
-     termination or claim release.
+     nonblocking. For the coordinator/operator hard-escape path only, run the
+     actual drain-event subprocess through the resolved pr-batch
+     `bin/agent-coord-bounded` process-control seam with a finite positive
+     deadline; the helper must launch that subprocess in its own process group
+     and terminate the whole group when the deadline expires. A deadline expiry,
+     forced termination, or any other advertised-support emission failure
+     records best-effort `UNKNOWN` evidence; the coordinator/operator then
+     proceeds immediately to worker process termination and claim release
+     without waiting further on the drain event.
   3. Stop the worker at the process level — terminate the `codex exec` /
      `claude -p` process, or close the Conductor workspace running an in-process
      `Agent`/`Workflow` coordinator.

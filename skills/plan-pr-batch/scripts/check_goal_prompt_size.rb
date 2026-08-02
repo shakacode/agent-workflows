@@ -17,9 +17,11 @@ COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
-                                  "coordinator_route=<model/effort@binding|UNKNOWN>;" \
+                                  "coordinator_route=<model>/<effort>@<binding>;" \
                                   "lanes=<lane-id:host+model/effort@binding>,...;" \
                                   "UNKNOWN=field;no guesses"
+MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_FRAGMENT =
+  "coordinator_route=<model/effort@binding|UNKNOWN>"
 BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
 FINAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
@@ -327,6 +329,12 @@ def require_occurrence_count(text, phrase, expected_count, label)
   abort_with_failure(
     "#{label} has #{actual_count} occurrences of #{phrase.inspect}; expected #{expected_count}"
   )
+end
+
+def reject_phrases(text, phrases, label)
+  phrases.each do |phrase|
+    abort_with_failure("#{label} contains forbidden phrase: #{phrase}") if text.include?(phrase)
+  end
 end
 
 def extract_goal_prompt_template(text, heading, label:)
@@ -660,6 +668,11 @@ end
   "pr-batch goal prompt" => pr_batch_prompt_template,
   "workflow plan-to-goal prompt" => workflow_prompt_template
 }.each do |label, template|
+  reject_phrases(
+    template,
+    [MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_FRAGMENT],
+    "#{label} manifest provenance contract"
+  )
   require_occurrence_count(template, GOAL_PROMPT_PREFLIGHT_LINE, 1, "#{label} preflight contract")
   require_occurrence_count(template, GOAL_PROMPT_ITEM_SHAPE, 1, "#{label} complete item shape")
   require_occurrence_count(template, GOAL_PROMPT_BASE_RESOLUTION_LINE, 1, "#{label} base-resolution contract")
@@ -686,6 +699,11 @@ end
     "#{label} synchronized current-wave assignment contract"
   )
 end
+reject_phrases(
+  triage_prompt_contract_text,
+  [MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_FRAGMENT],
+  "triage generated-prompt manifest provenance contract"
+)
 require_occurrence_count(
   triage_prompt_contract_text,
   MANIFEST_PROVENANCE_PROMPT_LINE,

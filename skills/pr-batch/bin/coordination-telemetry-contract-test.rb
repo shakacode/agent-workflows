@@ -13,12 +13,15 @@ PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
 CONTINUE_SKILL_PATH = File.join(ROOT, "skills/continue/SKILL.md")
 TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
-                       "coordinator_route=<model/effort@binding|UNKNOWN>;" \
+                       "coordinator_route=<model>/<effort>@<binding>;" \
                        "lanes=<lane-id:host+model/effort@binding>,...;" \
                        "UNKNOWN=field;no guesses"
 MANIFEST_MISSING_REPETITION_LINE = MANIFEST_PROMPT_LINE.sub(">,...", ">")
-MANIFEST_WHOLE_ENTRY_UNKNOWN_LINE =
+MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE =
   MANIFEST_PROMPT_LINE.sub("model/effort@binding>,...", "model/effort@binding|UNKNOWN>,...")
+MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_LINE =
+  MANIFEST_PROMPT_LINE.sub("coordinator_route=<model>/<effort>@<binding>",
+                           "coordinator_route=<model/effort@binding|UNKNOWN>")
 HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
@@ -85,6 +88,9 @@ COOPERATIVE_DRAIN_EMISSION_REQUIREMENT =
   "advertises typed-event support."
 COOPERATIVE_DRAIN_DEDUPLICATION_REQUIREMENT =
   "The coordinator/operator must not emit a duplicate for that cooperative path."
+COOPERATIVE_DRAIN_OWNERSHIP_REQUIREMENT =
+  "The cooperative worker path remains worker-owned at that checkpoint; the coordinator/operator neither " \
+  "re-emits nor duplicates it."
 HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT =
   "Immediately before terminating a worker that cannot reach that checkpoint, the coordinator/operator instead " \
   "emits one lane-scoped typed `human_intervention` event with `kind: drain` when the active private coordination " \
@@ -92,9 +98,14 @@ HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT =
 DRAIN_TRANSPORT_FALLBACK_REQUIREMENT =
   "For either drain path, backend `n/a` skips the emission; unadvertised or unsupported typed-event capability " \
   "records `typed event transport: unavailable` and remains nonblocking."
+HARD_ESCAPE_DRAIN_BOUNDED_EXECUTION_REQUIREMENT =
+  "For the coordinator/operator hard-escape path only, run the actual drain-event subprocess through the resolved " \
+  "pr-batch `bin/agent-coord-bounded` process-control seam with a finite positive deadline; the helper must launch " \
+  "that subprocess in its own process group and terminate the whole group when the deadline expires."
 DRAIN_EMISSION_FAILURE_REQUIREMENT =
-  "After advertised support, an emission failure, degradation, or rejection records best-effort `UNKNOWN` evidence " \
-  "and never blocks safe termination or claim release."
+  "A deadline expiry, forced termination, or any other advertised-support emission failure records best-effort " \
+  "`UNKNOWN` evidence; the coordinator/operator then proceeds immediately to worker process termination and claim " \
+  "release without waiting further on the drain event."
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -239,29 +250,46 @@ def assert_hard_escape_drain_emission_contract(section, location)
   {
     "cooperative worker emission" => COOPERATIVE_DRAIN_EMISSION_REQUIREMENT,
     "cooperative-path deduplication" => COOPERATIVE_DRAIN_DEDUPLICATION_REQUIREMENT,
+    "cooperative worker ownership" => COOPERATIVE_DRAIN_OWNERSHIP_REQUIREMENT,
     "coordinator/operator hard-escape emission" => HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT,
     "transport fallback" => DRAIN_TRANSPORT_FALLBACK_REQUIREMENT,
-    "advertised-support write failure" => DRAIN_EMISSION_FAILURE_REQUIREMENT
+    "hard-escape bounded execution" => HARD_ESCAPE_DRAIN_BOUNDED_EXECUTION_REQUIREMENT,
+    "failure continuation" => DRAIN_EMISSION_FAILURE_REQUIREMENT
   }.each do |concept, phrase|
     assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
   end
 
   cooperative_offset = normalized_section.index(COOPERATIVE_DRAIN_EMISSION_REQUIREMENT)
+  cooperative_ownership_offset = normalized_section.index(COOPERATIVE_DRAIN_OWNERSHIP_REQUIREMENT)
   hard_escape_offset = normalized_section.index(HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT)
+  bounded_execution_offset = normalized_section.index(HARD_ESCAPE_DRAIN_BOUNDED_EXECUTION_REQUIREMENT)
+  failure_continuation_offset = normalized_section.index(DRAIN_EMISSION_FAILURE_REQUIREMENT)
+  assert_operator cooperative_offset, :<, cooperative_ownership_offset,
+                  "#{location} must keep cooperative ownership after the worker emission"
+  assert_operator cooperative_ownership_offset, :<, hard_escape_offset,
+                  "#{location} must keep cooperative ownership distinct from the hard-escape fallback"
   assert_operator cooperative_offset, :<, hard_escape_offset,
                   "#{location} must assign cooperative emission before the hard-escape fallback"
+  assert_operator hard_escape_offset, :<, bounded_execution_offset,
+                  "#{location} must bind bounded execution to the hard-escape emission"
+  assert_operator bounded_execution_offset, :<, failure_continuation_offset,
+                  "#{location} must continue termination and release after bounded emission failure"
 end
 
 def assert_manifest_prompt_contract(text, location)
   normalized_text = text.gsub(/\s+/, " ")
   assert_includes normalized_text, MANIFEST_PROMPT_LINE,
                   "#{location} must use the exact manifest provenance grammar"
+  assert_includes normalized_text, "coordinator_route=<model>/<effort>@<binding>",
+                  "#{location} must keep coordinator route UNKNOWN at field granularity"
   assert_includes normalized_text, "lanes=<lane-id:host+model/effort@binding>,...",
                   "#{location} must require repeated lane entries"
   assert_includes normalized_text, ";UNKNOWN=field;",
                   "#{location} must keep UNKNOWN at field granularity"
   refute_match(/lanes=<lane-id:[^>]*\|UNKNOWN>/, normalized_text,
                "#{location} must reject whole-entry UNKNOWN")
+  refute_includes normalized_text, "coordinator_route=<model/effort@binding|UNKNOWN>",
+                  "#{location} must reject whole-route UNKNOWN"
 end
 
 def assert_remediation_authority_section_contract(section, location)
@@ -396,6 +424,27 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
+  def test_wedged_worker_hard_escape_rejects_each_bounded_execution_mutation
+    {
+      WORKFLOW_PATH => "### Cancelling Or Stopping A Batch",
+      PR_BATCH_SKILL_PATH => "### Cancellation Or Relaunch"
+    }.each do |path, heading|
+      section = extract_section(read_repo_file(path), heading).gsub(/\s+/, " ")
+      {
+        "hard-escape bounded execution" => HARD_ESCAPE_DRAIN_BOUNDED_EXECUTION_REQUIREMENT,
+        "failure continuation" => DRAIN_EMISSION_FAILURE_REQUIREMENT
+      }.each do |concept, phrase|
+        mutated_section = section.sub(phrase, "")
+        refute_equal section, mutated_section, "#{path} must expose #{concept} to mutation"
+
+        error = assert_raises(Minitest::Assertion) do
+          assert_hard_escape_drain_emission_contract(mutated_section, "#{path} #{concept} mutation")
+        end
+        assert_includes error.message, "must include the #{concept}"
+      end
+    end
+  end
+
   def test_registered_batch_manifest_dry_run_carries_pack_and_route_provenance
     manifest = registered_batch_manifest
 
@@ -410,7 +459,8 @@ class CoordinationTelemetryContractTest < Minitest::Test
   def test_manifest_prompt_rejects_missing_repetition_and_whole_entry_unknown
     {
       "missing repetition" => MANIFEST_MISSING_REPETITION_LINE,
-      "whole-entry UNKNOWN" => MANIFEST_WHOLE_ENTRY_UNKNOWN_LINE
+      "whole-entry UNKNOWN" => MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE,
+      "whole coordinator-route UNKNOWN" => MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_LINE
     }.each do |mutation, invalid_line|
       [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
         text = read_repo_file(path)
