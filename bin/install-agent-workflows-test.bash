@@ -64,7 +64,9 @@ write_owner_mismatch_stat_shim() {
 
         def stat(path, *args)
           result = agent_workflows_original_stat(path, *args)
-          return result unless File.expand_path(path.to_s) == ENV["AGENT_WORKFLOWS_TEST_SOURCE_OWNER_PATH"]
+          source_owner_path = ENV["AGENT_WORKFLOWS_TEST_SOURCE_OWNER_PATH"]
+          return result unless source_owner_path &&
+                               File.realpath(path.to_s) == File.realpath(source_owner_path)
 
           Struct.new(:uid).new(Process.euid.zero? ? 1 : 0)
         end
@@ -329,6 +331,7 @@ test_install_uses_effective_uid_instead_of_source_owner_for_safe_target() {
   [[ "$status" -eq 0 ]] || fail "safe current-user target depended on source checkout owner: $output"
   ruby -e 'exit 1 unless ARGV.all? { |path| File.lstat(path).uid == Process.euid }' "$target" "$target/.agents" || \
     fail "installer did not preserve effective-user ownership on signed launch directories"
+  assert_contains "$output" "Signed launch readiness: unsupported"
   assert_file "$target/.agent-workflows-install.json"
 }
 

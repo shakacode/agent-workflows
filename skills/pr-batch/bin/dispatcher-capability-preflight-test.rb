@@ -1741,6 +1741,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
       "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
       "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
@@ -1783,7 +1784,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
-      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
         "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
@@ -1822,7 +1824,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
-      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
         "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
@@ -1864,6 +1867,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
       "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
       "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
@@ -1898,11 +1902,50 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     end
   end
 
+  def test_human_waiver_requires_the_exact_active_issue
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+
+    variants = {
+      "cross issue" => input.merge("expected_issue" => "shakacode/agent-workflows#999"),
+      "missing issue" => input.reject { |key, _value| key == "expected_issue" },
+      "unknown issue" => input.merge("expected_issue" => "UNKNOWN")
+    }
+    variants.each do |label, variant|
+      replay = dispatch(
+        variant.merge(
+          "active_assignments" => pending.fetch("active_assignments"),
+          "launch_waiver" => waiver
+        ),
+        helper
+      )
+
+      assert_equal "invalid-input", replay.fetch("status"), label
+      assert_includes replay.fetch("reason"), "issue", label
+    end
+  end
+
   def test_human_waiver_rejects_stale_future_pregrant_observations_and_future_grants
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
-      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
         "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
@@ -1958,8 +2001,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         path: waiver_path, record: waiver_record, assignment: candidate_assignment, overrides:
       )
       validated, reason = AgentDoctor::SignedLaunchWaiver.validate_dispatcher(
-        wrapper:, batch_id:, lane_id:, assignment: candidate_assignment, host: "codex", target: root,
-        helper_path: helper
+        wrapper:, expected_issue: waiver_record.fetch("issue"), batch_id:, lane_id:,
+        assignment: candidate_assignment, host: "codex", target: root, helper_path: helper
       )
 
       assert_nil validated, label
@@ -1971,7 +2014,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
-      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
         "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
@@ -2018,7 +2062,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
-      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
         "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
@@ -2048,7 +2093,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
-      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
         "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
@@ -2141,7 +2187,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     File.write(File.join(root, ".agents/signed-launch-capability.json"), "{}\n")
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
-      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
         "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",

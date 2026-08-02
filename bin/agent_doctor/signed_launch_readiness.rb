@@ -100,14 +100,17 @@ module AgentDoctor
 
     def read_record(path, root:, agents:)
       return unless [root, agents].all? { |directory| safe_owned_directory?(directory) }
+      return unless File.const_defined?(:NOFOLLOW)
 
       helper_uid = File.stat(__FILE__).uid
-      stat = File.lstat(path)
-      return unless stat.file? && stat.uid == helper_uid && (stat.mode & 0o022).zero?
+      File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+        stat = file.stat
+        next unless stat.file? && stat.uid == helper_uid && (stat.mode & 0o022).zero?
 
-      record = JSON.parse(File.read(path, encoding: "UTF-8"))
-      record if record.is_a?(Hash)
-    rescue Errno::ENOENT, Errno::ENOTDIR
+        record = JSON.parse(file.read.force_encoding("UTF-8"))
+        record if record.is_a?(Hash)
+      end
+    rescue JSON::ParserError, SystemCallError
       nil
     end
     private_class_method :read_record

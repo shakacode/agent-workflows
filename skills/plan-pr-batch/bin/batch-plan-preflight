@@ -339,6 +339,7 @@ module BatchPlanPreflight
     require SIGNED_LAUNCH_WAIVER_LIBRARY
     validated, = AgentDoctor::SignedLaunchWaiver.validate_lifecycle(
       wrapper: waiver,
+      expected_issue: lane["issue"],
       batch_plan_id: plan.fetch("id"),
       stage_dependency_plan_id:,
       lane:,

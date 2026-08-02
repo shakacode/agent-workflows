@@ -11,12 +11,12 @@ module AgentDoctor
 
     module_function
 
-    def validate_dispatcher(wrapper:, batch_id:, lane_id:, assignment:, host:, target:, helper_path:)
+    def validate_dispatcher(wrapper:, expected_issue:, batch_id:, lane_id:, assignment:, host:, target:, helper_path:)
       return [nil, "launch_waiver must be an exact v1 dispatcher waiver"] unless dispatcher_wrapper_shape?(wrapper)
 
       observation = wrapper.fetch("observation")
       record, reason = validate_bootstrap(
-        waiver_ref: wrapper.fetch("waiver_ref"), batch_id:, lane_id:,
+        waiver_ref: wrapper.fetch("waiver_ref"), expected_issue:, batch_id:, lane_id:,
         dispatcher: assignment["dispatcher"], route: assignment["route"], host:, target:, helper_path:
       )
       return [nil, "launch_waiver #{reason}"] unless record
@@ -30,12 +30,15 @@ module AgentDoctor
       [nil, "launch_waiver must be an exact v1 dispatcher waiver"]
     end
 
-    def validate_bootstrap(waiver_ref:, batch_id:, lane_id:, dispatcher:, route:, host:, target:, helper_path:)
+    def validate_bootstrap(waiver_ref:, expected_issue:, batch_id:, lane_id:, dispatcher:, route:, host:, target:,
+                           helper_path:)
       readiness = SignedLaunchReadiness.assess(host:, target:)
       return [nil, "requires exact typed unsupported host readiness"] unless readiness["capability"] == "unsupported"
 
       record = SignedLaunchWaiverRecord.read(waiver_ref, helper_path:)
       return [nil, "reference must name a safe durable human waiver file"] unless SignedLaunchWaiverRecord.bootstrap?(record)
+      return [nil, "issue binding does not match"] unless
+        SignedLaunchWaiverRecord.known_string?(expected_issue) && record["issue"] == expected_issue
       return [nil, "batch binding does not match"] unless record["batch_id"] == batch_id
       return [nil, "lane binding does not match"] unless record.fetch("authorized_lanes").include?(lane_id)
       return [nil, "dispatcher binding does not match"] unless record["authorized_dispatcher"] == dispatcher
@@ -47,12 +50,13 @@ module AgentDoctor
       [nil, "record is malformed"]
     end
 
-    def validate_lifecycle(wrapper:, batch_plan_id:, stage_dependency_plan_id:, lane:, host:, target:, helper_path:)
+    def validate_lifecycle(wrapper:, expected_issue:, batch_plan_id:, stage_dependency_plan_id:, lane:, host:, target:,
+                           helper_path:)
       return [nil, "lifecycle waiver must be an exact v1 workflow-control waiver"] unless
         lifecycle_wrapper_shape?(wrapper)
 
       record, reason = validate_bootstrap(
-        waiver_ref: wrapper.fetch("waiver_ref"), batch_id: batch_plan_id, lane_id: lane.fetch("id"),
+        waiver_ref: wrapper.fetch("waiver_ref"), expected_issue:, batch_id: batch_plan_id, lane_id: lane.fetch("id"),
         dispatcher: wrapper.fetch("dispatcher"), route: wrapper.fetch("route"), host:, target:, helper_path:
       )
       return [nil, "lifecycle waiver #{reason}"] unless record

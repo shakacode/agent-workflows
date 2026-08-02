@@ -12,6 +12,8 @@ require "openssl"
 require "rbconfig"
 require "tmpdir"
 
+require_relative "agent_doctor/signed_launch_readiness"
+
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
 
 class AgentWorkflowsStatusTest < Minitest::Test
@@ -159,6 +161,42 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "supported", payload.dig("signed_launch_readiness", "dispatcher_launch")
         assert_equal "supported", payload.dig("signed_launch_readiness", "workflow_control_lifecycle")
         assert_equal "codex-collaboration", payload.dig("signed_launch_readiness", "producer")
+      end
+    end
+  end
+
+  def test_signed_launch_readiness_reads_records_only_from_validated_descriptors
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_signed_launch_capability(target)
+      path_read = File.method(:read)
+      File.singleton_class.send(:define_method, :read) do |*_args, **_kwargs|
+        raise "readiness record used a path-level read"
+      end
+
+      readiness = begin
+        AgentDoctor::SignedLaunchReadiness.assess(host: "codex", target:)
+      ensure
+        File.singleton_class.send(:define_method, :read, path_read)
+      end
+
+      assert_equal "supported", readiness.fetch("capability")
+    end
+  end
+
+  def test_signed_launch_readiness_rejects_a_symlinked_record
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-record") do |outside|
+        write_signed_launch_capability(target)
+        path = File.join(target, ".agents/dispatcher-launch-trust.json")
+        replacement = File.join(outside, "dispatcher-launch-trust.json")
+        FileUtils.mv(path, replacement)
+        File.symlink(replacement, path)
+
+        readiness = AgentDoctor::SignedLaunchReadiness.assess(host: "codex", target:)
+
+        assert_equal "UNKNOWN", readiness.fetch("capability")
+        assert_equal false, readiness.fetch("ready")
+        assert_equal "not-permitted-while-capability-unknown", readiness.fetch("waiver")
       end
     end
   end
@@ -377,7 +415,9 @@ class AgentWorkflowsStatusTest < Minitest::Test
     assert_equal "CHECK_FAILED", payload.fetch("status")
     assert_nil payload.fetch("target")
     assert_equal "UNKNOWN", payload.dig("signed_launch_readiness", "capability")
+    assert_equal false, payload.dig("signed_launch_readiness", "ready")
     assert_equal "target-unavailable", payload.dig("signed_launch_readiness", "reason")
+    assert_equal "not-permitted-while-capability-unknown", payload.dig("signed_launch_readiness", "waiver")
   end
 
   def test_flat_status_reports_present_skill_route_without_migration_warning

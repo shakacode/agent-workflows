@@ -297,6 +297,10 @@ class BatchPlanPreflightTest < Minitest::Test
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
                 backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
                 lifecycle_receipts: [], lifecycle_waivers: [])
+    waived_lane_ids = lifecycle_waivers.filter_map { |waiver| waiver["lane_id"] if waiver.is_a?(Hash) }
+    lanes.each do |planned_lane|
+      planned_lane["issue"] = "shakacode/agent-workflows#299" if waived_lane_ids.include?(planned_lane["id"])
+    end
     maps ||= lanes.each_with_index.to_h { |record, index| [record.fetch("id"), touch_map(index + 1, ["lib/#{record.fetch('id')}.rb"])] }
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
@@ -782,6 +786,33 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "lane-lifecycle-waiver-invalid"
+  end
+
+  def test_lifecycle_waiver_requires_the_exact_active_issue
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+    valid_input = input_for(backend: "codex", lifecycle_waivers: [waiver])
+    variants = {
+      "cross issue" => "shakacode/agent-workflows#999",
+      "missing issue" => nil,
+      "unknown issue" => "UNKNOWN"
+    }
+    variants.each do |label, issue|
+      input = JSON.parse(JSON.generate(valid_input))
+      lane = input.dig("plan", "lanes", 0)
+      issue.nil? ? lane.delete("issue") : lane["issue"] = issue
+
+      result, _stderr, status = evaluate(input, helper:)
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "lane-lifecycle-waiver-invalid", label
+      assert_empty result.dig("launch", "completed_lane_ids"), label
+    end
   end
 
   def test_lifecycle_waiver_rejects_completion_before_the_bootstrap_grant

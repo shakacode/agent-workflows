@@ -780,7 +780,7 @@ fi
 
 set +e
 signed_launch_probe="$(
-  ruby -I "$repo_root/bin" -ragent_doctor/signed_launch_readiness -e '
+  ruby -I "$target/bin" -ragent_doctor/signed_launch_readiness -e '
     payload = AgentDoctor::SignedLaunchReadiness.assess(host: ARGV.fetch(0), target: ARGV.fetch(1))
     puts payload.fetch("capability")
   ' "$host" "$target" 2>&1

@@ -352,6 +352,7 @@ Plan a PR batch
      exact durable direct-human bootstrap waiver may authorize one terminal
      `workflow-control-lane-lifecycle-waiver v1`. Bind it to the same batch plan,
      dependency plan, authorized lane, wave, hard dispatcher, model/effort route,
+     and a non-`UNKNOWN` lane `issue` exactly matching the bootstrap record,
      terminal chronology, durable evidence, and the current canonical waiver
      SHA-256 digest. Receipt path identifiers must be URI-unambiguous. `UNKNOWN` readiness, cross-batch
      or cross-lane reuse, fallbacks, inherited routing, unsafe waiver files, and

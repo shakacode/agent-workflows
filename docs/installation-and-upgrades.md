@@ -102,8 +102,8 @@ or the helper owner with no group/world write bits.
 
 Workflow control accepts a
 separate terminal lifecycle waiver bound to the same durable human record,
-batch plan, dependency plan, lane, wave, route, completion chronology, and
-evidence reference. Signed and waived lifecycle records are mutually
+batch plan, dependency plan, lane, the lane's exact non-`UNKNOWN` issue, wave,
+route, completion chronology, and evidence reference. Signed and waived lifecycle records are mutually
 deduplicated per lane. Interpolated receipt identifiers use only letters,
 digits, `.`, `_`, `:`, and `-`; slash-bearing or URI-ambiguous identifiers are
 rejected instead of being allowed to collide.

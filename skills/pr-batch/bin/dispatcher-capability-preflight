@@ -649,6 +649,7 @@ def validated_launch_waiver(input, assignment)
   end
   waiver, reason = AgentDoctor::SignedLaunchWaiver.validate_dispatcher(
     wrapper: input["launch_waiver"],
+    expected_issue: input["expected_issue"],
     batch_id: input["batch_id"],
     lane_id: input["lane_id"],
     assignment:,
@@ -702,6 +703,8 @@ fail_input("launch_confirmation must be a well-formed identity-bound confirmatio
 if input.key?("launch_waiver")
   batch_id_valid = nonempty_string?(input["batch_id"]) && !unknown_sentinel?(input["batch_id"])
   fail_input("launch_waiver requires a non-UNKNOWN batch_id") unless batch_id_valid
+  expected_issue_valid = nonempty_string?(input["expected_issue"]) && !unknown_sentinel?(input["expected_issue"])
+  fail_input("launch_waiver requires a non-UNKNOWN expected_issue") unless expected_issue_valid
   fail_input("launch_waiver requires an exact hard requested route") unless requested["hard_route"] == true
   fail_input("launch_waiver and launch_confirmation are mutually exclusive") if input.key?("launch_confirmation")
   fail_input("launch_waiver requires one matching persisted launch assignment") unless
