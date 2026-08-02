@@ -597,6 +597,28 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_guarded_direct_merge_submission_requires_a_readable_live_guard
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_skill(root, "No commands here.\n")
+      guard = write_script(root, "merge-pr-after-checks", "exec true\n")
+      relative_guard = ".agents/bin/merge-pr-after-checks"
+      run_git!(root, "init", "-q")
+      run_git!(root, "add", "--", relative_guard)
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_guard)
+      assert_match(/\A100755 /, run_git!(root, "ls-files", "--stage", "--", relative_guard))
+      File.chmod(0o111, guard)
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable is not readable"
+    end
+  end
+
   def test_guarded_direct_merge_submission_rejects_unsafe_parent_paths
     with_repo do |root|
       write_valid_binstub_contract(root)
