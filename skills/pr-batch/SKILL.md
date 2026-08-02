@@ -827,11 +827,12 @@ error (exit 1), not an `UNKNOWN` mutation outcome.
 Only a validated trusted-base `merge_submission` opt-in may delegate direct
 submission to one repository-owned executable guard under `.agents/bin`; the
 portable helper never performs a generic direct merge. The fixed-argv guard is
-executed from private identity-bound trusted bytes with the repository root as
-its working directory; guard adapters must resolve repository files from that
-working directory or passed argv, not from runtime `$0` or `__dir__`, which
-identify the private copy rather than the configured `.agents/bin` path. The
-guard is still bound to the fresh receipt and exact live head/base facts, and
+executed from private identity-bound trusted bytes in an isolated Git root
+whose branch and HEAD retain the exact PR identity while all tracked working
+files come from the receipt-bound trusted-base tree. Repository-relative
+delegation therefore resolves trusted-base tracked dependencies; runtime `$0`
+and `__dir__` identify the private guard copy. The guard is still bound to the
+fresh receipt and exact live head/base facts, and
 its result is accepted only after live GitHub state proves an exact terminal
 merge of the authorized head. This consumer-owned exception acknowledges that
 direct merge has no atomic expected-base OID. Treat helper exit 2 as an

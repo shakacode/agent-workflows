@@ -2896,11 +2896,15 @@ files, and non-executable files fail closed. Immediately before delegation,
 the helper revalidates the fresh receipt, exact head, base branch, and
 receipt-bound base SHA against live metadata. It does not reopen the configured
 live executable path for delegation. Instead, it materializes a private
-executable from the already validated trusted-base bytes, invokes it without a
-shell with the repository root as the working directory, and removes the copy
-afterward. Runtime `$0` and `__dir__` therefore identify the private copy, not
-the configured `.agents/bin` path; adapters must resolve repository files from
-the working directory or passed argv. The helper uses this fixed argv order:
+executable from the already validated trusted-base bytes and invokes it without
+a shell from an isolated private Git root. That root binds its branch and HEAD
+to the exact live PR head while its tracked index and working files are
+populated exclusively from the receipt-bound trusted-base tree. Consequently,
+repository-relative delegation cannot execute PR-modified tracked dependencies.
+The helper removes the private executable and Git root afterward; cleanup
+failure after launch is an `UNKNOWN` outcome reconciled against exact live
+state. Runtime `$0` and `__dir__` identify the private guard copy. The helper
+uses this fixed argv order:
 
 ```text
 --repo OWNER/REPO --host HOST --pr NUMBER

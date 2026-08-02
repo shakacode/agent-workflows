@@ -7,6 +7,7 @@
 
 require "json"
 require "digest"
+require "fileutils"
 require "open3"
 require "optparse"
 require "tempfile"
@@ -64,6 +65,7 @@ module PrMergeSubmit
         repository(owner: $owner, name: $name) {
           pullRequest(number: $number) {
             id
+            headRefName
             headRefOid
             baseRefName
             baseRefOid
@@ -720,7 +722,7 @@ module PrMergeSubmit
       end
 
       validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
-      guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
+      guard_stdout, guard_stderr, guard_status = run_guard(policy, options, refreshed)
       diagnostics = failure_output(guard_stdout, guard_stderr)
       reconciled = fetch_pr_for_reconciliation!(options, "guarded-direct submission outcome")
       unless guard_status.success?
@@ -760,7 +762,7 @@ module PrMergeSubmit
       }
     end
 
-    def run_guard(policy, options)
+    def run_guard(policy, options, pull_request)
       args = [
         "--repo", options[:repo],
         "--host", options[:host],
@@ -773,8 +775,13 @@ module PrMergeSubmit
       ]
       args.concat(["--subject", options[:subject]]) if options[:subject]
       args.concat(["--body", options[:body]]) if options[:body]
-      Dir.mktmpdir("pr-merge-submit-guard") do |directory|
+      directory = Dir.mktmpdir("pr-merge-submit-guard")
+      guard_result = nil
+      begin
         File.chmod(0o700, directory)
+        repository_root = materialize_trusted_base_repository!(
+          directory, options, pull_request["headRefName"]
+        )
         executable = File.join(directory, "identity-bound-guard")
         File.open(executable, File::WRONLY | File::CREAT | File::EXCL, 0o700) do |file|
           file.binmode
@@ -782,17 +789,144 @@ module PrMergeSubmit
           file.flush
           file.fsync
         end
-        run_process(
-          { "GH_HOST" => options[:host] }, executable, *args,
+        guard_result = run_process(
+          { "GH_HOST" => options[:host], "GH_REPO" => options[:repo] }, executable, *args,
           timeout_seconds: guard_timeout_seconds,
           mutation: true,
           process_label: "guarded-direct executable",
-          chdir: @repo_root,
+          chdir: repository_root,
           launch_eacces_message: "private materialized guarded-direct executable launch was denied (EACCES); " \
                                  "the temporary filesystem may be mounted noexec",
           launch_enoent_message: "private materialized guarded-direct executable launch failed (ENOENT); " \
                                  "its absolute shebang interpreter may be missing"
         )
+      ensure
+        guard_result = cleanup_private_guard_directory!(directory, guard_result)
+      end
+      guard_result
+    end
+
+    def cleanup_private_guard_directory!(directory, guard_result)
+      remove_private_guard_directory!(directory)
+      guard_result
+    rescue StandardError => e
+      message = "private guarded-direct repository cleanup failed: #{e.message}"
+      raise Error, message if guard_result.nil?
+
+      stdout, stderr, = guard_result
+      [stdout, failure_output(stderr, message), FailedStatus.new]
+    end
+
+    def remove_private_guard_directory!(directory)
+      FileUtils.remove_entry(directory)
+    end
+
+    def materialize_trusted_base_repository!(directory, options, head_ref_name)
+      unless head_ref_name.is_a?(String) && !head_ref_name.empty?
+        raise Error, "PR head branch is missing or invalid for guarded-direct submission"
+      end
+
+      _stdout, _stderr, status = git_capture(
+        "check-ref-format", "refs/heads/#{head_ref_name}", chdir: @repo_root
+      )
+      raise Error, "PR head branch is missing or invalid for guarded-direct submission" unless status.success?
+
+      base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      [options[:expected_head], base_sha].each do |sha|
+        _stdout, stderr, commit_status = git_capture(
+          "-C", @repo_root, "cat-file", "-e", "#{sha}^{commit}", chdir: @repo_root
+        )
+        unless commit_status.success?
+          raise Error, "guarded-direct private repository commit is unavailable: #{sha}: " \
+                       "#{failure_output('', stderr)}"
+        end
+      end
+
+      repository_root = File.join(directory, "trusted-base-repository")
+      stdout, stderr, clone_status = git_capture(
+        "clone", "--shared", "--no-checkout", "--quiet", "--", @repo_root, repository_root,
+        chdir: @repo_root
+      )
+      unless clone_status.success?
+        raise Error, "could not create guarded-direct private repository: #{failure_output(stdout, stderr)}"
+      end
+
+      preserve_origin_remote!(repository_root)
+      private_git!(
+        repository_root, "update-ref", "refs/heads/#{head_ref_name}", options[:expected_head],
+        context: "bind guarded-direct private head"
+      )
+      private_git!(
+        repository_root, "symbolic-ref", "HEAD", "refs/heads/#{head_ref_name}",
+        context: "select guarded-direct private head branch"
+      )
+      private_git!(
+        repository_root, "read-tree", "--reset", "-u", base_sha,
+        context: "populate guarded-direct trusted-base repository"
+      )
+      verify_private_repository!(repository_root, options, head_ref_name, base_sha)
+      repository_root
+    end
+
+    def preserve_origin_remote!(repository_root)
+      stdout, _stderr, status = git_capture(
+        "-C", @repo_root, "remote", "get-url", "origin", chdir: @repo_root
+      )
+      origin_urls = stdout.lines(chomp: true)
+      if status.success? && origin_urls.one? && !origin_urls.first.empty? &&
+         !origin_urls.first.match?(/[[:cntrl:]]/)
+        private_git!(
+          repository_root, "remote", "set-url", "origin", origin_urls.first,
+          context: "preserve guarded-direct origin remote"
+        )
+      else
+        private_git!(
+          repository_root, "remote", "remove", "origin",
+          context: "remove guarded-direct local clone origin"
+        )
+      end
+    end
+
+    def private_git!(repository_root, *args, context:)
+      stdout, stderr, status = git_capture("-C", repository_root, *args, chdir: repository_root)
+      return stdout if status.success?
+
+      raise Error, "#{context} failed: #{failure_output(stdout, stderr)}"
+    end
+
+    def verify_private_repository!(repository_root, options, head_ref_name, base_sha)
+      actual_head = private_git!(
+        repository_root, "rev-parse", "HEAD", context: "verify guarded-direct private head"
+      ).strip
+      actual_branch = private_git!(
+        repository_root, "symbolic-ref", "--short", "HEAD",
+        context: "verify guarded-direct private head branch"
+      ).strip
+      base_tree = private_git!(
+        repository_root, "rev-parse", "#{base_sha}^{tree}",
+        context: "verify guarded-direct trusted-base tree"
+      ).strip
+      materialized_tree = private_git!(
+        repository_root, "write-tree", context: "verify guarded-direct materialized tree"
+      ).strip
+      _stdout, _stderr, clean_status = git_capture(
+        "-C", repository_root, "diff-files", "--quiet", chdir: repository_root
+      )
+      untracked = private_git!(
+        repository_root, "ls-files", "--others", "--exclude-standard",
+        context: "verify guarded-direct private untracked files"
+      )
+      ignored = private_git!(
+        repository_root, "ls-files", "--others", "--ignored", "--exclude-standard",
+        context: "verify guarded-direct private ignored files"
+      )
+      unless actual_head.casecmp?(options[:expected_head]) &&
+             actual_branch == head_ref_name &&
+             materialized_tree.casecmp?(base_tree) &&
+             clean_status.success? &&
+             untracked.empty? &&
+             ignored.empty?
+        raise Error, "guarded-direct private repository identity or trusted-base contents did not verify"
       end
     end
 

@@ -193,12 +193,15 @@ fragments, interpolation, and paths outside `.agents/bin` are invalid. The
 guard must exist as an executable regular file in the trusted-base tree and in
 the invoking checkout with identical bytes. At runtime, `pr-merge-submit` does
 not reopen that configured live path: it materializes the validated trusted-base
-bytes as a private executable, invokes them with the repository root as the
-working directory, and removes the private copy afterward. Consequently the
-guard's runtime `$0` and `__dir__` do not identify its configured `.agents/bin`
-path. Guard adapters must resolve repository files from the working directory
-or from passed argv, not relative to the runtime executable. The helper supplies
-this fixed argv contract, in order:
+bytes as a private executable and invokes them from an isolated private Git
+root. That root retains the exact PR head commit and branch identity while its
+tracked index and working files are populated exclusively from the
+receipt-bound trusted-base tree. Repository-relative delegation therefore
+cannot execute PR-modified tracked dependencies. The private executable and Git
+root are removed afterward; cleanup failure after launch is an `UNKNOWN`
+outcome. Runtime `$0` and `__dir__` identify the private copy, so guard adapters
+must resolve repository files from the private working directory or passed
+argv. The helper supplies this fixed argv contract, in order:
 
 ```text
 --repo OWNER/REPO --host HOST --pr NUMBER

@@ -610,12 +610,16 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       assert_match(/\A100755 /, run_git!(root, "ls-files", "--stage", "--", relative_guard))
       File.chmod(0o111, guard)
 
-      out, status = run_doctor(root)
+      original_readable = File.method(:readable?)
+      File.define_singleton_method(:readable?) { |_path| true }
+      issues = AgentWorkflowSeamDoctor.send(:guarded_direct_file_issues, root, relative_guard)
+      File.define_singleton_method(:readable?, original_readable)
 
-      refute status.success?
-      assert_includes out,
+      assert_includes issues,
                       "invalid merge_submission policy: " \
                       "guarded_direct.executable is not readable"
+    ensure
+      File.define_singleton_method(:readable?, original_readable) if original_readable
     end
   end
 

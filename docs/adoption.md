@@ -103,10 +103,11 @@ notes.
    PRs continue through canonical enqueue and never invoke the guard. A
    queue-disabled PR without this opt-in returns a deterministic configuration
    error before mutation. The
-   helper executes a private copy of the validated trusted-base bytes with the
-   repository root as its working directory; guards must resolve repository
-   files from that working directory or passed argv because runtime `$0` and
-   `__dir__` point at the private copy, not the configured `.agents/bin` path.
+   helper executes a private copy of the validated trusted-base bytes from an
+   isolated Git root whose branch and HEAD identify the exact PR while all
+   tracked working files come from the receipt-bound trusted-base tree. Guards
+   may delegate to repository-relative tracked files from that private working
+   directory; runtime `$0` and `__dir__` point at the private guard copy.
 
    The optional `autonomous_merge` mapping is seeded as an empty mapping by
    downstream presets without overwriting repo-owned policy. An empty or absent

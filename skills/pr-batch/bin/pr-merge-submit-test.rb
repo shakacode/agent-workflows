@@ -107,7 +107,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_guarded_direct_delegates_with_fixed_argv_and_reconciles_exact_merge
-    result, log, guard_log = run_cli(
+    result, log, guard_log, _attacker_log, fixture_head = run_cli(
       mode: "guard_success",
       merge_submission: guarded_direct_policy,
       body: "Detailed merge body"
@@ -128,7 +128,7 @@ class PrMergeSubmitTest < Minitest::Test
     argv = guard_log.lines.map(&:chomp)
     assert_equal [
       "--repo", "owner/repo", "--host", HOST, "--pr", "42",
-      "--expected-head", HEAD_SHA, "--expected-base", "main",
+      "--expected-head", fixture_head, "--expected-base", "main",
       "--expected-base-sha", payload.dig("guard", "trusted_base_sha"),
       "--method", "squash"
     ], argv.first(14)
@@ -140,7 +140,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_guard_executes_identity_bound_bytes_when_live_path_is_swapped_after_validation
-    result, log, guard_log, attacker_log = run_cli(
+    result, log, guard_log, attacker_log, fixture_head = run_cli(
       mode: "guard_path_swap",
       merge_submission: guarded_direct_policy
     )
@@ -150,7 +150,7 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "guarded_direct", payload.fetch("submission")
     assert_equal Digest::SHA256.hexdigest(fake_guard), payload.dig("guard", "sha256")
     assert_equal ".agents/bin/merge-pr-after-checks", payload.dig("guard", "path")
-    assert_includes guard_log, "--expected-head\n#{HEAD_SHA}"
+    assert_includes guard_log, "--expected-head\n#{fixture_head}"
     assert_empty attacker_log
     refute_includes log, "mergePullRequest"
   end
@@ -181,14 +181,15 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_hichee_style_queue_disabled_master_replay_uses_guarded_direct
-    result, _log, guard_log = run_cli(
+    result, _log, guard_log, attacker_log, fixture_head = run_cli(
       mode: "hichee_replay",
       base: "master",
       expected_base: "master",
       repo: "shakacode/hichee",
       merge_submission: guarded_direct_policy(
         rationale: "HiChee owns a checks-and-head-validating direct squash wrapper."
-      )
+      ),
+      guard_fixture: :delegating
     )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
@@ -198,6 +199,23 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "shakacode/hichee", payload.fetch("repo")
     assert_includes guard_log, "shakacode/hichee"
     assert_includes guard_log, "master"
+    assert_includes guard_log, "delegated trusted-base dependency"
+    assert_includes guard_log, "feature/test"
+    assert_includes guard_log, fixture_head
+    assert_empty attacker_log
+  end
+
+  def test_guarded_direct_never_executes_a_pr_head_secondary_dependency
+    result, _log, guard_log, attacker_log, fixture_head = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :delegating
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes guard_log, "delegated trusted-base dependency"
+    assert_includes guard_log, fixture_head
+    assert_empty attacker_log
   end
 
   def test_guard_failure_ambiguous_state_and_head_movement_are_unknown
@@ -280,6 +298,40 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
     assert_empty guard_log
+  end
+
+  def test_private_repository_cleanup_failure_after_guard_launch_is_reconciled
+    runner = PrMergeSubmit::Runner.allocate
+    runner.define_singleton_method(:remove_private_guard_directory!) do |_directory|
+      raise Errno::EACCES, "cleanup denied"
+    end
+    successful_status = Object.new
+    successful_status.define_singleton_method(:success?) { true }
+
+    stdout, stderr, status = runner.send(
+      :cleanup_private_guard_directory!,
+      "/private/guard", ["guard stdout", "guard stderr", successful_status]
+    )
+
+    assert_equal "guard stdout", stdout
+    assert_includes stderr, "guard stderr"
+    assert_includes stderr, "private guarded-direct repository cleanup failed"
+    refute status.success?
+  end
+
+  def test_guarded_direct_rejects_missing_or_invalid_head_branch_metadata
+    [:missing, "bad..branch"].each do |head_ref_name|
+      result, _log, guard_log = run_cli(
+        mode: "guard_success",
+        merge_submission: guarded_direct_policy,
+        head_ref_name:
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus
+      assert_includes result.fetch(:stderr),
+                      "PR head branch is missing or invalid for guarded-direct submission"
+      assert_empty guard_log
+    end
   end
 
   def test_guard_scoped_enoent_handling_preserves_the_missing_gh_error
@@ -1041,17 +1093,23 @@ class PrMergeSubmitTest < Minitest::Test
     policy_fixture: :present,
     receipt_base_sha: nil,
     guard_fixture: :executable,
+    head_ref_name: "feature/test",
     guard_timeout_seconds: nil,
     interrupt_guard: false
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
-      repo_root, base_sha = if merge_submission.equal?(SOURCE_REPO_POLICY)
-                              [File.expand_path("../../..", __dir__), BASE_SHA]
-                            else
-                              prepare_consumer_repo(
-                                dir, merge_submission:, policy_fixture:, guard_fixture:
-                              )
-                            end
+      repo_root, base_sha, fixture_head = if merge_submission.equal?(SOURCE_REPO_POLICY)
+                                            [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
+                                          else
+                                            prepare_consumer_repo(
+                                              dir, merge_submission:, policy_fixture:, guard_fixture:
+                                            )
+                                          end
+      if !merge_submission.equal?(SOURCE_REPO_POLICY) &&
+         (mode.start_with?("guard") || mode == "hichee_replay")
+        head = fixture_head
+        expected_head = fixture_head
+      end
       trusted_policy_observer&.call(
         YAML.safe_load(
           run_git!(repo_root, "show", "#{base_sha}:.agents/agent-workflow.yml"),
@@ -1067,7 +1125,7 @@ class PrMergeSubmitTest < Minitest::Test
         gh_path,
         fake_gh(
           mode:, head:, base:, base_sha: receipt_base_sha || base_sha,
-          url_host:, repo:, merge_commit_oid:
+          url_host:, repo:, merge_commit_oid:, head_ref_name:
         )
       )
       FileUtils.chmod(0o755, gh_path)
@@ -1102,7 +1160,7 @@ class PrMergeSubmitTest < Minitest::Test
       log = File.exist?(log_path) ? File.read(log_path) : ""
       guard_log = File.exist?(guard_log_path) ? File.read(guard_log_path) : ""
       attacker_log = File.exist?(attacker_log_path) ? File.read(attacker_log_path) : ""
-      [result, log, guard_log, attacker_log]
+      [result, log, guard_log, attacker_log, fixture_head]
     end
   end
 
@@ -1442,6 +1500,8 @@ class PrMergeSubmitTest < Minitest::Test
       guard_body = case guard_fixture
                    when :executable, :non_executable, :modified_after_commit
                      fake_guard
+                   when :delegating
+                     fake_delegating_guard
                    when :launch_eacces
                      blocked_interpreter = File.join(root, "non-executable-guard-interpreter")
                      File.write(blocked_interpreter, "#!/bin/sh\nexit 0\n")
@@ -1457,12 +1517,27 @@ class PrMergeSubmitTest < Minitest::Test
     end
 
     run_git!(root, "init", "-q")
+    if guard_fixture == :delegating
+      secondary_path = File.join(root, "script/merge_pr_after_checks")
+      FileUtils.mkdir_p(File.dirname(secondary_path))
+      File.write(secondary_path, trusted_base_secondary)
+      FileUtils.chmod(0o755, secondary_path)
+    end
     run_git!(root, "add", "--all")
     run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture")
     base_sha = run_git!(root, "rev-parse", "HEAD").strip
     File.open(guard_path, "a") { |file| file.write("# changed after trusted base\n") } if
       guard_fixture == :modified_after_commit && File.file?(guard_path)
-    [root, base_sha]
+    if guard_fixture == :delegating
+      File.write(File.join(root, "script/merge_pr_after_checks"), pr_head_secondary)
+      FileUtils.chmod(0o755, File.join(root, "script/merge_pr_after_checks"))
+      run_git!(root, "add", "--all")
+      run_git!(
+        root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "untrusted PR head"
+      )
+    end
+    [root, base_sha, run_git!(root, "rev-parse", "HEAD").strip]
   end
 
   def run_git!(root, *args)
@@ -1503,7 +1578,42 @@ class PrMergeSubmitTest < Minitest::Test
     RUBY
   end
 
-  def fake_gh(mode:, head:, base:, base_sha:, url_host:, repo:, merge_commit_oid: MERGE_COMMIT_SHA)
+  def fake_delegating_guard
+    <<~RUBY
+      #!/usr/bin/env ruby
+      exec File.join(Dir.pwd, "script/merge_pr_after_checks"), *ARGV
+    RUBY
+  end
+
+  def trusted_base_secondary
+    <<~RUBY
+      #!/usr/bin/env ruby
+      branch = `git rev-parse --abbrev-ref HEAD`.strip
+      head = `git rev-parse HEAD`.strip
+      File.open(ENV.fetch("PR_TEST_GUARD_LOG"), "a") do |file|
+        file.puts("delegated trusted-base dependency", branch, head, ARGV)
+      end
+      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+    RUBY
+  end
+
+  def pr_head_secondary
+    <<~RUBY
+      #!/usr/bin/env ruby
+      File.write(ENV.fetch("PR_TEST_ATTACKER_MARKER"), "PR-only dependency executed\n")
+      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+    RUBY
+  end
+
+  def fake_gh(
+    mode:, head:, base:, base_sha:, url_host:, repo:, head_ref_name: "feature/test",
+    merge_commit_oid: MERGE_COMMIT_SHA
+  )
+    head_ref_entry = if head_ref_name == :missing
+                       ""
+                     else
+                       %("headRefName" => #{head_ref_name.inspect},)
+                     end
     semantic_issue = semantic_issue_payload(
       host: HOST, repo: "owner/repo", pr_number: 42, head:
     )
@@ -1632,6 +1742,7 @@ class PrMergeSubmitTest < Minitest::Test
             "repository" => {
               "pullRequest" => {
                 "id" => "PR_42",
+                #{head_ref_entry}
                 "headRefOid" => if current_mode == "guard_head_moved" && guard_called
                                   #{MOVED_SHA.inspect}
                                 else
