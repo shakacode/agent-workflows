@@ -828,11 +828,15 @@ Only a validated trusted-base `merge_submission` opt-in may delegate direct
 submission to one repository-owned executable guard under `.agents/bin`; the
 portable helper never performs a generic direct merge. The fixed-argv guard is
 executed from private identity-bound trusted bytes in an isolated Git root
-whose branch and HEAD retain the exact PR identity while all tracked working
-files come from the receipt-bound trusted-base tree. Repository-relative
-delegation therefore resolves trusted-base tracked dependencies; runtime `$0`
-and `__dir__` identify the private guard copy. The guard is still bound to the
-fresh receipt and exact live head/base facts, and
+whose detached `HEAD`, index, and working files all bind the receipt-base
+commit and tree. Exact PR identity comes only from revalidated live GitHub
+metadata and fixed argv, never local Git state. Repository-relative delegation
+therefore resolves trusted-base dependencies. Trusted script shebangs resolve
+to identity-recorded absolute interpreters outside the consumer repository
+through a fixed path, and the guard runs with a closed environment that does not inherit caller-controlled
+interpreter or loader injection variables. Runtime `$0` and `__dir__` identify
+the private guard copy. The guard is still bound to the fresh receipt and exact
+live head/base facts, and
 its result is accepted only after live GitHub state proves an exact terminal
 merge of the authorized head. This consumer-owned exception acknowledges that
 direct merge has no atomic expected-base OID. Treat helper exit 2 as an

@@ -194,14 +194,22 @@ guard must exist as an executable regular file in the trusted-base tree and in
 the invoking checkout with identical bytes. At runtime, `pr-merge-submit` does
 not reopen that configured live path: it materializes the validated trusted-base
 bytes as a private executable and invokes them from an isolated private Git
-root. That root retains the exact PR head commit and branch identity while its
-tracked index and working files are populated exclusively from the
-receipt-bound trusted-base tree. Repository-relative delegation therefore
-cannot execute PR-modified tracked dependencies. The private executable and Git
-root are removed afterward; cleanup failure after launch is an `UNKNOWN`
-outcome. Runtime `$0` and `__dir__` identify the private copy, so guard adapters
-must resolve repository files from the private working directory or passed
-argv. The helper supplies this fixed argv contract, in order:
+root whose detached `HEAD`, index, and working files all bind the receipt-base
+commit and tree. PR identity exists only in revalidated live GitHub metadata and
+the fixed argv; `git show HEAD` inside the guard cannot expose PR-tree bytes.
+Repository-relative delegation therefore resolves trusted-base dependencies.
+For scripts, the helper parses the trusted shebang and invokes an
+identity-recorded absolute interpreter outside the consumer repository
+directly; `/usr/bin/env PROGRAM` is resolved through a fixed trusted path rather
+than the caller's `PATH`. The guard
+receives a closed environment containing the explicit GitHub host/repository,
+OS-account home and identity, fixed path, and supported GitHub token variables,
+so variables such as `BASH_ENV`, `RUBYOPT`, and loader injection settings are
+not inherited. The private executable and Git root are removed afterward;
+cleanup failure after launch is an `UNKNOWN` outcome. Runtime `$0` and `__dir__`
+identify the private copy, so guard adapters must resolve repository files from
+the private working directory or passed argv. The helper supplies this fixed
+argv contract, in order:
 
 ```text
 --repo OWNER/REPO --host HOST --pr NUMBER

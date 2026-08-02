@@ -2897,14 +2897,21 @@ the helper revalidates the fresh receipt, exact head, base branch, and
 receipt-bound base SHA against live metadata. It does not reopen the configured
 live executable path for delegation. Instead, it materializes a private
 executable from the already validated trusted-base bytes and invokes it without
-a shell from an isolated private Git root. That root binds its branch and HEAD
-to the exact live PR head while its tracked index and working files are
-populated exclusively from the receipt-bound trusted-base tree. Consequently,
-repository-relative delegation cannot execute PR-modified tracked dependencies.
-The helper removes the private executable and Git root afterward; cleanup
-failure after launch is an `UNKNOWN` outcome reconciled against exact live
-state. Runtime `$0` and `__dir__` identify the private guard copy. The helper
-uses this fixed argv order:
+a shell from an isolated private Git root. That root's detached `HEAD`, index,
+and working files all bind the receipt-base commit and tree. Exact PR identity
+comes only from revalidated live GitHub metadata and fixed argv; local `HEAD`
+cannot expose PR-tree bytes. Repository-relative delegation therefore resolves
+trusted-base dependencies. For scripts, the helper parses the trusted shebang,
+resolves `/usr/bin/env PROGRAM` only through a fixed trusted path, records the
+resolved absolute interpreter identity, rejects interpreters inside the
+consumer repository, and invokes the interpreter directly. The guard's
+closed environment contains only the bound GitHub host/repository,
+OS-account-derived home and identity, fixed path, and supported GitHub token
+variables; it does not inherit caller `PATH`, `BASH_ENV`, `RUBYOPT`, or loader
+injection settings. The helper removes the private executable and Git root
+afterward; cleanup failure after launch is an `UNKNOWN` outcome reconciled
+against exact live state. Runtime `$0` and `__dir__` identify the private guard
+copy. The helper uses this fixed argv order:
 
 ```text
 --repo OWNER/REPO --host HOST --pr NUMBER

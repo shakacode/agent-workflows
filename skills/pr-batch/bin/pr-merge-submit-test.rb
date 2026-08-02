@@ -5,6 +5,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 require "time"
 
@@ -163,7 +164,10 @@ class PrMergeSubmitTest < Minitest::Test
     )
 
     assert_equal 2, timeout_result.fetch(:status).exitstatus
-    assert_includes timeout_result.fetch(:stderr), "guarded-direct executable timed out"
+    assert_match(
+      /guarded-direct executable (?:timed out|process group did not exit after forced termination)/,
+      timeout_result.fetch(:stderr)
+    )
     assert_includes timeout_result.fetch(:stderr), "do not retry blindly"
     assert_equal(3, timeout_log.lines.count { |line| line.include?("number=42") })
 
@@ -174,7 +178,10 @@ class PrMergeSubmitTest < Minitest::Test
     )
 
     assert_equal 2, interrupt_result.fetch(:status).exitstatus
-    assert_includes interrupt_result.fetch(:stderr), "guarded-direct executable was interrupted by SIGINT"
+    assert_match(
+      /guarded-direct executable (?:was interrupted by SIGINT|process group did not exit after forced termination)/,
+      interrupt_result.fetch(:stderr)
+    )
     assert_includes interrupt_result.fetch(:stderr), "do not retry blindly"
     assert_equal(3, interrupt_log.lines.count { |line| line.include?("number=42") })
     refute_empty interrupt_guard_log
@@ -200,7 +207,7 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes guard_log, "shakacode/hichee"
     assert_includes guard_log, "master"
     assert_includes guard_log, "delegated trusted-base dependency"
-    assert_includes guard_log, "feature/test"
+    assert_includes guard_log, "\nHEAD\n#{payload.dig('guard', 'trusted_base_sha')}\n"
     assert_includes guard_log, fixture_head
     assert_empty attacker_log
   end
@@ -216,6 +223,60 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes guard_log, "delegated trusted-base dependency"
     assert_includes guard_log, fixture_head
     assert_empty attacker_log
+  end
+
+  def test_private_guard_git_head_cannot_read_pr_tree_bytes
+    result, _log, guard_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :delegating
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes guard_log, "delegated trusted-base dependency"
+    refute_includes guard_log, "PR-only dependency executed"
+  end
+
+  def test_guard_interpreter_ignores_checkout_controlled_path
+    result, _log, guard_log, attacker_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      interpreter_attack: true
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "/usr/bin/env ruby", payload.dig("guard", "interpreter", "requested")
+    assert_equal File.realpath(RbConfig.ruby), payload.dig("guard", "interpreter", "path")
+    assert_match(/\A[0-9a-f]{64}\z/, payload.dig("guard", "interpreter", "sha256"))
+    assert_empty attacker_log
+    refute_empty guard_log
+  end
+
+  def test_guard_environment_ignores_checkout_controlled_bash_env
+    result, _log, guard_log, attacker_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :bash_executable,
+      bash_env_attack: true
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_empty attacker_log
+    refute_empty guard_log
+  end
+
+  def test_guard_rejects_an_absolute_interpreter_inside_the_pr_checkout
+    result, _log, guard_log, attacker_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :checkout_interpreter
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "interpreter must be outside the consumer repository"
+    assert_empty attacker_log
+    assert_empty guard_log
   end
 
   def test_guard_failure_ambiguous_state_and_head_movement_are_unknown
@@ -268,7 +329,7 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty guard_log
   end
 
-  def test_private_materialized_guard_launch_eacces_is_a_deterministic_error
+  def test_guarded_direct_rejects_an_absolute_interpreter_in_the_checkout
     result, log, guard_log = run_cli(
       mode: "guard_ambiguous",
       merge_submission: guarded_direct_policy,
@@ -276,15 +337,15 @@ class PrMergeSubmitTest < Minitest::Test
     )
 
     assert_equal 1, result.fetch(:status).exitstatus
-    assert_equal "Error: private materialized guarded-direct executable launch was denied (EACCES); " \
-                 "the temporary filesystem may be mounted noexec\n", result.fetch(:stderr)
+    assert_includes result.fetch(:stderr),
+                    "trusted-base guarded-direct interpreter must be outside the consumer repository"
     assert_equal(2, log.lines.count { |line| line.include?("number=42") })
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
     assert_empty guard_log
   end
 
-  def test_private_materialized_guard_launch_enoent_is_a_deterministic_error
+  def test_guarded_direct_rejects_a_missing_absolute_interpreter
     result, log, guard_log = run_cli(
       mode: "guard_ambiguous",
       merge_submission: guarded_direct_policy,
@@ -292,8 +353,7 @@ class PrMergeSubmitTest < Minitest::Test
     )
 
     assert_equal 1, result.fetch(:status).exitstatus
-    assert_equal "Error: private materialized guarded-direct executable launch failed (ENOENT); " \
-                 "its absolute shebang interpreter may be missing\n", result.fetch(:stderr)
+    assert_includes result.fetch(:stderr), "trusted-base guarded-direct interpreter is unavailable"
     assert_equal(2, log.lines.count { |line| line.include?("number=42") })
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
@@ -319,7 +379,38 @@ class PrMergeSubmitTest < Minitest::Test
     refute status.success?
   end
 
-  def test_guarded_direct_rejects_missing_or_invalid_head_branch_metadata
+  def test_forced_termination_unknown_is_returned_for_exact_reconciliation
+    runner = PrMergeSubmit::Runner.allocate
+    runner.instance_variable_set(
+      :@merge_assurance_receipt,
+      { "bindings" => { "base" => { "sha" => BASE_SHA } } }
+    )
+    runner.define_singleton_method(:materialize_trusted_base_repository!) { |directory| directory }
+    runner.define_singleton_method(:guarded_direct_launch_command!) do |_bytes, executable|
+      [[executable], nil]
+    end
+    runner.define_singleton_method(:guard_timeout_seconds) { 0.1 }
+    runner.define_singleton_method(:run_process) do |*_args, **_kwargs|
+      raise PrMergeSubmit::UnknownOutcome,
+            "guarded-direct executable process group did not exit after forced termination; " \
+            "remote outcome is UNKNOWN"
+    end
+
+    _stdout, stderr, status = runner.send(
+      :run_guard,
+      { "method" => "squash", "trusted_bytes" => fake_guard, "identity" => {} },
+      {
+        repo: "owner/repo", host: HOST, pr: 42, expected_head: HEAD_SHA,
+        expected_base: "main", method: "squash",
+        merge_assurance_receipt: "/tmp/receipt.json", subject: nil, body: nil
+      }
+    )
+
+    assert_includes stderr, "process group did not exit after forced termination"
+    refute status.success?
+  end
+
+  def test_guarded_direct_ignores_unneeded_head_branch_metadata
     [:missing, "bad..branch"].each do |head_ref_name|
       result, _log, guard_log = run_cli(
         mode: "guard_success",
@@ -327,10 +418,8 @@ class PrMergeSubmitTest < Minitest::Test
         head_ref_name:
       )
 
-      assert_equal 1, result.fetch(:status).exitstatus
-      assert_includes result.fetch(:stderr),
-                      "PR head branch is missing or invalid for guarded-direct submission"
-      assert_empty guard_log
+      assert result.fetch(:status).success?, result.fetch(:stderr)
+      refute_empty guard_log
     end
   end
 
@@ -1094,6 +1183,8 @@ class PrMergeSubmitTest < Minitest::Test
     receipt_base_sha: nil,
     guard_fixture: :executable,
     head_ref_name: "feature/test",
+    interpreter_attack: false,
+    bash_env_attack: false,
     guard_timeout_seconds: nil,
     interrupt_guard: false
   )
@@ -1120,6 +1211,14 @@ class PrMergeSubmitTest < Minitest::Test
       guard_log_path = File.join(dir, "guard.log")
       guard_marker_path = File.join(dir, "guard-called")
       attacker_log_path = File.join(dir, "attacker-called")
+      File.write(File.join(dir, "guard-mode"), mode)
+      File.write(
+        File.join(dir, "guard-live-path"),
+        File.join(repo_root, ".agents/bin/merge-pr-after-checks")
+      )
+      interpreter_attack_path = prepare_interpreter_attack(dir, attacker_log_path, guard_marker_path) if
+        interpreter_attack
+      bash_env_attack_path = prepare_bash_env_attack(dir, attacker_log_path) if bash_env_attack
       gh_path = File.join(dir, "gh")
       File.write(
         gh_path,
@@ -1143,6 +1242,7 @@ class PrMergeSubmitTest < Minitest::Test
         dir, log_path, mode,
         guard_log_path:, guard_marker_path:, attacker_log_path:,
         guard_live_path: File.join(repo_root, ".agents/bin/merge-pr-after-checks"),
+        interpreter_attack_path:, bash_env_attack_path:,
         guard_timeout_seconds:
       )
       arguments = cli_arguments(
@@ -1260,10 +1360,13 @@ class PrMergeSubmitTest < Minitest::Test
     guard_log_path:, guard_marker_path:,
     attacker_log_path: File.join(dir, "attacker-called"),
     guard_live_path: "",
+    interpreter_attack_path: nil,
+    bash_env_attack_path: nil,
     guard_timeout_seconds: nil
   )
+    path = [interpreter_attack_path, dir, ENV.fetch("PATH")].compact.join(File::PATH_SEPARATOR)
     environment = {
-      "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
+      "PATH" => path,
       "GH_LOG" => log_path,
       "PR_TEST_MODE" => mode,
       "PR_TEST_GUARD_LOG" => guard_log_path,
@@ -1273,7 +1376,30 @@ class PrMergeSubmitTest < Minitest::Test
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }
     environment["PR_MERGE_SUBMIT_GUARD_TIMEOUT_SECONDS"] = guard_timeout_seconds if guard_timeout_seconds
+    environment["BASH_ENV"] = bash_env_attack_path if bash_env_attack_path
     environment
+  end
+
+  def prepare_interpreter_attack(dir, attacker_log_path, guard_marker_path)
+    attack_dir = File.join(dir, "checkout-controlled-bin")
+    FileUtils.mkdir_p(attack_dir)
+    attacker = File.join(attack_dir, "ruby")
+    File.write(
+      attacker,
+      <<~RUBY
+        #!#{RbConfig.ruby}
+        File.write(#{attacker_log_path.inspect}, "checkout-controlled interpreter executed\n")
+        File.write(#{guard_marker_path.inspect}, "called\n")
+      RUBY
+    )
+    FileUtils.chmod(0o755, attacker)
+    attack_dir
+  end
+
+  def prepare_bash_env_attack(dir, attacker_log_path)
+    attack_path = File.join(dir, "checkout-controlled-bash-env")
+    File.write(attack_path, "printf 'checkout-controlled BASH_ENV executed\\n' > #{attacker_log_path}\n")
+    attack_path
   end
 
   def gh_timeout_seconds_for(mode)
@@ -1291,7 +1417,7 @@ class PrMergeSubmitTest < Minitest::Test
     include_merge_assurance_receipt: true, receipt_path: nil
   )
     args = [
-      SCRIPT, "42", "--repo", repo, "--host", HOST,
+      RbConfig.ruby, SCRIPT, "42", "--repo", repo, "--host", HOST,
       "--method", "squash", "--subject", subject
     ]
     args.concat(["--body", body]) unless body.nil?
@@ -1500,6 +1626,13 @@ class PrMergeSubmitTest < Minitest::Test
       guard_body = case guard_fixture
                    when :executable, :non_executable, :modified_after_commit
                      fake_guard
+                   when :bash_executable
+                     fake_bash_guard(dir)
+                   when :checkout_interpreter
+                     checkout_interpreter = File.join(root, "checkout-interpreter")
+                     File.write(checkout_interpreter, trusted_checkout_interpreter)
+                     FileUtils.chmod(0o755, checkout_interpreter)
+                     "#!#{checkout_interpreter}\n"
                    when :delegating
                      fake_delegating_guard
                    when :launch_eacces
@@ -1536,6 +1669,14 @@ class PrMergeSubmitTest < Minitest::Test
         root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
         "commit", "-qm", "untrusted PR head"
       )
+    elsif guard_fixture == :checkout_interpreter
+      File.write(File.join(root, "checkout-interpreter"), pr_head_checkout_interpreter)
+      FileUtils.chmod(0o755, File.join(root, "checkout-interpreter"))
+      run_git!(root, "add", "--all")
+      run_git!(
+        root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "untrusted interpreter replacement"
+      )
     end
     [root, base_sha, run_git!(root, "rev-parse", "HEAD").strip]
   end
@@ -1557,20 +1698,26 @@ class PrMergeSubmitTest < Minitest::Test
 
   def fake_guard
     attacker_guard = <<~RUBY
-      #!/usr/bin/env ruby
-      File.write(ENV.fetch("PR_TEST_ATTACKER_MARKER"), "attacker bytes executed\n")
-      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+      #!#{RbConfig.ruby}
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      File.write(File.join(test_root, "attacker-called"), "attacker bytes executed\n")
+      File.write(File.join(test_root, "guard-called"), "called\n")
     RUBY
     <<~RUBY
       #!/usr/bin/env ruby
-      if ENV.fetch("PR_TEST_MODE") == "guard_path_swap"
-        File.write(ENV.fetch("PR_TEST_GUARD_LIVE_PATH"), #{attacker_guard.inspect})
-        File.chmod(0o755, ENV.fetch("PR_TEST_GUARD_LIVE_PATH"))
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      mode = File.read(File.join(test_root, "guard-mode"))
+      if mode == "guard_path_swap"
+        live_path = File.read(File.join(test_root, "guard-live-path"))
+        File.write(live_path, #{attacker_guard.inspect})
+        File.chmod(0o755, live_path)
       end
-      File.open(ENV.fetch("PR_TEST_GUARD_LOG"), "a") { |file| file.puts(ARGV.join("\n")) }
-      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
-      sleep 5 if %w[guard_timeout guard_interrupt].include?(ENV.fetch("PR_TEST_MODE"))
-      if %w[guard_failure guard_failure_merged].include?(ENV.fetch("PR_TEST_MODE"))
+      File.open(File.join(test_root, "guard.log"), "a") { |file| file.puts(ARGV.join("\n")) }
+      File.write(File.join(test_root, "guard-called"), "called\n")
+      sleep 5 if %w[guard_timeout guard_interrupt].include?(mode)
+      if %w[guard_failure guard_failure_merged].include?(mode)
         warn "repository guard rejected direct submission"
         exit 1
       end
@@ -1585,23 +1732,53 @@ class PrMergeSubmitTest < Minitest::Test
     RUBY
   end
 
+  def fake_bash_guard(dir)
+    <<~BASH
+      #!/bin/bash
+      printf '%s\\n' "$@" >> #{File.join(dir, 'guard.log')}
+      printf 'called\\n' > #{File.join(dir, 'guard-called')}
+    BASH
+  end
+
+  def trusted_checkout_interpreter
+    <<~RUBY
+      #!#{RbConfig.ruby}
+      exec #{RbConfig.ruby.inspect}, *ARGV
+    RUBY
+  end
+
+  def pr_head_checkout_interpreter
+    <<~RUBY
+      #!#{RbConfig.ruby}
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      File.write(File.join(test_root, "attacker-called"), "PR interpreter executed\n")
+      File.write(File.join(test_root, "guard-called"), "called\n")
+    RUBY
+  end
+
   def trusted_base_secondary
     <<~RUBY
       #!/usr/bin/env ruby
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
       branch = `git rev-parse --abbrev-ref HEAD`.strip
       head = `git rev-parse HEAD`.strip
-      File.open(ENV.fetch("PR_TEST_GUARD_LOG"), "a") do |file|
-        file.puts("delegated trusted-base dependency", branch, head, ARGV)
+      head_dependency = `git show HEAD:script/merge_pr_after_checks`
+      File.open(File.join(test_root, "guard.log"), "a") do |file|
+        file.puts("delegated trusted-base dependency", branch, head, head_dependency, ARGV)
       end
-      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+      File.write(File.join(test_root, "guard-called"), "called\n")
     RUBY
   end
 
   def pr_head_secondary
     <<~RUBY
       #!/usr/bin/env ruby
-      File.write(ENV.fetch("PR_TEST_ATTACKER_MARKER"), "PR-only dependency executed\n")
-      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      File.write(File.join(test_root, "attacker-called"), "PR-only dependency executed\n")
+      File.write(File.join(test_root, "guard-called"), "called\n")
     RUBY
   end
 
@@ -1632,7 +1809,7 @@ class PrMergeSubmitTest < Minitest::Test
                       }
                     end
     <<~RUBY
-      #!/usr/bin/env ruby
+      #!#{RbConfig.ruby}
       require "json"
       File.open(ENV.fetch("GH_LOG"), "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")

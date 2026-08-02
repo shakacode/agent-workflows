@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add a fail-closed queue-or-guarded-direct merge-submission seam whose fixed-argv repository guard runs from receipt-base-bound private Git state, resolves trusted script interpreters independently from checkout-controlled paths and injection variables, and requires exact live post-mutation reconciliation.** [issue 292](https://github.com/shakacode/agent-workflows/issues/292).
 - **Document that current install and upgrade paths are development channels without independent human release approval, and track an immutable human-reviewed stable channel.** [issue 296](https://github.com/shakacode/agent-workflows/issues/296).
 - **Add machine-enforced batch-plan preflight and merge-assurance receipt gates, including scoped exact-head CI evidence and a historical React on Rails Wave A fixture replay that proves an unsafe plan is rejected before dispatch.**
 - **Add `$pr-walkthrough`, a read-only exact-diff PR tour that builds a complete conceptual change map, explains one change and its rationale at a time, pauses for questions before continuing, adapts depth for large or complex PRs, tracks diff coverage, and keeps understanding separate from review or merge approval.**

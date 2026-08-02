@@ -7,9 +7,11 @@
 
 require "json"
 require "digest"
+require "etc"
 require "fileutils"
 require "open3"
 require "optparse"
+require "rbconfig"
 require "tempfile"
 require "tmpdir"
 require "time"
@@ -37,6 +39,17 @@ module PrMergeSubmit
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
   GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
   GIT_BLOB_OID = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
+  ENV_INTERPRETER = "/usr/bin/env"
+  ENV_PROGRAM = /\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/
+  TRUSTED_INTERPRETER_DIRS = [
+    File.dirname(RbConfig.ruby),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ].uniq.freeze
 
   module_function
 
@@ -65,7 +78,6 @@ module PrMergeSubmit
         repository(owner: $owner, name: $name) {
           pullRequest(number: $number) {
             id
-            headRefName
             headRefOid
             baseRefName
             baseRefOid
@@ -722,7 +734,7 @@ module PrMergeSubmit
       end
 
       validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
-      guard_stdout, guard_stderr, guard_status = run_guard(policy, options, refreshed)
+      guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
       diagnostics = failure_output(guard_stdout, guard_stderr)
       reconciled = fetch_pr_for_reconciliation!(options, "guarded-direct submission outcome")
       unless guard_status.success?
@@ -762,7 +774,7 @@ module PrMergeSubmit
       }
     end
 
-    def run_guard(policy, options, pull_request)
+    def run_guard(policy, options)
       args = [
         "--repo", options[:repo],
         "--host", options[:host],
@@ -779,9 +791,7 @@ module PrMergeSubmit
       guard_result = nil
       begin
         File.chmod(0o700, directory)
-        repository_root = materialize_trusted_base_repository!(
-          directory, options, pull_request["headRefName"]
-        )
+        repository_root = materialize_trusted_base_repository!(directory)
         executable = File.join(directory, "identity-bound-guard")
         File.open(executable, File::WRONLY | File::CREAT | File::EXCL, 0o700) do |file|
           file.binmode
@@ -789,21 +799,113 @@ module PrMergeSubmit
           file.flush
           file.fsync
         end
-        guard_result = run_process(
-          { "GH_HOST" => options[:host], "GH_REPO" => options[:repo] }, executable, *args,
-          timeout_seconds: guard_timeout_seconds,
-          mutation: true,
-          process_label: "guarded-direct executable",
-          chdir: repository_root,
-          launch_eacces_message: "private materialized guarded-direct executable launch was denied (EACCES); " \
-                                 "the temporary filesystem may be mounted noexec",
-          launch_enoent_message: "private materialized guarded-direct executable launch failed (ENOENT); " \
-                                 "its absolute shebang interpreter may be missing"
+        launch_command, interpreter_identity = guarded_direct_launch_command!(
+          policy.fetch("trusted_bytes"), executable
         )
+        policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
+        begin
+          guard_result = run_process(
+            guarded_direct_environment(options),
+            *launch_command, *args,
+            timeout_seconds: guard_timeout_seconds,
+            mutation: true,
+            process_label: "guarded-direct executable",
+            chdir: repository_root,
+            unsetenv_others: true,
+            launch_eacces_message: "private materialized guarded-direct executable launch was denied (EACCES); " \
+                                   "the temporary filesystem may be mounted noexec",
+            launch_enoent_message: "private materialized guarded-direct executable launch failed (ENOENT); " \
+                                   "its absolute shebang interpreter may be missing"
+          )
+        rescue UnknownOutcome => e
+          guard_result = ["", e.message, FailedStatus.new]
+        end
       ensure
         guard_result = cleanup_private_guard_directory!(directory, guard_result)
       end
       guard_result
+    end
+
+    def guarded_direct_environment(options)
+      account = Etc.getpwuid(Process.uid)
+      environment = {
+        "GH_HOST" => options[:host],
+        "GH_REPO" => options[:repo],
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => TRUSTED_INTERPRETER_DIRS.join(File::PATH_SEPARATOR)
+      }
+      %w[GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN].each do |name|
+        value = ENV[name]
+        environment[name] = value if value && !value.empty?
+      end
+      environment
+    end
+
+    def guarded_direct_launch_command!(trusted_bytes, executable)
+      shebang = trusted_bytes.lines.first
+      return [[executable], nil] unless shebang&.start_with?("#!")
+
+      match = shebang.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
+      raise Error, "trusted-base guarded-direct executable has an unsupported shebang" unless match
+
+      interpreter = match[:interpreter]
+      argument = match[:argument]
+      if interpreter == ENV_INTERPRETER
+        unless argument&.match?(ENV_PROGRAM)
+          raise Error, "trusted-base guarded-direct /usr/bin/env shebang must name one fixed program"
+        end
+
+        interpreter = resolve_env_interpreter!(argument)
+        [[interpreter.fetch("path"), executable], interpreter]
+      else
+        identity = resolve_absolute_interpreter!(interpreter)
+        [[identity.fetch("path"), *[argument].compact, executable], identity]
+      end
+    end
+
+    def resolve_env_interpreter!(program)
+      if program == File.basename(RbConfig.ruby)
+        return resolve_absolute_interpreter!(RbConfig.ruby, requested: "#{ENV_INTERPRETER} #{program}")
+      end
+
+      candidate = TRUSTED_INTERPRETER_DIRS
+                  .map { |directory| File.join(directory, program) }
+                  .find { |path| File.file?(path) && File.executable?(path) }
+      raise Error, "trusted-base guarded-direct interpreter is unavailable: #{program}" unless candidate
+
+      resolve_absolute_interpreter!(candidate, requested: "#{ENV_INTERPRETER} #{program}")
+    end
+
+    def resolve_absolute_interpreter!(path, requested: path)
+      realpath = File.realpath(path)
+      repository_prefix = "#{@repo_root}#{File::SEPARATOR}"
+      if realpath == @repo_root || realpath.start_with?(repository_prefix)
+        raise Error, "trusted-base guarded-direct interpreter must be outside the consumer repository"
+      end
+
+      File.open(realpath, "rb") do |file|
+        stat = file.stat
+        unless stat.file? && File.executable?(realpath)
+          raise Error, "trusted-base guarded-direct interpreter is not an executable regular file: #{path}"
+        end
+
+        digest = Digest::SHA256.new
+        digest << file.read(1_048_576) until file.eof?
+        return {
+          "requested" => requested,
+          "path" => realpath,
+          "device" => stat.dev,
+          "inode" => stat.ino,
+          "size" => stat.size,
+          "sha256" => digest.hexdigest
+        }
+      end
+    rescue Errno::ENOENT
+      raise Error, "trusted-base guarded-direct interpreter is unavailable: #{path}"
+    rescue Errno::EACCES
+      raise Error, "trusted-base guarded-direct interpreter is inaccessible: #{path}"
     end
 
     def cleanup_private_guard_directory!(directory, guard_result)
@@ -821,25 +923,14 @@ module PrMergeSubmit
       FileUtils.remove_entry(directory)
     end
 
-    def materialize_trusted_base_repository!(directory, options, head_ref_name)
-      unless head_ref_name.is_a?(String) && !head_ref_name.empty?
-        raise Error, "PR head branch is missing or invalid for guarded-direct submission"
-      end
-
-      _stdout, _stderr, status = git_capture(
-        "check-ref-format", "refs/heads/#{head_ref_name}", chdir: @repo_root
-      )
-      raise Error, "PR head branch is missing or invalid for guarded-direct submission" unless status.success?
-
+    def materialize_trusted_base_repository!(directory)
       base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha")
-      [options[:expected_head], base_sha].each do |sha|
-        _stdout, stderr, commit_status = git_capture(
-          "-C", @repo_root, "cat-file", "-e", "#{sha}^{commit}", chdir: @repo_root
-        )
-        unless commit_status.success?
-          raise Error, "guarded-direct private repository commit is unavailable: #{sha}: " \
-                       "#{failure_output('', stderr)}"
-        end
+      _stdout, stderr, commit_status = git_capture(
+        "-C", @repo_root, "cat-file", "-e", "#{base_sha}^{commit}", chdir: @repo_root
+      )
+      unless commit_status.success?
+        raise Error, "guarded-direct private repository commit is unavailable: #{base_sha}: " \
+                     "#{failure_output('', stderr)}"
       end
 
       repository_root = File.join(directory, "trusted-base-repository")
@@ -853,18 +944,14 @@ module PrMergeSubmit
 
       preserve_origin_remote!(repository_root)
       private_git!(
-        repository_root, "update-ref", "refs/heads/#{head_ref_name}", options[:expected_head],
-        context: "bind guarded-direct private head"
-      )
-      private_git!(
-        repository_root, "symbolic-ref", "HEAD", "refs/heads/#{head_ref_name}",
-        context: "select guarded-direct private head branch"
+        repository_root, "update-ref", "--no-deref", "HEAD", base_sha,
+        context: "bind guarded-direct private HEAD to trusted base"
       )
       private_git!(
         repository_root, "read-tree", "--reset", "-u", base_sha,
         context: "populate guarded-direct trusted-base repository"
       )
-      verify_private_repository!(repository_root, options, head_ref_name, base_sha)
+      verify_private_repository!(repository_root, base_sha)
       repository_root
     end
 
@@ -894,13 +981,9 @@ module PrMergeSubmit
       raise Error, "#{context} failed: #{failure_output(stdout, stderr)}"
     end
 
-    def verify_private_repository!(repository_root, options, head_ref_name, base_sha)
+    def verify_private_repository!(repository_root, base_sha)
       actual_head = private_git!(
         repository_root, "rev-parse", "HEAD", context: "verify guarded-direct private head"
-      ).strip
-      actual_branch = private_git!(
-        repository_root, "symbolic-ref", "--short", "HEAD",
-        context: "verify guarded-direct private head branch"
       ).strip
       base_tree = private_git!(
         repository_root, "rev-parse", "#{base_sha}^{tree}",
@@ -920,8 +1003,7 @@ module PrMergeSubmit
         repository_root, "ls-files", "--others", "--ignored", "--exclude-standard",
         context: "verify guarded-direct private ignored files"
       )
-      unless actual_head.casecmp?(options[:expected_head]) &&
-             actual_branch == head_ref_name &&
+      unless actual_head.casecmp?(base_sha) &&
              materialized_tree.casecmp?(base_tree) &&
              clean_status.success? &&
              untracked.empty? &&
@@ -1142,6 +1224,7 @@ module PrMergeSubmit
     def run_process(
       environment, command, *args,
       timeout_seconds:, mutation:, process_label:, chdir:,
+      unsetenv_others: false,
       launch_eacces_message: nil, launch_enoent_message: nil
     )
       validate_receipt_freshness!(@merge_assurance_receipt) if mutation && @merge_assurance_receipt
@@ -1164,7 +1247,7 @@ module PrMergeSubmit
       pid = begin
         Process.spawn(
           environment, command, *args,
-          out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:
+          out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:, unsetenv_others:
         )
       rescue Errno::EACCES
         raise if launch_eacces_message.nil?
