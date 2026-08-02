@@ -431,9 +431,9 @@ Parse and bind the local receipt to the expected batch ID, choose only from the 
 For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
 preflight receipt to `publish` and `replay`
-with `--publication-preflight`; replay reports a snapshot mismatch/staleness
-blocker if coordination, target/head, or QA state no longer matches the
-published binding.
+with `--publication-preflight` and explicit `--workflow-config <trusted repo
+workflow config>`; replay reports a snapshot mismatch/staleness blocker if
+coordination, target/head, or QA state no longer matches the published binding.
 
 Use `completed-batch-audit-receipt` for both `publish` and `replay`;
 `--targets-json` is a JSON array of exact `host`, `repo`, `type`
@@ -443,7 +443,7 @@ the same `expected_targets`, raw successful targeted `coordination_status`,
 `target_snapshots` (`target`, terminal `state`, full `head_sha`, `source`), and
 `qa_evidence` (`target`, marker text, plus `maintainer_waiver: {"url": "<exact
 same-target #issuecomment URL>"}` only for `WAIVED`). The CLI reads
-`coordination_backend` from `--workflow-config`; do not
+`coordination_backend` only from `--workflow-config`; do not
 replace the bounded coordination result with a caller-written lane summary.
 
 The preflight receipt embeds the canonical raw v1 input as `source_input` with
@@ -453,6 +453,8 @@ re-assesses that bound source input, re-fetches each exact target through
 authenticated `gh api`, reruns bounded exact-batch coordination status when a
 backend applies, and re-authenticates any waiver; missing, altered, stale, or
 mismatched terminal facts block before POST or ready replay.
+
+Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay.
 
 When `coordination_backend: n/a`, `coordination_status` must instead be a
 `completed-batch-coordination-not-applicable` v1 object with the exact batch ID

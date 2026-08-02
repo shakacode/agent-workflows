@@ -95,12 +95,24 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def replay_marker(marker, expected_batch_id:, other_blockers: [], publication_preflight: nil, expected_targets: nil)
+  def replay_marker(
+    marker,
+    expected_batch_id:,
+    other_blockers: [],
+    publication_preflight: nil,
+    expected_targets: nil,
+    coordination_backend: nil
+  )
     state = marker_state(marker)
     state = nil unless state&.fields&.fetch("batch_id") == expected_batch_id
     marker_blockers = if state
                         state_blockers(state) +
-                          publication_snapshot_blockers(state, publication_preflight, expected_targets:)
+                          publication_snapshot_blockers(
+                            state,
+                            publication_preflight,
+                            expected_targets:,
+                            coordination_backend:
+                          )
                       else
                         [INVALID_MARKER_BLOCKER]
                       end
@@ -127,7 +139,14 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def publish(expected_batch_id:, targets:, receipt:, other_blockers: [], publication_preflight: nil)
+  def publish(
+    expected_batch_id:,
+    targets:,
+    receipt:,
+    other_blockers: [],
+    publication_preflight: nil,
+    coordination_backend: nil
+  )
     comment_body = canonical_comment_body(receipt)
     raise Error, "local completed-batch audit receipt is invalid" unless comment_body
 
@@ -135,7 +154,12 @@ module CompletedBatchAuditReceipt
     marker = comment_marker(comment_body)
     state = marker_state(marker)
     if state&.fields&.fetch("audit_status") == "complete"
-      validate_publication_preflight!(publication_preflight, expected_batch_id:, targets: deterministic)
+      validate_publication_preflight!(
+        publication_preflight,
+        expected_batch_id:,
+        targets: deterministic,
+        coordination_backend:
+      )
       marker = bind_publication_snapshot(marker, publication_preflight)
       comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
     end
@@ -144,7 +168,8 @@ module CompletedBatchAuditReceipt
       expected_batch_id:,
       other_blockers:,
       publication_preflight:,
-      expected_targets: deterministic
+      expected_targets: deterministic,
+      coordination_backend:
     )
     raise Error, "local completed-batch audit receipt is invalid" unless local.fetch("well_formed")
 
@@ -186,7 +211,8 @@ module CompletedBatchAuditReceipt
       expected_batch_id:,
       other_blockers:,
       publication_preflight:,
-      expected_targets: deterministic
+      expected_targets: deterministic,
+      coordination_backend:
     )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
 
@@ -205,7 +231,14 @@ module CompletedBatchAuditReceipt
     )
   end
 
-  def replay_reference(expected_batch_id:, targets:, reference:, other_blockers: [], publication_preflight: nil)
+  def replay_reference(
+    expected_batch_id:,
+    targets:,
+    reference:,
+    other_blockers: [],
+    publication_preflight: nil,
+    coordination_backend: nil
+  )
     parsed = parse_reference(reference)
     target = parsed.fetch("target")
     deterministic = deterministic_targets(targets)
@@ -243,7 +276,8 @@ module CompletedBatchAuditReceipt
       expected_batch_id:,
       other_blockers:,
       publication_preflight:,
-      expected_targets: deterministic
+      expected_targets: deterministic,
+      coordination_backend:
     )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
     raise Error, "compact reference result does not match receipt verdict" unless
@@ -485,11 +519,12 @@ module CompletedBatchAuditReceipt
     "#{COMMENT_HEADER}\n\n#{marker}"
   end
 
-  def validate_publication_preflight!(preflight, expected_batch_id:, targets:)
+  def validate_publication_preflight!(preflight, expected_batch_id:, targets:, coordination_backend: nil)
     valid = publication_preflight_reassessed?(
       preflight,
       expected_batch_id:,
-      expected_targets: targets
+      expected_targets: targets,
+      coordination_backend:
     )
     raise PublicationPreflightError, "completed-batch publication preflight is missing or invalid" unless valid
     raise PublicationPreflightError, "completed-batch publication preflight is blocked" unless preflight.fetch("eligible")
@@ -540,7 +575,7 @@ module CompletedBatchAuditReceipt
     value&.split(";", 2)&.first
   end
 
-  def publication_snapshot_blockers(state, preflight, expected_targets: nil)
+  def publication_snapshot_blockers(state, preflight, expected_targets: nil, coordination_backend: nil)
     value = state.fields["publication_snapshot"]
     return [PUBLICATION_REFRESH_BLOCKER] if state.fields["audit_status"] == "complete" && !value
     return [] unless value
@@ -548,7 +583,8 @@ module CompletedBatchAuditReceipt
     return [PUBLICATION_MISMATCH_BLOCKER] unless publication_preflight_reassessed?(
       preflight,
       expected_batch_id: state.fields.fetch("batch_id"),
-      expected_targets:
+      expected_targets:,
+      coordination_backend:
     )
     return [PUBLICATION_MISMATCH_BLOCKER] unless preflight.fetch("eligible")
 
@@ -564,7 +600,13 @@ module CompletedBatchAuditReceipt
     )
   end
 
-  def publication_preflight_reassessed?(preflight, expected_batch_id:, expected_targets:)
+  def publication_preflight_reassessed?(preflight, expected_batch_id:, expected_targets:, coordination_backend: nil)
+    trusted_backend = CompletedBatchPublicationPreflight.normalized_known_string(coordination_backend)
+    return false unless trusted_backend
+    return false unless preflight.is_a?(Hash)
+
+    stored_backend = preflight.dig("snapshot", "coordination_backend")
+    return false unless stored_backend == trusted_backend
     return false unless CompletedBatchPublicationPreflight.valid_receipt?(
       preflight,
       expected_batch_id:,
@@ -573,7 +615,7 @@ module CompletedBatchAuditReceipt
 
     CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
       preflight,
-      coordination_backend: preflight.dig("snapshot", "coordination_backend"),
+      coordination_backend: trusted_backend,
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       coordination_verifier: method(:authenticated_publication_coordination_status)
@@ -599,6 +641,18 @@ module CompletedBatchAuditReceipt
 
   def authenticated_publication_coordination_status(backend:, batch_id:)
     CompletedBatchPublicationPreflight.authenticated_coordination_status(backend:, batch_id:)
+  end
+
+  def trusted_coordination_backend(workflow_config)
+    config = YAML.safe_load(File.read(workflow_config, encoding: "UTF-8"), aliases: false)
+    raise Error, "workflow config must be a mapping" unless config.is_a?(Hash)
+
+    backend = CompletedBatchPublicationPreflight.normalized_known_string(config["coordination_backend"])
+    raise Error, "workflow config coordination_backend is missing or invalid" unless backend
+
+    backend
+  rescue Psych::Exception, SystemCallError => e
+    raise Error, "workflow config could not be read: #{e.message}"
   end
 
   def bot_login?(login)
@@ -1124,6 +1178,7 @@ module CompletedBatchAuditReceipt
       opts.on("--receipt PATH") { |value| options["receipt"] = value }
       opts.on("--reference-file PATH") { |value| options["reference_file"] = value }
       opts.on("--publication-preflight PATH") { |value| options["publication_preflight"] = value }
+      opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
       opts.on("--other-blocker TEXT") { |value| options.fetch("other_blockers") << value }
       opts.on("-h", "--help") do
         puts opts
@@ -1133,7 +1188,7 @@ module CompletedBatchAuditReceipt
     parser.parse!(argv)
     raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
 
-    %w[expected_batch_id targets_json].each do |field|
+    %w[expected_batch_id targets_json workflow_config].each do |field|
       raise OptionParser::MissingArgument, "--#{field.tr('_', '-')}" if options[field].to_s.empty?
     end
 
@@ -1149,6 +1204,7 @@ module CompletedBatchAuditReceipt
       end
     end
 
+    coordination_backend = trusted_coordination_backend(options.fetch("workflow_config"))
     configure_gh_timeout!
     targets = JSON.parse(File.read(options.fetch("targets_json"), encoding: "UTF-8"))
     preflight_path = options["publication_preflight"].to_s
@@ -1164,7 +1220,8 @@ module CompletedBatchAuditReceipt
                  targets:,
                  receipt: File.read(options.fetch("receipt"), encoding: "UTF-8"),
                  other_blockers: options.fetch("other_blockers"),
-                 publication_preflight:
+                 publication_preflight:,
+                 coordination_backend:
                )
              else
                reference_path = options.fetch("reference_file")
@@ -1174,7 +1231,8 @@ module CompletedBatchAuditReceipt
                  targets:,
                  reference:,
                  other_blockers: options.fetch("other_blockers"),
-                 publication_preflight:
+                 publication_preflight:,
+                 coordination_backend:
                )
              end
     puts JSON.pretty_generate(result)
@@ -1206,7 +1264,7 @@ module CompletedBatchAuditReceipt
 
   def usage
     "Usage: completed-batch-audit-receipt <publish|replay> --expected-batch-id ID " \
-      "--targets-json PATH (--receipt PATH | --reference-file PATH|-) " \
+      "--targets-json PATH --workflow-config PATH (--receipt PATH | --reference-file PATH|-) " \
       "[--publication-preflight PATH] [--other-blocker TEXT ...]"
   end
 end

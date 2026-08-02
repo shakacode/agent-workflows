@@ -112,6 +112,7 @@ module CompletedBatchPublicationPreflight
       "contract" => CONTRACT,
       "version" => VERSION,
       "batch_id" => batch_id,
+      "coordination_backend" => backend,
       "eligible" => eligible,
       "verdict" => eligible ? "ELIGIBLE" : "BLOCKED",
       "targets" => expected_targets,
@@ -139,6 +140,7 @@ module CompletedBatchPublicationPreflight
       "contract" => CONTRACT,
       "version" => VERSION,
       "batch_id" => nil,
+      "coordination_backend" => nil,
       "eligible" => false,
       "verdict" => "BLOCKED",
       "targets" => [],
@@ -166,6 +168,9 @@ module CompletedBatchPublicationPreflight
     unsigned = receipt.reject { |key, _value| key == "receipt_digest" }
     return false unless receipt["receipt_digest"] == digest(canonicalize(unsigned))
     return false unless receipt["batch_id"] == receipt.dig("snapshot", "batch_id")
+
+    backend = normalized_known_string(receipt["coordination_backend"])
+    return false unless backend && backend == receipt.dig("snapshot", "coordination_backend")
     return false if expected_batch_id && receipt["batch_id"] != expected_batch_id
 
     target_blockers = []
@@ -251,9 +256,14 @@ module CompletedBatchPublicationPreflight
   )
     return false unless valid_receipt?(receipt)
 
+    trusted_backend = normalized_known_string(coordination_backend)
+    return false unless trusted_backend
+    return false unless receipt["coordination_backend"] == trusted_backend
+    return false unless receipt.dig("snapshot", "coordination_backend") == trusted_backend
+
     refreshed = assess(
       receipt.fetch("source_input"),
-      coordination_backend:,
+      coordination_backend: trusted_backend,
       waiver_verifier:,
       target_verifier:,
       coordination_verifier:

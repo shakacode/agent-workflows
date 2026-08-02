@@ -13,6 +13,8 @@ load File.expand_path("completed-batch-audit-receipt", __dir__)
 class CompletedBatchAuditReceiptTest < Minitest::Test
   SCRIPT = File.expand_path("completed-batch-audit-receipt", __dir__)
   FIXTURES = File.expand_path("../fixtures", __dir__)
+  WORKFLOW_CONFIG = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
+  REAL_BACKEND = "agent-coord private backend"
 
   def marker(body)
     "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
@@ -140,7 +142,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -179,7 +181,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         CompletedBatchAuditReceipt.validate_publication_preflight!(
           preflight,
           expected_batch_id: "batch-184",
-          targets: [target]
+          targets: [target],
+          coordination_backend: "n/a"
         )
       end
     end
@@ -210,7 +213,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       CompletedBatchAuditReceipt.validate_publication_preflight!(
         preflight,
         expected_batch_id: "batch-184",
-        targets: [target]
+        targets: [target],
+        coordination_backend: "n/a"
       )
     end
 
@@ -220,7 +224,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         CompletedBatchAuditReceipt.validate_publication_preflight!(
           preflight,
           expected_batch_id: "batch-184",
-          targets: [target]
+          targets: [target],
+          coordination_backend: "n/a"
         )
       end
     end
@@ -246,10 +251,131 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         CompletedBatchAuditReceipt.validate_publication_preflight!(
           preflight,
           expected_batch_id: "batch-184",
-          targets: [target]
+          targets: [target],
+          coordination_backend: "n/a"
         )
       end
     end
+  end
+
+  def test_complete_publication_rejects_forged_no_backend_receipt_in_trusted_real_backend_context
+    preflight = publication_preflight
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    unexpected_api = lambda do |_host, endpoint, **_options|
+      flunk "backend mismatch must fail before GitHub API call: #{endpoint}"
+    end
+
+    with_stubbed_gh_api(unexpected_api) do
+      assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_complete_publication_rejects_real_backend_receipt_in_trusted_no_backend_context
+    preflight = publication_preflight(coordination_backend: REAL_BACKEND)
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    api_calls = []
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      api_calls << endpoint
+      publication_target_payload
+    end
+
+    with_stubbed_gh_api(authenticated_api) do
+      assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target],
+          coordination_backend: "n/a"
+        )
+      end
+    end
+    assert_empty api_calls, "backend mismatch must fail before target freshness calls"
+  end
+
+  def test_complete_publication_accepts_matching_real_backend_after_live_coordination_refresh
+    preflight = publication_preflight(coordination_backend: REAL_BACKEND)
+    assert_equal REAL_BACKEND, preflight.fetch("coordination_backend")
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    coordination_calls = []
+    coordination_status = preflight.dig("source_input", "coordination_status")
+    coordination_verifier = lambda do |backend:, batch_id:|
+      coordination_calls << [backend, batch_id]
+      coordination_status
+    end
+    target_payload = publication_target_payload
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/pulls/184"
+
+      target_payload
+    end
+
+    with_stubbed_gh_api(authenticated_api) do
+      with_stubbed_coordination_status(coordination_verifier) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+    assert_equal [[REAL_BACKEND, "batch-184"]], coordination_calls
+  end
+
+  def test_complete_publication_accepts_matching_no_backend_without_live_coordination_call
+    preflight = publication_preflight
+    assert_equal "n/a", preflight.fetch("coordination_backend")
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    coordination_calls = []
+    coordination_verifier = lambda do |backend:, batch_id:|
+      coordination_calls << [backend, batch_id]
+      nil
+    end
+    target_payload = publication_target_payload
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/pulls/184"
+
+      target_payload
+    end
+
+    with_stubbed_gh_api(authenticated_api) do
+      with_stubbed_coordination_status(coordination_verifier) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target],
+          coordination_backend: "n/a"
+        )
+      end
+    end
+    assert_empty coordination_calls
   end
 
   def test_publish_binds_snapshot_and_replay_blocks_a_refreshed_snapshot_mismatch
@@ -261,7 +387,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -286,7 +412,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       env["COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"] = stale_path
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, published.fetch("chat_reference"))
-      replay_out, replay_err, replay_status = Open3.capture3(
+      replay_out, replay_err, replay_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -304,6 +430,60 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert replayed.fetch("well_formed")
       refute replayed.fetch("ready")
       assert_equal ["completed-batch-audit publication snapshot mismatch or stale"], replayed.fetch("blockers")
+      refute File.exist?(env.fetch("FAKE_COORDINATION_LOG")),
+             "trusted n/a publish/replay must not invoke agent-coord"
+    end
+  end
+
+  def test_publish_and_replay_cli_refresh_matching_real_backend_with_bounded_coordination
+    with_fake_gh(coordination_backend: REAL_BACKEND) do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      publish_out, publish_err, publish_status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert publish_status.success?, publish_err
+      published = JSON.parse(publish_out)
+      assert published.fetch("ready")
+      publish_coordination_calls = File.readlines(env.fetch("FAKE_COORDINATION_LOG"), chomp: true)
+      refute_empty publish_coordination_calls
+      assert(publish_coordination_calls.all? { |call| call == "status --batch-id batch-184 --json" })
+
+      reference_path = File.join(directory, "reference.txt")
+      File.write(reference_path, published.fetch("chat_reference"))
+      replay_out, replay_err, replay_status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "replay",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        reference_path
+      )
+
+      assert replay_status.success?, replay_err
+      assert JSON.parse(replay_out).fetch("ready")
+      replay_coordination_calls = File.readlines(env.fetch("FAKE_COORDINATION_LOG"), chomp: true)
+      assert_operator replay_coordination_calls.length, :>, publish_coordination_calls.length
+      assert(replay_coordination_calls.all? { |call| call == "status --batch-id batch-184 --json" })
     end
   end
 
@@ -398,7 +578,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, ready_marker)
 
-        out, err, status = Open3.capture3(
+        out, err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -462,9 +642,75 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   end
 
   def test_cli_usage_errors_use_documented_exit
-    _out, _err, status = Open3.capture3("ruby", SCRIPT)
+    _out, _err, status = capture_receipt_cli("ruby", SCRIPT)
 
     assert_equal 64, status.exitstatus
+  end
+
+  def test_complete_publish_cli_requires_explicit_workflow_config
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+
+      _out, err, status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert_equal 64, status.exitstatus
+      assert_includes err, "missing argument: --workflow-config"
+      refute File.exist?(env.fetch("FAKE_GH_LOG"))
+    end
+  end
+
+  def test_complete_publish_cli_rejects_malformed_workflow_config_before_api_calls
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      config_path = File.join(directory, "malformed-agent-workflow.yml")
+      File.write(receipt_path, ready_marker)
+      File.write(config_path, "coordination_backend: [\n")
+
+      out, _err, status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path,
+        "--workflow-config",
+        config_path
+      )
+
+      assert_equal 1, status.exitstatus
+      result = JSON.parse(out)
+      refute result.fetch("well_formed")
+      refute result.fetch("ready")
+      assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+      assert_includes result.fetch("errors").join("\n"), "workflow config"
+      refute File.exist?(env.fetch("FAKE_GH_LOG"))
+    end
   end
 
   def test_cli_rejects_command_incompatible_input_options
@@ -475,7 +721,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       File.write(receipt_path, ready_marker)
       File.write(reference_path, "invalid reference")
 
-      _out, _err, publish_status = Open3.capture3(
+      _out, _err, publish_status = capture_receipt_cli(
         "ruby",
         SCRIPT,
         "publish",
@@ -488,7 +734,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--reference-file",
         reference_path
       )
-      _out, _err, replay_status = Open3.capture3(
+      _out, _err, replay_status = capture_receipt_cli(
         "ruby",
         SCRIPT,
         "replay",
@@ -501,7 +747,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "--receipt",
         receipt_path
       )
-      _out, _err, invalid_option_precedence_status = Open3.capture3(
+      _out, _err, invalid_option_precedence_status = capture_receipt_cli(
         "ruby",
         SCRIPT,
         "publish",
@@ -526,7 +772,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       targets_path = write_json(directory, "targets.json", [])
       missing_reference = File.join(directory, "missing-reference.txt")
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         "ruby",
         SCRIPT,
         "replay",
@@ -579,7 +825,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       }
 
       cases.each do |label, args|
-        out, _err, status = Open3.capture3("ruby", SCRIPT, *args)
+        out, _err, status = capture_receipt_cli("ruby", SCRIPT, *args)
 
         assert_equal 1, status.exitstatus, label
         result = JSON.parse(out)
@@ -598,7 +844,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       File.write(targets_path, "{")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         "ruby",
         SCRIPT,
         "publish",
@@ -635,7 +881,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, ready_marker)
 
-        out, _err, status = Open3.capture3(
+        out, _err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -803,7 +1049,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -840,7 +1086,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, err, status = Open3.capture3(
+      out, err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -893,7 +1139,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, full_body)
 
-        out, err, status = Open3.capture3(
+        out, err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -945,7 +1191,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, "#{CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER}\n\n#{ready_marker}")
 
-      _out, err, status = Open3.capture3(
+      _out, err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -976,7 +1222,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, supplied_marker)
 
-        publish_out, publish_err, publish_status = Open3.capture3(
+        publish_out, publish_err, publish_status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -999,7 +1245,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
         reference_path = File.join(directory, "reference.txt")
         File.write(reference_path, published.fetch("chat_reference"))
-        replay_out, replay_err, replay_status = Open3.capture3(
+        replay_out, replay_err, replay_status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -1032,7 +1278,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, format(format, full_body))
 
-        out, _err, status = Open3.capture3(
+        out, _err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -1064,7 +1310,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1080,7 +1326,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, JSON.parse(publish_out).fetch("chat_reference"))
 
-      out, err, status = Open3.capture3(
+      out, err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1112,7 +1358,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1129,7 +1375,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, JSON.parse(publish_out).fetch("chat_reference"))
       env["FAKE_GH_MODE"] = "readback-failure"
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1165,7 +1411,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1195,7 +1441,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, published.fetch("chat_reference"))
-      replay_out, replay_err, replay_status = Open3.capture3(
+      replay_out, replay_err, replay_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1219,7 +1465,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       replay_summary = replayed.fetch("pr_description_summary").fetch("section")
       assert_equal summary, replay_summary
 
-      cleared_out, cleared_err, cleared_status = Open3.capture3(
+      cleared_out, cleared_err, cleared_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1250,7 +1496,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, _publish_err, publish_status = Open3.capture3(
+      publish_out, _publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1267,7 +1513,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, reference.sub(/SHA-256 `[0-9a-f]{64}`/, "SHA-256 `#{'0' * 64}`"))
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1304,7 +1550,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1344,7 +1590,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, ready_marker)
 
-        out, _err, status = Open3.capture3(
+        out, _err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -1377,7 +1623,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, ready_marker)
 
-        out, _err, status = Open3.capture3(
+        out, _err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -1419,7 +1665,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       File.write(receipt_path, ready_marker)
 
       out, _err, status = Timeout.timeout(10) do
-        Open3.capture3(
+        capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -1471,7 +1717,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1489,7 +1735,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, published.fetch("chat_reference"))
-      replay_out, replay_err, replay_status = Open3.capture3(
+      replay_out, replay_err, replay_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1519,7 +1765,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1539,7 +1785,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, published.fetch("chat_reference"))
-      replay_out, replay_err, replay_status = Open3.capture3(
+      replay_out, replay_err, replay_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1597,7 +1843,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1615,7 +1861,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, published.fetch("chat_reference"))
-      replay_out, replay_err, replay_status = Open3.capture3(
+      replay_out, replay_err, replay_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1659,7 +1905,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1692,7 +1938,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1728,7 +1974,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1763,7 +2009,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         receipt_path = File.join(directory, "receipt.txt")
         File.write(receipt_path, ready_marker)
 
-        out, _err, status = Open3.capture3(
+        out, _err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -1798,7 +2044,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1830,7 +2076,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1847,7 +2093,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, JSON.parse(publish_out).fetch("chat_reference"))
       env["FAKE_GH_MODE"] = "comment-type-bot"
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1879,7 +2125,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1897,7 +2143,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       File.write(reference_path, JSON.parse(publish_out).fetch("chat_reference"))
       File.write(env.fetch("FAKE_GH_LOG"), "")
       env["FAKE_GH_MODE"] = "replay-current-state-changed"
-      out, err, status = Open3.capture3(
+      out, err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1931,7 +2177,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1965,7 +2211,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
 
-      out, _err, status = Open3.capture3(
+      out, _err, status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -1998,7 +2244,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, followup_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -2021,7 +2267,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       reference_path = File.join(directory, "reference.txt")
       File.write(reference_path, published.fetch("chat_reference"))
-      replay_out, replay_err, replay_status = Open3.capture3(
+      replay_out, replay_err, replay_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -2051,7 +2297,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       receipt_path = File.join(directory, "receipt.txt")
       File.write(receipt_path, ready_marker)
-      publish_out, publish_err, publish_status = Open3.capture3(
+      publish_out, publish_err, publish_status = capture_receipt_cli(
         env,
         "ruby",
         SCRIPT,
@@ -2081,7 +2327,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       variants.each do |label, candidate|
         reference_path = File.join(directory, "#{label}.txt")
         File.write(reference_path, candidate)
-        out, _err, status = Open3.capture3(
+        out, _err, status = capture_receipt_cli(
           env,
           "ruby",
           SCRIPT,
@@ -2214,7 +2460,20 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     path
   end
 
-  def publication_preflight(head_sha: "a" * 40, waived: false)
+  def capture_receipt_cli(*arguments)
+    command = arguments.dup
+    script_index = command.index(SCRIPT)
+    if script_index &&
+       %w[publish replay].include?(command[script_index + 1]) &&
+       !command.include?("--workflow-config")
+      environment = command.first.is_a?(Hash) ? command.first : {}
+      workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
+      command.concat(["--workflow-config", workflow_config])
+    end
+    Open3.capture3(*command)
+  end
+
+  def publication_preflight(head_sha: "a" * 40, waived: false, coordination_backend: "n/a")
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
     waiver_url = "https://github.com/acme/widgets/pull/184#issuecomment-9184"
     evidence = <<~MARKER
@@ -2233,21 +2492,45 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     MARKER
     qa_row = { "target" => target, "evidence" => evidence }
     qa_row["maintainer_waiver"] = { "url" => waiver_url } if waived
+    coordination_status = if coordination_backend == "n/a"
+                            {
+                              "contract" => "completed-batch-coordination-not-applicable",
+                              "version" => 1,
+                              "batch_id" => "batch-184",
+                              "mode" => "single_operator",
+                              "rationale" => "repository workflow seam declares coordination_backend: n/a",
+                              "source" => "https://github.com/acme/widgets/blob/#{head_sha}/.agents/agent-workflow.yml",
+                              "completed_at" => "2026-07-18T17:59:59Z",
+                              "targets" => [target]
+                            }
+                          else
+                            {
+                              "scope" => { "kind" => "batch", "batch_id" => "batch-184" },
+                              "batches" => [{
+                                "batch_id" => "batch-184",
+                                "repo" => "acme/widgets",
+                                "status" => "completed",
+                                "updated_at" => "2026-07-18T17:59:59Z",
+                                "completed_at" => "2026-07-18T17:59:59Z",
+                                "lanes" => [{
+                                  "name" => "batch-184-pr-184",
+                                  "targets" => ["184"],
+                                  "status" => "done",
+                                  "terminal" => "done",
+                                  "closed_at" => "2026-07-18T17:59:59Z",
+                                  "pr_state" => "merged",
+                                  "pr_url" => "https://github.com/acme/widgets/pull/184",
+                                  "evidence_url" => "https://github.com/acme/widgets/pull/184"
+                                }]
+                              }]
+                            }
+                          end
     input = {
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
       "batch_id" => "batch-184",
       "expected_targets" => [target],
-      "coordination_status" => {
-        "contract" => "completed-batch-coordination-not-applicable",
-        "version" => 1,
-        "batch_id" => "batch-184",
-        "mode" => "single_operator",
-        "rationale" => "repository workflow seam declares coordination_backend: n/a",
-        "source" => "https://github.com/acme/widgets/blob/#{head_sha}/.agents/agent-workflow.yml",
-        "completed_at" => "2026-07-18T17:59:59Z",
-        "targets" => [target]
-      },
+      "coordination_status" => coordination_status,
       "target_snapshots" => [{
         "target" => target,
         "state" => "merged",
@@ -2259,7 +2542,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     comment = publication_waiver_comment(head_sha:, url: waiver_url)
     CompletedBatchPublicationPreflight.assess(
       input,
-      coordination_backend: "n/a",
+      coordination_backend:,
       waiver_verifier: ->(**_keywords) { comment },
       target_verifier: lambda do |target:|
         {
@@ -2268,6 +2551,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           "head_sha" => head_sha,
           "verification_source" => "authenticated gh api"
         }
+      end,
+      coordination_verifier: lambda do |backend:, batch_id:|
+        coordination_status if backend == coordination_backend && batch_id == "batch-184"
       end
     )
   end
@@ -2309,7 +2595,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     CompletedBatchAuditReceipt.define_singleton_method(:gh_api, original)
   end
 
-  def with_fake_gh(mode: nil, target_type: "pull_request")
+  def with_stubbed_coordination_status(callable)
+    original = CompletedBatchAuditReceipt.method(:authenticated_publication_coordination_status)
+    CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_coordination_status, callable)
+    yield
+  ensure
+    CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_coordination_status, original)
+  end
+
+  def with_fake_gh(mode: nil, target_type: "pull_request", coordination_backend: "n/a")
     Dir.mktmpdir("completed-batch-audit-receipt") do |directory|
       bin = File.join(directory, "bin")
       FileUtils.mkdir_p(bin)
@@ -2439,6 +2733,20 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         end
       RUBY
       FileUtils.chmod(0o755, gh)
+      agent_coord = File.join(bin, "agent-coord")
+      File.write(agent_coord, <<~'RUBY')
+        #!/usr/bin/env ruby
+        require "json"
+
+        expected = ["status", "--batch-id", ENV.fetch("FAKE_BATCH_ID"), "--json"]
+        abort "unexpected agent-coord arguments: #{ARGV.inspect}" unless ARGV == expected
+        File.open(ENV.fetch("FAKE_COORDINATION_LOG"), "a") { |file| file.puts(ARGV.join(" ")) }
+        puts ENV.fetch("FAKE_COORDINATION_STATUS")
+      RUBY
+      FileUtils.chmod(0o755, agent_coord)
+      preflight = publication_preflight(coordination_backend:)
+      workflow_config = File.join(directory, "agent-workflow.yml")
+      File.write(workflow_config, "coordination_backend: #{coordination_backend.inspect}\n")
       env = {
         "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
         "FAKE_GH_LOG" => File.join(directory, "gh.log"),
@@ -2447,10 +2755,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "FAKE_GH_LATE_SIDE_EFFECT" => File.join(directory, "gh-late-side-effect.txt"),
         "FAKE_GH_MODE" => mode.to_s,
         "FAKE_TARGET_TYPE" => target_type,
+        "FAKE_BATCH_ID" => "batch-184",
+        "FAKE_COORDINATION_LOG" => File.join(directory, "agent-coord.log"),
+        "FAKE_COORDINATION_STATUS" => JSON.generate(preflight.dig("source_input", "coordination_status")),
+        "FAKE_WORKFLOW_CONFIG" => workflow_config,
         "COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT" => File.join(directory, "publication-preflight.json"),
         "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "1" : nil
       }
-      File.write(env.fetch("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"), JSON.generate(publication_preflight))
+      File.write(env.fetch("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"), JSON.generate(preflight))
       yield env, directory
     end
   end

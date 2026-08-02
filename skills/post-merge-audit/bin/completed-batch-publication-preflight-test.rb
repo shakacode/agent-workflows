@@ -377,6 +377,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     result = assess_input(input)
 
     assert_equal CompletedBatchPublicationPreflight.canonicalize(input), result.fetch("source_input")
+    assert_equal BACKEND, result.fetch("coordination_backend")
+    assert_equal BACKEND, result.dig("snapshot", "coordination_backend")
     assert_equal CompletedBatchPublicationPreflight.digest(result.fetch("source_input")),
                  result.fetch("source_input_digest")
   end
@@ -397,6 +399,49 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
     )
+  end
+
+  def test_reassessment_rejects_source_input_coordination_mode_mismatch_with_recomputed_digests
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    result = assess_input(input)
+    result.fetch("source_input")["coordination_status"] = no_backend_input.fetch("coordination_status")
+    result["source_input_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("source_input"))
+    result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      result.reject { |key, _value| key == "receipt_digest" }
+    )
+
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result),
+           "integrity digests alone must not authenticate the source-input backend mode"
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
+  def test_reassessment_rejects_trusted_backend_mismatch_before_live_refresh
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    result = assess_input(input)
+    target_calls = []
+    coordination_calls = []
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: "n/a",
+      waiver_verifier: ->(**) { flunk "waiver verifier must not run" },
+      target_verifier: lambda { |**args|
+        target_calls << args
+        flunk "target verifier must not run"
+      },
+      coordination_verifier: lambda { |**args|
+        coordination_calls << args
+        flunk "coordination verifier must not run"
+      }
+    )
+    assert_empty target_calls
+    assert_empty coordination_calls
   end
 
   def test_unknown_and_in_progress_qa_block_completion
