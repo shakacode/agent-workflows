@@ -121,6 +121,9 @@ REGISTRATION_BOUNDED_FRAGMENTS = [
   "whole-group `TERM` then `KILL`",
   "does not block worker launch"
 ].freeze
+REGISTRATION_OBSERVATION_MARKER = "accepted host-observed `launch-confirmation v2`"
+REGISTRATION_ACTIVE_MARKER = "before treating"
+REGISTRATION_NO_SHELL_MARKER = "without shell evaluation"
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -163,6 +166,16 @@ def extract_section(text, heading)
   end
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
+end
+
+def extract_between(text, start_marker, end_marker)
+  start_offset = text.index(start_marker)
+  raise "missing start marker #{start_marker.inspect}" unless start_offset
+
+  end_offset = text.index(end_marker, start_offset)
+  raise "missing end marker #{end_marker.inspect}" unless end_offset
+
+  text[start_offset...end_offset]
 end
 
 def parse_operational_signal_rows(section)
@@ -312,6 +325,44 @@ def assert_registration_runtime_contract(text, location)
   (REGISTRATION_RECONCILIATION_FRAGMENTS + REGISTRATION_BOUNDED_FRAGMENTS).each do |fragment|
     assert_includes normalized_text, fragment, "#{location} must include #{fragment.inspect}"
   end
+end
+
+def assert_registration_section_runtime_contract(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  assert_includes normalized_section, REGISTRATION_NO_SHELL_MARKER,
+                  "#{location} must prohibit shell evaluation in the registration invocation"
+  refute_includes normalized_section, "with shell evaluation",
+                  "#{location} must reject positive shell-evaluation wording"
+
+  observation_offset = normalized_section.index(REGISTRATION_OBSERVATION_MARKER)
+  active_offset = normalized_section.index(REGISTRATION_ACTIVE_MARKER)
+  refute_nil observation_offset, "#{location} must require host-observed reconciliation"
+  refute_nil active_offset, "#{location} must bind reconciliation before active treatment"
+  assert_operator observation_offset, :<, active_offset,
+                  "#{location} must reconcile the host observation before treating the lane active"
+end
+
+def authoritative_registration_sections
+  {
+    COORDINATION_DOC_PATH =>
+      extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Batch Provenance Manifest"),
+    WORKFLOW_PATH =>
+      extract_between(read_repo_file(WORKFLOW_PATH),
+                      "- When the backend supports batch registration",
+                      "- Treat the backend as available"),
+    File.join(ROOT, "skills/plan-pr-batch/SKILL.md") =>
+      extract_between(read_repo_file(File.join(ROOT, "skills/plan-pr-batch/SKILL.md")),
+                      "   - Build the batch-registration provenance",
+                      "   - For PRs with review feedback"),
+    PR_BATCH_SKILL_PATH =>
+      extract_between(read_repo_file(PR_BATCH_SKILL_PATH),
+                      "12. Batch-registration provenance:",
+                      "<!-- host-branch: codex-only start -->"),
+    TRIAGE_SKILL_PATH =>
+      extract_between(read_repo_file(TRIAGE_SKILL_PATH),
+                      "After every accepted host-observed `launch-confirmation v2`",
+                      "For Codex prompts")
+  }
 end
 
 def assert_remediation_authority_section_contract(section, location)
@@ -481,6 +532,36 @@ class CoordinationTelemetryContractTest < Minitest::Test
   def test_registration_runtime_contract_is_synchronized
     [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
       assert_registration_runtime_contract(read_repo_file(path), path)
+    end
+  end
+
+  def test_authoritative_registration_sections_bind_runtime_contract_locally
+    authoritative_registration_sections.each do |path, section|
+      assert_registration_section_runtime_contract(section, path)
+    end
+  end
+
+  def test_registration_section_runtime_contract_rejects_qa_mutants
+    authoritative_registration_sections.each do |path, section|
+      normalized = section.gsub(/\s+/, " ")
+      mutants = {
+        "deleted no-shell rule" => normalized.sub(REGISTRATION_NO_SHELL_MARKER, ""),
+        "positive shell evaluation" =>
+          normalized.sub(REGISTRATION_NO_SHELL_MARKER, "with shell evaluation"),
+        "deleted host observation" => normalized.sub(REGISTRATION_OBSERVATION_MARKER, ""),
+        "inverted reconciliation order" =>
+          normalized
+          .sub(REGISTRATION_OBSERVATION_MARKER, "__REGISTRATION_OBSERVATION__")
+          .sub(REGISTRATION_ACTIVE_MARKER, REGISTRATION_OBSERVATION_MARKER)
+          .sub("__REGISTRATION_OBSERVATION__", REGISTRATION_ACTIVE_MARKER)
+      }
+
+      mutants.each do |name, mutant|
+        refute_equal normalized, mutant, "#{path} must expose the #{name} mutant"
+        assert_raises(Minitest::Assertion, "#{path} must reject the #{name} mutant") do
+          assert_registration_section_runtime_contract(mutant, "#{path} #{name}")
+        end
+      end
     end
   end
 
