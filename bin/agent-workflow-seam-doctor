@@ -1819,11 +1819,42 @@ module AgentWorkflowSeamDoctor
     return ["invalid merge_submission policy: guarded_direct.executable is not executable"] unless
       File.executable?(live_path)
 
-    []
+    guarded_direct_git_issues(root, relative_path)
   rescue Errno::ENOTDIR
     ["invalid merge_submission policy: guarded_direct.executable parent is not a directory"]
   rescue Errno::ENOENT, Errno::EACCES
     ["invalid merge_submission policy: guarded_direct.executable is missing or inaccessible"]
+  end
+
+  def guarded_direct_git_issues(root, relative_path)
+    return [] unless File.exist?(File.join(root, ".git"))
+
+    # The doctor also validates pre-commit adoption worktrees, so the index is
+    # the tracking boundary. pr-merge-submit separately binds runtime bytes to
+    # the trusted-base commit before any guarded direct submission.
+    stdout, _stderr, status = Open3.capture3(
+      "git", "-C", root, "ls-files", "--stage", "--", relative_path
+    )
+    unless status.success?
+      return ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
+    end
+
+    lines = stdout.lines(chomp: true)
+    if lines.empty?
+      return ["invalid merge_submission policy: guarded_direct.executable is not tracked by git"]
+    end
+
+    match = lines.one? && lines.first.match(
+      /\A(?<mode>\d{6}) [0-9a-f]+ 0\t(?<path>[^\r\n]+)\z/
+    )
+    unless match && match[:path] == relative_path
+      return ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
+    end
+    return [] if match[:mode] == "100755"
+
+    ["invalid merge_submission policy: guarded_direct.executable git mode must be 100755"]
+  rescue Errno::ENOENT, Errno::EACCES
+    ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
   end
 
   def load_policy_config(path)

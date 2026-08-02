@@ -87,6 +87,18 @@ module AgentWorkflowSeamDoctorTestHelpers
     Open3.capture2e("ruby", SCRIPT, "--root", root, *)
   end
 
+  def run_git!(root, *arguments)
+    environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_PARAMETERS" => nil
+    }
+    out, status = Open3.capture2e(environment, "git", *arguments, chdir: root)
+    raise "git fixture failed: #{out}" unless status.success?
+
+    out
+  end
+
   def executable_available?(executable)
     ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
       path = File.join(directory, executable)
@@ -552,6 +564,36 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       symlink_out, symlink_status = run_doctor(root)
       refute symlink_status.success?
       assert_includes symlink_out, "guarded_direct.executable must be a regular file"
+    end
+  end
+
+  def test_guarded_direct_merge_submission_requires_tracked_executable_git_mode
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_skill(root, "No commands here.\n")
+      guard = write_script(root, "merge-pr-after-checks", "exec true\n")
+      relative_guard = ".agents/bin/merge-pr-after-checks"
+      run_git!(root, "init", "-q")
+
+      untracked_out, untracked_status = run_doctor(root)
+      refute untracked_status.success?
+      assert_includes untracked_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable is not tracked by git"
+
+      run_git!(root, "add", "--", relative_guard)
+      run_git!(root, "update-index", "--chmod=-x", "--", relative_guard)
+      File.chmod(0o755, guard)
+      mode_out, mode_status = run_doctor(root)
+      refute mode_status.success?
+      assert_includes mode_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable git mode must be 100755"
+
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_guard)
+      valid_out, valid_status = run_doctor(root)
+      assert valid_status.success?, valid_out
     end
   end
 

@@ -418,7 +418,9 @@ module PrMergeSubmit
       end
 
       guarded_direct = seam.fetch("guarded_direct")
-      guard_identity, trusted_guard_bytes = validate_guard_identity!(base_sha, guarded_direct.fetch("executable"))
+      guard_identity, trusted_guard_bytes = load_trusted_guard_identity!(
+        base_sha, guarded_direct.fetch("executable")
+      )
       {
         "mode" => seam["mode"],
         "source" => "trusted_base",
@@ -530,7 +532,7 @@ module PrMergeSubmit
       tree_status.success? && stdout.empty?
     end
 
-    def validate_guard_identity!(base_sha, relative_path)
+    def load_trusted_guard_identity!(base_sha, relative_path)
       trusted_bytes = trusted_blob!(base_sha, relative_path, "trusted-base guarded-direct executable")
       stdout, stderr, status = git_capture(
         "-C", @repo_root, "ls-tree", base_sha, "--", relative_path, chdir: @repo_root
@@ -543,6 +545,16 @@ module PrMergeSubmit
         raise Error, "trusted-base guarded-direct executable must be one executable regular file"
       end
 
+      identity = {
+        "path" => relative_path,
+        "trusted_base_sha" => base_sha,
+        "blob_oid" => match[:oid],
+        "sha256" => Digest::SHA256.hexdigest(trusted_bytes)
+      }
+      [identity, trusted_bytes]
+    end
+
+    def validate_live_guard!(relative_path, trusted_bytes)
       live_path = File.join(@repo_root, relative_path)
       %w[.agents .agents/bin].each do |component|
         stat = File.lstat(File.join(@repo_root, component))
@@ -556,14 +568,6 @@ module PrMergeSubmit
       unless File.binread(live_path) == trusted_bytes
         raise Error, "guarded-direct executable does not match the trusted-base blob: #{relative_path}"
       end
-
-      identity = {
-        "path" => relative_path,
-        "trusted_base_sha" => base_sha,
-        "blob_oid" => match[:oid],
-        "sha256" => Digest::SHA256.hexdigest(trusted_bytes)
-      }
-      [identity, trusted_bytes]
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "guarded-direct executable is unavailable: #{relative_path}: #{e.message}"
     end
@@ -715,6 +719,7 @@ module PrMergeSubmit
         raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before guarded-direct submission"
       end
 
+      validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
       guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
       diagnostics = failure_output(guard_stdout, guard_stderr)
       reconciled = fetch_pr_for_reconciliation!(options, "guarded-direct submission outcome")

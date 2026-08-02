@@ -217,12 +217,11 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_malformed_or_untrusted_guard_configuration_stops_before_github
+  def test_malformed_or_untrusted_base_guard_configuration_stops_before_github
     cases = {
       "unknown mode" => [{ "mode" => "direct" }, :executable],
       "missing guard" => [guarded_direct_policy, :missing],
-      "non-executable guard" => [guarded_direct_policy, :non_executable],
-      "changed guard" => [guarded_direct_policy, :modified_after_commit]
+      "non-executable guard" => [guarded_direct_policy, :non_executable]
     }
     cases.each do |label, (seam, guard_fixture)|
       result, log, guard_log = run_cli(
@@ -234,6 +233,21 @@ class PrMergeSubmitTest < Minitest::Test
       assert_empty log, label
       assert_empty guard_log, label
     end
+  end
+
+  def test_live_guard_drift_stops_open_direct_submission_before_mutation
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "guarded-direct executable does not match the trusted-base blob"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
   end
 
   def test_guard_blob_oid_accepts_only_exact_sha1_or_sha256_lengths
@@ -424,6 +438,23 @@ class PrMergeSubmitTest < Minitest::Test
     refute payload.key?("method")
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_existing_exact_merge_is_idempotent_when_the_live_guard_drifted
+    result, log, guard_log = run_cli(
+      mode: "already_merged",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "already_merged", payload.fetch("submission")
+    assert_equal true, payload.fetch("already_complete")
+    assert_equal(1, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
   end
 
   def test_existing_exact_merge_accepts_an_advanced_base_oid_before_old_base_guard
@@ -1378,8 +1409,17 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def fake_guard
+    attacker_guard = <<~RUBY
+      #!/usr/bin/env ruby
+      File.write(ENV.fetch("PR_TEST_ATTACKER_MARKER"), "attacker bytes executed\n")
+      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+    RUBY
     <<~RUBY
       #!/usr/bin/env ruby
+      if ENV.fetch("PR_TEST_MODE") == "guard_path_swap"
+        File.write(ENV.fetch("PR_TEST_GUARD_LIVE_PATH"), #{attacker_guard.inspect})
+        File.chmod(0o755, ENV.fetch("PR_TEST_GUARD_LIVE_PATH"))
+      end
       File.open(ENV.fetch("PR_TEST_GUARD_LOG"), "a") { |file| file.puts(ARGV.join("\n")) }
       File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
       sleep 5 if %w[guard_timeout guard_interrupt].include?(ENV.fetch("PR_TEST_MODE"))
@@ -1409,11 +1449,6 @@ class PrMergeSubmitTest < Minitest::Test
                         }
                       }
                     end
-    attacker_guard = <<~RUBY
-      #!/usr/bin/env ruby
-      File.write(ENV.fetch("PR_TEST_ATTACKER_MARKER"), "attacker bytes executed\n")
-      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
-    RUBY
     <<~RUBY
       #!/usr/bin/env ruby
       require "json"
@@ -1441,10 +1476,6 @@ class PrMergeSubmitTest < Minitest::Test
         sleep 5 if #{mode.inspect} == "metadata_timeout"
         query_count_path = ENV.fetch("GH_LOG") + ".queries"
         query_count = File.exist?(query_count_path) ? File.read(query_count_path).to_i : 0
-        if #{mode.inspect} == "guard_path_swap" && query_count.zero?
-          File.write(ENV.fetch("PR_TEST_GUARD_LIVE_PATH"), #{attacker_guard.inspect})
-          File.chmod(0o755, ENV.fetch("PR_TEST_GUARD_LIVE_PATH"))
-        end
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
         guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
