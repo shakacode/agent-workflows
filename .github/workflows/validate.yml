@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: "3.4"
 
@@ -25,7 +25,7 @@ jobs:
         run: echo "dir=$(gem env gemdir)" >> "$GITHUB_OUTPUT"
 
       - name: Cache RuboCop gems
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.gem-cache.outputs.dir }}
           key: ${{ runner.os }}-ruby-3.4-rubocop-${{ hashFiles('.rubocop-version') }}
