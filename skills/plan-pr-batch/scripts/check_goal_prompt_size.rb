@@ -728,6 +728,24 @@ require_occurrence_count(
   1,
   "triage generated-prompt stage-dependency scope"
 )
+require_occurrence_count(
+  triage_prompt_contract_text,
+  CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE,
+  1,
+  "triage generated-prompt complete exactly-once current-wave coverage"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE,
+  1,
+  "triage generated-prompt per-worker single ownership"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE,
+  1,
+  "triage generated-prompt synchronized current-wave assignment contract"
+)
 require_phrases(
   GOAL_MODE_COMPACT_CONTRACT,
   GOAL_MODE_REQUIRED_SEMANTICS,
