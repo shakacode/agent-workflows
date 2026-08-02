@@ -44,6 +44,16 @@ AUDIT_SECTION_REQUIRED_CONCEPTS = {
   "unavailable outcome" => "`#{AUDIT_UNAVAILABLE}`",
   "required continuation" => AUDIT_REQUIRED_CONTINUATION
 }.freeze
+AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS = {
+  "hard deadline and process-group termination" =>
+    "Run that exact child contract through the resolved pr-batch `bin/agent-coord-bounded` process-control seam " \
+    "with a positive hard deadline; the helper must preserve the exact child executable and separate argument " \
+    "vector, launch it in its own process group, and terminate the whole process group when the deadline expires.",
+  "timeout failure evidence and closeout continuation" =>
+    "A timeout or forced termination is a command failure: record best-effort `UNKNOWN` telemetry-audit evidence " \
+    "and continue closeout through steps 13-14 with that blocker; the audit subprocess must never wedge merge " \
+    "closeout."
+}.freeze
 REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS = {
   "outcome-bound authority" =>
     "Coordinated review-remediation authority is outcome-bound across convergence cycles, not pass-count-bound.",
@@ -203,6 +213,18 @@ def assert_batch_audit_argv_contract(section, location)
   end
   refute_includes normalized_section, "agent-coord batch-audit",
                   "#{location} must not present the audit as shell command text"
+end
+
+def assert_batch_audit_bounded_execution_contract(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS.each do |concept, phrase|
+    assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
+  end
+
+  hard_deadline_offset = normalized_section.index(AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS.values.fetch(0))
+  continuation_offset = normalized_section.index(AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS.values.fetch(1))
+  assert_operator hard_deadline_offset, :<, continuation_offset,
+                  "#{location} must bind timeout handling after the bounded child execution requirement"
 end
 
 def assert_typed_event_transport_section_contract(section, location)
@@ -549,6 +571,44 @@ class CoordinationTelemetryContractTest < Minitest::Test
         assert_batch_audit_argv_contract(incomplete_fixture, "negative argv fixture")
       end
       assert_includes error.message, "must include the #{concept}"
+    end
+  end
+
+  def test_batch_audit_execution_is_bounded_and_closeout_continues
+    {
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
+      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+    }.each do |path, headings|
+      text = read_repo_file(path)
+      headings.each do |heading|
+        section = extract_section(text, heading)
+        assert_batch_audit_bounded_execution_contract(section, "#{path} #{heading}")
+      end
+    end
+  end
+
+  def test_batch_audit_bounded_execution_rejects_each_authoritative_section_mutation
+    {
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
+      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+    }.each do |path, headings|
+      text = read_repo_file(path)
+      headings.each do |heading|
+        section = extract_section(text, heading).gsub(/\s+/, " ")
+        AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS.each do |concept, phrase|
+          mutated_section = section.sub(phrase, "")
+          refute_equal section, mutated_section, "#{path} #{heading} must expose #{concept} to mutation"
+          (AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS.values - [phrase]).each do |preserved_phrase|
+            assert_includes mutated_section, preserved_phrase,
+                            "#{path} #{heading} mutant must remove only the #{concept}"
+          end
+
+          error = assert_raises(Minitest::Assertion) do
+            assert_batch_audit_bounded_execution_contract(mutated_section, "#{path} #{heading} mutation")
+          end
+          assert_includes error.message, "must include the #{concept}"
+        end
+      end
     end
   end
 
