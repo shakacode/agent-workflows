@@ -11,12 +11,23 @@ require "openssl"
 require "rbconfig"
 require "tempfile"
 require "tmpdir"
+require "time"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
+  class << self
+    def workflow_control_signing_key
+      @workflow_control_signing_key ||= OpenSSL::PKey::RSA.generate(2048)
+    end
+
+    def weak_workflow_control_signing_key
+      @weak_workflow_control_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
+    end
+  end
+
   RISK_SURFACES = %w[
     ci_workflow
     developer_tooling
@@ -91,7 +102,11 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def workflow_control_signing_key
-    @workflow_control_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
+    self.class.workflow_control_signing_key
+  end
+
+  def weak_workflow_control_signing_key
+    self.class.weak_workflow_control_signing_key
   end
 
   def canonicalize(value)
@@ -126,7 +141,7 @@ class BatchPlanPreflightTest < Minitest::Test
                                         config_mode: 0o600, agents_mode: 0o700,
                                         root_mode: 0o700, config_symlink: false,
                                         agents_symlink: false)
-    root = Dir.mktmpdir("workflow-control-trust-install")
+    root = secure_mktmpdir("workflow-control-trust-install")
     File.chmod(root_mode, root)
     (@workflow_control_install_roots ||= []) << root
     helper = File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight")
@@ -166,7 +181,7 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def installed_unsupported_workflow_control_helper
-    root = Dir.mktmpdir("workflow-control-unsupported-install")
+    root = secure_mktmpdir("workflow-control-unsupported-install")
     File.chmod(0o700, root)
     (@workflow_control_install_roots ||= []) << root
     helper = File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight")
@@ -217,8 +232,11 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def lane_lifecycle_waiver(path:, record:, route:, lane_id: "lane-a", wave: "wave-a",
-                            stage_dependency_plan_id: "trusted-plan-1")
+                            stage_dependency_plan_id: "trusted-plan-1", completed_at: nil, recorded_at: nil)
     batch_plan_id = record.fetch("batch_id")
+    granted_at = Time.iso8601(record.fetch("granted_at"))
+    completed_at ||= (granted_at + 1).iso8601
+    recorded_at ||= (granted_at + 2).iso8601
     {
       "type" => "workflow-control-lane-lifecycle-waiver",
       "version" => 1,
@@ -231,8 +249,8 @@ class BatchPlanPreflightTest < Minitest::Test
       "lane_id" => lane_id,
       "wave" => wave,
       "state" => "completed",
-      "completed_at" => "2026-08-02T07:30:00Z",
-      "recorded_at" => "2026-08-02T07:30:01Z",
+      "completed_at" => completed_at,
+      "recorded_at" => recorded_at,
       "receipt_ref" => "workflow-control-waiver-state://#{batch_plan_id}/stage-dependency-plans/" \
                        "#{stage_dependency_plan_id}/waves/#{wave}/lanes/#{lane_id}/completed",
       "dispatcher" => record.fetch("authorized_dispatcher"),
@@ -246,6 +264,14 @@ class BatchPlanPreflightTest < Minitest::Test
     Array(@workflow_control_install_roots).each do |root|
       FileUtils.remove_entry(root) if File.exist?(root)
     end
+    FileUtils.remove_entry(@secure_fixture_root) if @secure_fixture_root && File.exist?(@secure_fixture_root)
+  end
+
+  def secure_mktmpdir(prefix)
+    @secure_fixture_root ||= Dir.mktmpdir("batch-plan-preflight-fixtures", __dir__).tap do |root|
+      File.chmod(0o700, root)
+    end
+    Dir.mktmpdir(prefix, @secure_fixture_root).tap { |root| File.chmod(0o700, root) }
   end
 
   def gate_lane(id, patch_edit: true)
@@ -658,6 +684,26 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal first, replay
   end
 
+  def test_positive_lifecycle_waiver_is_portable_when_tmpdir_is_world_writable
+    original_tmpdir = ENV["TMPDIR"]
+    ENV["TMPDIR"] = "/tmp"
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+
+    result, stderr, status = evaluate(
+      input_for(backend: "codex", lifecycle_waivers: [waiver]), helper: helper
+    )
+
+    assert status.success?, "#{stderr}\n#{result.inspect}"
+    assert_equal ["lane-a"], result.dig("launch", "completed_lane_ids")
+  ensure
+    ENV["TMPDIR"] = original_tmpdir
+  end
+
   def test_exact_human_lifecycle_waivers_validate_a_second_lane_independently
     helper, root = installed_unsupported_workflow_control_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
@@ -736,6 +782,31 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "lane-lifecycle-waiver-invalid"
+  end
+
+  def test_lifecycle_waiver_rejects_completion_before_the_bootstrap_grant
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    granted_at = Time.iso8601(waiver_record.fetch("granted_at"))
+    waiver = lane_lifecycle_waiver(
+      path: waiver_path,
+      record: waiver_record,
+      route:,
+      completed_at: (granted_at - 1).iso8601,
+      recorded_at: (granted_at + 1).iso8601
+    )
+
+    result, _stderr, status = evaluate(
+      input_for(backend: "codex", lifecycle_waivers: [waiver]), helper: helper
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-waiver-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
   end
 
   def test_signed_and_waived_lifecycle_records_for_the_same_lane_are_rejected_as_duplicates
@@ -908,6 +979,21 @@ class BatchPlanPreflightTest < Minitest::Test
     result, _stderr, status = evaluate(
       input_for(lifecycle_receipts: [receipt]),
       helper: workflow_control_helper
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_lifecycle_receipt_rejects_an_rsa_1024_trust_anchor
+    weak_key = weak_workflow_control_signing_key
+    receipt = lane_lifecycle_receipt(key_id: "weak-workflow-control-key", signing_key: weak_key)
+    helper, = installed_workflow_control_helper(key_id: "weak-workflow-control-key", key: weak_key)
+
+    result, _stderr, status = evaluate(
+      input_for(lifecycle_receipts: [receipt]), helper: helper
     )
 
     refute status.success?

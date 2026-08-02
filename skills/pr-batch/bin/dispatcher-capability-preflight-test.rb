@@ -14,6 +14,16 @@ require_relative "../../../bin/agent_doctor/signed_launch_waiver"
 HELPER = File.expand_path("dispatcher-capability-preflight", __dir__)
 
 class DispatcherCapabilityPreflightTest < Minitest::Test
+  class << self
+    def dispatcher_signing_key
+      @dispatcher_signing_key ||= OpenSSL::PKey::RSA.generate(2048)
+    end
+
+    def weak_dispatcher_signing_key
+      @weak_dispatcher_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
+    end
+  end
+
   def dispatch(input, env_or_helper = {}, helper = HELPER)
     env = env_or_helper.is_a?(Hash) ? env_or_helper : {}
     helper = env_or_helper unless env_or_helper.is_a?(Hash)
@@ -55,7 +65,11 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
   end
 
   def dispatcher_signing_key
-    @dispatcher_signing_key ||= OpenSSL::PKey::RSA.generate(1024)
+    self.class.dispatcher_signing_key
+  end
+
+  def weak_dispatcher_signing_key
+    self.class.weak_dispatcher_signing_key
   end
 
   def caller_dispatcher_trust_env(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
@@ -68,7 +82,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
   def installed_dispatcher_helper(key_id: "test-dispatcher-key", key: dispatcher_signing_key,
                                   config_mode: 0o600, agents_mode: 0o700, root_mode: 0o700, config_symlink: false,
                                   agents_symlink: false)
-    root = Dir.mktmpdir("dispatcher-trust-install")
+    root = secure_mktmpdir("dispatcher-trust-install")
     File.chmod(root_mode, root)
     (@dispatcher_install_roots ||= []) << root
     helper = File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight")
@@ -109,7 +123,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
   end
 
   def installed_unsupported_dispatcher_helper
-    root = Dir.mktmpdir("dispatcher-unsupported-install")
+    root = secure_mktmpdir("dispatcher-unsupported-install")
     File.chmod(0o700, root)
     (@dispatcher_install_roots ||= []) << root
     helper = File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight")
@@ -207,6 +221,14 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
   def teardown
     Array(@dispatcher_install_roots).each { |root| FileUtils.remove_entry(root) if File.exist?(root) }
+    FileUtils.remove_entry(@secure_fixture_root) if @secure_fixture_root && File.exist?(@secure_fixture_root)
+  end
+
+  def secure_mktmpdir(prefix)
+    @secure_fixture_root ||= Dir.mktmpdir("dispatcher-preflight-fixtures", __dir__).tap do |root|
+      File.chmod(0o700, root)
+    end
+    Dir.mktmpdir(prefix, @secure_fixture_root).tap { |root| File.chmod(0o700, root) }
   end
 
   def canonicalize(value)
@@ -1963,9 +1985,14 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     allowed = %w[
       https://example.test/evidence codex-worker://live-request dispatcher-receipt://launch
       plan-state://batch/lane workflow-control-state://batch/lane
-      workflow-control-waiver-state://batch/lane
+      workflow-control-waiver-state://batch/lane codex-worker:live-request
+      dispatcher-receipt:launch plan-state:batch/lane workflow-control-state:batch/lane
+      workflow-control-waiver-state:batch/lane
     ]
-    rejected = %w[http://example.test/evidence file:///tmp/evidence]
+    rejected = %w[
+      http://example.test/evidence file:///tmp/evidence https: codex-worker: dispatcher-receipt:
+      plan-state: workflow-control-state: workflow-control-waiver-state:
+    ]
 
     allowed.each do |evidence_ref|
       wrapper = launch_waiver(
@@ -2705,6 +2732,35 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
     assert_equal "replay-already-active", output.fetch("status")
     assert_equal "confirmed-active", output.dig("active_assignments", 0, "lifecycle")
+    refute output.key?("dispatch")
+  end
+
+  def test_launch_confirmation_v2_rejects_an_rsa_1024_trust_anchor
+    input = {
+      "lane_id" => "incident-weak-runtime-observation-key",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "weak-runtime-observation-key-instance"
+      }]
+    }
+    pending = dispatch(input)
+    weak_key = weak_dispatcher_signing_key
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => launch_confirmation(pending.fetch("dispatch"), {}, weak_key)
+      ),
+      fixed_dispatcher_trust(key: weak_key)
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    refute(Array(output["active_assignments"]).any? do |assignment|
+      assignment["lifecycle"] == "confirmed-active"
+    end)
     refute output.key?("dispatch")
   end
 

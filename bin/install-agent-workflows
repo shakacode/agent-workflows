@@ -280,7 +280,6 @@ ensure_real_directory() {
 }
 
 ensure_signed_launch_directories() {
-  local owner_reference="$repo_root/bin/agent_doctor/signed_launch_readiness.rb"
   local directory
 
   if [[ -L "$target" || -e "$target" && ! -d "$target" ]]; then
@@ -291,13 +290,12 @@ ensure_signed_launch_directories() {
     install -d -m 0700 "$target"
   fi
   if ! ruby -e '
-    directory, owner_reference = ARGV
+    directory = ARGV.fetch(0)
     directory_stat = File.lstat(directory)
-    owner_uid = File.stat(owner_reference).uid
     exit 1 unless directory_stat.directory? && !directory_stat.symlink?
-    exit 1 unless directory_stat.uid == owner_uid
+    exit 1 unless directory_stat.uid == Process.euid
     exit 1 unless (directory_stat.mode & 0o022).zero?
-  ' "$target" "$owner_reference"; then
+  ' "$target"; then
     echo "Refusing unsafe signed launch host root ownership or permissions: $target" >&2
     exit 1
   fi
@@ -312,13 +310,12 @@ ensure_signed_launch_directories() {
     install -d -m 0700 "$directory"
   fi
   if ! ruby -e '
-    directory, owner_reference = ARGV
+    directory = ARGV.fetch(0)
     directory_stat = File.lstat(directory)
-    owner_uid = File.stat(owner_reference).uid
     exit 1 unless directory_stat.directory? && !directory_stat.symlink?
-    exit 1 unless directory_stat.uid == owner_uid
+    exit 1 unless directory_stat.uid == Process.euid
     exit 1 unless (directory_stat.mode & 0o022).zero?
-  ' "$directory" "$owner_reference"; then
+  ' "$directory"; then
     echo "Refusing unsafe signed launch directory ownership or permissions: $directory" >&2
     exit 1
   fi

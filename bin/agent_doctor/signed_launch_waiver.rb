@@ -66,7 +66,7 @@ module AgentDoctor
         %w[batch_plan_id stage_dependency_plan_id wave lane_id state].all? do |field|
           SignedLaunchWaiverRecord.receipt_component?(wrapper[field])
         end
-      return [nil, "lifecycle waiver chronology is invalid"] unless lifecycle_chronology_valid?(wrapper)
+      return [nil, "lifecycle waiver chronology is invalid"] unless lifecycle_chronology_valid?(wrapper, record)
       return [nil, "lifecycle waiver durable references are invalid"] unless
         wrapper["receipt_ref"] == lifecycle_receipt_ref(wrapper) &&
         SignedLaunchWaiverRecord.durable_ref?(wrapper["evidence_ref"])
@@ -100,9 +100,10 @@ module AgentDoctor
     end
     private_class_method :lifecycle_wrapper_shape?
 
-    def lifecycle_chronology_valid?(wrapper)
+    def lifecycle_chronology_valid?(wrapper, record)
       SignedLaunchWaiverRecord.timestamp?(wrapper["completed_at"]) &&
         SignedLaunchWaiverRecord.timestamp?(wrapper["recorded_at"]) &&
+        Time.iso8601(record.fetch("granted_at")) <= Time.iso8601(wrapper["completed_at"]) &&
         Time.iso8601(wrapper["completed_at"]) <= Time.iso8601(wrapper["recorded_at"]) &&
         Time.iso8601(wrapper["recorded_at"]) <= Time.now.utc + 300
     end

@@ -395,7 +395,7 @@ module BatchPlanPreflight
     public_key = OpenSSL::PKey.read(
       trust_anchor.fetch(WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD)
     )
-    return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
+    return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private? && public_key.n.num_bits >= 2048
 
     signature = Base64.strict_decode64(receipt["signature"])
     payload = JSON.generate(canonicalize(receipt.reject { |key, _value| key == "signature" }))

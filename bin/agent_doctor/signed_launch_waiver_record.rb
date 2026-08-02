@@ -13,9 +13,7 @@ module AgentDoctor
       serial_execution synthetic_signatures_forbidden
     ].freeze
     REQUIRED_GATES = [
-      "security preflight",
-      "stage dependency gate",
-      "batch plan gate",
+      "security preflight", "stage dependency gate", "batch plan gate",
       "TDD and focused tests",
       "bin/validate",
       "independent final-head QA and review",
@@ -23,8 +21,7 @@ module AgentDoctor
       "unresolved review-thread gate",
       "autonomous merge eligibility",
       "merge assurance",
-      "exact-head merge submission",
-      "completed-batch audit"
+      "exact-head merge submission", "completed-batch audit"
     ].freeze
     DURABLE_REF_SCHEMES = %w[
       codex-worker dispatcher-receipt https plan-state workflow-control-state workflow-control-waiver-state
@@ -110,7 +107,10 @@ module AgentDoctor
       return false unless nonempty?(value)
 
       uri = URI.parse(value)
-      uri.absolute? && DURABLE_REF_SCHEMES.include?(uri.scheme)
+      return false unless uri.absolute? && DURABLE_REF_SCHEMES.include?(uri.scheme)
+
+      parts = uri.scheme == "https" ? [uri.host] : [uri.opaque, uri.host, uri.path]
+      parts.any? { |part| nonempty?(part) && part != "/" }
     rescue URI::InvalidURIError
       false
     end

@@ -152,7 +152,7 @@ def launch_observation_signature_verified?(confirmation)
   return false unless trust_anchor && confirmation["key_id"] == trust_anchor[TRUSTED_KEY_ID_FIELD]
 
   public_key = OpenSSL::PKey.read(trust_anchor.fetch(TRUSTED_PUBLIC_KEY_FIELD))
-  return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
+  return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private? && public_key.n.num_bits >= 2048
 
   signature = Base64.strict_decode64(confirmation["signature"])
   payload = JSON.generate(canonicalize(launch_observation_payload(confirmation)))

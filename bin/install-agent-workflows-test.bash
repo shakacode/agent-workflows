@@ -55,6 +55,32 @@ assert_not_contains() {
   [[ "$haystack" != *"$needle"* ]] || fail "expected output not to contain '$needle', got: $haystack"
 }
 
+write_owner_mismatch_stat_shim() {
+  ruby -e '
+    File.write(ARGV.fetch(0), <<~RUBY)
+      class << File
+        alias_method :agent_workflows_original_stat, :stat
+        alias_method :agent_workflows_original_lstat, :lstat
+
+        def stat(path, *args)
+          result = agent_workflows_original_stat(path, *args)
+          return result unless File.expand_path(path.to_s) == ENV["AGENT_WORKFLOWS_TEST_SOURCE_OWNER_PATH"]
+
+          Struct.new(:uid).new(Process.euid.zero? ? 1 : 0)
+        end
+
+        def lstat(path, *args)
+          result = agent_workflows_original_lstat(path, *args)
+          return result unless File.expand_path(path.to_s) == ENV["AGENT_WORKFLOWS_TEST_TARGET_OWNER_PATH"]
+
+          result.define_singleton_method(:uid) { Process.euid.zero? ? 1 : 0 }
+          result
+        end
+      end
+    RUBY
+  ' "$1"
+}
+
 write_native_scw_state() {
   local host="$1"
   local target="$2"
@@ -278,6 +304,56 @@ test_install_refuses_unsafe_host_root_without_replacing_it() {
   assert_contains "$output" "Refusing unsafe signed launch host root ownership or permissions: $target"
   ruby -e 'exit 1 unless (File.lstat(ARGV.fetch(0)).mode & 0o777) == 0o777' "$target" || \
     fail "installer silently changed user-owned host-root permissions"
+}
+
+test_install_uses_effective_uid_instead_of_source_owner_for_safe_target() {
+  local tmp source target stat_shim output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  stat_shim="$tmp/source-owner-mismatch.rb"
+  mkdir -p "$source" "$target/.agents"
+  chmod 0700 "$target" "$target/.agents"
+  new_source_repo "$source"
+  write_owner_mismatch_stat_shim "$stat_shim"
+
+  set +e
+  output="$(
+    AGENT_WORKFLOWS_TEST_SOURCE_OWNER_PATH="$source/bin/agent_doctor/signed_launch_readiness.rb" \
+      RUBYOPT="-r$stat_shim" \
+      "$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1
+  )"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "safe current-user target depended on source checkout owner: $output"
+  ruby -e 'exit 1 unless ARGV.all? { |path| File.lstat(path).uid == Process.euid }' "$target" "$target/.agents" || \
+    fail "installer did not preserve effective-user ownership on signed launch directories"
+  assert_file "$target/.agent-workflows-install.json"
+}
+
+test_install_refuses_signed_launch_target_owned_by_another_uid() {
+  local tmp target stat_shim unsafe_path output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  stat_shim="$tmp/target-owner-mismatch.rb"
+  mkdir -p "$target/.agents"
+  chmod 0700 "$target" "$target/.agents"
+  write_owner_mismatch_stat_shim "$stat_shim"
+
+  for unsafe_path in "$target" "$target/.agents"; do
+    set +e
+    output="$(
+      AGENT_WORKFLOWS_TEST_TARGET_OWNER_PATH="$unsafe_path" RUBYOPT="-r$stat_shim" \
+        "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1
+    )"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "installer accepted a signed launch target owned by another uid: $unsafe_path"
+    assert_contains "$output" "ownership or permissions: $unsafe_path"
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "wrong-owner install committed metadata"
+  done
 }
 
 test_post_install_readiness_probe_failure_is_nonfatal_and_reports_unknown() {
@@ -1861,6 +1937,8 @@ main() {
     test_codex_host_install_writes_helpers_and_metadata
     test_install_refuses_unsafe_host_root_without_replacing_it
     test_install_refuses_unsafe_host_readiness_directory_without_replacing_it
+    test_install_uses_effective_uid_instead_of_source_owner_for_safe_target
+    test_install_refuses_signed_launch_target_owned_by_another_uid
     test_post_install_readiness_probe_failure_is_nonfatal_and_reports_unknown
     test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
     test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
