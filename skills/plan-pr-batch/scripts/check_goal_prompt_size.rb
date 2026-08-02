@@ -18,7 +18,8 @@ LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_route=<model/effort@binding|UNKNOWN>;" \
-                                  "lanes=<lane-id:host+model/effort@binding|UNKNOWN>;no guesses"
+                                  "lanes=<lane-id:host+model/effort@binding>,...;" \
+                                  "UNKNOWN=field;no guesses"
 BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
 FINAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
@@ -44,7 +45,7 @@ STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_orde
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                               "live=<replay/ref>;" \
-                              "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
+                              "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN"
 TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                                      "live=<replay/ref>; " \
@@ -119,10 +120,10 @@ TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
   "block=>stop; no raw GitHub/override"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-    Original:trusted ad-hoc prompt|n/a.
-    Goal:one-line outcome.
-    Notes:scope/branch/dependency.
-    Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale.
+    Original:trusted ad-hoc prompt|n/a
+    Goal:one-line outcome
+    Notes:scope/branch/dependency
+    Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 TEXT
 TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
@@ -541,10 +542,10 @@ required_all_prompt_phrases = [
   STAGE_DEPENDENCY_PROMPT_LINE,
   STAGE_DEPENDENCY_SCOPE_LINE,
   ASK_WALKTHROUGH_PROMPT_LINE,
-  "merge only when `merge_authority` is `auto_merge_when_gates_pass`",
+  "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
-  "document confidence data in the PR description",
+  "document confidence data in PR description",
   "Verify live GitHub before edits",
   COORDINATION_DEPENDENCY_PROMPT_LINE,
   "register before launch when supported",

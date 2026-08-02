@@ -523,19 +523,19 @@ merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
-Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model/effort@binding|UNKNOWN>;lanes=<lane-id:host+model/effort@binding|UNKNOWN>;no guesses
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model/effort@binding|UNKNOWN>;lanes=<lane-id:host+model/effort@binding>,...;UNKNOWN=field;no guesses
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original:trusted ad-hoc prompt|n/a.
-  Goal:one-line outcome.
-  Notes:scope/branch/dependency.
-  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale.
+  Original:trusted ad-hoc prompt|n/a
+  Goal:one-line outcome
+  Notes:scope/branch/dependency
+  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
@@ -545,7 +545,7 @@ Current wave:each target/disjoint lane exactly once;one target/lane/worker;share
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
-merge only when `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in the PR description
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
@@ -796,10 +796,14 @@ authorized ready/merge action, required QA Evidence verification, and the late
 post-merge bot-finding sweep before final batch handoff. Once every batch target
 has a final state, run a read-only check after terminal releases only when the
 active backend advertises an `agent-coord`-compatible telemetry-completeness
-audit capability bound to the exact command
-`agent-coord batch-audit --batch-id <id> --json`. When that compatible
-capability is advertised, incomplete coverage, command failure, or `UNKNOWN`
-readback blocks telemetry closeout. If the active backend does not advertise
+audit capability bound to the following process contract. Executable:
+`agent-coord`. Arguments, in order and as separate
+values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`. Pass the
+opaque batch ID as exactly one argument value through a process/argument-vector
+API. Shell interpolation, `eval`, `sh -c`, and equivalent shell-evaluation
+paths are forbidden. When that compatible capability is advertised, incomplete
+coverage, command failure, or `UNKNOWN` readback blocks telemetry closeout. If
+the active backend does not advertise
 that compatible capability or its advertisement is `UNKNOWN`, record
 `telemetry audit: unavailable` in the durable handoff and continue; backend
 `n/a` skips the check. Once every batch target has a
@@ -885,6 +889,16 @@ For every PR-batch target whose visible task directly authorizes updating the
 PR, invoke the canonical `address-review` closeout with trusted parent state
 `COORDINATED_AUTOFIX=1` so verified review fixes run through action `f` without an extra quick-action pause.
 Coordinated review-decision authority comes from direct authorization to update the PR and is independent of `merge_authority`; merge authority governs merge only.
+Coordinated review-remediation authority is outcome-bound across convergence
+cycles, not pass-count-bound. A verified correctness/security/contract
+regression caused by the authorized lane may be repaired without a fresh
+maintainer prompt if and only if the repair stays within the already-authorized
+path envelope, preserves the accepted outcome, and changes no unrelated
+semantics. Fresh authority is mandatory for a new path, unrelated behavior or
+product semantics, a material tradeoff or judgment, a new security, release, or
+merge-policy expansion, destructive or risky publication not already
+authorized, or a new actor, replacement, or resource. `Bounded pass` binds
+paths/semantics/risk; pass count alone does not expire authority.
 Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`.
 If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items.
 For every coordinated `DISCUSS` outcome, record one evidence-backed recommendation: `fix now`, `defer`, `decline`, or `ask user`.

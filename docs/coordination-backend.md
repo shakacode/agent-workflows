@@ -164,9 +164,13 @@ Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
 own those lifecycle events; workers do not duplicate them. After terminal
 releases, run a read-only check only when the active backend advertises an
 `agent-coord`-compatible telemetry-completeness audit capability bound to the
-exact command `agent-coord batch-audit --batch-id <id> --json`. When that
-compatible capability is advertised, an incomplete result, command failure,
-or `UNKNOWN` readback blocks telemetry closeout. If the active backend does not
+following process contract. Executable: `agent-coord`. Arguments, in order and
+as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.
+Pass the opaque batch ID as exactly one argument value through a
+process/argument-vector API. Shell interpolation, `eval`, `sh -c`, and
+equivalent shell-evaluation paths are forbidden. When that compatible
+capability is advertised, an incomplete result, command failure, or `UNKNOWN`
+readback blocks telemetry closeout. If the active backend does not
 advertise that compatible capability or its advertisement is `UNKNOWN`, record
 `telemetry audit: unavailable` in the durable handoff and continue; backend
 `n/a` skips the check.

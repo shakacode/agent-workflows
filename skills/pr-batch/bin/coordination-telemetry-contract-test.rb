@@ -11,29 +11,52 @@ PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
 CONTINUE_SKILL_PATH = File.join(ROOT, "skills/continue/SKILL.md")
+TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "coordinator_route=<model/effort@binding|UNKNOWN>;" \
-                       "lanes=<lane-id:host+model/effort@binding|UNKNOWN>;no guesses"
+                       "lanes=<lane-id:host+model/effort@binding>,...;" \
+                       "UNKNOWN=field;no guesses"
+MANIFEST_MISSING_REPETITION_LINE = MANIFEST_PROMPT_LINE.sub(">,...", ">")
+MANIFEST_WHOLE_ENTRY_UNKNOWN_LINE =
+  MANIFEST_PROMPT_LINE.sub("model/effort@binding>,...", "model/effort@binding|UNKNOWN>,...")
 HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
   "otherwise `blocked-user-input` for other required user input."
-BATCH_AUDIT_EXECUTABLE = "agent-coord"
-BATCH_AUDIT_ARGUMENTS = "batch-audit --batch-id <id> --json"
-BATCH_AUDIT_COMMAND = "#{BATCH_AUDIT_EXECUTABLE} #{BATCH_AUDIT_ARGUMENTS}".freeze
 AUDIT_COMPATIBLE_CAPABILITY = "`agent-coord`-compatible telemetry-completeness audit capability"
-AUDIT_COMMAND_BINDING = "bound to the exact command `#{BATCH_AUDIT_COMMAND}`".freeze
+AUDIT_ARGV_REQUIRED_CONCEPTS = {
+  "executable" => "Executable: `agent-coord`.",
+  "ordered separate arguments" =>
+    "Arguments, in order and as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.",
+  "single opaque ID argument" =>
+    "Pass the opaque batch ID as exactly one argument value through a process/argument-vector API.",
+  "shell-evaluation prohibition" =>
+    "Shell interpolation, `eval`, `sh -c`, and equivalent shell-evaluation paths are forbidden."
+}.freeze
 AUDIT_UNSUPPORTED_CAPABILITY = "does not advertise that compatible capability"
 AUDIT_UNKNOWN_ADVERTISEMENT = "its advertisement is `UNKNOWN`"
 AUDIT_UNAVAILABLE = "telemetry audit: unavailable"
 AUDIT_REQUIRED_CONTINUATION = "durable handoff and continue"
 AUDIT_SECTION_REQUIRED_CONCEPTS = {
   "compatible capability" => AUDIT_COMPATIBLE_CAPABILITY,
-  "exact command binding" => AUDIT_COMMAND_BINDING,
   "unsupported capability condition" => AUDIT_UNSUPPORTED_CAPABILITY,
   "UNKNOWN advertisement condition" => AUDIT_UNKNOWN_ADVERTISEMENT,
   "unavailable outcome" => "`#{AUDIT_UNAVAILABLE}`",
   "required continuation" => AUDIT_REQUIRED_CONTINUATION
+}.freeze
+REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS = {
+  "outcome-bound authority" =>
+    "Coordinated review-remediation authority is outcome-bound across convergence cycles, not pass-count-bound.",
+  "bounded regression repair" =>
+    "A verified correctness/security/contract regression caused by the authorized lane may be repaired without a fresh " \
+    "maintainer prompt if and only if the repair stays within the already-authorized path envelope, preserves the " \
+    "accepted outcome, and changes no unrelated semantics.",
+  "fresh-authority boundary" =>
+    "Fresh authority is mandatory for a new path, unrelated behavior or product semantics, a material tradeoff or " \
+    "judgment, a new security, release, or merge-policy expansion, destructive or risky publication not already " \
+    "authorized, or a new actor, replacement, or resource.",
+  "bounded-pass meaning" =>
+    "`Bounded pass` binds paths/semantics/risk; pass count alone does not expire authority."
 }.freeze
 EVENT_TRANSPORT_REQUIRED_CONCEPTS = {
   "optional transport" => "Typed-event transport is optional",
@@ -119,14 +142,6 @@ def extract_json_fence(text, heading)
   JSON.parse(text[body_start...body_end])
 end
 
-def batch_audit_invocation_executables(text)
-  text.to_enum(:scan, /#{Regexp.escape(BATCH_AUDIT_ARGUMENTS)}/).map do
-    invocation = Regexp.last_match
-    prefix = text[0...invocation.begin(0)]
-    prefix[/(\S+)[ \t]+\z/, 1]&.delete_prefix("`")
-  end
-end
-
 def registered_batch_manifest
   docs = read_repo_file(COORDINATION_DOC_PATH)
   extract_json_fence(docs, "## Batch Provenance Manifest")
@@ -162,11 +177,40 @@ def assert_batch_audit_section_contract(section, location)
   AUDIT_SECTION_REQUIRED_CONCEPTS.each do |concept, phrase|
     assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
   end
+  assert_batch_audit_argv_contract(normalized_section, location)
+end
+
+def assert_batch_audit_argv_contract(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  AUDIT_ARGV_REQUIRED_CONCEPTS.each do |concept, phrase|
+    assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
+  end
+  refute_includes normalized_section, "agent-coord batch-audit",
+                  "#{location} must not present the audit as shell command text"
 end
 
 def assert_typed_event_transport_section_contract(section, location)
   normalized_section = section.gsub(/\s+/, " ")
   EVENT_TRANSPORT_REQUIRED_CONCEPTS.each do |concept, phrase|
+    assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
+  end
+end
+
+def assert_manifest_prompt_contract(text, location)
+  normalized_text = text.gsub(/\s+/, " ")
+  assert_includes normalized_text, MANIFEST_PROMPT_LINE,
+                  "#{location} must use the exact manifest provenance grammar"
+  assert_includes normalized_text, "lanes=<lane-id:host+model/effort@binding>,...",
+                  "#{location} must require repeated lane entries"
+  assert_includes normalized_text, ";UNKNOWN=field;",
+                  "#{location} must keep UNKNOWN at field granularity"
+  refute_match(/lanes=<lane-id:[^>]*\|UNKNOWN>/, normalized_text,
+               "#{location} must reject whole-entry UNKNOWN")
+end
+
+def assert_remediation_authority_section_contract(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS.each do |concept, phrase|
     assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
   end
 end
@@ -276,12 +320,26 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_match(/\A[0-9a-f]{40}\z|\AUNKNOWN\z/, manifest.fetch("pack_sha"))
     assert_manifest_route_provenance(manifest)
 
-    [
-      "workflows/pr-processing.md",
-      "skills/plan-pr-batch/SKILL.md",
-      "skills/pr-batch/SKILL.md"
-    ].each do |path|
-      assert_includes read_repo_file(File.join(ROOT, path)), MANIFEST_PROMPT_LINE
+    [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
+      assert_manifest_prompt_contract(read_repo_file(path), path)
+    end
+  end
+
+  def test_manifest_prompt_rejects_missing_repetition_and_whole_entry_unknown
+    {
+      "missing repetition" => MANIFEST_MISSING_REPETITION_LINE,
+      "whole-entry UNKNOWN" => MANIFEST_WHOLE_ENTRY_UNKNOWN_LINE
+    }.each do |mutation, invalid_line|
+      [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
+        text = read_repo_file(path)
+        mutated_text = text.sub(MANIFEST_PROMPT_LINE, invalid_line)
+        refute_equal text, mutated_text, "#{path} must expose the manifest grammar to mutation"
+
+        error = assert_raises(Minitest::Assertion) do
+          assert_manifest_prompt_contract(mutated_text, "#{path} #{mutation} mutation")
+        end
+        assert_includes error.message, "must use the exact manifest provenance grammar"
+      end
     end
   end
 
@@ -365,24 +423,6 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
-  def test_authoritative_closeout_surfaces_use_exact_batch_audit_command
-    {
-      WORKFLOW_PATH => 2,
-      COORDINATION_DOC_PATH => 1,
-      PR_BATCH_SKILL_PATH => 1
-    }.each do |path, expected_count|
-      text = read_repo_file(path).gsub(/\s+/, " ")
-      executables = batch_audit_invocation_executables(text)
-
-      assert_equal expected_count, executables.length,
-                   "#{path} must expose every batch-audit invocation to executable-token validation"
-      assert_equal Array.new(expected_count, BATCH_AUDIT_EXECUTABLE), executables,
-                   "#{path} must use only the exact agent-coord executable token"
-      assert_equal expected_count, text.scan("`#{BATCH_AUDIT_COMMAND}`").length,
-                   "#{path} must use the exact executable and batch-audit subcommand"
-    end
-  end
-
   def test_batch_audit_fails_closed_only_for_an_advertised_capability
     {
       WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
@@ -400,7 +440,6 @@ class CoordinationTelemetryContractTest < Minitest::Test
   def test_batch_audit_section_contract_rejects_each_missing_required_concept
     expected_concepts = [
       "compatible capability",
-      "exact command binding",
       "unsupported capability condition",
       "UNKNOWN advertisement condition",
       "unavailable outcome",
@@ -414,6 +453,86 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
       error = assert_raises(Minitest::Assertion) do
         assert_batch_audit_section_contract(incomplete_fixture, "negative fixture")
+      end
+      assert_includes error.message, "must include the #{concept}"
+    end
+  end
+
+  def test_batch_audit_argv_contract_rejects_each_authoritative_section_mutation
+    {
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"],
+      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+    }.each do |path, headings|
+      text = read_repo_file(path)
+      headings.each do |heading|
+        section = extract_section(text, heading).gsub(/\s+/, " ")
+        AUDIT_ARGV_REQUIRED_CONCEPTS.each do |concept, phrase|
+          mutated_section = section.sub(phrase, "mutated #{concept}")
+          refute_equal section, mutated_section, "#{path} #{heading} must expose #{concept} to mutation"
+
+          error = assert_raises(Minitest::Assertion) do
+            assert_batch_audit_section_contract(mutated_section, "#{path} #{heading} mutation")
+          end
+          assert_includes error.message, "must include the #{concept}"
+        end
+      end
+    end
+  end
+
+  def test_batch_audit_argv_contract_rejects_each_missing_required_concept
+    complete_fixture = AUDIT_ARGV_REQUIRED_CONCEPTS.values.join(" | ")
+    AUDIT_ARGV_REQUIRED_CONCEPTS.each do |concept, phrase|
+      incomplete_fixture = complete_fixture.sub(phrase, "")
+
+      error = assert_raises(Minitest::Assertion) do
+        assert_batch_audit_argv_contract(incomplete_fixture, "negative argv fixture")
+      end
+      assert_includes error.message, "must include the #{concept}"
+    end
+  end
+
+  def test_review_remediation_authority_is_section_local_and_outcome_bound
+    {
+      WORKFLOW_PATH => ["## Review Comment Handling"],
+      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+    }.each do |path, headings|
+      text = read_repo_file(path)
+      headings.each do |heading|
+        section = extract_section(text, heading)
+        assert_remediation_authority_section_contract(section, "#{path} #{heading}")
+      end
+    end
+  end
+
+  def test_review_remediation_authority_rejects_each_authoritative_section_mutation
+    {
+      WORKFLOW_PATH => ["## Review Comment Handling"],
+      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+    }.each do |path, headings|
+      text = read_repo_file(path)
+      headings.each do |heading|
+        section = extract_section(text, heading).gsub(/\s+/, " ")
+        REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS.each do |concept, phrase|
+          mutated_section = section.sub(phrase, "mutated #{concept}")
+          refute_equal section, mutated_section, "#{path} #{heading} must expose #{concept} to mutation"
+
+          error = assert_raises(Minitest::Assertion) do
+            assert_remediation_authority_section_contract(mutated_section, "#{path} #{heading} mutation")
+          end
+          assert_includes error.message, "must include the #{concept}"
+        end
+      end
+    end
+  end
+
+  def test_review_remediation_authority_rejects_each_missing_required_concept
+    complete_fixture = REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS.values.join(" | ")
+    REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS.each do |concept, phrase|
+      incomplete_fixture = complete_fixture.sub(phrase, "")
+
+      error = assert_raises(Minitest::Assertion) do
+        assert_remediation_authority_section_contract(incomplete_fixture, "negative authority fixture")
       end
       assert_includes error.message, "must include the #{concept}"
     end
