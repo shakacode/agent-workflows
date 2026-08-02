@@ -283,8 +283,8 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_guard_scoped_enoent_handling_preserves_the_missing_gh_error
-    runner = PrMergeSubmit::Runner.new
     original_path = ENV.fetch("PATH")
+    runner = PrMergeSubmit::Runner.new
 
     Dir.mktmpdir("pr-merge-submit-empty-path") do |empty_path|
       ENV["PATH"] = empty_path
@@ -295,6 +295,18 @@ class PrMergeSubmitTest < Minitest::Test
     end
   ensure
     ENV["PATH"] = original_path
+  end
+
+  def test_unknown_guard_fixture_fails_closed
+    error = assert_raises(RuntimeError) do
+      run_cli(
+        mode: "guard_ambiguous",
+        merge_submission: guarded_direct_policy,
+        guard_fixture: :unknown
+      )
+    end
+
+    assert_equal "unknown guard fixture: :unknown", error.message
   end
 
   def test_guard_blob_oid_accepts_only_exact_sha1_or_sha256_lengths
@@ -1428,6 +1440,8 @@ class PrMergeSubmitTest < Minitest::Test
     guard_path = File.join(root, executable.to_s)
     if guard_fixture != :missing && executable.to_s.match?(%r{\A\.agents/bin/[A-Za-z0-9_.-]+\z})
       guard_body = case guard_fixture
+                   when :executable, :non_executable, :modified_after_commit
+                     fake_guard
                    when :launch_eacces
                      blocked_interpreter = File.join(root, "non-executable-guard-interpreter")
                      File.write(blocked_interpreter, "#!/bin/sh\nexit 0\n")
@@ -1436,7 +1450,7 @@ class PrMergeSubmitTest < Minitest::Test
                    when :launch_enoent
                      "#!#{File.join(root, 'missing-guard-interpreter')}\n"
                    else
-                     fake_guard
+                     raise "unknown guard fixture: #{guard_fixture.inspect}"
                    end
       File.write(guard_path, guard_body)
       FileUtils.chmod(guard_fixture == :non_executable ? 0o644 : 0o755, guard_path)
