@@ -48,6 +48,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PUBLICATION_PREFLIGHT = "completed-batch-publication-preflight"
   REQUIRED_PUBLICATION_SNAPSHOT = "helper-managed `publication_snapshot`"
   REQUIRED_TERMINAL_PUBLICATION_STATES = "`SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`"
+  REQUIRED_WAIVER_INPUT_RULE = "WAIVED input supplies only the exact same-target `#issuecomment-<id>` URL."
+  REQUIRED_AUTHENTICATED_WAIVER_RULE = "The helper must fetch that comment through authenticated `gh api`; HTTP/API failure or any comment ID, URL, target, exact-head, decision-marker, human author, trusted association, timestamp, or body mismatch blocks completion."
+  REQUIRED_WAIVER_SNAPSHOT_RULE = "The authenticated snapshot binds the exact comment ID/URL, body SHA-256, author/association, timestamps, target, and head."
+  REQUIRED_WAIVER_MARKER_RULE = "The fetched body must contain exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`, `head_sha: <full exact head>`, and `decision: waived`."
+  REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE = "Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication."
   REQUIRED_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
   REQUIRED_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
   REQUIRED_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
@@ -347,6 +352,16 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should bind the terminal publication snapshot"
       assert_includes normalized_text, REQUIRED_TERMINAL_PUBLICATION_STATES,
                       "#{relative_path} should name the accepted terminal exact-head QA dispositions"
+      assert_includes normalized_text, REQUIRED_WAIVER_INPUT_RULE,
+                      "#{relative_path} should accept only a same-target waiver comment URL from input"
+      assert_includes normalized_text, REQUIRED_AUTHENTICATED_WAIVER_RULE,
+                      "#{relative_path} should authenticate and replay the waiver comment"
+      assert_includes normalized_text, REQUIRED_WAIVER_SNAPSHOT_RULE,
+                      "#{relative_path} should bind authenticated waiver metadata into the snapshot"
+      assert_includes normalized_text, REQUIRED_WAIVER_MARKER_RULE,
+                      "#{relative_path} should require an exact-head waiver decision marker"
+      assert_includes normalized_text, REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE,
+                      "#{relative_path} should re-authenticate the waiver during publication and replay"
       assert_includes normalized_text, "unmerged",
                       "#{relative_path} should block an unmerged coordinated target"
       assert_includes normalized_text, "in_progress",

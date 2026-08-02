@@ -48,7 +48,7 @@
     {
       "target": {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10026},
       "evidence": "<!-- qa-evidence v1\nrequired: yes\nstatus: waived\nhead_sha: 57e048ed10551eb3cf8414a4de0064443bef730d\ntested_at: PR/head 57e048ed10551eb3cf8414a4de0064443bef730d\nscope: PR #10026 exact-head checks\nautomated_checks: focused specs\nmanual_checks: not applicable: maintainer accepted worker evidence\nfindings: waived: https://github.com/shakacode/hichee/pull/10026#issuecomment-5000000000\nrelease_blocking: waived\nprocess_gap_disposition: checklist+replay\n-->",
-      "maintainer_waiver": {"url": "https://github.com/shakacode/hichee/pull/10026#issuecomment-5000000000", "author": "justin808", "author_association": "MEMBER", "body_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      "maintainer_waiver": {"url": "https://github.com/shakacode/hichee/pull/10026#issuecomment-5000000000"}
     }
   ]
 }

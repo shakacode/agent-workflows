@@ -102,6 +102,64 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_complete_publication_reauthenticates_waiver_receipt_before_post
+    preflight = publication_preflight(waived: true)
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    missing_comment = lambda do |_host, _endpoint, **_options|
+      raise CompletedBatchAuditReceipt::Error, "GitHub API request failed"
+    end
+
+    with_stubbed_gh_api(missing_comment) do
+      assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target]
+        )
+      end
+    end
+  end
+
+  def test_complete_publication_accepts_only_the_unchanged_authenticated_waiver
+    preflight = publication_preflight(waived: true)
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    comment = publication_waiver_comment(head_sha: "a" * 40)
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/issues/comments/9184"
+
+      comment
+    end
+
+    with_stubbed_gh_api(authenticated_api) do
+      CompletedBatchAuditReceipt.validate_publication_preflight!(
+        preflight,
+        expected_batch_id: "batch-184",
+        targets: [target]
+      )
+    end
+
+    comment["body"] = "#{comment.fetch('body')}\nEdited after preflight.\n"
+    with_stubbed_gh_api(authenticated_api) do
+      assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target]
+        )
+      end
+    end
+  end
+
   def test_publish_binds_snapshot_and_replay_blocks_a_refreshed_snapshot_mismatch
     with_fake_gh do |env, directory|
       targets_path = write_json(
@@ -2048,22 +2106,25 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     path
   end
 
-  def publication_preflight(head_sha: "a" * 40)
+  def publication_preflight(head_sha: "a" * 40, waived: false)
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    waiver_url = "https://github.com/acme/widgets/pull/184#issuecomment-9184"
     evidence = <<~MARKER
       <!-- qa-evidence v1
       required: yes
-      status: satisfied
+      status: #{waived ? 'waived' : 'satisfied'}
       head_sha: #{head_sha}
       tested_at: PR/head #{head_sha}
       scope: PR #184 exact head
       automated_checks: focused tests
       manual_checks: not applicable: no manual surface
-      findings: none
-      release_blocking: clear
+      findings: #{waived ? "waived: #{waiver_url}" : 'none'}
+      release_blocking: #{waived ? 'waived' : 'clear'}
       process_gap_disposition: script
       -->
     MARKER
+    qa_row = { "target" => target, "evidence" => evidence }
+    qa_row["maintainer_waiver"] = { "url" => waiver_url } if waived
     input = {
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
@@ -2095,9 +2156,33 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "head_sha" => head_sha,
         "source" => "https://github.com/acme/widgets/pull/184"
       }],
-      "qa_evidence" => [{ "target" => target, "evidence" => evidence }]
+      "qa_evidence" => [qa_row]
     }
-    CompletedBatchPublicationPreflight.assess(input, coordination_backend: "agent-coord")
+    comment = publication_waiver_comment(head_sha:, url: waiver_url)
+    CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: "agent-coord",
+      waiver_verifier: ->(**_keywords) { comment }
+    )
+  end
+
+  def publication_waiver_comment(head_sha:, url: "https://github.com/acme/widgets/pull/184#issuecomment-9184")
+    {
+      "id" => Integer(url[/#issuecomment-(\d+)\z/, 1], 10),
+      "html_url" => url,
+      "issue_url" => "https://api.github.com/repos/acme/widgets/issues/184",
+      "body" => <<~BODY,
+        <!-- qa-maintainer-waiver v1
+        target: https://github.com/acme/widgets/pull/184
+        head_sha: #{head_sha}
+        decision: waived
+        -->
+      BODY
+      "user" => { "login" => "maintainer", "type" => "User" },
+      "author_association" => "MEMBER",
+      "created_at" => "2026-07-18T17:59:59Z",
+      "updated_at" => "2026-07-18T17:59:59Z"
+    }
   end
 
   def with_stubbed_gh_api(callable)

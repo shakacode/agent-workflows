@@ -493,6 +493,9 @@ module CompletedBatchAuditReceipt
     )
     raise PublicationPreflightError, "completed-batch publication preflight is missing or invalid" unless valid
     raise PublicationPreflightError, "completed-batch publication preflight is blocked" unless preflight.fetch("eligible")
+    return if publication_waivers_authenticated?(preflight)
+
+    raise PublicationPreflightError, "completed-batch publication waiver authentication failed"
   end
 
   def bind_publication_snapshot(marker, preflight)
@@ -550,10 +553,24 @@ module CompletedBatchAuditReceipt
       expected_targets:
     )
     return [PUBLICATION_MISMATCH_BLOCKER] unless preflight.fetch("eligible")
+    return [PUBLICATION_MISMATCH_BLOCKER] unless publication_waivers_authenticated?(preflight)
 
     bound = publication_snapshot(value)
     current = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
     bound == current ? [] : [PUBLICATION_MISMATCH_BLOCKER]
+  end
+
+  def publication_waivers_authenticated?(preflight)
+    CompletedBatchPublicationPreflight.authenticated_waivers_valid?(
+      preflight,
+      waiver_verifier: method(:authenticated_publication_waiver_comment)
+    )
+  end
+
+  def authenticated_publication_waiver_comment(host:, repo:, comment_id:)
+    gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+  rescue Error
+    nil
   end
 
   def bot_login?(login)

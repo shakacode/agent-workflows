@@ -422,7 +422,7 @@ per-target QA Evidence marker. The preflight deterministically derives the full
 target set from coordination lanes and fails closed when the batch or a lane is
 absent, nonterminal, unmerged/unclosed, or `UNKNOWN`; when an exact-head QA
 disposition is not `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`
-with a replayable maintainer-waiver URL/author/association/body hash; or when
+with an authenticated replayable maintainer-waiver comment; or when
 the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
 
@@ -441,9 +441,21 @@ Use `completed-batch-audit-receipt` for both `publish` and `replay`;
 contract is `completed-batch-publication-preflight-input` v1 with `batch_id`,
 the same `expected_targets`, raw successful targeted `coordination_status`,
 `target_snapshots` (`target`, terminal `state`, full `head_sha`, `source`), and
-`qa_evidence` (`target`, marker text, plus `maintainer_waiver` only for
-`WAIVED`). The CLI reads `coordination_backend` from `--workflow-config`; do not
+`qa_evidence` (`target`, marker text, plus `maintainer_waiver: {"url": "<exact
+same-target #issuecomment URL>"}` only for `WAIVED`). The CLI reads
+`coordination_backend` from `--workflow-config`; do not
 replace the bounded coordination result with a caller-written lane summary.
+
+WAIVED input supplies only the exact same-target `#issuecomment-<id>` URL. The
+helper must fetch that comment through authenticated `gh api`; HTTP/API failure
+or any comment ID, URL, target, exact-head, decision-marker, human author,
+trusted association, timestamp, or body mismatch blocks completion. The
+authenticated snapshot binds the exact comment ID/URL, body SHA-256,
+author/association, timestamps, target, and head. The fetched body must contain
+exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`,
+`head_sha: <full exact head>`, and `decision: waived`. Receipt publication and
+replay independently re-fetch and compare the bound waiver; a self-consistent
+preflight digest is not authentication.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 

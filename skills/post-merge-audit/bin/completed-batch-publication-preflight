@@ -9,7 +9,9 @@
 
 require "digest"
 require "json"
+require "open3"
 require "optparse"
+require "timeout"
 require "time"
 require "uri"
 require "yaml"
@@ -24,10 +26,13 @@ module CompletedBatchPublicationPreflight
   DIGEST_PATTERN = /\Asha256:[0-9a-f]{64}\z/
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
+  TRUSTED_HUMAN_TYPES = %w[User].freeze
+  DEFAULT_GH_TIMEOUT_SECONDS = 60
+  PROCESS_TERMINATION_GRACE_SECONDS = 0.25
 
   module_function
 
-  def assess(input, coordination_backend:)
+  def assess(input, coordination_backend:, waiver_verifier: nil)
     blockers = []
     input = {} unless input.is_a?(Hash)
     validate_input_envelope(input, blockers)
@@ -46,7 +51,13 @@ module CompletedBatchPublicationPreflight
     validate_batch_terminal(batch, blockers)
     canonical_lanes = canonical_lane_snapshots(lane_entries, blockers)
     canonical_targets = canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers)
-    canonical_qa = canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers)
+    canonical_qa = canonical_qa_snapshots(
+      expected_targets,
+      snapshots,
+      qa_entries,
+      blockers,
+      waiver_verifier:
+    )
     snapshot = {
       "batch_id" => batch_id,
       "coordination_backend" => backend,
@@ -133,6 +144,49 @@ module CompletedBatchPublicationPreflight
       receipt["verdict"] == "ELIGIBLE" && receipt["blockers"] == []
     else
       receipt["verdict"] == "BLOCKED" && receipt["blockers"].is_a?(Array) && !receipt["blockers"].empty?
+    end
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def authenticated_waivers_valid?(receipt, waiver_verifier:)
+    return false unless valid_receipt?(receipt)
+    return false unless waiver_verifier.respond_to?(:call)
+
+    qa_rows = receipt.dig("snapshot", "qa")
+    targets = receipt.fetch("targets")
+    return false unless qa_rows.is_a?(Array) && qa_rows.length == targets.length
+    return false unless qa_rows.map { |row| row.fetch("target") } == targets
+
+    qa_rows.all? do |row|
+      next false unless row.keys.sort ==
+                        %w[evidence_sha256 head_sha maintainer_waiver status target verdict]
+      next false unless row.fetch("evidence_sha256").to_s.match?(DIGEST_PATTERN)
+
+      verdict = row.fetch("verdict")
+      status = row.fetch("status")
+      expected_status = {
+        "SATISFIED" => "satisfied",
+        "NOT_APPLICABLE" => "not_applicable",
+        "WAIVED" => "waived"
+      }[verdict]
+      next false unless status == expected_status
+      next row["maintainer_waiver"].nil? unless verdict == "WAIVED"
+
+      target = validated_target(row.fetch("target"))
+      head_sha = row.fetch("head_sha").to_s.downcase
+      waiver = row["maintainer_waiver"]
+      next false unless target && head_sha.match?(SHA_PATTERN) && waiver.is_a?(Hash)
+
+      reference = waiver_comment_reference(waiver["url"], target)
+      next false unless reference
+
+      comment = waiver_verifier.call(
+        host: target.fetch("host"),
+        repo: target.fetch("repo"),
+        comment_id: reference.fetch("comment_id")
+      )
+      verified_waiver_comment(comment, reference:, target:, head_sha:) == waiver
     end
   rescue KeyError, NoMethodError, TypeError
     false
@@ -342,7 +396,7 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers)
+  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
     expected_targets.map do |target|
       key = target_key(target)
       row = qa_entries[key]
@@ -365,7 +419,13 @@ module CompletedBatchPublicationPreflight
       unless %w[SATISFIED NOT_APPLICABLE WAIVED].include?(verdict)
         blockers << "#{target_label(target)} QA disposition is #{status || verdict}"
       end
-      waiver = canonical_waiver(row["maintainer_waiver"], target, evidence)
+      waiver = canonical_waiver(
+        row["maintainer_waiver"],
+        target,
+        evidence,
+        head_sha:,
+        verifier: waiver_verifier
+      )
       if verdict == "WAIVED" && !waiver
         blockers << "#{target_label(target)} maintainer QA waiver is not replayable"
       elsif verdict != "WAIVED" && row.key?("maintainer_waiver")
@@ -382,32 +442,119 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def canonical_waiver(value, target, evidence)
+  def canonical_waiver(value, target, evidence, head_sha:, verifier:)
     return unless value.is_a?(Hash)
-    return unless value.keys.sort == %w[author author_association body_sha256 url]
-    return unless value["author"].to_s.match?(SAFE_LOGIN_PATTERN)
-    return if value["author"].to_s.downcase.end_with?("[bot]")
-    return unless TRUSTED_ASSOCIATIONS.include?(value["author_association"])
-    return unless value["body_sha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
-    return unless evidence.include?(value["url"].to_s)
+    return unless value.keys == ["url"]
+    return unless verifier.respond_to?(:call)
 
-    uri = URI.parse(value["url"].to_s)
-    return unless uri.is_a?(URI::HTTPS) && uri.host&.downcase == target["host"]
-    return unless uri.query.nil? && uri.userinfo.nil?
+    reference = waiver_comment_reference(value.fetch("url"), target)
+    return unless reference && evidence.include?(reference.fetch("url"))
+
+    comment = verifier.call(
+      host: target.fetch("host"),
+      repo: target.fetch("repo"),
+      comment_id: reference.fetch("comment_id")
+    )
+    verified_waiver_comment(comment, reference:, target:, head_sha:)
+  rescue KeyError, URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def waiver_comment_reference(value, target)
+    uri = URI.parse(value.to_s)
+    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.query.nil? && uri.userinfo.nil?
+
+    host = uri.port == 443 ? uri.host.downcase : "#{uri.host.downcase}:#{uri.port}"
+    return unless host == target.fetch("host")
 
     path = uri.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
-    return unless path && "#{path[1]}/#{path[2]}".casecmp?(target["repo"])
-    return unless Integer(path[4], 10) == target["number"]
-    return unless uri.fragment.to_s.match?(/\Aissuecomment-\d+\z/)
+    return unless path && "#{path[1]}/#{path[2]}".casecmp?(target.fetch("repo"))
+
+    expected_segment = target.fetch("type") == "pull_request" ? "pull" : "issues"
+    return unless path[3] == expected_segment && Integer(path[4], 10) == target.fetch("number")
+
+    fragment = uri.fragment.to_s.match(/\Aissuecomment-(\d+)\z/)
+    comment_id = fragment && Integer(fragment[1], 10)
+    return unless comment_id&.positive?
+
+    { "url" => value, "comment_id" => comment_id }
+  end
+
+  def verified_waiver_comment(comment, reference:, target:, head_sha:)
+    return unless comment.is_a?(Hash)
+    return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
+    return unless comment["html_url"] == reference.fetch("url")
+    return unless issue_api_url_matches_target?(comment["issue_url"], target)
+    return unless valid_timestamp?(comment["created_at"]) && valid_timestamp?(comment["updated_at"])
+
+    user = comment["user"]
+    return unless user.is_a?(Hash)
+
+    author = user["login"].to_s
+    return unless author.match?(SAFE_LOGIN_PATTERN) && !author.downcase.end_with?("[bot]")
+    return unless TRUSTED_HUMAN_TYPES.include?(user["type"])
+
+    association = comment["author_association"].to_s
+    return unless TRUSTED_ASSOCIATIONS.include?(association)
+
+    body = comment["body"]
+    return unless body.is_a?(String) && !body.empty?
+
+    fields = waiver_marker_fields(body)
+    return unless fields
+    return unless fields.fetch("target") == target_base_url(target)
+    return unless fields.fetch("head_sha").casecmp?(head_sha)
+    return unless fields.fetch("decision") == "waived"
 
     {
-      "url" => value["url"],
-      "author" => value["author"],
-      "author_association" => value["author_association"],
-      "body_sha256" => value["body_sha256"]
+      "url" => reference.fetch("url"),
+      "comment_id" => reference.fetch("comment_id"),
+      "author" => author,
+      "author_association" => association,
+      "body_sha256" => Digest::SHA256.hexdigest(body.encode(Encoding::UTF_8)),
+      "created_at" => comment.fetch("created_at"),
+      "updated_at" => comment.fetch("updated_at"),
+      "target" => target,
+      "head_sha" => head_sha,
+      "decision" => "waived",
+      "verification_source" => "authenticated gh api"
     }
-  rescue URI::InvalidURIError, ArgumentError
+  rescue KeyError, NoMethodError, TypeError
     nil
+  end
+
+  def waiver_marker_fields(body)
+    return unless body.scan("<!-- qa-maintainer-waiver v1").length == 1
+
+    matches = body.scan(/<!-- qa-maintainer-waiver v1\n(.*?)\n-->/m)
+    return unless matches.one?
+
+    lines = matches.first.fetch(0).lines(chomp: true)
+    return if lines.empty? || lines.any? { |line| line.include?("<!--") || line.include?("-->") }
+
+    fields = lines.each_with_object({}) do |line, parsed|
+      match = line.match(/\A(target|head_sha|decision): (.+)\z/)
+      break unless match && !parsed.key?(match[1])
+
+      parsed[match[1]] = match[2]
+    end
+    fields if fields&.keys&.sort == %w[decision head_sha target]
+  end
+
+  def issue_api_url_matches_target?(value, target)
+    uri = URI.parse(value.to_s)
+    return false unless uri.is_a?(URI::HTTPS) && uri.host && uri.query.nil? && uri.fragment.nil? && uri.userinfo.nil?
+
+    path = uri.path.match(%r{\A(?:/api/v3)?/repos/([^/\s]+)/([^/\s]+)/issues/(\d+)\z})
+    path && "#{path[1]}/#{path[2]}".casecmp?(target.fetch("repo")) &&
+      Integer(path[3], 10) == target.fetch("number")
+  rescue URI::InvalidURIError, ArgumentError
+    false
+  end
+
+  def target_base_url(target)
+    segment = target.fetch("type") == "pull_request" ? "pull" : "issues"
+    "https://#{target.fetch('host')}/#{target.fetch('repo')}/#{segment}/#{target.fetch('number')}"
   end
 
   def validated_target_set(value, blockers, label)
@@ -507,6 +654,98 @@ module CompletedBatchPublicationPreflight
     "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(value)))}"
   end
 
+  def authenticated_waiver_comment(host:, repo:, comment_id:)
+    command = [
+      "gh", "api", "--hostname", host,
+      "repos/#{repo}/issues/comments/#{comment_id}"
+    ]
+    stdout, _stderr, status = capture_process(
+      command,
+      input: "",
+      timeout: gh_timeout_seconds
+    )
+    return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
+  def capture_process(command, input:, timeout:)
+    stdin = stdout = stderr = wait_thread = nil
+    workers = []
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*command)
+    writer = Thread.new do
+      stdin.write(input)
+    rescue Errno::EPIPE, IOError
+      nil
+    ensure
+      stdin.close unless stdin.closed?
+    end
+    stdout_reader = Thread.new { read_process_stream(stdout) }
+    stderr_reader = Thread.new { read_process_stream(stderr) }
+    workers = [writer, stdout_reader, stderr_reader]
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+
+    [wait_thread, *workers].each do |thread|
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      raise Timeout::Error if remaining <= 0 || !thread.join(remaining)
+    end
+
+    [stdout_reader.value, stderr_reader.value, wait_thread.value]
+  ensure
+    terminate_process(wait_thread) if wait_thread&.alive?
+    [stdin, stdout, stderr].compact.each do |stream|
+      stream.close unless stream.closed?
+    rescue IOError
+      nil
+    end
+    workers.each(&:join)
+    wait_thread&.join
+  end
+
+  def configure_gh_timeout!
+    timeout = Integer(
+      ENV.fetch(
+        "COMPLETED_BATCH_PUBLICATION_PREFLIGHT_GH_TIMEOUT_SECONDS",
+        DEFAULT_GH_TIMEOUT_SECONDS.to_s
+      ),
+      exception: false
+    )
+    unless timeout&.positive?
+      raise OptionParser::InvalidArgument,
+            "COMPLETED_BATCH_PUBLICATION_PREFLIGHT_GH_TIMEOUT_SECONDS must be a positive integer"
+    end
+
+    @gh_timeout_seconds = timeout
+  end
+
+  def gh_timeout_seconds
+    @gh_timeout_seconds || DEFAULT_GH_TIMEOUT_SECONDS
+  end
+
+  def read_process_stream(stream)
+    stream.read
+  rescue IOError
+    ""
+  end
+
+  def terminate_process(wait_thread)
+    Process.kill("TERM", wait_thread.pid)
+  rescue Errno::ESRCH
+    wait_thread.join
+  else
+    unless wait_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
+      begin
+        Process.kill("KILL", wait_thread.pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+    wait_thread.join
+  end
+
   def run(argv)
     options = {}
     parser = OptionParser.new do |opts|
@@ -529,7 +768,12 @@ module CompletedBatchPublicationPreflight
     raise TypeError, "workflow config must be a mapping" unless config.is_a?(Hash)
 
     raw = options.fetch("input") == "-" ? $stdin.read : File.read(options.fetch("input"), encoding: "UTF-8")
-    result = assess(JSON.parse(raw), coordination_backend: config["coordination_backend"])
+    configure_gh_timeout!
+    result = assess(
+      JSON.parse(raw),
+      coordination_backend: config["coordination_backend"],
+      waiver_verifier: method(:authenticated_waiver_comment)
+    )
     puts JSON.pretty_generate(result)
     result.fetch("eligible") ? 0 : 1
   rescue OptionParser::ParseError => e
