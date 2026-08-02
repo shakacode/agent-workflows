@@ -37,6 +37,57 @@ Claude:
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
 
+## Signed Launch Readiness
+
+Install freshness and signed-launch readiness are independent. An install may
+report `UP_TO_DATE` while `signed_launch_readiness.capability` is
+`unsupported`. Check `agent-workflows-status --json` before opening a batch.
+
+For Codex, the public v1 host contract uses three host-owned files under
+`<target>/.agents/`:
+
+- `signed-launch-capability.json` identifies the host, producer, dispatcher key
+  id, and workflow-control key id.
+- `dispatcher-launch-trust.json` contains the matching public-only RSA
+  dispatcher anchor.
+- `workflow-control-lifecycle-trust.json` contains the matching public-only RSA
+  workflow-control anchor.
+
+All three safe, exact records mean `supported`. All three absent on a safe
+Codex home mean `unsupported`, because current Codex collaboration can expose
+explicit route metadata but does not provide the required signing producer.
+Any partial, malformed, mismatched, symlinked, incorrectly owned, or
+group/world-writable state means `UNKNOWN`; repair or remove that state before
+launch. Waivers are never accepted from `UNKNOWN`.
+
+The installer creates or validates only the safe `<target>/.agents/`
+directory. It never generates private keys, signatures, capability claims,
+trust anchors, or waiver records. A supported host integration owns its private
+keys and provisions the public files. The coordinator cannot select or replace
+that trust.
+
+When readiness is exactly `unsupported`, a human may grant a one-time durable
+`agent-workflow-bootstrap-waiver v1`. It must record direct in-session human
+provenance and bind the exact batch, issue, authorized lanes, hard dispatcher,
+model, effort, and empty fallback list while expressly preserving every other
+gate. File ownership and permissions protect the durable record from ordinary
+replacement; they do not cryptographically prove that a human spoke. The
+coordinator must therefore persist the exact direct-user message and thread as
+procedural provenance. The dispatcher additionally requires exact live, dispatcher-bound,
+instance-bound, explicit non-inherited request metadata for the persisted
+assignment and records lifecycle `waived-active`. Workflow control accepts a
+separate terminal lifecycle waiver bound to the same durable human record,
+batch plan, dependency plan, lane, wave, route, completion chronology, and
+evidence reference. Signed and waived lifecycle records are mutually
+deduplicated per lane.
+
+Upgrades from pre-v2 confirmation preserve version 1 launch confirmations as
+history only. They do not synthesize version 2 signatures or infer active
+state. A pending lane must receive either a fresh supported host-signed v2
+observation or an exact unsupported-host human waiver. Existing signed
+workflow-control receipts remain replayable; missing receipts do not become
+completion claims during migration.
+
 ## Skill Delivery Modes
 
 Use exactly one auto-invocable Agent Workflows skill delivery route per

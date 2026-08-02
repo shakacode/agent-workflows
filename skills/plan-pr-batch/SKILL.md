@@ -335,8 +335,9 @@ Plan a PR batch
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
      owns schema, collision, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
-     requires `plan.id`, `plan.active_wave`, and a top-level
-     `lane_lifecycle_receipts` array. Advance max-one groups only from the
+     requires `plan.id`, `plan.active_wave`, a top-level
+     `lane_lifecycle_receipts` array, and optionally a
+     `lane_lifecycle_waivers` array. Advance max-one groups only from the
      helper's exact signed workflow-control completion receipt bound to the
      batch, dependency plan, lane, wave, canonical durable-state reference, and
      completed/recorded chronology. The receipt's RSA-SHA256 signature covers
@@ -347,6 +348,13 @@ Plan a PR batch
      `agent_workflow_control_lifecycle_trusted_key_id` and
      `agent_workflow_control_lifecycle_trusted_public_key_pem`; caller input and
      environment cannot supply trust. Inline lane completion claims are invalid.
+     When signed-launch readiness is exactly typed `unsupported` on Codex, an
+     exact durable direct-human bootstrap waiver may authorize one terminal
+     `workflow-control-lane-lifecycle-waiver v1`. Bind it to the same batch plan,
+     dependency plan, authorized lane, wave, hard dispatcher, model/effort route,
+     terminal chronology, and durable evidence. `UNKNOWN` readiness, cross-batch
+     or cross-lane reuse, fallbacks, inherited routing, unsafe waiver files, and
+     duplicate signed/waived records remain rejected.
      Preserve real PR `pr-file-touch-map` verified results unchanged; represent
      explicit pre-PR paths with the helper's typed `planned-path-evidence` v1
      record and durable evidence reference. A rejected result launches no

@@ -68,6 +68,7 @@ module BatchPlanPreflight
     "agent_workflow_control_lifecycle_trusted_key_id"
   WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD =
     "agent_workflow_control_lifecycle_trusted_public_key_pem"
+  SIGNED_LAUNCH_WAIVER_LIBRARY = File.join(INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_waiver.rb")
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -125,8 +126,9 @@ module BatchPlanPreflight
     changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
     completed_lane_ids = []
     if lane_ids_valid
-      lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_receipts(
+      lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_records(
         input["lane_lifecycle_receipts"],
+        input.fetch("lane_lifecycle_waivers", []),
         input["plan"],
         input["stage_dependency_plan"]
       )
@@ -282,6 +284,70 @@ module BatchPlanPreflight
       )
     end
     [violations, completed_lane_ids.uniq]
+  end
+
+  def validate_lane_lifecycle_records(receipts, waivers, plan, stage_dependency_plan)
+    receipt_violations, receipt_lane_ids = validate_lane_lifecycle_receipts(receipts, plan, stage_dependency_plan)
+    violations = receipt_violations.dup
+    waiver_lane_ids = []
+    unless waivers.is_a?(Array)
+      violations << violation(
+        "lane-lifecycle-waivers-array-required",
+        "$.lane_lifecycle_waivers",
+        "When present, workflow-control lifecycle waivers must be an array."
+      )
+      return [violations, receipt_lane_ids]
+    end
+
+    lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
+    waivers.each_with_index do |waiver, index|
+      path = "$.lane_lifecycle_waivers[#{index}]"
+      lane = waiver.is_a?(Hash) ? lanes_by_id[waiver["lane_id"]] : nil
+      valid = lane && valid_lane_lifecycle_waiver?(
+        waiver, plan, stage_dependency_plan.fetch("id"), lane
+      )
+      unless valid
+        violations << violation(
+          "lane-lifecycle-waiver-invalid",
+          path,
+          "Require exact typed unsupported-host readiness, a durable direct-human batch waiver, " \
+          "and a batch/lane/route-bound terminal lifecycle observation."
+        )
+        next
+      end
+
+      waiver_lane_ids << waiver.fetch("lane_id")
+    end
+
+    raw_lane_ids = Array(receipts).filter_map { |record| record["lane_id"] if record.is_a?(Hash) } +
+                   waivers.filter_map { |record| record["lane_id"] if record.is_a?(Hash) }
+    if raw_lane_ids.tally.any? { |_lane_id, count| count > 1 }
+      violations << violation(
+        "lane-lifecycle-record-duplicate",
+        "$.lane_lifecycle_receipts",
+        "A lane may have exactly one signed or human-waived completed lifecycle record, never both."
+      )
+    end
+
+    [violations, (receipt_lane_ids + waiver_lane_ids).uniq]
+  end
+
+  def valid_lane_lifecycle_waiver?(waiver, plan, stage_dependency_plan_id, lane)
+    return false unless plan["backend"] == "codex"
+
+    require SIGNED_LAUNCH_WAIVER_LIBRARY
+    validated, = AgentDoctor::SignedLaunchWaiver.validate_lifecycle(
+      wrapper: waiver,
+      batch_plan_id: plan.fetch("id"),
+      stage_dependency_plan_id:,
+      lane:,
+      host: "codex",
+      target: INSTALLATION_ROOT,
+      helper_path: HELPER_PATH
+    )
+    !validated.nil?
+  rescue LoadError
+    false
   end
 
   def valid_lane_lifecycle_receipt?(receipt, batch_plan_id, stage_dependency_plan_id, lanes_by_id)

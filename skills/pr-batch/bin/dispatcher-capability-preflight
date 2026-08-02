@@ -18,6 +18,7 @@ TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
 TRUST_CONFIG_PATH = File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
 TRUSTED_KEY_ID_FIELD = "agent_workflow_dispatcher_trusted_key_id"
 TRUSTED_PUBLIC_KEY_FIELD = "agent_workflow_dispatcher_trusted_public_key_pem"
+SIGNED_LAUNCH_WAIVER_LIBRARY = File.join(INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_waiver.rb")
 CALLER_TRUST_OVERRIDE_FIELDS = [
   TRUSTED_KEY_ID_FIELD,
   TRUSTED_PUBLIC_KEY_FIELD,
@@ -268,14 +269,24 @@ end
 
 def persisted_assignment?(assignment)
   assignment_identity?(assignment) && assignment_provenance_valid?(assignment) &&
-    %w[launch-pending confirmed-active].include?(assignment["lifecycle"])
+    %w[launch-pending confirmed-active waived-active].include?(assignment["lifecycle"]) &&
+    assignment_waiver_binding_valid?(assignment)
 end
 
 def canonical_assignment(assignment)
   assignment.slice(
     "lane_id", "route", "dispatcher", "instance_id", "launch_token", "lifecycle", "candidate_index",
-    "requested", "selection_provenance"
+    "requested", "selection_provenance", "waiver_id", "waiver_ref"
   )
+end
+
+def assignment_waiver_binding_valid?(assignment)
+  has_binding = assignment.key?("waiver_id") || assignment.key?("waiver_ref")
+  if assignment["lifecycle"] == "waived-active"
+    nonempty_string?(assignment["waiver_id"]) && nonempty_string?(assignment["waiver_ref"])
+  else
+    !has_binding
+  end
 end
 
 def assignment_provenance_valid?(assignment)
@@ -597,14 +608,21 @@ def pending_replay_output(input:, requested:, authority:, assignment:, request: 
   output
 end
 
-def active_replay_output(input:, requested:, authority:, assignment:, confirmation: nil, request: nil, resolution: nil)
+def active_replay_output(input:, requested:, authority:, assignment:, confirmation: nil, launch_waiver: nil, request: nil, resolution: nil)
+  waived = assignment["lifecycle"] == "waived-active"
+  if waived && launch_waiver
+    assignment = assignment.merge(
+      "waiver_id" => launch_waiver.dig("observation", "waiver_id"),
+      "waiver_ref" => launch_waiver["waiver_ref"]
+    )
+  end
   output = {
     "status" => "replay-already-active",
     "requested_route" => requested["route"],
     "requested_dispatcher" => requested["dispatcher"],
     "actual_route" => assignment["route"],
     "actual_dispatcher" => assignment["dispatcher"],
-    "reason" => "matching-persisted-confirmed-active-assignment",
+    "reason" => waived ? "matching-persisted-waived-active-assignment" : "matching-persisted-confirmed-active-assignment",
     "authority" => authority,
     "resume_goal" => false,
     "lane_state" => input.fetch("lane_state", {}),
@@ -613,9 +631,37 @@ def active_replay_output(input:, requested:, authority:, assignment:, confirmati
     "persistence" => persistence("active_assignments")
   }
   output["launch_confirmation"] = confirmation if confirmation
+  output["launch_waiver"] = launch_waiver if launch_waiver
   output["dispatch_decision_request"] = request if request
   output["decision_resolution"] = resolution if resolution
   output
+end
+
+def validated_launch_waiver(input, assignment)
+  return unless input.key?("launch_waiver")
+
+  begin
+    require SIGNED_LAUNCH_WAIVER_LIBRARY
+  rescue LoadError
+    fail_input("launch_waiver validation support is unavailable")
+  end
+  waiver, reason = AgentDoctor::SignedLaunchWaiver.validate_dispatcher(
+    wrapper: input["launch_waiver"],
+    batch_id: input["batch_id"],
+    lane_id: input["lane_id"],
+    assignment:,
+    host: "codex",
+    target: INSTALLATION_ROOT,
+    helper_path: HELPER_PATH
+  )
+  fail_input(reason) unless waiver
+  if assignment["lifecycle"] == "waived-active" &&
+     (assignment["waiver_id"] != waiver.dig("observation", "waiver_id") ||
+      assignment["waiver_ref"] != waiver["waiver_ref"])
+    fail_input("waived-active assignment requires the same durable launch_waiver used for activation")
+  end
+
+  waiver
 end
 
 begin
@@ -650,6 +696,17 @@ if input.fetch("active_assignments", []).any? { |entry| entry["lane_id"] != inpu
 end
 fail_input("replacement must be a well-formed replacement proof") if input.key?("replacement") && !replacement_proof_shape?(input["replacement"])
 fail_input("launch_confirmation must be a well-formed identity-bound confirmation") if input.key?("launch_confirmation") && !confirmation_shape?(input["launch_confirmation"])
+if input.key?("launch_waiver")
+  batch_id_valid = nonempty_string?(input["batch_id"]) && !unknown_sentinel?(input["batch_id"])
+  fail_input("launch_waiver requires a non-UNKNOWN batch_id") unless batch_id_valid
+  fail_input("launch_waiver requires an exact hard requested route") unless requested["hard_route"] == true
+  fail_input("launch_waiver and launch_confirmation are mutually exclusive") if input.key?("launch_confirmation")
+  fail_input("launch_waiver requires one matching persisted launch assignment") unless
+    input.fetch("active_assignments", []).length == 1
+end
+if input.fetch("active_assignments", []).any? { |entry| entry["lifecycle"] == "waived-active" } && !input.key?("launch_waiver")
+  fail_input("waived-active assignment requires its durable launch_waiver")
+end
 if input.key?("launch_confirmation")
   confirmed_assignment = input.fetch("active_assignments", []).find do |entry|
     entry["lane_id"] == input["lane_id"] && assignment_identity_matches?(input.dig("launch_confirmation", "assignment"), entry)
@@ -729,6 +786,7 @@ history_resolution = persisted_resolution ||
                      (decision_resolution(persisted_decision_history, resolved_operator_decision) if persisted_decision_history && resolved_operator_decision)
 if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] && !input.key?("replacement")
   confirmation = input["launch_confirmation"]
+  launch_waiver = validated_launch_waiver(input, persisted_assignment)
   if confirmation && !assignment_identity_matches?(confirmation["assignment"], persisted_assignment)
     fail_input("launch_confirmation must match the persisted assignment identity")
   end
@@ -786,6 +844,16 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
                authority:,
                assignment: persisted_assignment.merge("lifecycle" => "confirmed-active"),
                confirmation:,
+               request: persisted_decision_history,
+               resolution: history_resolution
+             )
+           elsif persisted_assignment["lifecycle"] == "waived-active" || launch_waiver
+             active_replay_output(
+               input:,
+               requested:,
+               authority:,
+               assignment: persisted_assignment.merge("lifecycle" => "waived-active"),
+               launch_waiver:,
                request: persisted_decision_history,
                resolution: history_resolution
              )
@@ -849,6 +917,7 @@ if matching_assignment
     exit
   end
   confirmation = input["launch_confirmation"]
+  launch_waiver = validated_launch_waiver(input, matching_assignment)
   if confirmation && !assignment_identity_matches?(confirmation["assignment"], matching_assignment)
     fail_input("launch_confirmation must match the persisted assignment identity")
   end
@@ -862,6 +931,12 @@ if matching_assignment
              )
            elsif matching_assignment["lifecycle"] == "confirmed-active"
              active_replay_output(input:, requested:, authority:, assignment: matching_assignment)
+           elsif matching_assignment["lifecycle"] == "waived-active" || launch_waiver
+             active_replay_output(
+               input:, requested:, authority:,
+               assignment: matching_assignment.merge("lifecycle" => "waived-active"),
+               launch_waiver:
+             )
            else
              pending_replay_output(input:, requested:, authority:, assignment: matching_assignment)
            end

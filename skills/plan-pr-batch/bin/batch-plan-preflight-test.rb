@@ -165,6 +165,82 @@ class BatchPlanPreflightTest < Minitest::Test
     @workflow_control_helper ||= installed_workflow_control_helper.first
   end
 
+  def installed_unsupported_workflow_control_helper
+    root = Dir.mktmpdir("workflow-control-unsupported-install")
+    File.chmod(0o700, root)
+    (@workflow_control_install_roots ||= []) << root
+    helper = File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight")
+    module_root = File.join(root, "bin/agent_doctor")
+    FileUtils.mkdir_p(File.dirname(helper))
+    FileUtils.mkdir_p(module_root)
+    FileUtils.mkdir_p(File.join(root, ".agents"), mode: 0o700)
+    FileUtils.cp(HELPER, helper)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_readiness.rb", __dir__), module_root)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver.rb", __dir__), module_root)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver_record.rb", __dir__), module_root)
+    File.chmod(0o755, helper)
+    [helper, root]
+  end
+
+  def bootstrap_waiver(root, batch_id:, lane_id:, route:, dispatcher: "codex-collaboration")
+    waiver_dir = File.join(root, "waivers")
+    FileUtils.mkdir_p(waiver_dir, mode: 0o700)
+    path = File.join(waiver_dir, "bootstrap-waiver.json")
+    record = {
+      "type" => "agent-workflow-bootstrap-waiver", "version" => 1,
+      "waiver_id" => "#{batch_id}-human-waiver", "batch_id" => batch_id,
+      "issue" => "shakacode/agent-workflows#299", "granted_at" => "2026-08-02T07:16:33Z",
+      "grant_source" => {
+        "kind" => "direct-in-session-human-user", "thread_id" => "human-thread",
+        "exact_message" => "go ahead with the one-time exception for issue #299."
+      },
+      "authorized_lanes" => [lane_id], "authorized_dispatcher" => dispatcher,
+      "authorized_route" => route.merge("fallbacks" => []),
+      "authorized_exception" => "Use live host-bound route metadata for this exact batch only.",
+      "constraints" => {
+        "serial_execution" => true, "preserve_validation_open_dependency" => true,
+        "generated_keys_forbidden" => true, "synthetic_signatures_forbidden" => true,
+        "inherited_routing_forbidden" => true, "fallback_dispatchers_forbidden" => true,
+        "scope_expansion_forbidden" => true, "other_gate_bypass_forbidden" => true,
+        "merge_authority" => "auto_merge_when_gates_pass"
+      },
+      "not_waived" => [
+        "security preflight", "stage dependency gate", "batch plan gate", "TDD and focused tests",
+        "bin/validate", "independent final-head QA and review", "current-head CI and configured reviewer completion",
+        "unresolved review-thread gate", "autonomous merge eligibility", "merge assurance",
+        "exact-head merge submission", "completed-batch audit"
+      ]
+    }
+    File.write(path, JSON.generate(record))
+    File.chmod(0o600, path)
+    [path, record]
+  end
+
+  def lane_lifecycle_waiver(path:, record:, route:, lane_id: "lane-a", wave: "wave-a",
+                            stage_dependency_plan_id: "trusted-plan-1")
+    batch_plan_id = record.fetch("batch_id")
+    {
+      "type" => "workflow-control-lane-lifecycle-waiver",
+      "version" => 1,
+      "producer" => "human-waived-pr-batch-workflow-control",
+      "waiver_ref" => path,
+      "waiver_id" => record.fetch("waiver_id"),
+      "batch_plan_id" => batch_plan_id,
+      "stage_dependency_plan_id" => stage_dependency_plan_id,
+      "lane_id" => lane_id,
+      "wave" => wave,
+      "state" => "completed",
+      "completed_at" => "2026-08-02T07:30:00Z",
+      "recorded_at" => "2026-08-02T07:30:01Z",
+      "receipt_ref" => "workflow-control-waiver-state://#{batch_plan_id}/stage-dependency-plans/" \
+                       "#{stage_dependency_plan_id}/waves/#{wave}/lanes/#{lane_id}/completed",
+      "dispatcher" => record.fetch("authorized_dispatcher"),
+      "route" => route,
+      "completion_attestation" => "coordinator-observed-completed",
+      "evidence_ref" => "codex-worker://completed-lane-state"
+    }
+  end
+
   def teardown
     Array(@workflow_control_install_roots).each do |root|
       FileUtils.remove_entry(root) if File.exist?(root)
@@ -193,7 +269,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
                 backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
-                lifecycle_receipts: [])
+                lifecycle_receipts: [], lifecycle_waivers: [])
     maps ||= lanes.each_with_index.to_h { |record, index| [record.fetch("id"), touch_map(index + 1, ["lib/#{record.fetch('id')}.rb"])] }
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
@@ -210,6 +286,7 @@ class BatchPlanPreflightTest < Minitest::Test
       },
       "file_touch_map" => maps,
       "lane_lifecycle_receipts" => lifecycle_receipts,
+      "lane_lifecycle_waivers" => lifecycle_waivers,
       "stage_dependency_plan" => {
         "contract" => "stage-dependency-plan",
         "version" => 1,
@@ -550,6 +627,80 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["lane-b"], second_result.dig("launch", "eligible_lane_ids")
     assert_equal [], second_result.dig("launch", "held_lane_ids")
     assert_equal ["lane-a"], second_result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_exact_human_lifecycle_waiver_advances_serial_group_and_replays_stably_on_unsupported_host
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    lanes = [lane("lane-b"), lane("lane-a")]
+    lanes.each { |record| record["serialization_group"] = "serial-writers" }
+    maps = {
+      "lane-a" => touch_map(1, ["CHANGELOG.md"]),
+      "lane-b" => touch_map(2, ["CHANGELOG.md"])
+    }
+    groups = [{ "id" => "serial-writers", "max_concurrency" => 1 }]
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+    input = input_for(
+      lanes:, maps:, groups:, backend: "codex", batch_plan_id: "batch-plan-1", lifecycle_waivers: [waiver]
+    )
+
+    first, first_stderr, first_status = evaluate(input, helper: helper)
+    replay, replay_stderr, replay_status = evaluate(input, helper: helper)
+
+    assert first_status.success?, "#{first_stderr}\n#{first.inspect}"
+    assert replay_status.success?, "#{replay_stderr}\n#{replay.inspect}"
+    assert_equal ["lane-b"], first.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-a"], first.dig("launch", "completed_lane_ids")
+    assert_equal first, replay
+  end
+
+  def test_lifecycle_waiver_rejects_cross_batch_lane_route_and_partial_host_reuse
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    valid = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+    variants = {
+      "batch" => valid.merge("batch_plan_id" => "another-batch"),
+      "lane" => valid.merge("lane_id" => "lane-z"),
+      "dispatcher" => valid.merge("dispatcher" => "remote"),
+      "route" => valid.merge("route" => route.merge("effort" => "high"))
+    }
+
+    variants.each do |label, waiver|
+      result, _stderr, status = evaluate(input_for(backend: "codex", lifecycle_waivers: [waiver]), helper: helper)
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "lane-lifecycle-waiver-invalid", label
+      assert_empty result.dig("launch", "completed_lane_ids"), label
+    end
+
+    File.write(File.join(root, ".agents/signed-launch-capability.json"), "{}\n")
+    result, _stderr, status = evaluate(input_for(backend: "codex", lifecycle_waivers: [valid]), helper: helper)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-waiver-invalid"
+  end
+
+  def test_signed_and_waived_lifecycle_records_for_the_same_lane_are_rejected_as_duplicates
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+    input = input_for(backend: "codex", lifecycle_receipts: [lane_lifecycle_receipt], lifecycle_waivers: [waiver])
+
+    result, _stderr, status = evaluate(input, helper: helper)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-record-duplicate"
+    assert_empty result.dig("launch", "completed_lane_ids")
   end
 
   def test_inline_lane_completion_claim_is_rejected

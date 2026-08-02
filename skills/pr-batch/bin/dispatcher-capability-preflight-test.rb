@@ -106,6 +106,94 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     helper
   end
 
+  def installed_unsupported_dispatcher_helper
+    root = Dir.mktmpdir("dispatcher-unsupported-install")
+    File.chmod(0o700, root)
+    (@dispatcher_install_roots ||= []) << root
+    helper = File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight")
+    module_root = File.join(root, "bin/agent_doctor")
+    FileUtils.mkdir_p(File.dirname(helper))
+    FileUtils.mkdir_p(module_root)
+    FileUtils.mkdir_p(File.join(root, ".agents"), mode: 0o700)
+    FileUtils.cp(HELPER, helper)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_readiness.rb", __dir__), module_root)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver.rb", __dir__), module_root)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver_record.rb", __dir__), module_root)
+    File.chmod(0o755, helper)
+    [helper, root]
+  end
+
+  def bootstrap_waiver(root, batch_id:, lane_id:, route:, dispatcher: "codex-collaboration")
+    waiver_dir = File.join(root, "waivers")
+    FileUtils.mkdir_p(waiver_dir, mode: 0o700)
+    path = File.join(waiver_dir, "bootstrap-waiver.json")
+    record = {
+      "type" => "agent-workflow-bootstrap-waiver",
+      "version" => 1,
+      "waiver_id" => "#{batch_id}-human-waiver",
+      "batch_id" => batch_id,
+      "issue" => "shakacode/agent-workflows#299",
+      "granted_at" => "2026-08-02T07:16:33Z",
+      "grant_source" => {
+        "kind" => "direct-in-session-human-user",
+        "thread_id" => "human-thread",
+        "exact_message" => "go ahead with the one-time exception for issue #299."
+      },
+      "authorized_lanes" => [lane_id],
+      "authorized_dispatcher" => dispatcher,
+      "authorized_route" => route.merge("fallbacks" => []),
+      "authorized_exception" => "Use live host-bound route metadata for this exact batch only.",
+      "constraints" => {
+        "serial_execution" => true,
+        "preserve_validation_open_dependency" => true,
+        "generated_keys_forbidden" => true,
+        "synthetic_signatures_forbidden" => true,
+        "inherited_routing_forbidden" => true,
+        "fallback_dispatchers_forbidden" => true,
+        "scope_expansion_forbidden" => true,
+        "other_gate_bypass_forbidden" => true,
+        "merge_authority" => "auto_merge_when_gates_pass"
+      },
+      "not_waived" => [
+        "security preflight", "stage dependency gate", "batch plan gate", "TDD and focused tests",
+        "bin/validate", "independent final-head QA and review", "current-head CI and configured reviewer completion",
+        "unresolved review-thread gate", "autonomous merge eligibility", "merge assurance",
+        "exact-head merge submission", "completed-batch audit"
+      ]
+    }
+    File.write(path, JSON.generate(record))
+    File.chmod(0o600, path)
+    [path, record]
+  end
+
+  def launch_waiver(path:, record:, assignment:, overrides: {})
+    observation = {
+      "type" => "agent-workflow-waived-host-observation",
+      "version" => 1,
+      "waiver_id" => record.fetch("waiver_id"),
+      "batch_id" => record.fetch("batch_id"),
+      "lane_id" => assignment.fetch("lane_id"),
+      "dispatcher" => assignment.fetch("dispatcher"),
+      "route" => assignment.fetch("route"),
+      "instance_id" => assignment.fetch("instance_id"),
+      "launch_token" => assignment.fetch("launch_token"),
+      "actual_model" => assignment.dig("route", "model"),
+      "actual_effort" => assignment.dig("route", "effort"),
+      "binding_source" => "dispatcher-bound",
+      "attestation" => "instance-bound",
+      "observed_at" => "2026-08-02T08:00:00Z",
+      "routing_mode" => "explicit",
+      "inherited" => false,
+      "evidence_ref" => "codex-worker://live-request-metadata"
+    }.merge(overrides)
+    {
+      "type" => "dispatcher-launch-waiver",
+      "version" => 1,
+      "waiver_ref" => path,
+      "observation" => observation
+    }
+  end
+
   def dispatcher_trust_env(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
     fixed_dispatcher_trust(key_id:, key:)
   end
@@ -1617,6 +1705,201 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal confirmation, confirmed.fetch("launch_confirmation")
     assert_equal "replay-already-active", replay_active.fetch("status")
     refute replay_active.key?("dispatch")
+  end
+
+  def test_exact_human_waiver_activates_and_replays_an_unsupported_host_lane_distinctly
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      helper
+    )
+    replay = dispatch(
+      input.merge("candidates" => [], "active_assignments" => activated.fetch("active_assignments"),
+                  "launch_waiver" => activated.fetch("launch_waiver")),
+      helper
+    )
+
+    assert_equal "replay-already-active", activated.fetch("status")
+    assert_equal "waived-active", activated.dig("active_assignments", 0, "lifecycle")
+    assert_equal waiver_record.fetch("waiver_id"), activated.dig("active_assignments", 0, "waiver_id")
+    assert_equal waiver_path, activated.dig("active_assignments", 0, "waiver_ref")
+    assert_equal "matching-persisted-waived-active-assignment", activated.fetch("reason")
+    assert_equal waiver, activated.fetch("launch_waiver")
+    assert_equal activated.fetch("active_assignments"), replay.fetch("active_assignments")
+    assert_equal "matching-persisted-waived-active-assignment", replay.fetch("reason")
+    refute replay.key?("dispatch")
+  end
+
+  def test_waived_active_replay_rejects_a_different_waiver_for_the_same_batch_lane_and_route
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      helper
+    )
+
+    replacement_record = JSON.parse(JSON.generate(waiver_record))
+    replacement_record["waiver_id"] = "batch-299-replacement-human-waiver"
+    replacement_path = File.join(File.dirname(waiver_path), "replacement-bootstrap-waiver.json")
+    File.write(replacement_path, JSON.generate(replacement_record))
+    File.chmod(0o600, replacement_path)
+    replacement = launch_waiver(
+      path: replacement_path, record: replacement_record, assignment: activated.dig("active_assignments", 0)
+    )
+    replay = dispatch(
+      input.merge("candidates" => [], "active_assignments" => activated.fetch("active_assignments"),
+                  "launch_waiver" => replacement),
+      helper
+    )
+
+    assert_equal "invalid-input", replay.fetch("status")
+    assert_includes replay.fetch("reason"), "same durable launch_waiver"
+  end
+
+  def test_human_waiver_rejects_cross_batch_lane_route_and_inherited_reuse
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    valid = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    variants = {
+      "batch" => [input.merge("batch_id" => "another-batch"), valid],
+      "lane" => [input, launch_waiver(path: waiver_path, record: waiver_record,
+                                      assignment: pending.fetch("dispatch"), overrides: { "lane_id" => "aw299-qa" })],
+      "dispatcher" => [input, launch_waiver(path: waiver_path, record: waiver_record,
+                                            assignment: pending.fetch("dispatch"), overrides: { "dispatcher" => "remote" })],
+      "route" => [input, launch_waiver(path: waiver_path, record: waiver_record,
+                                       assignment: pending.fetch("dispatch"), overrides: { "actual_effort" => "high" })],
+      "inherited" => [input, launch_waiver(path: waiver_path, record: waiver_record,
+                                           assignment: pending.fetch("dispatch"), overrides: { "inherited" => true })]
+    }
+
+    variants.each do |label, (variant_input, waiver)|
+      output = dispatch(
+        variant_input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+        helper
+      )
+      assert_equal "invalid-input", output.fetch("status"), label
+      assert_includes output.fetch("reason"), "launch_waiver", label
+    end
+  end
+
+  def test_human_waiver_rejects_unsafe_file_nonhuman_provenance_and_weakened_constraints
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    wrapper = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+
+    mutations = {
+      "writable file" => -> { File.chmod(0o666, waiver_path) },
+      "nonhuman provenance" => lambda do
+        changed = JSON.parse(JSON.generate(waiver_record))
+        changed["grant_source"]["kind"] = "coordinator-asserted"
+        File.write(waiver_path, JSON.generate(changed))
+        File.chmod(0o600, waiver_path)
+      end,
+      "weakened constraints" => lambda do
+        changed = JSON.parse(JSON.generate(waiver_record))
+        changed["constraints"]["generated_keys_forbidden"] = false
+        File.write(waiver_path, JSON.generate(changed))
+        File.chmod(0o600, waiver_path)
+      end
+    }
+
+    mutations.each do |label, mutation|
+      File.write(waiver_path, JSON.generate(waiver_record))
+      File.chmod(0o600, waiver_path)
+      mutation.call
+      output = dispatch(
+        input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => wrapper),
+        helper
+      )
+      assert_equal "invalid-input", output.fetch("status"), label
+      assert_includes output.fetch("reason"), "launch_waiver", label
+    end
+  end
+
+  def test_human_waiver_is_rejected_for_unknown_partial_host_capability
+    helper, root = installed_unsupported_dispatcher_helper
+    File.write(File.join(root, ".agents/signed-launch-capability.json"), "{}\n")
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_waiver" => launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+      ),
+      helper
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    assert_includes output.fetch("reason"), "unsupported"
   end
 
   def test_forged_v2_confirmation_cannot_activate_by_copying_assignment_and_self_declaring_enums

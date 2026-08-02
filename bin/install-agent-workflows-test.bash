@@ -10,8 +10,8 @@ cleanup() {
 }
 trap cleanup EXIT
 export AGENT_WORKFLOWS_CODEX_EXECUTABLE="$FAKE_CODEX_DIR/codex"
-cat > "$AGENT_WORKFLOWS_CODEX_EXECUTABLE" <<'RUBY'
-#!/usr/bin/env ruby
+ruby -e '
+  File.write(ARGV.fetch(0), %q{#!/usr/bin/env ruby
 abort "unexpected arguments: #{ARGV.inspect}" unless ARGV == %w[plugin list --marketplace agent-workflows]
 case ENV.fetch("QA_CODEX_PLUGIN_STATE", "enabled")
 when "enabled"
@@ -26,7 +26,8 @@ else
   warn "invalid Codex TOML"
   exit 2
 end
-RUBY
+})
+' "$AGENT_WORKFLOWS_CODEX_EXECUTABLE"
 chmod +x "$AGENT_WORKFLOWS_CODEX_EXECUTABLE"
 
 fail() {
@@ -179,6 +180,9 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
   assert_file "$target/bin/agent_doctor/process_runner.rb"
+  assert_file "$target/bin/agent_doctor/signed_launch_readiness.rb"
+  assert_file "$target/bin/agent_doctor/signed_launch_waiver.rb"
+  assert_file "$target/bin/agent_doctor/signed_launch_waiver_record.rb"
   assert_file "$target/bin/agent_doctor/timeout_budget.rb"
   assert_file "$target/bin/agent_doctor/workflows_cli.rb"
   grep -Eq '^agent-workflows-doctor-v1:[0-9a-f]{64}$' "$target/bin/agent_doctor/.agent-workflows-managed" || \
@@ -190,11 +194,56 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not install stack-specific helper"
   assert_file "$target/bin/upgrade-agent-workflows"
   assert_file "$target/.agent-workflows-install.json"
+  [[ -d "$target/.agents" && ! -L "$target/.agents" ]] || \
+    fail "Codex install did not provision a real host-readiness directory"
+  ruby -e 'exit 1 unless (File.lstat(ARGV.fetch(0)).mode & 0o022).zero?' "$target/.agents" || \
+    fail "Codex install left the host-readiness directory group/world writable"
+  assert_contains "$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$ROOT")" \
+    "signed_readiness=unsupported"
+  assert_contains "$(<"$tmp/install-agent-workflows-test.out")" "Signed launch readiness: unsupported"
+  [[ ! -e "$target/.agents/signed-launch-capability.json" ]] || \
+    fail "installer must not synthesize a host signing capability"
+  [[ ! -e "$target/.agents/dispatcher-launch-trust.json" ]] || \
+    fail "installer must not synthesize dispatcher trust"
+  [[ ! -e "$target/.agents/workflow-control-lifecycle-trust.json" ]] || \
+    fail "installer must not synthesize workflow-control trust"
   [[ ! -e "$target/.codex-plugin/plugin.json" ]] || fail "Codex native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+}
+
+test_install_refuses_unsafe_host_readiness_directory_without_replacing_it() {
+  local tmp target outside output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  outside="$tmp/outside-agents"
+  mkdir -p "$target" "$outside"
+  printf 'user-owned\n' > "$outside/sentinel"
+  ln -s "$outside" "$target/.agents"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "installer accepted a symlinked signed launch directory"
+  assert_contains "$output" "Refusing unsafe signed launch directory"
+  [[ -L "$target/.agents" ]] || fail "installer replaced the user-owned .agents symlink"
+  assert_file "$outside/sentinel"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "unsafe readiness install committed metadata"
+
+  rm -f "$target/.agents"
+  mkdir "$target/.agents"
+  chmod 0777 "$target/.agents"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "installer accepted a writable signed launch directory"
+  assert_contains "$output" "Refusing unsafe signed launch directory ownership or permissions"
+  [[ "$(stat -f '%Lp' "$target/.agents")" = "777" ]] || fail "installer silently changed user-owned .agents permissions"
 }
 
 test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
@@ -1748,6 +1797,7 @@ main() {
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
+    test_install_refuses_unsafe_host_readiness_directory_without_replacing_it
     test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
     test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
     test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade

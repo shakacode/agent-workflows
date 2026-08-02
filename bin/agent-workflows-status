@@ -5,6 +5,7 @@ require "json"
 require "optparse"
 require "open3"
 require "rbconfig"
+require_relative "agent_doctor/signed_launch_readiness"
 
 module AgentWorkflowsStatus
   METADATA_NAME = ".agent-workflows-install.json"
@@ -153,6 +154,10 @@ module AgentWorkflowsStatus
     [nil, "delivery-state check failed: #{error}#{e.message}"]
   end
 
+  def signed_launch_readiness(host:, target:)
+    AgentDoctor::SignedLaunchReadiness.inspect(host:, target:)
+  end
+
   def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
     {
       "status" => status,
@@ -168,23 +173,26 @@ module AgentWorkflowsStatus
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
-      "flat" => delivery_state&.fetch("flat", nil)
+      "flat" => delivery_state&.fetch("flat", nil),
+      "signed_launch_readiness" => signed_launch_readiness(host:, target:)
     }
   end
 
   def text_for(payload)
+    readiness = payload.fetch("signed_launch_readiness")
+    readiness_text = "signed_readiness=#{readiness.fetch('capability')} ready=#{readiness.fetch('ready')}"
     case payload.fetch("status")
     when "UP_TO_DATE"
-      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
+      "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} #{readiness_text} target=#{payload['target']}\n"
     when "UPGRADE_AVAILABLE"
       installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
       available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
-      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}\n"
+      "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} #{readiness_text} target=#{payload['target']}\n"
     when "NOT_INSTALLED"
-      "NOT_INSTALLED target=#{payload['target']}\n"
+      "NOT_INSTALLED #{readiness_text} target=#{payload['target']}\n"
     when "CHECK_FAILED"
       guidance = payload["guidance"] ? " #{payload['guidance']}" : ""
-      "CHECK_FAILED #{payload['reason']}#{guidance}\n"
+      "CHECK_FAILED #{payload['reason']} #{readiness_text}#{guidance}\n"
     else
       raise "unknown status: #{payload.fetch('status')}"
     end

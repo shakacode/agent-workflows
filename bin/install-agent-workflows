@@ -26,6 +26,11 @@ Installed paths:
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
   <target>/.agent-workflows-install.json
+
+Signed launch host contract:
+  <target>/.agents/ is reserved for host-owned capability and public trust-anchor files.
+  This installer creates or validates that directory, but never creates private keys,
+  signatures, capability claims, or waiver records.
 USAGE
 }
 
@@ -272,6 +277,29 @@ ensure_real_directory() {
     exit 1
   fi
   mkdir -p "$directory"
+}
+
+ensure_signed_launch_directory() {
+  local directory="$target/.agents"
+
+  if [[ -L "$directory" || -e "$directory" && ! -d "$directory" ]]; then
+    echo "Refusing unsafe signed launch directory: $directory" >&2
+    exit 1
+  fi
+  if [[ ! -e "$directory" ]]; then
+    install -d -m 0700 "$directory"
+  fi
+  if ! ruby -e '
+    directory, installer = ARGV
+    directory_stat = File.lstat(directory)
+    installer_stat = File.lstat(installer)
+    exit 1 unless directory_stat.directory? && !directory_stat.symlink?
+    exit 1 unless directory_stat.uid == installer_stat.uid
+    exit 1 unless (directory_stat.mode & 0o022).zero?
+  ' "$directory" "$repo_root/bin/install-agent-workflows"; then
+    echo "Refusing unsafe signed launch directory ownership or permissions: $directory" >&2
+    exit 1
+  fi
 }
 
 copy_children_preserving_unrelated() {
@@ -618,6 +646,7 @@ if [[ "$delivery_status" -ne 0 ]]; then
   exit 1
 fi
 prepare_metadata
+ensure_signed_launch_directory
 
 if [[ "$mode" = "copy" ]]; then
   ensure_real_directory "$target/bin"
@@ -731,22 +760,30 @@ if [[ -n "$migration_staging" ]]; then
   fi
 fi
 
-cat <<MSG
-Installed ShakaCode agent workflows into:
-  $target
+signed_launch_capability="$(
+  ruby -I "$repo_root/bin" -ragent_doctor/signed_launch_readiness -e '
+    payload = AgentDoctor::SignedLaunchReadiness.inspect(host: ARGV.fetch(0), target: ARGV.fetch(1))
+    puts payload.fetch("capability")
+  ' "$host" "$target"
+)"
 
-Host:
-  $host
-
-Add this to PATH if needed:
-  export PATH="$target/bin:\$PATH"
-
-Initialize a consumer repo with:
-  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared "$repo_root"
-
-Validate a consumer repo with:
-  agent-workflow-seam-doctor --shared "$repo_root"
-
-Check for updates with:
-  agent-workflows-status --host "$host"
-MSG
+printf '%s\n' \
+  "Installed ShakaCode agent workflows into:" \
+  "  $target" \
+  "" \
+  "Host:" \
+  "  $host" \
+  "" \
+  "Signed launch readiness: $signed_launch_capability" \
+  "" \
+  "Add this to PATH if needed:" \
+  "  export PATH=\"$target/bin:\$PATH\"" \
+  "" \
+  "Initialize a consumer repo with:" \
+  "  agent-workflow-seam-doctor --init --root /path/to/consumer/repo --shared \"$repo_root\"" \
+  "" \
+  "Validate a consumer repo with:" \
+  "  agent-workflow-seam-doctor --shared \"$repo_root\"" \
+  "" \
+  "Check for updates with:" \
+  "  agent-workflows-status --host \"$host\""

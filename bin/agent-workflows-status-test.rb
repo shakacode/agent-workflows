@@ -8,6 +8,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "openssl"
 require "rbconfig"
 require "tmpdir"
 
@@ -53,6 +54,42 @@ class AgentWorkflowsStatusTest < Minitest::Test
     File.write(File.join(plugin_root, "plugin.json"), "#{JSON.generate(manifest)}\n")
   end
 
+  def write_signed_launch_capability(target)
+    agents = File.join(target, ".agents")
+    FileUtils.mkdir_p(agents)
+    dispatcher_key = OpenSSL::PKey::RSA.generate(1024)
+    workflow_key = OpenSSL::PKey::RSA.generate(1024)
+    File.write(
+      File.join(agents, "signed-launch-capability.json"),
+      JSON.generate(
+        "type" => "agent-workflow-signed-launch-capability",
+        "version" => 1,
+        "host" => "codex",
+        "producer" => "codex-collaboration",
+        "dispatcher_launch_key_id" => "dispatcher-key",
+        "workflow_control_lifecycle_key_id" => "workflow-key"
+      )
+    )
+    File.write(
+      File.join(agents, "dispatcher-launch-trust.json"),
+      JSON.generate(
+        "type" => "agent-workflow-dispatcher-trust-anchor",
+        "version" => 1,
+        "agent_workflow_dispatcher_trusted_key_id" => "dispatcher-key",
+        "agent_workflow_dispatcher_trusted_public_key_pem" => dispatcher_key.public_to_pem
+      )
+    )
+    File.write(
+      File.join(agents, "workflow-control-lifecycle-trust.json"),
+      JSON.generate(
+        "type" => "agent-workflow-control-lifecycle-trust-anchor",
+        "version" => 1,
+        "agent_workflow_control_lifecycle_trusted_key_id" => "workflow-key",
+        "agent_workflow_control_lifecycle_trusted_public_key_pem" => workflow_key.public_to_pem
+      )
+    )
+  end
+
   def test_not_installed_target_reports_not_installed
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       out, status = run_status({}, "--target", target, "--host", "claude")
@@ -72,6 +109,115 @@ class AgentWorkflowsStatusTest < Minitest::Test
 
         assert_equal 0, status.exitstatus, out
         assert_includes out, "UP_TO_DATE"
+      end
+    end
+  end
+
+  def test_clean_codex_install_reports_signed_launch_as_unsupported_without_a_host_producer
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        assert_equal(
+          {
+            "type" => "agent-workflow-signed-launch-readiness",
+            "version" => 1,
+            "host" => "codex",
+            "capability" => "unsupported",
+            "ready" => false,
+            "reason" => "host-producer-unavailable",
+            "dispatcher_launch" => "unsupported",
+            "workflow_control_lifecycle" => "unsupported",
+            "waiver" => "exact-batch-scoped-human-required"
+          },
+          payload.fetch("signed_launch_readiness")
+        )
+      end
+    end
+  end
+
+  def test_codex_install_reports_supported_when_host_capability_and_both_trust_anchors_are_safe
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+        write_signed_launch_capability(target)
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "supported", payload.dig("signed_launch_readiness", "capability")
+        assert_equal true, payload.dig("signed_launch_readiness", "ready")
+        assert_equal "supported", payload.dig("signed_launch_readiness", "dispatcher_launch")
+        assert_equal "supported", payload.dig("signed_launch_readiness", "workflow_control_lifecycle")
+        assert_equal "codex-collaboration", payload.dig("signed_launch_readiness", "producer")
+      end
+    end
+  end
+
+  def test_partial_signed_launch_files_report_unknown_and_do_not_allow_waiver
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+        FileUtils.mkdir_p(File.join(target, ".agents"))
+        File.write(File.join(target, ".agents/signed-launch-capability.json"), "{}\n")
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+        readiness = JSON.parse(out).fetch("signed_launch_readiness")
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UNKNOWN", readiness.fetch("capability")
+        assert_equal "not-permitted-while-capability-unknown", readiness.fetch("waiver")
+      end
+    end
+  end
+
+  def test_unsafe_agents_symlink_reports_unknown_even_when_host_files_are_absent
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        Dir.mktmpdir("agent-workflows-status-agents") do |outside|
+          File.write(File.join(source, "VERSION"), "9.9.9\n")
+          write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+          File.symlink(outside, File.join(target, ".agents"))
+
+          out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+          assert_equal 0, status.exitstatus, out
+          assert_equal "UNKNOWN", JSON.parse(out).dig("signed_launch_readiness", "capability")
+        end
+      end
+    end
+  end
+
+  def test_private_or_writable_host_trust_material_reports_unknown
+    %w[private-key writable-capability].each do |scenario|
+      Dir.mktmpdir("agent-workflows-status-test") do |target|
+        Dir.mktmpdir("agent-workflows-status-source") do |source|
+          File.write(File.join(source, "VERSION"), "9.9.9\n")
+          write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+          write_signed_launch_capability(target)
+          if scenario == "private-key"
+            path = File.join(target, ".agents/dispatcher-launch-trust.json")
+            record = JSON.parse(File.read(path))
+            record["agent_workflow_dispatcher_trusted_public_key_pem"] = OpenSSL::PKey::RSA.generate(1024).to_pem
+            File.write(path, JSON.generate(record))
+          else
+            File.chmod(0o666, File.join(target, ".agents/signed-launch-capability.json"))
+          end
+
+          out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+          assert_equal 0, status.exitstatus, scenario
+          assert_equal "UNKNOWN", JSON.parse(out).dig("signed_launch_readiness", "capability"), scenario
+        end
       end
     end
   end
