@@ -1,0 +1,546 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Resolve a completed batch's exact target set from bounded coordination status,
+# reconcile terminal target/head and QA snapshots, and emit a deterministic
+# integrity-bound publication receipt. The input snapshots are collected by the
+# coordinator from the configured repository seams immediately before use; this
+# helper is deliberately read-only and replayable.
+
+require "digest"
+require "json"
+require "optparse"
+require "time"
+require "uri"
+require "yaml"
+
+load File.expand_path("closeout-evidence-replay", __dir__) unless defined?(CloseoutEvidenceReplay)
+
+module CompletedBatchPublicationPreflight
+  CONTRACT = "completed-batch-publication-preflight"
+  INPUT_CONTRACT = "completed-batch-publication-preflight-input"
+  VERSION = 1
+  SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  DIGEST_PATTERN = /\Asha256:[0-9a-f]{64}\z/
+  SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
+  TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
+
+  module_function
+
+  def assess(input, coordination_backend:)
+    blockers = []
+    input = {} unless input.is_a?(Hash)
+    validate_input_envelope(input, blockers)
+    backend = normalized_known_string(coordination_backend)
+    blockers << "configured coordination backend is unavailable" unless backend && backend.downcase != "n/a"
+
+    batch_id = normalized_known_string(input["batch_id"])
+    blockers << "publication batch id is invalid" unless batch_id
+    expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
+    batch = resolved_batch(input["coordination_status"], batch_id, blockers)
+    lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+    compare_resolved_scope(expected_targets, resolved_targets, blockers)
+    snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
+    qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
+
+    validate_batch_terminal(batch, blockers)
+    canonical_lanes = canonical_lane_snapshots(lane_entries, blockers)
+    canonical_targets = canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers)
+    canonical_qa = canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers)
+    snapshot = {
+      "batch_id" => batch_id,
+      "coordination_backend" => backend,
+      "coordination" => {
+        "status" => scalar_or_nil(batch&.fetch("status", nil)),
+        "updated_at" => scalar_or_nil(batch&.fetch("updated_at", nil)),
+        "completed_at" => scalar_or_nil(batch&.fetch("completed_at", nil)),
+        "lanes" => canonical_lanes
+      },
+      "targets" => canonical_targets,
+      "qa" => canonical_qa
+    }
+    snapshot = canonicalize(snapshot)
+    snapshot_digest = digest(snapshot)
+    blockers = blockers.uniq
+    eligible = blockers.empty?
+    result = {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "batch_id" => batch_id,
+      "eligible" => eligible,
+      "verdict" => eligible ? "ELIGIBLE" : "BLOCKED",
+      "targets" => expected_targets,
+      "blockers" => blockers,
+      "snapshot" => snapshot,
+      "snapshot_digest" => snapshot_digest
+    }
+    result["receipt_digest"] = digest(result)
+    result
+  rescue StandardError => e
+    blocked_result("publication preflight input is invalid: #{e.class}")
+  end
+
+  def blocked_result(blocker)
+    snapshot = canonicalize(
+      "batch_id" => nil,
+      "coordination_backend" => nil,
+      "coordination" => { "status" => nil, "updated_at" => nil, "completed_at" => nil, "lanes" => [] },
+      "targets" => [],
+      "qa" => []
+    )
+    result = {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "batch_id" => nil,
+      "eligible" => false,
+      "verdict" => "BLOCKED",
+      "targets" => [],
+      "blockers" => [blocker],
+      "snapshot" => snapshot,
+      "snapshot_digest" => digest(snapshot)
+    }
+    result["receipt_digest"] = digest(result)
+    result
+  end
+
+  def valid_receipt?(receipt, expected_batch_id: nil, expected_targets: nil)
+    return false unless receipt.is_a?(Hash)
+    return false unless receipt["contract"] == CONTRACT && receipt["version"] == VERSION
+    return false unless receipt["snapshot"].is_a?(Hash)
+    return false unless receipt["snapshot_digest"].to_s.match?(DIGEST_PATTERN)
+    return false unless receipt["receipt_digest"].to_s.match?(DIGEST_PATTERN)
+    return false unless receipt["snapshot_digest"] == digest(canonicalize(receipt["snapshot"]))
+
+    unsigned = receipt.reject { |key, _value| key == "receipt_digest" }
+    return false unless receipt["receipt_digest"] == digest(canonicalize(unsigned))
+    return false unless receipt["batch_id"] == receipt.dig("snapshot", "batch_id")
+    return false if expected_batch_id && receipt["batch_id"] != expected_batch_id
+
+    target_blockers = []
+    targets = validated_target_set(receipt["targets"], target_blockers, "receipt target")
+    return false unless target_blockers.empty?
+    return false unless targets == receipt["targets"]
+    return false unless targets == receipt.dig("snapshot", "targets").map { |entry| entry.fetch("target") }
+
+    if expected_targets
+      expected_blockers = []
+      expected = validated_target_set(expected_targets, expected_blockers, "expected target")
+      return false unless expected_blockers.empty?
+      return false unless targets == expected
+    end
+
+    if receipt["eligible"]
+      receipt["verdict"] == "ELIGIBLE" && receipt["blockers"] == []
+    else
+      receipt["verdict"] == "BLOCKED" && receipt["blockers"].is_a?(Array) && !receipt["blockers"].empty?
+    end
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def validate_input_envelope(input, blockers)
+    blockers << "publication preflight input contract or version is invalid" unless
+      input["contract"] == INPUT_CONTRACT && input["version"] == VERSION
+    required = %w[batch_id expected_targets coordination_status target_snapshots qa_evidence]
+    missing = required.reject { |key| input.key?(key) }
+    blockers << "publication preflight input fields are missing: #{missing.join(', ')}" unless missing.empty?
+  end
+
+  def resolved_batch(status, batch_id, blockers)
+    unless status.is_a?(Hash)
+      blockers << "coordination status is absent or invalid"
+      return nil
+    end
+    unless status.dig("scope", "kind") == "batch" && status.dig("scope", "batch_id") == batch_id
+      blockers << "coordination status scope does not match publication batch"
+    end
+    batches = status["batches"]
+    unless batches.is_a?(Array)
+      blockers << "coordination batch list is absent or invalid"
+      return nil
+    end
+    matches = batches.select { |candidate| candidate.is_a?(Hash) && candidate["batch_id"] == batch_id }
+    unless matches.length == 1
+      blockers << "coordination batch is absent or ambiguous"
+      return nil
+    end
+
+    matches.first
+  end
+
+  def resolved_lanes(batch, expected_targets, blockers)
+    return [[], []] unless batch
+
+    lanes = batch["lanes"]
+    unless lanes.is_a?(Array) && !lanes.empty? && lanes.all? { |lane| lane.is_a?(Hash) }
+      blockers << "coordination lanes are absent or invalid"
+      return [[], []]
+    end
+    batch_repo = batch["repo"].to_s
+    seen_names = {}
+    seen_targets = {}
+    entries = []
+    lanes.each do |lane|
+      name = normalized_known_string(lane["name"])
+      if !name || seen_names[name.downcase]
+        blockers << "coordination lane identity is absent or duplicated"
+      else
+        seen_names[name.downcase] = true
+      end
+      targets = targets_for_lane(lane, batch_repo, expected_targets)
+      if targets.empty?
+        blockers << "coordination lane #{name || 'UNKNOWN'} target is absent or ambiguous"
+      end
+      targets.each do |target|
+        key = target_key(target)
+        if seen_targets[key]
+          blockers << "#{target_label(target)} appears in multiple coordination lanes"
+        else
+          seen_targets[key] = true
+        end
+        entries << { "name" => name, "target" => target, "lane" => lane }
+      end
+    end
+    entries.sort_by! { |entry| target_sort_key(entry.fetch("target")) + [entry.fetch("name").to_s] }
+    [entries, entries.map { |entry| entry.fetch("target") }]
+  end
+
+  def targets_for_lane(lane, batch_repo, expected_targets)
+    url_targets = %w[pr_url issue_url target_url].filter_map do |field|
+      value = lane[field]
+      next if value.nil?
+
+      url = normalized_known_string(value)
+      return [] unless url
+
+      target = target_from_url(url)
+      return [] unless target
+
+      target
+    end
+    url_targets.uniq! { |target| target_key(target) }
+    return [] if url_targets.length > 1
+
+    raw_targets = lane["targets"]
+    target_rows = []
+    if lane.key?("targets")
+      return [] unless raw_targets.is_a?(Array) && !raw_targets.empty?
+
+      target_rows = raw_targets.map do |raw|
+        number = Integer(raw.to_s.sub(/\A#/, ""), exception: false)
+        candidates = expected_targets.select do |target|
+          target["repo"].casecmp?(batch_repo) && target["number"] == number
+        end
+        return [] unless candidates.one?
+
+        candidates.first
+      end
+      target_rows.uniq! { |target| target_key(target) }
+    end
+
+    if url_targets.any? && target_rows.any?
+      return [] unless url_targets.map { |target| target_key(target) } ==
+                       target_rows.map { |target| target_key(target) }
+
+      url_targets
+    elsif url_targets.any?
+      url_targets
+    else
+      target_rows
+    end
+  end
+
+  def compare_resolved_scope(expected, resolved, blockers)
+    expected_keys = expected.to_h { |target| [target_key(target), target] }
+    resolved_keys = resolved.to_h { |target| [target_key(target), target] }
+    expected_keys.each do |key, target|
+      blockers << "#{target_label(target)} is absent from resolved coordination scope" unless resolved_keys.key?(key)
+    end
+    resolved_keys.each do |key, target|
+      blockers << "#{target_label(target)} is outside the trusted batch target manifest" unless expected_keys.key?(key)
+    end
+  end
+
+  def validate_batch_terminal(batch, blockers)
+    return unless batch
+
+    blockers << "coordination batch is not completed" unless batch["status"] == "completed"
+    blockers << "coordination batch update timestamp is absent or invalid" unless valid_timestamp?(batch["updated_at"])
+    blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
+  end
+
+  def canonical_lane_snapshots(entries, blockers)
+    entries.map do |entry|
+      lane = entry.fetch("lane")
+      target = entry.fetch("target")
+      terminal = lane["status"] == "done" && lane["terminal"] == "done" && valid_timestamp?(lane["closed_at"])
+      blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
+      expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+      blockers << "#{target_label(target)} coordination target state is not #{expected_state}" unless lane["pr_state"] == expected_state
+      evidence = normalized_known_string(lane["evidence_url"])
+      blockers << "#{target_label(target)} coordination terminal evidence is absent" unless evidence
+      {
+        "name" => entry.fetch("name"),
+        "target" => target,
+        "status" => scalar_or_nil(lane["status"]),
+        "terminal" => scalar_or_nil(lane["terminal"]),
+        "closed_at" => scalar_or_nil(lane["closed_at"]),
+        "target_state" => scalar_or_nil(lane["pr_state"]),
+        "evidence" => evidence
+      }
+    end
+  end
+
+  def indexed_target_snapshots(rows, expected_targets, blockers)
+    indexed_rows(rows, expected_targets, blockers, "target snapshot")
+  end
+
+  def indexed_qa_evidence(rows, expected_targets, blockers)
+    indexed_rows(rows, expected_targets, blockers, "QA evidence")
+  end
+
+  def indexed_rows(rows, expected_targets, blockers, label)
+    unless rows.is_a?(Array) && rows.all? { |row| row.is_a?(Hash) }
+      blockers << "#{label} list is absent or invalid"
+      return {}
+    end
+    expected_keys = expected_targets.to_h { |target| [target_key(target), target] }
+    rows.each_with_object({}) do |row, indexed|
+      target = validated_target(row["target"])
+      unless target
+        blockers << "#{label} target is invalid"
+        next
+      end
+      key = target_key(target)
+      blockers << "#{target_label(target)} #{label} is duplicated" if indexed.key?(key)
+      blockers << "#{target_label(target)} #{label} is outside the trusted target manifest" unless expected_keys.key?(key)
+      indexed[key] = row.merge("target" => target)
+    end
+  end
+
+  def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers)
+    lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
+    expected_targets.map do |target|
+      key = target_key(target)
+      row = snapshots[key]
+      unless row
+        blockers << "#{target_label(target)} target snapshot is absent"
+        next({ "target" => target, "state" => nil, "head_sha" => nil, "source" => nil })
+      end
+      expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+      state = scalar_or_nil(row["state"])
+      blockers << "#{target_label(target)} target is not #{expected_state}" unless state == expected_state
+      head_sha = row["head_sha"].to_s.downcase
+      blockers << "#{target_label(target)} exact head SHA is absent or invalid" unless head_sha.match?(SHA_PATTERN)
+      source = normalized_known_string(row["source"])
+      blockers << "#{target_label(target)} target snapshot source is absent" unless source
+      lane_state = lanes_by_target.dig(key, "lane", "pr_state")
+      if lane_state && state && lane_state != state
+        blockers << "#{target_label(target)} coordination and target state disagree"
+      end
+      { "target" => target, "state" => state, "head_sha" => head_sha, "source" => source }
+    end
+  end
+
+  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers)
+    expected_targets.map do |target|
+      key = target_key(target)
+      row = qa_entries[key]
+      head_sha = snapshots.dig(key, "head_sha").to_s.downcase
+      unless row
+        blockers << "#{target_label(target)} QA evidence is absent"
+        next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
+               "evidence_sha256" => nil, "maintainer_waiver" => nil })
+      end
+      evidence = row["evidence"]
+      unless evidence.is_a?(String) && !evidence.empty?
+        blockers << "#{target_label(target)} QA evidence is absent"
+        next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
+               "evidence_sha256" => nil, "maintainer_waiver" => nil })
+      end
+      replay = CloseoutEvidenceReplay.replay(evidence, expected_head_sha: head_sha)
+      qa = replay.fetch("qa_evidence")
+      verdict = qa.fetch("verdict")
+      status = qa.dig("fields", "status")
+      unless %w[SATISFIED NOT_APPLICABLE WAIVED].include?(verdict)
+        blockers << "#{target_label(target)} QA disposition is #{status || verdict}"
+      end
+      waiver = canonical_waiver(row["maintainer_waiver"], target, evidence)
+      if verdict == "WAIVED" && !waiver
+        blockers << "#{target_label(target)} maintainer QA waiver is not replayable"
+      elsif verdict != "WAIVED" && row.key?("maintainer_waiver")
+        blockers << "#{target_label(target)} maintainer QA waiver is inconsistent with QA disposition"
+      end
+      {
+        "target" => target,
+        "head_sha" => head_sha,
+        "verdict" => verdict,
+        "status" => status,
+        "evidence_sha256" => "sha256:#{Digest::SHA256.hexdigest(evidence.encode(Encoding::UTF_8))}",
+        "maintainer_waiver" => waiver
+      }
+    end
+  end
+
+  def canonical_waiver(value, target, evidence)
+    return unless value.is_a?(Hash)
+    return unless value.keys.sort == %w[author author_association body_sha256 url]
+    return unless value["author"].to_s.match?(SAFE_LOGIN_PATTERN)
+    return if value["author"].to_s.downcase.end_with?("[bot]")
+    return unless TRUSTED_ASSOCIATIONS.include?(value["author_association"])
+    return unless value["body_sha256"].to_s.match?(/\A[0-9a-f]{64}\z/)
+    return unless evidence.include?(value["url"].to_s)
+
+    uri = URI.parse(value["url"].to_s)
+    return unless uri.is_a?(URI::HTTPS) && uri.host&.downcase == target["host"]
+    return unless uri.query.nil? && uri.userinfo.nil?
+
+    path = uri.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
+    return unless path && "#{path[1]}/#{path[2]}".casecmp?(target["repo"])
+    return unless Integer(path[4], 10) == target["number"]
+    return unless uri.fragment.to_s.match?(/\Aissuecomment-\d+\z/)
+
+    {
+      "url" => value["url"],
+      "author" => value["author"],
+      "author_association" => value["author_association"],
+      "body_sha256" => value["body_sha256"]
+    }
+  rescue URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def validated_target_set(value, blockers, label)
+    unless value.is_a?(Array) && !value.empty?
+      blockers << "#{label} set is absent or empty"
+      return []
+    end
+    targets = value.filter_map do |raw|
+      target = validated_target(raw)
+      blockers << "#{label} is invalid" unless target
+      target
+    end
+    duplicates = targets.group_by { |target| target_key(target) }.select { |_key, rows| rows.length > 1 }
+    blockers << "#{label} set contains duplicates" unless duplicates.empty?
+    targets.uniq { |target| target_key(target) }.sort_by { |target| target_sort_key(target) }
+  end
+
+  def validated_target(value)
+    return unless value.is_a?(Hash)
+    return unless value.keys.map(&:to_s).sort == %w[host number repo type]
+
+    host = value["host"].to_s.downcase
+    repo = value["repo"].to_s
+    type = value["type"].to_s
+    number = Integer(value["number"], exception: false)
+    return unless host.match?(/\A[A-Za-z0-9.-]+(?::\d+)?\z/)
+    return unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    return unless %w[pull_request issue].include?(type) && number&.positive?
+
+    { "host" => host, "repo" => repo, "type" => type, "number" => number }
+  end
+
+  def target_from_url(value)
+    uri = URI.parse(value)
+    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.query.nil? && uri.fragment.nil? && uri.userinfo.nil?
+
+    path = uri.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
+    return unless path
+
+    validated_target(
+      "host" => uri.port == 443 ? uri.host : "#{uri.host}:#{uri.port}",
+      "repo" => "#{path[1]}/#{path[2]}",
+      "type" => path[3] == "pull" ? "pull_request" : "issue",
+      "number" => Integer(path[4], 10)
+    )
+  rescue URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def target_key(target)
+    [target.fetch("host").downcase, target.fetch("repo").downcase, target.fetch("type"), target.fetch("number")].join("|")
+  end
+
+  def target_sort_key(target)
+    [target.fetch("type") == "pull_request" ? 0 : 1, target.fetch("host").downcase,
+     target.fetch("repo").downcase, target.fetch("number")]
+  end
+
+  def target_label(target)
+    "#{target.fetch('repo')}##{target.fetch('type')}:#{target.fetch('number')}"
+  end
+
+  def normalized_known_string(value)
+    return unless value.is_a?(String)
+
+    normalized = value.unicode_normalize(:nfkc).gsub(/[[:space:]]+/, " ").strip
+    return if normalized.empty? || normalized.match?(/UNKNOWN/i) || normalized.include?("<!--") || normalized.include?("-->")
+
+    normalized
+  end
+
+  def scalar_or_nil(value)
+    value.is_a?(String) ? value : nil
+  end
+
+  def valid_timestamp?(value)
+    return false unless normalized_known_string(value)
+
+    Time.iso8601(value)
+    true
+  rescue ArgumentError
+    false
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) { |key, sorted| sorted[key] = canonicalize(value.fetch(key)) }
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def digest(value)
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(value)))}"
+  end
+
+  def run(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: completed-batch-publication-preflight --workflow-config PATH --input PATH|-"
+      opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
+      opts.on("--input PATH") { |value| options["input"] = value }
+      opts.on("-h", "--help") do
+        puts opts
+        return 0
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    %w[workflow_config input].each do |key|
+      raise OptionParser::MissingArgument, "--#{key.tr('_', '-')}" if options[key].to_s.empty?
+    end
+
+    config = YAML.safe_load(File.read(options.fetch("workflow_config"), encoding: "UTF-8"), aliases: false)
+    raise TypeError, "workflow config must be a mapping" unless config.is_a?(Hash)
+
+    raw = options.fetch("input") == "-" ? $stdin.read : File.read(options.fetch("input"), encoding: "UTF-8")
+    result = assess(JSON.parse(raw), coordination_backend: config["coordination_backend"])
+    puts JSON.pretty_generate(result)
+    result.fetch("eligible") ? 0 : 1
+  rescue OptionParser::ParseError => e
+    warn "Error: #{e.message}"
+    64
+  rescue JSON::ParserError, Psych::Exception, SystemCallError, TypeError => e
+    result = blocked_result("publication preflight input could not be read")
+    result["errors"] = [e.message]
+    puts JSON.pretty_generate(result)
+    1
+  end
+end
+
+exit(CompletedBatchPublicationPreflight.run(ARGV)) if $PROGRAM_NAME == __FILE__

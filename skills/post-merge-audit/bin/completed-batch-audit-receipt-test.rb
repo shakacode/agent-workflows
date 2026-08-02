@@ -7,10 +7,12 @@ require "json"
 require "open3"
 require "tmpdir"
 
+load File.expand_path("completed-batch-publication-preflight", __dir__)
 load File.expand_path("completed-batch-audit-receipt", __dir__)
 
 class CompletedBatchAuditReceiptTest < Minitest::Test
   SCRIPT = File.expand_path("completed-batch-audit-receipt", __dir__)
+  FIXTURES = File.expand_path("../fixtures", __dir__)
 
   def marker(body)
     "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
@@ -50,6 +52,131 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert result.fetch("ready")
     assert_empty result.fetch("blockers")
     assert_equal "clean", result.dig("fields", "verdict")
+  end
+
+  def test_real_premature_hichee_marker_replays_invalid_and_nonready
+    marker = File.read(
+      File.join(FIXTURES, "completed-batch-publication-hichee-premature-marker.txt"),
+      encoding: "UTF-8"
+    )
+    result = CompletedBatchAuditReceipt.replay_marker(
+      marker,
+      expected_batch_id: "hc-b-20260730-backend-closeout"
+    )
+
+    refute result.fetch("well_formed")
+    refute result.fetch("ready")
+    assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+  end
+
+  def test_complete_publish_requires_eligible_publication_preflight_before_post
+    with_fake_gh do |env, directory|
+      env.delete("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT")
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+
+      out, _err, status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert_equal 1, status.exitstatus
+      result = JSON.parse(out)
+      refute result.fetch("well_formed")
+      refute result.fetch("ready")
+      assert_equal ["completed-batch-audit publication preflight failed"], result.fetch("blockers")
+      refute File.exist?(env.fetch("FAKE_GH_LOG")), "publication gate must run before anchor lookup or POST"
+    end
+  end
+
+  def test_publish_binds_snapshot_and_replay_blocks_a_refreshed_snapshot_mismatch
+    with_fake_gh do |env, directory|
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      publish_out, publish_err, publish_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+      assert publish_status.success?, publish_err
+      published = JSON.parse(publish_out)
+      assert published.fetch("ready")
+      assert_match(/\Asha256:[0-9a-f]{64}\z/, published.fetch("publication_snapshot_digest"))
+      posted_body = File.read(env.fetch("FAKE_GH_BODY"), encoding: "UTF-8")
+      assert_equal 1, posted_body.scan("<!-- completed-batch-audit v1").length
+      assert_includes posted_body, "publication_snapshot: sha256:"
+
+      stale_path = File.join(directory, "stale-preflight.json")
+      File.write(stale_path, JSON.generate(publication_preflight(head_sha: "b" * 40)))
+      env["COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"] = stale_path
+      reference_path = File.join(directory, "reference.txt")
+      File.write(reference_path, published.fetch("chat_reference"))
+      replay_out, replay_err, replay_status = Open3.capture3(
+        env,
+        "ruby",
+        SCRIPT,
+        "replay",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--reference-file",
+        reference_path
+      )
+
+      assert replay_status.success?, replay_err
+      replayed = JSON.parse(replay_out)
+      assert replayed.fetch("well_formed")
+      refute replayed.fetch("ready")
+      assert_equal ["completed-batch-audit publication snapshot mismatch or stale"], replayed.fetch("blockers")
+    end
+  end
+
+  def test_bound_snapshot_replay_requires_the_current_exact_target_manifest
+    preflight = publication_preflight
+    bound = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, preflight)
+    different_target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 185
+    }
+
+    result = CompletedBatchAuditReceipt.replay_marker(
+      bound,
+      expected_batch_id: "batch-184",
+      publication_preflight: preflight,
+      expected_targets: [different_target]
+    )
+
+    assert result.fetch("well_formed")
+    refute result.fetch("ready")
+    assert_equal ["completed-batch-audit publication snapshot mismatch or stale"], result.fetch("blockers")
   end
 
   def test_external_blocker_union_forces_derived_readiness_false
@@ -493,7 +620,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       CompletedBatchAuditReceipt::PostOutcomeUnknownError.new(unsafe_message) =>
         "completed-batch-audit comment POST outcome unknown",
       CompletedBatchAuditReceipt::PostReadbackError.new(unsafe_message, comment_id: 9001) =>
-        "completed-batch-audit comment readback verification failed"
+        "completed-batch-audit comment readback verification failed",
+      CompletedBatchAuditReceipt::PublicationPreflightError.new(unsafe_message) =>
+        "completed-batch-audit publication preflight failed"
     }
 
     cases.each do |error, expected|
@@ -530,9 +659,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result = JSON.parse(out)
       refute result.fetch("well_formed")
       refute result.fetch("ready")
-      assert_equal ["completed-batch-audit marker invalid"], result.fetch("blockers")
+      assert_equal ["completed-batch-audit publication preflight failed"], result.fetch("blockers")
       assert_equal(
-        "Conversation status: Follow-ups remain — completed-batch-audit marker invalid.",
+        "Conversation status: Follow-ups remain — completed-batch-audit publication preflight failed.",
         result.fetch("final_status")
       )
       assert_nil result.fetch("chat_reference")
@@ -620,8 +749,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         assert result.fetch("ready")
         posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-        assert_equal full_body, posted_body
-        assert_equal supplied_marker, CompletedBatchAuditReceipt.comment_marker(posted_body)
+        assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+        bound_marker = CompletedBatchAuditReceipt.comment_marker(posted_body)
+        assert_includes bound_marker, "publication_snapshot: sha256:"
+        assert_equal "batch-184", CompletedBatchAuditReceipt.marker_fields(bound_marker).fetch("batch_id")
         assert_equal Digest::SHA256.hexdigest(posted_body), result.dig("receipt", "sha256")
       end
     end
@@ -669,7 +800,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
-  def test_publish_preserves_marker_wrapper_bytes_with_or_without_trailing_newline
+  def test_publish_canonicalizes_marker_wrapper_with_snapshot_binding_regardless_of_trailing_newline
     [ready_marker, ready_marker.chomp].each do |supplied_marker|
       with_fake_gh do |env, directory|
         targets_path = write_json(
@@ -696,7 +827,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         assert publish_status.success?, publish_err
         published = JSON.parse(publish_out)
         posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-        assert_equal supplied_marker, CompletedBatchAuditReceipt.comment_marker(posted_body)
+        bound_marker = CompletedBatchAuditReceipt.comment_marker(posted_body)
+        assert_includes bound_marker, "publication_snapshot: sha256:"
+        assert_equal "batch-184", CompletedBatchAuditReceipt.marker_fields(bound_marker).fetch("batch_id")
         assert_equal Digest::SHA256.hexdigest(posted_body), published.dig("receipt", "sha256")
 
         reference_path = File.join(directory, "reference.txt")
@@ -1915,6 +2048,58 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     path
   end
 
+  def publication_preflight(head_sha: "a" * 40)
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    evidence = <<~MARKER
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR/head #{head_sha}
+      scope: PR #184 exact head
+      automated_checks: focused tests
+      manual_checks: not applicable: no manual surface
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: script
+      -->
+    MARKER
+    input = {
+      "contract" => "completed-batch-publication-preflight-input",
+      "version" => 1,
+      "batch_id" => "batch-184",
+      "expected_targets" => [target],
+      "coordination_status" => {
+        "scope" => { "kind" => "batch", "batch_id" => "batch-184" },
+        "batches" => [{
+          "batch_id" => "batch-184",
+          "repo" => "acme/widgets",
+          "status" => "completed",
+          "updated_at" => "2026-07-18T17:59:59Z",
+          "completed_at" => "2026-07-18T17:59:59Z",
+          "lanes" => [{
+            "name" => "lane-184",
+            "targets" => ["184"],
+            "status" => "done",
+            "terminal" => "done",
+            "closed_at" => "2026-07-18T17:59:59Z",
+            "pr_state" => "merged",
+            "pr_url" => "https://github.com/acme/widgets/pull/184",
+            "evidence_url" => "https://github.com/acme/widgets/pull/184"
+          }]
+        }]
+      },
+      "target_snapshots" => [{
+        "target" => target,
+        "state" => "merged",
+        "head_sha" => head_sha,
+        "source" => "https://github.com/acme/widgets/pull/184"
+      }],
+      "qa_evidence" => [{ "target" => target, "evidence" => evidence }]
+    }
+    CompletedBatchPublicationPreflight.assess(input, coordination_backend: "agent-coord")
+  end
+
   def with_stubbed_gh_api(callable)
     original = CompletedBatchAuditReceipt.method(:gh_api)
     CompletedBatchAuditReceipt.define_singleton_method(:gh_api, callable)
@@ -2053,8 +2238,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "FAKE_GH_LATE_SIDE_EFFECT" => File.join(directory, "gh-late-side-effect.txt"),
         "FAKE_GH_MODE" => mode.to_s,
         "FAKE_TARGET_TYPE" => target_type,
+        "COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT" => File.join(directory, "publication-preflight.json"),
         "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "1" : nil
       }
+      File.write(env.fetch("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"), JSON.generate(publication_preflight))
       yield env, directory
     end
   end

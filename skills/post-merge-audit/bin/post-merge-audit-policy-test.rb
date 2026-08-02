@@ -45,6 +45,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>"
   OBSOLETE_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated terminal disposition records"
   REQUIRED_STRICT_MARKER_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
+  REQUIRED_PUBLICATION_PREFLIGHT = "completed-batch-publication-preflight"
+  REQUIRED_PUBLICATION_SNAPSHOT = "helper-managed `publication_snapshot`"
+  REQUIRED_TERMINAL_PUBLICATION_STATES = "`SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`"
   REQUIRED_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
   REQUIRED_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
   REQUIRED_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
@@ -198,7 +201,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, REQUIRED_COMPLETED_BATCH_MODE_SCOPE,
                       "#{relative_path} should scope completed-batch ownership to completed-batch mode"
-      assert_includes text, REQUIRED_RECEIPT_HELPER_RULE,
+      assert_includes text.gsub(/\s+/, " "), REQUIRED_RECEIPT_HELPER_RULE,
                       "#{relative_path} should document the durable receipt helper manifest"
     end
   end
@@ -220,7 +223,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
     ].each do |rule|
       assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
     end
-    nested_marker_rule = "  - Post this exact durable GitHub comment body, with one concise header, one blank line, and exactly one unchanged v1 wrapper; fill every field explicitly and use `none` rather than omitting a field:\n\n"
+    nested_marker_rule = "  - Give the local marker body below to the receipt helper. It publishes one concise header, one blank line, and exactly one canonical v1 wrapper after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; fill every operator-authored field explicitly and use `none` rather than omitting a field:\n\n"
     indented_marker_block = [
       "    ```text\n",
       "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
@@ -330,6 +333,24 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should make non-backend and not-applicable identities replayable"
       assert_includes text, REQUIRED_TERMINAL_DISPOSITION_REPLAY_RULE,
                       "#{relative_path} should require canonical terminal disposition records"
+    end
+  end
+
+  def test_complete_publication_requires_terminal_coordination_and_exact_head_qa_snapshot
+    REQUIRED_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      normalized_text = text.gsub(/\s+/, " ")
+
+      assert_includes normalized_text, REQUIRED_PUBLICATION_PREFLIGHT,
+                      "#{relative_path} should require the deterministic publication preflight"
+      assert_includes normalized_text, REQUIRED_PUBLICATION_SNAPSHOT,
+                      "#{relative_path} should bind the terminal publication snapshot"
+      assert_includes normalized_text, REQUIRED_TERMINAL_PUBLICATION_STATES,
+                      "#{relative_path} should name the accepted terminal exact-head QA dispositions"
+      assert_includes normalized_text, "unmerged",
+                      "#{relative_path} should block an unmerged coordinated target"
+      assert_includes normalized_text, "in_progress",
+                      "#{relative_path} should block in-progress QA"
     end
   end
 end

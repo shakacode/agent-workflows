@@ -414,13 +414,40 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
+Before publishing `audit_status: complete`, run
+`completed-batch-publication-preflight` against the repository's configured
+`coordination_backend`, a freshly captured bounded targeted coordination status,
+the trusted target manifest, refreshed terminal target/head snapshots, and one
+per-target QA Evidence marker. The preflight deterministically derives the full
+target set from coordination lanes and fails closed when the batch or a lane is
+absent, nonterminal, unmerged/unclosed, or `UNKNOWN`; when an exact-head QA
+disposition is not `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`
+with a replayable maintainer-waiver URL/author/association/body hash; or when
+the configured coordination seam is unavailable. `unknown`, `in_progress`,
+missing, stale-head, and malformed QA evidence block completion.
+
 Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
-Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects.
+For `audit_status: complete`, that parse/bind step additionally requires the
+eligible publication preflight and exact manifest match. Pass the same refreshed
+preflight receipt to `publish` and `replay`
+with `--publication-preflight`; replay reports a snapshot mismatch/staleness
+blocker if coordination, target/head, or QA state no longer matches the
+published binding.
+
+Use `completed-batch-audit-receipt` for both `publish` and `replay`;
+`--targets-json` is a JSON array of exact `host`, `repo`, `type`
+(`pull_request` or `issue`), and positive `number` objects. The preflight input
+contract is `completed-batch-publication-preflight-input` v1 with `batch_id`,
+the same `expected_targets`, raw successful targeted `coordination_status`,
+`target_snapshots` (`target`, terminal `state`, full `head_sha`, `source`), and
+`qa_evidence` (`target`, marker text, plus `maintainer_waiver` only for
+`WAIVED`). The CLI reads `coordination_backend` from `--workflow-config`; do not
+replace the bounded coordination result with a caller-written lane summary.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
+A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also have exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails closed. Legacy receipts without the field remain parseable historical evidence but cannot satisfy the new publication preflight.
 
 A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
 
@@ -436,9 +463,10 @@ In final chat, this compact receipt line immediately precedes the exact `Convers
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
-Post this exact durable GitHub comment body, with one concise header, one blank
-line, and exactly one unchanged v1 wrapper; fill every field explicitly and use
-`none` rather than omitting a field:
+Give this local receipt to the helper. It publishes one concise header, one
+blank line, and exactly one canonical v1 wrapper; the helper injects the
+integrity-bound `publication_snapshot` after `scope_evidence`. Fill every
+operator-authored field explicitly and use `none` rather than omitting a field:
 
 ```text
 Completed-batch audit: replay evidence follows.
