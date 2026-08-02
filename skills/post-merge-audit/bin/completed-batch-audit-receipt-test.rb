@@ -51,10 +51,23 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     false
   end
 
+  def process_state(pid)
+    stat_path = "/proc/#{pid}/stat"
+    return process_alive?(pid) ? "present" : nil unless File.file?(stat_path)
+
+    stat = File.read(stat_path, encoding: "UTF-8")
+    closing_parenthesis = stat.rindex(") ")
+    return "present" unless closing_parenthesis
+
+    stat[(closing_parenthesis + 2)..].split.first
+  rescue Errno::ENOENT, Errno::ESRCH
+    nil
+  end
+
   def wait_for_process_exit(pid, timeout: 2)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
-    sleep 0.01 while process_alive?(pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
-    !process_alive?(pid)
+    sleep 0.01 while process_state(pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+    process_state(pid).nil?
   end
 
   def test_capture_process_timeout_terminates_descendant_after_wrapper_exits
@@ -73,7 +86,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       descendant_pid = Integer(File.read(descendant_pid_path), 10)
 
       assert wait_for_process_exit(descendant_pid),
-             "timed receipt-helper descendant #{descendant_pid} survived after its wrapper exited"
+             "timed receipt-helper descendant #{descendant_pid} survived after its wrapper exited " \
+             "with state #{process_state(descendant_pid).inspect}"
     ensure
       Process.kill("KILL", descendant_pid) if descendant_pid && process_alive?(descendant_pid)
     end

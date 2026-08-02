@@ -992,21 +992,90 @@ module CompletedBatchPublicationPreflight
   def terminate_process_group(process_group_id, wait_thread)
     return unless isolated_process_group?(process_group_id)
 
-    signal_process_group("TERM", process_group_id)
-    unless wait_for_process_group_exit(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
-      signal_process_group("KILL", process_group_id)
-      wait_for_process_group_exit(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
+    descendants = process_group_descendants(
+      process_group_id,
+      deadline: monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)
+    )
+    if descendants
+      # Keep the leader alive while Linux descendants exit so wrappers can reap
+      # them; this avoids orphan zombies when the helper itself is PID 1.
+      terminate_process_group_child_first(process_group_id, wait_thread, descendants)
+    else
+      # procfs is Linux-specific; retain the bounded POSIX group fallback elsewhere.
+      terminate_process_group_fallback(process_group_id, wait_thread)
     end
-    wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
   ensure
     if isolated_process_group?(process_group_id) &&
        process_group_alive?(process_group_id)
       signal_process_group("KILL", process_group_id)
+      leader_reaped = wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+      wait_for_process_group_exit(
+        process_group_id,
+        PROCESS_TERMINATION_GRACE_SECONDS,
+        reap_children: leader_reaped
+      )
     end
+  end
+
+  def terminate_process_group_child_first(process_group_id, wait_thread, descendants)
+    signal_processes("TERM", descendants, process_group_id)
+    unless wait_for_process_group_descendants(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
+      remaining = process_group_descendants(
+        process_group_id,
+        deadline: monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)
+      )
+      signal_processes("KILL", remaining || [], process_group_id)
+      wait_for_process_group_descendants(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
+    end
+
+    leader_reaped = terminate_process_group_leader(process_group_id, wait_thread)
+    signal_process_group("KILL", process_group_id) if process_group_alive?(process_group_id)
+    wait_for_process_group_exit(
+      process_group_id,
+      PROCESS_TERMINATION_GRACE_SECONDS,
+      reap_children: leader_reaped
+    )
+  end
+
+  def terminate_process_group_fallback(process_group_id, wait_thread)
+    signal_process_group("TERM", process_group_id)
+    leader_reaped = wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    unless leader_reaped && !process_group_alive?(process_group_id)
+      signal_process_group("KILL", process_group_id)
+      leader_reaped ||= wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    end
+    wait_for_process_group_exit(
+      process_group_id,
+      PROCESS_TERMINATION_GRACE_SECONDS,
+      reap_children: leader_reaped
+    )
+  end
+
+  def terminate_process_group_leader(process_group_id, wait_thread)
+    return true if wait_thread&.join(0)
+
+    signal_process("TERM", process_group_id, process_group_id)
+    return true if wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+
+    signal_process("KILL", process_group_id, process_group_id)
+    !!wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
   end
 
   def isolated_process_group?(process_group_id)
     process_group_id.is_a?(Integer) && process_group_id.positive? && process_group_id != Process.getpgrp
+  end
+
+  def signal_processes(signal, process_ids, process_group_id)
+    process_ids.each { |pid| signal_process(signal, pid, process_group_id) }
+  end
+
+  def signal_process(signal, pid, process_group_id)
+    return false if pid == Process.pid || Process.getpgid(pid) != process_group_id
+
+    Process.kill(signal, pid)
+    true
+  rescue Errno::ESRCH, Errno::EPERM
+    false
   end
 
   def signal_process_group(signal, process_group_id)
@@ -1025,15 +1094,98 @@ module CompletedBatchPublicationPreflight
     true
   end
 
-  def wait_for_process_group_exit(process_group_id, timeout)
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  def wait_for_process_group_descendants(process_group_id, timeout)
+    deadline = monotonic_deadline(timeout)
+    loop do
+      descendants = process_group_descendants(process_group_id, deadline:)
+      return false unless descendants
+      return true if descendants.empty?
+
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      return false if remaining <= 0
+
+      sleep [remaining, 0.01].min
+    end
+  end
+
+  def wait_for_process_group_exit(process_group_id, timeout, reap_children: false)
+    deadline = monotonic_deadline(timeout)
     while process_group_alive?(process_group_id)
+      reap_process_group_children(process_group_id) if reap_children
+      return true unless process_group_alive?(process_group_id)
+
       remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
       return false if remaining <= 0
 
       sleep [remaining, 0.01].min
     end
     true
+  end
+
+  def process_group_descendants(process_group_id, deadline:)
+    return unless File.directory?("/proc/self")
+
+    records = {}
+    deadline_expired = false
+    Dir.glob("/proc/[0-9]*/stat").each do |path|
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        deadline_expired = true
+        break
+      end
+
+      record = proc_process_record(path)
+      records[record.fetch(:pid)] = record if record&.fetch(:process_group_id) == process_group_id
+    end
+    return if deadline_expired
+
+    records.delete(process_group_id)
+    records.values
+           .sort_by { |record| [-proc_process_depth(record, records), -record.fetch(:pid)] }
+           .map { |record| record.fetch(:pid) }
+  end
+
+  def proc_process_record(path)
+    stat = File.read(path, encoding: "UTF-8")
+    closing_parenthesis = stat.rindex(") ")
+    return unless closing_parenthesis
+
+    fields = stat[(closing_parenthesis + 2)..].split
+    return if fields.length < 3
+
+    {
+      pid: Integer(File.basename(File.dirname(path)), 10),
+      parent_pid: Integer(fields.fetch(1), 10),
+      process_group_id: Integer(fields.fetch(2), 10)
+    }
+  rescue Errno::EACCES, Errno::ENOENT, Errno::EPERM, Errno::ESRCH, ArgumentError
+    nil
+  end
+
+  def proc_process_depth(record, records)
+    depth = 0
+    seen = {}
+    current = record
+    while (parent = records[current.fetch(:parent_pid)]) && !seen[parent.fetch(:pid)]
+      seen[parent.fetch(:pid)] = true
+      depth += 1
+      current = parent
+    end
+    depth
+  end
+
+  def reap_process_group_children(process_group_id)
+    # Ruby-as-PID-1 adopts orphaned group descendants; reap only after the
+    # Open3 wait thread has reaped the original group leader.
+    loop do
+      waited = Process.waitpid2(-process_group_id, Process::WNOHANG)
+      return unless waited
+    end
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def monotonic_deadline(timeout)
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   end
 
   def run(argv)

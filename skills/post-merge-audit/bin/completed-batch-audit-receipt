@@ -4,7 +4,6 @@
 require "json"
 require "digest"
 require "base64"
-require "open3"
 require "optparse"
 require "timeout"
 require "uri"
@@ -30,7 +29,6 @@ module CompletedBatchAuditReceipt
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
   WRITE_PERMISSIONS = %w[admin maintain write].freeze
   DEFAULT_GH_TIMEOUT_SECONDS = 60
-  PROCESS_TERMINATION_GRACE_SECONDS = 0.25
   LEGACY_FIELDS = %w[
     batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
   ].freeze
@@ -709,44 +707,7 @@ module CompletedBatchAuditReceipt
   end
 
   def capture_process(command, input:, timeout:)
-    stdin = stdout = stderr = wait_thread = nil
-    workers = []
-    process_group_id = nil
-    completed = false
-    stdin, stdout, stderr, wait_thread = Open3.popen3(*command, pgroup: true)
-    process_group_id = wait_thread.pid
-    writer = Thread.new do
-      stdin.write(input)
-    rescue Errno::EPIPE, IOError
-      nil
-    ensure
-      stdin.close unless stdin.closed?
-    end
-    stdout_reader = Thread.new { read_process_stream(stdout) }
-    stderr_reader = Thread.new { read_process_stream(stderr) }
-    workers = [writer, stdout_reader, stderr_reader]
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
-
-    [wait_thread, *workers].each do |thread|
-      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      raise Timeout::Error if remaining <= 0 || !thread.join(remaining)
-    end
-
-    result = [stdout_reader.value, stderr_reader.value, wait_thread.value]
-    completed = true
-    result
-  ensure
-    terminate_process_group(process_group_id, wait_thread) unless completed
-    [stdin, stdout, stderr].compact.each do |stream|
-      stream.close unless stream.closed?
-    rescue IOError
-      nil
-    end
-    workers.each do |worker|
-      worker.kill unless worker.join(PROCESS_TERMINATION_GRACE_SECONDS)
-      worker.join
-    end
-    wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    CompletedBatchPublicationPreflight.capture_process(command, input:, timeout:)
   end
 
   def configure_gh_timeout!
@@ -763,59 +724,6 @@ module CompletedBatchAuditReceipt
 
   def gh_timeout_seconds
     @gh_timeout_seconds || DEFAULT_GH_TIMEOUT_SECONDS
-  end
-
-  def read_process_stream(stream)
-    stream.read
-  rescue IOError
-    ""
-  end
-
-  def terminate_process_group(process_group_id, wait_thread)
-    return unless isolated_process_group?(process_group_id)
-
-    signal_process_group("TERM", process_group_id)
-    unless wait_for_process_group_exit(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
-      signal_process_group("KILL", process_group_id)
-      wait_for_process_group_exit(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
-    end
-    wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
-  ensure
-    if isolated_process_group?(process_group_id) &&
-       process_group_alive?(process_group_id)
-      signal_process_group("KILL", process_group_id)
-    end
-  end
-
-  def isolated_process_group?(process_group_id)
-    process_group_id.is_a?(Integer) && process_group_id.positive? && process_group_id != Process.getpgrp
-  end
-
-  def signal_process_group(signal, process_group_id)
-    Process.kill(signal, -process_group_id)
-    true
-  rescue Errno::ESRCH, Errno::EPERM
-    false
-  end
-
-  def process_group_alive?(process_group_id)
-    Process.kill(0, -process_group_id)
-    true
-  rescue Errno::ESRCH
-    false
-  rescue Errno::EPERM
-    true
-  end
-
-  def wait_for_process_group_exit(process_group_id, timeout)
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
-    while process_group_alive?(process_group_id)
-      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      return false if remaining <= 0
-
-      sleep [remaining, 0.01].min
-    end
-    true
   end
 
   def validated_target(target)
