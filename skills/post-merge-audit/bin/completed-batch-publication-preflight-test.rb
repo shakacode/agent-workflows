@@ -6,6 +6,7 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tempfile"
 require "tmpdir"
 
@@ -91,6 +92,66 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         "FAKE_GH_COMMENT" => JSON.generate(valid_waiver_comment(row, input))
       }
       yield env
+    end
+  end
+
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  end
+
+  def wait_for_process_exit(pid, timeout: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    sleep 0.01 while process_alive?(pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+    !process_alive?(pid)
+  end
+
+  def test_capture_process_timeout_terminates_descendant_process_group
+    Dir.mktmpdir("completed-batch-process-group") do |directory|
+      descendant_pid_path = File.join(directory, "descendant.pid")
+      wrapper = 'sleep 30 & descendant=$!; printf "%s\n" "$descendant" > "$1"; wait "$descendant"'
+      descendant_pid = nil
+
+      assert_raises(Timeout::Error) do
+        CompletedBatchPublicationPreflight.capture_process(
+          ["/bin/sh", "-c", wrapper, "process-group-wrapper", descendant_pid_path],
+          input: "",
+          timeout: 0.5
+        )
+      end
+      descendant_pid = Integer(File.read(descendant_pid_path), 10)
+
+      assert wait_for_process_exit(descendant_pid),
+             "timed process descendant #{descendant_pid} survived process-group cleanup"
+    ensure
+      Process.kill("KILL", descendant_pid) if descendant_pid && process_alive?(descendant_pid)
+    end
+  end
+
+  def test_capture_process_timeout_kills_term_resistant_group_leader
+    Dir.mktmpdir("completed-batch-term-resistant") do |directory|
+      child_pid_path = File.join(directory, "child.pid")
+      program = 'trap("TERM") {}; File.write(ARGV.fetch(0), Process.pid.to_s); sleep 30'
+      child_pid = nil
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      assert_raises(Timeout::Error) do
+        CompletedBatchPublicationPreflight.capture_process(
+          [RbConfig.ruby, "-e", program, child_pid_path],
+          input: "",
+          timeout: 0.5
+        )
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      child_pid = Integer(File.read(child_pid_path), 10)
+
+      assert_operator elapsed, :<, 3
+      assert wait_for_process_exit(child_pid),
+             "TERM-resistant process-group leader #{child_pid} survived KILL escalation"
+    ensure
+      Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
     end
   end
 

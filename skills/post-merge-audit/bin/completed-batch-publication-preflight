@@ -675,7 +675,10 @@ module CompletedBatchPublicationPreflight
   def capture_process(command, input:, timeout:)
     stdin = stdout = stderr = wait_thread = nil
     workers = []
-    stdin, stdout, stderr, wait_thread = Open3.popen3(*command)
+    process_group_id = nil
+    completed = false
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*command, pgroup: true)
+    process_group_id = wait_thread.pid
     writer = Thread.new do
       stdin.write(input)
     rescue Errno::EPIPE, IOError
@@ -693,16 +696,21 @@ module CompletedBatchPublicationPreflight
       raise Timeout::Error if remaining <= 0 || !thread.join(remaining)
     end
 
-    [stdout_reader.value, stderr_reader.value, wait_thread.value]
+    result = [stdout_reader.value, stderr_reader.value, wait_thread.value]
+    completed = true
+    result
   ensure
-    terminate_process(wait_thread) if wait_thread&.alive?
+    terminate_process_group(process_group_id, wait_thread) unless completed
     [stdin, stdout, stderr].compact.each do |stream|
       stream.close unless stream.closed?
     rescue IOError
       nil
     end
-    workers.each(&:join)
-    wait_thread&.join
+    workers.each do |worker|
+      worker.kill unless worker.join(PROCESS_TERMINATION_GRACE_SECONDS)
+      worker.join
+    end
+    wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
   end
 
   def configure_gh_timeout!
@@ -731,19 +739,51 @@ module CompletedBatchPublicationPreflight
     ""
   end
 
-  def terminate_process(wait_thread)
-    Process.kill("TERM", wait_thread.pid)
-  rescue Errno::ESRCH
-    wait_thread.join
-  else
-    unless wait_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
-      begin
-        Process.kill("KILL", wait_thread.pid)
-      rescue Errno::ESRCH
-        nil
-      end
+  def terminate_process_group(process_group_id, wait_thread)
+    return unless isolated_process_group?(process_group_id)
+
+    signal_process_group("TERM", process_group_id)
+    unless wait_for_process_group_exit(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
+      signal_process_group("KILL", process_group_id)
+      wait_for_process_group_exit(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
     end
-    wait_thread.join
+    wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+  ensure
+    if isolated_process_group?(process_group_id) &&
+       process_group_alive?(process_group_id)
+      signal_process_group("KILL", process_group_id)
+    end
+  end
+
+  def isolated_process_group?(process_group_id)
+    process_group_id.is_a?(Integer) && process_group_id.positive? && process_group_id != Process.getpgrp
+  end
+
+  def signal_process_group(signal, process_group_id)
+    Process.kill(signal, -process_group_id)
+    true
+  rescue Errno::ESRCH, Errno::EPERM
+    false
+  end
+
+  def process_group_alive?(process_group_id)
+    Process.kill(0, -process_group_id)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_process_group_exit(process_group_id, timeout)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    while process_group_alive?(process_group_id)
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      return false if remaining <= 0
+
+      sleep [remaining, 0.01].min
+    end
+    true
   end
 
   def run(argv)
