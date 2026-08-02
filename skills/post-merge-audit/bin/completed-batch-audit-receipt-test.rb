@@ -42,6 +42,66 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     BODY
   end
 
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  end
+
+  def wait_for_process_exit(pid, timeout: 2)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    sleep 0.01 while process_alive?(pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+    !process_alive?(pid)
+  end
+
+  def test_capture_process_timeout_terminates_descendant_after_wrapper_exits
+    Dir.mktmpdir("completed-batch-receipt-process-group") do |directory|
+      descendant_pid_path = File.join(directory, "descendant.pid")
+      wrapper = 'sleep 30 >/dev/null 2>&1 & descendant=$!; printf "%s\n" "$descendant" > "$1"; wait "$descendant"'
+      descendant_pid = nil
+
+      assert_raises(Timeout::Error) do
+        CompletedBatchAuditReceipt.capture_process(
+          ["/bin/sh", "-c", wrapper, "process-group-wrapper", descendant_pid_path],
+          input: "",
+          timeout: 0.5
+        )
+      end
+      descendant_pid = Integer(File.read(descendant_pid_path), 10)
+
+      assert wait_for_process_exit(descendant_pid),
+             "timed receipt-helper descendant #{descendant_pid} survived after its wrapper exited"
+    ensure
+      Process.kill("KILL", descendant_pid) if descendant_pid && process_alive?(descendant_pid)
+    end
+  end
+
+  def test_capture_process_timeout_kills_term_resistant_group_leader
+    Dir.mktmpdir("completed-batch-receipt-term-resistant") do |directory|
+      child_pid_path = File.join(directory, "child.pid")
+      program = 'trap("TERM") {}; File.write(ARGV.fetch(0), Process.pid.to_s); sleep 30'
+      child_pid = nil
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      assert_raises(Timeout::Error) do
+        CompletedBatchAuditReceipt.capture_process(
+          [RbConfig.ruby, "-e", program, child_pid_path],
+          input: "",
+          timeout: 0.5
+        )
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+      child_pid = Integer(File.read(child_pid_path), 10)
+
+      assert_operator elapsed, :<, 3
+      assert wait_for_process_exit(child_pid),
+             "TERM-resistant receipt-helper group leader #{child_pid} survived KILL escalation"
+    ensure
+      Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+    end
+  end
+
   def test_legacy_complete_marker_is_parseable_but_not_ready_without_publication_snapshot
     result = CompletedBatchAuditReceipt.replay_marker(
       ready_marker,
