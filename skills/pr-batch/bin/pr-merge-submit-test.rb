@@ -250,6 +250,22 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty guard_log
   end
 
+  def test_private_materialized_guard_launch_eacces_is_a_deterministic_error
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :launch_eacces
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: private materialized guarded-direct executable launch was denied (EACCES); " \
+                 "the temporary filesystem may be mounted noexec\n", result.fetch(:stderr)
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
   def test_guard_blob_oid_accepts_only_exact_sha1_or_sha256_lengths
     runner = PrMergeSubmit::Runner.new
 
@@ -1380,7 +1396,15 @@ class PrMergeSubmitTest < Minitest::Test
     executable = merge_submission.dig("guarded_direct", "executable") if merge_submission.is_a?(Hash)
     guard_path = File.join(root, executable.to_s)
     if guard_fixture != :missing && executable.to_s.match?(%r{\A\.agents/bin/[A-Za-z0-9_.-]+\z})
-      File.write(guard_path, fake_guard)
+      guard_body = if guard_fixture == :launch_eacces
+                     blocked_interpreter = File.join(root, "non-executable-guard-interpreter")
+                     File.write(blocked_interpreter, "#!/bin/sh\nexit 0\n")
+                     File.chmod(0o644, blocked_interpreter)
+                     "#!#{blocked_interpreter}\n"
+                   else
+                     fake_guard
+                   end
+      File.write(guard_path, guard_body)
       FileUtils.chmod(guard_fixture == :non_executable ? 0o644 : 0o755, guard_path)
     end
 

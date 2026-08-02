@@ -787,7 +787,9 @@ module PrMergeSubmit
           timeout_seconds: guard_timeout_seconds,
           mutation: true,
           process_label: "guarded-direct executable",
-          chdir: @repo_root
+          chdir: @repo_root,
+          launch_eacces_message: "private materialized guarded-direct executable launch was denied (EACCES); " \
+                                 "the temporary filesystem may be mounted noexec"
         )
       end
     end
@@ -1001,7 +1003,10 @@ module PrMergeSubmit
       raise Error, "gh is not installed or not on PATH"
     end
 
-    def run_process(environment, command, *args, timeout_seconds:, mutation:, process_label:, chdir:)
+    def run_process(
+      environment, command, *args,
+      timeout_seconds:, mutation:, process_label:, chdir:, launch_eacces_message: nil
+    )
       validate_receipt_freshness!(@merge_assurance_receipt) if mutation && @merge_assurance_receipt
       if @cancellation_signal && (mutation || !@mutation_attempted)
         cancellation_signal = @cancellation_signal
@@ -1019,10 +1024,16 @@ module PrMergeSubmit
       stdout_file = Tempfile.new("pr-merge-submit-stdout")
       stderr_file = Tempfile.new("pr-merge-submit-stderr")
       interrupted_signal = nil
-      pid = Process.spawn(
-        environment, command, *args,
-        out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:
-      )
+      pid = begin
+        Process.spawn(
+          environment, command, *args,
+          out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:
+        )
+      rescue Errno::EACCES
+        raise if launch_eacces_message.nil?
+
+        raise Error, launch_eacces_message
+      end
       deadline = monotonic_time + timeout_seconds
       status = nil
       timed_out = false
