@@ -1905,6 +1905,33 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_hichee_data_431_status_row_with_matching_sha_remains_ready
+    head = HICHEE_DATA_431_HEAD
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: hichee_data_431_identity,
+      exact_statuses: [
+        {
+          "id" => 604, "context" => "CodeRabbit", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/604"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+      assert status.success?, out
+      data = JSON.parse(out)
+      other = data.fetch("scopes").fetch("other")
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal true, other.fetch("complete")
+      assert_equal "READY", other.fetch("state")
+      assert_equal [[604, "CodeRabbit", "success"]],
+                   other.fetch("rows").map { |row| row.values_at("id", "name", "state") }
+    end
+  end
+
   def test_partial_combined_status_page_is_unknown_not_complete
     with_fake_gh(
       required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
