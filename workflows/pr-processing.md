@@ -2872,7 +2872,8 @@ already merged, preserves an exact existing queue entry, and uses
 `enqueuePullRequest` only for an exact open PR on a queue-controlled base. With
 no trusted-base `merge_submission` policy, or with explicit
 `mode: merge_queue_only`, a queue-disabled PR fails closed before any merge
-mutation or repository guard invocation.
+mutation or repository guard invocation with deterministic error exit 1. This
+pre-mutation policy rejection is not an `UNKNOWN` outcome.
 
 The only direct-submit exception is this closed trusted-base mapping:
 

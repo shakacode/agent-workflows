@@ -94,15 +94,17 @@ notes.
 
    Keep that value, or omit the mapping, unless the consumer deliberately owns
    a guarded direct-merge exception. Such a consumer may select
-   `merge_queue_or_guarded_direct` and name one executable adapter under
+   `merge_queue_or_guarded_direct` and name one executable guard under
    `.agents/bin`, an exact merge method, and an explicit acknowledgement plus
-   rationale for the non-atomic base binding. The adapter is a path, not a shell
+   rationale for the non-atomic base binding. The guard is a path, not a shell
    command. It receives the fixed argv contract documented in
    [seam-design.md](seam-design.md), and its return value is accepted only after
    live GitHub state proves the authorized head merged exactly. Queue-enabled
-   PRs continue through canonical enqueue and never invoke the adapter. The
+   PRs continue through canonical enqueue and never invoke the guard. A
+   queue-disabled PR without this opt-in returns a deterministic configuration
+   error before mutation. The
    helper executes a private copy of the validated trusted-base bytes with the
-   repository root as its working directory; adapters must resolve repository
+   repository root as its working directory; guards must resolve repository
    files from that working directory or passed argv because runtime `$0` and
    `__dir__` point at the private copy, not the configured `.agents/bin` path.
 
@@ -188,7 +190,7 @@ For repos that keep the checker in the checkout:
 
 The checker fails when the pointer section is missing, core scripts are missing
 or malformed, policy YAML is incomplete, a configured guarded-direct merge
-adapter is malformed, missing, or non-executable, or executable snippets in
+guard is malformed, missing, or non-executable, or executable snippets in
 repo-local or installed shared skill Markdown still contain unresolved
 placeholders such as `<follow-up prefix>`.
 

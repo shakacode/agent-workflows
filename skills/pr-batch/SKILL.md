@@ -821,7 +821,9 @@ then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
 of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
-base is queue-controlled. Queue-disabled submission fails closed by default.
+base is queue-controlled. Queue-disabled submission without an enabled
+guarded-direct seam fails before mutation as a deterministic configuration
+error (exit 1), not an `UNKNOWN` mutation outcome.
 Only a validated trusted-base `merge_submission` opt-in may delegate direct
 submission to one repository-owned executable guard under `.agents/bin`; the
 portable helper never performs a generic direct merge. The fixed-argv guard is

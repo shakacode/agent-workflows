@@ -35,6 +35,7 @@ module PrMergeSubmit
   GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
   GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  GIT_BLOB_OID = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
 
   module_function
 
@@ -398,7 +399,11 @@ module PrMergeSubmit
     def load_merge_submission_policy!
       base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha").to_s
       @repo_root = trusted_repo_root!
-      raw = trusted_blob!(base_sha, POLICY_CONFIG, "trusted-base merge-submission policy")
+      raw = trusted_blob!(
+        base_sha, POLICY_CONFIG, "trusted-base merge-submission policy", allow_missing: true
+      )
+      return { "mode" => "merge_queue_only", "source" => "portable_default" } if raw.nil?
+
       config = YAML.safe_load(
         raw, permitted_classes: [], permitted_symbols: [], aliases: false
       ) || {}
@@ -500,13 +505,29 @@ module PrMergeSubmit
       raise Error, "could not resolve consumer repository root: #{e.message}"
     end
 
-    def trusted_blob!(base_sha, relative_path, context)
+    def trusted_blob!(base_sha, relative_path, context, allow_missing: false)
       stdout, stderr, status = git_capture(
         "-C", @repo_root, "cat-file", "blob", "#{base_sha}:#{relative_path}", chdir: @repo_root
       )
-      raise Error, "#{context} is unavailable: #{failure_output(stdout, stderr)}" unless status.success?
+      unless status.success?
+        return nil if allow_missing && trusted_path_absent?(base_sha, relative_path)
 
-      stdout
+        raise Error, "#{context} is unavailable: #{failure_output(stdout, stderr)}"
+      end
+
+      stdout.b
+    end
+
+    def trusted_path_absent?(base_sha, relative_path)
+      _stdout, _stderr, commit_status = git_capture(
+        "-C", @repo_root, "cat-file", "-e", "#{base_sha}^{commit}", chdir: @repo_root
+      )
+      return false unless commit_status.success?
+
+      stdout, _stderr, tree_status = git_capture(
+        "-C", @repo_root, "ls-tree", base_sha, "--", relative_path, chdir: @repo_root
+      )
+      tree_status.success? && stdout.empty?
     end
 
     def validate_guard_identity!(base_sha, relative_path)
@@ -516,8 +537,9 @@ module PrMergeSubmit
       )
       raise Error, "trusted-base guarded-direct executable metadata is unavailable: #{failure_output(stdout, stderr)}" unless status.success?
 
-      match = stdout.match(/\A(?<mode>\d{6}) blob (?<oid>[0-9a-f]{40,64})\t(?<path>[^\r\n]+)\n?\z/)
-      unless match && match[:mode] == "100755" && match[:path] == relative_path
+      match = stdout.match(/\A(?<mode>\d{6}) blob (?<oid>[0-9a-f]+)\t(?<path>[^\r\n]+)\n?\z/)
+      unless match && valid_git_blob_oid?(match[:oid]) &&
+             match[:mode] == "100755" && match[:path] == relative_path
         raise Error, "trusted-base guarded-direct executable must be one executable regular file"
       end
 
@@ -544,6 +566,10 @@ module PrMergeSubmit
       [identity, trusted_bytes]
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "guarded-direct executable is unavailable: #{relative_path}: #{e.message}"
+    end
+
+    def valid_git_blob_oid?(value)
+      value.is_a?(String) && value.match?(GIT_BLOB_OID)
     end
 
     def git_capture(*args, chdir:)
@@ -635,8 +661,8 @@ module PrMergeSubmit
       end
 
       unless @merge_submission["mode"] == "merge_queue_or_guarded_direct"
-        raise UnknownOutcome, "queue-disabled submission is unsupported by the trusted-base merge_submission " \
-                              "policy; configure an explicit repository-owned guarded-direct exception or use a merge queue"
+        raise Error, "queue-disabled submission is unsupported by the trusted-base merge_submission " \
+                     "policy; configure an explicit repository-owned guarded-direct exception or use a merge queue"
       end
 
       guarded_direct_result(options)

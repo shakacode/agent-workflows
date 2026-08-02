@@ -213,6 +213,8 @@ when the authorized head is an exact terminal merge on the expected base. This
 exception explicitly acknowledges that GitHub direct merge has no atomic
 expected-base OID; it does not make direct merge equivalent to the merge queue.
 Queue-enabled PRs always use canonical enqueue and never invoke the guard.
+On a queue-disabled base, an absent or queue-only seam is a deterministic
+configuration error (exit 1), not an `UNKNOWN` mutation outcome.
 
 ## AGENTS Pointer
 

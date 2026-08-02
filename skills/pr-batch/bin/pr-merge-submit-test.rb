@@ -40,6 +40,7 @@ class PrMergeSubmitTest < Minitest::Test
     enqueue_timeout_unknown enqueue_timeout_merged
   ].freeze
   MUTATION_TIMEOUT_GH_SECONDS = "2"
+  GUARD_TIMEOUT_GH_SECONDS = "2"
   # The remaining timeout modes hang their only gh call, so a startup-induced
   # timeout is the same observable event as the hang under test. They keep the
   # tight deadline that makes their elapsed-time bounds meaningful.
@@ -47,6 +48,9 @@ class PrMergeSubmitTest < Minitest::Test
   NO_TIMEOUT_GH_SECONDS = "60"
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
   MUTATION_TIMEOUT_ATTEMPTS = 3
+  QUEUE_DISABLED_ERROR = "queue-disabled submission is unsupported by the trusted-base " \
+                         "merge_submission policy; configure an explicit repository-owned " \
+                         "guarded-direct exception or use a merge queue"
 
   def test_queue_disabled_pr_without_merge_submission_fails_closed_before_mutation
     trusted_policy = nil
@@ -56,8 +60,8 @@ class PrMergeSubmitTest < Minitest::Test
       trusted_policy_observer: ->(policy) { trusted_policy = policy }
     )
 
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "queue-disabled submission is unsupported"
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: #{QUEUE_DISABLED_ERROR}\n", result.fetch(:stderr)
     assert_equal({ "base_branch" => "main" }, trusted_policy)
     refute trusted_policy.key?("merge_submission")
     refute_includes log, "enqueuePullRequest"
@@ -71,10 +75,35 @@ class PrMergeSubmitTest < Minitest::Test
       merge_submission: { "mode" => "merge_queue_only" }
     )
 
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "queue-disabled submission is unsupported"
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: #{QUEUE_DISABLED_ERROR}\n", result.fetch(:stderr)
     refute_includes log, "enqueuePullRequest"
     assert_empty guard_log
+  end
+
+  def test_only_a_missing_trusted_base_policy_blob_uses_the_portable_default
+    missing_result, missing_log, = run_cli(
+      mode: "direct", merge_submission: nil, policy_fixture: :missing
+    )
+    assert_equal 1, missing_result.fetch(:status).exitstatus
+    assert_equal "Error: #{QUEUE_DISABLED_ERROR}\n", missing_result.fetch(:stderr)
+    refute_empty missing_log
+
+    malformed_result, malformed_log, = run_cli(
+      mode: "direct", merge_submission: nil, policy_fixture: :malformed
+    )
+    assert_equal 1, malformed_result.fetch(:status).exitstatus
+    assert_includes malformed_result.fetch(:stderr),
+                    "Error: trusted-base merge-submission policy is invalid YAML:"
+    assert_empty malformed_log
+
+    invalid_base_result, invalid_base_log, = run_cli(
+      mode: "direct", merge_submission: nil, receipt_base_sha: "f" * 40
+    )
+    assert_equal 1, invalid_base_result.fetch(:status).exitstatus
+    assert_includes invalid_base_result.fetch(:stderr),
+                    "Error: trusted-base merge-submission policy is unavailable:"
+    assert_empty invalid_base_log
   end
 
   def test_guarded_direct_delegates_with_fixed_argv_and_reconciles_exact_merge
@@ -104,7 +133,7 @@ class PrMergeSubmitTest < Minitest::Test
       "--method", "squash"
     ], argv.first(14)
     assert_equal "--merge-assurance-receipt", argv[14]
-    assert File.absolute_path(argv[15]) == argv[15]
+    assert_equal File.absolute_path(argv[15]), argv[15]
     assert_equal [
       "--subject", "Fix the thing (#42)", "--body", "Detailed merge body"
     ], argv.last(4)
@@ -205,6 +234,32 @@ class PrMergeSubmitTest < Minitest::Test
       assert_empty log, label
       assert_empty guard_log, label
     end
+  end
+
+  def test_guard_blob_oid_accepts_only_exact_sha1_or_sha256_lengths
+    runner = PrMergeSubmit::Runner.new
+
+    assert runner.send(:valid_git_blob_oid?, "a" * 40)
+    assert runner.send(:valid_git_blob_oid?, "b" * 64)
+    [0, 39, 41, 63, 65].each do |length|
+      refute runner.send(:valid_git_blob_oid?, "c" * length), length
+    end
+  end
+
+  def test_trusted_blob_returns_non_ascii_bytes_with_binary_encoding
+    runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(:@repo_root, "/trusted/repo")
+    status = Object.new
+    status.define_singleton_method(:success?) { true }
+    trusted_bytes = "#!/bin/sh\n# snowman: \u2603\n"
+    runner.define_singleton_method(:git_capture) do |*_args, **_kwargs|
+      [trusted_bytes, "", status]
+    end
+
+    result = runner.send(:trusted_blob!, HEAD_SHA, ".agents/bin/guard", "test guard")
+
+    assert_equal trusted_bytes.b, result
+    assert_equal Encoding::BINARY, result.encoding
   end
 
   def test_trusted_base_merge_submission_rejects_closed_schema_violations
@@ -893,6 +948,8 @@ class PrMergeSubmitTest < Minitest::Test
     trusted_policy_observer: nil,
     merge_commit_oid: MERGE_COMMIT_SHA,
     merge_submission: SOURCE_REPO_POLICY,
+    policy_fixture: :present,
+    receipt_base_sha: nil,
     guard_fixture: :executable,
     guard_timeout_seconds: nil,
     interrupt_guard: false
@@ -902,7 +959,7 @@ class PrMergeSubmitTest < Minitest::Test
                               [File.expand_path("../../..", __dir__), BASE_SHA]
                             else
                               prepare_consumer_repo(
-                                dir, merge_submission:, guard_fixture:
+                                dir, merge_submission:, policy_fixture:, guard_fixture:
                               )
                             end
       trusted_policy_observer&.call(
@@ -918,7 +975,10 @@ class PrMergeSubmitTest < Minitest::Test
       gh_path = File.join(dir, "gh")
       File.write(
         gh_path,
-        fake_gh(mode:, head:, base:, base_sha:, url_host:, repo:, merge_commit_oid:)
+        fake_gh(
+          mode:, head:, base:, base_sha: receipt_base_sha || base_sha,
+          url_host:, repo:, merge_commit_oid:
+        )
       )
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path) if mode.include?("timeout")
@@ -927,7 +987,8 @@ class PrMergeSubmitTest < Minitest::Test
       unless receipt_mode == :missing
         write_merge_assurance_receipt(
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
-                        base_ref: expected_base, base_sha:, host: HOST, pr_number: 42, gh_dir: dir
+                        base_ref: expected_base, base_sha: receipt_base_sha || base_sha,
+                        host: HOST, pr_number: 42, gh_dir: dir
         )
       end
       environment = cli_environment(
@@ -1069,6 +1130,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def gh_timeout_seconds_for(mode)
     return NO_TIMEOUT_GH_SECONDS unless mode.include?("timeout")
+    return GUARD_TIMEOUT_GH_SECONDS if mode == "guard_timeout"
     return MUTATION_TIMEOUT_GH_SECONDS if MUTATION_TIMEOUT_MODES.include?(mode)
 
     SOLE_CALL_TIMEOUT_GH_SECONDS
@@ -1266,15 +1328,23 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def prepare_consumer_repo(dir, merge_submission:, guard_fixture:)
+  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:)
     root = File.join(dir, "consumer")
     FileUtils.mkdir_p(File.join(root, ".agents/bin"))
     policy = { "base_branch" => "main" }
     policy["merge_submission"] = merge_submission unless merge_submission.nil?
-    File.write(
-      File.join(root, ".agents/agent-workflow.yml"),
-      policy.to_yaml
-    )
+    policy_path = File.join(root, ".agents/agent-workflow.yml")
+    case policy_fixture
+    when :present
+      File.write(policy_path, policy.to_yaml)
+    when :malformed
+      File.write(policy_path, "merge_submission: [\n")
+    when :missing
+      nil
+    else
+      raise "unknown policy fixture: #{policy_fixture.inspect}"
+    end
+    File.write(File.join(root, "README.md"), "consumer fixture\n")
 
     executable = merge_submission.dig("guarded_direct", "executable") if merge_submission.is_a?(Hash)
     guard_path = File.join(root, executable.to_s)
@@ -1293,7 +1363,15 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def run_git!(root, *args)
-    stdout, stderr, status = Open3.capture3("git", *args, chdir: root)
+    environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_PARAMETERS" => nil,
+      "GIT_CONFIG_COUNT" => "1",
+      "GIT_CONFIG_KEY_0" => "commit.gpgSign",
+      "GIT_CONFIG_VALUE_0" => "false"
+    }
+    stdout, stderr, status = Open3.capture3(environment, "git", *args, chdir: root)
     raise "git fixture failed: #{stderr}" unless status.success?
 
     stdout

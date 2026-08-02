@@ -1805,8 +1805,12 @@ module AgentWorkflowSeamDoctor
   def guarded_direct_file_issues(root, relative_path)
     live_path = File.join(root, relative_path)
     parent_paths = %w[.agents .agents/bin].map { |component| File.join(root, component) }
-    if parent_paths.any? { |path| File.lstat(path).symlink? }
-      return ["invalid merge_submission policy: guarded_direct.executable path contains a symlink"]
+    parent_paths.each do |path|
+      stat = File.lstat(path)
+      return ["invalid merge_submission policy: guarded_direct.executable path contains a symlink"] if
+        stat.symlink?
+      return ["invalid merge_submission policy: guarded_direct.executable parent is not a directory"] unless
+        stat.directory?
     end
 
     stat = File.lstat(live_path)
@@ -1816,6 +1820,8 @@ module AgentWorkflowSeamDoctor
       File.executable?(live_path)
 
     []
+  rescue Errno::ENOTDIR
+    ["invalid merge_submission policy: guarded_direct.executable parent is not a directory"]
   rescue Errno::ENOENT, Errno::EACCES
     ["invalid merge_submission policy: guarded_direct.executable is missing or inaccessible"]
   end

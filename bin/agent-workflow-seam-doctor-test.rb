@@ -555,6 +555,34 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_guarded_direct_merge_submission_rejects_unsafe_parent_paths
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_skill(root, "No commands here.\n")
+
+      bin_path = File.join(root, ".agents/bin")
+      FileUtils.rm_rf(bin_path)
+      File.write(bin_path, "not a directory\n")
+      file_out, file_status = run_doctor(root)
+      refute file_status.success?
+      assert_includes file_out, "FAIL agent workflow seam has"
+      assert_includes file_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable parent is not a directory"
+
+      FileUtils.rm_f(bin_path)
+      external_bin = File.join(root, "external-bin")
+      FileUtils.mkdir_p(external_bin)
+      File.symlink(external_bin, bin_path)
+      symlink_out, symlink_status = run_doctor(root)
+      refute symlink_status.success?
+      assert_includes symlink_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable path contains a symlink"
+    end
+  end
+
   def test_optional_autonomous_merge_policy_uses_the_shared_closed_schema
     with_repo do |root|
       write_valid_binstub_contract(root)
