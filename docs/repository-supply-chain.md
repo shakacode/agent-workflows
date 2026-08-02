@@ -45,7 +45,7 @@ unattended marketplace updates when you require human-reviewed provenance.
 
 Every external GitHub Action reference is pinned to a full commit SHA. A version
 comment is documentation only; the commit SHA is the executable identity.
-Dependabot proposes Action updates weekly so a maintainer can inspect the
+Dependabot proposes Action updates monthly so a maintainer can inspect the
 upstream comparison and release notes, update the SHA and version comment
 together, and run `bin/validate`.
 
