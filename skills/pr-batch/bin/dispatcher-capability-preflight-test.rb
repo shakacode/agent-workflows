@@ -139,6 +139,46 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     [helper, root]
   end
 
+  def symlinked_supported_dispatcher_helper
+    root = secure_mktmpdir("dispatcher-symlink-install")
+    File.chmod(0o700, root)
+    (@dispatcher_install_roots ||= []) << root
+    FileUtils.mkdir_p(File.join(root, "skills"))
+    FileUtils.mkdir_p(File.join(root, "bin"))
+    FileUtils.mkdir_p(File.join(root, ".agents"), mode: 0o700)
+    File.symlink(File.expand_path("..", __dir__), File.join(root, "skills/pr-batch"))
+    File.symlink(File.expand_path("../../../bin/agent_doctor", __dir__), File.join(root, "bin/agent_doctor"))
+    key = dispatcher_signing_key
+    records = {
+      "signed-launch-capability.json" => {
+        "type" => "agent-workflow-signed-launch-capability",
+        "version" => 1,
+        "host" => "codex",
+        "producer" => "test-host-producer",
+        "dispatcher_launch_key_id" => "test-dispatcher-key",
+        "workflow_control_lifecycle_key_id" => "test-workflow-control-key"
+      },
+      "dispatcher-launch-trust.json" => {
+        "type" => "agent-workflow-dispatcher-trust-anchor",
+        "version" => 1,
+        "agent_workflow_dispatcher_trusted_key_id" => "test-dispatcher-key",
+        "agent_workflow_dispatcher_trusted_public_key_pem" => key.public_to_pem
+      },
+      "workflow-control-lifecycle-trust.json" => {
+        "type" => "agent-workflow-control-lifecycle-trust-anchor",
+        "version" => 1,
+        "agent_workflow_control_lifecycle_trusted_key_id" => "test-workflow-control-key",
+        "agent_workflow_control_lifecycle_trusted_public_key_pem" => key.public_to_pem
+      }
+    }
+    records.each do |name, record|
+      path = File.join(root, ".agents", name)
+      File.write(path, JSON.generate(record))
+      File.chmod(0o600, path)
+    end
+    [File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight"), root]
+  end
+
   def bootstrap_waiver(root, batch_id:, lane_id:, route:, dispatcher: "codex-collaboration")
     waiver_dir = File.join(root, "waivers")
     FileUtils.mkdir_p(waiver_dir, mode: 0o700)
@@ -208,6 +248,21 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "waiver_ref" => path,
       "waiver_digest" => waiver_digest(record),
       "observation" => observation
+    }
+  end
+
+  def fixed_time_env(root, now)
+    shim = File.join(root, "fixed-time.rb")
+    File.write(shim, <<~RUBY)
+      class << Time
+        def now
+          Time.at(Integer(ENV.fetch("AGENT_WORKFLOWS_TEST_EPOCH"))).utc
+        end
+      end
+    RUBY
+    {
+      "AGENT_WORKFLOWS_TEST_EPOCH" => now.to_i.to_s,
+      "RUBYOPT" => "-r#{shim}"
     }
   end
 
@@ -1778,6 +1833,89 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal activated.fetch("active_assignments"), replay.fetch("active_assignments")
     assert_equal "matching-persisted-waived-active-assignment", replay.fetch("reason")
     refute replay.key?("dispatch")
+  end
+
+  def test_symlink_install_assesses_readiness_against_the_installed_home
+    helper, root = symlinked_supported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      helper
+    )
+
+    assert_equal "invalid-input", activated.fetch("status")
+    assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
+  end
+
+  def test_waived_active_replays_the_exact_activated_waiver_after_the_initial_observation_ages_out
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    observed_at = Time.iso8601(waiver.dig("observation", "observed_at"))
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      fixed_time_env(root, observed_at),
+      helper
+    )
+
+    replay = dispatch(
+      input.merge("candidates" => [], "active_assignments" => activated.fetch("active_assignments"),
+                  "launch_waiver" => activated.fetch("launch_waiver")),
+      fixed_time_env(root, observed_at + AgentDoctor::SignedLaunchWaiver::MAX_OBSERVATION_AGE_SECONDS + 1),
+      helper
+    )
+
+    assert_equal "replay-already-active", replay.fetch("status")
+    assert_equal activated.fetch("active_assignments"), replay.fetch("active_assignments")
+    assert_equal activated.fetch("launch_waiver"), replay.fetch("launch_waiver")
+
+    mutated_waiver = JSON.parse(JSON.generate(activated.fetch("launch_waiver")))
+    mutated_waiver["observation"]["evidence_ref"] = "codex-worker://different-live-request-metadata"
+    rejected = dispatch(
+      input.merge("candidates" => [], "active_assignments" => activated.fetch("active_assignments"),
+                  "launch_waiver" => mutated_waiver),
+      fixed_time_env(root, observed_at + AgentDoctor::SignedLaunchWaiver::MAX_OBSERVATION_AGE_SECONDS + 1),
+      helper
+    )
+
+    assert_equal "invalid-input", rejected.fetch("status")
+    assert_includes rejected.fetch("reason"), "exact launch_waiver wrapper"
   end
 
   def test_waived_active_replay_rejects_a_different_waiver_for_the_same_batch_lane_and_route

@@ -58,7 +58,7 @@ module BatchPlanPreflight
   ].freeze
   LIFECYCLE_FUTURE_SKEW_SECONDS = 300
   LIFECYCLE_RECEIPT_COMPONENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/
-  HELPER_PATH = File.realpath(__FILE__)
+  HELPER_PATH = File.expand_path(__FILE__)
   INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
   WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
   WORKFLOW_CONTROL_TRUST_CONFIG_PATH = File.join(

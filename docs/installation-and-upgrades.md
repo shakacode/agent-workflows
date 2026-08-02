@@ -82,7 +82,8 @@ replacement; they do not cryptographically prove that a human spoke. The
 coordinator must therefore persist the exact direct-user message and thread as
 procedural provenance. The dispatcher additionally requires exact live, dispatcher-bound,
 instance-bound, explicit non-inherited request metadata for the persisted
-assignment and records lifecycle `waived-active`. `observed_at` must be no more
+assignment and records lifecycle `waived-active`. At initial activation,
+`observed_at` must be no more
 than 300 seconds old, no more than 300 seconds in the future, and not earlier
 than a non-future `granted_at`. Both assignment and observation require nonempty
 instance and launch-token identities. Durable evidence schemes are limited to
@@ -93,8 +94,9 @@ are rejected. `merge_authority` is exactly `none`, `ask`, or
 
 The trusted helper canonicalizes the complete waiver record and binds its
 SHA-256 digest into dispatcher and workflow-control wrappers. Dispatcher replay
-persists and compares waiver id, absolute reference, and digest; a record
-mutation at the same path is rejected. This provides procedural record mutation
+persists and compares waiver id, absolute reference, record digest, and the
+complete activated wrapper digest. The exact wrapper may replay after its
+initial observation ages out; wrapper or record mutation is rejected. This provides procedural record mutation
 and replay integrity, not cryptographic proof that a human spoke. The waiver
 file is opened once without following the final symlink, validated through its
 descriptor, and accepted only under a full real directory chain owned by root

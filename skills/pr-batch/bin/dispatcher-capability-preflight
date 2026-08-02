@@ -12,7 +12,7 @@ ACCEPTED_BINDING_EVIDENCE = %w[operator-selected dispatcher-bound].freeze
 NEGATIVE_BINDING_EVIDENCE = %w[unbound binding-rejected binding-failed].freeze
 ACCEPTED_ATTESTATION_EVIDENCE = %w[instance-bound dispatcher-attested].freeze
 NEGATIVE_ATTESTATION_EVIDENCE = %w[unattested attestation-rejected attestation-failed].freeze
-HELPER_PATH = File.realpath(__FILE__)
+HELPER_PATH = File.expand_path(__FILE__)
 INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
 TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
 TRUST_CONFIG_PATH = File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
@@ -276,15 +276,17 @@ end
 def canonical_assignment(assignment)
   assignment.slice(
     "lane_id", "route", "dispatcher", "instance_id", "launch_token", "lifecycle", "candidate_index",
-    "requested", "selection_provenance", "waiver_id", "waiver_ref", "waiver_digest"
+    "requested", "selection_provenance", "waiver_id", "waiver_ref", "waiver_digest", "launch_waiver_digest"
   )
 end
 
 def assignment_waiver_binding_valid?(assignment)
-  has_binding = %w[waiver_id waiver_ref waiver_digest].any? { |field| assignment.key?(field) }
+  has_binding = %w[waiver_id waiver_ref waiver_digest launch_waiver_digest].any? { |field| assignment.key?(field) }
   if assignment["lifecycle"] == "waived-active"
     nonempty_string?(assignment["waiver_id"]) && nonempty_string?(assignment["waiver_ref"]) &&
-      assignment["waiver_digest"].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
+      %w[waiver_digest launch_waiver_digest].all? do |field|
+        assignment[field].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
+      end
   else
     !has_binding
   end
@@ -615,7 +617,8 @@ def active_replay_output(input:, requested:, authority:, assignment:, confirmati
     assignment = assignment.merge(
       "waiver_id" => launch_waiver.dig("observation", "waiver_id"),
       "waiver_ref" => launch_waiver["waiver_ref"],
-      "waiver_digest" => launch_waiver["waiver_digest"]
+      "waiver_digest" => launch_waiver["waiver_digest"],
+      "launch_waiver_digest" => "sha256:#{stable_digest(launch_waiver)}"
     )
   end
   output = {
@@ -642,6 +645,14 @@ end
 def validated_launch_waiver(input, assignment)
   return unless input.key?("launch_waiver")
 
+  replay = assignment["lifecycle"] == "waived-active"
+  launch_waiver_digest = "sha256:#{stable_digest(input['launch_waiver'])}"
+  if replay && assignment["launch_waiver_digest"] != launch_waiver_digest
+    fail_input(
+      "waived-active assignment requires the same durable launch_waiver used for activation, " \
+      "including the exact launch_waiver wrapper"
+    )
+  end
   begin
     require SIGNED_LAUNCH_WAIVER_LIBRARY
   rescue LoadError
@@ -655,7 +666,8 @@ def validated_launch_waiver(input, assignment)
     assignment:,
     host: "codex",
     target: INSTALLATION_ROOT,
-    helper_path: HELPER_PATH
+    helper_path: HELPER_PATH,
+    replay:
   )
   fail_input(reason) unless waiver
   if assignment["lifecycle"] == "waived-active" &&

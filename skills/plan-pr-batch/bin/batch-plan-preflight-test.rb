@@ -197,6 +197,46 @@ class BatchPlanPreflightTest < Minitest::Test
     [helper, root]
   end
 
+  def symlinked_supported_workflow_control_helper
+    root = secure_mktmpdir("workflow-control-symlink-install")
+    File.chmod(0o700, root)
+    (@workflow_control_install_roots ||= []) << root
+    FileUtils.mkdir_p(File.join(root, "skills"))
+    FileUtils.mkdir_p(File.join(root, "bin"))
+    FileUtils.mkdir_p(File.join(root, ".agents"), mode: 0o700)
+    File.symlink(File.expand_path("..", __dir__), File.join(root, "skills/plan-pr-batch"))
+    File.symlink(File.expand_path("../../../bin/agent_doctor", __dir__), File.join(root, "bin/agent_doctor"))
+    key = workflow_control_signing_key
+    records = {
+      "signed-launch-capability.json" => {
+        "type" => "agent-workflow-signed-launch-capability",
+        "version" => 1,
+        "host" => "codex",
+        "producer" => "test-host-producer",
+        "dispatcher_launch_key_id" => "test-dispatcher-key",
+        "workflow_control_lifecycle_key_id" => "test-workflow-control-key"
+      },
+      "dispatcher-launch-trust.json" => {
+        "type" => "agent-workflow-dispatcher-trust-anchor",
+        "version" => 1,
+        "agent_workflow_dispatcher_trusted_key_id" => "test-dispatcher-key",
+        "agent_workflow_dispatcher_trusted_public_key_pem" => key.public_to_pem
+      },
+      "workflow-control-lifecycle-trust.json" => {
+        "type" => "agent-workflow-control-lifecycle-trust-anchor",
+        "version" => 1,
+        "agent_workflow_control_lifecycle_trusted_key_id" => "test-workflow-control-key",
+        "agent_workflow_control_lifecycle_trusted_public_key_pem" => key.public_to_pem
+      }
+    }
+    records.each do |name, record|
+      path = File.join(root, ".agents", name)
+      File.write(path, JSON.generate(record))
+      File.chmod(0o600, path)
+    end
+    [File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight"), root]
+  end
+
   def bootstrap_waiver(root, batch_id:, lane_id:, route:, dispatcher: "codex-collaboration")
     waiver_dir = File.join(root, "waivers")
     FileUtils.mkdir_p(waiver_dir, mode: 0o700)
@@ -686,6 +726,24 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["lane-b"], first.dig("launch", "eligible_lane_ids")
     assert_equal ["lane-a"], first.dig("launch", "completed_lane_ids")
     assert_equal first, replay
+  end
+
+  def test_symlink_install_lifecycle_waiver_assesses_readiness_against_the_installed_home
+    helper, root = symlinked_supported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+
+    result, _stderr, status = evaluate(
+      input_for(backend: "codex", lifecycle_waivers: [waiver]), helper:
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-waiver-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
   end
 
   def test_positive_lifecycle_waiver_is_portable_when_tmpdir_is_world_writable
