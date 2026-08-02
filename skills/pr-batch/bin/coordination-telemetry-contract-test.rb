@@ -8,9 +8,12 @@ ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
+PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
+CONTINUE_SKILL_PATH = File.join(ROOT, "skills/continue/SKILL.md")
 MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "coordinator_route=<model/effort@binding|UNKNOWN>;" \
-                       "lanes=<lane-id:host+worker-route,...>;no guesses"
+                       "lanes=<lane-id:host+model/effort@binding|UNKNOWN>;no guesses"
 HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
@@ -31,6 +34,17 @@ AUDIT_SECTION_REQUIRED_CONCEPTS = {
   "UNKNOWN advertisement condition" => AUDIT_UNKNOWN_ADVERTISEMENT,
   "unavailable outcome" => "`#{AUDIT_UNAVAILABLE}`",
   "required continuation" => AUDIT_REQUIRED_CONTINUATION
+}.freeze
+EVENT_TRANSPORT_REQUIRED_CONCEPTS = {
+  "optional transport" => "Typed-event transport is optional",
+  "unadvertised transport" => "does not advertise it",
+  "unsupported transport" => "reports it unsupported",
+  "distinct unavailable outcome" => "`typed event transport: unavailable`",
+  "nonblocking skip and continuation" =>
+    "skip the emission, and continue without marking the event emission `UNKNOWN`",
+  "advertised attempted-write failure" =>
+    "Only after the transport is advertised does an attempted write that fails, degrades, or is rejected " \
+    "become `UNKNOWN` handoff evidence"
 }.freeze
 
 EXPECTED_OPERATIONAL_SIGNALS = {
@@ -150,6 +164,13 @@ def assert_batch_audit_section_contract(section, location)
   end
 end
 
+def assert_typed_event_transport_section_contract(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  EVENT_TRANSPORT_REQUIRED_CONCEPTS.each do |concept, phrase|
+    assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
+  end
+end
+
 class CoordinationTelemetryContractTest < Minitest::Test
   def test_extract_section_stops_at_a_parent_heading
     fixture = <<~MARKDOWN
@@ -203,7 +224,50 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes telemetry, "`phase.changed`"
     assert_includes telemetry, "best-effort"
     assert_includes telemetry, "No coordination backend (`n/a`): skip the event silently."
-    assert_includes telemetry, "preserve `UNKNOWN`"
+    assert_includes telemetry, "preserve the missing fact as `UNKNOWN`"
+  end
+
+  def test_typed_event_transport_fallback_is_section_local_and_nonblocking
+    {
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"],
+      PR_BATCH_SKILL_PATH => ["## Question And Decision Handling"],
+      PR_MONITORING_SKILL_PATH => ["## Monitoring Loop"],
+      PAUSE_SKILL_PATH => ["## Output Rules"],
+      CONTINUE_SKILL_PATH => ["# Continue"]
+    }.each do |path, headings|
+      text = read_repo_file(path)
+      headings.each do |heading|
+        section = extract_section(text, heading)
+        assert_typed_event_transport_section_contract(section, "#{path} #{heading}")
+      end
+    end
+  end
+
+  def test_typed_event_transport_contract_rejects_each_missing_required_concept
+    transport_unavailable = EVENT_TRANSPORT_REQUIRED_CONCEPTS.fetch("distinct unavailable outcome")
+    assert_equal "`typed event transport: unavailable`", transport_unavailable
+    refute_equal "`#{AUDIT_UNAVAILABLE}`", transport_unavailable
+
+    expected_concepts = [
+      "optional transport",
+      "unadvertised transport",
+      "unsupported transport",
+      "distinct unavailable outcome",
+      "nonblocking skip and continuation",
+      "advertised attempted-write failure"
+    ]
+    assert_equal expected_concepts, EVENT_TRANSPORT_REQUIRED_CONCEPTS.keys
+
+    complete_fixture = EVENT_TRANSPORT_REQUIRED_CONCEPTS.values.join(" | ")
+    EVENT_TRANSPORT_REQUIRED_CONCEPTS.each do |concept, phrase|
+      incomplete_fixture = complete_fixture.sub(phrase, "")
+
+      error = assert_raises(Minitest::Assertion) do
+        assert_typed_event_transport_section_contract(incomplete_fixture, "negative fixture")
+      end
+      assert_includes error.message, "must include the #{concept}"
+    end
   end
 
   def test_registered_batch_manifest_dry_run_carries_pack_and_route_provenance

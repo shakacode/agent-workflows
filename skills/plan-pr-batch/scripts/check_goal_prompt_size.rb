@@ -18,8 +18,8 @@ LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_route=<model/effort@binding|UNKNOWN>;" \
-                                  "lanes=<lane-id:host+worker-route,...>;no guesses"
-BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence."
+                                  "lanes=<lane-id:host+model/effort@binding|UNKNOWN>;no guesses"
+BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
 FINAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
@@ -40,7 +40,7 @@ COORDINATION_DEPENDENCY_PROMPT_LINE =
   "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
   "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
-                               "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam."
+                               "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                               "live=<replay/ref>;" \
@@ -142,6 +142,8 @@ GOAL_PROMPT_FALLBACK_LINE =
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
+READY_ITEM_DONE_WHEN_LINE =
+  "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
@@ -345,12 +347,12 @@ def extract_goal_prompt_template(text, heading, label:)
 end
 
 def with_items(prompt_template, items)
-  updated_prompt = prompt_template.sub(/Items:\n.*?\n{2,}Execution rules:/m) do
-    "Items:\n#{items}\n\nExecution rules:"
+  updated_prompt = prompt_template.sub(/Items:\n.*?\nExecution rules:/m) do
+    "Items:\n#{items}\nExecution rules:"
   end
   if updated_prompt == prompt_template
     abort_with_failure(
-      "goal prompt template must contain an Items section followed by a blank line and Execution rules:"
+      "goal prompt template must contain an Items section followed by Execution rules:"
     )
   end
 
@@ -869,19 +871,19 @@ bulky_items = (1..12).map do |number|
 end.join("\n")
 
 first_ready_item = <<~ITEM.chomp
-  - Target: Issue #1: https://github.com/shakacode/react_on_rails/issues/1
+  - Target: Issue #1: https://github.com/acme/x/issues/1
     Original: n/a.
-    Goal: Add size guard.
-    Notes: implementation.
-    Done when: authority state with head evidence.
+    Goal: Guard.
+    Notes: impl.
+    Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 
 second_ready_item = <<~ITEM.chomp
-  - Target: Issue #2: https://github.com/shakacode/react_on_rails/issues/2
+  - Target: Issue #2: https://github.com/acme/x/issues/2
     Original: n/a.
-    Goal: Review routing.
-    Notes: QA hard route.
-    Done when: authority state with head evidence.
+    Goal: Route.
+    Notes: QA.
+    Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 
 mixed_route_ready_items = [first_ready_item, second_ready_item].join("\n")
@@ -889,6 +891,11 @@ mixed_route_ready_items = [first_ready_item, second_ready_item].join("\n")
 [bulky_items, first_ready_item, second_ready_item].each do |fixture|
   ITEM_FIXTURE_FIELD_PREFIXES.each do |prefix|
     abort_with_failure("goal prompt fixture is missing current item field #{prefix}") unless fixture.include?(prefix)
+  end
+end
+[first_ready_item, second_ready_item].each do |fixture|
+  unless fixture.lines.map(&:strip).include?(READY_ITEM_DONE_WHEN_LINE)
+    abort_with_failure("ready-item fixture is missing the exact merge-authority completion contract")
   end
 end
 

@@ -31,8 +31,12 @@ write. If a new actor takes over abandoned ownership, emit private-backend
 `human_intervention` with `kind: takeover`; if a fenced replacement supersedes
 the prior actor, use `kind: supersede`. A routine same-thread resume with the
 same verified holder is neither a takeover nor a supersede and emits no event.
-Backend `n/a` skips silently; a degraded or rejected event write is best-effort
-and remains `UNKNOWN` in the resumed handoff.
+Backend `n/a` skips silently. Typed-event transport is optional: when an active
+private backend does not advertise it or reports it
+unsupported, record `typed event transport: unavailable`, skip the emission,
+and continue without marking the event emission `UNKNOWN`. Only after the
+transport is advertised does an attempted write that fails, degrades, or is
+rejected become `UNKNOWN` handoff evidence.
 
 If the user supplied focus text or arguments, treat it as additional direction or a narrowed scope
 for what to continue.

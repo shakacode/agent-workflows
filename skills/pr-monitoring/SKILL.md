@@ -140,9 +140,15 @@ cohorts on the new head.
      `help_requested`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 
 Typed event emission is best-effort and follows the canonical `pr-batch`
-backend-neutral rule: backend `n/a` skips silently; a degraded backend, missing
-required field, or rejected write is recorded as `UNKNOWN` in the handoff and
-does not replace the primary monitoring action.
+backend-neutral rule. Backend `n/a` skips silently. Typed-event transport is
+optional: when an active private backend does not advertise it or reports it
+unsupported, record `typed event transport: unavailable`, skip the emission,
+and continue without marking the event emission `UNKNOWN`. Only after the
+transport is advertised does an attempted write that fails, degrades, or is
+rejected become `UNKNOWN` handoff evidence. Do not attempt an event with a
+missing required field; preserve the missing payload fact as `UNKNOWN`
+separately from event-emission status. Typed events do not replace the primary
+monitoring action.
 
 ## Final States
 

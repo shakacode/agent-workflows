@@ -25,8 +25,13 @@ Print operator prompts for safe agent-runner restarts.
 - For a PR-batch help-needed pause, emit private-backend `help_requested`
   alongside the restart/block handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. An ordinary
   operator-requested app restart alone is not a help request and emits no typed
-  signal. Backend `n/a` skips silently; a degraded or rejected write is
-  best-effort and recorded as `UNKNOWN` in the handoff.
+  signal. Backend `n/a` skips silently. Typed-event transport is optional: when
+  an active private backend
+  does not advertise it or reports it unsupported, record
+  `typed event transport: unavailable`, skip the emission, and continue without
+  marking the event emission `UNKNOWN`. Only after the transport is advertised
+  does an attempted write that fails, degrades, or is rejected become `UNKNOWN`
+  handoff evidence.
 - Include the new-chat restart prompt when the user asks how to restart,
   resume after an app restart, move to a new chat, or preserve copy/paste
   handoff state.

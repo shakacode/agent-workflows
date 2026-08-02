@@ -152,9 +152,13 @@ packets and handoffs:
 
 Include batch, lane, agent, repository, target, branch, and status context when
 known. Typed payload fields remain data rather than path components. Event
-writes are best-effort for the primary operation: backend `n/a` skips silently,
-while degraded, unavailable, or rejected writes become `UNKNOWN` handoff
-evidence. Public claim comments are not a typed event transport.
+writes are best-effort for the primary operation. Backend `n/a` skips silently.
+Typed-event transport is optional: when an active private backend does not
+advertise it or reports it unsupported, record
+`typed event transport: unavailable`, skip the emission, and continue without
+marking the event emission `UNKNOWN`. Only after the transport is advertised
+does an attempted write that fails, degrades, or is rejected become `UNKNOWN`
+handoff evidence. Public claim comments are not a typed event transport.
 
 Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
 own those lifecycle events; workers do not duplicate them. After terminal
