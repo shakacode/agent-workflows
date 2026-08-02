@@ -277,6 +277,7 @@ precise blocker.
    Use A/B/C group letters
    only when multiple prompts are created, and get `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell.
+   Do not end the batch title with a period; the line ends with the title text.
    Use `Thread handle:` as the first worker-specific line:
    `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` from
    the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
@@ -355,7 +356,8 @@ Return:
   installed backend does not support queue state, omit this section and note that
   queue state is unavailable.
 - Residual risks and maintainer decisions needed.
-- Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+- Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action as an exact command, paste-ready prompt, URL, or question, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
+- Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
 
 ## Common Mistakes
 

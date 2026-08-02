@@ -1135,6 +1135,7 @@ owner/serial decision without repeating the expanded map:
 Use this goal prompt shape:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+Do not end the batch title with a period; the line ends with the title text.
 Resolve `<PROJECT>` from the optional `repo_prefix` in
 `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII
 letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
@@ -1154,7 +1155,7 @@ dispatch; workers copy it unchanged.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
 
@@ -1311,7 +1312,53 @@ marked `blocked`, release-audit `in_progress`, or `unknown`, or still `UNKNOWN`;
 a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
 use the documented fallback evidence.
 
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive.
+End the final user-visible message carrying the batch handoff with the [Unblock Block](#unblock-block), required whenever the status is not clean, followed by the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive; a `Follow-ups remain` handoff without the Unblock Block is incomplete for the same reason, because the operator cannot tell which small action to take next.
+
+### Unblock Block
+
+<!-- Canonical unblock-block copy. Skills should point here instead of duplicating this section. -->
+
+Any conversation that stops non-clean — every final `Conversation status: Follow-ups remain — <each exact action or blocker>.` — must let the operator act without reading anything above the closing lines. Emit exactly one `Unblock:` block as the last thing before that status line.
+
+Closing order for the final user-visible message, with nothing between these:
+
+1. The compact `Completed-batch audit:` receipt line, when a completed-batch audit applies.
+2. The `Unblock:` block, whenever the final status is `Follow-ups remain`.
+3. The exact `Conversation status:` line.
+
+Omit the block when the final status is `Conversation status: Ready for archiving.`; that line already says the only remaining action is archiving.
+
+```text
+Unblock:
+1. [<you|agent|external>] <smallest next action> — <exact command, paste-ready prompt, URL, or question>
+   Help: <a different way to clear this same blocker, or `none — <reason>`>
+2. ...
+```
+
+Rules:
+
+- One numbered entry per exact blocker in the same normalized blocker union rendered in the `Conversation status` line. Never drop a blocker, never add one that is missing from that union, and never merge two blockers into one entry.
+- Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark any entry whose position differs from its status-line position with `(reordered)` after the owner tag, so a skimming operator reads the divergence as deliberate rather than as a mismatch.
+- `[you]` means the operator must act before anything else moves, including any manual resume prompt they have to paste after a runner restart. `[agent]` means this thread resumes on its own through a real trigger — name it, such as the 15-minute monitor wake or the bounded watch window. Never tag work `[agent]` when it cannot continue without the operator; manual resume instructions are always `[you]`. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required.
+- Each action is the smallest next step, not the remaining plan, and is executable as written: an exact shell command, an exact prompt to paste, an exact URL, or the exact question with its allowed answers.
+- Each `Help:` line offers one genuinely different route to clearing that same blocker — waive, rerun, reassign, cancel the lane or batch, escalate to a named owner, or the exact skill or workflow section that performs it — or exactly `none — <reason>` when no alternative exists. Do not restate the primary action as its own help.
+- An `UNKNOWN` fact is a blocker; its entry names the exact command or check that resolves it.
+- Carry only blockers. Decisions, evidence, and FYI items stay in the handoff body above.
+- When every entry is `[agent]` or `[external]`, still emit the block and say that waiting is the correct action, so the operator can tell that nothing is owed from them.
+
+Worked example. The status line renders PR #124 first, but answering PR #123 with
+`migrate` forces a re-push that restarts PR #124's checks, so the operator-owned
+entry leads instead. The `(reordered)` marker tells a skimming operator that the
+divergence from the status line is deliberate:
+
+```text
+Unblock:
+1. [you] (reordered) Answer the storage-format question on PR #123 — https://github.com/OWNER/REPO/pull/123#discussion_r1 — reply `keep` or `migrate`
+   Help: reply `defer` to record it as an accepted-deferral against PR #123 and keep that lane open on its existing PR; the question moves to a follow-up instead of blocking this batch.
+2. [external] Hosted CI `build` on PR #124 is queued and clears when the run finishes; no action needed from you
+   Help: if it is still queued at the next monitor wake, cancel and retrigger with `gh run cancel --repo OWNER/REPO <run-id>` then `gh run rerun --repo OWNER/REPO <run-id>`; `--failed` does not apply while a run is queued.
+Conversation status: Follow-ups remain — PR #124 (pending): hosted CI `build`; PR #123 (open): answer storage-format question.
+```
 
 ### Goal Mode Completion Contract
 
@@ -1874,9 +1921,10 @@ target list for each batch:
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule from
 [Plan To Goal Handoff](#plan-to-goal-handoff), and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+Do not end the batch title with a period; the line ends with the title text.
 
 ```text
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.
+Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
@@ -2013,7 +2061,7 @@ Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-Immediately before the exact final `Conversation status` line, emit only:
+Immediately before the closing lines — the [Unblock Block](#unblock-block) when the status is not clean, then the exact final `Conversation status` line — emit only:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
@@ -2139,7 +2187,7 @@ The closeout lane is:
     ranges. Reserve release/range audit for final-release readiness, suspected
     bad merges, missing or unverified batch scope, or a lightweight sweep that
     finds a blocker, failed post-merge check, or credible release-readiness risk.
-13. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker.
+13. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker, and emit the [Unblock Block](#unblock-block) immediately before it with one entry per blocker in that same union.
 
 ## Self-Review Gate
 
