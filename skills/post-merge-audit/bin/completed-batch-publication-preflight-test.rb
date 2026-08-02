@@ -154,7 +154,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     }
   end
 
-  def with_fake_waiver_gh(input, mode: "success")
+  def with_fake_waiver_gh(input, mode: "success", author_permission: "write")
     Dir.mktmpdir("completed-batch-publication-preflight") do |directory|
       bin = File.join(directory, "bin")
       FileUtils.mkdir_p(bin)
@@ -176,6 +176,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
         if target
           puts JSON.generate(target.fetch("payload"))
+        elsif endpoint == "repos/shakacode/hichee/collaborators/justin808/permission"
+          puts JSON.generate(
+            "permission" => ENV.fetch("FAKE_GH_AUTHOR_PERMISSION"),
+            "user" => { "login" => "justin808", "type" => "User" }
+          )
         elsif endpoint.include?("/issues/comments/")
           exit 1 if ENV.fetch("FAKE_GH_MODE") == "not_found"
 
@@ -217,6 +222,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
         "FAKE_GH_LOG" => File.join(directory, "gh.log"),
         "FAKE_GH_MODE" => mode,
+        "FAKE_GH_AUTHOR_PERMISSION" => author_permission,
         "FAKE_GH_COMMENT" => JSON.generate(valid_waiver_comment(row, input)),
         "FAKE_GH_TARGETS" => JSON.generate(targets),
         "FAKE_BATCH_ID" => input.fetch("batch_id"),
@@ -842,6 +848,39 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
           assert_includes(
             File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true),
             "api --hostname github.com repos/shakacode/hichee/issues/comments/999999999999999999"
+          )
+        end
+      end
+    end
+  end
+
+  def test_cli_waiver_author_requires_current_write_permission
+    %w[read triage collaborator].each do |permission|
+      input = fixture("completed-batch-publication-hichee-terminal.json")
+      with_fake_waiver_gh(input, author_permission: permission) do |env|
+        Tempfile.create(["agent-workflow", ".yml"]) do |config|
+          config.write("coordination_backend: agent-coord private backend\n")
+          config.flush
+          out, _err, status = Open3.capture3(
+            env,
+            "ruby",
+            SCRIPT,
+            "--workflow-config",
+            config.path,
+            "--input",
+            File.join(FIXTURES, "completed-batch-publication-hichee-terminal.json")
+          )
+
+          assert_equal 1, status.exitstatus, permission
+          result = JSON.parse(out)
+          refute result.fetch("eligible"), permission
+          assert_includes result.fetch("blockers"),
+                          "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable",
+                          permission
+          assert_includes(
+            File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true),
+            "api --hostname github.com repos/shakacode/hichee/collaborators/justin808/permission",
+            permission
           )
         end
       end

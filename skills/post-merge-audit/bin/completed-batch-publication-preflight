@@ -27,6 +27,7 @@ module CompletedBatchPublicationPreflight
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
+  WRITE_PERMISSIONS = %w[write maintain admin].freeze
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
   COORDINATION_CAPTURE_TIMEOUT_SECONDS = 25
@@ -685,12 +686,8 @@ module CompletedBatchPublicationPreflight
     return unless issue_api_url_matches_target?(comment["issue_url"], target)
     return unless valid_timestamp?(comment["created_at"]) && valid_timestamp?(comment["updated_at"])
 
-    user = comment["user"]
-    return unless user.is_a?(Hash)
-
-    author = user["login"].to_s
-    return unless author.match?(SAFE_LOGIN_PATTERN) && !author.downcase.end_with?("[bot]")
-    return unless TRUSTED_HUMAN_TYPES.include?(user["type"])
+    author = waiver_comment_author(comment)
+    return unless author
 
     association = comment["author_association"].to_s
     return unless TRUSTED_ASSOCIATIONS.include?(association)
@@ -862,7 +859,36 @@ module CompletedBatchPublicationPreflight
   end
 
   def authenticated_waiver_comment(host:, repo:, comment_id:)
-    authenticated_gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+    comment = authenticated_gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+    author = waiver_comment_author(comment)
+    return unless author
+
+    permission = authenticated_gh_api(host, "repos/#{repo}/collaborators/#{author}/permission")
+    comment if verified_waiver_author_permission?(comment, permission)
+  end
+
+  def verified_waiver_author_permission?(comment, permission)
+    author = waiver_comment_author(comment)
+    return false unless author && permission.is_a?(Hash)
+
+    permission_user = permission["user"]
+    permission_author = waiver_comment_author("user" => permission_user)
+    return false unless permission_author&.casecmp?(author)
+
+    WRITE_PERMISSIONS.include?(permission["permission"].to_s)
+  end
+
+  def waiver_comment_author(comment)
+    return unless comment.is_a?(Hash)
+
+    user = comment["user"]
+    return unless user.is_a?(Hash)
+
+    author = user["login"].to_s
+    return unless author.match?(SAFE_LOGIN_PATTERN) && !author.downcase.end_with?("[bot]")
+    return unless TRUSTED_HUMAN_TYPES.include?(user["type"])
+
+    author
   end
 
   def authenticated_target_snapshot(target:)

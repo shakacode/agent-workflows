@@ -603,7 +603,10 @@ module CompletedBatchAuditReceipt
     return false unless trusted_backend
     return false unless preflight.is_a?(Hash)
 
-    stored_backend = preflight.dig("snapshot", "coordination_backend")
+    snapshot = preflight["snapshot"]
+    return false unless snapshot.is_a?(Hash)
+
+    stored_backend = snapshot["coordination_backend"]
     return false unless stored_backend == trusted_backend
     return false unless CompletedBatchPublicationPreflight.valid_receipt?(
       preflight,
@@ -621,7 +624,12 @@ module CompletedBatchAuditReceipt
   end
 
   def authenticated_publication_waiver_comment(host:, repo:, comment_id:)
-    gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+    comment = gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+    author = CompletedBatchPublicationPreflight.waiver_comment_author(comment)
+    return unless author
+
+    permission = gh_api(host, "repos/#{repo}/collaborators/#{author}/permission")
+    comment if CompletedBatchPublicationPreflight.verified_waiver_author_permission?(comment, permission)
   rescue Error
     nil
   end

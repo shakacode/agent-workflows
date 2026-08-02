@@ -234,6 +234,47 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_malformed_publication_preflight_snapshot_is_a_structured_failure
+    with_fake_gh do |env, directory|
+      File.write(
+        env.fetch("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"),
+        JSON.generate("snapshot" => [])
+      )
+      targets_path = write_json(
+        directory,
+        "targets.json",
+        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+      )
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+
+      out, _err, status = capture_receipt_cli(
+        env,
+        "ruby",
+        SCRIPT,
+        "publish",
+        "--expected-batch-id",
+        "batch-184",
+        "--targets-json",
+        targets_path,
+        "--receipt",
+        receipt_path
+      )
+
+      assert_equal 1, status.exitstatus
+      result = JSON.parse(out)
+      refute result.fetch("well_formed")
+      refute result.fetch("ready")
+      assert_equal ["completed-batch-audit publication preflight failed"], result.fetch("blockers")
+      assert_equal(
+        "Conversation status: Follow-ups remain — completed-batch-audit publication preflight failed.",
+        result.fetch("final_status")
+      )
+      assert_nil result.fetch("chat_reference")
+      refute File.exist?(env.fetch("FAKE_GH_LOG")), "malformed preflight must fail before GitHub API access"
+    end
+  end
+
   def test_complete_publication_reauthenticates_waiver_receipt_before_post
     preflight = publication_preflight(waived: true)
     target = {
@@ -274,6 +315,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         target_payload
       when "repos/acme/widgets/issues/comments/9184"
         comment
+      when "repos/acme/widgets/collaborators/maintainer/permission"
+        { "permission" => "write", "user" => { "login" => "maintainer", "type" => "User" } }
       else
         raise "unexpected endpoint: #{endpoint}"
       end
