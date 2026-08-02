@@ -266,6 +266,37 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty guard_log
   end
 
+  def test_private_materialized_guard_launch_enoent_is_a_deterministic_error
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :launch_enoent
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: private materialized guarded-direct executable launch failed (ENOENT); " \
+                 "its absolute shebang interpreter may be missing\n", result.fetch(:stderr)
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_guard_scoped_enoent_handling_preserves_the_missing_gh_error
+    runner = PrMergeSubmit::Runner.new
+    original_path = ENV.fetch("PATH")
+
+    Dir.mktmpdir("pr-merge-submit-empty-path") do |empty_path|
+      ENV["PATH"] = empty_path
+      error = assert_raises(PrMergeSubmit::Error) do
+        runner.send(:run_gh, "--version", host: HOST)
+      end
+      assert_equal "gh is not installed or not on PATH", error.message
+    end
+  ensure
+    ENV["PATH"] = original_path
+  end
+
   def test_guard_blob_oid_accepts_only_exact_sha1_or_sha256_lengths
     runner = PrMergeSubmit::Runner.new
 
@@ -1396,11 +1427,14 @@ class PrMergeSubmitTest < Minitest::Test
     executable = merge_submission.dig("guarded_direct", "executable") if merge_submission.is_a?(Hash)
     guard_path = File.join(root, executable.to_s)
     if guard_fixture != :missing && executable.to_s.match?(%r{\A\.agents/bin/[A-Za-z0-9_.-]+\z})
-      guard_body = if guard_fixture == :launch_eacces
+      guard_body = case guard_fixture
+                   when :launch_eacces
                      blocked_interpreter = File.join(root, "non-executable-guard-interpreter")
                      File.write(blocked_interpreter, "#!/bin/sh\nexit 0\n")
                      File.chmod(0o644, blocked_interpreter)
                      "#!#{blocked_interpreter}\n"
+                   when :launch_enoent
+                     "#!#{File.join(root, 'missing-guard-interpreter')}\n"
                    else
                      fake_guard
                    end

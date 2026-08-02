@@ -789,7 +789,9 @@ module PrMergeSubmit
           process_label: "guarded-direct executable",
           chdir: @repo_root,
           launch_eacces_message: "private materialized guarded-direct executable launch was denied (EACCES); " \
-                                 "the temporary filesystem may be mounted noexec"
+                                 "the temporary filesystem may be mounted noexec",
+          launch_enoent_message: "private materialized guarded-direct executable launch failed (ENOENT); " \
+                                 "its absolute shebang interpreter may be missing"
         )
       end
     end
@@ -1005,7 +1007,8 @@ module PrMergeSubmit
 
     def run_process(
       environment, command, *args,
-      timeout_seconds:, mutation:, process_label:, chdir:, launch_eacces_message: nil
+      timeout_seconds:, mutation:, process_label:, chdir:,
+      launch_eacces_message: nil, launch_enoent_message: nil
     )
       validate_receipt_freshness!(@merge_assurance_receipt) if mutation && @merge_assurance_receipt
       if @cancellation_signal && (mutation || !@mutation_attempted)
@@ -1033,6 +1036,10 @@ module PrMergeSubmit
         raise if launch_eacces_message.nil?
 
         raise Error, launch_eacces_message
+      rescue Errno::ENOENT
+        raise if launch_enoent_message.nil?
+
+        raise Error, launch_enoent_message
       end
       deadline = monotonic_time + timeout_seconds
       status = nil
