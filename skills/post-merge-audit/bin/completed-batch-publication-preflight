@@ -31,6 +31,7 @@ module CompletedBatchPublicationPreflight
   COORDINATION_TIMEOUT_SECONDS = 20
   COORDINATION_CAPTURE_TIMEOUT_SECONDS = 25
   PROCESS_TERMINATION_GRACE_SECONDS = 0.25
+  PROCESS_CLEANUP_TIMEOUT_SECONDS = PROCESS_TERMINATION_GRACE_SECONDS * 4
   AGENT_COORD_BOUNDED = File.expand_path("../../pr-batch/bin/agent-coord-bounded", __dir__)
 
   module_function
@@ -990,75 +991,82 @@ module CompletedBatchPublicationPreflight
   end
 
   def terminate_process_group(process_group_id, wait_thread)
+    cleanup_deadline = monotonic_deadline(PROCESS_CLEANUP_TIMEOUT_SECONDS)
     return unless isolated_process_group?(process_group_id)
 
-    descendants = process_group_descendants(
+    descendant_layers = process_group_descendant_layers(
       process_group_id,
-      deadline: monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)
+      deadline: cleanup_deadline
     )
-    if descendants
-      # Keep the leader alive while Linux descendants exit so wrappers can reap
-      # them; this avoids orphan zombies when the helper itself is PID 1.
-      terminate_process_group_child_first(process_group_id, wait_thread, descendants)
+    if descendant_layers
+      # Keep every parent alive until its deepest child layer is absent. That
+      # lets wrappers reap children before their own bounded termination.
+      terminate_process_group_child_first(process_group_id, wait_thread, deadline: cleanup_deadline)
     else
       # procfs is Linux-specific; retain the bounded POSIX group fallback elsewhere.
-      terminate_process_group_fallback(process_group_id, wait_thread)
+      terminate_process_group_fallback(process_group_id, wait_thread, deadline: cleanup_deadline)
     end
   ensure
     if isolated_process_group?(process_group_id) &&
        process_group_alive?(process_group_id)
       signal_process_group("KILL", process_group_id)
-      leader_reaped = wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+      leader_reaped = join_thread_until(wait_thread, cleanup_deadline)
       wait_for_process_group_exit(
         process_group_id,
-        PROCESS_TERMINATION_GRACE_SECONDS,
+        deadline: cleanup_deadline,
         reap_children: leader_reaped
       )
     end
   end
 
-  def terminate_process_group_child_first(process_group_id, wait_thread, descendants)
-    signal_processes("TERM", descendants, process_group_id)
-    unless wait_for_process_group_descendants(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
-      remaining = process_group_descendants(
-        process_group_id,
-        deadline: monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)
-      )
-      signal_processes("KILL", remaining || [], process_group_id)
-      wait_for_process_group_descendants(process_group_id, PROCESS_TERMINATION_GRACE_SECONDS)
+  def terminate_process_group_child_first(process_group_id, wait_thread, deadline:)
+    loop do
+      layers = process_group_descendant_layers(process_group_id, deadline:)
+      break unless layers && !layers.empty?
+
+      deepest_layer = layers.first
+      signal_processes("TERM", deepest_layer, process_group_id)
+      term_deadline = [deadline, monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)].min
+      next if wait_for_processes_exit(deepest_layer, process_group_id, deadline: term_deadline)
+
+      surviving = deepest_layer.select { |pid| process_in_group?(pid, process_group_id) }
+      signal_processes("KILL", surviving, process_group_id)
+      break unless wait_for_processes_exit(surviving, process_group_id, deadline:)
     end
 
-    leader_reaped = terminate_process_group_leader(process_group_id, wait_thread)
+    leader_reaped = terminate_process_group_leader(process_group_id, wait_thread, deadline:)
     signal_process_group("KILL", process_group_id) if process_group_alive?(process_group_id)
     wait_for_process_group_exit(
       process_group_id,
-      PROCESS_TERMINATION_GRACE_SECONDS,
+      deadline:,
       reap_children: leader_reaped
     )
   end
 
-  def terminate_process_group_fallback(process_group_id, wait_thread)
+  def terminate_process_group_fallback(process_group_id, wait_thread, deadline:)
     signal_process_group("TERM", process_group_id)
-    leader_reaped = wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    term_deadline = [deadline, monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)].min
+    leader_reaped = join_thread_until(wait_thread, term_deadline)
     unless leader_reaped && !process_group_alive?(process_group_id)
       signal_process_group("KILL", process_group_id)
-      leader_reaped ||= wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+      leader_reaped ||= join_thread_until(wait_thread, deadline)
     end
     wait_for_process_group_exit(
       process_group_id,
-      PROCESS_TERMINATION_GRACE_SECONDS,
+      deadline:,
       reap_children: leader_reaped
     )
   end
 
-  def terminate_process_group_leader(process_group_id, wait_thread)
+  def terminate_process_group_leader(process_group_id, wait_thread, deadline:)
     return true if wait_thread&.join(0)
 
     signal_process("TERM", process_group_id, process_group_id)
-    return true if wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    term_deadline = [deadline, monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)].min
+    return true if join_thread_until(wait_thread, term_deadline)
 
     signal_process("KILL", process_group_id, process_group_id)
-    !!wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+    join_thread_until(wait_thread, deadline)
   end
 
   def isolated_process_group?(process_group_id)
@@ -1094,22 +1102,25 @@ module CompletedBatchPublicationPreflight
     true
   end
 
-  def wait_for_process_group_descendants(process_group_id, timeout)
-    deadline = monotonic_deadline(timeout)
-    loop do
-      descendants = process_group_descendants(process_group_id, deadline:)
-      return false unless descendants
-      return true if descendants.empty?
-
+  def wait_for_processes_exit(process_ids, process_group_id, deadline:)
+    while process_ids.any? { |pid| process_in_group?(pid, process_group_id) }
       remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
       return false if remaining <= 0
 
       sleep [remaining, 0.01].min
     end
+    true
   end
 
-  def wait_for_process_group_exit(process_group_id, timeout, reap_children: false)
-    deadline = monotonic_deadline(timeout)
+  def process_in_group?(pid, process_group_id)
+    Process.getpgid(pid) == process_group_id
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_process_group_exit(process_group_id, deadline:, reap_children: false)
     while process_group_alive?(process_group_id)
       reap_process_group_children(process_group_id) if reap_children
       return true unless process_group_alive?(process_group_id)
@@ -1122,7 +1133,7 @@ module CompletedBatchPublicationPreflight
     true
   end
 
-  def process_group_descendants(process_group_id, deadline:)
+  def process_group_descendant_layers(process_group_id, deadline:)
     return unless File.directory?("/proc/self")
 
     records = {}
@@ -1138,10 +1149,13 @@ module CompletedBatchPublicationPreflight
     end
     return if deadline_expired
 
-    records.delete(process_group_id)
-    records.values
-           .sort_by { |record| [-proc_process_depth(record, records), -record.fetch(:pid)] }
-           .map { |record| record.fetch(:pid) }
+    descendants = records.values.reject { |record| record.fetch(:pid) == process_group_id }
+    descendants
+      .group_by { |record| proc_process_depth(record, records) }
+      .sort_by { |depth, _records| -depth }
+      .map do |_depth, layer|
+        layer.map { |record| record.fetch(:pid) }.sort.reverse
+      end
   end
 
   def proc_process_record(path)
@@ -1186,6 +1200,14 @@ module CompletedBatchPublicationPreflight
 
   def monotonic_deadline(timeout)
     Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  end
+
+  def join_thread_until(thread, deadline)
+    return false unless thread
+    return true if thread.join(0)
+
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    remaining.positive? && !!thread.join(remaining)
   end
 
   def run(argv)

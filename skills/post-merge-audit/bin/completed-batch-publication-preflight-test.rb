@@ -275,6 +275,62 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_capture_process_timeout_reaps_nested_descendant_layers
+    Dir.mktmpdir("completed-batch-nested-process-group") do |directory|
+      process_ids_path = File.join(directory, "process-ids")
+      intermediate_program = <<~'RUBY'
+        leaf_pid = Process.spawn("/bin/sleep", "30")
+        File.write(ARGV.fetch(0), [Process.ppid, Process.pid, leaf_pid].join("\n") + "\n")
+        Process.wait(leaf_pid)
+      RUBY
+      leader_program = <<~'RUBY'
+        intermediate_pid = Process.spawn(RbConfig.ruby, "-e", ARGV.fetch(1), ARGV.fetch(0))
+        Process.wait(intermediate_pid)
+      RUBY
+      helper_program = <<~'RUBY'
+        load ARGV.shift
+        begin
+          CompletedBatchPublicationPreflight.capture_process(
+            [RbConfig.ruby, "-rrbconfig", "-e", ARGV.fetch(1), ARGV.fetch(0), ARGV.fetch(2)],
+            input: "",
+            timeout: 0.5
+          )
+          exit 1
+        rescue Timeout::Error
+          exit 0
+        end
+      RUBY
+      process_ids = []
+      helper_pid = Process.spawn(
+        RbConfig.ruby,
+        "-rrbconfig",
+        "-e",
+        helper_program,
+        SCRIPT,
+        process_ids_path,
+        leader_program,
+        intermediate_program
+      )
+
+      _pid, helper_status = Process.wait2(helper_pid)
+      assert_predicate helper_status, :success?
+      process_ids = File.readlines(process_ids_path, chomp: true).map { |line| Integer(line, 10) }
+      assert_equal 3, process_ids.length
+
+      %w[leader intermediate leaf].zip(process_ids).each do |label, pid|
+        assert wait_for_process_exit(pid),
+               "timed nested #{label} #{pid} survived process-group cleanup " \
+               "with state #{process_state(pid).inspect}"
+      end
+    ensure
+      process_ids.reverse_each do |pid|
+        Process.kill("KILL", pid) if process_alive?(pid)
+      rescue Errno::EPERM
+        nil
+      end
+    end
+  end
+
   def test_capture_process_timeout_kills_term_resistant_group_leader
     Dir.mktmpdir("completed-batch-term-resistant") do |directory|
       child_pid_path = File.join(directory, "child.pid")
