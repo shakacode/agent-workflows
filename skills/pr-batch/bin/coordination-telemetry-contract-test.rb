@@ -124,6 +124,16 @@ REGISTRATION_BOUNDED_FRAGMENTS = [
 REGISTRATION_OBSERVATION_MARKER = "accepted host-observed `launch-confirmation v2`"
 REGISTRATION_ACTIVE_PATTERN = /before treating (?:the|that) lane as active/
 REGISTRATION_NO_SHELL_MARKER = "without shell evaluation"
+REGISTRATION_UPDATE_PATTERNS = {
+  "signed actual host" => /signed `actual_host`/,
+  "unknown host blocks exact policy" => /cannot satisfy exact-policy activation/,
+  "update capability detection" => %r{registration update/upsert/reconciliation capability},
+  "create-only fallback" => /unadvertised or unsupported create-only backend/,
+  "affected fields unknown" => /affected (?:registration )?fields? `UNKNOWN`/,
+  "safe pending state" => /launch-pending/,
+  "advertised update path" => /advertised update/,
+  "nonwedging failure" => /without wedging|must not wedge/
+}.freeze
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -340,6 +350,9 @@ def assert_registration_section_runtime_contract(section, location)
   refute_nil active_match, "#{location} must bind reconciliation before treating the lane as active"
   assert_operator observation_offset, :<, active_match.begin(0),
                   "#{location} must reconcile the host observation before treating the lane active"
+  REGISTRATION_UPDATE_PATTERNS.each do |concept, pattern|
+    assert_match pattern, normalized_section, "#{location} must include #{concept}"
+  end
 end
 
 def authoritative_registration_sections
@@ -563,6 +576,20 @@ class CoordinationTelemetryContractTest < Minitest::Test
         refute_equal normalized, mutant, "#{path} must expose the #{name} mutant"
         assert_raises(Minitest::Assertion, "#{path} must reject the #{name} mutant") do
           assert_registration_section_runtime_contract(mutant, "#{path} #{name}")
+        end
+      end
+    end
+  end
+
+  def test_registration_update_capability_contract_rejects_independent_mutants
+    authoritative_registration_sections.each do |path, section|
+      normalized = section.gsub(/\s+/, " ")
+      REGISTRATION_UPDATE_PATTERNS.each do |concept, pattern|
+        match = normalized.match(pattern)
+        refute_nil match, "#{path} must expose #{concept}"
+        mutant = normalized.gsub(pattern, "")
+        assert_raises(Minitest::Assertion, "#{path} must reject deleted #{concept}") do
+          assert_registration_section_runtime_contract(mutant, "#{path} deleted #{concept}")
         end
       end
     end

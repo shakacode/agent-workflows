@@ -135,6 +135,7 @@ def launch_observation_payload(confirmation)
     "dispatcher" => assignment["dispatcher"],
     "instance_id" => confirmation["instance_id"],
     "launch_token" => assignment["launch_token"],
+    "actual_host" => confirmation["actual_host"],
     "actual_model" => confirmation["actual_model"],
     "actual_effort" => confirmation["actual_effort"],
     "binding_source" => confirmation["binding_source"],
@@ -311,7 +312,8 @@ def confirmation_shape?(confirmation)
   return true if confirmation["version"] == 1
   return false unless confirmation["version"] == 2
 
-  confirmation["actual_model"] == confirmation.dig("assignment", "route", "model") &&
+  nonempty_string?(confirmation["actual_host"]) &&
+    confirmation["actual_model"] == confirmation.dig("assignment", "route", "model") &&
     confirmation["actual_effort"] == confirmation.dig("assignment", "route", "effort") &&
     confirmation["binding_source"] == "dispatcher-bound" &&
     confirmation["attestation"] == "instance-bound" &&

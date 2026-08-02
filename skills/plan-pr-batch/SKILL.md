@@ -380,6 +380,16 @@ Plan a PR batch
      as active: update each actual host/model/effort/binding field changed by
      fallback, escalation, or replacement, preserve verified fields, and use
      `UNKNOWN` only per unverifiable field. Every advertised registration
+     observation takes actual host only from signed `actual_host`; missing,
+     blank, unsigned, or `UNKNOWN` host cannot satisfy exact-policy activation.
+     Before requiring a reconciliation write, detect advertised registration
+     update/upsert/reconciliation capability. An unadvertised or unsupported
+     create-only backend records each affected field `UNKNOWN`; authenticated
+     confirmation remains valid, but activation requires every launch-
+     acceptance field verified and otherwise stays `launch-pending`. An
+     advertised update uses the bounded safe executable-plus-opaque-argv
+     contract; failure records affected fields `UNKNOWN` without wedging.
+     Every advertised registration
      invocation resolves a backend-advertised safe executable plus ordered
      opaque argv without shell evaluation and runs with a finite hard deadline
      in its own process group; timeout or whole-group `TERM` then `KILL` records

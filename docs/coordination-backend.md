@@ -139,6 +139,21 @@ preserve every other verified field, and write literal `UNKNOWN` only for each
 individual field the observation cannot verify. Never replace a whole route or
 lane entry with `UNKNOWN`.
 
+The accepted confirmation's actual host comes only from the signed
+`actual_host` field in its canonical dispatcher observation payload. A missing,
+blank, unsigned, or literal `UNKNOWN` actual host cannot satisfy exact-policy
+activation; keep the lane `launch-pending` until a fresh qualifying observation
+verifies it.
+
+Before requiring a reconciliation write, detect whether the backend advertises
+a registration update/upsert/reconciliation capability. For an unadvertised or
+unsupported create-only backend, record each affected registration field
+`UNKNOWN`; this does not undo an authenticated confirmation, but activation
+proceeds only when every launch-acceptance field is verified and otherwise
+remains `launch-pending`. An advertised update uses the same bounded safe
+executable-plus-opaque-argv contract below; timeout or failure records affected
+fields `UNKNOWN` and must not wedge activation or reconciliation handoff.
+
 Every advertised batch-registration invocation must provide a safe executable
 and ordered opaque argv as separate values. Resolve that backend-advertised
 executable-plus-argv seam without shell evaluation, preserve every argument as

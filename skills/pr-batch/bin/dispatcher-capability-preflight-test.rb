@@ -34,6 +34,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "version" => 2,
       "id" => "launch-confirmation-v2",
       "assignment" => assignment,
+      "actual_host" => "codex",
       "actual_model" => assignment.dig("route", "model"),
       "actual_effort" => assignment.dig("route", "effort"),
       "binding_source" => "dispatcher-bound",
@@ -137,6 +138,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "dispatcher" => assignment["dispatcher"],
       "instance_id" => confirmation["instance_id"],
       "launch_token" => assignment["launch_token"],
+      "actual_host" => confirmation["actual_host"],
       "actual_model" => confirmation["actual_model"],
       "actual_effort" => confirmation["actual_effort"],
       "binding_source" => confirmation["binding_source"],
@@ -2080,6 +2082,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assignment = pending.fetch("dispatch")
     valid_confirmation = launch_confirmation(assignment)
     malformed_confirmations = {
+      "blank actual host" => valid_confirmation.merge("actual_host" => " "),
+      "tampered actual host" => valid_confirmation.merge("actual_host" => "claude"),
       "actual model mismatch" => valid_confirmation.merge("actual_model" => "Terra"),
       "actual effort mismatch" => valid_confirmation.merge("actual_effort" => "medium"),
       "request-only operator binding" => valid_confirmation.merge("binding_source" => "operator-selected"),
@@ -2095,7 +2099,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       )
     }
     evidence_fields = %w[
-      actual_model actual_effort binding_source attestation instance_id observed_at routing_mode inherited
+      actual_host actual_model actual_effort binding_source attestation instance_id observed_at routing_mode inherited
       evidence_ref key_id signature
     ]
     %w[type version id assignment].concat(evidence_fields).each do |field|
