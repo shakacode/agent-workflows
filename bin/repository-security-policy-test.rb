@@ -2,21 +2,21 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "date"
 require "fileutils"
 require "tmpdir"
 require "yaml"
 
 class RepositorySecurityPolicyTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
+  YAML_TIMESTAMP_CLASSES = [Date, Time].freeze
 
   def test_github_actions_are_pinned_to_full_commit_shas
     reference_sets = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).map do |path|
-      workflow = YAML.safe_load_file(path, aliases: true)
-      [path, workflow_uses(workflow)]
+      [path, workflow_uses(load_yaml_file(path))]
     end
     reference_sets.concat(action_paths.map do |path|
-      action = YAML.safe_load_file(path, aliases: true)
-      [path, composite_uses(action)]
+      [path, composite_uses(load_yaml_file(path))]
     end)
 
     mutable_uses = reference_sets.flat_map do |path, references|
@@ -52,6 +52,35 @@ class RepositorySecurityPolicyTest < Minitest::Test
     YAML
 
     assert_equal [["runs.steps.0.uses", "owner/action@v1"]], composite_uses(action)
+  end
+
+  def test_action_reference_scanner_accepts_timestamp_scalars_and_still_rejects_mutable_uses
+    sha = "0123456789abcdef0123456789abcdef01234567"
+
+    Dir.mktmpdir("repository-security-policy") do |root|
+      immutable_workflow = File.join(root, "immutable.yml")
+      mutable_workflow = File.join(root, "mutable.yml")
+      File.write(immutable_workflow, <<~YAML)
+        generated_on: 2026-08-02
+        jobs:
+          validate:
+            steps: [{ uses: owner/action@#{sha} }]
+      YAML
+      File.write(mutable_workflow, <<~YAML)
+        generated_at: 2026-08-02T12:34:56Z
+        jobs:
+          validate:
+            steps: [{ uses: owner/action@v1 }]
+      YAML
+
+      immutable_references = workflow_uses(load_yaml_file(immutable_workflow))
+      mutable_references = workflow_uses(load_yaml_file(mutable_workflow))
+
+      assert_equal [["jobs.validate.steps.0.uses", "owner/action@#{sha}"]], immutable_references
+      assert acceptable_action_reference?(immutable_references.first.last)
+      assert_equal [["jobs.validate.steps.0.uses", "owner/action@v1"]], mutable_references
+      refute acceptable_action_reference?(mutable_references.first.last)
+    end
   end
 
   def test_action_scanner_keeps_nested_temp_named_directories
@@ -109,6 +138,10 @@ class RepositorySecurityPolicyTest < Minitest::Test
   end
 
   private
+
+  def load_yaml_file(path)
+    YAML.safe_load_file(path, permitted_classes: YAML_TIMESTAMP_CLASSES, aliases: true)
+  end
 
   def action_paths(root = ROOT)
     Dir.glob(File.join(root, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).reject do |path|
