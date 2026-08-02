@@ -4,6 +4,7 @@
 # Validate that portable agent workflows can resolve their repo-specific seam.
 
 require "json"
+require "etc"
 require "fileutils"
 require "open3"
 require "optparse"
@@ -134,6 +135,14 @@ module AgentWorkflowSeamDoctor
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
   MERGE_METHODS = %w[merge rebase squash].freeze
   GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  SYSTEM_TOOL_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ].freeze
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY = "untrusted_contributor_intake"
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS = %w[
     trusted_github_host
@@ -1834,8 +1843,24 @@ module AgentWorkflowSeamDoctor
     # The doctor also validates pre-commit adoption worktrees, so the index is
     # the tracking boundary. pr-merge-submit separately binds runtime bytes to
     # the trusted-base commit before any guarded direct submission.
+    git = trusted_system_git(root)
+    return ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"] unless git
+
+    account = Etc.getpwuid(Process.uid)
+    environment = {
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_NO_REPLACE_OBJECTS" => "1",
+      "GIT_OPTIONAL_LOCKS" => "0",
+      "GIT_TERMINAL_PROMPT" => "0"
+    }
     stdout, _stderr, status = Open3.capture3(
-      "git", "-C", root, "ls-files", "--stage", "--", relative_path
+      environment, git, "-C", root, "ls-files", "--stage", "--", relative_path,
+      unsetenv_others: true
     )
     unless status.success?
       return ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
@@ -1855,8 +1880,25 @@ module AgentWorkflowSeamDoctor
     return [] if match[:mode] == "100755"
 
     ["invalid merge_submission policy: guarded_direct.executable git mode must be 100755"]
-  rescue Errno::ENOENT, Errno::EACCES
+  rescue ArgumentError, Errno::ENOENT, Errno::EACCES
     ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
+  end
+
+  def trusted_system_git(root)
+    candidate = SYSTEM_TOOL_DIRS
+                .map { |directory| File.join(directory, "git") }
+                .find { |path| File.file?(path) && File.executable?(path) }
+    return unless candidate
+
+    realpath = File.realpath(candidate)
+    root_realpath = File.realpath(root)
+    root_prefix = "#{root_realpath}#{File::SEPARATOR}"
+    return if realpath == root_realpath || realpath.start_with?(root_prefix)
+
+    stat = File.stat(realpath)
+    realpath if stat.file? && File.executable?(realpath)
+  rescue Errno::ENOENT, Errno::EACCES
+    nil
   end
 
   def load_policy_config(path)

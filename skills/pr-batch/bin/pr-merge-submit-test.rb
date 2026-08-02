@@ -423,6 +423,31 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_guarded_direct_rejects_shebangless_text_before_spawn
+    runner = PrMergeSubmit::Runner.new
+
+    error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:guarded_direct_launch_command!, "echo attacker\n", "/tmp/guard")
+    end
+
+    assert_equal(
+      "trusted-base guarded-direct executable must have a supported explicit shebang",
+      error.message
+    )
+  end
+
+  def test_guarded_direct_rejects_all_shebangless_native_magic_prefixes
+    runner = PrMergeSubmit::Runner.new
+    [
+      "\x7FELF", "\xFE\xED\xFA\xCE", "\xCE\xFA\xED\xFE",
+      "\xCA\xFE\xBA\xBE", "MZ", "", "echo native\n"
+    ].each do |bytes|
+      assert_raises(PrMergeSubmit::Error) do
+        runner.send(:guarded_direct_launch_command!, "#{bytes}payload".b, "/tmp/guard")
+      end
+    end
+  end
+
   def test_run_gh_ignores_checkout_controlled_path_shim
     original_path = ENV.fetch("PATH")
     runner = PrMergeSubmit::Runner.new
@@ -559,6 +584,27 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal "local account identity is unavailable for uid #{Process.uid}", error.message
   ensure
     Etc.singleton_class.define_method(:getpwuid, original_getpwuid)
+  end
+
+  def test_git_and_gh_spawn_races_use_deterministic_submitter_errors
+    runner = PrMergeSubmit::Runner.new
+    runner.define_singleton_method(:resolve_system_tool!) { |name, **| "/usr/bin/#{name}" }
+
+    original_capture3 = Open3.method(:capture3)
+    Open3.singleton_class.define_method(:capture3) { |*| raise Errno::EACCES, "git disappeared" }
+    git_error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:git_capture, "--version", chdir: Dir.pwd)
+    end
+    assert_includes git_error.message, "git could not be launched after trusted resolution"
+    Open3.singleton_class.define_method(:capture3, original_capture3)
+
+    runner.define_singleton_method(:run_process) { |*_, **| raise Errno::ENOENT, "gh disappeared" }
+    gh_error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:run_gh, "--version", host: HOST)
+    end
+    assert_includes gh_error.message, "gh could not be launched after trusted resolution"
+  ensure
+    Open3.singleton_class.define_method(:capture3, original_capture3) if original_capture3
   end
 
   def test_unknown_guard_fixture_fails_closed

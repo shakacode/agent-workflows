@@ -2903,7 +2903,9 @@ isolates HEAD/index/worktree state only: object/ref confidentiality is not
 promised, and the materialized repository preserves the source `origin`.
 Exact PR identity comes only from revalidated live GitHub metadata and fixed argv; local `HEAD`
 cannot expose PR-tree bytes. Repository-relative delegation therefore resolves
-trusted-base dependencies. For scripts, the helper parses the trusted shebang,
+trusted-base dependencies. Every guard requires a supported explicit shebang;
+shebang-less files, including native magic prefixes, fail closed before spawn.
+The helper parses the trusted shebang,
 resolves `/usr/bin/env PROGRAM` only through a fixed trusted path, records the
 resolved absolute interpreter identity, rejects interpreters inside the
 consumer repository, and invokes the interpreter directly. The identity check
@@ -2914,7 +2916,11 @@ variables; it does not inherit caller `PATH`, `BASH_ENV`, `RUBYOPT`, or loader
 injection settings. The helper removes the private executable and Git root
 afterward; cleanup failure after launch is an `UNKNOWN` outcome reconciled
 against exact live state. Runtime `$0` and `__dir__` identify the private guard
-copy. The helper uses this fixed argv order:
+copy. Internal validation/materialization Git receives no GitHub tokens, SSH
+agent, or caller credential/config controls. Preserved `origin` is metadata for
+the trusted consumer guard, which intentionally receives only supported GitHub
+token variables for its authorized submission. The helper uses this fixed argv
+order:
 
 ```text
 --repo OWNER/REPO --host HOST --pr NUMBER

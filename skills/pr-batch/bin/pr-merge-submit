@@ -615,10 +615,10 @@ module PrMergeSubmit
         "GIT_OPTIONAL_LOCKS" => "0",
         "GIT_TERMINAL_PROMPT" => "0"
       }
-      Open3.capture3(
-        environment, resolve_system_tool!("git", outside_root: chdir), *args,
-        chdir:, unsetenv_others: true
-      )
+      executable = resolve_system_tool!("git", outside_root: chdir)
+      Open3.capture3(environment, executable, *args, chdir:, unsetenv_others: true)
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "git could not be launched after trusted resolution: #{e.message}"
     end
 
     def resolve_system_tool!(name, outside_root:)
@@ -895,7 +895,9 @@ module PrMergeSubmit
 
     def guarded_direct_launch_command!(trusted_bytes, executable)
       shebang = trusted_bytes.lines.first
-      return [[executable], nil] unless shebang&.start_with?("#!")
+      unless shebang&.start_with?("#!")
+        raise Error, "trusted-base guarded-direct executable must have a supported explicit shebang"
+      end
 
       match = shebang.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
       raise Error, "trusted-base guarded-direct executable has an unsupported shebang" unless match
@@ -1275,14 +1277,17 @@ module PrMergeSubmit
         environment[name] = value if value && !value.empty?
       end
       environment.merge!(system_tool_test_environment)
+      executable = resolve_system_tool!("gh", outside_root: Dir.pwd)
       run_process(
-        environment, resolve_system_tool!("gh", outside_root: Dir.pwd), *args,
+        environment, executable, *args,
         timeout_seconds: gh_timeout_seconds,
         mutation:,
         process_label: "gh",
         chdir: Dir.pwd,
         unsetenv_others: true
       )
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "gh could not be launched after trusted resolution: #{e.message}"
     end
 
     def system_tool_test_environment

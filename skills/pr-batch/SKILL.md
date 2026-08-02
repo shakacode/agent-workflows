@@ -833,7 +833,9 @@ commit and tree. This is HEAD/index/worktree isolation, not object/ref
 confidentiality; the materialized repository preserves the source `origin`.
 Exact PR identity comes only from revalidated live GitHub
 metadata and fixed argv, never local Git state. Repository-relative delegation
-therefore resolves trusted-base dependencies. Trusted script shebangs resolve
+therefore resolves trusted-base dependencies. Every guard requires a supported
+explicit shebang; shebang-less files, including native magic prefixes, fail
+closed before spawn. Trusted script shebangs resolve
 to identity-recorded absolute interpreters outside the consumer repository
 through a fixed path, and the guard runs with a closed environment that does not inherit caller-controlled
 interpreter or loader injection variables. The identity check and later
@@ -847,6 +849,10 @@ direct merge has no atomic expected-base OID. Treat helper exit 2 as an
 `UNKNOWN` mutation or cleanup outcome and never retry it blindly. Queue
 submission is not terminal: continue closeout until GitHub reports the PR
 merged or exposes a real blocker.
+Internal validation/materialization Git receives no GitHub tokens, SSH agent,
+or caller credential/config controls. Preserved `origin` is metadata for the
+trusted consumer guard, which intentionally receives only supported GitHub
+token variables for its authorized submission.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.

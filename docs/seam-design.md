@@ -200,7 +200,9 @@ promise object/ref confidentiality, and the materialized repository preserves
 the source `origin`. PR identity exists only in revalidated live GitHub metadata and
 the fixed argv; `git show HEAD` inside the guard cannot expose PR-tree bytes.
 Repository-relative delegation therefore resolves trusted-base dependencies.
-For scripts, the helper parses the trusted shebang and invokes an
+Every guard must have a supported explicit shebang; shebang-less files,
+including native magic prefixes, fail closed before spawn. The helper parses
+the trusted shebang and invokes an
 identity-recorded absolute interpreter outside the consumer repository
 directly; `/usr/bin/env PROGRAM` is resolved through a fixed trusted path rather
 than the caller's `PATH`. The identity check and later absolute-path spawn have
@@ -211,7 +213,11 @@ so variables such as `BASH_ENV`, `RUBYOPT`, and loader injection settings are
 not inherited. The private executable and Git root are removed afterward;
 cleanup failure after launch is an `UNKNOWN` outcome. Runtime `$0` and `__dir__`
 identify the private copy, so guard adapters must resolve repository files from
-the private working directory or passed argv. The helper supplies this fixed
+the private working directory or passed argv. Internal validation and
+materialization Git receives no GitHub tokens, SSH agent, or caller
+credential/config controls. Preserved `origin` is metadata for the trusted
+consumer guard; only that authorized guard receives supported GitHub token
+variables. The helper supplies this fixed
 argv contract, in order:
 
 ```text

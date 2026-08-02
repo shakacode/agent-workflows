@@ -597,6 +597,40 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_guarded_direct_git_validation_ignores_hostile_path_git_and_credential_environment
+    with_repo do |root|
+      guard = write_script(root, "merge-pr-after-checks", "exec true\n")
+      relative_guard = ".agents/bin/merge-pr-after-checks"
+      run_git!(root, "init", "-q")
+      run_git!(root, "add", "--", relative_guard)
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_guard)
+      Dir.mktmpdir("seam-doctor-git-shim") do |attack_dir|
+        marker = File.join(attack_dir, "git-ran")
+        shim = File.join(attack_dir, "git")
+        File.write(shim, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n")
+        FileUtils.chmod(0o755, shim)
+        original = ENV.to_h
+        ENV.update(
+          "PATH" => attack_dir,
+          "GIT_DIR" => File.join(root, "attacker-git-dir"),
+          "GIT_INDEX_FILE" => File.join(root, "attacker-index"),
+          "SSH_AUTH_SOCK" => File.join(root, "attacker-agent"),
+          "GH_TOKEN" => "attacker-token"
+        )
+
+        issues = AgentWorkflowSeamDoctor.send(
+          :guarded_direct_git_issues, root, relative_guard
+        )
+
+        assert_empty issues
+        refute_path_exists marker
+      ensure
+        ENV.replace(original) if original
+      end
+      assert File.executable?(guard)
+    end
+  end
+
   def test_guarded_direct_merge_submission_requires_a_readable_live_guard
     with_repo do |root|
       write_valid_binstub_contract(root)

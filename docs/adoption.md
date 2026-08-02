@@ -110,14 +110,20 @@ notes.
    source `origin`, and Git objects or refs may remain observable. The exact PR identity is supplied only by
    live GitHub metadata and fixed argv. Guards may delegate to trusted-base
    repository files from that private working directory; they must not infer PR
-   identity from local Git state. Script interpreters are resolved from the
+   identity from local Git state. Every guard must have a supported explicit
+   shebang; shebang-less files, including native magic prefixes, fail closed
+   before spawn. Script interpreters are resolved from the
    trusted shebang through a fixed path and invoked by absolute identity under
    a closed environment; caller-controlled `PATH`, `BASH_ENV`, `RUBYOPT`, and
    loader settings are not inherited. An absolute shebang interpreter inside
    the consumer repository is invalid. The recorded absolute-path interpreter
    check and later spawn retain a known filesystem TOCTOU window. Runtime `$0`
    and `__dir__` point at the
-   private guard copy.
+   private guard copy. Internal validation and materialization Git runs without
+   GitHub tokens, SSH agent access, or caller credential/config controls.
+   Preserved `origin` is metadata for the trusted consumer guard, which
+   intentionally receives only supported GitHub token variables for the
+   authorized submission.
 
    The optional `autonomous_merge` mapping is seeded as an empty mapping by
    downstream presets without overwriting repo-owned policy. An empty or absent
