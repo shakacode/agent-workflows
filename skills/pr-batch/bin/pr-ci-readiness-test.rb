@@ -343,6 +343,18 @@ end
 
 # CLI / Runner integration via a fake gh on PATH.
 class PrCiReadinessCliTest < Minitest::Test
+  HICHEE_DATA_431_HEAD = "6c7f86b92e2eac2fc73ce29c74ab5cce9ea9b2c1"
+
+  def hichee_data_431_identity
+    {
+      "id" => 18_431, "number" => 431,
+      "head" => {
+        "sha" => HICHEE_DATA_431_HEAD, "ref" => "upgrade-rails",
+        "repo" => { "id" => 43_100, "full_name" => "shakacode/hichee-data" }
+      }
+    }
+  end
+
   # Build a temp dir with a fake `gh` executable that emits canned `gh pr
   # checks` JSON, then run the real script with that dir prepended to PATH.
   def with_fake_gh(required_json:, full_json:, pr_head: "a" * 40, pr_identity: nil, runs: {},
@@ -1752,37 +1764,59 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  # Regression: commit statuses used to be read from `/commits/{ref}/statuses`,
-  # whose rows carry no commit SHA, and every row was asserted against a `sha`
-  # key that never exists. Any head carrying a single commit status therefore
-  # produced an incomplete `other` scope and an UNKNOWN verdict, which made the
-  # sanctioned merge path reject every such PR.
-  def test_commit_status_bearing_head_yields_complete_other_scope_and_known_verdict
-    head = "a" * 40
+  # Deterministic replay of shakacode/hichee-data#431: Azure check runs were
+  # exact-head green and CodeRabbit's commit-status row omitted `sha`. The
+  # combined-status envelope still binds the inventory to the requested head.
+  def test_hichee_data_431_status_row_without_sha_replays_ready
+    head = HICHEE_DATA_431_HEAD
+    coderabbit_status = {
+      "id" => 431_001, "context" => "CodeRabbit", "state" => "success",
+      "target_url" => "https://example.test/status/431001"
+    }
+    azure_check_runs = [
+      {
+        "id" => 2_770_001, "name" => "Azure Pipelines / build",
+        "status" => "completed", "conclusion" => "success", "head_sha" => head,
+        "app" => { "slug" => "azure-pipelines" },
+        "html_url" => "https://example.test/check/2770001"
+      },
+      {
+        "id" => 2_770_002, "name" => "Azure Pipelines / test",
+        "status" => "completed", "conclusion" => "success", "head_sha" => head,
+        "app" => { "slug" => "azure-pipelines" },
+        "html_url" => "https://example.test/check/2770002"
+      }
+    ]
+    refute coderabbit_status.key?("sha")
+
     with_fake_gh(
-      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      required_json: '[{"workflow":"UNKNOWN","name":"Azure Pipelines / build","bucket":"pass"}]',
       full_json: "[]",
       pr_head: head,
-      exact_statuses: [
-        { "id" => 600, "context" => "CodeRabbit", "state" => "success",
-          "target_url" => "https://example/status/600" }
-      ]
+      pr_identity: hichee_data_431_identity,
+      exact_check_runs: azure_check_runs,
+      exact_statuses: [coderabbit_status]
     ) do |env|
-      out, status = run_script(env, "123", "--repo", "owner/repo")
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
       assert status.success?, out
       data = JSON.parse(out)
-
       other = data.fetch("scopes").fetch("other")
 
       refute other.key?("error"), other.inspect
       assert_equal true, other.fetch("complete")
       assert_equal head, other.fetch("head_sha")
       assert_equal(
-        [[600, "CodeRabbit", "success"]],
-        other.fetch("rows").map { |row| row.values_at("id", "name", "state") }
+        [
+          [2_770_001, "Azure Pipelines / build", "completed", "success", nil],
+          [2_770_002, "Azure Pipelines / test", "completed", "success", nil],
+          [431_001, "CodeRabbit", nil, nil, "success"]
+        ],
+        other.fetch("rows").map { |row| row.values_at("id", "name", "status", "conclusion", "state") }
       )
-      refute_equal "UNKNOWN", other.fetch("state")
-      refute_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal "READY", data.fetch("ordinary_verdict")
+      assert_equal "READY", other.fetch("state")
+      assert_equal true, data.dig("viewer_review_inventory", "complete")
+      assert_empty data.fetch("viewer_pending_review_drafts")
       assert_equal "READY", data.fetch("verdict")
     end
   end
@@ -1813,20 +1847,21 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_combined_commit_status_for_another_commit_fails_closed
-    head = "a" * 40
+  def test_hichee_data_431_wrong_combined_status_ref_remains_unknown
+    head = HICHEE_DATA_431_HEAD
     other_head = "b" * 40
     with_fake_gh(
       required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
       full_json: "[]",
       pr_head: head,
+      pr_identity: hichee_data_431_identity,
       exact_status_sha: other_head,
       exact_statuses: [
         { "id" => 602, "context" => "CodeRabbit", "state" => "success",
           "target_url" => "https://example/status/602" }
       ]
     ) do |env|
-      out, status = run_script(env, "123", "--repo", "owner/repo")
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
       assert status.success?, out
       data = JSON.parse(out)
 
@@ -1838,6 +1873,35 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_includes other.fetch("error"), "combined commit status was not bound to exact head #{head}"
       assert_includes other.fetch("error"), other_head
       assert_equal "UNKNOWN", data.fetch("verdict")
+    end
+  end
+
+  def test_hichee_data_431_status_row_with_contradictory_sha_remains_unknown
+    head = HICHEE_DATA_431_HEAD
+    other_head = "b" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: hichee_data_431_identity,
+      exact_statuses: [
+        {
+          "id" => 603, "context" => "CodeRabbit", "state" => "success",
+          "sha" => other_head, "target_url" => "https://example/status/603"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+      assert status.success?, out
+      data = JSON.parse(out)
+      other = data.fetch("scopes").fetch("other")
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, other.fetch("complete")
+      assert_equal "UNKNOWN", other.fetch("state")
+      assert_empty other.fetch("rows")
+      assert_includes other.fetch("error"), "status context contradicted exact head #{head}"
+      assert_includes other.fetch("error"), other_head
     end
   end
 
