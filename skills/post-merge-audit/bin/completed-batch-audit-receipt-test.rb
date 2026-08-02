@@ -42,15 +42,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     BODY
   end
 
-  def test_exact_v1_marker_replays_ready
+  def test_legacy_complete_marker_is_parseable_but_not_ready_without_publication_snapshot
     result = CompletedBatchAuditReceipt.replay_marker(
       ready_marker,
       expected_batch_id: "batch-184"
     )
 
     assert result.fetch("well_formed")
-    assert result.fetch("ready")
-    assert_empty result.fetch("blockers")
+    refute result.fetch("ready")
+    assert_equal ["completed-batch-audit publication snapshot refresh required"], result.fetch("blockers")
     assert_equal "clean", result.dig("fields", "verdict")
   end
 
@@ -134,10 +134,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "number" => 184
     }
     comment = publication_waiver_comment(head_sha: "a" * 40)
+    target_payload = publication_target_payload
     authenticated_api = lambda do |_host, endpoint, **_options|
-      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/issues/comments/9184"
-
-      comment
+      case endpoint
+      when "repos/acme/widgets/pulls/184"
+        target_payload
+      when "repos/acme/widgets/issues/comments/9184"
+        comment
+      else
+        raise "unexpected endpoint: #{endpoint}"
+      end
     end
 
     with_stubbed_gh_api(authenticated_api) do
@@ -149,6 +155,32 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
 
     comment["body"] = "#{comment.fetch('body')}\nEdited after preflight.\n"
+    with_stubbed_gh_api(authenticated_api) do
+      assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-184",
+          targets: [target]
+        )
+      end
+    end
+  end
+
+  def test_complete_publication_rejects_a_stale_authenticated_target_head
+    preflight = publication_preflight
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    stale_target_payload = publication_target_payload(head_sha: "b" * 40)
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/pulls/184"
+
+      stale_target_payload
+    end
+
     with_stubbed_gh_api(authenticated_api) do
       assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
         CompletedBatchAuditReceipt.validate_publication_preflight!(
@@ -246,9 +278,13 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
     assert result.fetch("well_formed")
     refute result.fetch("ready")
-    assert_equal ["release owner confirmation"], result.fetch("blockers")
     assert_equal(
-      "Conversation status: Follow-ups remain — release owner confirmation.",
+      ["completed-batch-audit publication snapshot refresh required", "release owner confirmation"],
+      result.fetch("blockers")
+    )
+    assert_equal(
+      "Conversation status: Follow-ups remain — completed-batch-audit publication snapshot refresh required; " \
+      "release owner confirmation.",
       CompletedBatchAuditReceipt.final_status(result)
     )
   end
@@ -266,7 +302,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert result.fetch("well_formed"), blocker.inspect
       refute result.fetch("ready"), blocker.inspect
       assert_equal(
-        ["completed-batch-audit external blocker invalid"],
+        [
+          "completed-batch-audit publication snapshot refresh required",
+          "completed-batch-audit external blocker invalid"
+        ],
         result.fetch("blockers"),
         blocker.inspect
       )
@@ -278,7 +317,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       other_blockers: ["", " safe\towner ", "<!-- injected -->"]
     )
     assert_equal(
-      ["completed-batch-audit external blocker invalid", "safe owner"],
+      [
+        "completed-batch-audit publication snapshot refresh required",
+        "completed-batch-audit external blocker invalid",
+        "safe owner"
+      ],
       mixed.fetch("blockers")
     )
     refute_includes CompletedBatchAuditReceipt.final_status(mixed), "<!--"
@@ -825,7 +868,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       expected_batch_id: "batch-184"
     )
     assert replayed.fetch("well_formed")
-    assert replayed.fetch("ready")
+    refute replayed.fetch("ready")
+    assert_equal(
+      ["completed-batch-audit publication snapshot refresh required"],
+      replayed.fetch("blockers")
+    )
   end
 
   def test_publish_canonicalizes_legacy_full_comment_to_the_concise_header
@@ -1808,7 +1855,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert result.fetch("well_formed")
       assert result.fetch("ready")
       assert_equal [
-        "api --hostname github.com repos/acme/widgets/issues/comments/9001"
+        "api --hostname github.com repos/acme/widgets/issues/comments/9001",
+        "api --hostname github.com repos/acme/widgets/pulls/184"
       ], File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
     end
   end
@@ -2131,24 +2179,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "batch_id" => "batch-184",
       "expected_targets" => [target],
       "coordination_status" => {
-        "scope" => { "kind" => "batch", "batch_id" => "batch-184" },
-        "batches" => [{
-          "batch_id" => "batch-184",
-          "repo" => "acme/widgets",
-          "status" => "completed",
-          "updated_at" => "2026-07-18T17:59:59Z",
-          "completed_at" => "2026-07-18T17:59:59Z",
-          "lanes" => [{
-            "name" => "lane-184",
-            "targets" => ["184"],
-            "status" => "done",
-            "terminal" => "done",
-            "closed_at" => "2026-07-18T17:59:59Z",
-            "pr_state" => "merged",
-            "pr_url" => "https://github.com/acme/widgets/pull/184",
-            "evidence_url" => "https://github.com/acme/widgets/pull/184"
-          }]
-        }]
+        "contract" => "completed-batch-coordination-not-applicable",
+        "version" => 1,
+        "batch_id" => "batch-184",
+        "mode" => "single_operator",
+        "rationale" => "repository workflow seam declares coordination_backend: n/a",
+        "source" => "https://github.com/acme/widgets/blob/#{head_sha}/.agents/agent-workflow.yml",
+        "completed_at" => "2026-07-18T17:59:59Z",
+        "targets" => [target]
       },
       "target_snapshots" => [{
         "target" => target,
@@ -2161,9 +2199,27 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     comment = publication_waiver_comment(head_sha:, url: waiver_url)
     CompletedBatchPublicationPreflight.assess(
       input,
-      coordination_backend: "agent-coord",
-      waiver_verifier: ->(**_keywords) { comment }
+      coordination_backend: "n/a",
+      waiver_verifier: ->(**_keywords) { comment },
+      target_verifier: lambda do |target:|
+        {
+          "target" => target,
+          "state" => "merged",
+          "head_sha" => head_sha,
+          "verification_source" => "authenticated gh api"
+        }
+      end
     )
+  end
+
+  def publication_target_payload(head_sha: "a" * 40)
+    {
+      "number" => 184,
+      "html_url" => "https://github.com/acme/widgets/pull/184",
+      "state" => "closed",
+      "merged_at" => "2026-07-18T17:59:59Z",
+      "head" => { "sha" => head_sha }
+    }
   end
 
   def publication_waiver_comment(head_sha:, url: "https://github.com/acme/widgets/pull/184#issuecomment-9184")
@@ -2259,6 +2315,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         case [method, endpoint]
         when ["GET", "user"]
           puts JSON.generate("login" => actor, "type" => actor_type)
+        when ["GET", "repos/acme/widgets/pulls/184"]
+          puts JSON.generate(
+            "number" => 184,
+            "html_url" => "https://github.com/acme/widgets/pull/184",
+            "state" => "closed",
+            "merged_at" => "2026-07-18T17:59:59Z",
+            "head" => { "sha" => "a" * 40 }
+          )
         when ["GET", "repos/acme/widgets/issues/184"]
           target = {
             "number" => 184,

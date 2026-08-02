@@ -28,29 +28,62 @@ module CompletedBatchPublicationPreflight
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   DEFAULT_GH_TIMEOUT_SECONDS = 60
+  COORDINATION_TIMEOUT_SECONDS = 20
+  COORDINATION_CAPTURE_TIMEOUT_SECONDS = 25
   PROCESS_TERMINATION_GRACE_SECONDS = 0.25
+  AGENT_COORD_BOUNDED = File.expand_path("../../pr-batch/bin/agent-coord-bounded", __dir__)
 
   module_function
 
-  def assess(input, coordination_backend:, waiver_verifier: nil)
+  def assess(
+    input,
+    coordination_backend:,
+    waiver_verifier: nil,
+    target_verifier: nil,
+    coordination_verifier: nil
+  )
     blockers = []
     input = {} unless input.is_a?(Hash)
     validate_input_envelope(input, blockers)
     backend = normalized_known_string(coordination_backend)
-    blockers << "configured coordination backend is unavailable" unless backend && backend.downcase != "n/a"
+    blockers << "configured coordination backend is unavailable" unless backend
 
     batch_id = normalized_known_string(input["batch_id"])
     blockers << "publication batch id is invalid" unless batch_id
     expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
-    batch = resolved_batch(input["coordination_status"], batch_id, blockers)
-    lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+    no_backend = backend&.downcase == "n/a"
+    if no_backend
+      no_backend_evidence = resolved_no_backend_evidence(
+        input["coordination_status"],
+        batch_id,
+        expected_targets,
+        blockers
+      )
+      batch = nil
+      lane_entries = []
+      resolved_targets = no_backend_evidence ? expected_targets : []
+    else
+      no_backend_evidence = nil
+      authenticated_status = coordination_verifier&.call(backend:, batch_id:)
+      unless authenticated_status == input["coordination_status"]
+        blockers << "coordination status is not authenticated or fresh"
+      end
+      batch = resolved_batch(input["coordination_status"], batch_id, blockers)
+      lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+    end
     compare_resolved_scope(expected_targets, resolved_targets, blockers)
     snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
-    validate_batch_terminal(batch, blockers)
+    validate_batch_terminal(batch, blockers) unless no_backend
     canonical_lanes = canonical_lane_snapshots(lane_entries, blockers)
-    canonical_targets = canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers)
+    canonical_targets = canonical_target_snapshots(
+      expected_targets,
+      snapshots,
+      lane_entries,
+      blockers,
+      target_verifier:
+    )
     canonical_qa = canonical_qa_snapshots(
       expected_targets,
       snapshots,
@@ -61,16 +94,17 @@ module CompletedBatchPublicationPreflight
     snapshot = {
       "batch_id" => batch_id,
       "coordination_backend" => backend,
-      "coordination" => {
-        "status" => scalar_or_nil(batch&.fetch("status", nil)),
-        "updated_at" => scalar_or_nil(batch&.fetch("updated_at", nil)),
-        "completed_at" => scalar_or_nil(batch&.fetch("completed_at", nil)),
-        "lanes" => canonical_lanes
-      },
+      "coordination" => canonical_coordination_snapshot(
+        batch,
+        canonical_lanes,
+        no_backend_evidence,
+        authenticated: no_backend || authenticated_status == input["coordination_status"]
+      ),
       "targets" => canonical_targets,
       "qa" => canonical_qa
     }
     snapshot = canonicalize(snapshot)
+    source_input = canonicalize(input)
     snapshot_digest = digest(snapshot)
     blockers = blockers.uniq
     eligible = blockers.empty?
@@ -82,6 +116,8 @@ module CompletedBatchPublicationPreflight
       "verdict" => eligible ? "ELIGIBLE" : "BLOCKED",
       "targets" => expected_targets,
       "blockers" => blockers,
+      "source_input" => source_input,
+      "source_input_digest" => digest(source_input),
       "snapshot" => snapshot,
       "snapshot_digest" => snapshot_digest
     }
@@ -107,6 +143,8 @@ module CompletedBatchPublicationPreflight
       "verdict" => "BLOCKED",
       "targets" => [],
       "blockers" => [blocker],
+      "source_input" => {},
+      "source_input_digest" => digest({}),
       "snapshot" => snapshot,
       "snapshot_digest" => digest(snapshot)
     }
@@ -118,6 +156,9 @@ module CompletedBatchPublicationPreflight
     return false unless receipt.is_a?(Hash)
     return false unless receipt["contract"] == CONTRACT && receipt["version"] == VERSION
     return false unless receipt["snapshot"].is_a?(Hash)
+    return false unless receipt["source_input"].is_a?(Hash)
+    return false unless receipt["source_input_digest"].to_s.match?(DIGEST_PATTERN)
+    return false unless receipt["source_input_digest"] == digest(canonicalize(receipt["source_input"]))
     return false unless receipt["snapshot_digest"].to_s.match?(DIGEST_PATTERN)
     return false unless receipt["receipt_digest"].to_s.match?(DIGEST_PATTERN)
     return false unless receipt["snapshot_digest"] == digest(canonicalize(receipt["snapshot"]))
@@ -132,6 +173,15 @@ module CompletedBatchPublicationPreflight
     return false unless target_blockers.empty?
     return false unless targets == receipt["targets"]
     return false unless targets == receipt.dig("snapshot", "targets").map { |entry| entry.fetch("target") }
+
+    coordination = receipt.dig("snapshot", "coordination")
+    if receipt.dig("snapshot", "coordination_backend").to_s.downcase == "n/a"
+      return false unless coordination.fetch("lanes") == []
+      return false unless coordination.dig("not_applicable", "targets") == targets
+    else
+      return false unless targets == coordination.fetch("lanes").map { |entry| entry.fetch("target") }
+    end
+    return false unless targets == receipt.dig("snapshot", "qa").map { |entry| entry.fetch("target") }
 
     if expected_targets
       expected_blockers = []
@@ -192,6 +242,27 @@ module CompletedBatchPublicationPreflight
     false
   end
 
+  def reassessed_receipt_valid?(
+    receipt,
+    coordination_backend:,
+    waiver_verifier:,
+    target_verifier:,
+    coordination_verifier:
+  )
+    return false unless valid_receipt?(receipt)
+
+    refreshed = assess(
+      receipt.fetch("source_input"),
+      coordination_backend:,
+      waiver_verifier:,
+      target_verifier:,
+      coordination_verifier:
+    )
+    canonicalize(refreshed) == canonicalize(receipt)
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
   def validate_input_envelope(input, blockers)
     blockers << "publication preflight input contract or version is invalid" unless
       input["contract"] == INPUT_CONTRACT && input["version"] == VERSION
@@ -220,6 +291,58 @@ module CompletedBatchPublicationPreflight
     end
 
     matches.first
+  end
+
+  def resolved_no_backend_evidence(value, batch_id, expected_targets, blockers)
+    valid_shape = value.is_a?(Hash) &&
+                  value.keys.sort == %w[batch_id completed_at contract mode rationale source targets version]
+    unless valid_shape &&
+           value["contract"] == "completed-batch-coordination-not-applicable" &&
+           value["version"] == VERSION &&
+           value["batch_id"] == batch_id &&
+           value["mode"] == "single_operator"
+      blockers << "typed no-backend coordination evidence is absent or invalid"
+      return nil
+    end
+
+    rationale = normalized_known_string(value["rationale"])
+    source = durable_https_url(value["source"])
+    targets_blockers = []
+    targets = validated_target_set(value["targets"], targets_blockers, "no-backend target")
+    unless rationale && source && valid_timestamp?(value["completed_at"]) &&
+           targets_blockers.empty? && targets == expected_targets
+      blockers << "typed no-backend coordination evidence is absent or invalid"
+      return nil
+    end
+
+    {
+      "mode" => "single_operator",
+      "rationale" => rationale,
+      "source" => source,
+      "completed_at" => value.fetch("completed_at"),
+      "targets" => targets
+    }
+  end
+
+  def canonical_coordination_snapshot(batch, lanes, no_backend_evidence, authenticated:)
+    if no_backend_evidence
+      {
+        "status" => "not_applicable",
+        "updated_at" => no_backend_evidence.fetch("completed_at"),
+        "completed_at" => no_backend_evidence.fetch("completed_at"),
+        "lanes" => [],
+        "not_applicable" => no_backend_evidence,
+        "verification_source" => "trusted workflow config plus durable typed evidence"
+      }
+    else
+      {
+        "status" => scalar_or_nil(batch&.fetch("status", nil)),
+        "updated_at" => scalar_or_nil(batch&.fetch("updated_at", nil)),
+        "completed_at" => scalar_or_nil(batch&.fetch("completed_at", nil)),
+        "lanes" => lanes,
+        "verification_source" => authenticated ? "authenticated agent-coord-bounded" : nil
+      }
+    end
   end
 
   def resolved_lanes(batch, expected_targets, blockers)
@@ -372,27 +495,62 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers)
+  def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
     lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
     expected_targets.map do |target|
       key = target_key(target)
       row = snapshots[key]
       unless row
         blockers << "#{target_label(target)} target snapshot is absent"
-        next({ "target" => target, "state" => nil, "head_sha" => nil, "source" => nil })
+        next(
+          {
+            "target" => target,
+            "state" => nil,
+            "head_sha" => nil,
+            "no_pr_evidence" => nil,
+            "source" => nil,
+            "verification_source" => nil
+          }
+        )
       end
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       state = scalar_or_nil(row["state"])
       blockers << "#{target_label(target)} target is not #{expected_state}" unless state == expected_state
-      head_sha = row["head_sha"].to_s.downcase
-      blockers << "#{target_label(target)} exact head SHA is absent or invalid" unless head_sha.match?(SHA_PATTERN)
+      raw_head_sha = row["head_sha"].to_s.downcase
+      no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
+      if target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr_evidence
+        head_sha = nil
+      else
+        head_sha = raw_head_sha
+        blockers << "#{target_label(target)} exact head SHA is absent or invalid" unless head_sha.match?(SHA_PATTERN)
+        if row.key?("no_pr_evidence")
+          blockers << "#{target_label(target)} no-PR evidence is invalid or inconsistent"
+        end
+      end
       source = normalized_known_string(row["source"])
       blockers << "#{target_label(target)} target snapshot source is absent" unless source
       lane_state = lanes_by_target.dig(key, "lane", "pr_state")
       if lane_state && state && lane_state != state
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
-      { "target" => target, "state" => state, "head_sha" => head_sha, "source" => source }
+      verified = target_verifier&.call(target:)
+      verified_shape = verified.is_a?(Hash) &&
+                       verified.keys.sort == %w[head_sha state target verification_source] &&
+                       validated_target(verified["target"]) == target &&
+                       verified["state"] == state &&
+                       verified["head_sha"] == head_sha &&
+                       verified["verification_source"] == "authenticated gh api"
+      unless verified_shape
+        blockers << "#{target_label(target)} target state/head is not authenticated or fresh"
+      end
+      {
+        "target" => target,
+        "state" => state,
+        "head_sha" => head_sha,
+        "no_pr_evidence" => no_pr_evidence,
+        "source" => source,
+        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
+      }
     end
   end
 
@@ -400,7 +558,10 @@ module CompletedBatchPublicationPreflight
     expected_targets.map do |target|
       key = target_key(target)
       row = qa_entries[key]
-      head_sha = snapshots.dig(key, "head_sha").to_s.downcase
+      raw_head_sha = snapshots.dig(key, "head_sha").to_s.downcase
+      no_pr = canonical_no_pr_evidence(snapshots.dig(key, "no_pr_evidence"), target)
+      head_sha = raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
+      head_sha = nil if target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr
       unless row
         blockers << "#{target_label(target)} QA evidence is absent"
         next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
@@ -442,6 +603,17 @@ module CompletedBatchPublicationPreflight
     end
   end
 
+  def canonical_no_pr_evidence(value, target)
+    return unless target["type"] == "issue"
+    return unless value.is_a?(Hash) && value.keys.sort == %w[rationale target url]
+
+    rationale = normalized_known_string(value["rationale"])
+    evidence_target = validated_target(value["target"])
+    return unless rationale && evidence_target == target && value["url"] == target_base_url(target)
+
+    { "url" => value.fetch("url"), "rationale" => rationale, "target" => evidence_target }
+  end
+
   def canonical_waiver(value, target, evidence, head_sha:, verifier:)
     return unless value.is_a?(Hash)
     return unless value.keys == ["url"]
@@ -478,6 +650,8 @@ module CompletedBatchPublicationPreflight
     return unless comment_id&.positive?
 
     { "url" => value, "comment_id" => comment_id }
+  rescue KeyError, URI::InvalidURIError, ArgumentError
+    nil
   end
 
   def verified_waiver_comment(comment, reference:, target:, head_sha:)
@@ -626,6 +800,15 @@ module CompletedBatchPublicationPreflight
     normalized
   end
 
+  def durable_https_url(value)
+    uri = URI.parse(value.to_s)
+    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
+
+    value
+  rescue URI::InvalidURIError
+    nil
+  end
+
   def scalar_or_nil(value)
     value.is_a?(String) ? value : nil
   end
@@ -655,15 +838,72 @@ module CompletedBatchPublicationPreflight
   end
 
   def authenticated_waiver_comment(host:, repo:, comment_id:)
+    authenticated_gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+  end
+
+  def authenticated_target_snapshot(target:)
+    endpoint_type = target.fetch("type") == "pull_request" ? "pulls" : "issues"
+    payload = authenticated_gh_api(
+      target.fetch("host"),
+      "repos/#{target.fetch('repo')}/#{endpoint_type}/#{target.fetch('number')}"
+    )
+    verified_target_api_snapshot(payload, target)
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def verified_target_api_snapshot(payload, target)
+    return unless payload.is_a?(Hash)
+    return unless Integer(payload["number"], exception: false) == target.fetch("number")
+    return unless payload["html_url"] == target_base_url(target)
+
+    if target.fetch("type") == "pull_request"
+      return unless payload["state"] == "closed" && valid_timestamp?(payload["merged_at"])
+
+      head_sha = payload.dig("head", "sha").to_s.downcase
+      return unless head_sha.match?(SHA_PATTERN)
+
+      state = "merged"
+    else
+      return unless payload["state"] == "closed" && !payload.key?("pull_request")
+
+      head_sha = nil
+      state = "closed"
+    end
+    {
+      "target" => target,
+      "state" => state,
+      "head_sha" => head_sha,
+      "verification_source" => "authenticated gh api"
+    }
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def authenticated_coordination_status(backend:, batch_id:)
+    return unless normalized_known_string(backend) && backend.downcase != "n/a"
+
     command = [
-      "gh", "api", "--hostname", host,
-      "repos/#{repo}/issues/comments/#{comment_id}"
+      AGENT_COORD_BOUNDED,
+      "--timeout", COORDINATION_TIMEOUT_SECONDS.to_s,
+      "status", "--batch-id", batch_id, "--json"
     ]
     stdout, _stderr, status = capture_process(
       command,
       input: "",
-      timeout: gh_timeout_seconds
+      timeout: COORDINATION_CAPTURE_TIMEOUT_SECONDS
     )
+    return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
+  def authenticated_gh_api(host, endpoint)
+    command = ["gh", "api", "--hostname", host, endpoint]
+    stdout, _stderr, status = capture_process(command, input: "", timeout: gh_timeout_seconds)
     return unless status.success?
 
     payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
@@ -812,7 +1052,9 @@ module CompletedBatchPublicationPreflight
     result = assess(
       JSON.parse(raw),
       coordination_backend: config["coordination_backend"],
-      waiver_verifier: method(:authenticated_waiver_comment)
+      waiver_verifier: method(:authenticated_waiver_comment),
+      target_verifier: method(:authenticated_target_snapshot),
+      coordination_verifier: method(:authenticated_coordination_status)
     )
     puts JSON.pretty_generate(result)
     result.fetch("eligible") ? 0 : 1

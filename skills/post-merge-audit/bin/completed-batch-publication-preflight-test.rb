@@ -21,12 +21,97 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     JSON.parse(File.read(File.join(FIXTURES, name), encoding: "UTF-8"))
   end
 
-  def assess_input(input, backend: BACKEND, waiver_verifier: valid_waiver_verifier(input))
+  def no_backend_input
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    input["coordination_status"] = {
+      "contract" => "completed-batch-coordination-not-applicable",
+      "version" => 1,
+      "batch_id" => input.fetch("batch_id"),
+      "mode" => "single_operator",
+      "rationale" => "repository workflow seam declares coordination_backend: n/a",
+      "source" => "https://github.com/shakacode/agent-workflows/blob/fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/agent-workflow.yml",
+      "completed_at" => "2026-07-31T11:40:00Z",
+      "targets" => JSON.parse(JSON.generate(input.fetch("expected_targets")))
+    }
+    input
+  end
+
+  def no_pr_input
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    number = 10_036
+    target = input.fetch("expected_targets").find { |row| row.fetch("number") == number }
+    target["type"] = "issue"
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == [number.to_s] }
+    lane["issue_url"] = lane.delete("pr_url").sub("/pull/", "/issues/")
+    lane["pr_state"] = "closed"
+    snapshot = input.fetch("target_snapshots").find { |row| row.dig("target", "number") == number }
+    snapshot.fetch("target")["type"] = "issue"
+    snapshot["state"] = "closed"
+    snapshot["head_sha"] = "not_applicable"
+    snapshot["no_pr_evidence"] = {
+      "url" => "https://github.com/shakacode/hichee/issues/10036",
+      "rationale" => "closed issue; no implementation PR was created",
+      "target" => JSON.parse(JSON.generate(snapshot.fetch("target")))
+    }
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == number }
+    qa.fetch("target")["type"] = "issue"
+    qa["evidence"] = <<~MARKER
+      <!-- qa-evidence v1
+      required: no
+      status: not_applicable
+      head_sha: not_applicable
+      tested_at: issue #10036 closed with no implementation PR
+      scope: issue-only closeout
+      automated_checks: not applicable
+      manual_checks: not applicable
+      findings: none
+      release_blocking: not_applicable
+      process_gap_disposition: not_applicable
+      -->
+    MARKER
+    input
+  end
+
+  def assess_input(
+    input,
+    backend: BACKEND,
+    waiver_verifier: valid_waiver_verifier(input),
+    target_verifier: valid_target_verifier(input),
+    coordination_verifier: valid_coordination_verifier(input, backend)
+  )
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: backend,
-      waiver_verifier:
+      waiver_verifier:,
+      target_verifier:,
+      coordination_verifier:
     )
+  end
+
+  def valid_target_verifier(input)
+    lambda do |target:|
+      row = input.fetch("target_snapshots").find { |candidate| candidate.fetch("target") == target }
+      next unless row
+
+      raw_head_sha = row["head_sha"].to_s.downcase
+      head_sha = raw_head_sha.match?(CompletedBatchPublicationPreflight::SHA_PATTERN) ? raw_head_sha : nil
+      {
+        "target" => target,
+        "state" => row.fetch("state"),
+        "head_sha" => head_sha,
+        "verification_source" => "authenticated gh api"
+      }
+    end
+  end
+
+  def valid_coordination_verifier(input, backend)
+    expected_backend = backend
+    lambda do |backend:, batch_id:|
+      next unless backend == expected_backend && batch_id == input.fetch("batch_id")
+
+      input.fetch("coordination_status")
+    end
   end
 
   def valid_waiver_verifier(input)
@@ -78,18 +163,64 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         #!/usr/bin/env ruby
         require "json"
 
-        File.write(ENV.fetch("FAKE_GH_LOG"), ARGV.join(" "))
-        exit 1 if ENV.fetch("FAKE_GH_MODE") == "not_found"
+        File.open(ENV.fetch("FAKE_GH_LOG"), "a") { |file| file.puts(ARGV.join(" ")) }
+        args = ARGV.dup
+        abort "expected api" unless args.shift == "api"
+        abort "expected --hostname" unless args.shift == "--hostname"
+        host = args.shift
+        endpoint = args.shift
+        targets = JSON.parse(ENV.fetch("FAKE_GH_TARGETS"))
+        target = targets.find do |candidate|
+          candidate.fetch("host") == host && candidate.fetch("endpoint") == endpoint
+        end
 
-        puts ENV.fetch("FAKE_GH_COMMENT")
+        if target
+          puts JSON.generate(target.fetch("payload"))
+        elsif endpoint.include?("/issues/comments/")
+          exit 1 if ENV.fetch("FAKE_GH_MODE") == "not_found"
+
+          puts ENV.fetch("FAKE_GH_COMMENT")
+        else
+          abort "unexpected endpoint: #{host} #{endpoint}"
+        end
+      RUBY
+      agent_coord = File.join(bin, "agent-coord")
+      File.write(agent_coord, <<~'RUBY')
+        #!/usr/bin/env ruby
+        abort "unexpected agent-coord arguments" unless ARGV == ["status", "--batch-id", ENV.fetch("FAKE_BATCH_ID"), "--json"]
+
+        puts ENV.fetch("FAKE_COORDINATION_STATUS")
       RUBY
       FileUtils.chmod("+x", gh)
+      FileUtils.chmod("+x", agent_coord)
       row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
+      targets = input.fetch("target_snapshots").map do |snapshot|
+        target = snapshot.fetch("target")
+        endpoint_type = target.fetch("type") == "pull_request" ? "pulls" : "issues"
+        payload = {
+          "number" => target.fetch("number"),
+          "html_url" => "https://#{target.fetch('host')}/#{target.fetch('repo')}/" \
+                        "#{target.fetch('type') == 'pull_request' ? 'pull' : 'issues'}/#{target.fetch('number')}",
+          "state" => "closed"
+        }
+        if target.fetch("type") == "pull_request"
+          payload["merged_at"] = "2026-07-31T12:00:00Z"
+          payload["head"] = { "sha" => snapshot.fetch("head_sha") }
+        end
+        {
+          "host" => target.fetch("host"),
+          "endpoint" => "repos/#{target.fetch('repo')}/#{endpoint_type}/#{target.fetch('number')}",
+          "payload" => payload
+        }
+      end
       env = {
         "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
         "FAKE_GH_LOG" => File.join(directory, "gh.log"),
         "FAKE_GH_MODE" => mode,
-        "FAKE_GH_COMMENT" => JSON.generate(valid_waiver_comment(row, input))
+        "FAKE_GH_COMMENT" => JSON.generate(valid_waiver_comment(row, input)),
+        "FAKE_GH_TARGETS" => JSON.generate(targets),
+        "FAKE_BATCH_ID" => input.fetch("batch_id"),
+        "FAKE_COORDINATION_STATUS" => JSON.generate(input.fetch("coordination_status"))
       }
       yield env
     end
@@ -169,7 +300,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     target_numbers = result.fetch("targets").map { |target| target.fetch("number") }
     assert_equal [10_026, 10_036, 10_048, 10_049], target_numbers
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("snapshot_digest"))
-    assert_equal "sha256:78743edf641a114bf78424d667c4d30c40af202acebdbade974da12422efee64",
+    assert_equal "sha256:ad03e39faca482023cba75d7ea46b33fd26051fc1528002ca07e3e74d8b831b5",
                  result.fetch("snapshot_digest")
   end
 
@@ -207,8 +338,25 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal "57e048ed10551eb3cf8414a4de0064443bef730d", waiver.fetch("head_sha")
     assert_equal 10_026, waiver.dig("target", "number")
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
-    assert_equal "sha256:2fe75fde54b0ac0ac3d4d7068ba5958fe8e0dae4e7e1596407102337706c299d",
+    assert_equal "sha256:a3e1067977f6ad217c74cbd8b54acea13538bd85f701f5591c8ad7d8973740d5",
                  result.fetch("snapshot_digest")
+  end
+
+  def test_assess_fails_closed_without_live_target_and_coordination_verifiers
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input)
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination status is not authenticated or fresh"
+    input.fetch("expected_targets").each do |target|
+      assert_includes result.fetch("blockers"),
+                      "#{target.fetch('repo')}##{target.fetch('type')}:#{target.fetch('number')} " \
+                      "target state/head is not authenticated or fresh"
+    end
   end
 
   def test_snapshot_is_deterministic_under_source_array_reordering
@@ -224,6 +372,33 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal baseline.fetch("snapshot_digest"), replay.fetch("snapshot_digest")
   end
 
+  def test_receipt_binds_the_exact_raw_source_input
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    result = assess_input(input)
+
+    assert_equal CompletedBatchPublicationPreflight.canonicalize(input), result.fetch("source_input")
+    assert_equal CompletedBatchPublicationPreflight.digest(result.fetch("source_input")),
+                 result.fetch("source_input_digest")
+  end
+
+  def test_reassessment_rejects_altered_raw_input_even_with_recomputed_digests
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    result = assess_input(input)
+    result.dig("source_input", "target_snapshots", 0)["head_sha"] = "b" * 40
+    result["source_input_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("source_input"))
+    result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      result.reject { |key, _value| key == "receipt_digest" }
+    )
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
   def test_unknown_and_in_progress_qa_block_completion
     %w[unknown in_progress].each do |status|
       input = fixture("completed-batch-publication-hichee-terminal.json")
@@ -236,6 +411,44 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       refute result.fetch("eligible"), status
       assert_includes result.fetch("blockers"),
                       "shakacode/hichee#pull_request:10049 QA disposition is #{status}", status
+    end
+  end
+
+  def test_closed_issue_without_pr_uses_typed_no_pr_evidence_instead_of_a_fabricated_sha
+    input = no_pr_input
+    number = 10_036
+    snapshot = input.fetch("target_snapshots").find { |row| row.dig("target", "number") == number }
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    issue_snapshot = result.dig("snapshot", "targets").find { |row| row.dig("target", "number") == number }
+    assert_nil issue_snapshot.fetch("head_sha")
+    assert_equal snapshot.fetch("no_pr_evidence"), issue_snapshot.fetch("no_pr_evidence")
+    issue_qa = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == number }
+    assert_equal "NOT_APPLICABLE", issue_qa.fetch("verdict")
+  end
+
+  def test_no_pr_evidence_fails_closed_for_forged_url_target_or_rationale
+    mutations = [
+      ->(evidence) { evidence["url"] = evidence.fetch("url").sub("10036", "10048") },
+      ->(evidence) { evidence.fetch("target")["number"] = 10_048 },
+      ->(evidence) { evidence["rationale"] = "UNKNOWN" }
+    ]
+
+    mutations.each_with_index do |mutate, index|
+      input = no_pr_input
+      evidence = input.fetch("target_snapshots")
+                      .find { |row| row.dig("target", "number") == 10_036 }
+                      .fetch("no_pr_evidence")
+      mutate.call(evidence)
+
+      result = assess_input(input)
+
+      refute result.fetch("eligible"), index
+      assert_includes result.fetch("blockers"),
+                      "shakacode/hichee#issue:10036 no-PR evidence is invalid or inconsistent",
+                      index
     end
   end
 
@@ -340,6 +553,21 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     )
   end
 
+  def test_malformed_waiver_url_returns_false_instead_of_raising_during_refresh
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    receipt = assess_input(input)
+    receipt.dig("snapshot", "qa", 0, "maintainer_waiver")["url"] = "https://[malformed"
+    receipt["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(receipt.fetch("snapshot"))
+    receipt["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      receipt.reject { |key, _value| key == "receipt_digest" }
+    )
+
+    refute CompletedBatchPublicationPreflight.authenticated_waivers_valid?(
+      receipt,
+      waiver_verifier: valid_waiver_verifier(input)
+    )
+  end
+
   def test_expected_target_absent_from_coordination_scope_blocks
     input = fixture("completed-batch-publication-hichee-terminal.json")
     input.dig("coordination_status", "batches", 0, "lanes").pop
@@ -375,11 +603,45 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute CompletedBatchPublicationPreflight.valid_receipt?(result)
   end
 
-  def test_no_configured_coordination_backend_fails_closed
-    result = assess_input(fixture("completed-batch-publication-hichee-terminal.json"), backend: "n/a")
+  def test_recomputed_eligible_receipt_cannot_omit_coordination_and_qa_rows
+    result = assess_input(fixture("completed-batch-publication-hichee-terminal.json"))
+    result.dig("snapshot", "coordination")["lanes"] = []
+    result["snapshot"]["qa"] = []
+    result["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("snapshot"))
+    result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      result.reject { |key, _value| key == "receipt_digest" }
+    )
 
-    refute result.fetch("eligible")
-    assert_includes result.fetch("blockers"), "configured coordination backend is unavailable"
+    refute CompletedBatchPublicationPreflight.valid_receipt?(result)
+  end
+
+  def test_no_backend_single_operator_path_accepts_typed_durable_evidence
+    result = assess_input(no_backend_input, backend: "n/a")
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal "not_applicable", result.dig("snapshot", "coordination", "status")
+    assert_equal "single_operator", result.dig("snapshot", "coordination", "not_applicable", "mode")
+  end
+
+  def test_no_backend_path_rejects_missing_or_malformed_typed_evidence
+    mutations = [
+      ->(proof) { proof.delete("rationale") },
+      ->(proof) { proof["source"] = "not a durable URL" },
+      ->(proof) { proof.fetch("targets").pop },
+      ->(proof) { proof["mode"] = "multi_operator" },
+      ->(proof) { proof["completed_at"] = "not-a-timestamp" }
+    ]
+
+    mutations.each_with_index do |mutate, index|
+      input = no_backend_input
+      mutate.call(input.fetch("coordination_status"))
+      result = assess_input(input, backend: "n/a")
+
+      refute result.fetch("eligible"), index
+      assert_includes result.fetch("blockers"),
+                      "typed no-backend coordination evidence is absent or invalid",
+                      index
+    end
   end
 
   def test_cli_reads_the_repository_coordination_backend_seam
@@ -402,10 +664,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         result = JSON.parse(out)
         assert result.fetch("eligible")
         assert_equal "agent-coord private backend", result.dig("snapshot", "coordination_backend")
-        assert_equal(
-          "api --hostname github.com repos/shakacode/hichee/issues/comments/5000000000",
-          File.read(env.fetch("FAKE_GH_LOG"))
-        )
+        calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+        assert_includes calls,
+                        "api --hostname github.com repos/shakacode/hichee/pulls/10026"
+        assert_includes calls,
+                        "api --hostname github.com repos/shakacode/hichee/issues/comments/5000000000"
       end
     end
   end
@@ -440,9 +703,9 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
           refute result.fetch("eligible")
           assert_includes result.fetch("blockers"),
                           "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
-          assert_equal(
-            "api --hostname github.com repos/shakacode/hichee/issues/comments/999999999999999999",
-            File.read(env.fetch("FAKE_GH_LOG"))
+          assert_includes(
+            File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true),
+            "api --hostname github.com repos/shakacode/hichee/issues/comments/999999999999999999"
           )
         end
       end

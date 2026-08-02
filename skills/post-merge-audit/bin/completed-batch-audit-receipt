@@ -486,16 +486,13 @@ module CompletedBatchAuditReceipt
   end
 
   def validate_publication_preflight!(preflight, expected_batch_id:, targets:)
-    valid = CompletedBatchPublicationPreflight.valid_receipt?(
+    valid = publication_preflight_reassessed?(
       preflight,
       expected_batch_id:,
       expected_targets: targets
     )
     raise PublicationPreflightError, "completed-batch publication preflight is missing or invalid" unless valid
     raise PublicationPreflightError, "completed-batch publication preflight is blocked" unless preflight.fetch("eligible")
-    return if publication_waivers_authenticated?(preflight)
-
-    raise PublicationPreflightError, "completed-batch publication waiver authentication failed"
   end
 
   def bind_publication_snapshot(marker, preflight)
@@ -545,15 +542,15 @@ module CompletedBatchAuditReceipt
 
   def publication_snapshot_blockers(state, preflight, expected_targets: nil)
     value = state.fields["publication_snapshot"]
+    return [PUBLICATION_REFRESH_BLOCKER] if state.fields["audit_status"] == "complete" && !value
     return [] unless value
     return [PUBLICATION_REFRESH_BLOCKER] unless preflight
-    return [PUBLICATION_MISMATCH_BLOCKER] unless CompletedBatchPublicationPreflight.valid_receipt?(
+    return [PUBLICATION_MISMATCH_BLOCKER] unless publication_preflight_reassessed?(
       preflight,
       expected_batch_id: state.fields.fetch("batch_id"),
       expected_targets:
     )
     return [PUBLICATION_MISMATCH_BLOCKER] unless preflight.fetch("eligible")
-    return [PUBLICATION_MISMATCH_BLOCKER] unless publication_waivers_authenticated?(preflight)
 
     bound = publication_snapshot(value)
     current = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
@@ -567,10 +564,41 @@ module CompletedBatchAuditReceipt
     )
   end
 
+  def publication_preflight_reassessed?(preflight, expected_batch_id:, expected_targets:)
+    return false unless CompletedBatchPublicationPreflight.valid_receipt?(
+      preflight,
+      expected_batch_id:,
+      expected_targets:
+    )
+
+    CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      preflight,
+      coordination_backend: preflight.dig("snapshot", "coordination_backend"),
+      waiver_verifier: method(:authenticated_publication_waiver_comment),
+      target_verifier: method(:authenticated_publication_target_snapshot),
+      coordination_verifier: method(:authenticated_publication_coordination_status)
+    )
+  end
+
   def authenticated_publication_waiver_comment(host:, repo:, comment_id:)
     gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
   rescue Error
     nil
+  end
+
+  def authenticated_publication_target_snapshot(target:)
+    endpoint_type = target.fetch("type") == "pull_request" ? "pulls" : "issues"
+    payload = gh_api(
+      target.fetch("host"),
+      "repos/#{target.fetch('repo')}/#{endpoint_type}/#{target.fetch('number')}"
+    )
+    CompletedBatchPublicationPreflight.verified_target_api_snapshot(payload, target)
+  rescue Error, KeyError
+    nil
+  end
+
+  def authenticated_publication_coordination_status(backend:, batch_id:)
+    CompletedBatchPublicationPreflight.authenticated_coordination_status(backend:, batch_id:)
   end
 
   def bot_login?(login)

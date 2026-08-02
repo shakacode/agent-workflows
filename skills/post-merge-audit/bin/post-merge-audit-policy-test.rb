@@ -53,6 +53,11 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_WAIVER_SNAPSHOT_RULE = "The authenticated snapshot binds the exact comment ID/URL, body SHA-256, author/association, timestamps, target, and head."
   REQUIRED_WAIVER_MARKER_RULE = "The fetched body must contain exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`, `head_sha: <full exact head>`, and `decision: waived`."
   REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE = "Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication."
+  REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts."
+  REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay."
+  REQUIRED_TYPED_NO_BACKEND_EVIDENCE = "When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks."
+  REQUIRED_TYPED_NO_PR_EVIDENCE = "An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks."
+  REQUIRED_LEGACY_PUBLICATION_REFRESH = "A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness."
   REQUIRED_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
   REQUIRED_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
   REQUIRED_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
@@ -362,6 +367,16 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should require an exact-head waiver decision marker"
       assert_includes normalized_text, REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE,
                       "#{relative_path} should re-authenticate the waiver during publication and replay"
+      assert_includes normalized_text, REQUIRED_RAW_PREFLIGHT_INPUT_BINDING,
+                      "#{relative_path} should bind the exact raw preflight input"
+      assert_includes normalized_text, REQUIRED_LIVE_PREFLIGHT_REASSESSMENT,
+                      "#{relative_path} should reacquire terminal facts before publication and replay"
+      assert_includes normalized_text, REQUIRED_TYPED_NO_BACKEND_EVIDENCE,
+                      "#{relative_path} should require typed bounded no-backend evidence"
+      assert_includes normalized_text, REQUIRED_TYPED_NO_PR_EVIDENCE,
+                      "#{relative_path} should require typed no-PR evidence without a fabricated SHA"
+      assert_includes normalized_text, REQUIRED_LEGACY_PUBLICATION_REFRESH,
+                      "#{relative_path} should keep legacy complete markers parseable but non-ready"
       assert_includes normalized_text, "unmerged",
                       "#{relative_path} should block an unmerged coordinated target"
       assert_includes normalized_text, "in_progress",
