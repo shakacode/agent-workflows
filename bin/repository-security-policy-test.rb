@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "fileutils"
+require "tmpdir"
 require "yaml"
 
 class RepositorySecurityPolicyTest < Minitest::Test
@@ -11,10 +13,6 @@ class RepositorySecurityPolicyTest < Minitest::Test
     reference_sets = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).map do |path|
       workflow = YAML.safe_load_file(path, aliases: true)
       [path, workflow_uses(workflow)]
-    end
-    action_paths = Dir.glob(File.join(ROOT, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).reject do |path|
-      relative_parts = path.delete_prefix("#{ROOT}/").split("/")
-      (relative_parts & %w[.codex .git .tmp tmp]).any?
     end
     reference_sets.concat(action_paths.map do |path|
       action = YAML.safe_load_file(path, aliases: true)
@@ -56,6 +54,20 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_equal [["runs.steps.0.uses", "owner/action@v1"]], composite_uses(action)
   end
 
+  def test_action_scanner_keeps_nested_temp_named_directories
+    Dir.mktmpdir("repository-security-policy") do |root|
+      nested_action = File.join(root, "skills/example/tmp/action.yml")
+      ignored_action = File.join(root, "tmp/action.yml")
+      FileUtils.mkdir_p(File.dirname(nested_action))
+      FileUtils.mkdir_p(File.dirname(ignored_action))
+      File.write(nested_action, "name: nested\n")
+      File.write(ignored_action, "name: ignored\n")
+
+      assert_includes action_paths(root), nested_action
+      refute_includes action_paths(root), ignored_action
+    end
+  end
+
   def test_repository_local_references_are_bound_by_the_checkout
     assert acceptable_action_reference?("./.github/actions/example")
     assert acceptable_action_reference?("owner/action@0123456789abcdef0123456789abcdef01234567")
@@ -85,10 +97,17 @@ class RepositorySecurityPolicyTest < Minitest::Test
     end
 
     refute_nil action_updates
-    assert_equal "weekly", action_updates.dig("schedule", "interval")
+    assert_equal "monthly", action_updates.dig("schedule", "interval")
   end
 
   private
+
+  def action_paths(root = ROOT)
+    Dir.glob(File.join(root, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).reject do |path|
+      first_part = path.delete_prefix("#{root}/").split("/", 2).first
+      %w[.codex .git .tmp tmp].include?(first_part)
+    end
+  end
 
   def acceptable_action_reference?(reference)
     return false unless reference.is_a?(String)
