@@ -69,6 +69,22 @@ EVENT_TRANSPORT_REQUIRED_CONCEPTS = {
     "Only after the transport is advertised does an attempted write that fails, degrades, or is rejected " \
     "become `UNKNOWN` handoff evidence"
 }.freeze
+COOPERATIVE_DRAIN_EMISSION_REQUIREMENT =
+  "When a worker first observes cancellation at its cooperative drain checkpoint, that worker emits one " \
+  "lane-scoped typed `human_intervention` event with `kind: drain` when the active private coordination backend " \
+  "advertises typed-event support."
+COOPERATIVE_DRAIN_DEDUPLICATION_REQUIREMENT =
+  "The coordinator/operator must not emit a duplicate for that cooperative path."
+HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT =
+  "Immediately before terminating a worker that cannot reach that checkpoint, the coordinator/operator instead " \
+  "emits one lane-scoped typed `human_intervention` event with `kind: drain` when the active private coordination " \
+  "backend advertises typed-event support."
+DRAIN_TRANSPORT_FALLBACK_REQUIREMENT =
+  "For either drain path, backend `n/a` skips the emission; unadvertised or unsupported typed-event capability " \
+  "records `typed event transport: unavailable` and remains nonblocking."
+DRAIN_EMISSION_FAILURE_REQUIREMENT =
+  "After advertised support, an emission failure, degradation, or rejection records best-effort `UNKNOWN` evidence " \
+  "and never blocks safe termination or claim release."
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -196,6 +212,24 @@ def assert_typed_event_transport_section_contract(section, location)
   end
 end
 
+def assert_hard_escape_drain_emission_contract(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  {
+    "cooperative worker emission" => COOPERATIVE_DRAIN_EMISSION_REQUIREMENT,
+    "cooperative-path deduplication" => COOPERATIVE_DRAIN_DEDUPLICATION_REQUIREMENT,
+    "coordinator/operator hard-escape emission" => HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT,
+    "transport fallback" => DRAIN_TRANSPORT_FALLBACK_REQUIREMENT,
+    "advertised-support write failure" => DRAIN_EMISSION_FAILURE_REQUIREMENT
+  }.each do |concept, phrase|
+    assert_includes normalized_section, phrase, "#{location} must include the #{concept}"
+  end
+
+  cooperative_offset = normalized_section.index(COOPERATIVE_DRAIN_EMISSION_REQUIREMENT)
+  hard_escape_offset = normalized_section.index(HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT)
+  assert_operator cooperative_offset, :<, hard_escape_offset,
+                  "#{location} must assign cooperative emission before the hard-escape fallback"
+end
+
 def assert_manifest_prompt_contract(text, location)
   normalized_text = text.gsub(/\s+/, " ")
   assert_includes normalized_text, MANIFEST_PROMPT_LINE,
@@ -311,6 +345,32 @@ class CoordinationTelemetryContractTest < Minitest::Test
         assert_typed_event_transport_section_contract(incomplete_fixture, "negative fixture")
       end
       assert_includes error.message, "must include the #{concept}"
+    end
+  end
+
+  def test_wedged_worker_hard_escape_assigns_one_drain_event_to_the_coordinator
+    {
+      WORKFLOW_PATH => "### Cancelling Or Stopping A Batch",
+      PR_BATCH_SKILL_PATH => "### Cancellation Or Relaunch"
+    }.each do |path, heading|
+      section = extract_section(read_repo_file(path), heading)
+      assert_hard_escape_drain_emission_contract(section, "#{path} #{heading}")
+    end
+  end
+
+  def test_wedged_worker_hard_escape_rejects_removed_coordinator_emission
+    {
+      WORKFLOW_PATH => "### Cancelling Or Stopping A Batch",
+      PR_BATCH_SKILL_PATH => "### Cancellation Or Relaunch"
+    }.each do |path, heading|
+      section = extract_section(read_repo_file(path), heading).gsub(/\s+/, " ")
+      mutated_section = section.sub(HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT, "")
+      refute_equal section, mutated_section, "#{path} must expose the hard-escape emission to mutation"
+
+      error = assert_raises(Minitest::Assertion) do
+        assert_hard_escape_drain_emission_contract(mutated_section, "#{path} hard-escape mutation")
+      end
+      assert_includes error.message, "must include the coordinator/operator hard-escape emission"
     end
   end
 

@@ -778,9 +778,19 @@ then release the coordination claim and exit; wedged workers are stopped at the
 process level. Restarting with updated skills requires launching fresh workers
 from a checkout that already has the updated `.agents/skills/...` and
 `.agents/workflows/...` files — a still-running worker keeps its old skill text.
-Each draining private-backend lane emits one `human_intervention` event with
-`kind: drain`; an event-write failure stays best-effort/`UNKNOWN` and never
-prevents safe drain or release.
+When a worker first observes cancellation at its cooperative drain checkpoint,
+that worker emits one lane-scoped typed `human_intervention` event with
+`kind: drain` when the active private coordination backend advertises
+typed-event support. The coordinator/operator must not emit a duplicate for
+that cooperative path. Immediately before terminating a worker that cannot
+reach that checkpoint, the coordinator/operator instead emits one lane-scoped
+typed `human_intervention` event with `kind: drain` when the active private
+coordination backend advertises typed-event support. For either drain path,
+backend `n/a` skips the emission; unadvertised or unsupported typed-event
+capability records `typed event transport: unavailable` and remains
+nonblocking. After advertised support, an emission failure, degradation, or
+rejection records best-effort `UNKNOWN` evidence and never blocks safe
+termination or claim release.
 
 ## Coordinator Closeout Lane
 

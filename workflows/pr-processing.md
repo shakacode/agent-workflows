@@ -2028,31 +2028,41 @@ hatch**, not a single kill switch:
   `agent-coord status --repo <owner/repo> --target <issue-or-pr> --json` for
   single-lane workers. A worker deep inside one target may not stop until its
   next checkpoint, and a wedged worker requires the hard escape hatch.
-  When a private backend is active, the draining lane emits one lane-scoped
-  `human_intervention` event with `kind: drain` when it first observes the
-  cancellation; a failed event write remains best-effort/`UNKNOWN` and does not
-  prevent the safe drain or claim release.
+  When a worker first observes cancellation at its cooperative drain checkpoint,
+  that worker emits one lane-scoped typed `human_intervention` event with
+  `kind: drain` when the active private coordination backend advertises
+  typed-event support. The coordinator/operator must not emit a duplicate for
+  that cooperative path.
 - **Hard escape hatch.** For a wedged or unresponsive worker that is not reaching a
   checkpoint, use this sequence:
   1. Ensure cancellation is recorded in the backend, or record that backend state
      is `UNKNOWN` if the backend is unavailable.
-  2. Stop the worker at the process level — terminate the `codex exec` /
+  2. Immediately before terminating a worker that cannot reach that checkpoint,
+     the coordinator/operator instead emits one lane-scoped typed
+     `human_intervention` event with `kind: drain` when the active private
+     coordination backend advertises typed-event support. For either drain path,
+     backend `n/a` skips the emission; unadvertised or unsupported typed-event
+     capability records `typed event transport: unavailable` and remains
+     nonblocking. After advertised support, an emission failure, degradation, or
+     rejection records best-effort `UNKNOWN` evidence and never blocks safe
+     termination or claim release.
+  3. Stop the worker at the process level — terminate the `codex exec` /
      `claude -p` process, or close the Conductor workspace running an in-process
      `Agent`/`Workflow` coordinator.
-  3. Run `agent-coord release` for the lane, or manually clear the orphaned
+  4. Run `agent-coord release` for the lane, or manually clear the orphaned
      claim, so relaunch does not wait for lease expiry, and remove the mirrored
      claim label (the daemon backstop also reconciles it on lease expiry). This
      is safe because the cancellation state still prevents another worker from
      reclaiming the lane while cleanup is in progress.
-  4. Clean the lane worktree. If the directory still exists, run
+  5. Clean the lane worktree. If the directory still exists, run
      `git worktree remove --force` on that path. If the directory is already
      gone, confirm no other active lane depends on deleted worktree metadata,
      then run repo-wide `git worktree prune` with `--expire=now`.
-  5. Delete or reset the lane's local branch ref, and reset/delete any pushed
+  6. Delete or reset the lane's local branch ref, and reset/delete any pushed
      remote lane branch when that is safe for the PR. Otherwise, choose a fresh
      branch name for the relaunch, so the next worker does not start from commits
      produced by the cancelled run.
-  6. Keep cancellation recorded until all old workers have drained, released
+  7. Keep cancellation recorded until all old workers have drained, released
      their claims, or been stopped and cleaned up through this hard escape hatch.
      Also cancel or reassign downstream lanes that still `depends_on` a cancelled
      lane. Record the relaunch intent in the batch handoff or private state,
