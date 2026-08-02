@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "time"
 require "uri"
@@ -25,6 +26,11 @@ module AgentDoctor
       "exact-head merge submission",
       "completed-batch audit"
     ].freeze
+    DURABLE_REF_SCHEMES = %w[
+      codex-worker dispatcher-receipt https plan-state workflow-control-state workflow-control-waiver-state
+    ].freeze
+    MERGE_AUTHORITIES = %w[none ask auto_merge_when_gates_pass].freeze
+    RECEIPT_COMPONENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/
 
     module_function
 
@@ -32,17 +38,33 @@ module AgentDoctor
       return unless absolute_path?(path)
 
       helper_uid = File.stat(helper_path).uid
-      parent_stat = File.lstat(File.dirname(path))
-      file_stat = File.lstat(path)
-      return unless parent_stat.directory? && parent_stat.uid == helper_uid && (parent_stat.mode & 0o022).zero?
-      return unless file_stat.file? && file_stat.uid == helper_uid && (file_stat.mode & 0o022).zero?
+      return unless safe_ancestor_chain?(path, helper_uid)
+      return unless File.const_defined?(:NOFOLLOW)
 
-      record = JSON.parse(File.read(path, encoding: "UTF-8"))
-      record if record.is_a?(Hash)
+      File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+        file_stat = file.stat
+        next unless file_stat.file? && file_stat.uid == helper_uid && (file_stat.mode & 0o022).zero?
+
+        record = JSON.parse(file.read.force_encoding("UTF-8"))
+        record if record.is_a?(Hash)
+      end
     rescue JSON::ParserError, SystemCallError
       nil
     end
 
+    def safe_ancestor_chain?(path, helper_uid)
+      directory = File.dirname(path)
+      loop do
+        stat = File.lstat(directory)
+        return false unless stat.directory? && [0, helper_uid].include?(stat.uid) && (stat.mode & 0o022).zero?
+
+        parent = File.dirname(directory)
+        return true if parent == directory
+
+        directory = parent
+      end
+    end
+    private_class_method :safe_ancestor_chain?
     def bootstrap?(record)
       expected_keys = %w[
         authorized_dispatcher authorized_exception authorized_lanes authorized_route batch_id constraints
@@ -51,7 +73,8 @@ module AgentDoctor
       return false unless record.is_a?(Hash) && record.keys.sort == expected_keys
       return false unless record["type"] == "agent-workflow-bootstrap-waiver" && record["version"] == 1
       return false unless %w[waiver_id batch_id issue authorized_exception].all? { |key| nonempty?(record[key]) }
-      return false unless timestamp?(record["granted_at"]) && direct_human_source?(record["grant_source"])
+      return false unless timestamp?(record["granted_at"]) && Time.iso8601(record["granted_at"]) <= Time.now.utc &&
+                          direct_human_source?(record["grant_source"])
       return false unless record["authorized_lanes"].is_a?(Array) && !record["authorized_lanes"].empty? &&
                           record["authorized_lanes"].all? { |lane| nonempty?(lane) } &&
                           record["authorized_lanes"].uniq == record["authorized_lanes"]
@@ -61,6 +84,10 @@ module AgentDoctor
                           (REQUIRED_GATES - record["not_waived"]).empty?
 
       !nested_unknown?(record)
+    end
+
+    def canonical_digest(record)
+      "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(record)))}"
     end
 
     def authorized_route_matches?(authorized, actual)
@@ -75,10 +102,21 @@ module AgentDoctor
       false
     end
 
+    def known_string?(value)
+      nonempty?(value) && !value.strip.casecmp?("UNKNOWN")
+    end
+
     def durable_ref?(value)
-      nonempty?(value) && URI.parse(value).absolute?
+      return false unless nonempty?(value)
+
+      uri = URI.parse(value)
+      uri.absolute? && DURABLE_REF_SCHEMES.include?(uri.scheme)
     rescue URI::InvalidURIError
       false
+    end
+
+    def receipt_component?(value)
+      value.is_a?(String) && value.match?(RECEIPT_COMPONENT_PATTERN)
     end
 
     def timestamp?(value)
@@ -101,6 +139,18 @@ module AgentDoctor
       end
     end
 
+    def canonicalize(value)
+      case value
+      when Hash
+        value.keys.sort.each_with_object({}) { |key, canonical| canonical[key] = canonicalize(value[key]) }
+      when Array
+        value.map { |entry| canonicalize(entry) }
+      else
+        value
+      end
+    end
+    private_class_method :canonicalize
+
     def direct_human_source?(source)
       source.is_a?(Hash) && source.keys.sort == %w[exact_message kind thread_id] &&
         source["kind"] == "direct-in-session-human-user" && nonempty?(source["thread_id"]) &&
@@ -117,7 +167,8 @@ module AgentDoctor
     def constraints?(constraints)
       expected_keys = (REQUIRED_CONSTRAINTS + ["merge_authority"]).sort
       constraints.is_a?(Hash) && constraints.keys.sort == expected_keys &&
-        REQUIRED_CONSTRAINTS.all? { |key| constraints[key] == true } && nonempty?(constraints["merge_authority"])
+        REQUIRED_CONSTRAINTS.all? { |key| constraints[key] == true } &&
+        MERGE_AUTHORITIES.include?(constraints["merge_authority"])
     end
     private_class_method :constraints?
 

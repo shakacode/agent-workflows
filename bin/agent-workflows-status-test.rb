@@ -15,6 +15,9 @@ require "tmpdir"
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
 
 class AgentWorkflowsStatusTest < Minitest::Test
+  STRONG_RSA_KEY = OpenSSL::PKey::RSA.generate(2048)
+  WEAK_PUBLIC_KEY_PEM = OpenSSL::PKey::RSA.generate(1024).public_to_pem
+
   def setup
     @fake_codex_dir = Dir.mktmpdir("status-fake-codex")
     @fake_codex = File.join(@fake_codex_dir, "codex")
@@ -57,8 +60,6 @@ class AgentWorkflowsStatusTest < Minitest::Test
   def write_signed_launch_capability(target)
     agents = File.join(target, ".agents")
     FileUtils.mkdir_p(agents)
-    dispatcher_key = OpenSSL::PKey::RSA.generate(1024)
-    workflow_key = OpenSSL::PKey::RSA.generate(1024)
     File.write(
       File.join(agents, "signed-launch-capability.json"),
       JSON.generate(
@@ -76,7 +77,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
         "type" => "agent-workflow-dispatcher-trust-anchor",
         "version" => 1,
         "agent_workflow_dispatcher_trusted_key_id" => "dispatcher-key",
-        "agent_workflow_dispatcher_trusted_public_key_pem" => dispatcher_key.public_to_pem
+        "agent_workflow_dispatcher_trusted_public_key_pem" => STRONG_RSA_KEY.public_to_pem
       )
     )
     File.write(
@@ -85,7 +86,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
         "type" => "agent-workflow-control-lifecycle-trust-anchor",
         "version" => 1,
         "agent_workflow_control_lifecycle_trusted_key_id" => "workflow-key",
-        "agent_workflow_control_lifecycle_trusted_public_key_pem" => workflow_key.public_to_pem
+        "agent_workflow_control_lifecycle_trusted_public_key_pem" => STRONG_RSA_KEY.public_to_pem
       )
     )
   end
@@ -158,6 +159,25 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "supported", payload.dig("signed_launch_readiness", "dispatcher_launch")
         assert_equal "supported", payload.dig("signed_launch_readiness", "workflow_control_lifecycle")
         assert_equal "codex-collaboration", payload.dig("signed_launch_readiness", "producer")
+      end
+    end
+  end
+
+  def test_codex_install_rejects_a_1024_bit_public_trust_anchor
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+        write_signed_launch_capability(target)
+        path = File.join(target, ".agents/dispatcher-launch-trust.json")
+        anchor = JSON.parse(File.read(path))
+        anchor["agent_workflow_dispatcher_trusted_public_key_pem"] = WEAK_PUBLIC_KEY_PEM
+        File.write(path, JSON.generate(anchor))
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UNKNOWN", JSON.parse(out).dig("signed_launch_readiness", "capability")
       end
     end
   end
@@ -346,6 +366,18 @@ class AgentWorkflowsStatusTest < Minitest::Test
 
     assert_equal 3, status.exitstatus, out
     assert_includes out, "--delivery-mode must be flat or plugin-companion"
+  end
+
+  def test_check_failed_payload_without_resolved_target_reports_typed_unknown_readiness
+    load SCRIPT
+    payload = AgentWorkflowsStatus.build_payload(
+      host: "codex", target: nil, source: nil, delivery_mode: "hybrid", fetch: false
+    )
+
+    assert_equal "CHECK_FAILED", payload.fetch("status")
+    assert_nil payload.fetch("target")
+    assert_equal "UNKNOWN", payload.dig("signed_launch_readiness", "capability")
+    assert_equal "target-unavailable", payload.dig("signed_launch_readiness", "reason")
   end
 
   def test_flat_status_reports_present_skill_route_without_migration_warning

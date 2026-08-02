@@ -49,9 +49,9 @@ For Codex, the public v1 host contract uses three host-owned files under
 - `signed-launch-capability.json` identifies the host, producer, dispatcher key
   id, and workflow-control key id.
 - `dispatcher-launch-trust.json` contains the matching public-only RSA
-  dispatcher anchor.
+  dispatcher anchor of at least 2048 bits.
 - `workflow-control-lifecycle-trust.json` contains the matching public-only RSA
-  workflow-control anchor.
+  workflow-control anchor of at least 2048 bits.
 
 All three safe, exact records mean `supported`. All three absent on a safe
 Codex home mean `unsupported`, because current Codex collaboration can expose
@@ -60,11 +60,18 @@ Any partial, malformed, mismatched, symlinked, incorrectly owned, or
 group/world-writable state means `UNKNOWN`; repair or remove that state before
 launch. Waivers are never accepted from `UNKNOWN`.
 
-The installer creates or validates only the safe `<target>/.agents/`
-directory. It never generates private keys, signatures, capability claims,
-trust anchors, or waiver records. A supported host integration owns its private
-keys and provisions the public files. The coordinator cannot select or replace
-that trust.
+The clean `unsupported` classification and its waiver path are Codex-only in
+v1. A clean non-Codex host is outside this producer contract and remains
+`UNKNOWN`/blocked until that host defines an equivalent contract; absent files
+on such a host are not partial-state remediation instructions.
+
+The installer creates or validates the real, owner-matched, non-group/world-
+writable `<target>/` and `<target>/.agents/` directories without replacing or
+chmodding unsafe user-owned paths. It never generates private keys, signatures,
+capability claims, trust anchors, or waiver records. A supported host integration
+owns its private keys and provisions the public files. The coordinator cannot
+select or replace that trust. A failed post-install readiness probe is
+non-fatal after a completed install: the installer warns and reports `UNKNOWN`.
 
 When readiness is exactly `unsupported`, a human may grant a one-time durable
 `agent-workflow-bootstrap-waiver v1`. It must record direct in-session human
@@ -75,11 +82,31 @@ replacement; they do not cryptographically prove that a human spoke. The
 coordinator must therefore persist the exact direct-user message and thread as
 procedural provenance. The dispatcher additionally requires exact live, dispatcher-bound,
 instance-bound, explicit non-inherited request metadata for the persisted
-assignment and records lifecycle `waived-active`. Workflow control accepts a
+assignment and records lifecycle `waived-active`. `observed_at` must be no more
+than 300 seconds old, no more than 300 seconds in the future, and not earlier
+than a non-future `granted_at`. Both assignment and observation require nonempty
+instance and launch-token identities. Durable evidence schemes are limited to
+`https`, `codex-worker`, `dispatcher-receipt`, `plan-state`,
+`workflow-control-state`, and `workflow-control-waiver-state`; `http` and `file`
+are rejected. `merge_authority` is exactly `none`, `ask`, or
+`auto_merge_when_gates_pass`.
+
+The trusted helper canonicalizes the complete waiver record and binds its
+SHA-256 digest into dispatcher and workflow-control wrappers. Dispatcher replay
+persists and compares waiver id, absolute reference, and digest; a record
+mutation at the same path is rejected. This provides procedural record mutation
+and replay integrity, not cryptographic proof that a human spoke. The waiver
+file is opened once without following the final symlink, validated through its
+descriptor, and accepted only under a full real directory chain owned by root
+or the helper owner with no group/world write bits.
+
+Workflow control accepts a
 separate terminal lifecycle waiver bound to the same durable human record,
 batch plan, dependency plan, lane, wave, route, completion chronology, and
 evidence reference. Signed and waived lifecycle records are mutually
-deduplicated per lane.
+deduplicated per lane. Interpolated receipt identifiers use only letters,
+digits, `.`, `_`, `:`, and `-`; slash-bearing or URI-ambiguous identifiers are
+rejected instead of being allowed to collide.
 
 Upgrades from pre-v2 confirmation preserve version 1 launch confirmations as
 history only. They do not synthesize version 2 signatures or infer active

@@ -189,7 +189,7 @@ class BatchPlanPreflightTest < Minitest::Test
     record = {
       "type" => "agent-workflow-bootstrap-waiver", "version" => 1,
       "waiver_id" => "#{batch_id}-human-waiver", "batch_id" => batch_id,
-      "issue" => "shakacode/agent-workflows#299", "granted_at" => "2026-08-02T07:16:33Z",
+      "issue" => "shakacode/agent-workflows#299", "granted_at" => (Time.now.utc - 60).iso8601,
       "grant_source" => {
         "kind" => "direct-in-session-human-user", "thread_id" => "human-thread",
         "exact_message" => "go ahead with the one-time exception for issue #299."
@@ -213,7 +213,7 @@ class BatchPlanPreflightTest < Minitest::Test
     }
     File.write(path, JSON.generate(record))
     File.chmod(0o600, path)
-    [path, record]
+    [File.realpath(path), record]
   end
 
   def lane_lifecycle_waiver(path:, record:, route:, lane_id: "lane-a", wave: "wave-a",
@@ -224,6 +224,7 @@ class BatchPlanPreflightTest < Minitest::Test
       "version" => 1,
       "producer" => "human-waived-pr-batch-workflow-control",
       "waiver_ref" => path,
+      "waiver_digest" => "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(record)))}",
       "waiver_id" => record.fetch("waiver_id"),
       "batch_plan_id" => batch_plan_id,
       "stage_dependency_plan_id" => stage_dependency_plan_id,
@@ -657,6 +658,57 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal first, replay
   end
 
+  def test_exact_human_lifecycle_waivers_validate_a_second_lane_independently
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    lanes = [lane("lane-a"), lane("lane-b")]
+    waivers = lanes.map do |planned_lane|
+      lane_id = planned_lane.fetch("id")
+      waiver_path, waiver_record = bootstrap_waiver(
+        File.join(root, lane_id), batch_id: "batch-plan-1", lane_id:, route:
+      )
+      lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:, lane_id:)
+    end
+    input = input_for(lanes:, backend: "codex", lifecycle_waivers: waivers)
+
+    first, first_stderr, first_status = evaluate(input, helper: helper)
+    replay, replay_stderr, replay_status = evaluate(input, helper: helper)
+
+    assert first_status.success?, "#{first_stderr}\n#{first.inspect}"
+    assert replay_status.success?, "#{replay_stderr}\n#{replay.inspect}"
+    assert_equal %w[lane-a lane-b], first.dig("launch", "completed_lane_ids").sort
+    assert_empty first.dig("launch", "eligible_lane_ids")
+    assert_equal first, replay
+  end
+
+  def test_lifecycle_waiver_rejects_mutated_canonical_record_content_at_the_same_path
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+    mutations = {
+      "issue" => ->(record) { record["issue"] = "shakacode/agent-workflows#999" },
+      "granted_at" => ->(record) { record["granted_at"] = "2026-08-02T07:17:33Z" },
+      "exact_message" => ->(record) { record["grant_source"]["exact_message"] = "different approval" },
+      "merge_authority" => ->(record) { record["constraints"]["merge_authority"] = "none" }
+    }
+
+    mutations.each do |label, mutation|
+      changed = JSON.parse(JSON.generate(waiver_record))
+      mutation.call(changed)
+      File.write(waiver_path, JSON.generate(changed))
+      result, _stderr, status = evaluate(
+        input_for(backend: "codex", lifecycle_waivers: [waiver]), helper: helper
+      )
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "lane-lifecycle-waiver-invalid", label
+    end
+  end
+
   def test_lifecycle_waiver_rejects_cross_batch_lane_route_and_partial_host_reuse
     helper, root = installed_unsupported_workflow_control_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
@@ -766,6 +818,84 @@ class BatchPlanPreflightTest < Minitest::Test
                       "lane-lifecycle-receipt-invalid", label
       assert_empty result.dig("launch", "eligible_lane_ids"), label
       assert_empty result.dig("launch", "completed_lane_ids"), label
+    end
+  end
+
+  def test_signed_lifecycle_receipt_rejects_slash_bearing_or_uri_ambiguous_identifiers
+    cases = {
+      "batch" => lambda do
+        batch_id = "batch/plan"
+        [input_for(batch_plan_id: batch_id, lifecycle_receipts: [lane_lifecycle_receipt(batch_plan_id: batch_id)])]
+      end,
+      "stage plan" => lambda do
+        input = input_for
+        stage_id = "trusted/plan"
+        input.fetch("stage_dependency_plan")["id"] = stage_id
+        input.fetch("stage_dependency_gate")["trusted_plan_id"] = stage_id
+        input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
+          stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
+        input["lane_lifecycle_receipts"] = [lane_lifecycle_receipt(stage_dependency_plan_id: stage_id)]
+        [input]
+      end,
+      "wave" => lambda do
+        unsafe_lane = lane("lane-a", wave: "wave/a")
+        [input_for(lanes: [unsafe_lane], active_wave: "wave/a",
+                   lifecycle_receipts: [lane_lifecycle_receipt(wave: "wave/a")])]
+      end,
+      "lane" => lambda do
+        unsafe_lane = lane("lane/a")
+        [input_for(lanes: [unsafe_lane], lifecycle_receipts: [lane_lifecycle_receipt(lane_id: "lane/a")])]
+      end,
+      "percent escape" => lambda do
+        batch_id = "batch%2Fplan"
+        [input_for(batch_plan_id: batch_id, lifecycle_receipts: [lane_lifecycle_receipt(batch_plan_id: batch_id)])]
+      end
+    }
+
+    cases.each do |label, build_input|
+      result, _stderr, status = evaluate(build_input.call.fetch(0), helper: workflow_control_helper)
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "lane-lifecycle-receipt-invalid", label
+    end
+  end
+
+  def test_waived_lifecycle_receipt_rejects_slash_bearing_or_uri_ambiguous_identifiers
+    helper, root = installed_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    cases = {
+      "batch" => { batch: "batch/plan" },
+      "stage plan" => { stage: "trusted/plan" },
+      "wave" => { wave: "wave/a" },
+      "lane" => { lane: "lane/a" },
+      "percent escape" => { batch: "batch%2Fplan" }
+    }
+
+    cases.each do |label, overrides|
+      batch_id = overrides.fetch(:batch, "batch-plan-1")
+      stage_id = overrides.fetch(:stage, "trusted-plan-1")
+      wave = overrides.fetch(:wave, "wave-a")
+      lane_id = overrides.fetch(:lane, "lane-a")
+      planned_lane = lane(lane_id, wave:)
+      waiver_path, waiver_record = bootstrap_waiver(root, batch_id:, lane_id:, route:)
+      waiver = lane_lifecycle_waiver(
+        path: waiver_path, record: waiver_record, route:, lane_id:, wave:, stage_dependency_plan_id: stage_id
+      )
+      input = input_for(
+        lanes: [planned_lane], backend: "codex", active_wave: wave, batch_plan_id: batch_id,
+        lifecycle_waivers: [waiver]
+      )
+      input.fetch("stage_dependency_plan")["id"] = stage_id
+      input.fetch("stage_dependency_gate")["trusted_plan_id"] = stage_id
+      input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
+        stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
+
+      result, _stderr, status = evaluate(input, helper: helper)
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "lane-lifecycle-waiver-invalid", label
     end
   end
 

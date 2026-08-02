@@ -243,7 +243,69 @@ test_install_refuses_unsafe_host_readiness_directory_without_replacing_it() {
   set -e
   [[ "$status" -ne 0 ]] || fail "installer accepted a writable signed launch directory"
   assert_contains "$output" "Refusing unsafe signed launch directory ownership or permissions"
-  [[ "$(stat -f '%Lp' "$target/.agents")" = "777" ]] || fail "installer silently changed user-owned .agents permissions"
+  ruby -e 'exit 1 unless (File.lstat(ARGV.fetch(0)).mode & 0o777) == 0o777' "$target/.agents" || \
+    fail "installer silently changed user-owned .agents permissions"
+}
+
+test_install_refuses_unsafe_host_root_without_replacing_it() {
+  local tmp target outside output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  outside="$tmp/outside-home"
+  mkdir -p "$outside"
+  printf 'user-owned\n' > "$outside/sentinel"
+  ln -s "$outside" "$target"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "installer accepted a symlinked host root"
+  assert_contains "$output" "Refusing unsafe signed launch host root: $target"
+  [[ -L "$target" ]] || fail "installer replaced the user-owned host-root symlink"
+  assert_file "$outside/sentinel"
+  [[ ! -e "$outside/.agent-workflows-install.json" ]] || fail "unsafe host-root install committed metadata"
+
+  rm -f "$target"
+  mkdir "$target"
+  chmod 0777 "$target"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "installer accepted a writable host root"
+  assert_contains "$output" "Refusing unsafe signed launch host root ownership or permissions: $target"
+  ruby -e 'exit 1 unless (File.lstat(ARGV.fetch(0)).mode & 0o777) == 0o777' "$target" || \
+    fail "installer silently changed user-owned host-root permissions"
+}
+
+test_post_install_readiness_probe_failure_is_nonfatal_and_reports_unknown() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  ruby -e '
+    File.write(
+      ARGV.fetch(0),
+      "module AgentDoctor\n  module SignedLaunchReadiness\n" \
+      "    def self.assess(host:, target:)\n      raise \"forced readiness probe failure\"\n    end\n" \
+      "  end\nend\n"
+    )
+  ' "$source/bin/agent_doctor/signed_launch_readiness.rb"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "readiness probe failure aborted completed install: $output"
+  assert_contains "$output" "WARNING: signed launch readiness probe failed"
+  assert_contains "$output" "Signed launch readiness: UNKNOWN"
+  assert_contains "$output" "Installed ShakaCode agent workflows into:"
+  assert_file "$target/.agent-workflows-install.json"
 }
 
 test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
@@ -1797,7 +1859,9 @@ main() {
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
+    test_install_refuses_unsafe_host_root_without_replacing_it
     test_install_refuses_unsafe_host_readiness_directory_without_replacing_it
+    test_post_install_readiness_probe_failure_is_nonfatal_and_reports_unknown
     test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision
     test_copy_mode_adopts_an_exact_unmarked_agent_doctor_copy
     test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade

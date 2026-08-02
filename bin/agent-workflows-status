@@ -155,7 +155,7 @@ module AgentWorkflowsStatus
   end
 
   def signed_launch_readiness(host:, target:)
-    AgentDoctor::SignedLaunchReadiness.inspect(host:, target:)
+    AgentDoctor::SignedLaunchReadiness.assess(host:, target:)
   end
 
   def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)

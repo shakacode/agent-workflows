@@ -153,11 +153,12 @@ _Avoid_: worker launcher, backend mutation
 **Signed-launch readiness**:
 The public host capability reported separately from installation freshness.
 `supported` requires an exact safe host manifest and both public-only RSA trust
-anchors; a clean Codex host with all three absent is `unsupported`; partial or
-unsafe state is `UNKNOWN`. Only exact `unsupported` permits a durable,
-batch/lane/route-bound direct-human waiver. Dispatcher waiver replay is
-`waived-active`, never signed `confirmed-active`; workflow-control uses a
-separate terminal waiver record and deduplicates it with signed receipts.
+anchors of at least 2048 bits; Codex-only v1 clean absence is `unsupported`;
+other-host absence and partial or unsafe state are `UNKNOWN`. Only exact
+`unsupported` permits a durable, batch/lane/route-bound direct-human waiver.
+Dispatcher replay is `waived-active` and binds id/ref/canonical digest plus a
+bounded live observation; workflow control binds the same digest and uses
+collision-safe receipt identifiers. Digest integrity does not prove a human.
 _Avoid_: installer freshness, coordinator-generated trust, implicit waiver
 
 **Model escalation request**:

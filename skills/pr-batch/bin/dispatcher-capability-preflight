@@ -276,14 +276,15 @@ end
 def canonical_assignment(assignment)
   assignment.slice(
     "lane_id", "route", "dispatcher", "instance_id", "launch_token", "lifecycle", "candidate_index",
-    "requested", "selection_provenance", "waiver_id", "waiver_ref"
+    "requested", "selection_provenance", "waiver_id", "waiver_ref", "waiver_digest"
   )
 end
 
 def assignment_waiver_binding_valid?(assignment)
-  has_binding = assignment.key?("waiver_id") || assignment.key?("waiver_ref")
+  has_binding = %w[waiver_id waiver_ref waiver_digest].any? { |field| assignment.key?(field) }
   if assignment["lifecycle"] == "waived-active"
-    nonempty_string?(assignment["waiver_id"]) && nonempty_string?(assignment["waiver_ref"])
+    nonempty_string?(assignment["waiver_id"]) && nonempty_string?(assignment["waiver_ref"]) &&
+      assignment["waiver_digest"].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
   else
     !has_binding
   end
@@ -613,7 +614,8 @@ def active_replay_output(input:, requested:, authority:, assignment:, confirmati
   if waived && launch_waiver
     assignment = assignment.merge(
       "waiver_id" => launch_waiver.dig("observation", "waiver_id"),
-      "waiver_ref" => launch_waiver["waiver_ref"]
+      "waiver_ref" => launch_waiver["waiver_ref"],
+      "waiver_digest" => launch_waiver["waiver_digest"]
     )
   end
   output = {
@@ -657,7 +659,8 @@ def validated_launch_waiver(input, assignment)
   fail_input(reason) unless waiver
   if assignment["lifecycle"] == "waived-active" &&
      (assignment["waiver_id"] != waiver.dig("observation", "waiver_id") ||
-      assignment["waiver_ref"] != waiver["waiver_ref"])
+      assignment["waiver_ref"] != waiver["waiver_ref"] ||
+      assignment["waiver_digest"] != waiver["waiver_digest"])
     fail_input("waived-active assignment requires the same durable launch_waiver used for activation")
   end
 

@@ -279,8 +279,30 @@ ensure_real_directory() {
   mkdir -p "$directory"
 }
 
-ensure_signed_launch_directory() {
-  local directory="$target/.agents"
+ensure_signed_launch_directories() {
+  local owner_reference="$repo_root/bin/agent_doctor/signed_launch_readiness.rb"
+  local directory
+
+  if [[ -L "$target" || -e "$target" && ! -d "$target" ]]; then
+    echo "Refusing unsafe signed launch host root: $target" >&2
+    exit 1
+  fi
+  if [[ ! -e "$target" ]]; then
+    install -d -m 0700 "$target"
+  fi
+  if ! ruby -e '
+    directory, owner_reference = ARGV
+    directory_stat = File.lstat(directory)
+    owner_uid = File.stat(owner_reference).uid
+    exit 1 unless directory_stat.directory? && !directory_stat.symlink?
+    exit 1 unless directory_stat.uid == owner_uid
+    exit 1 unless (directory_stat.mode & 0o022).zero?
+  ' "$target" "$owner_reference"; then
+    echo "Refusing unsafe signed launch host root ownership or permissions: $target" >&2
+    exit 1
+  fi
+
+  directory="$target/.agents"
 
   if [[ -L "$directory" || -e "$directory" && ! -d "$directory" ]]; then
     echo "Refusing unsafe signed launch directory: $directory" >&2
@@ -290,13 +312,13 @@ ensure_signed_launch_directory() {
     install -d -m 0700 "$directory"
   fi
   if ! ruby -e '
-    directory, installer = ARGV
+    directory, owner_reference = ARGV
     directory_stat = File.lstat(directory)
-    installer_stat = File.lstat(installer)
+    owner_uid = File.stat(owner_reference).uid
     exit 1 unless directory_stat.directory? && !directory_stat.symlink?
-    exit 1 unless directory_stat.uid == installer_stat.uid
+    exit 1 unless directory_stat.uid == owner_uid
     exit 1 unless (directory_stat.mode & 0o022).zero?
-  ' "$directory" "$repo_root/bin/install-agent-workflows"; then
+  ' "$directory" "$owner_reference"; then
     echo "Refusing unsafe signed launch directory ownership or permissions: $directory" >&2
     exit 1
   fi
@@ -567,7 +589,7 @@ if [[ ! -f "$pending_migration_receipt" ]]; then
   fi
 fi
 
-mkdir -p "$target"
+ensure_signed_launch_directories
 install_lock="$target/.agent-workflows-install.lock"
 if ! mkdir "$install_lock" 2>/dev/null; then
   echo "DELIVERY_MODE_CONFLICT: another agent-workflows install or migration holds $install_lock" >&2
@@ -646,7 +668,6 @@ if [[ "$delivery_status" -ne 0 ]]; then
   exit 1
 fi
 prepare_metadata
-ensure_signed_launch_directory
 
 if [[ "$mode" = "copy" ]]; then
   ensure_real_directory "$target/bin"
@@ -760,12 +781,22 @@ if [[ -n "$migration_staging" ]]; then
   fi
 fi
 
-signed_launch_capability="$(
+set +e
+signed_launch_probe="$(
   ruby -I "$repo_root/bin" -ragent_doctor/signed_launch_readiness -e '
-    payload = AgentDoctor::SignedLaunchReadiness.inspect(host: ARGV.fetch(0), target: ARGV.fetch(1))
+    payload = AgentDoctor::SignedLaunchReadiness.assess(host: ARGV.fetch(0), target: ARGV.fetch(1))
     puts payload.fetch("capability")
-  ' "$host" "$target"
+  ' "$host" "$target" 2>&1
 )"
+signed_launch_probe_status=$?
+set -e
+if [[ "$signed_launch_probe_status" -eq 0 ]]; then
+  signed_launch_capability="$signed_launch_probe"
+else
+  signed_launch_capability="UNKNOWN"
+  printf 'WARNING: signed launch readiness probe failed; reporting UNKNOWN: %s\n' \
+    "$signed_launch_probe" >&2
+fi
 
 printf '%s\n' \
   "Installed ShakaCode agent workflows into:" \

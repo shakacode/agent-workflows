@@ -11,7 +11,9 @@ module AgentDoctor
 
     module_function
 
-    def inspect(host:, target:)
+    def assess(host:, target:)
+      return unknown(host, reason: "target-unavailable") unless target.is_a?(String) && !target.strip.empty?
+
       root = File.expand_path(target.to_s)
       agents = File.join(root, ".agents")
       paths = {
@@ -60,14 +62,14 @@ module AgentDoctor
       }
     end
 
-    def unknown(host)
+    def unknown(host, reason: "host-capability-unknown")
       {
         "type" => "agent-workflow-signed-launch-readiness",
         "version" => 1,
         "host" => host,
         "capability" => "UNKNOWN",
         "ready" => false,
-        "reason" => "host-capability-unknown",
+        "reason" => reason,
         "dispatcher_launch" => "UNKNOWN",
         "workflow_control_lifecycle" => "UNKNOWN",
         "waiver" => "not-permitted-while-capability-unknown"
@@ -151,7 +153,7 @@ module AgentDoctor
                           record[key_id_field] == key_id && nonempty?(record[public_key_field])
 
       key = OpenSSL::PKey.read(record.fetch(public_key_field))
-      key.is_a?(OpenSSL::PKey::RSA) && !key.private?
+      key.is_a?(OpenSSL::PKey::RSA) && !key.private? && key.n.num_bits >= 2048
     rescue OpenSSL::PKey::PKeyError
       false
     end

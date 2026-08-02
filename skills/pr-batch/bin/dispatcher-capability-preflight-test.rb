@@ -2,12 +2,14 @@
 # frozen_string_literal: true
 
 require "base64"
+require "digest"
 require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
 require "openssl"
 require "tmpdir"
+require_relative "../../../bin/agent_doctor/signed_launch_waiver"
 
 HELPER = File.expand_path("dispatcher-capability-preflight", __dir__)
 
@@ -133,7 +135,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "waiver_id" => "#{batch_id}-human-waiver",
       "batch_id" => batch_id,
       "issue" => "shakacode/agent-workflows#299",
-      "granted_at" => "2026-08-02T07:16:33Z",
+      "granted_at" => (Time.now.utc - 60).iso8601,
       "grant_source" => {
         "kind" => "direct-in-session-human-user",
         "thread_id" => "human-thread",
@@ -163,7 +165,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     }
     File.write(path, JSON.generate(record))
     File.chmod(0o600, path)
-    [path, record]
+    [File.realpath(path), record]
   end
 
   def launch_waiver(path:, record:, assignment:, overrides: {})
@@ -181,7 +183,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "actual_effort" => assignment.dig("route", "effort"),
       "binding_source" => "dispatcher-bound",
       "attestation" => "instance-bound",
-      "observed_at" => "2026-08-02T08:00:00Z",
+      "observed_at" => Time.now.utc.iso8601,
       "routing_mode" => "explicit",
       "inherited" => false,
       "evidence_ref" => "codex-worker://live-request-metadata"
@@ -190,8 +192,13 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "type" => "dispatcher-launch-waiver",
       "version" => 1,
       "waiver_ref" => path,
+      "waiver_digest" => waiver_digest(record),
       "observation" => observation
     }
+  end
+
+  def waiver_digest(record)
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(record)))}"
   end
 
   def dispatcher_trust_env(key_id: "test-dispatcher-key", key: dispatcher_signing_key)
@@ -1742,6 +1749,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "waived-active", activated.dig("active_assignments", 0, "lifecycle")
     assert_equal waiver_record.fetch("waiver_id"), activated.dig("active_assignments", 0, "waiver_id")
     assert_equal waiver_path, activated.dig("active_assignments", 0, "waiver_ref")
+    assert_equal waiver.fetch("waiver_digest"), activated.dig("active_assignments", 0, "waiver_digest")
     assert_equal "matching-persisted-waived-active-assignment", activated.fetch("reason")
     assert_equal waiver, activated.fetch("launch_waiver")
     assert_equal activated.fetch("active_assignments"), replay.fetch("active_assignments")
@@ -1788,6 +1796,47 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_includes replay.fetch("reason"), "same durable launch_waiver"
   end
 
+  def test_waived_active_replay_rejects_mutated_canonical_waiver_content_at_the_same_path
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver), helper
+    )
+    mutations = {
+      "issue" => ->(record) { record["issue"] = "shakacode/agent-workflows#999" },
+      "granted_at" => ->(record) { record["granted_at"] = "2026-08-02T07:17:33Z" },
+      "exact_message" => ->(record) { record["grant_source"]["exact_message"] = "different approval" },
+      "merge_authority" => ->(record) { record["constraints"]["merge_authority"] = "none" }
+    }
+
+    mutations.each do |label, mutation|
+      changed = JSON.parse(JSON.generate(waiver_record))
+      mutation.call(changed)
+      File.write(waiver_path, JSON.generate(changed))
+      replay = dispatch(
+        input.merge("candidates" => [], "active_assignments" => activated.fetch("active_assignments"),
+                    "launch_waiver" => activated.fetch("launch_waiver")),
+        helper
+      )
+
+      assert_equal "invalid-input", replay.fetch("status"), label
+      assert_includes replay.fetch("reason"), "launch_waiver", label
+    end
+  end
+
   def test_human_waiver_rejects_cross_batch_lane_route_and_inherited_reuse
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
@@ -1824,6 +1873,147 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       )
       assert_equal "invalid-input", output.fetch("status"), label
       assert_includes output.fetch("reason"), "launch_waiver", label
+    end
+  end
+
+  def test_human_waiver_rejects_stale_future_pregrant_observations_and_future_grants
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    now = Time.now.utc
+    max_age = AgentDoctor::SignedLaunchWaiver::MAX_OBSERVATION_AGE_SECONDS
+    max_future = AgentDoctor::SignedLaunchWaiver::MAX_FUTURE_SKEW_SECONDS
+    variants = {
+      "stale" => [waiver_record, { "observed_at" => (now - max_age - 5).iso8601 }],
+      "too far future" => [waiver_record, { "observed_at" => (now + max_future + 5).iso8601 }],
+      "before grant" => [waiver_record, { "observed_at" => (Time.iso8601(waiver_record.fetch("granted_at")) - 1).iso8601 }],
+      "future grant" => [waiver_record.merge("granted_at" => (now + 5).iso8601),
+                         { "observed_at" => (now + 10).iso8601 }]
+    }
+
+    variants.each do |label, (record, overrides)|
+      File.write(waiver_path, JSON.generate(record))
+      waiver = launch_waiver(path: waiver_path, record:, assignment: pending.fetch("dispatch"), overrides:)
+      output = dispatch(
+        input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver), helper
+      )
+
+      assert_equal "invalid-input", output.fetch("status"), label
+      assert_includes output.fetch("reason"), "launch_waiver", label
+    end
+  end
+
+  def test_waiver_library_defensively_requires_nonempty_assignment_and_observation_runtime_identity
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    batch_id = "batch-299"
+    lane_id = "aw299-implementation"
+    assignment = {
+      "lane_id" => lane_id, "route" => route, "dispatcher" => "codex-collaboration",
+      "instance_id" => "live-worker-299", "launch_token" => "launch-token-299"
+    }
+    waiver_path, waiver_record = bootstrap_waiver(root, batch_id:, lane_id:, route:)
+    variants = {
+      "assignment instance" => [assignment.merge("instance_id" => ""), {}],
+      "assignment token" => [assignment.merge("launch_token" => ""), {}],
+      "observation instance" => [assignment, { "instance_id" => "" }],
+      "observation token" => [assignment, { "launch_token" => "" }]
+    }
+
+    variants.each do |label, (candidate_assignment, overrides)|
+      wrapper = launch_waiver(
+        path: waiver_path, record: waiver_record, assignment: candidate_assignment, overrides:
+      )
+      validated, reason = AgentDoctor::SignedLaunchWaiver.validate_dispatcher(
+        wrapper:, batch_id:, lane_id:, assignment: candidate_assignment, host: "codex", target: root,
+        helper_path: helper
+      )
+
+      assert_nil validated, label
+      assert_includes reason, "observation", label
+    end
+  end
+
+  def test_human_waiver_evidence_references_use_the_documented_durable_scheme_allowlist
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    allowed = %w[
+      https://example.test/evidence codex-worker://live-request dispatcher-receipt://launch
+      plan-state://batch/lane workflow-control-state://batch/lane
+      workflow-control-waiver-state://batch/lane
+    ]
+    rejected = %w[http://example.test/evidence file:///tmp/evidence]
+
+    allowed.each do |evidence_ref|
+      wrapper = launch_waiver(
+        path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"), overrides: { "evidence_ref" => evidence_ref }
+      )
+      output = dispatch(
+        input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => wrapper), helper
+      )
+      assert_equal "replay-already-active", output.fetch("status"), evidence_ref
+    end
+    rejected.each do |evidence_ref|
+      wrapper = launch_waiver(
+        path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"), overrides: { "evidence_ref" => evidence_ref }
+      )
+      output = dispatch(
+        input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => wrapper), helper
+      )
+      assert_equal "invalid-input", output.fetch("status"), evidence_ref
+    end
+  end
+
+  def test_bootstrap_waiver_merge_authority_uses_the_canonical_allowlist
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route, "dispatcher" => "codex-collaboration", "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound", "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+
+    %w[none ask auto_merge_when_gates_pass owner].each do |merge_authority|
+      record = JSON.parse(JSON.generate(waiver_record))
+      record["constraints"]["merge_authority"] = merge_authority
+      File.write(waiver_path, JSON.generate(record))
+      wrapper = launch_waiver(path: waiver_path, record:, assignment: pending.fetch("dispatch"))
+      output = dispatch(
+        input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => wrapper), helper
+      )
+
+      expected = merge_authority == "owner" ? "invalid-input" : "replay-already-active"
+      assert_equal expected, output.fetch("status"), merge_authority
     end
   end
 
@@ -1871,6 +2061,52 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       assert_equal "invalid-input", output.fetch("status"), label
       assert_includes output.fetch("reason"), "launch_waiver", label
     end
+  end
+
+  def test_waiver_record_rejects_an_unsafe_writable_ancestor_chain
+    Dir.mktmpdir("unsafe-waiver-ancestor", "/tmp") do |unsafe_root|
+      route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+      waiver_path, = bootstrap_waiver(
+        unsafe_root, batch_id: "batch-299", lane_id: "aw299-implementation", route:
+      )
+
+      assert_nil AgentDoctor::SignedLaunchWaiverRecord.read(waiver_path, helper_path: HELPER)
+    end
+  end
+
+  def test_waiver_record_rejects_a_symlink_anywhere_in_its_ancestor_chain
+    Dir.mktmpdir("symlinked-waiver-ancestor") do |temporary_root|
+      root = File.realpath(temporary_root)
+      real_parent = File.join(root, "real/nested")
+      FileUtils.mkdir_p(real_parent, mode: 0o700)
+      File.symlink("real", File.join(root, "alias"))
+      path = File.join(real_parent, "bootstrap-waiver.json")
+      File.write(path, "{}")
+      File.chmod(0o600, path)
+      aliased_path = File.join(root, "alias/nested/bootstrap-waiver.json")
+
+      assert_nil AgentDoctor::SignedLaunchWaiverRecord.read(aliased_path, helper_path: HELPER)
+    end
+  end
+
+  def test_waiver_record_reads_from_the_single_validated_file_descriptor
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-299", lane_id: "aw299-implementation", route:
+    )
+    replacement = waiver_record.merge("issue" => "shakacode/agent-workflows#999")
+    substitute_path_read = ->(*_args, **_kwargs) { JSON.generate(replacement) }
+
+    original_path_read = File.method(:read)
+    File.singleton_class.send(:define_method, :read, substitute_path_read)
+    actual = begin
+      AgentDoctor::SignedLaunchWaiverRecord.read(waiver_path, helper_path: helper)
+    ensure
+      File.singleton_class.send(:define_method, :read, original_path_read)
+    end
+
+    assert_equal waiver_record, actual
   end
 
   def test_human_waiver_is_rejected_for_unknown_partial_host_capability
