@@ -544,6 +544,27 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal "NOT_APPLICABLE", issue_qa.fetch("verdict")
   end
 
+  def test_no_pr_issue_rejects_head_bound_satisfied_qa
+    input = no_pr_input
+    fabricated_head = "a" * 40
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == 10_036 }
+    qa["evidence"] = qa.fetch("evidence")
+                       .sub("required: no", "required: yes")
+                       .sub("status: not_applicable", "status: satisfied")
+                       .sub("head_sha: not_applicable", "head_sha: #{fabricated_head}")
+                       .sub(
+                         "tested_at: issue #10036 closed with no implementation PR",
+                         "tested_at: PR/head #{fabricated_head}"
+                       )
+                       .sub("release_blocking: not_applicable", "release_blocking: clear")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 QA evidence contradicts typed no-PR disposition"
+  end
+
   def test_no_pr_evidence_fails_closed_for_forged_url_target_or_rationale
     mutations = [
       ->(evidence) { evidence["url"] = evidence.fetch("url").sub("10036", "10048") },
