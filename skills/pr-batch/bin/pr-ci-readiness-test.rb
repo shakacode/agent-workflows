@@ -1927,8 +1927,8 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", data.fetch("verdict")
       assert_equal true, other.fetch("complete")
       assert_equal "READY", other.fetch("state")
-      assert_equal [[604, "CodeRabbit", "success"]],
-                   other.fetch("rows").map { |row| row.values_at("id", "name", "state") }
+      normalized_rows = other.fetch("rows").map { |row| row.values_at("id", "name", "state") }
+      assert_equal [[604, "CodeRabbit", "success"]], normalized_rows
     end
   end
 

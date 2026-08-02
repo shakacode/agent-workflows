@@ -745,6 +745,7 @@ module PrCiReadiness
         unless context.is_a?(String) && !context.empty?
           raise Error, "combined commit status response had an invalid context"
         end
+
         if row.key?("sha") && row["sha"].to_s != head_sha
           actual = row["sha"].to_s
           raise Error,
