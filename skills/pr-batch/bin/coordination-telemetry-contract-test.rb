@@ -122,7 +122,7 @@ REGISTRATION_BOUNDED_FRAGMENTS = [
   "does not block worker launch"
 ].freeze
 REGISTRATION_OBSERVATION_MARKER = "accepted host-observed `launch-confirmation v2`"
-REGISTRATION_ACTIVE_MARKER = "before treating"
+REGISTRATION_ACTIVE_PATTERN = /before treating (?:the|that) lane as active/
 REGISTRATION_NO_SHELL_MARKER = "without shell evaluation"
 
 EXPECTED_OPERATIONAL_SIGNALS = {
@@ -335,10 +335,10 @@ def assert_registration_section_runtime_contract(section, location)
                   "#{location} must reject positive shell-evaluation wording"
 
   observation_offset = normalized_section.index(REGISTRATION_OBSERVATION_MARKER)
-  active_offset = normalized_section.index(REGISTRATION_ACTIVE_MARKER)
+  active_match = normalized_section.match(REGISTRATION_ACTIVE_PATTERN)
   refute_nil observation_offset, "#{location} must require host-observed reconciliation"
-  refute_nil active_offset, "#{location} must bind reconciliation before active treatment"
-  assert_operator observation_offset, :<, active_offset,
+  refute_nil active_match, "#{location} must bind reconciliation before treating the lane as active"
+  assert_operator observation_offset, :<, active_match.begin(0),
                   "#{location} must reconcile the host observation before treating the lane active"
 end
 
@@ -544,16 +544,19 @@ class CoordinationTelemetryContractTest < Minitest::Test
   def test_registration_section_runtime_contract_rejects_qa_mutants
     authoritative_registration_sections.each do |path, section|
       normalized = section.gsub(/\s+/, " ")
+      active_phrase = normalized[REGISTRATION_ACTIVE_PATTERN]
       mutants = {
         "deleted no-shell rule" => normalized.sub(REGISTRATION_NO_SHELL_MARKER, ""),
         "positive shell evaluation" =>
           normalized.sub(REGISTRATION_NO_SHELL_MARKER, "with shell evaluation"),
         "deleted host observation" => normalized.sub(REGISTRATION_OBSERVATION_MARKER, ""),
+        "inactive target state" =>
+          normalized.sub(REGISTRATION_ACTIVE_PATTERN) { |phrase| phrase.sub("active", "inactive") },
         "inverted reconciliation order" =>
           normalized
           .sub(REGISTRATION_OBSERVATION_MARKER, "__REGISTRATION_OBSERVATION__")
-          .sub(REGISTRATION_ACTIVE_MARKER, REGISTRATION_OBSERVATION_MARKER)
-          .sub("__REGISTRATION_OBSERVATION__", REGISTRATION_ACTIVE_MARKER)
+          .sub(active_phrase, REGISTRATION_OBSERVATION_MARKER)
+          .sub("__REGISTRATION_OBSERVATION__", active_phrase)
       }
 
       mutants.each do |name, mutant|
