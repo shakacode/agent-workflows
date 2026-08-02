@@ -1866,7 +1866,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
   end
 
-  def test_waived_active_replays_the_exact_activated_waiver_after_the_initial_observation_ages_out
+  def test_waived_active_replay_accepts_a_fresh_exact_reobservation_after_the_prior_observation_ages_out
     helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
@@ -1894,28 +1894,63 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       helper
     )
 
+    replay_time = observed_at + AgentDoctor::SignedLaunchWaiver::MAX_OBSERVATION_AGE_SECONDS + 1
+    refreshed_waiver = JSON.parse(JSON.generate(activated.fetch("launch_waiver")))
+    refreshed_waiver["observation"]["observed_at"] = replay_time.iso8601
+    refreshed_waiver["observation"]["evidence_ref"] = "codex-worker://fresh-live-request-metadata"
     replay = dispatch(
       input.merge("candidates" => [], "active_assignments" => activated.fetch("active_assignments"),
-                  "launch_waiver" => activated.fetch("launch_waiver")),
-      fixed_time_env(root, observed_at + AgentDoctor::SignedLaunchWaiver::MAX_OBSERVATION_AGE_SECONDS + 1),
+                  "launch_waiver" => refreshed_waiver),
+      fixed_time_env(root, replay_time),
       helper
     )
 
     assert_equal "replay-already-active", replay.fetch("status")
     assert_equal activated.fetch("active_assignments"), replay.fetch("active_assignments")
-    assert_equal activated.fetch("launch_waiver"), replay.fetch("launch_waiver")
+    assert_equal refreshed_waiver, replay.fetch("launch_waiver")
+  end
+
+  def test_waived_active_replay_rejects_an_aged_mutated_wrapper_even_when_caller_recomputes_assignment_digest
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    observed_at = Time.iso8601(waiver.dig("observation", "observed_at"))
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      fixed_time_env(root, observed_at),
+      helper
+    )
 
     mutated_waiver = JSON.parse(JSON.generate(activated.fetch("launch_waiver")))
     mutated_waiver["observation"]["evidence_ref"] = "codex-worker://different-live-request-metadata"
+    caller_state = JSON.parse(JSON.generate(activated.fetch("active_assignments")))
+    caller_state.first["launch_waiver_digest"] =
+      "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(mutated_waiver)))}"
     rejected = dispatch(
-      input.merge("candidates" => [], "active_assignments" => activated.fetch("active_assignments"),
-                  "launch_waiver" => mutated_waiver),
+      input.merge("candidates" => [], "active_assignments" => caller_state, "launch_waiver" => mutated_waiver),
       fixed_time_env(root, observed_at + AgentDoctor::SignedLaunchWaiver::MAX_OBSERVATION_AGE_SECONDS + 1),
       helper
     )
 
     assert_equal "invalid-input", rejected.fetch("status")
-    assert_includes rejected.fetch("reason"), "exact launch_waiver wrapper"
+    assert_includes rejected.fetch("reason"), "observation"
   end
 
   def test_waived_active_replay_rejects_a_different_waiver_for_the_same_batch_lane_and_route

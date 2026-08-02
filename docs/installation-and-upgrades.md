@@ -82,8 +82,8 @@ replacement; they do not cryptographically prove that a human spoke. The
 coordinator must therefore persist the exact direct-user message and thread as
 procedural provenance. The dispatcher additionally requires exact live, dispatcher-bound,
 instance-bound, explicit non-inherited request metadata for the persisted
-assignment and records lifecycle `waived-active`. At initial activation,
-`observed_at` must be no more
+assignment and records lifecycle `waived-active`. At initial activation and
+every `waived-active` replay, `observed_at` must be no more
 than 300 seconds old, no more than 300 seconds in the future, and not earlier
 than a non-future `granted_at`. Both assignment and observation require nonempty
 instance and launch-token identities. Durable evidence schemes are limited to
@@ -94,10 +94,14 @@ are rejected. `merge_authority` is exactly `none`, `ask`, or
 
 The trusted helper canonicalizes the complete waiver record and binds its
 SHA-256 digest into dispatcher and workflow-control wrappers. Dispatcher replay
-persists and compares waiver id, absolute reference, record digest, and the
-complete activated wrapper digest. The exact wrapper may replay after its
-initial observation ages out; wrapper or record mutation is rejected. This provides procedural record mutation
-and replay integrity, not cryptographic proof that a human spoke. The waiver
+persists and compares the waiver id, absolute reference, and record digest, then
+revalidates the supplied exact assignment-bound observation as a liveness
+heartbeat. After 300 seconds, the coordinator must re-observe the host and
+resupply a fresh observation for the same durable waiver record and exact issue;
+caller-supplied persisted state or wrapper digests never extend freshness.
+Stale, mutated, or mismatched observations and record mutation are rejected.
+This provides procedural record mutation and replay integrity, not
+cryptographic proof that a human spoke. The waiver
 file is opened once without following the final symlink, validated through its
 descriptor, and accepted only under a full real directory chain owned by root
 or the helper owner with no group/world write bits.

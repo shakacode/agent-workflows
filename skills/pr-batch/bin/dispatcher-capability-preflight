@@ -276,17 +276,15 @@ end
 def canonical_assignment(assignment)
   assignment.slice(
     "lane_id", "route", "dispatcher", "instance_id", "launch_token", "lifecycle", "candidate_index",
-    "requested", "selection_provenance", "waiver_id", "waiver_ref", "waiver_digest", "launch_waiver_digest"
+    "requested", "selection_provenance", "waiver_id", "waiver_ref", "waiver_digest"
   )
 end
 
 def assignment_waiver_binding_valid?(assignment)
-  has_binding = %w[waiver_id waiver_ref waiver_digest launch_waiver_digest].any? { |field| assignment.key?(field) }
+  has_binding = %w[waiver_id waiver_ref waiver_digest].any? { |field| assignment.key?(field) }
   if assignment["lifecycle"] == "waived-active"
     nonempty_string?(assignment["waiver_id"]) && nonempty_string?(assignment["waiver_ref"]) &&
-      %w[waiver_digest launch_waiver_digest].all? do |field|
-        assignment[field].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
-      end
+      assignment["waiver_digest"].to_s.match?(/\Asha256:[0-9a-f]{64}\z/)
   else
     !has_binding
   end
@@ -617,8 +615,7 @@ def active_replay_output(input:, requested:, authority:, assignment:, confirmati
     assignment = assignment.merge(
       "waiver_id" => launch_waiver.dig("observation", "waiver_id"),
       "waiver_ref" => launch_waiver["waiver_ref"],
-      "waiver_digest" => launch_waiver["waiver_digest"],
-      "launch_waiver_digest" => "sha256:#{stable_digest(launch_waiver)}"
+      "waiver_digest" => launch_waiver["waiver_digest"]
     )
   end
   output = {
@@ -645,14 +642,6 @@ end
 def validated_launch_waiver(input, assignment)
   return unless input.key?("launch_waiver")
 
-  replay = assignment["lifecycle"] == "waived-active"
-  launch_waiver_digest = "sha256:#{stable_digest(input['launch_waiver'])}"
-  if replay && assignment["launch_waiver_digest"] != launch_waiver_digest
-    fail_input(
-      "waived-active assignment requires the same durable launch_waiver used for activation, " \
-      "including the exact launch_waiver wrapper"
-    )
-  end
   begin
     require SIGNED_LAUNCH_WAIVER_LIBRARY
   rescue LoadError
@@ -666,8 +655,7 @@ def validated_launch_waiver(input, assignment)
     assignment:,
     host: "codex",
     target: INSTALLATION_ROOT,
-    helper_path: HELPER_PATH,
-    replay:
+    helper_path: HELPER_PATH
   )
   fail_input(reason) unless waiver
   if assignment["lifecycle"] == "waived-active" &&

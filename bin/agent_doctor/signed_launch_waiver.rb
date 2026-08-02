@@ -11,8 +11,7 @@ module AgentDoctor
 
     module_function
 
-    def validate_dispatcher(wrapper:, expected_issue:, batch_id:, lane_id:, assignment:, host:, target:, helper_path:,
-                            replay: false)
+    def validate_dispatcher(wrapper:, expected_issue:, batch_id:, lane_id:, assignment:, host:, target:, helper_path:)
       return [nil, "launch_waiver must be an exact v1 dispatcher waiver"] unless dispatcher_wrapper_shape?(wrapper)
 
       observation = wrapper.fetch("observation")
@@ -24,7 +23,7 @@ module AgentDoctor
       return [nil, "launch_waiver canonical digest does not match the current waiver record"] unless
         wrapper["waiver_digest"] == SignedLaunchWaiverRecord.canonical_digest(record)
       return [nil, "launch_waiver observation is not exactly bound to the active assignment"] unless
-        dispatcher_observation_valid?(observation, record:, batch_id:, lane_id:, assignment:, replay:)
+        dispatcher_observation_valid?(observation, record:, batch_id:, lane_id:, assignment:)
 
       [wrapper, nil]
     rescue KeyError, TypeError
@@ -121,7 +120,7 @@ module AgentDoctor
     end
     private_class_method :lifecycle_receipt_ref
 
-    def dispatcher_observation_valid?(observation, record:, batch_id:, lane_id:, assignment:, replay:)
+    def dispatcher_observation_valid?(observation, record:, batch_id:, lane_id:, assignment:)
       expected_keys = %w[
         actual_effort actual_model attestation batch_id binding_source dispatcher evidence_ref inherited
         instance_id lane_id launch_token observed_at route routing_mode type version waiver_id
@@ -139,21 +138,21 @@ module AgentDoctor
         observation["actual_model"] == assignment.dig("route", "model") &&
         observation["actual_effort"] == assignment.dig("route", "effort") &&
         observation["binding_source"] == "dispatcher-bound" && observation["attestation"] == "instance-bound" &&
-        dispatcher_chronology_valid?(observation, record, replay:) &&
+        dispatcher_chronology_valid?(observation, record) &&
         observation["routing_mode"] == "explicit" && observation["inherited"] == false &&
         SignedLaunchWaiverRecord.durable_ref?(observation["evidence_ref"]) &&
         !SignedLaunchWaiverRecord.nested_unknown?(observation)
     end
     private_class_method :dispatcher_observation_valid?
 
-    def dispatcher_chronology_valid?(observation, record, replay:)
+    def dispatcher_chronology_valid?(observation, record)
       return false unless SignedLaunchWaiverRecord.timestamp?(observation["observed_at"])
 
       now = Time.now.utc
       granted_at = Time.iso8601(record.fetch("granted_at"))
       observed_at = Time.iso8601(observation.fetch("observed_at"))
       granted_at <= now && observed_at >= granted_at &&
-        (replay || observed_at >= now - MAX_OBSERVATION_AGE_SECONDS) &&
+        observed_at >= now - MAX_OBSERVATION_AGE_SECONDS &&
         observed_at <= now + MAX_FUTURE_SKEW_SECONDS
     end
     private_class_method :dispatcher_chronology_valid?
