@@ -127,6 +127,13 @@ module AgentWorkflowSeamDoctor
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
+  MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
+  MERGE_SUBMISSION_MODES = %w[merge_queue_only merge_queue_or_guarded_direct].freeze
+  MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
+  GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
+  NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
+  MERGE_METHODS = %w[merge rebase squash].freeze
+  GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY = "untrusted_contributor_intake"
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS = %w[
     trusted_github_host
@@ -1457,6 +1464,7 @@ module AgentWorkflowSeamDoctor
   def prepare_init_policy(root, base_branch, existing)
     defaults = REQUIRED_POLICY_KEYS.to_h { |key| [key, key == "base_branch" ? base_branch : "n/a"] }
     defaults["follow_up_prefix"] = "Follow-up:"
+    defaults[MERGE_SUBMISSION_POLICY_KEY] = { "mode" => "merge_queue_only" }
     prepare_init_mapping(File.join(root, POLICY_CONFIG), existing, defaults, "policy config")
   end
 
@@ -1687,6 +1695,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(untrusted_contributor_intake_policy_issues(config))
+    issues.concat(merge_submission_policy_issues(root, config))
     if config.key?("autonomous_merge")
       autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
       autonomous_policy.errors.each do |error|
@@ -1721,6 +1730,94 @@ module AgentWorkflowSeamDoctor
     scheme = intake_policy["trusted_github_scheme"]
     issues << "invalid policy value for key: #{scheme_key}" if scheme && scheme != "https"
     issues.uniq
+  end
+
+  def merge_submission_policy_issues(root, config)
+    return [] unless config.key?(MERGE_SUBMISSION_POLICY_KEY)
+
+    seam = config[MERGE_SUBMISSION_POLICY_KEY]
+    return ["invalid merge_submission policy: expected a mapping"] unless seam.is_a?(Hash)
+
+    mode = seam["mode"]
+    unless MERGE_SUBMISSION_MODES.include?(mode)
+      return ["invalid merge_submission policy: mode must be merge_queue_only or " \
+              "merge_queue_or_guarded_direct"]
+    end
+    expected_keys = mode == "merge_queue_only" ? ["mode"] : MERGE_SUBMISSION_KEYS
+    unless exact_string_keys?(seam, expected_keys)
+      return ["invalid merge_submission policy: keys must be exactly #{expected_keys.sort.join(', ')}"]
+    end
+    return [] if mode == "merge_queue_only"
+
+    direct = seam["guarded_direct"]
+    unless exact_string_keys?(direct, GUARDED_DIRECT_KEYS)
+      return ["invalid merge_submission policy: guarded_direct keys must be exactly " \
+              "#{GUARDED_DIRECT_KEYS.sort.join(', ')}"]
+    end
+
+    issues = []
+    executable = direct["executable"]
+    unless valid_guarded_direct_executable_value?(executable)
+      issues << "invalid merge_submission policy: guarded_direct.executable must name one " \
+                "repository-root-relative file under .agents/bin"
+    end
+    unless MERGE_METHODS.include?(direct["method"])
+      issues << "invalid merge_submission policy: guarded_direct.method must be merge, rebase, or squash"
+    end
+
+    acknowledgement = direct["non_atomic_base"]
+    unless exact_string_keys?(acknowledgement, NON_ATOMIC_BASE_KEYS)
+      issues << "invalid merge_submission policy: guarded_direct.non_atomic_base keys must be exactly " \
+                "#{NON_ATOMIC_BASE_KEYS.sort.join(', ')}"
+      return issues
+    end
+    unless acknowledgement["acknowledged"] == true
+      issues << "invalid merge_submission policy: guarded_direct.non_atomic_base.acknowledged must be true"
+    end
+    unless valid_non_atomic_base_rationale?(acknowledgement["rationale"])
+      issues << "invalid merge_submission policy: guarded_direct.non_atomic_base.rationale must be " \
+                "nonempty, resolved single-line prose"
+    end
+    issues.concat(guarded_direct_file_issues(root, executable)) if
+      valid_guarded_direct_executable_value?(executable)
+    issues
+  end
+
+  def exact_string_keys?(mapping, expected_keys)
+    mapping.is_a?(Hash) && mapping.keys.all?(String) && mapping.keys.sort == expected_keys.sort
+  end
+
+  def valid_guarded_direct_executable_value?(value)
+    value.is_a?(String) && value.match?(GUARDED_DIRECT_EXECUTABLE) &&
+      !%w[. ..].include?(File.basename(value))
+  end
+
+  def valid_non_atomic_base_rationale?(value)
+    return false unless value.is_a?(String)
+
+    rationale = value.strip
+    !rationale.empty? && rationale.length <= 500 &&
+      !rationale.match?(/[[:cntrl:]]/) &&
+      !rationale.casecmp?("UNKNOWN") &&
+      !rationale.match?(/<[^>]+>/)
+  end
+
+  def guarded_direct_file_issues(root, relative_path)
+    live_path = File.join(root, relative_path)
+    parent_paths = %w[.agents .agents/bin].map { |component| File.join(root, component) }
+    if parent_paths.any? { |path| File.lstat(path).symlink? }
+      return ["invalid merge_submission policy: guarded_direct.executable path contains a symlink"]
+    end
+
+    stat = File.lstat(live_path)
+    return ["invalid merge_submission policy: guarded_direct.executable must be a regular file"] if
+      stat.symlink? || !stat.file?
+    return ["invalid merge_submission policy: guarded_direct.executable is not executable"] unless
+      File.executable?(live_path)
+
+    []
+  rescue Errno::ENOENT, Errno::EACCES
+    ["invalid merge_submission policy: guarded_direct.executable is missing or inaccessible"]
   end
 
   def load_policy_config(path)

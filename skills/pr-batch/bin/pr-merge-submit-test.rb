@@ -17,9 +17,11 @@ class PrMergeSubmitTest < Minitest::Test
   HEAD_SHA = "a" * 40
   NUMERIC_SHA = "1" * 40
   MOVED_SHA = "b" * 40
+  BASE_SHA = Open3.capture2("git", "rev-parse", "HEAD", chdir: File.expand_path("../../..", __dir__)).first.strip
   HOST = "ghe.example:8443"
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
+  SOURCE_REPO_POLICY = Object.new.freeze
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -35,7 +37,6 @@ class PrMergeSubmitTest < Minitest::Test
   # stale-assignment-sweep-test.rb uses; only the stub's deliberate 5s sleep
   # can cross it.
   MUTATION_TIMEOUT_MODES = %w[
-    direct_timeout_unknown direct_timeout_merged
     enqueue_timeout_unknown enqueue_timeout_merged
   ].freeze
   MUTATION_TIMEOUT_GH_SECONDS = "2"
@@ -47,126 +48,239 @@ class PrMergeSubmitTest < Minitest::Test
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
   MUTATION_TIMEOUT_ATTEMPTS = 3
 
-  def test_open_queue_disabled_pr_merges_the_same_head_directly
-    result, log = run_cli(mode: "direct")
+  def test_queue_disabled_pr_without_merge_submission_fails_closed_before_mutation
+    trusted_policy = nil
+    result, log, guard_log = run_cli(
+      mode: "direct",
+      merge_submission: nil,
+      trusted_policy_observer: ->(policy) { trusted_policy = policy }
+    )
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "direct", payload.fetch("submission")
-    assert_equal HEAD_SHA, payload.fetch("expected_head")
-    assert_equal "main", payload.fetch("expected_base")
-    assert_equal "squash", payload.fetch("method")
-    assert_includes log, "mergePullRequest"
-    assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "queue-disabled submission is unsupported"
+    assert_equal({ "base_branch" => "main" }, trusted_policy)
+    refute trusted_policy.key?("merge_submission")
     refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+    refute_includes File.read(SCRIPT), "mergePullRequest"
   end
 
-  def test_direct_merge_uses_requested_method_and_subject
-    result, log = run_cli(mode: "direct")
+  def test_explicit_queue_only_policy_also_refuses_queue_disabled_submission
+    result, log, guard_log = run_cli(
+      mode: "direct",
+      merge_submission: { "mode" => "merge_queue_only" }
+    )
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "queue-disabled submission is unsupported"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_guarded_direct_delegates_with_fixed_argv_and_reconciles_exact_merge
+    result, log, guard_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      body: "Detailed merge body"
+    )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "guarded_direct", payload.fetch("submission")
+    assert_equal "squash", payload.fetch("method")
+    assert_equal false, payload.fetch("atomic_expected_base_oid")
+    assert_equal true, payload.dig("non_atomic_base", "acknowledged")
+    assert_equal ".agents/bin/merge-pr-after-checks", payload.dig("guard", "path")
+    assert_match(/\A[0-9a-f]{64}\z/, payload.dig("guard", "sha256"))
+    assert_equal true, payload.fetch("reconciled_after_guard")
     assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
-    assert_includes log, "mergeMethod=SQUASH"
-    assert_includes log, "commitHeadline=Fix the thing (#42)"
-    refute_includes log, "pr merge"
-    refute_includes log, "--auto"
+    refute_includes log, "enqueuePullRequest"
+    refute_includes log, "mergePullRequest"
+    argv = guard_log.lines.map(&:chomp)
+    assert_equal [
+      "--repo", "owner/repo", "--host", HOST, "--pr", "42",
+      "--expected-head", HEAD_SHA, "--expected-base", "main",
+      "--expected-base-sha", payload.dig("guard", "trusted_base_sha"),
+      "--method", "squash"
+    ], argv.first(14)
+    assert_equal "--merge-assurance-receipt", argv[14]
+    assert File.absolute_path(argv[15]) == argv[15]
+    assert_equal [
+      "--subject", "Fix the thing (#42)", "--body", "Detailed merge body"
+    ], argv.last(4)
   end
 
-  def test_direct_merge_accepts_advanced_base_oid_after_exact_merged_response
-    result, log = run_cli(mode: "direct_base_advanced")
+  def test_guard_executes_identity_bound_bytes_when_live_path_is_swapped_after_validation
+    result, log, guard_log, attacker_log = run_cli(
+      mode: "guard_path_swap",
+      merge_submission: guarded_direct_policy
+    )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "direct", payload.fetch("submission")
-    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
-    assert_includes log, "mergePullRequest"
+    assert_equal "guarded_direct", payload.fetch("submission")
+    assert_equal Digest::SHA256.hexdigest(fake_guard), payload.dig("guard", "sha256")
+    assert_equal ".agents/bin/merge-pr-after-checks", payload.dig("guard", "path")
+    assert_includes guard_log, "--expected-head\n#{HEAD_SHA}"
+    assert_empty attacker_log
+    refute_includes log, "mergePullRequest"
   end
 
-  def test_direct_merge_response_requires_a_full_hex_merge_commit_oid
-    ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
-      result, log = run_cli(mode: "direct", merge_commit_oid:)
+  def test_guard_timeout_and_interrupt_are_unknown_and_reconciled
+    timeout_result, timeout_log, = run_cli(
+      mode: "guard_timeout",
+      merge_submission: guarded_direct_policy,
+      guard_timeout_seconds: "0.1"
+    )
 
-      assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
-      assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
-      assert_includes log, "mergePullRequest", merge_commit_oid
+    assert_equal 2, timeout_result.fetch(:status).exitstatus
+    assert_includes timeout_result.fetch(:stderr), "guarded-direct executable timed out"
+    assert_includes timeout_result.fetch(:stderr), "do not retry blindly"
+    assert_equal(3, timeout_log.lines.count { |line| line.include?("number=42") })
+
+    interrupt_result, interrupt_log, interrupt_guard_log = run_cli(
+      mode: "guard_interrupt",
+      merge_submission: guarded_direct_policy,
+      interrupt_guard: true
+    )
+
+    assert_equal 2, interrupt_result.fetch(:status).exitstatus
+    assert_includes interrupt_result.fetch(:stderr), "guarded-direct executable was interrupted by SIGINT"
+    assert_includes interrupt_result.fetch(:stderr), "do not retry blindly"
+    assert_equal(3, interrupt_log.lines.count { |line| line.include?("number=42") })
+    refute_empty interrupt_guard_log
+  end
+
+  def test_hichee_style_queue_disabled_master_replay_uses_guarded_direct
+    result, _log, guard_log = run_cli(
+      mode: "hichee_replay",
+      base: "master",
+      expected_base: "master",
+      repo: "shakacode/hichee",
+      merge_submission: guarded_direct_policy(
+        rationale: "HiChee owns a checks-and-head-validating direct squash wrapper."
+      )
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "guarded_direct", payload.fetch("submission")
+    assert_equal "master", payload.fetch("expected_base")
+    assert_equal "shakacode/hichee", payload.fetch("repo")
+    assert_includes guard_log, "shakacode/hichee"
+    assert_includes guard_log, "master"
+  end
+
+  def test_guard_failure_ambiguous_state_and_head_movement_are_unknown
+    {
+      "guard_failure" => "guard failed",
+      "guard_failure_merged" => "guard failed",
+      "guard_ambiguous" => "not an exact terminal merge",
+      "guard_head_moved" => "PR head moved"
+    }.each do |mode, detail|
+      result, log, guard_log = run_cli(mode:, merge_submission: guarded_direct_policy)
+
+      assert_equal 2, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), detail, mode
+      assert_includes result.fetch(:stderr), "do not retry blindly", mode
+      refute_includes log, "enqueuePullRequest", mode
+      refute_empty guard_log, mode
     end
   end
 
+  def test_malformed_or_untrusted_guard_configuration_stops_before_github
+    cases = {
+      "unknown mode" => [{ "mode" => "direct" }, :executable],
+      "missing guard" => [guarded_direct_policy, :missing],
+      "non-executable guard" => [guarded_direct_policy, :non_executable],
+      "changed guard" => [guarded_direct_policy, :modified_after_commit]
+    }
+    cases.each do |label, (seam, guard_fixture)|
+      result, log, guard_log = run_cli(
+        mode: "guard_ambiguous", merge_submission: seam, guard_fixture:
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, label
+      assert_includes result.fetch(:stderr), label.include?("mode") ? "mode is invalid" : "guarded-direct executable", label
+      assert_empty log, label
+      assert_empty guard_log, label
+    end
+  end
+
+  def test_trusted_base_merge_submission_rejects_closed_schema_violations
+    cases = [
+      { "mode" => "merge_queue_or_guarded_direct" },
+      guarded_direct_policy.tap do |seam|
+        seam["guarded_direct"]["non_atomic_base"]["acknowledged"] = false
+      end,
+      guarded_direct_policy(executable: ".agents/bin/merge-pr --force"),
+      guarded_direct_policy.tap do |seam|
+        seam["guarded_direct"]["shell"] = "bash -lc"
+      end
+    ]
+    cases.each do |seam|
+      result, log, guard_log = run_cli(
+        mode: "guard_ambiguous", merge_submission: seam
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, seam.inspect
+      assert_includes result.fetch(:stderr), "merge_submission", seam.inspect
+      assert_empty log, seam.inspect
+      assert_empty guard_log, seam.inspect
+    end
+  end
+
+  def test_non_string_merge_submission_keys_fail_closed_without_sort_exceptions
+    cases = [
+      guarded_direct_policy.merge(1 => "unexpected"),
+      guarded_direct_policy.tap { |seam| seam.fetch("guarded_direct")[1] = "unexpected" },
+      guarded_direct_policy.tap do |seam|
+        seam.dig("guarded_direct", "non_atomic_base")[1] = "unexpected"
+      end
+    ]
+
+    cases.each do |seam|
+      result, log, guard_log = run_cli(mode: "guard_ambiguous", merge_submission: seam)
+
+      assert_equal 1, result.fetch(:status).exitstatus, seam.inspect
+      assert_includes result.fetch(:stderr), "merge_submission", seam.inspect
+      refute_includes result.fetch(:stderr), "comparison of", seam.inspect
+      assert_empty log, seam.inspect
+      assert_empty guard_log, seam.inspect
+    end
+  end
+
+  def test_guarded_direct_requested_method_must_match_trusted_base_method
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy(method: "merge")
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "does not match trusted-base guarded-direct method"
+    assert_equal(1, log.lines.count { |line| line.include?("number=42") })
+    assert_empty guard_log
+  end
+
   def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
-    result, log = run_cli(mode: "queue")
+    result, log, guard_log = run_cli(
+      mode: "queue", merge_submission: guarded_direct_policy
+    )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "merge_queue", payload.fetch("submission")
+    assert_equal "squash", payload.fetch("direct_method_requested")
+    refute payload.key?("requested_method")
     assert_equal HEAD_SHA, payload.fetch("expected_head")
     assert_equal "main", payload.fetch("expected_base")
     assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
-    refute_includes log, "mergePullRequest"
+    assert_empty guard_log
     assert_includes log, "enqueuePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
     assert_includes log, "GH_HOST=#{HOST} api graphql"
     assert_equal 3, log.scan("GraphQL-Features: merge_queue").length
     refute_includes log, "--auto"
-  end
-
-  def test_queue_enablement_race_retries_only_after_explicit_queue_error
-    result, log = run_cli(mode: "queue_race")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "merge_queue", payload.fetch("submission")
-    assert_includes payload.fetch("direct_attempt"), "set by the merge queue"
-    query_count = log.lines.count { |line| line.include?("number=42") }
-    assert_equal 3, query_count
-    assert_includes log, "mergePullRequest"
-    assert_includes log, "enqueuePullRequest"
-  end
-
-  def test_queue_control_error_followed_by_merge_preserves_unknown_provenance
-    result, log = run_cli(mode: "queue_race_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "already_merged", payload.fetch("submission")
-    assert_equal "UNKNOWN", payload.fetch("merge_provenance")
-    assert_equal true, payload.fetch("reconciled_after_failure")
-    refute payload.key?("method")
-    assert_includes log, "mergePullRequest"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_unrelated_direct_failure_does_not_enqueue
-    result, log = run_cli(mode: "direct_failure")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_raw_queue_control_text_does_not_authorize_enqueue
-    result, log = run_cli(mode: "direct_raw_queue_error")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_mixed_graphql_errors_do_not_authorize_enqueue
-    result, log = run_cli(mode: "queue_race_mixed_errors")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_successful_direct_api_diagnostics_do_not_corrupt_json
-    result, = run_cli(mode: "direct_with_stderr")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "direct", payload.fetch("submission")
-    assert_includes payload.fetch("diagnostics"), "debug diagnostic"
   end
 
   def test_enqueue_graphql_failure_with_unresolved_state_is_unknown
@@ -279,65 +393,10 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_direct_transport_failure_reconciles_an_exact_merge
-    result, log = run_cli(mode: "direct_transport_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_unknown_reconciled_merge(
-      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
-    )
-    assert_includes log, "mergePullRequest"
-  end
-
-  def test_ambiguous_direct_response_reconciles_merged_pr_after_base_advances
-    result, log = run_cli(mode: "direct_transport_merged_base_advanced")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_unknown_reconciled_merge(
-      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
-    )
-    assert_includes log, "mergePullRequest"
-  end
-
-  def test_invalid_direct_responses_reconcile_an_exact_merge
-    %w[
-      direct_invalid_json_merged
-      direct_graphql_error_merged
-      direct_incomplete_response_merged
-      direct_non_object_response_merged
-    ].each do |mode|
-      result, log = run_cli(mode:)
-
-      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
-      assert_unknown_reconciled_merge(
-        JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
-      )
-      assert_includes log, "mergePullRequest", mode
-    end
-  end
-
-  def test_incomplete_direct_response_with_unchanged_live_state_reports_unknown
-    result, = run_cli(mode: "direct_incomplete_response_unknown")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-  end
-
-  def test_unresolved_direct_transport_failure_reports_unknown
-    result, log = run_cli(mode: "direct_transport_unknown")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-    assert_includes log, "mergePullRequest"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_base_advancement_never_qualifies_open_queued_or_nonterminal_states
+  def test_base_advancement_never_qualifies_open_queued_states
     {
-      "direct_transport_open_base_advanced" => "mergePullRequest",
       "enqueue_transport_queued_base_advanced" => "enqueuePullRequest",
-      "queue_post_queued_base_advanced" => "enqueuePullRequest",
-      "direct_nonterminal_base_advanced" => "mergePullRequest"
+      "queue_post_queued_base_advanced" => "enqueuePullRequest"
     }.each do |mode, attempted_mutation|
       result, log = run_cli(mode:)
 
@@ -524,23 +583,6 @@ class PrMergeSubmitTest < Minitest::Test
     refute status.success?
   end
 
-  def test_direct_mutation_timeout_with_unchanged_state_is_unknown
-    result = run_mutation_timeout_cli("direct_timeout_unknown")
-
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "timed out"
-    assert_includes result.fetch(:stderr), "do not retry blindly"
-  end
-
-  def test_direct_mutation_timeout_reconciles_with_unknown_provenance
-    result = run_mutation_timeout_cli("direct_timeout_merged")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_unknown_reconciled_merge(
-      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
-    )
-  end
-
   def test_enqueue_mutation_timeout_with_unchanged_state_is_unknown
     result = run_mutation_timeout_cli("enqueue_timeout_unknown")
 
@@ -707,7 +749,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_live_base_sha_mismatch_stops_before_any_mutation
-    result, log = run_cli(mode: "direct", receipt_mode: :mismatched_base_sha)
+    result, log = run_cli(mode: "initial_open_base_advanced")
 
     refute result.fetch(:status).success?
     assert_includes result.fetch(:stderr), "receipt base SHA mismatch"
@@ -750,6 +792,24 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   private
+
+  def guarded_direct_policy(
+    executable: ".agents/bin/merge-pr-after-checks",
+    method: "squash",
+    rationale: "The repository guard revalidates policy immediately before direct squash."
+  )
+    {
+      "mode" => "merge_queue_or_guarded_direct",
+      "guarded_direct" => {
+        "executable" => executable,
+        "method" => method,
+        "non_atomic_base" => {
+          "acknowledged" => true,
+          "rationale" => rationale
+        }
+      }
+    }
+  end
 
   def assert_reconciled_queue_merge(payload)
     assert_equal "merge_queue", payload.fetch("submission")
@@ -821,6 +881,7 @@ class PrMergeSubmitTest < Minitest::Test
     head: HEAD_SHA,
     expected_head: HEAD_SHA,
     base: "main",
+    expected_base: "main",
     url_host: HOST,
     include_expected_head: true,
     include_expected_base: true,
@@ -829,12 +890,36 @@ class PrMergeSubmitTest < Minitest::Test
     include_merge_assurance_receipt: true,
     receipt_mode: :valid,
     after_stub_warmup: nil,
-    merge_commit_oid: MERGE_COMMIT_SHA
+    trusted_policy_observer: nil,
+    merge_commit_oid: MERGE_COMMIT_SHA,
+    merge_submission: SOURCE_REPO_POLICY,
+    guard_fixture: :executable,
+    guard_timeout_seconds: nil,
+    interrupt_guard: false
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
+      repo_root, base_sha = if merge_submission.equal?(SOURCE_REPO_POLICY)
+                              [File.expand_path("../../..", __dir__), BASE_SHA]
+                            else
+                              prepare_consumer_repo(
+                                dir, merge_submission:, guard_fixture:
+                              )
+                            end
+      trusted_policy_observer&.call(
+        YAML.safe_load(
+          run_git!(repo_root, "show", "#{base_sha}:.agents/agent-workflow.yml"),
+          permitted_classes: [], permitted_symbols: [], aliases: false
+        )
+      )
       log_path = File.join(dir, "gh.log")
+      guard_log_path = File.join(dir, "guard.log")
+      guard_marker_path = File.join(dir, "guard-called")
+      attacker_log_path = File.join(dir, "attacker-called")
       gh_path = File.join(dir, "gh")
-      File.write(gh_path, fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid:))
+      File.write(
+        gh_path,
+        fake_gh(mode:, head:, base:, base_sha:, url_host:, repo:, merge_commit_oid:)
+      )
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path) if mode.include?("timeout")
       after_stub_warmup&.call
@@ -842,28 +927,65 @@ class PrMergeSubmitTest < Minitest::Test
       unless receipt_mode == :missing
         write_merge_assurance_receipt(
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
-                        base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
+                        base_ref: expected_base, base_sha:, host: HOST, pr_number: 42, gh_dir: dir
         )
       end
-      stdout, stderr, status = Open3.capture3(
-        cli_environment(dir, log_path, mode),
-        *cli_arguments(
-          repo, expected_head, include_expected_head, include_expected_base,
-          subject:, body:, include_merge_assurance_receipt:, receipt_path:
-        )
+      environment = cli_environment(
+        dir, log_path, mode,
+        guard_log_path:, guard_marker_path:, attacker_log_path:,
+        guard_live_path: File.join(repo_root, ".agents/bin/merge-pr-after-checks"),
+        guard_timeout_seconds:
       )
+      arguments = cli_arguments(
+        repo, expected_head, include_expected_head, include_expected_base,
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:
+      )
+      result = if interrupt_guard
+                 capture_with_interrupt(
+                   environment, arguments, chdir: repo_root, wait_path: guard_marker_path
+                 )
+               else
+                 stdout, stderr, status = Open3.capture3(environment, *arguments, chdir: repo_root)
+                 { stdout:, stderr:, status: }
+               end
       log = File.exist?(log_path) ? File.read(log_path) : ""
-      [{ stdout:, stderr:, status: }, log]
+      guard_log = File.exist?(guard_log_path) ? File.read(guard_log_path) : ""
+      attacker_log = File.exist?(attacker_log_path) ? File.read(attacker_log_path) : ""
+      [result, log, guard_log, attacker_log]
     end
   end
 
-  def run_cli_with_interrupt(mode:, wait_for: "mergePullRequest", after_stub_warmup: nil)
+  def capture_with_interrupt(environment, arguments, chdir:, wait_path:)
+    Open3.popen3(environment, *arguments, chdir:) do |stdin, stdout, stderr, wait_thread|
+      stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+      until File.exist?(wait_path)
+        raise "guard did not start before interrupt deadline" if
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep 0.01
+      end
+      Process.kill("INT", wait_thread.pid)
+      {
+        stdout: stdout_reader.value,
+        stderr: stderr_reader.value,
+        status: wait_thread.value
+      }
+    end
+  end
+
+  def run_cli_with_interrupt(mode:, wait_for: "enqueuePullRequest", after_stub_warmup: nil)
     Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
       File.write(
         gh_path,
-        fake_gh(mode:, head: HEAD_SHA, base: "main", url_host: HOST, repo: "owner/repo")
+        fake_gh(
+          mode:, head: HEAD_SHA, base: "main", base_sha: BASE_SHA,
+          url_host: HOST, repo: "owner/repo"
+        )
       )
       FileUtils.chmod(0o755, gh_path)
       warm_stub(dir, gh_path)
@@ -871,10 +993,14 @@ class PrMergeSubmitTest < Minitest::Test
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir
+                      base_ref: "main", base_sha: BASE_SHA, host: HOST, pr_number: 42, gh_dir: dir
       )
       result = Open3.popen3(
-        cli_environment(dir, log_path, mode),
+        cli_environment(
+          dir, log_path, mode,
+          guard_log_path: File.join(dir, "guard.log"),
+          guard_marker_path: File.join(dir, "guard-called")
+        ),
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
           include_merge_assurance_receipt: true, receipt_path:
@@ -920,12 +1046,25 @@ class PrMergeSubmitTest < Minitest::Test
     )
   end
 
-  def cli_environment(dir, log_path, mode)
-    {
+  def cli_environment(
+    dir, log_path, mode,
+    guard_log_path:, guard_marker_path:,
+    attacker_log_path: File.join(dir, "attacker-called"),
+    guard_live_path: "",
+    guard_timeout_seconds: nil
+  )
+    environment = {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
       "GH_LOG" => log_path,
+      "PR_TEST_MODE" => mode,
+      "PR_TEST_GUARD_LOG" => guard_log_path,
+      "PR_TEST_GUARD_MARKER" => guard_marker_path,
+      "PR_TEST_ATTACKER_MARKER" => attacker_log_path,
+      "PR_TEST_GUARD_LIVE_PATH" => guard_live_path,
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }
+    environment["PR_MERGE_SUBMIT_GUARD_TIMEOUT_SECONDS"] = guard_timeout_seconds if guard_timeout_seconds
+    environment
   end
 
   def gh_timeout_seconds_for(mode)
@@ -937,6 +1076,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def cli_arguments(
     repo, expected_head, include_expected_head, include_expected_base,
+    expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
     include_merge_assurance_receipt: true, receipt_path: nil
   )
@@ -946,14 +1086,15 @@ class PrMergeSubmitTest < Minitest::Test
     ]
     args.concat(["--body", body]) unless body.nil?
     args.concat(["--expected-head", expected_head]) if include_expected_head
-    args.concat(["--expected-base", "main"]) if include_expected_base
+    args.concat(["--expected-base", expected_base]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
     args
   end
 
-  def write_merge_assurance_receipt(path, mode:, repo:, head:, base_ref:, host:, pr_number:, gh_dir:)
+  def write_merge_assurance_receipt(
+    path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:
+  )
     now = Time.now.utc
-    base_sha = mode == :mismatched_base_sha ? "c" * 40 : "b" * 40
     checked_at = (now - 1).iso8601
     scope = lambda do |name, rows|
       {
@@ -1125,7 +1266,54 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid: MERGE_COMMIT_SHA)
+  def prepare_consumer_repo(dir, merge_submission:, guard_fixture:)
+    root = File.join(dir, "consumer")
+    FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+    policy = { "base_branch" => "main" }
+    policy["merge_submission"] = merge_submission unless merge_submission.nil?
+    File.write(
+      File.join(root, ".agents/agent-workflow.yml"),
+      policy.to_yaml
+    )
+
+    executable = merge_submission.dig("guarded_direct", "executable") if merge_submission.is_a?(Hash)
+    guard_path = File.join(root, executable.to_s)
+    if guard_fixture != :missing && executable.to_s.match?(%r{\A\.agents/bin/[A-Za-z0-9_.-]+\z})
+      File.write(guard_path, fake_guard)
+      FileUtils.chmod(guard_fixture == :non_executable ? 0o644 : 0o755, guard_path)
+    end
+
+    run_git!(root, "init", "-q")
+    run_git!(root, "add", "--all")
+    run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture")
+    base_sha = run_git!(root, "rev-parse", "HEAD").strip
+    File.open(guard_path, "a") { |file| file.write("# changed after trusted base\n") } if
+      guard_fixture == :modified_after_commit && File.file?(guard_path)
+    [root, base_sha]
+  end
+
+  def run_git!(root, *args)
+    stdout, stderr, status = Open3.capture3("git", *args, chdir: root)
+    raise "git fixture failed: #{stderr}" unless status.success?
+
+    stdout
+  end
+
+  def fake_guard
+    <<~RUBY
+      #!/usr/bin/env ruby
+      File.open(ENV.fetch("PR_TEST_GUARD_LOG"), "a") { |file| file.puts(ARGV.join("\n")) }
+      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+      sleep 5 if %w[guard_timeout guard_interrupt].include?(ENV.fetch("PR_TEST_MODE"))
+      if %w[guard_failure guard_failure_merged].include?(ENV.fetch("PR_TEST_MODE"))
+        warn "repository guard rejected direct submission"
+        exit 1
+      end
+      puts "guard output is not merge proof"
+    RUBY
+  end
+
+  def fake_gh(mode:, head:, base:, base_sha:, url_host:, repo:, merge_commit_oid: MERGE_COMMIT_SHA)
     semantic_issue = semantic_issue_payload(
       host: HOST, repo: "owner/repo", pr_number: 42, head:
     )
@@ -1143,38 +1331,17 @@ class PrMergeSubmitTest < Minitest::Test
                         }
                       }
                     end
-    direct_base_oid = if %w[
-      direct_base_advanced direct_nonterminal_base_advanced
-    ].include?(mode)
-                        ADVANCED_BASE_SHA
-                      else
-                        "b" * 40
-                      end
-    direct_state = mode == "direct_nonterminal_base_advanced" ? "OPEN" : "MERGED"
-    direct_payload = {
-      "data" => {
-        "mergePullRequest" => {
-          "pullRequest" => {
-            "headRefOid" => head,
-            "baseRefName" => base,
-            "baseRefOid" => direct_base_oid,
-            "state" => direct_state,
-            "merged" => true,
-            "mergedAt" => "2026-07-20T15:00:00Z",
-            "url" => "https://#{url_host}/#{repo}/pull/42",
-            "mergeCommit" => { "oid" => merge_commit_oid }
-          }
-        }
-      }
-    }
+    attacker_guard = <<~RUBY
+      #!/usr/bin/env ruby
+      File.write(ENV.fetch("PR_TEST_ATTACKER_MARKER"), "attacker bytes executed\n")
+      File.write(ENV.fetch("PR_TEST_GUARD_MARKER"), "called\n")
+    RUBY
     <<~RUBY
       #!/usr/bin/env ruby
       require "json"
       File.open(ENV.fetch("GH_LOG"), "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
-      warn "debug diagnostic" if #{mode.inspect} == "direct_with_stderr"
-
       if ARGV.include?("repos/owner/repo/issues/1")
         puts #{JSON.generate(semantic_issue).inspect}
         exit 0
@@ -1196,8 +1363,13 @@ class PrMergeSubmitTest < Minitest::Test
         sleep 5 if #{mode.inspect} == "metadata_timeout"
         query_count_path = ENV.fetch("GH_LOG") + ".queries"
         query_count = File.exist?(query_count_path) ? File.read(query_count_path).to_i : 0
+        if #{mode.inspect} == "guard_path_swap" && query_count.zero?
+          File.write(ENV.fetch("PR_TEST_GUARD_LIVE_PATH"), #{attacker_guard.inspect})
+          File.chmod(0o755, ENV.fetch("PR_TEST_GUARD_LIVE_PATH"))
+        end
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
+        guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
         queue_enabled = case current_mode
                         when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
@@ -1214,7 +1386,6 @@ class PrMergeSubmitTest < Minitest::Test
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
-                        when "queue_race", "queue_race_merged", "queue_race_mixed_errors" then query_count.positive?
                         else false
                         end
         queued = case current_mode
@@ -1227,24 +1398,22 @@ class PrMergeSubmitTest < Minitest::Test
                       "enqueue_graphql_error_merged_queued",
                       "queue_entry_replaced_same_target",
                       "queue_post_queued_base_advanced",
-                      "queue_post_queued_with_commit",
-                      "direct_graphql_error_queued_with_commit" then query_count.positive?
-                 when "queue_race" then query_count > 1
+                      "queue_post_queued_with_commit" then query_count.positive?
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
                  else false
                  end
         merged_after_mutation = [
-          "direct_transport_merged", "direct_invalid_json_merged", "direct_graphql_error_merged",
-          "direct_incomplete_response_merged", "direct_non_object_response_merged",
-          "direct_timeout_merged", "direct_transport_merged_base_advanced",
           "enqueue_transport_merged", "enqueue_graphql_error_merged",
           "enqueue_graphql_error_merged_queued",
-          "enqueue_timeout_merged", "queue_fast_merged", "queue_fast_merged_base_advanced",
-          "queue_race_merged"
+          "enqueue_timeout_merged", "queue_fast_merged", "queue_fast_merged_base_advanced"
         ].include?(current_mode)
+        guarded_direct_merged = %w[
+          guard_success guard_path_swap hichee_replay guard_failure_merged
+        ].include?(current_mode) &&
+                                guard_called
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
-                 (merged_after_mutation && query_count.positive?)
+                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
@@ -1258,9 +1427,7 @@ class PrMergeSubmitTest < Minitest::Test
           already_merged_base_advanced
           initial_open_base_advanced already_queued_base_advanced
           queue_fast_merged_base_advanced
-          queue_post_queued_base_advanced
-          direct_transport_merged_base_advanced direct_transport_open_base_advanced
-          enqueue_transport_queued_base_advanced direct_nonterminal_base_advanced
+          queue_post_queued_base_advanced enqueue_transport_queued_base_advanced
         ]
         initially_advanced_modes = %w[
           already_merged_base_advanced initial_open_base_advanced already_queued_base_advanced
@@ -1269,7 +1436,7 @@ class PrMergeSubmitTest < Minitest::Test
                            (initially_advanced_modes.include?(current_mode) || query_count.positive?)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
-                          #{('b' * 40).inspect}
+                          #{base_sha.inspect}
                         end
         queue_entry = if queued
                         {
@@ -1284,7 +1451,11 @@ class PrMergeSubmitTest < Minitest::Test
             "repository" => {
               "pullRequest" => {
                 "id" => "PR_42",
-                "headRefOid" => #{head.inspect},
+                "headRefOid" => if current_mode == "guard_head_moved" && guard_called
+                                  #{MOVED_SHA.inspect}
+                                else
+                                  #{head.inspect}
+                                end,
                 "baseRefName" => live_base,
                 "baseRefOid" => live_base_oid,
                 "state" => merged ? "MERGED" : "OPEN",
@@ -1295,7 +1466,6 @@ class PrMergeSubmitTest < Minitest::Test
                 "mergeCommit" => if merged || %w[
                   already_queued_with_commit queue_post_queued_with_commit
                   enqueue_transport_queued_with_commit enqueue_graphql_error_queued_with_commit
-                  direct_graphql_error_queued_with_commit
                 ].include?(current_mode)
                                    { "oid" => #{merge_commit_oid.inspect} }
                                  end,
@@ -1306,61 +1476,6 @@ class PrMergeSubmitTest < Minitest::Test
             }
           }
         )
-        exit 0
-      end
-
-      if ARGV.any? { |arg| arg.include?("mergePullRequest") }
-        case #{mode.inspect}
-        when "queue_race", "queue_race_merged"
-          puts JSON.generate("errors" => [{ "message" => "The merge strategy for main is set by the merge queue" }])
-          exit 1
-        when "queue_race_mixed_errors"
-          puts JSON.generate(
-            "errors" => [
-              { "message" => "The merge strategy for main is set by the merge queue" },
-              { "message" => "nested field resolution failed" }
-            ]
-          )
-          exit 1
-        when "direct_failure"
-          puts JSON.generate("errors" => [{ "message" => "permission denied" }])
-          exit 1
-        when "direct_transport_merged", "direct_transport_merged_base_advanced",
-             "direct_transport_open_base_advanced", "direct_transport_unknown"
-          warn "connection reset after request"
-          exit 1
-        when "direct_timeout_unknown", "direct_timeout_merged", "direct_interrupt_unknown"
-          sleep 5
-        when "direct_interrupt_exit_zero"
-          trap("INT") do
-            puts #{JSON.generate(direct_payload).inspect}
-            exit 0
-          end
-          sleep 5
-        when "direct_raw_queue_error"
-          warn "The merge strategy for main is set by the merge queue"
-          exit 1
-        when "direct_invalid_json_merged"
-          puts "truncated json"
-        when "direct_graphql_error_merged"
-          puts JSON.generate(
-            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
-            "errors" => [{ "message" => "nested field resolution failed" }]
-          )
-          exit 1
-        when "direct_graphql_error_queued_with_commit"
-          puts JSON.generate(
-            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
-            "errors" => [{ "message" => "nested field resolution failed" }]
-          )
-          exit 1
-        when "direct_incomplete_response_merged", "direct_incomplete_response_unknown"
-          puts JSON.generate("data" => { "mergePullRequest" => { "pullRequest" => nil } })
-        when "direct_non_object_response_merged"
-          puts JSON.generate([])
-        else
-          puts #{JSON.generate(direct_payload).inspect}
-        end
         exit 0
       end
 

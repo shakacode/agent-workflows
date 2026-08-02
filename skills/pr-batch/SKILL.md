@@ -820,13 +820,20 @@ When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
 then submit the reviewed host, base, and exact head through the canonical
 `pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
 receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge, uses GitHub's `enqueuePullRequest` when the base is
-queue-controlled, and uses `mergePullRequest` otherwise. Direct submission is
-atomically bound to the authorized head with `expectedHeadOid`; the fresh
-receipt's base SHA is rechecked in live metadata immediately before mutation.
-If queue enforcement changes after that read, only GitHub's explicit
-queue-control error permits one exact-head enqueue retry. Treat helper exit 2 as
-an `UNKNOWN` mutation or cleanup outcome and never retry it blindly. Queue
+of an exact terminal merge and uses GitHub's `enqueuePullRequest` only when the
+base is queue-controlled. Queue-disabled submission fails closed by default.
+Only a validated trusted-base `merge_submission` opt-in may delegate direct
+submission to one repository-owned executable guard under `.agents/bin`; the
+portable helper never performs a generic direct merge. The fixed-argv guard is
+executed from private identity-bound trusted bytes with the repository root as
+its working directory; guard adapters must resolve repository files from that
+working directory or passed argv, not from runtime `$0` or `__dir__`, which
+identify the private copy rather than the configured `.agents/bin` path. The
+guard is still bound to the fresh receipt and exact live head/base facts, and
+its result is accepted only after live GitHub state proves an exact terminal
+merge of the authorized head. This consumer-owned exception acknowledges that
+direct merge has no atomic expected-base OID. Treat helper exit 2 as an
+`UNKNOWN` mutation or cleanup outcome and never retry it blindly. Queue
 submission is not terminal: continue closeout until GitHub reports the PR
 merged or exposes a real blocker.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
