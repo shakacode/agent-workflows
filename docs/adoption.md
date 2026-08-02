@@ -105,14 +105,18 @@ notes.
    error before mutation. The
    helper executes a private copy of the validated trusted-base bytes from an
    isolated Git root whose detached `HEAD`, index, and working files all bind
-   the receipt-base commit and tree. The exact PR identity is supplied only by
+   the receipt-base commit and tree. This is HEAD/index/worktree isolation, not
+   object/ref confidentiality: the materialized repository preserves its
+   source `origin`, and Git objects or refs may remain observable. The exact PR identity is supplied only by
    live GitHub metadata and fixed argv. Guards may delegate to trusted-base
    repository files from that private working directory; they must not infer PR
    identity from local Git state. Script interpreters are resolved from the
    trusted shebang through a fixed path and invoked by absolute identity under
    a closed environment; caller-controlled `PATH`, `BASH_ENV`, `RUBYOPT`, and
    loader settings are not inherited. An absolute shebang interpreter inside
-   the consumer repository is invalid. Runtime `$0` and `__dir__` point at the
+   the consumer repository is invalid. The recorded absolute-path interpreter
+   check and later spawn retain a known filesystem TOCTOU window. Runtime `$0`
+   and `__dir__` point at the
    private guard copy.
 
    The optional `autonomous_merge` mapping is seeded as an empty mapping by

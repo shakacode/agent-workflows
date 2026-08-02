@@ -829,12 +829,16 @@ submission to one repository-owned executable guard under `.agents/bin`; the
 portable helper never performs a generic direct merge. The fixed-argv guard is
 executed from private identity-bound trusted bytes in an isolated Git root
 whose detached `HEAD`, index, and working files all bind the receipt-base
-commit and tree. Exact PR identity comes only from revalidated live GitHub
+commit and tree. This is HEAD/index/worktree isolation, not object/ref
+confidentiality; the materialized repository preserves the source `origin`.
+Exact PR identity comes only from revalidated live GitHub
 metadata and fixed argv, never local Git state. Repository-relative delegation
 therefore resolves trusted-base dependencies. Trusted script shebangs resolve
 to identity-recorded absolute interpreters outside the consumer repository
 through a fixed path, and the guard runs with a closed environment that does not inherit caller-controlled
-interpreter or loader injection variables. Runtime `$0` and `__dir__` identify
+interpreter or loader injection variables. The identity check and later
+absolute-path interpreter spawn retain a known filesystem TOCTOU window.
+Runtime `$0` and `__dir__` identify
 the private guard copy. The guard is still bound to the fresh receipt and exact
 live head/base facts, and
 its result is accepted only after live GitHub state proves an exact terminal

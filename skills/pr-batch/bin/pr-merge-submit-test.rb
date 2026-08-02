@@ -423,19 +423,142 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_guard_scoped_enoent_handling_preserves_the_missing_gh_error
+  def test_run_gh_ignores_checkout_controlled_path_shim
     original_path = ENV.fetch("PATH")
     runner = PrMergeSubmit::Runner.new
 
-    Dir.mktmpdir("pr-merge-submit-empty-path") do |empty_path|
-      ENV["PATH"] = empty_path
-      error = assert_raises(PrMergeSubmit::Error) do
-        runner.send(:run_gh, "--version", host: HOST)
+    Dir.mktmpdir("pr-merge-submit-gh-shim") do |dir|
+      marker = File.join(dir, "gh-shim-ran")
+      File.write(
+        File.join(dir, "gh"),
+        "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n"
+      )
+      FileUtils.chmod(0o755, File.join(dir, "gh"))
+      ENV["PATH"] = dir
+      statuses = [false, true].map do |mutation|
+        _stdout, _stderr, status = runner.send(
+          :run_gh, "--version", host: HOST, mutation:
+        )
+        status
       end
-      assert_equal "gh is not installed or not on PATH", error.message
+
+      assert statuses.all?(&:success?)
+      refute_path_exists marker
     end
   ensure
     ENV["PATH"] = original_path
+  end
+
+  def test_run_gh_uses_closed_environment_with_only_supported_nonempty_tokens
+    original_values = {
+      "GH_CONFIG_DIR" => ENV["GH_CONFIG_DIR"],
+      "GH_DEBUG" => ENV["GH_DEBUG"],
+      "GH_REPO" => ENV["GH_REPO"],
+      "GIT_DIR" => ENV["GIT_DIR"],
+      "GH_TOKEN" => ENV["GH_TOKEN"],
+      "GITHUB_TOKEN" => ENV["GITHUB_TOKEN"]
+    }
+    Dir.mktmpdir("pr-merge-submit-gh-environment") do |dir|
+      capture = File.join(dir, "environment.json")
+      gh = File.join(dir, "trusted-gh")
+      File.write(
+        gh,
+        "#!#{RbConfig.ruby}\nrequire 'json'\nFile.write(#{capture.inspect}, JSON.generate(ENV.to_h))\n"
+      )
+      FileUtils.chmod(0o755, gh)
+      ENV.update(
+        "GH_CONFIG_DIR" => File.join(dir, "checkout-config"),
+        "GH_DEBUG" => "api",
+        "GH_REPO" => "attacker/repo",
+        "GIT_DIR" => File.join(dir, "attacker-git-dir"),
+        "GH_TOKEN" => "supported-token",
+        "GITHUB_TOKEN" => ""
+      )
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => gh })
+
+      _stdout, stderr, status = runner.send(:run_gh, "--version", host: HOST)
+
+      assert status.success?, stderr
+      environment = JSON.parse(File.read(capture))
+      assert_equal "supported-token", environment["GH_TOKEN"]
+      refute environment.key?("GITHUB_TOKEN")
+      %w[GH_CONFIG_DIR GH_DEBUG GH_REPO GIT_DIR].each do |name|
+        refute environment.key?(name), name
+      end
+    end
+  ensure
+    original_values&.each do |name, value|
+      value ? ENV[name] = value : ENV.delete(name)
+    end
+  end
+
+  def test_git_capture_ignores_checkout_controlled_path_shim
+    runner = PrMergeSubmit::Runner.new
+
+    Dir.mktmpdir("pr-merge-submit-git-shim") do |dir|
+      marker = File.join(dir, "git-shim-ran")
+      File.write(
+        File.join(dir, "git"),
+        "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n"
+      )
+      FileUtils.chmod(0o755, File.join(dir, "git"))
+      original_path = ENV.fetch("PATH")
+      ENV["PATH"] = dir
+      _stdout, _stderr, status = runner.send(:git_capture, "--version", chdir: dir)
+
+      assert status.success?
+      refute_path_exists marker
+    ensure
+      ENV["PATH"] = original_path
+    end
+  end
+
+  def test_first_git_capture_rejects_a_resolved_tool_inside_the_candidate_repository
+    Dir.mktmpdir("pr-merge-submit-repository-git") do |repo_root|
+      marker = File.join(repo_root, "git-ran")
+      git = File.join(repo_root, "git")
+      File.write(git, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n")
+      FileUtils.chmod(0o755, git)
+      runner = PrMergeSubmit::Runner.new(system_tools: { "git" => git })
+
+      error = assert_raises(PrMergeSubmit::Error) do
+        runner.send(:git_capture, "--version", chdir: repo_root)
+      end
+
+      assert_equal "git must resolve outside the consumer repository", error.message
+      refute_path_exists marker
+    end
+  end
+
+  def test_git_capture_ignores_ambient_git_injection_variables
+    repo_root = File.expand_path("../../..", __dir__)
+    runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(:@repo_root, repo_root)
+    original_git_dir = ENV["GIT_DIR"]
+    ENV["GIT_DIR"] = File.join(repo_root, "checkout-controlled-git-dir")
+
+    stdout, stderr, status = runner.send(
+      :git_capture, "-C", repo_root, "rev-parse", "HEAD", chdir: repo_root
+    )
+
+    assert status.success?, stderr
+    assert_match(/\A[0-9a-f]{40}\n\z/, stdout)
+  ensure
+    original_git_dir ? ENV["GIT_DIR"] = original_git_dir : ENV.delete("GIT_DIR")
+  end
+
+  def test_missing_local_account_fails_with_deterministic_submitter_error
+    runner = PrMergeSubmit::Runner.new
+    original_getpwuid = Etc.method(:getpwuid)
+    Etc.singleton_class.define_method(:getpwuid) { |_uid| raise ArgumentError, "can't find user" }
+
+    error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:guarded_direct_environment, host: HOST, repo: "owner/repo")
+    end
+
+    assert_equal "local account identity is unavailable for uid #{Process.uid}", error.message
+  ensure
+    Etc.singleton_class.define_method(:getpwuid, original_getpwuid)
   end
 
   def test_unknown_guard_fixture_fails_closed
@@ -1247,7 +1370,7 @@ class PrMergeSubmitTest < Minitest::Test
       )
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
-        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:
       )
       result = if interrupt_guard
                  capture_with_interrupt(
@@ -1312,7 +1435,7 @@ class PrMergeSubmitTest < Minitest::Test
         ),
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
-          include_merge_assurance_receipt: true, receipt_path:
+          include_merge_assurance_receipt: true, receipt_path:, gh_path:
         )
       ) do |stdin, stdout, stderr, wait_thread|
         stdin.close
@@ -1412,12 +1535,20 @@ class PrMergeSubmitTest < Minitest::Test
 
   def cli_arguments(
     repo, expected_head, include_expected_head, include_expected_base,
+    gh_path:,
     expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
     include_merge_assurance_receipt: true, receipt_path: nil
   )
+    runner = <<~RUBY
+      load #{SCRIPT.inspect}
+      test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER].to_h { |name| [name, ENV.fetch(name)] }
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => #{gh_path.inspect} })
+      runner.define_singleton_method(:system_tool_test_environment) { test_environment }
+      exit runner.run(ARGV)
+    RUBY
     args = [
-      RbConfig.ruby, SCRIPT, "42", "--repo", repo, "--host", HOST,
+      RbConfig.ruby, "-e", runner, "42", "--repo", repo, "--host", HOST,
       "--method", "squash", "--subject", subject
     ]
     args.concat(["--body", body]) unless body.nil?

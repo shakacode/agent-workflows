@@ -50,6 +50,14 @@ module PrMergeSubmit
     "/usr/sbin",
     "/sbin"
   ].uniq.freeze
+  SYSTEM_TOOL_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ].freeze
 
   module_function
 
@@ -115,6 +123,10 @@ module PrMergeSubmit
         }
       }
     GRAPHQL
+
+    def initialize(system_tools: {})
+      @system_tools = system_tools
+    end
 
     def run(argv)
       @pending_signal = nil
@@ -591,16 +603,54 @@ module PrMergeSubmit
     end
 
     def git_capture(*args, chdir:)
+      account = local_account!
       environment = {
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
         "GIT_CONFIG_NOSYSTEM" => "1",
         "GIT_CONFIG_GLOBAL" => File::NULL,
         "GIT_NO_REPLACE_OBJECTS" => "1",
         "GIT_OPTIONAL_LOCKS" => "0",
         "GIT_TERMINAL_PROMPT" => "0"
       }
-      Open3.capture3(environment, "git", *args, chdir:)
+      Open3.capture3(
+        environment, resolve_system_tool!("git", outside_root: chdir), *args,
+        chdir:, unsetenv_others: true
+      )
+    end
+
+    def resolve_system_tool!(name, outside_root:)
+      candidate = @system_tools[name]
+      candidate ||= SYSTEM_TOOL_DIRS
+                    .map { |directory| File.join(directory, name) }
+                    .find { |path| File.file?(path) && File.executable?(path) }
+      raise Error, "#{name} is not installed in an approved system tool directory" unless candidate
+
+      realpath = File.realpath(candidate)
+      repository_root = File.realpath(outside_root)
+      repository_prefix = "#{repository_root}#{File::SEPARATOR}"
+      if realpath == repository_root || realpath.start_with?(repository_prefix)
+        raise Error, "#{name} must resolve outside the consumer repository"
+      end
+
+      stat = File.stat(realpath)
+      unless stat.file? && File.executable?(realpath)
+        raise Error, "#{name} is not an executable regular file"
+      end
+
+      realpath
     rescue Errno::ENOENT
-      raise Error, "git is not installed or not on PATH"
+      raise Error, "#{name} is not installed in an approved system tool directory"
+    rescue Errno::EACCES
+      raise Error, "#{name} in the approved system tool directories is inaccessible"
+    end
+
+    def local_account!
+      Etc.getpwuid(Process.uid)
+    rescue ArgumentError
+      raise Error, "local account identity is unavailable for uid #{Process.uid}"
     end
 
     def validate_receipt_live_bindings!(pull_request, options)
@@ -827,7 +877,7 @@ module PrMergeSubmit
     end
 
     def guarded_direct_environment(options)
-      account = Etc.getpwuid(Process.uid)
+      account = local_account!
       environment = {
         "GH_HOST" => options[:host],
         "GH_REPO" => options[:repo],
@@ -1210,15 +1260,33 @@ module PrMergeSubmit
     end
 
     def run_gh(*args, host:, mutation: false)
+      account = local_account!
+      environment = {
+        "GH_HOST" => host,
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GH_PROMPT_DISABLED" => "1",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+      %w[GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN].each do |name|
+        value = ENV[name]
+        environment[name] = value if value && !value.empty?
+      end
+      environment.merge!(system_tool_test_environment)
       run_process(
-        { "GH_HOST" => host }, "gh", *args,
+        environment, resolve_system_tool!("gh", outside_root: Dir.pwd), *args,
         timeout_seconds: gh_timeout_seconds,
         mutation:,
         process_label: "gh",
-        chdir: Dir.pwd
+        chdir: Dir.pwd,
+        unsetenv_others: true
       )
-    rescue Errno::ENOENT
-      raise Error, "gh is not installed or not on PATH"
+    end
+
+    def system_tool_test_environment
+      {}
     end
 
     def run_process(
