@@ -375,7 +375,16 @@ Plan a PR batch
      registration is supported, persist this manifest after dispatcher
      selection and before worker launch. Backend `n/a` keeps the same
      provenance in the durable Batch Plan/handoff; a degraded registration is
-     `UNKNOWN` with exact retry evidence. Use the
+     `UNKNOWN` with exact retry evidence. After every accepted host-observed
+     `launch-confirmation v2`, reconcile registration before treating the lane
+     as active: update each actual host/model/effort/binding field changed by
+     fallback, escalation, or replacement, preserve verified fields, and use
+     `UNKNOWN` only per unverifiable field. Every advertised registration
+     invocation resolves a backend-advertised safe executable plus ordered
+     opaque argv without shell evaluation and runs with a finite hard deadline
+     in its own process group; timeout or whole-group `TERM` then `KILL` records
+     best-effort field-granular `UNKNOWN`, names reconciliation, and does not
+     block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.

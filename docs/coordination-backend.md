@@ -131,6 +131,23 @@ literal `UNKNOWN`. Register this manifest after dispatcher selection is
 persisted and before the worker launch so downstream consumers can group batch
 outcomes by `pack_sha`, coordinator route, worker route, and host.
 
+After every accepted host-observed `launch-confirmation v2`, reconcile and
+update the registered manifest before treating that lane as active. When
+fallback, escalation, or replacement changes the observed actual host, model,
+effort, or binding source, persist the observed value for that exact field,
+preserve every other verified field, and write literal `UNKNOWN` only for each
+individual field the observation cannot verify. Never replace a whole route or
+lane entry with `UNKNOWN`.
+
+Every advertised batch-registration invocation must provide a safe executable
+and ordered opaque argv as separate values. Resolve that backend-advertised
+executable-plus-argv seam without shell evaluation, preserve every argument as
+one argument, and run it with a finite hard deadline in its own process group.
+On expiry terminate the whole group with `TERM`, then `KILL` after a finite
+grace period. Timeout, forced termination, or an unsafe advertisement records
+best-effort field-granular `UNKNOWN`; worker launch continues and the durable
+handoff names the exact reconciliation needed.
+
 When the backend is `n/a`, keep the same provenance in the durable coordinator
 handoff instead of inventing a registration surface. A degraded registration
 write is `UNKNOWN`; preserve the manifest locally and report the exact retry or

@@ -1376,7 +1376,15 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   first, then register the manifest before launch. If registration is
   unavailable, carry those facts in the coordinator handoff and mark
   backend-held batch metadata as `UNKNOWN` or `unavailable` instead of treating
-  it as absent work.
+  it as absent work. After every accepted host-observed `launch-confirmation
+  v2`, reconcile registration before treating the lane as active: update each
+  actual host/model/effort/binding field changed by fallback, escalation, or
+  replacement, preserve verified fields, and use `UNKNOWN` only per
+  unverifiable field. Every advertised registration invocation resolves a
+  backend-advertised safe executable plus ordered opaque argv without shell
+  evaluation and runs with a finite hard deadline in its own process group;
+  timeout or whole-group `TERM` then `KILL` records best-effort field-granular
+  `UNKNOWN`, names reconciliation, and does not block worker launch.
 - Treat the backend as available when bounded `agent-coord doctor --json` and
   targeted lane-scoped status probes exit 0. Resolve `PR_BATCH_SKILL_DIR` with
   the env-var / loaded-skill / repo-local chain, then use
@@ -2051,11 +2059,14 @@ hatch**, not a single kill switch:
      coordination backend advertises typed-event support. For either drain path,
      backend `n/a` skips the emission; unadvertised or unsupported typed-event
      capability records `typed event transport: unavailable` and remains
-     nonblocking. For the coordinator/operator hard-escape path only, run the
-     actual drain-event subprocess through the resolved pr-batch
-     `bin/agent-coord-bounded` process-control seam with a finite positive
-     deadline; the helper must launch that subprocess in its own process group
-     and terminate the whole group when the deadline expires. A deadline expiry,
+     nonblocking. For the coordinator/operator hard-escape path only, resolve
+     the active backend's advertised drain-event executable and ordered opaque
+     argv; reject a missing, malformed, or unsafe advertisement as an emission
+     failure. Run that exact executable and separate argv without shell
+     evaluation, with a finite deadline in its own process group, preserving
+     each opaque argument; on expiry terminate the whole group with `TERM`, then
+     `KILL` after a finite grace period. No `agent-coord` compatibility or
+     generic private typed-event transport is required. A deadline expiry,
      forced termination, or any other advertised-support emission failure
      records best-effort `UNKNOWN` evidence; the coordinator/operator then
      proceeds immediately to worker process termination and claim release

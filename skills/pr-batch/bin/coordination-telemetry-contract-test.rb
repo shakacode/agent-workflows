@@ -99,13 +99,28 @@ DRAIN_TRANSPORT_FALLBACK_REQUIREMENT =
   "For either drain path, backend `n/a` skips the emission; unadvertised or unsupported typed-event capability " \
   "records `typed event transport: unavailable` and remains nonblocking."
 HARD_ESCAPE_DRAIN_BOUNDED_EXECUTION_REQUIREMENT =
-  "For the coordinator/operator hard-escape path only, run the actual drain-event subprocess through the resolved " \
-  "pr-batch `bin/agent-coord-bounded` process-control seam with a finite positive deadline; the helper must launch " \
-  "that subprocess in its own process group and terminate the whole group when the deadline expires."
+  "For the coordinator/operator hard-escape path only, resolve the active backend's advertised drain-event " \
+  "executable and ordered opaque argv; reject a missing, malformed, or unsafe advertisement as an emission failure. " \
+  "Run that exact executable and separate argv without shell evaluation, with a finite deadline in its own process " \
+  "group, preserving each opaque argument; on expiry terminate the whole group with `TERM`, then `KILL` after a " \
+  "finite grace period. No `agent-coord` compatibility or generic private typed-event transport is required."
 DRAIN_EMISSION_FAILURE_REQUIREMENT =
   "A deadline expiry, forced termination, or any other advertised-support emission failure records best-effort " \
   "`UNKNOWN` evidence; the coordinator/operator then proceeds immediately to worker process termination and claim " \
   "release without waiting further on the drain event."
+REGISTRATION_RECONCILIATION_FRAGMENTS = [
+  "After every accepted host-observed `launch-confirmation v2`, reconcile",
+  "fallback, escalation, or replacement",
+  "preserve verified",
+  "`UNKNOWN` only per unverifiable field"
+].freeze
+REGISTRATION_BOUNDED_FRAGMENTS = [
+  "backend-advertised safe executable plus ordered opaque argv",
+  "without shell evaluation",
+  "finite hard deadline in its own process group",
+  "whole-group `TERM` then `KILL`",
+  "does not block worker launch"
+].freeze
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -292,6 +307,13 @@ def assert_manifest_prompt_contract(text, location)
                   "#{location} must reject whole-route UNKNOWN"
 end
 
+def assert_registration_runtime_contract(text, location)
+  normalized_text = text.gsub(/\s+/, " ")
+  (REGISTRATION_RECONCILIATION_FRAGMENTS + REGISTRATION_BOUNDED_FRAGMENTS).each do |fragment|
+    assert_includes normalized_text, fragment, "#{location} must include #{fragment.inspect}"
+  end
+end
+
 def assert_remediation_authority_section_contract(section, location)
   normalized_section = section.gsub(/\s+/, " ")
   REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS.each do |concept, phrase|
@@ -453,6 +475,21 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
     [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
       assert_manifest_prompt_contract(read_repo_file(path), path)
+    end
+  end
+
+  def test_registration_runtime_contract_is_synchronized
+    [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
+      assert_registration_runtime_contract(read_repo_file(path), path)
+    end
+  end
+
+  def test_registration_runtime_contract_rejects_independent_mutants
+    text = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+    (REGISTRATION_RECONCILIATION_FRAGMENTS + REGISTRATION_BOUNDED_FRAGMENTS).each do |fragment|
+      mutant = text.gsub(fragment, "")
+      refute_equal text, mutant
+      assert_raises(Minitest::Assertion) { assert_registration_runtime_contract(mutant, "independent mutant") }
     end
   end
 

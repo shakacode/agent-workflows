@@ -352,6 +352,16 @@ Before implementation or worker launch, produce:
     dispatcher selection and before worker launch when registration is
     supported; backend `n/a` keeps it in durable coordinator state. Follow the
     canonical example and resolution rules in `docs/coordination-backend.md`.
+    After every accepted host-observed `launch-confirmation v2`, reconcile
+    registration before treating the lane as active: update each actual
+    host/model/effort/binding field changed by fallback, escalation, or
+    replacement, preserve verified fields, and use `UNKNOWN` only per
+    unverifiable field. Every advertised registration invocation resolves a
+    backend-advertised safe executable plus ordered opaque argv without shell
+    evaluation and runs with a finite hard deadline in its own process group;
+    timeout or whole-group `TERM` then `KILL` records best-effort
+    field-granular `UNKNOWN`, names reconciliation, and does not block worker
+    launch.
 <!-- host-branch: codex-only start -->
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
@@ -790,11 +800,14 @@ typed `human_intervention` event with `kind: drain` when the active private
 coordination backend advertises typed-event support. For either drain path,
 backend `n/a` skips the emission; unadvertised or unsupported typed-event
 capability records `typed event transport: unavailable` and remains
-nonblocking. For the coordinator/operator hard-escape path only, run the actual
-drain-event subprocess through the resolved pr-batch
-`bin/agent-coord-bounded` process-control seam with a finite positive deadline;
-the helper must launch that subprocess in its own process group and terminate
-the whole group when the deadline expires. A deadline expiry, forced
+nonblocking. For the coordinator/operator hard-escape path only, resolve the
+active backend's advertised drain-event executable and ordered opaque argv;
+reject a missing, malformed, or unsafe advertisement as an emission failure.
+Run that exact executable and separate argv without shell evaluation, with a
+finite deadline in its own process group, preserving each opaque argument; on
+expiry terminate the whole group with `TERM`, then `KILL` after a finite grace
+period. No `agent-coord` compatibility or generic private typed-event transport
+is required. A deadline expiry, forced
 termination, or any other advertised-support emission failure records
 best-effort `UNKNOWN` evidence; the coordinator/operator then proceeds
 immediately to worker process termination and claim release without waiting
