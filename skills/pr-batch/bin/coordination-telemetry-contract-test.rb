@@ -134,6 +134,20 @@ REGISTRATION_UPDATE_PATTERNS = {
   "advertised update path" => /advertised update/,
   "nonwedging failure" => /without wedging|must not wedge/
 }.freeze
+CREATE_ONLY_BRANCH_PATTERNS = {
+  "affected fields unknown" => /affected (?:registration )?fields? `UNKNOWN`/,
+  "authenticated confirmation survives" =>
+    /does not undo an authenticated confirmation|authenticated confirmation remains valid/,
+  "verified acceptance fields gate activation" =>
+    /activation (?:proceeds only when|requires) every launch-\s*acceptance field (?:is )?verified/,
+  "unverified activation remains pending" => /otherwise (?:remains|stays) `launch-pending`/
+}.freeze
+ADVERTISED_UPDATE_BRANCH_PATTERNS = {
+  "bounded safe executable and opaque argv" => /bounded safe executable-plus-opaque-argv/,
+  "no shell evaluation" => /without shell evaluation/,
+  "failure fields unknown" => /failure records affected fields `UNKNOWN`/,
+  "nonwedging failure" => /without wedging|must not wedge/
+}.freeze
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -352,6 +366,25 @@ def assert_registration_section_runtime_contract(section, location)
                   "#{location} must reconcile the host observation before treating the lane active"
   REGISTRATION_UPDATE_PATTERNS.each do |concept, pattern|
     assert_match pattern, normalized_section, "#{location} must include #{concept}"
+  end
+end
+
+def assert_registration_capability_branches(section, location)
+  normalized_section = section.gsub(/\s+/, " ")
+  create_start = normalized_section.index(/unadvertised or unsupported create-only backend/)
+  update_start = normalized_section.index(/An advertised update/)
+  refute_nil create_start, "#{location} must expose the create-only branch"
+  refute_nil update_start, "#{location} must expose the advertised-update branch"
+  assert_operator create_start, :<, update_start,
+                  "#{location} must decide create-only fallback before advertised update execution"
+
+  create_clause = normalized_section[create_start...update_start]
+  update_clause = normalized_section[update_start..]
+  CREATE_ONLY_BRANCH_PATTERNS.each do |concept, pattern|
+    assert_match pattern, create_clause, "#{location} create-only branch must include #{concept}"
+  end
+  ADVERTISED_UPDATE_BRANCH_PATTERNS.each do |concept, pattern|
+    assert_match pattern, update_clause, "#{location} advertised-update branch must include #{concept}"
   end
 end
 
@@ -590,6 +623,31 @@ class CoordinationTelemetryContractTest < Minitest::Test
         mutant = normalized.gsub(pattern, "")
         assert_raises(Minitest::Assertion, "#{path} must reject deleted #{concept}") do
           assert_registration_section_runtime_contract(mutant, "#{path} deleted #{concept}")
+        end
+      end
+    end
+  end
+
+  def test_registration_capability_branches_are_complete_and_reject_hostile_mutants
+    authoritative_registration_sections.each do |path, section|
+      normalized = section.gsub(/\s+/, " ")
+      assert_registration_capability_branches(normalized, path)
+      hostile_mutants = {
+        "create-only fields become verified" =>
+          normalized.sub(CREATE_ONLY_BRANCH_PATTERNS.fetch("affected fields unknown"), "affected fields verified"),
+        "create-only invalidates authenticated confirmation" =>
+          normalized.sub(CREATE_ONLY_BRANCH_PATTERNS.fetch("authenticated confirmation survives"),
+                         "authenticated confirmation is invalidated"),
+        "create-only activates without verified acceptance" =>
+          normalized.sub(CREATE_ONLY_BRANCH_PATTERNS.fetch("verified acceptance fields gate activation"),
+                         "activation proceeds without verified launch-acceptance fields"),
+        "advertised update enables shell evaluation" =>
+          normalized.sub(REGISTRATION_NO_SHELL_MARKER, "with shell evaluation")
+      }
+      hostile_mutants.each do |name, mutant|
+        refute_equal normalized, mutant, "#{path} must expose #{name}"
+        assert_raises(Minitest::Assertion, "#{path} must reject #{name}") do
+          assert_registration_capability_branches(mutant, "#{path} #{name}")
         end
       end
     end
