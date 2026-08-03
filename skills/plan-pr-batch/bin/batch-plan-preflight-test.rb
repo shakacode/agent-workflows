@@ -845,17 +845,60 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "completed_lane_ids")
   end
 
-  def test_plugin_source_workflow_helper_cannot_waive_against_its_own_clean_agents_directory
-    helper, root = installed_unsupported_workflow_control_helper(installer_metadata: false)
+  def test_plugin_source_workflow_helper_binds_lifecycle_trust_to_a_validated_companion_home
+    helper, source_root = installed_unsupported_workflow_control_helper(installer_metadata: false)
     companion = secure_mktmpdir("workflow-plugin-companion")
     FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
     write_install_metadata(
       companion,
-      root,
+      source_root,
       host: "codex",
       mode: "copy",
       delivery_mode: "plugin-companion"
     )
+    key = workflow_control_signing_key
+    records = {
+      "signed-launch-capability.json" => {
+        "type" => "agent-workflow-signed-launch-capability",
+        "version" => 1,
+        "host" => "codex",
+        "producer" => "test-host-producer",
+        "dispatcher_launch_key_id" => "test-dispatcher-key",
+        "workflow_control_lifecycle_key_id" => "test-workflow-control-key"
+      },
+      "dispatcher-launch-trust.json" => {
+        "type" => "agent-workflow-dispatcher-trust-anchor",
+        "version" => 1,
+        "agent_workflow_dispatcher_trusted_key_id" => "test-dispatcher-key",
+        "agent_workflow_dispatcher_trusted_public_key_pem" => key.public_to_pem
+      },
+      "workflow-control-lifecycle-trust.json" => {
+        "type" => "agent-workflow-control-lifecycle-trust-anchor",
+        "version" => 1,
+        "agent_workflow_control_lifecycle_trusted_key_id" => "test-workflow-control-key",
+        "agent_workflow_control_lifecycle_trusted_public_key_pem" => key.public_to_pem
+      }
+    }
+    records.each do |name, record|
+      path = File.join(companion, ".agents", name)
+      File.write(path, JSON.generate(record))
+      File.chmod(0o600, path)
+    end
+
+    result, stderr, status = evaluate(
+      input_for(lifecycle_receipts: [lane_lifecycle_receipt]),
+      helper:,
+      env: { "CODEX_HOME" => companion }
+    )
+
+    assert status.success?, "#{stderr}\n#{result.inspect}"
+    assert_equal ["lane-a"], result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_plugin_source_workflow_helper_rejects_an_unvalidated_companion_override
+    helper, root = installed_unsupported_workflow_control_helper(installer_metadata: false)
+    companion = secure_mktmpdir("workflow-plugin-companion")
+    FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     waiver_path, waiver_record = bootstrap_waiver(
       root, batch_id: "batch-plan-1", lane_id: "lane-a", route:

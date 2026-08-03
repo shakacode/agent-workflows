@@ -1924,17 +1924,76 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
   end
 
-  def test_plugin_source_helper_cannot_waive_against_its_own_clean_agents_directory
-    helper, root = installed_unsupported_dispatcher_helper(installer_metadata: false)
+  def test_plugin_source_helper_binds_dispatcher_trust_to_a_validated_companion_home
+    helper, source_root = installed_unsupported_dispatcher_helper(installer_metadata: false)
     companion = secure_mktmpdir("dispatcher-plugin-companion")
     FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
     write_install_metadata(
       companion,
-      root,
+      source_root,
       host: "codex",
       mode: "copy",
       delivery_mode: "plugin-companion"
     )
+    key = dispatcher_signing_key
+    records = {
+      "signed-launch-capability.json" => {
+        "type" => "agent-workflow-signed-launch-capability",
+        "version" => 1,
+        "host" => "codex",
+        "producer" => "test-host-producer",
+        "dispatcher_launch_key_id" => "test-dispatcher-key",
+        "workflow_control_lifecycle_key_id" => "test-workflow-control-key"
+      },
+      "dispatcher-launch-trust.json" => {
+        "type" => "agent-workflow-dispatcher-trust-anchor",
+        "version" => 1,
+        "agent_workflow_dispatcher_trusted_key_id" => "test-dispatcher-key",
+        "agent_workflow_dispatcher_trusted_public_key_pem" => key.public_to_pem
+      },
+      "workflow-control-lifecycle-trust.json" => {
+        "type" => "agent-workflow-control-lifecycle-trust-anchor",
+        "version" => 1,
+        "agent_workflow_control_lifecycle_trusted_key_id" => "test-workflow-control-key",
+        "agent_workflow_control_lifecycle_trusted_public_key_pem" => key.public_to_pem
+      }
+    }
+    records.each do |name, record|
+      path = File.join(companion, ".agents", name)
+      File.write(path, JSON.generate(record))
+      File.chmod(0o600, path)
+    end
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    environment = { "CODEX_HOME" => companion }
+    pending = dispatch(input, environment, helper)
+    confirmed = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => launch_confirmation(pending.fetch("dispatch"))
+      ),
+      environment,
+      helper
+    )
+
+    assert_equal "replay-already-active", confirmed.fetch("status"), confirmed.inspect
+    assert_equal "confirmed-active", confirmed.dig("active_assignments", 0, "lifecycle")
+  end
+
+  def test_plugin_source_helper_rejects_an_unvalidated_companion_override
+    helper, root = installed_unsupported_dispatcher_helper(installer_metadata: false)
+    companion = secure_mktmpdir("dispatcher-plugin-companion")
+    FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
       "batch_id" => "batch-299",
