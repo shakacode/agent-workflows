@@ -135,6 +135,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         "target" => target,
         "state" => row.fetch("state"),
         "head_sha" => head_sha,
+        "completed_at" => row.fetch("completed_at", "2026-08-01T00:00:00Z"),
         "verification_source" => "authenticated gh api"
       }
     end
@@ -241,7 +242,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
           "number" => target.fetch("number"),
           "html_url" => "https://#{target.fetch('host')}/#{target.fetch('repo')}/" \
                         "#{target.fetch('type') == 'pull_request' ? 'pull' : 'issues'}/#{target.fetch('number')}",
-          "state" => "closed"
+          "state" => "closed",
+          "closed_at" => "2026-08-01T00:00:00Z"
         }
         if target.fetch("type") == "pull_request"
           payload["merged_at"] = "2026-07-31T12:00:00Z"
@@ -452,7 +454,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     target_numbers = result.fetch("targets").map { |target| target.fetch("number") }
     assert_equal [10_026, 10_036, 10_048, 10_049], target_numbers
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("snapshot_digest"))
-    assert_equal "sha256:2e73bd93cdf88b511d2865d9572d6e9ba4ee3c13a65bf8048f8cded7f37e5ca5",
+    assert_equal "sha256:77f784897b40eb5ddec704f0c1347afa9cbc090f66e58e647cfadd107cc3a23f",
                  result.fetch("snapshot_digest")
   end
 
@@ -490,7 +492,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal "57e048ed10551eb3cf8414a4de0064443bef730d", waiver.fetch("head_sha")
     assert_equal 10_026, waiver.dig("target", "number")
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
-    assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
+    assert_equal "sha256:7b3a27d37a28e6222bedaacde933537fd4b77614bc13e53de668790b48043273",
                  result.fetch("snapshot_digest")
   end
 
@@ -554,6 +556,27 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_includes result.fetch("blockers"),
                     "shakacode/hichee#pull_request:10048 coordination target state is not merged"
     assert_includes result.fetch("blockers"), "shakacode/hichee#pull_request:10048 target is not merged"
+  end
+
+  def test_abandoned_lane_stays_blocked_when_target_completed_before_coordination_closeout
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+    input.fetch("target_snapshots")
+         .find { |row| row.dig("target", "number") == 10_048 }["completed_at"] = "2026-07-30T08:43:03Z"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 coordination target state is not merged"
+    reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                            .find { |row| row.dig("target", "number") == 10_048 }
+    refute reconciled_lane.key?("completion_mode")
   end
 
   def test_abandoned_lane_preserves_historical_open_state_when_target_later_authenticates_as_merged

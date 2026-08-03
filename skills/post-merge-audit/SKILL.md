@@ -429,7 +429,8 @@ missing, stale-head, and malformed QA evidence block completion.
 A normal terminal `done` lane still requires its coordination target state and
 terminal evidence. An immutable terminal `abandoned` or `superseded` lane may
 instead reconcile only when the helper independently authenticates that the
-same exact target later reached `merged` or `closed`. The publication snapshot
+same exact target reached `merged` or `closed` at an authenticated completion
+timestamp later than the lane closeout. The publication snapshot
 preserves the original coordination terminal and records the later-target
 completion mode. Active/nonterminal lanes, open targets, unauthenticated target
 facts, and malformed terminal timestamps remain blocked.

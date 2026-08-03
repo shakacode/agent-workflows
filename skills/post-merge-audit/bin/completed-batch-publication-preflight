@@ -473,12 +473,15 @@ module CompletedBatchPublicationPreflight
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
       target_snapshot = targets_by_key[target_key(target)]
-      authenticated_target_completion = target_snapshot &&
-                                        target_snapshot["state"] == expected_state &&
-                                        target_snapshot["verification_source"] == "authenticated gh api"
+      authenticated_target_completion =
+        target_snapshot &&
+        target_snapshot["state"] == expected_state &&
+        target_snapshot["verification_source"] == "authenticated gh api"
+      target_completed_after_closeout =
+        authenticated_target_completion && timestamp_after?(target_snapshot["completed_at"], lane["closed_at"])
       coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
-      later_target_completion = RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state) &&
-                                authenticated_target_completion
+      later_target_completion =
+        RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state) && target_completed_after_closeout
       unless coordination_completion || later_target_completion
         blockers << "#{target_label(target)} coordination target state is not #{expected_state}" \
           unless lane["pr_state"] == expected_state
@@ -539,6 +542,7 @@ module CompletedBatchPublicationPreflight
             "target" => target,
             "state" => nil,
             "head_sha" => nil,
+            "completed_at" => nil,
             "no_pr_evidence" => nil,
             "source" => nil,
             "verification_source" => nil
@@ -561,27 +565,32 @@ module CompletedBatchPublicationPreflight
       end
       source = normalized_known_string(row["source"])
       blockers << "#{target_label(target)} target snapshot source is absent" unless source
-      lane = lanes_by_target.dig(key, "lane")
-      lane_state = lane&.fetch("pr_state", nil)
-      historical_incomplete_closeout = valid_terminal_lane?(lane) &&
-                                       RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
-      if lane_state && state && lane_state != state && !historical_incomplete_closeout
-        blockers << "#{target_label(target)} coordination and target state disagree"
-      end
       verified = target_verifier&.call(target:)
       verified_shape = verified.is_a?(Hash) &&
-                       verified.keys.sort == %w[head_sha state target verification_source] &&
+                       verified.keys.sort == %w[completed_at head_sha state target verification_source] &&
                        validated_target(verified["target"]) == target &&
                        verified["state"] == state &&
                        verified["head_sha"] == head_sha &&
+                       valid_timestamp?(verified["completed_at"]) &&
                        verified["verification_source"] == "authenticated gh api"
       unless verified_shape
         blockers << "#{target_label(target)} target state/head is not authenticated or fresh"
+      end
+      lane = lanes_by_target.dig(key, "lane")
+      lane_state = lane&.fetch("pr_state", nil)
+      authenticated_later_completion =
+        valid_terminal_lane?(lane) &&
+        RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"]) &&
+        verified_shape &&
+        timestamp_after?(verified["completed_at"], lane["closed_at"])
+      if lane_state && state && lane_state != state && !authenticated_later_completion
+        blockers << "#{target_label(target)} coordination and target state disagree"
       end
       {
         "target" => target,
         "state" => state,
         "head_sha" => head_sha,
+        "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
         "no_pr_evidence" => no_pr_evidence,
         "source" => source,
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
@@ -884,6 +893,14 @@ module CompletedBatchPublicationPreflight
     false
   end
 
+  def timestamp_after?(later, earlier)
+    return false unless valid_timestamp?(later) && valid_timestamp?(earlier)
+
+    Time.iso8601(later) > Time.iso8601(earlier)
+  rescue ArgumentError
+    false
+  end
+
   def valid_terminal_lane?(lane)
     return false unless lane.is_a?(Hash)
 
@@ -964,16 +981,20 @@ module CompletedBatchPublicationPreflight
       return unless head_sha.match?(SHA_PATTERN)
 
       state = "merged"
+      completed_at = payload.fetch("merged_at")
     else
-      return unless payload["state"] == "closed" && !payload.key?("pull_request")
+      return unless payload["state"] == "closed" && !payload.key?("pull_request") &&
+                    valid_timestamp?(payload["closed_at"])
 
       head_sha = nil
       state = "closed"
+      completed_at = payload.fetch("closed_at")
     end
     {
       "target" => target,
       "state" => state,
       "head_sha" => head_sha,
+      "completed_at" => completed_at,
       "verification_source" => "authenticated gh api"
     }
   rescue KeyError, NoMethodError, TypeError
