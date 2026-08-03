@@ -75,7 +75,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
   def pre_actual_host_v2_confirmation(assignment, overrides = {}, signing_key = dispatcher_signing_key)
     confirmation = launch_confirmation(assignment, { "signature" => nil }.merge(overrides))
-      .reject { |field, _value| field == "actual_host" || field == "signature" }
+                   .reject { |field, _value| %w[actual_host signature].include?(field) }
     return confirmation.merge("signature" => overrides["signature"]) if overrides.key?("signature")
 
     payload = JSON.generate(canonicalize(launch_observation_payload(confirmation).reject { |field, _value| field == "actual_host" }))
