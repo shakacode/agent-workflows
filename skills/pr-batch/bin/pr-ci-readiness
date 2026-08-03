@@ -132,6 +132,8 @@ module PrCiReadiness
     normalized_rows = rows.is_a?(Array) ? rows : []
     row_states = normalized_rows.map { |row| evidence_row_state(row) }
     state =
+      # Non-gating scopes preserve completeness and error diagnostics without
+      # allowing advisory inventory failures to change the readiness verdict.
       if !gates_verdict
         "NOT_APPLICABLE"
       elsif complete != true
@@ -149,6 +151,7 @@ module PrCiReadiness
       "state" => state,
       "source" => source,
       "complete" => complete == true,
+      "gates_verdict" => gates_verdict,
       "head_sha" => head_sha,
       "rows" => normalized_rows,
       "informational_rows" => informational_rows.is_a?(Array) ? informational_rows : [],

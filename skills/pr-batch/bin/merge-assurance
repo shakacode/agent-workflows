@@ -228,7 +228,10 @@ module MergeAssurance
         failures << "ci_result scope #{name} has invalid state"
         next
       end
-      failures << "ci_result scope #{name} is not complete" unless scope["complete"] == true
+      gates_verdict = scope.fetch("gates_verdict", true)
+      failures << "ci_result scope #{name} has invalid gates_verdict" unless [true, false].include?(gates_verdict)
+      failures << "ci_result scope #{name} cannot be non-gating" if gates_verdict == false && name != "other"
+      failures << "ci_result scope #{name} is not complete" if gates_verdict != false && scope["complete"] != true
       failures << "ci_result scope #{name} is not ready" unless %w[READY NOT_APPLICABLE].include?(scope["state"])
       failures << "ci_result scope #{name} head mismatch" unless scope["head_sha"] == context["head_sha"]
       failures << "ci_result scope #{name} rows are invalid" unless scope["rows"].is_a?(Array)
@@ -245,7 +248,9 @@ module MergeAssurance
     rows = scope["rows"]
     normalized_rows = rows.is_a?(Array) ? rows : []
     row_states = normalized_rows.map { |row| ci_evidence_row_state(row) }
-    if scope["complete"] != true
+    if scope["gates_verdict"] == false
+      "NOT_APPLICABLE"
+    elsif scope["complete"] != true
       "UNKNOWN"
     elsif !rows.is_a?(Array) || row_states.include?("UNKNOWN")
       "UNKNOWN"

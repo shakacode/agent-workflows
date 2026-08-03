@@ -140,6 +140,50 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_ci_accepts_incomplete_non_gating_other_scope
+    ci_result = ready_ci
+    ci_result.fetch("scopes")["other"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.checks_and_statuses.exact_head.non_required",
+      "complete" => false,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => [],
+      "error" => "status inventory unavailable",
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+  end
+
+  def test_ci_rejects_non_gating_marker_outside_other_scope
+    ci_result = ready_ci
+    scope = ci_result.fetch("scopes").fetch("required_status_check_rollup")
+    scope["gates_verdict"] = false
+    scope["state"] = "NOT_APPLICABLE"
+    scope["complete"] = false
+    scope["rows"] = []
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope required_status_check_rollup cannot be non-gating"
+  end
+
   def test_ci_row_representations_must_be_recognized_and_agree
     invalid_rows = {
       "bucket-state-contradiction" => {

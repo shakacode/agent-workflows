@@ -170,9 +170,10 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal "NOT_APPLICABLE", not_applicable.fetch("state")
     assert_equal "UNKNOWN", unknown.fetch("state")
     assert_equal(
-      %w[checked_at complete head_sha informational_rows rows source state],
+      %w[checked_at complete gates_verdict head_sha informational_rows rows source state],
       ready.keys.sort
     )
+    assert_equal true, ready.fetch("gates_verdict")
     assert_empty ready.fetch("informational_rows")
     assert_equal "query failed", unknown.fetch("error")
   end
