@@ -83,6 +83,20 @@ class LintCommandTest < Minitest::Test
     end
   end
 
+  def test_shell_surface_excludes_zsh
+    runner = LintRunner.new
+
+    Dir.mktmpdir("lint-zsh-files") do |directory|
+      extension = File.join(directory, "tool.zsh")
+      shebang = File.join(directory, "tool")
+      File.write(extension, "print -r -- zsh\n")
+      File.write(shebang, "#!/usr/bin/env zsh\n")
+
+      refute runner.send(:shell_file?, extension)
+      refute runner.send(:shell_file?, shebang)
+    end
+  end
+
   def test_ruby_surface_recognizes_extensions_entrypoints_and_shebangs
     runner = LintRunner.new
 
