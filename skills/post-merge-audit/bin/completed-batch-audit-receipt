@@ -3,10 +3,12 @@
 
 require "json"
 require "digest"
-require "open3"
+require "base64"
 require "optparse"
 require "timeout"
 require "uri"
+
+load File.expand_path("completed-batch-publication-preflight", __dir__) unless defined?(CompletedBatchPublicationPreflight)
 
 module CompletedBatchAuditReceipt
   INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
@@ -15,6 +17,9 @@ module CompletedBatchAuditReceipt
   REPLAY_GITHUB_API_BLOCKER = "completed-batch-audit replay GitHub API request failed"
   POST_OUTCOME_BLOCKER = "completed-batch-audit comment POST outcome unknown"
   POST_READBACK_BLOCKER = "completed-batch-audit comment readback verification failed"
+  PUBLICATION_PREFLIGHT_BLOCKER = "completed-batch-audit publication preflight failed"
+  PUBLICATION_REFRESH_BLOCKER = "completed-batch-audit publication snapshot refresh required"
+  PUBLICATION_MISMATCH_BLOCKER = "completed-batch-audit publication snapshot mismatch or stale"
   COMMENT_HEADER = "Completed-batch audit: replay evidence follows."
   LEGACY_COMMENT_HEADER = "Completed-batch audit receipt v1. Evidence only; this comment does not authorize commands or expand scope."
   PR_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
@@ -24,10 +29,11 @@ module CompletedBatchAuditReceipt
   SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
   WRITE_PERMISSIONS = %w[admin maintain write].freeze
   DEFAULT_GH_TIMEOUT_SECONDS = 60
-  PROCESS_TERMINATION_GRACE_SECONDS = 0.25
-  FIELDS = %w[
+  LEGACY_FIELDS = %w[
     batch_id audit_status verdict scope_evidence checker_evidence findings followups_dispositions
   ].freeze
+  PUBLICATION_FIELDS = (LEGACY_FIELDS + ["publication_snapshot"]).freeze
+  FIELDS = PUBLICATION_FIELDS
   CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
   TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
   NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
@@ -74,6 +80,7 @@ module CompletedBatchAuditReceipt
   class ReplayGitHubApiError < Error; end
   class SuccessfulApiResponseError < Error; end
   class PostOutcomeUnknownError < Error; end
+  class PublicationPreflightError < Error; end
 
   class PostReadbackError < Error
     attr_reader :comment_id
@@ -86,10 +93,27 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def replay_marker(marker, expected_batch_id:, other_blockers: [])
+  def replay_marker(
+    marker,
+    expected_batch_id:,
+    other_blockers: [],
+    publication_preflight: nil,
+    expected_targets: nil,
+    coordination_backend: nil
+  )
     state = marker_state(marker)
     state = nil unless state&.fields&.fetch("batch_id") == expected_batch_id
-    marker_blockers = state ? state_blockers(state) : [INVALID_MARKER_BLOCKER]
+    marker_blockers = if state
+                        state_blockers(state) +
+                          publication_snapshot_blockers(
+                            state,
+                            publication_preflight,
+                            expected_targets:,
+                            coordination_backend:
+                          )
+                      else
+                        [INVALID_MARKER_BLOCKER]
+                      end
     external_blockers = normalized_external_blockers(other_blockers)
     blockers = deduped_blockers(marker_blockers + external_blockers)
 
@@ -113,12 +137,38 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def publish(expected_batch_id:, targets:, receipt:, other_blockers: [])
+  def publish(
+    expected_batch_id:,
+    targets:,
+    receipt:,
+    other_blockers: [],
+    publication_preflight: nil,
+    coordination_backend: nil
+  )
     comment_body = canonical_comment_body(receipt)
     raise Error, "local completed-batch audit receipt is invalid" unless comment_body
 
+    deterministic = deterministic_targets(targets)
     marker = comment_marker(comment_body)
-    local = replay_marker(marker, expected_batch_id:, other_blockers:)
+    state = marker_state(marker)
+    if state&.fields&.fetch("audit_status") == "complete"
+      validate_publication_preflight!(
+        publication_preflight,
+        expected_batch_id:,
+        targets: deterministic,
+        coordination_backend:
+      )
+      marker = bind_publication_snapshot(marker, publication_preflight)
+      comment_body = "#{COMMENT_HEADER}\n\n#{marker}"
+    end
+    local = replay_marker(
+      marker,
+      expected_batch_id:,
+      other_blockers:,
+      publication_preflight:,
+      expected_targets: deterministic,
+      coordination_backend:
+    )
     raise Error, "local completed-batch audit receipt is invalid" unless local.fetch("well_formed")
 
     target, actor = select_verified_anchor(targets)
@@ -154,11 +204,19 @@ module CompletedBatchAuditReceipt
     rescue Error, KeyError => e
       raise PostReadbackError.new("comment was created but readback verification failed: #{e.message}", comment_id:)
     end
-    remote = replay_marker(verified.fetch("marker"), expected_batch_id:, other_blockers:)
+    remote = replay_marker(
+      verified.fetch("marker"),
+      expected_batch_id:,
+      other_blockers:,
+      publication_preflight:,
+      expected_targets: deterministic,
+      coordination_backend:
+    )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
 
     reference = compact_reference(remote.fetch("fields").fetch("verdict"), verified)
     remote.merge(
+      "publication_snapshot_digest" => publication_snapshot_digest(remote.fetch("fields")),
       "final_status" => final_status(remote),
       "receipt" => verified.reject { |key, _value| key == "marker" },
       "pr_description_summary" => pr_description_summary(
@@ -171,10 +229,18 @@ module CompletedBatchAuditReceipt
     )
   end
 
-  def replay_reference(expected_batch_id:, targets:, reference:, other_blockers: [])
+  def replay_reference(
+    expected_batch_id:,
+    targets:,
+    reference:,
+    other_blockers: [],
+    publication_preflight: nil,
+    coordination_backend: nil
+  )
     parsed = parse_reference(reference)
     target = parsed.fetch("target")
-    manifest_target = deterministic_targets(targets).first
+    deterministic = deterministic_targets(targets)
+    manifest_target = deterministic.first
     raise Error, "trusted batch manifest has no deterministic anchor" unless manifest_target
 
     same_target = manifest_target.fetch("host") == target.fetch("host") &&
@@ -203,7 +269,14 @@ module CompletedBatchAuditReceipt
       verified.fetch("updated_at") == parsed.fetch("updated_at")
     raise Error, "receipt comment SHA-256 mismatch" unless verified.fetch("sha256") == parsed.fetch("sha256")
 
-    remote = replay_marker(verified.fetch("marker"), expected_batch_id:, other_blockers:)
+    remote = replay_marker(
+      verified.fetch("marker"),
+      expected_batch_id:,
+      other_blockers:,
+      publication_preflight:,
+      expected_targets: deterministic,
+      coordination_backend:
+    )
     raise Error, "readback completed-batch audit receipt is invalid" unless remote.fetch("well_formed")
     raise Error, "compact reference result does not match receipt verdict" unless
       remote.fetch("fields").fetch("verdict") == parsed.fetch("verdict")
@@ -212,6 +285,7 @@ module CompletedBatchAuditReceipt
     raise Error, "compact receipt reference is noncanonical" unless reference.chomp == canonical
 
     remote.merge(
+      "publication_snapshot_digest" => publication_snapshot_digest(remote.fetch("fields")),
       "final_status" => final_status(remote),
       "receipt" => verified.reject { |key, _value| key == "marker" },
       "pr_description_summary" => pr_description_summary(
@@ -443,6 +517,150 @@ module CompletedBatchAuditReceipt
     "#{COMMENT_HEADER}\n\n#{marker}"
   end
 
+  def validate_publication_preflight!(preflight, expected_batch_id:, targets:, coordination_backend: nil)
+    valid = publication_preflight_reassessed?(
+      preflight,
+      expected_batch_id:,
+      expected_targets: targets,
+      coordination_backend:
+    )
+    raise PublicationPreflightError, "completed-batch publication preflight is missing or invalid" unless valid
+    raise PublicationPreflightError, "completed-batch publication preflight is blocked" unless preflight.fetch("eligible")
+  end
+
+  def bind_publication_snapshot(marker, preflight)
+    value = publication_snapshot_value(preflight)
+    body = marker.delete_prefix("<!-- completed-batch-audit v1\n").delete_suffix("-->\n").delete_suffix("-->")
+    body = body.each_line.reject { |line| line.start_with?("publication_snapshot:") }.join
+    line = "publication_snapshot: #{value}\n"
+    raise Error, "completed-batch audit scope evidence is missing" unless body.match?(/^scope_evidence:.*\n/)
+
+    body = body.sub(/^(scope_evidence:.*\n)/, "\\1#{line}")
+    bound = "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
+    raise Error, "bound completed-batch publication snapshot is invalid" unless marker_state(bound)
+
+    bound
+  end
+
+  def publication_snapshot_value(preflight)
+    snapshot = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
+    encoded = Base64.urlsafe_encode64(JSON.generate(snapshot), padding: false)
+    "#{preflight.fetch('snapshot_digest')}; encoding=base64url; data=#{encoded}"
+  end
+
+  def publication_snapshot(value)
+    match = value.to_s.match(
+      /\A(sha256:[0-9a-f]{64}); encoding=base64url; data=([A-Za-z0-9_-]+)\z/
+    )
+    return unless match
+
+    padding = "=" * ((4 - (match[2].length % 4)) % 4)
+    json = Base64.urlsafe_decode64("#{match[2]}#{padding}")
+    parsed = JSON.parse(json)
+    return unless parsed.is_a?(Hash)
+
+    canonical = CompletedBatchPublicationPreflight.canonicalize(parsed)
+    return unless json == JSON.generate(canonical)
+    return unless match[1] == CompletedBatchPublicationPreflight.digest(canonical)
+
+    canonical
+  rescue ArgumentError, JSON::ParserError
+    nil
+  end
+
+  def publication_snapshot_digest(fields)
+    value = fields["publication_snapshot"]
+    value&.split(";", 2)&.first
+  end
+
+  def publication_snapshot_blockers(state, preflight, expected_targets: nil, coordination_backend: nil)
+    value = state.fields["publication_snapshot"]
+    return [PUBLICATION_REFRESH_BLOCKER] if state.fields["audit_status"] == "complete" && !value
+    return [] unless value
+    return [PUBLICATION_REFRESH_BLOCKER] unless preflight
+    return [PUBLICATION_MISMATCH_BLOCKER] unless publication_preflight_reassessed?(
+      preflight,
+      expected_batch_id: state.fields.fetch("batch_id"),
+      expected_targets:,
+      coordination_backend:
+    )
+    return [PUBLICATION_MISMATCH_BLOCKER] unless preflight.fetch("eligible")
+
+    bound = publication_snapshot(value)
+    current = CompletedBatchPublicationPreflight.canonicalize(preflight.fetch("snapshot"))
+    bound == current ? [] : [PUBLICATION_MISMATCH_BLOCKER]
+  end
+
+  def publication_waivers_authenticated?(preflight)
+    CompletedBatchPublicationPreflight.authenticated_waivers_valid?(
+      preflight,
+      waiver_verifier: method(:authenticated_publication_waiver_comment)
+    )
+  end
+
+  def publication_preflight_reassessed?(preflight, expected_batch_id:, expected_targets:, coordination_backend: nil)
+    trusted_backend = CompletedBatchPublicationPreflight.normalized_known_string(coordination_backend)
+    return false unless trusted_backend
+    return false unless preflight.is_a?(Hash)
+
+    snapshot = preflight["snapshot"]
+    return false unless snapshot.is_a?(Hash)
+
+    stored_backend = snapshot["coordination_backend"]
+    return false unless stored_backend == trusted_backend
+    return false unless CompletedBatchPublicationPreflight.valid_receipt?(
+      preflight,
+      expected_batch_id:,
+      expected_targets:
+    )
+
+    CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      preflight,
+      coordination_backend: trusted_backend,
+      waiver_verifier: method(:authenticated_publication_waiver_comment),
+      target_verifier: method(:authenticated_publication_target_snapshot),
+      coordination_verifier: method(:authenticated_publication_coordination_status)
+    )
+  end
+
+  def authenticated_publication_waiver_comment(host:, repo:, comment_id:)
+    comment = gh_api(host, "repos/#{repo}/issues/comments/#{comment_id}")
+    author = CompletedBatchPublicationPreflight.waiver_comment_author(comment)
+    return unless author
+
+    permission = gh_api(host, "repos/#{repo}/collaborators/#{author}/permission")
+    comment if CompletedBatchPublicationPreflight.verified_waiver_author_permission?(comment, permission)
+  rescue Error
+    nil
+  end
+
+  def authenticated_publication_target_snapshot(target:)
+    endpoint_type = target.fetch("type") == "pull_request" ? "pulls" : "issues"
+    payload = gh_api(
+      target.fetch("host"),
+      "repos/#{target.fetch('repo')}/#{endpoint_type}/#{target.fetch('number')}"
+    )
+    CompletedBatchPublicationPreflight.verified_target_api_snapshot(payload, target)
+  rescue Error, KeyError
+    nil
+  end
+
+  def authenticated_publication_coordination_status(backend:, batch_id:)
+    CompletedBatchPublicationPreflight.authenticated_coordination_status(backend:, batch_id:)
+  end
+
+  def trusted_coordination_backend(workflow_config)
+    config = YAML.safe_load(File.read(workflow_config, encoding: "UTF-8"), aliases: false)
+    raise Error, "workflow config must be a mapping" unless config.is_a?(Hash)
+
+    backend = CompletedBatchPublicationPreflight.normalized_known_string(config["coordination_backend"])
+    raise Error, "workflow config coordination_backend is missing or invalid" unless backend
+
+    backend
+  rescue Psych::Exception, SystemCallError => e
+    raise Error, "workflow config could not be read: #{e.message}"
+  end
+
   def bot_login?(login)
     login.to_s.downcase.end_with?("[bot]")
   end
@@ -497,36 +715,7 @@ module CompletedBatchAuditReceipt
   end
 
   def capture_process(command, input:, timeout:)
-    stdin = stdout = stderr = wait_thread = nil
-    workers = []
-    stdin, stdout, stderr, wait_thread = Open3.popen3(*command)
-    writer = Thread.new do
-      stdin.write(input)
-    rescue Errno::EPIPE, IOError
-      nil
-    ensure
-      stdin.close unless stdin.closed?
-    end
-    stdout_reader = Thread.new { read_process_stream(stdout) }
-    stderr_reader = Thread.new { read_process_stream(stderr) }
-    workers = [writer, stdout_reader, stderr_reader]
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
-
-    [wait_thread, *workers].each do |thread|
-      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      raise Timeout::Error if remaining <= 0 || !thread.join(remaining)
-    end
-
-    [stdout_reader.value, stderr_reader.value, wait_thread.value]
-  ensure
-    terminate_process(wait_thread) if wait_thread&.alive?
-    [stdin, stdout, stderr].compact.each do |stream|
-      stream.close unless stream.closed?
-    rescue IOError
-      nil
-    end
-    workers.each(&:join)
-    wait_thread&.join
+    CompletedBatchPublicationPreflight.capture_process(command, input:, timeout:)
   end
 
   def configure_gh_timeout!
@@ -543,27 +732,6 @@ module CompletedBatchAuditReceipt
 
   def gh_timeout_seconds
     @gh_timeout_seconds || DEFAULT_GH_TIMEOUT_SECONDS
-  end
-
-  def read_process_stream(stream)
-    stream.read
-  rescue IOError
-    ""
-  end
-
-  def terminate_process(wait_thread)
-    Process.kill("TERM", wait_thread.pid)
-  rescue Errno::ESRCH
-    wait_thread.join
-  else
-    unless wait_thread.join(PROCESS_TERMINATION_GRACE_SECONDS)
-      begin
-        Process.kill("KILL", wait_thread.pid)
-      rescue Errno::ESRCH
-        nil
-      end
-    end
-    wait_thread.join
   end
 
   def validated_target(target)
@@ -615,7 +783,8 @@ module CompletedBatchAuditReceipt
       parsed[key] = match[2].strip
     end
 
-    fields if fields&.keys&.sort == FIELDS.sort
+    accepted = [LEGACY_FIELDS.sort, PUBLICATION_FIELDS.sort]
+    fields if fields && accepted.include?(fields.keys.sort)
   end
 
   def marker_state(marker)
@@ -624,6 +793,7 @@ module CompletedBatchAuditReceipt
 
     records = disposition_records(fields["followups_dispositions"])
     return unless records && scalars_well_formed?(fields, records:) && fields_consistent?(fields, records)
+    return if fields.key?("publication_snapshot") && !publication_snapshot(fields["publication_snapshot"])
 
     State.new(fields:, records:)
   end
@@ -671,6 +841,7 @@ module CompletedBatchAuditReceipt
       %w[clean follow-ups-remain UNKNOWN].include?(fields["verdict"]) &&
       structurally_valid_scalar?(fields["scope_evidence"]) &&
       structurally_valid_scalar?(fields["checker_evidence"]) &&
+      (!fields.key?("publication_snapshot") || structurally_valid_scalar?(fields["publication_snapshot"])) &&
       structurally_valid_dispositions?(fields["followups_dispositions"]) &&
       well_formed_findings?(fields["findings"], records:)
   end
@@ -843,6 +1014,8 @@ module CompletedBatchAuditReceipt
       ANCHOR_VERIFICATION_BLOCKER
     when ReplayGitHubApiError
       REPLAY_GITHUB_API_BLOCKER
+    when PublicationPreflightError
+      PUBLICATION_PREFLIGHT_BLOCKER
     else
       INVALID_MARKER_BLOCKER
     end
@@ -920,6 +1093,8 @@ module CompletedBatchAuditReceipt
       opts.on("--targets-json PATH") { |value| options["targets_json"] = value }
       opts.on("--receipt PATH") { |value| options["receipt"] = value }
       opts.on("--reference-file PATH") { |value| options["reference_file"] = value }
+      opts.on("--publication-preflight PATH") { |value| options["publication_preflight"] = value }
+      opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
       opts.on("--other-blocker TEXT") { |value| options.fetch("other_blockers") << value }
       opts.on("-h", "--help") do
         puts opts
@@ -929,7 +1104,7 @@ module CompletedBatchAuditReceipt
     parser.parse!(argv)
     raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
 
-    %w[expected_batch_id targets_json].each do |field|
+    %w[expected_batch_id targets_json workflow_config].each do |field|
       raise OptionParser::MissingArgument, "--#{field.tr('_', '-')}" if options[field].to_s.empty?
     end
 
@@ -945,14 +1120,24 @@ module CompletedBatchAuditReceipt
       end
     end
 
+    coordination_backend = trusted_coordination_backend(options.fetch("workflow_config"))
     configure_gh_timeout!
     targets = JSON.parse(File.read(options.fetch("targets_json"), encoding: "UTF-8"))
+    preflight_path = options["publication_preflight"].to_s
+    preflight_path = ENV.fetch("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT", "") if preflight_path.empty?
+    publication_preflight = if preflight_path.empty?
+                              nil
+                            else
+                              JSON.parse(File.read(preflight_path, encoding: "UTF-8"))
+                            end
     result = if command == "publish"
                publish(
                  expected_batch_id: options.fetch("expected_batch_id"),
                  targets:,
                  receipt: File.read(options.fetch("receipt"), encoding: "UTF-8"),
-                 other_blockers: options.fetch("other_blockers")
+                 other_blockers: options.fetch("other_blockers"),
+                 publication_preflight:,
+                 coordination_backend:
                )
              else
                reference_path = options.fetch("reference_file")
@@ -961,7 +1146,9 @@ module CompletedBatchAuditReceipt
                  expected_batch_id: options.fetch("expected_batch_id"),
                  targets:,
                  reference:,
-                 other_blockers: options.fetch("other_blockers")
+                 other_blockers: options.fetch("other_blockers"),
+                 publication_preflight:,
+                 coordination_backend:
                )
              end
     puts JSON.pretty_generate(result)
@@ -993,7 +1180,8 @@ module CompletedBatchAuditReceipt
 
   def usage
     "Usage: completed-batch-audit-receipt <publish|replay> --expected-batch-id ID " \
-      "--targets-json PATH (--receipt PATH | --reference-file PATH|-) [--other-blocker TEXT ...]"
+      "--targets-json PATH --workflow-config PATH (--receipt PATH | --reference-file PATH|-) " \
+      "[--publication-preflight PATH] [--other-blocker TEXT ...]"
   end
 end
 
