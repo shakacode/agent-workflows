@@ -1,0 +1,41 @@
+{
+  "contract": "completed-batch-publication-preflight-input",
+  "version": 1,
+  "batch_id": "hc-b-20260730-backend-closeout",
+  "expected_targets": [
+    {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10049},
+    {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10048},
+    {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10036},
+    {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10026}
+  ],
+  "coordination_status": {
+    "scope": {"kind": "batch", "batch_id": "hc-b-20260730-backend-closeout"},
+    "batches": [
+      {
+        "batch_id": "hc-b-20260730-backend-closeout",
+        "repo": "shakacode/hichee",
+        "status": "in_progress",
+        "updated_at": "2026-07-30T09:03:17Z",
+        "lanes": [
+          {"name": "hc-b-10049", "targets": ["10049"], "status": "done", "terminal": "done", "closed_at": "2026-07-30T08:43:02Z", "pr_state": "merged", "pr_url": "https://github.com/shakacode/hichee/pull/10049", "evidence_url": "https://github.com/shakacode/hichee/commit/7aa8690f0d0"},
+          {"name": "hc-b-10048", "targets": ["10048"], "status": "done", "terminal": "done", "closed_at": "2026-07-30T08:43:04Z", "pr_state": "merged", "pr_url": "https://github.com/shakacode/hichee/pull/10048", "evidence_url": "https://github.com/shakacode/hichee/commit/64db1fb3ece491a275b63ce23760f7e508c09259"},
+          {"name": "hc-b-10036", "targets": ["10036"], "status": "blocked", "terminal": null, "closed_at": null, "pr_state": "open", "pr_url": "https://github.com/shakacode/hichee/pull/10036", "evidence_url": "UNKNOWN"},
+          {"name": "hc-b-10026", "targets": ["10026"], "status": "done", "terminal": "done", "closed_at": "2026-07-30T08:43:06Z", "pr_state": "merged", "pr_url": "https://github.com/shakacode/hichee/pull/10026", "evidence_url": "https://github.com/shakacode/hichee/commit/22b983390a04d2e19b86a34dc20b46fdd906f8b0"}
+        ]
+      }
+    ]
+  },
+  "target_snapshots": [
+    {"target": {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10049}, "state": "merged", "head_sha": "0f0170f69957032a300ea1a4e7b7d0754e4702e7", "source": "https://github.com/shakacode/hichee/pull/10049"},
+    {"target": {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10048}, "state": "merged", "head_sha": "0810e61e1dd358fe3f5cf4306d1a99f80450c7b3", "source": "https://github.com/shakacode/hichee/pull/10048"},
+    {"target": {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10036}, "state": "open", "head_sha": "ccaae6cc61287dc51519bfbafe8eb149c9451232", "source": "https://github.com/shakacode/hichee/pull/10036"},
+    {"target": {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10026}, "state": "merged", "head_sha": "57e048ed10551eb3cf8414a4de0064443bef730d", "source": "https://github.com/shakacode/hichee/pull/10026"}
+  ],
+  "qa_evidence": [
+    {
+      "target": {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10036},
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: yes\nstatus: satisfied\nhead_sha: ccaae6cc61287dc51519bfbafe8eb149c9451232\ntested_at: PR/head ccaae6cc61287dc51519bfbafe8eb149c9451232\nscope: PR #10036 exact-head behavioral parity\nautomated_checks: focused specs\nmanual_checks: not applicable: no manual surface\nfindings: none\nrelease_blocking: clear\nprocess_gap_disposition: script\n-->"
+    }
+  ]
+}

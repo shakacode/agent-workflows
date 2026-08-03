@@ -2133,7 +2133,26 @@ Parent cross-batch reconciliation is checklist+replay over durable terminal hand
 
 Batch coordinators execute their retained closeout through checklist+replay.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description. Before publishing `audit_status: complete`, the coordinator runs `completed-batch-publication-preflight` with `--workflow-config <trusted repo workflow config>`, a fresh raw bounded targeted coordination status, the exact trusted target manifest, refreshed target terminal states/full heads, and one exact-head QA Evidence marker per target. The helper derives the full set from coordination lanes and refuses absent, ambiguous, nonterminal, unmerged/unclosed, or `UNKNOWN` state. QA must replay as `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED` with an authenticated replayable maintainer-waiver comment; `unknown`, `in_progress`, missing, stale, malformed, or blocked QA refuses completion. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible preflight and exact manifest match. Pass the refreshed preflight receipt to `publish` and `replay` with `--publication-preflight` and explicit `--workflow-config <trusted repo workflow config>`; replay blocks on a coordination, target/head, or QA snapshot mismatch/staleness.
+
+Each `qa_evidence` row must carry a coordinator-owned
+`user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
+canonical target and publication snapshot; `yes` requires strict visual-evidence
+v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or
+v2-contradictory classification blocks.
+
+WAIVED input supplies only the exact same-target `#issuecomment-<id>` URL. The helper must fetch that comment through authenticated `gh api`; HTTP/API failure or any comment ID, URL, target, exact-head, decision-marker, human author, trusted association, timestamp, or body mismatch blocks completion. The authenticated snapshot binds the exact comment ID/URL, body SHA-256, author/association, timestamps, target, and head. The fetched body must contain exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`, `head_sha: <full exact head>`, and `decision: waived`. Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication.
+
+The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts. Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay.
+
+Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay.
+
+Configured `public claim-comment fallback` is advisory ownership state only; it
+must not invoke private `agent-coord`, and without a separate authenticated
+terminal coordination contract it leaves completed-batch publication blocked as
+`UNKNOWN`.
+
+When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
@@ -2141,7 +2160,7 @@ Immediately before the exact final `Conversation status` line, emit only:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
-The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
+The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also contain exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
 
 A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
 
@@ -2284,6 +2303,10 @@ The closeout lane is:
     ranges. Reserve release/range audit for final-release readiness, suspected
     bad merges, missing or unverified batch scope, or a lightweight sweep that
     finds a blocker, failed post-merge check, or credible release-readiness risk.
+    Immediately before publishing a complete result, run the terminal
+    coordination/target/exact-head-QA publication preflight described above;
+    do not emit a complete receipt while it is blocked or reuse a prior
+    snapshot after any lane, target head/state, or QA evidence changes.
 14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker.
 
 ## Self-Review Gate
@@ -3031,34 +3054,91 @@ bindings and freshness before any mutation.
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 preserves read-only, idempotent observation when the exact reviewed PR is
 already merged, preserves an exact existing queue entry, and uses
-`enqueuePullRequest` only for an exact open PR on a queue-controlled base. On a
-queue-disabled base it uses `mergePullRequest` with GitHub's atomic
-`expectedHeadOid`. Immediately before that mutation, the helper revalidates the
-fresh receipt, exact head, base branch, and receipt-bound base SHA against live
-metadata. GitHub does not expose an atomic expected-base OID for direct merge,
-so the base may advance after this final read; that does not authorize a
-different PR head, and closeout must still verify the landed commit and base.
-Every API call is bound to the explicit host, and the returned PR URL must match
-it. The helper never invokes `gh pr merge`, never enables auto-merge, and fails
-closed when the head moved, queue state is missing, the direct response cannot
-prove the exact merge, or GitHub returns no queue entry.
+`enqueuePullRequest` only for an exact open PR on a queue-controlled base. With
+no trusted-base `merge_submission` policy, or with explicit
+`mode: merge_queue_only`, a queue-disabled PR fails closed before any merge
+mutation or repository guard invocation with deterministic error exit 1. This
+pre-mutation policy rejection is not an `UNKNOWN` outcome.
+
+The only direct-submit exception is this closed trusted-base mapping:
+
+```yaml
+merge_submission:
+  mode: merge_queue_or_guarded_direct
+  guarded_direct:
+    executable: ".agents/bin/merge-pr-after-checks"
+    method: squash
+    non_atomic_base:
+      acknowledged: true
+      rationale: "The repository guard revalidates local policy immediately before direct squash."
+```
+
+The executable must be one repository-root-relative executable regular file
+under `.agents/bin`, with live bytes matching the trusted-base blob. It is a
+path, never a command string; unknown keys, unknown modes, shell fragments,
+interpolation, missing acknowledgement or rationale, invalid methods, missing
+files, and non-executable files fail closed. Immediately before delegation,
+the helper revalidates the fresh receipt, exact head, base branch, and
+receipt-bound base SHA against live metadata. It does not reopen the configured
+live executable path for delegation. Instead, it materializes a private
+executable from the already validated trusted-base bytes and invokes it without
+a shell from an isolated private Git root. That root's detached `HEAD`, index,
+and working files all bind the receipt-base commit and tree. This contract
+isolates HEAD/index/worktree state only: object/ref confidentiality is not
+promised, and the materialized repository preserves the source `origin`.
+Exact PR identity comes only from revalidated live GitHub metadata and fixed argv; local `HEAD`
+cannot expose PR-tree bytes. Repository-relative delegation therefore resolves
+trusted-base dependencies. Every guard requires a supported explicit shebang;
+shebang-less files, including native magic prefixes, fail closed before spawn.
+The helper parses the trusted shebang,
+resolves `/usr/bin/env PROGRAM` only through a fixed trusted path, records the
+resolved absolute interpreter identity, rejects interpreters inside the
+consumer repository, and invokes the interpreter directly. The identity check
+and later absolute-path spawn retain a known filesystem TOCTOU window. The guard's
+closed environment contains only the bound GitHub host/repository,
+OS-account-derived home and identity, fixed path, and supported GitHub token
+variables; it does not inherit caller `PATH`, `BASH_ENV`, `RUBYOPT`, or loader
+injection settings. The helper removes the private executable and Git root
+afterward; cleanup failure after launch is an `UNKNOWN` outcome reconciled
+against exact live state. Runtime `$0` and `__dir__` identify the private guard
+copy. Internal validation/materialization Git receives no GitHub tokens, SSH
+agent, or caller credential/config controls. Preserved `origin` is metadata for
+the trusted consumer guard, which intentionally receives only supported GitHub
+token variables for its authorized submission. The helper uses this fixed argv
+order:
+
+```text
+--repo OWNER/REPO --host HOST --pr NUMBER
+--expected-head SHA --expected-base BRANCH --expected-base-sha SHA
+--method METHOD --merge-assurance-receipt ABSOLUTE_PATH
+[--subject SUBJECT] [--body BODY]
+```
+
+The guard owns any additional consumer direct-merge policy. Its exit status and
+output are not proof: the helper re-fetches GitHub and reports
+`submission: guarded_direct` only for an exact terminal merge of the authorized
+head and expected base. The output records the trusted guard path/blob identity,
+configured method, explicit non-atomic-base acknowledgement and rationale, and
+`atomic_expected_base_oid: false`. Failed, ambiguous, moved-head, or
+unreconciled outcomes are `UNKNOWN` and must not be retried blindly. A
+queue-enabled PR always follows canonical enqueue and never invokes the guard.
+The helper never issues generic `mergePullRequest`, invokes `gh pr merge`,
+enables auto-merge, or enables a merge queue.
 
 Submission is restart-safe for an exact head already merged or already present
-in the queue. After an ambiguous direct or enqueue response, the helper re-reads
-the PR and reports success only when that exact expected head and base are
-proven merged or queued. If direct submission discovers that queue enforcement
-changed after the metadata read, only an explicit queue-control GraphQL error
-permits one exact-head enqueue retry; unrelated or mixed errors remain
-`UNKNOWN`. Exit 2 reports an `UNKNOWN` mutation outcome: stop and reconcile live
-state rather than retrying blindly. If post-enqueue verification detects a
+in the queue. After an ambiguous enqueue response, the helper re-reads the PR
+and reports success only when that exact expected head and base are proven
+merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
+reconcile live state rather than retrying blindly. If post-enqueue verification detects a
 retarget or head change, the helper exits 2 without automatic cleanup: GitHub's
 dequeue mutation accepts only the PR ID, so it cannot prove that a later live
 queue entry is the one created by this submission rather than a concurrent
 actor's replacement.
 
-For a direct merge, `--method`, `--subject`, and `--body` control the requested
-merge shape. For a queued merge, GitHub's queue configuration controls the
-actual merge method and commit-title/body formatting. Before submission, verify
+For guarded-direct delegation, `--method` must match the trusted-base configured
+method, and `--subject` / `--body` are forwarded as fixed optional argv. For a
+queued merge, GitHub's queue configuration controls the actual merge method and
+commit-title/body formatting. Before submission, verify
 the PR title and live repository queue settings satisfy any consumer
 squash-title policy; direct-method or subject options cannot override a
 queue-generated commit title.

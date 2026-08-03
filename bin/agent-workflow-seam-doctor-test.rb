@@ -87,11 +87,37 @@ module AgentWorkflowSeamDoctorTestHelpers
     Open3.capture2e("ruby", SCRIPT, "--root", root, *)
   end
 
+  def run_git!(root, *arguments)
+    environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_PARAMETERS" => nil
+    }
+    out, status = Open3.capture2e(environment, "git", *arguments, chdir: root)
+    raise "git fixture failed: #{out}" unless status.success?
+
+    out
+  end
+
   def executable_available?(executable)
     ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? do |directory|
       path = File.join(directory, executable)
       File.file?(path) && File.executable?(path)
     end
+  end
+
+  def guarded_direct_policy
+    {
+      "mode" => "merge_queue_or_guarded_direct",
+      "guarded_direct" => {
+        "executable" => ".agents/bin/merge-pr-after-checks",
+        "method" => "squash",
+        "non_atomic_base" => {
+          "acknowledged" => true,
+          "rationale" => "The repository guard revalidates policy immediately before direct squash."
+        }
+      }
+    }
   end
 end
 
@@ -420,6 +446,242 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
                         "invalid policy value for key: repo_prefix " \
                         "(expected 1-6 uppercase ASCII letters or digits)"
       end
+    end
+  end
+
+  def test_optional_merge_submission_accepts_queue_only_and_guarded_direct_modes
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      write_policy(
+        root,
+        POLICY.merge("merge_submission" => { "mode" => "merge_queue_only" })
+      )
+      queue_out, queue_status = run_doctor(root)
+      assert queue_status.success?, queue_out
+
+      write_script(root, "merge-pr-after-checks", "exec true\n")
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      direct_out, direct_status = run_doctor(root)
+      assert direct_status.success?, direct_out
+    end
+  end
+
+  def test_guarded_direct_merge_submission_uses_a_closed_fail_closed_schema
+    cases = {
+      "unknown mode" => {
+        "mode" => "direct"
+      },
+      "queue-only extra key" => {
+        "mode" => "merge_queue_only", "guarded_direct" => {}
+      },
+      "missing acknowledgement" => guarded_direct_policy.tap do |policy|
+        policy["guarded_direct"]["non_atomic_base"].delete("acknowledged")
+      end,
+      "false acknowledgement" => guarded_direct_policy.tap do |policy|
+        policy["guarded_direct"]["non_atomic_base"]["acknowledged"] = false
+      end,
+      "missing rationale" => guarded_direct_policy.tap do |policy|
+        policy["guarded_direct"]["non_atomic_base"]["rationale"] = ""
+      end,
+      "invalid method" => guarded_direct_policy.tap do |policy|
+        policy["guarded_direct"]["method"] = "auto"
+      end,
+      "shell command" => guarded_direct_policy.tap do |policy|
+        policy["guarded_direct"]["executable"] = ".agents/bin/merge-pr --force"
+      end,
+      "outside path" => guarded_direct_policy.tap do |policy|
+        policy["guarded_direct"]["executable"] = "script/merge_pr_after_checks"
+      end,
+      "unknown nested key" => guarded_direct_policy.tap do |policy|
+        policy["guarded_direct"]["shell"] = "bash -lc"
+      end
+    }
+
+    cases.each do |label, seam|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_script(root, "merge-pr-after-checks", "exec true\n")
+        write_policy(root, POLICY.merge("merge_submission" => seam))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out, "merge_submission", label
+      end
+    end
+  end
+
+  def test_merge_submission_non_string_keys_return_structured_failures
+    cases = {
+      "merge_submission" => guarded_direct_policy.merge(1 => "unexpected"),
+      "guarded_direct" => guarded_direct_policy.tap do |policy|
+        policy.fetch("guarded_direct")[1] = "unexpected"
+      end,
+      "non_atomic_base" => guarded_direct_policy.tap do |policy|
+        policy.dig("guarded_direct", "non_atomic_base")[1] = "unexpected"
+      end
+    }
+
+    cases.each do |label, seam|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_script(root, "merge-pr-after-checks", "exec true\n")
+        write_policy(root, POLICY.merge("merge_submission" => seam))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out, "FAIL agent workflow seam has", label
+        assert_includes out, "invalid merge_submission policy", label
+        refute_includes out, "ArgumentError", label
+        refute_includes out, "comparison of", label
+      end
+    end
+  end
+
+  def test_guarded_direct_merge_submission_requires_a_real_executable_guard
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_skill(root, "No commands here.\n")
+
+      missing_out, missing_status = run_doctor(root)
+      refute missing_status.success?
+      assert_includes missing_out, "guarded_direct.executable is missing or inaccessible"
+
+      guard = write_script(root, "merge-pr-after-checks", "exec true\n")
+      File.chmod(0o644, guard)
+      mode_out, mode_status = run_doctor(root)
+      refute mode_status.success?
+      assert_includes mode_out, "guarded_direct.executable is not executable"
+
+      FileUtils.rm_f(guard)
+      File.symlink(File.join(root, ".agents/bin/test"), guard)
+      symlink_out, symlink_status = run_doctor(root)
+      refute symlink_status.success?
+      assert_includes symlink_out, "guarded_direct.executable must be a regular file"
+    end
+  end
+
+  def test_guarded_direct_merge_submission_requires_tracked_executable_git_mode
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_skill(root, "No commands here.\n")
+      guard = write_script(root, "merge-pr-after-checks", "exec true\n")
+      relative_guard = ".agents/bin/merge-pr-after-checks"
+      run_git!(root, "init", "-q")
+
+      untracked_out, untracked_status = run_doctor(root)
+      refute untracked_status.success?
+      assert_includes untracked_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable is not tracked by git"
+
+      run_git!(root, "add", "--", relative_guard)
+      run_git!(root, "update-index", "--chmod=-x", "--", relative_guard)
+      File.chmod(0o755, guard)
+      mode_out, mode_status = run_doctor(root)
+      refute mode_status.success?
+      assert_includes mode_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable git mode must be 100755"
+
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_guard)
+      valid_out, valid_status = run_doctor(root)
+      assert valid_status.success?, valid_out
+    end
+  end
+
+  def test_guarded_direct_git_validation_ignores_hostile_path_git_and_credential_environment
+    with_repo do |root|
+      guard = write_script(root, "merge-pr-after-checks", "exec true\n")
+      relative_guard = ".agents/bin/merge-pr-after-checks"
+      run_git!(root, "init", "-q")
+      run_git!(root, "add", "--", relative_guard)
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_guard)
+      Dir.mktmpdir("seam-doctor-git-shim") do |attack_dir|
+        marker = File.join(attack_dir, "git-ran")
+        shim = File.join(attack_dir, "git")
+        File.write(shim, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n")
+        FileUtils.chmod(0o755, shim)
+        original = ENV.to_h
+        ENV.update(
+          "PATH" => attack_dir,
+          "GIT_DIR" => File.join(root, "attacker-git-dir"),
+          "GIT_INDEX_FILE" => File.join(root, "attacker-index"),
+          "SSH_AUTH_SOCK" => File.join(root, "attacker-agent"),
+          "GH_TOKEN" => "attacker-token"
+        )
+
+        issues = AgentWorkflowSeamDoctor.send(
+          :guarded_direct_git_issues, root, relative_guard
+        )
+
+        assert_empty issues
+        refute_path_exists marker
+      ensure
+        ENV.replace(original) if original
+      end
+      assert File.executable?(guard)
+    end
+  end
+
+  def test_guarded_direct_merge_submission_requires_a_readable_live_guard
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_skill(root, "No commands here.\n")
+      guard = write_script(root, "merge-pr-after-checks", "exec true\n")
+      relative_guard = ".agents/bin/merge-pr-after-checks"
+      run_git!(root, "init", "-q")
+      run_git!(root, "add", "--", relative_guard)
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_guard)
+      assert_match(/\A100755 /, run_git!(root, "ls-files", "--stage", "--", relative_guard))
+      File.chmod(0o111, guard)
+
+      original_readable = File.method(:readable?)
+      File.define_singleton_method(:readable?) { |_path| true }
+      issues = AgentWorkflowSeamDoctor.send(:guarded_direct_file_issues, root, relative_guard)
+      File.define_singleton_method(:readable?, original_readable)
+
+      assert_includes issues,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable is not readable"
+    ensure
+      File.define_singleton_method(:readable?, original_readable) if original_readable
+    end
+  end
+
+  def test_guarded_direct_merge_submission_rejects_unsafe_parent_paths
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_skill(root, "No commands here.\n")
+
+      bin_path = File.join(root, ".agents/bin")
+      FileUtils.rm_rf(bin_path)
+      File.write(bin_path, "not a directory\n")
+      file_out, file_status = run_doctor(root)
+      refute file_status.success?
+      assert_includes file_out, "FAIL agent workflow seam has"
+      assert_includes file_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable parent is not a directory"
+
+      FileUtils.rm_f(bin_path)
+      external_bin = File.join(root, "external-bin")
+      FileUtils.mkdir_p(external_bin)
+      File.symlink(external_bin, bin_path)
+      symlink_out, symlink_status = run_doctor(root)
+      refute symlink_status.success?
+      assert_includes symlink_out,
+                      "invalid merge_submission policy: " \
+                      "guarded_direct.executable path contains a symlink"
     end
   end
 
@@ -1324,7 +1586,9 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       assert_includes File.read(File.join(root, "AGENTS.md"), encoding: "UTF-8"), AgentWorkflowSeamDoctor::POINTER_SECTION
       assert File.executable?(File.join(root, ".agents/bin/validate"))
       assert File.executable?(File.join(root, ".agents/bin/test"))
-      assert_equal "main", YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml"))).fetch("base_branch")
+      policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")))
+      assert_equal "main", policy.fetch("base_branch")
+      assert_equal({ "mode" => "merge_queue_only" }, policy.fetch("merge_submission"))
       trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")))
       assert_equal [], trust.fetch("trusted_users")
       assert_equal [], trust.fetch("trusted_bots")
@@ -4466,11 +4730,19 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
 
       out, status = run_doctor(root, "--init")
       assert status.success?, out
+      after_first = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+      assert_equal(
+        before.reject { |path, _content| path == ".agents/agent-workflow.yml" },
+        after_first.reject { |path, _content| path == ".agents/agent-workflow.yml" }
+      )
+      first_policy = YAML.safe_load(after_first.fetch(".agents/agent-workflow.yml"))
+      assert_equal({ "mode" => "merge_queue_only" }, first_policy.fetch("merge_submission"))
+
       second_out, second_status = run_doctor(root, "--init")
       assert second_status.success?, second_out
 
-      after = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
-      assert_equal before, after
+      after_second = paths.to_h { |path| [path, File.binread(File.join(root, path))] }
+      assert_equal after_first, after_second
     end
   end
 

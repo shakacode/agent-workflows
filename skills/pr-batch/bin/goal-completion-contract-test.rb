@@ -1598,11 +1598,17 @@ class GoalCompletionContractTest < Minitest::Test
     pending_marker = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #118\nfollowups_dispositions: ref: #118; owner: maintainer; current status: pending; disposition: await-input; evidence: issue #118")
     unknown_marker = completed_batch_audit_marker("batch_id: UNKNOWN\naudit_status: UNKNOWN\nverdict: UNKNOWN\nscope_evidence: UNKNOWN\nchecker_evidence: UNKNOWN\nfindings: UNKNOWN\nfollowups_dispositions: none")
 
-    assert completed_batch_audit_final_status_replays?(ready_marker, "Conversation status: Ready for archiving.")
+    refute completed_batch_audit_final_status_replays?(ready_marker, "Conversation status: Ready for archiving.")
+    assert completed_batch_audit_final_status_replays?(
+      ready_marker,
+      "Conversation status: Follow-ups remain — " \
+      "completed-batch-audit publication snapshot refresh required."
+    )
     refute completed_batch_audit_final_status_replays?(ready_marker, "Conversation status: Follow-ups remain — #117 (open): fix and verify.")
     assert completed_batch_audit_final_status_replays?(
       ready_marker,
-      "Conversation status: Follow-ups remain — release owner confirmation.",
+      "Conversation status: Follow-ups remain — " \
+      "completed-batch-audit publication snapshot refresh required; release owner confirmation.",
       other_blockers: ["release owner confirmation"]
     )
     refute completed_batch_audit_final_status_replays?(
@@ -1617,7 +1623,8 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert completed_batch_audit_final_status_replays?(
       pending_marker,
-      "Conversation status: Follow-ups remain — #118 (pending): await-input."
+      "Conversation status: Follow-ups remain — #118 (pending): await-input; " \
+      "completed-batch-audit publication snapshot refresh required."
     )
     assert completed_batch_audit_final_status_replays?(
       unknown_marker,
@@ -1659,13 +1666,13 @@ class GoalCompletionContractTest < Minitest::Test
         completed_batch_audit_marker("batch_id: backend:team;wave:117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: none"),
         true,
         true,
-        []
+        ["completed-batch-audit publication snapshot refresh required"]
       ],
       "case-varied typed prefix is opaque rather than typed" => [
         completed_batch_audit_marker("batch_id: Non-backend: docs;wave:117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: none"),
         true,
         true,
-        []
+        ["completed-batch-audit publication snapshot refresh required"]
       ],
       "nonterminal terminal enum is invalid" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: open; disposition: resolved; evidence: issue #117"),
@@ -1831,7 +1838,14 @@ class GoalCompletionContractTest < Minitest::Test
     end
     assert completed_batch_audit_marker_well_formed?(mixed)
     refute completed_batch_audit_release_or_archive_ready?(mixed)
-    assert_equal ["#117", "#118 (pending): await-input"], completed_batch_audit_marker_blockers(mixed)
+    assert_equal(
+      [
+        "#117",
+        "#118 (pending): await-input",
+        "completed-batch-audit publication snapshot refresh required"
+      ],
+      completed_batch_audit_marker_blockers(mixed)
+    )
     assert completed_batch_audit_marker_well_formed?(outstanding_without_record)
     assert_equal ["#117"], completed_batch_audit_marker_blockers(outstanding_without_record)
     refute completed_batch_audit_marker_well_formed?(malformed_record)
@@ -1926,14 +1940,18 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert well_formed_other_blocker?(raw_unknown)
     assert well_formed_other_blocker?(fullwidth_unknown)
-    assert_equal ["release state UNKNOWN"],
+    assert_equal [
+      "completed-batch-audit publication snapshot refresh required",
+      "release state UNKNOWN"
+    ],
                  completed_batch_audit_replay_result(
                    ready_marker,
                    other_blockers: [raw_unknown, fullwidth_unknown]
                  ).blockers
     assert completed_batch_audit_final_status_replays?(
       ready_marker,
-      "Conversation status: Follow-ups remain — release state UNKNOWN.",
+      "Conversation status: Follow-ups remain — " \
+      "completed-batch-audit publication snapshot refresh required; release state UNKNOWN.",
       other_blockers: [raw_unknown, fullwidth_unknown]
     )
   end
