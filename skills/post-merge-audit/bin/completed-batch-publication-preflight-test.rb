@@ -494,6 +494,113 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  result.fetch("snapshot_digest")
   end
 
+  def test_abandoned_or_superseded_lane_accepts_later_authenticated_target_completion_without_rewriting_closeout
+    %w[abandoned superseded].each do |terminal_state|
+      input = fixture("completed-batch-publication-hichee-terminal.json")
+      lane = input.dig("coordination_status", "batches", 0, "lanes")
+                  .find { |row| row.fetch("targets") == ["10048"] }
+      lane["status"] = terminal_state
+      lane["terminal"] = terminal_state
+      lane.delete("pr_state")
+      lane.delete("evidence_url")
+
+      result = assess_input(input)
+
+      assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+      reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                              .find { |row| row.dig("target", "number") == 10_048 }
+      assert_equal terminal_state, reconciled_lane.fetch("status")
+      assert_equal terminal_state, reconciled_lane.fetch("terminal")
+      assert_equal "authenticated_target_after_coordination_closeout",
+                   reconciled_lane.fetch("completion_mode")
+      assert_nil reconciled_lane.fetch("target_state")
+      assert_nil reconciled_lane.fetch("evidence")
+    end
+  end
+
+  def test_abandoned_lane_stays_blocked_when_target_is_not_later_completed
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+    input.fetch("target_snapshots")
+         .find { |row| row.dig("target", "number") == 10_048 }["state"] = "open"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 coordination target state is not merged"
+    assert_includes result.fetch("blockers"), "shakacode/hichee#pull_request:10048 target is not merged"
+  end
+
+  def test_authenticated_target_completion_does_not_rescue_nonterminal_lane
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "in_progress"
+    lane["terminal"] = "abandoned"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 coordination lane is nonterminal"
+  end
+
+  def test_abandoned_lane_stays_blocked_without_authenticated_target_completion
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input, target_verifier: ->(target:) {})
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 target state/head is not authenticated or fresh"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 coordination target state is not merged"
+  end
+
+  def test_authenticated_target_completion_does_not_rescue_invalid_terminal_timestamp
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane["closed_at"] = nil
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 coordination lane is nonterminal"
+  end
+
+  def test_done_lane_still_requires_coordination_terminal_evidence
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 coordination terminal evidence is absent"
+  end
+
   def test_assess_fails_closed_without_live_target_and_coordination_verifiers
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = CompletedBatchPublicationPreflight.assess(

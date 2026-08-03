@@ -426,6 +426,14 @@ with an authenticated replayable maintainer-waiver comment; or when
 the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
 
+A normal terminal `done` lane still requires its coordination target state and
+terminal evidence. An immutable terminal `abandoned` or `superseded` lane may
+instead reconcile only when the helper independently authenticates that the
+same exact target later reached `merged` or `closed`. The publication snapshot
+preserves the original coordination terminal and records the later-target
+completion mode. Active/nonterminal lanes, open targets, unauthenticated target
+facts, and malformed terminal timestamps remain blocked.
+
 Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 For `audit_status: complete`, that parse/bind step additionally requires the

@@ -28,6 +28,7 @@ module CompletedBatchPublicationPreflight
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
+  TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
@@ -79,7 +80,6 @@ module CompletedBatchPublicationPreflight
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
     validate_batch_terminal(batch, blockers) unless no_backend
-    canonical_lanes = canonical_lane_snapshots(lane_entries, blockers)
     canonical_targets = canonical_target_snapshots(
       expected_targets,
       snapshots,
@@ -87,6 +87,7 @@ module CompletedBatchPublicationPreflight
       blockers,
       target_verifier:
     )
+    canonical_lanes = canonical_lane_snapshots(lane_entries, canonical_targets, blockers)
     canonical_qa = canonical_qa_snapshots(
       expected_targets,
       snapshots,
@@ -460,17 +461,31 @@ module CompletedBatchPublicationPreflight
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
-  def canonical_lane_snapshots(entries, blockers)
+  def canonical_lane_snapshots(entries, target_snapshots, blockers)
+    targets_by_key = target_snapshots.to_h { |snapshot| [target_key(snapshot.fetch("target")), snapshot] }
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
-      terminal = lane["status"] == "done" && lane["terminal"] == "done" && valid_timestamp?(lane["closed_at"])
+      terminal_state = lane["terminal"]
+      terminal = TERMINAL_LANE_STATES.include?(terminal_state) &&
+                 lane["status"] == terminal_state &&
+                 valid_timestamp?(lane["closed_at"])
       blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
-      blockers << "#{target_label(target)} coordination target state is not #{expected_state}" unless lane["pr_state"] == expected_state
       evidence = normalized_known_string(lane["evidence_url"])
-      blockers << "#{target_label(target)} coordination terminal evidence is absent" unless evidence
-      {
+      target_snapshot = targets_by_key[target_key(target)]
+      authenticated_target_completion = target_snapshot &&
+                                        target_snapshot["state"] == expected_state &&
+                                        target_snapshot["verification_source"] == "authenticated gh api"
+      coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
+      later_target_completion = %w[abandoned superseded].include?(terminal_state) &&
+                                authenticated_target_completion
+      unless coordination_completion || later_target_completion
+        blockers << "#{target_label(target)} coordination target state is not #{expected_state}" \
+          unless lane["pr_state"] == expected_state
+        blockers << "#{target_label(target)} coordination terminal evidence is absent" unless evidence
+      end
+      snapshot = {
         "name" => entry.fetch("name"),
         "target" => target,
         "status" => scalar_or_nil(lane["status"]),
@@ -479,6 +494,10 @@ module CompletedBatchPublicationPreflight
         "target_state" => scalar_or_nil(lane["pr_state"]),
         "evidence" => evidence
       }
+      if terminal && later_target_completion
+        snapshot["completion_mode"] = "authenticated_target_after_coordination_closeout"
+      end
+      snapshot
     end
   end
 
