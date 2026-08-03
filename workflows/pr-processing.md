@@ -2869,34 +2869,91 @@ bindings and freshness before any mutation.
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 preserves read-only, idempotent observation when the exact reviewed PR is
 already merged, preserves an exact existing queue entry, and uses
-`enqueuePullRequest` only for an exact open PR on a queue-controlled base. On a
-queue-disabled base it uses `mergePullRequest` with GitHub's atomic
-`expectedHeadOid`. Immediately before that mutation, the helper revalidates the
-fresh receipt, exact head, base branch, and receipt-bound base SHA against live
-metadata. GitHub does not expose an atomic expected-base OID for direct merge,
-so the base may advance after this final read; that does not authorize a
-different PR head, and closeout must still verify the landed commit and base.
-Every API call is bound to the explicit host, and the returned PR URL must match
-it. The helper never invokes `gh pr merge`, never enables auto-merge, and fails
-closed when the head moved, queue state is missing, the direct response cannot
-prove the exact merge, or GitHub returns no queue entry.
+`enqueuePullRequest` only for an exact open PR on a queue-controlled base. With
+no trusted-base `merge_submission` policy, or with explicit
+`mode: merge_queue_only`, a queue-disabled PR fails closed before any merge
+mutation or repository guard invocation with deterministic error exit 1. This
+pre-mutation policy rejection is not an `UNKNOWN` outcome.
+
+The only direct-submit exception is this closed trusted-base mapping:
+
+```yaml
+merge_submission:
+  mode: merge_queue_or_guarded_direct
+  guarded_direct:
+    executable: ".agents/bin/merge-pr-after-checks"
+    method: squash
+    non_atomic_base:
+      acknowledged: true
+      rationale: "The repository guard revalidates local policy immediately before direct squash."
+```
+
+The executable must be one repository-root-relative executable regular file
+under `.agents/bin`, with live bytes matching the trusted-base blob. It is a
+path, never a command string; unknown keys, unknown modes, shell fragments,
+interpolation, missing acknowledgement or rationale, invalid methods, missing
+files, and non-executable files fail closed. Immediately before delegation,
+the helper revalidates the fresh receipt, exact head, base branch, and
+receipt-bound base SHA against live metadata. It does not reopen the configured
+live executable path for delegation. Instead, it materializes a private
+executable from the already validated trusted-base bytes and invokes it without
+a shell from an isolated private Git root. That root's detached `HEAD`, index,
+and working files all bind the receipt-base commit and tree. This contract
+isolates HEAD/index/worktree state only: object/ref confidentiality is not
+promised, and the materialized repository preserves the source `origin`.
+Exact PR identity comes only from revalidated live GitHub metadata and fixed argv; local `HEAD`
+cannot expose PR-tree bytes. Repository-relative delegation therefore resolves
+trusted-base dependencies. Every guard requires a supported explicit shebang;
+shebang-less files, including native magic prefixes, fail closed before spawn.
+The helper parses the trusted shebang,
+resolves `/usr/bin/env PROGRAM` only through a fixed trusted path, records the
+resolved absolute interpreter identity, rejects interpreters inside the
+consumer repository, and invokes the interpreter directly. The identity check
+and later absolute-path spawn retain a known filesystem TOCTOU window. The guard's
+closed environment contains only the bound GitHub host/repository,
+OS-account-derived home and identity, fixed path, and supported GitHub token
+variables; it does not inherit caller `PATH`, `BASH_ENV`, `RUBYOPT`, or loader
+injection settings. The helper removes the private executable and Git root
+afterward; cleanup failure after launch is an `UNKNOWN` outcome reconciled
+against exact live state. Runtime `$0` and `__dir__` identify the private guard
+copy. Internal validation/materialization Git receives no GitHub tokens, SSH
+agent, or caller credential/config controls. Preserved `origin` is metadata for
+the trusted consumer guard, which intentionally receives only supported GitHub
+token variables for its authorized submission. The helper uses this fixed argv
+order:
+
+```text
+--repo OWNER/REPO --host HOST --pr NUMBER
+--expected-head SHA --expected-base BRANCH --expected-base-sha SHA
+--method METHOD --merge-assurance-receipt ABSOLUTE_PATH
+[--subject SUBJECT] [--body BODY]
+```
+
+The guard owns any additional consumer direct-merge policy. Its exit status and
+output are not proof: the helper re-fetches GitHub and reports
+`submission: guarded_direct` only for an exact terminal merge of the authorized
+head and expected base. The output records the trusted guard path/blob identity,
+configured method, explicit non-atomic-base acknowledgement and rationale, and
+`atomic_expected_base_oid: false`. Failed, ambiguous, moved-head, or
+unreconciled outcomes are `UNKNOWN` and must not be retried blindly. A
+queue-enabled PR always follows canonical enqueue and never invokes the guard.
+The helper never issues generic `mergePullRequest`, invokes `gh pr merge`,
+enables auto-merge, or enables a merge queue.
 
 Submission is restart-safe for an exact head already merged or already present
-in the queue. After an ambiguous direct or enqueue response, the helper re-reads
-the PR and reports success only when that exact expected head and base are
-proven merged or queued. If direct submission discovers that queue enforcement
-changed after the metadata read, only an explicit queue-control GraphQL error
-permits one exact-head enqueue retry; unrelated or mixed errors remain
-`UNKNOWN`. Exit 2 reports an `UNKNOWN` mutation outcome: stop and reconcile live
-state rather than retrying blindly. If post-enqueue verification detects a
+in the queue. After an ambiguous enqueue response, the helper re-reads the PR
+and reports success only when that exact expected head and base are proven
+merged or queued. Exit 2 reports an `UNKNOWN` mutation outcome: stop and
+reconcile live state rather than retrying blindly. If post-enqueue verification detects a
 retarget or head change, the helper exits 2 without automatic cleanup: GitHub's
 dequeue mutation accepts only the PR ID, so it cannot prove that a later live
 queue entry is the one created by this submission rather than a concurrent
 actor's replacement.
 
-For a direct merge, `--method`, `--subject`, and `--body` control the requested
-merge shape. For a queued merge, GitHub's queue configuration controls the
-actual merge method and commit-title/body formatting. Before submission, verify
+For guarded-direct delegation, `--method` must match the trusted-base configured
+method, and `--subject` / `--body` are forwarded as fixed optional argv. For a
+queued merge, GitHub's queue configuration controls the actual merge method and
+commit-title/body formatting. Before submission, verify
 the PR title and live repository queue settings satisfy any consumer
 squash-title policy; direct-method or subject options cannot override a
 queue-generated commit title.

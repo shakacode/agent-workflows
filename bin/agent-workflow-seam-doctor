@@ -4,6 +4,7 @@
 # Validate that portable agent workflows can resolve their repo-specific seam.
 
 require "json"
+require "etc"
 require "fileutils"
 require "open3"
 require "optparse"
@@ -127,6 +128,21 @@ module AgentWorkflowSeamDoctor
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
+  MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
+  MERGE_SUBMISSION_MODES = %w[merge_queue_only merge_queue_or_guarded_direct].freeze
+  MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
+  GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
+  NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
+  MERGE_METHODS = %w[merge rebase squash].freeze
+  GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  SYSTEM_TOOL_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ].freeze
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY = "untrusted_contributor_intake"
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS = %w[
     trusted_github_host
@@ -1457,6 +1473,7 @@ module AgentWorkflowSeamDoctor
   def prepare_init_policy(root, base_branch, existing)
     defaults = REQUIRED_POLICY_KEYS.to_h { |key| [key, key == "base_branch" ? base_branch : "n/a"] }
     defaults["follow_up_prefix"] = "Follow-up:"
+    defaults[MERGE_SUBMISSION_POLICY_KEY] = { "mode" => "merge_queue_only" }
     prepare_init_mapping(File.join(root, POLICY_CONFIG), existing, defaults, "policy config")
   end
 
@@ -1687,6 +1704,7 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(untrusted_contributor_intake_policy_issues(config))
+    issues.concat(merge_submission_policy_issues(root, config))
     if config.key?("autonomous_merge")
       autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
       autonomous_policy.errors.each do |error|
@@ -1721,6 +1739,166 @@ module AgentWorkflowSeamDoctor
     scheme = intake_policy["trusted_github_scheme"]
     issues << "invalid policy value for key: #{scheme_key}" if scheme && scheme != "https"
     issues.uniq
+  end
+
+  def merge_submission_policy_issues(root, config)
+    return [] unless config.key?(MERGE_SUBMISSION_POLICY_KEY)
+
+    seam = config[MERGE_SUBMISSION_POLICY_KEY]
+    return ["invalid merge_submission policy: expected a mapping"] unless seam.is_a?(Hash)
+
+    mode = seam["mode"]
+    unless MERGE_SUBMISSION_MODES.include?(mode)
+      return ["invalid merge_submission policy: mode must be merge_queue_only or " \
+              "merge_queue_or_guarded_direct"]
+    end
+    expected_keys = mode == "merge_queue_only" ? ["mode"] : MERGE_SUBMISSION_KEYS
+    unless exact_string_keys?(seam, expected_keys)
+      return ["invalid merge_submission policy: keys must be exactly #{expected_keys.sort.join(', ')}"]
+    end
+    return [] if mode == "merge_queue_only"
+
+    direct = seam["guarded_direct"]
+    unless exact_string_keys?(direct, GUARDED_DIRECT_KEYS)
+      return ["invalid merge_submission policy: guarded_direct keys must be exactly " \
+              "#{GUARDED_DIRECT_KEYS.sort.join(', ')}"]
+    end
+
+    issues = []
+    executable = direct["executable"]
+    unless valid_guarded_direct_executable_value?(executable)
+      issues << "invalid merge_submission policy: guarded_direct.executable must name one " \
+                "repository-root-relative file under .agents/bin"
+    end
+    unless MERGE_METHODS.include?(direct["method"])
+      issues << "invalid merge_submission policy: guarded_direct.method must be merge, rebase, or squash"
+    end
+
+    acknowledgement = direct["non_atomic_base"]
+    unless exact_string_keys?(acknowledgement, NON_ATOMIC_BASE_KEYS)
+      issues << "invalid merge_submission policy: guarded_direct.non_atomic_base keys must be exactly " \
+                "#{NON_ATOMIC_BASE_KEYS.sort.join(', ')}"
+      return issues
+    end
+    unless acknowledgement["acknowledged"] == true
+      issues << "invalid merge_submission policy: guarded_direct.non_atomic_base.acknowledged must be true"
+    end
+    unless valid_non_atomic_base_rationale?(acknowledgement["rationale"])
+      issues << "invalid merge_submission policy: guarded_direct.non_atomic_base.rationale must be " \
+                "nonempty, resolved single-line prose"
+    end
+    issues.concat(guarded_direct_file_issues(root, executable)) if
+      valid_guarded_direct_executable_value?(executable)
+    issues
+  end
+
+  def exact_string_keys?(mapping, expected_keys)
+    mapping.is_a?(Hash) && mapping.keys.all?(String) && mapping.keys.sort == expected_keys.sort
+  end
+
+  def valid_guarded_direct_executable_value?(value)
+    value.is_a?(String) && value.match?(GUARDED_DIRECT_EXECUTABLE) &&
+      !%w[. ..].include?(File.basename(value))
+  end
+
+  def valid_non_atomic_base_rationale?(value)
+    return false unless value.is_a?(String)
+
+    rationale = value.strip
+    !rationale.empty? && rationale.length <= 500 &&
+      !rationale.match?(/[[:cntrl:]]/) &&
+      !rationale.casecmp?("UNKNOWN") &&
+      !rationale.match?(/<[^>]+>/)
+  end
+
+  def guarded_direct_file_issues(root, relative_path)
+    live_path = File.join(root, relative_path)
+    parent_paths = %w[.agents .agents/bin].map { |component| File.join(root, component) }
+    parent_paths.each do |path|
+      stat = File.lstat(path)
+      return ["invalid merge_submission policy: guarded_direct.executable path contains a symlink"] if
+        stat.symlink?
+      return ["invalid merge_submission policy: guarded_direct.executable parent is not a directory"] unless
+        stat.directory?
+    end
+
+    stat = File.lstat(live_path)
+    return ["invalid merge_submission policy: guarded_direct.executable must be a regular file"] if
+      stat.symlink? || !stat.file?
+    return ["invalid merge_submission policy: guarded_direct.executable is not executable"] unless
+      File.executable?(live_path)
+    return ["invalid merge_submission policy: guarded_direct.executable is not readable"] if
+      (stat.mode & 0o444).zero? || !File.readable?(live_path)
+
+    guarded_direct_git_issues(root, relative_path)
+  rescue Errno::ENOTDIR
+    ["invalid merge_submission policy: guarded_direct.executable parent is not a directory"]
+  rescue Errno::ENOENT, Errno::EACCES
+    ["invalid merge_submission policy: guarded_direct.executable is missing or inaccessible"]
+  end
+
+  def guarded_direct_git_issues(root, relative_path)
+    return [] unless File.exist?(File.join(root, ".git"))
+
+    # The doctor also validates pre-commit adoption worktrees, so the index is
+    # the tracking boundary. pr-merge-submit separately binds runtime bytes to
+    # the trusted-base commit before any guarded direct submission.
+    git = trusted_system_git(root)
+    return ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"] unless git
+
+    account = Etc.getpwuid(Process.uid)
+    environment = {
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_NO_REPLACE_OBJECTS" => "1",
+      "GIT_OPTIONAL_LOCKS" => "0",
+      "GIT_TERMINAL_PROMPT" => "0"
+    }
+    stdout, _stderr, status = Open3.capture3(
+      environment, git, "-C", root, "ls-files", "--stage", "--", relative_path,
+      unsetenv_others: true
+    )
+    unless status.success?
+      return ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
+    end
+
+    lines = stdout.lines(chomp: true)
+    if lines.empty?
+      return ["invalid merge_submission policy: guarded_direct.executable is not tracked by git"]
+    end
+
+    match = lines.one? && lines.first.match(
+      /\A(?<mode>\d{6}) [0-9a-f]+ 0\t(?<path>[^\r\n]+)\z/
+    )
+    unless match && match[:path] == relative_path
+      return ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
+    end
+    return [] if match[:mode] == "100755"
+
+    ["invalid merge_submission policy: guarded_direct.executable git mode must be 100755"]
+  rescue ArgumentError, Errno::ENOENT, Errno::EACCES
+    ["invalid merge_submission policy: guarded_direct.executable git metadata is unavailable"]
+  end
+
+  def trusted_system_git(root)
+    candidate = SYSTEM_TOOL_DIRS
+                .map { |directory| File.join(directory, "git") }
+                .find { |path| File.file?(path) && File.executable?(path) }
+    return unless candidate
+
+    realpath = File.realpath(candidate)
+    root_realpath = File.realpath(root)
+    root_prefix = "#{root_realpath}#{File::SEPARATOR}"
+    return if realpath == root_realpath || realpath.start_with?(root_prefix)
+
+    stat = File.stat(realpath)
+    realpath if stat.file? && File.executable?(realpath)
+  rescue Errno::ENOENT, Errno::EACCES
+    nil
   end
 
   def load_policy_config(path)
