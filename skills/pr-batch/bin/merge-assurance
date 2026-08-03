@@ -8,18 +8,32 @@
 # trusted runtime.
 
 require "digest"
+require "etc"
+require "fileutils"
+require "find"
 require "json"
+require "open3"
 require "optparse"
+require "rbconfig"
 require "tempfile"
 require "time"
 require "uri"
+require "yaml"
 
 module MergeAssurance
   class Error < StandardError; end
 
   CONTEXT_KEYS = %w[
     contract version host repo pr base head_sha authority diff_identity
-    human_merge_decision walkthrough semantic_github_actions_change operations
+    human_merge_decision walkthrough semantic_github_actions_change
+    selected_hosted_runs operations
+  ].freeze
+  SELECTED_HOSTED_RUN_KEYS = %w[provider run_id].freeze
+  SELECTED_HOSTED_RECEIPT_KEYS = %w[
+    head_sha pr provider repository run_id selected_at terminal_result
+  ].freeze
+  SELECTED_HOSTED_TERMINAL_RESULTS = %w[
+    cancelled failed nonterminal success
   ].freeze
   SCOPE_NAMES = %w[
     required_status_check_rollup github_actions dependabot other
@@ -106,18 +120,34 @@ module MergeAssurance
   TRACKER_GH_TIMEOUT_SECONDS = 60
   TRACKER_GH_TERMINATION_GRACE_SECONDS = 0.25
   TRACKER_GH_POLL_SECONDS = 0.01
+  POLICY_CONFIG = ".agents/agent-workflow.yml"
+  SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
+  SELECTED_HOSTED_CI_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  SYSTEM_TOOL_DIRS = %w[
+    /opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin
+  ].freeze
+  TRUSTED_INTERPRETER_DIRS = ([File.dirname(RbConfig.ruby)] + SYSTEM_TOOL_DIRS).uniq.freeze
 
   module_function
 
-  def assess(ci_result:, autonomous_result:, context:, now: Time.now.utc)
+  def assess(
+    ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts: nil,
+    now: Time.now.utc
+  )
     failures = []
     safe_context = context.is_a?(Hash) ? context : {}
     validate_context(context, failures)
     validate_ci(ci_result, safe_context, now, failures)
+    selected_hosted_ci_receipts ||= empty_selected_hosted_ci_receipts
+    validate_selected_hosted_ci(
+      selected_hosted_ci_receipts, safe_context, now, failures
+    )
     validate_autonomous(autonomous_result, safe_context, failures)
     failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
     failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
     failures << "context contains UNKNOWN" if contains_unknown?(context)
+    failures << "selected_hosted_ci_receipts contains UNKNOWN" if
+      contains_unknown?(selected_hosted_ci_receipts)
     validate_authority(safe_context, autonomous_result, now, failures)
     follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
     authenticated_tracker_reads = []
@@ -130,6 +160,7 @@ module MergeAssurance
 
     evidence = {
       "ci_result" => ci_result,
+      "selected_hosted_ci_receipts" => selected_hosted_ci_receipts,
       "autonomous_result" => autonomous_result,
       "context" => context,
       "authenticated_tracker_reads" => authenticated_tracker_reads
@@ -208,6 +239,14 @@ module MergeAssurance
     failures << "context operations must be an array" unless context["operations"].is_a?(Array)
     failures << "context semantic_github_actions_change must be boolean" unless
       [true, false].include?(context["semantic_github_actions_change"])
+    selections = context["selected_hosted_runs"]
+    unless selections.nil? || (selections.is_a?(Array) &&
+      selections.all? do |selection|
+        exact_keys?(selection, SELECTED_HOSTED_RUN_KEYS) &&
+          valid_selected_hosted_identity?(selection["provider"], selection["run_id"])
+      end)
+      failures << "context selected_hosted_runs are invalid"
+    end
   end
 
   def validate_ci(ci_result, context, now, failures)
@@ -243,6 +282,97 @@ module MergeAssurance
       validate_timestamp(scope["checked_at"], now, "ci_result scope #{name}", failures)
     end
     validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
+  end
+
+  def empty_selected_hosted_ci_receipts
+    {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => []
+    }
+  end
+
+  def validate_selected_hosted_ci(receipts, context, now, failures)
+    selections = context["selected_hosted_runs"]
+    selections = [] if selections.nil?
+    unless selections.is_a?(Array) &&
+           selections.all? { |selection| exact_keys?(selection, SELECTED_HOSTED_RUN_KEYS) }
+      failures << "context selected_hosted_runs are invalid"
+      return
+    end
+    invalid_selections = selections.reject do |selection|
+      valid_selected_hosted_identity?(selection["provider"], selection["run_id"])
+    end
+    failures << "context selected_hosted_runs contain invalid identities" if invalid_selections.any?
+    selection_ids = selections.map { |selection| selected_hosted_identity(selection) }
+    failures << "context selected_hosted_runs contain duplicates" unless
+      selection_ids.length == selection_ids.uniq.length
+
+    unless exact_keys?(receipts, %w[complete contract records version]) &&
+           receipts["contract"] == "selected-hosted-ci-receipts" &&
+           receipts["version"] == 1 && receipts["complete"] == true &&
+           receipts["records"].is_a?(Array)
+      failures << "selected hosted CI receipts are incomplete or malformed"
+      return
+    end
+
+    records = receipts["records"]
+    records.each do |record|
+      unless exact_keys?(record, SELECTED_HOSTED_RECEIPT_KEYS)
+        failures << "selected hosted CI receipt is malformed"
+        next
+      end
+      identity = selected_hosted_identity(record)
+      unless valid_selected_hosted_identity?(record["provider"], record["run_id"])
+        failures << "selected hosted CI receipt identity is invalid"
+        next
+      end
+      failures << "selected hosted run #{identity} repository mismatch" unless
+        record["repository"] == context["repo"]
+      failures << "selected hosted run #{identity} PR mismatch" unless
+        record["pr"] == context["pr"]
+      failures << "selected hosted run #{identity} head mismatch" unless
+        record["head_sha"] == context["head_sha"]
+      validate_selected_at(record["selected_at"], now, identity, failures)
+      result = record["terminal_result"]
+      unless SELECTED_HOSTED_TERMINAL_RESULTS.include?(result)
+        failures << "selected hosted run #{identity} terminal result is invalid"
+        next
+      end
+      failures << "selected hosted run #{identity} is #{result}" unless result == "success"
+    end
+
+    record_ids = records.filter_map do |record|
+      selected_hosted_identity(record) if record.is_a?(Hash)
+    end
+    failures << "selected hosted CI receipts contain duplicates" unless
+      record_ids.length == record_ids.uniq.length
+    (selection_ids - record_ids).each do |identity|
+      failures << "selected hosted run #{identity} is missing"
+    end
+    (record_ids - selection_ids).each do |identity|
+      failures << "hosted run #{identity} was not explicitly selected"
+    end
+  end
+
+  def valid_selected_hosted_identity?(provider, run_id)
+    provider.is_a?(String) &&
+      provider.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\z/) &&
+      run_id.is_a?(String) &&
+      run_id.match?(/\A[^\s[:cntrl:]]+\z/)
+  end
+
+  def selected_hosted_identity(record)
+    "#{record['provider']}/#{record['run_id']}"
+  end
+
+  def validate_selected_at(raw, now, identity, failures)
+    selected_at = Time.iso8601(raw.to_s)
+    failures << "selected hosted run #{identity} selection time is too far in the future" if
+      selected_at - now > MAX_FUTURE_SKEW_SECONDS
+  rescue ArgumentError
+    failures << "selected hosted run #{identity} selection time is invalid"
   end
 
   def recompute_ci_scope_state(scope)
@@ -1017,10 +1147,13 @@ module MergeAssurance
       options = parse_options(argv)
       return help if options[:help]
 
+      context = read_json(options[:context], "--context")
+      selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(context)
       result = MergeAssurance.assess(
         ci_result: read_json(options[:ci_result], "--ci-result"),
         autonomous_result: read_json(options[:autonomous_result], "--autonomous-result"),
-        context: read_json(options[:context], "--context")
+        context:,
+        selected_hosted_ci_receipts:
       )
       puts JSON.pretty_generate(result)
       result["eligible"] ? 0 : 1
@@ -1030,6 +1163,284 @@ module MergeAssurance
     end
 
     private
+
+    def load_selected_hosted_ci_receipts!(context)
+      context_failures = []
+      MergeAssurance.validate_context(context, context_failures)
+      context_failures << "context contains UNKNOWN" if MergeAssurance.contains_unknown?(context)
+      raise Error, context_failures.uniq.join("; ") unless context_failures.empty?
+
+      selections = context["selected_hosted_runs"]
+      return MergeAssurance.empty_selected_hosted_ci_receipts if selections.nil? || selections.empty?
+      raise Error, "context selected_hosted_runs must be an array" unless selections.is_a?(Array)
+
+      base_sha = context.dig("base", "sha").to_s
+      raise Error, "context base SHA is invalid for selected hosted CI" unless
+        MergeAssurance.full_sha?(base_sha)
+
+      repo_root = trusted_repo_root!
+      config = load_trusted_policy!(repo_root, base_sha)
+      executable = selected_hosted_ci_executable!(config)
+      trusted_bytes = trusted_executable!(repo_root, base_sha, executable)
+      request = {
+        "contract" => "selected-hosted-ci-receipt-request",
+        "version" => 1,
+        "host" => context["host"],
+        "repository" => context["repo"],
+        "pr" => context["pr"],
+        "head_sha" => context["head_sha"],
+        "selected_runs" => selections
+      }
+      run_selected_hosted_ci_seam!(
+        repo_root:, base_sha:, executable:, trusted_bytes:, request:
+      )
+    end
+
+    def trusted_repo_root!
+      stdout, stderr, status = git_capture("rev-parse", "--show-toplevel", chdir: Dir.pwd)
+      raise Error, "could not resolve consumer repository root: #{failure_output(stdout, stderr)}" unless
+        status.success?
+
+      root = File.realpath(stdout.strip)
+      raise Error, "consumer repository root is invalid" unless File.directory?(root)
+
+      root
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "could not resolve consumer repository root: #{e.message}"
+    end
+
+    def load_trusted_policy!(repo_root, base_sha)
+      raw = trusted_blob!(
+        repo_root, base_sha, POLICY_CONFIG, "trusted-base selected hosted CI policy"
+      )
+      config = YAML.safe_load(
+        raw, permitted_classes: [], permitted_symbols: [], aliases: false
+      )
+      raise Error, "trusted-base selected hosted CI policy must be a mapping" unless config.is_a?(Hash)
+
+      config
+    rescue Psych::Exception => e
+      raise Error, "trusted-base selected hosted CI policy is invalid YAML: #{e.message.lines.first.to_s.strip}"
+    end
+
+    def selected_hosted_ci_executable!(config)
+      seam = config[SELECTED_HOSTED_CI_POLICY_KEY]
+      unless seam.is_a?(Hash) && seam.keys == ["executable"]
+        raise Error, "selected hosted runs require an exact trusted-base " \
+                     "#{SELECTED_HOSTED_CI_POLICY_KEY}.executable seam"
+      end
+      executable = seam["executable"]
+      unless executable.is_a?(String) && executable.match?(SELECTED_HOSTED_CI_EXECUTABLE)
+        raise Error, "trusted-base selected hosted CI executable must name one file under .agents/bin"
+      end
+
+      executable
+    end
+
+    def trusted_executable!(repo_root, base_sha, executable)
+      trusted_bytes = trusted_blob!(
+        repo_root, base_sha, executable, "trusted-base selected hosted CI executable"
+      )
+      stdout, stderr, status = git_capture(
+        "-C", repo_root, "ls-tree", base_sha, "--", executable, chdir: repo_root
+      )
+      unless status.success?
+        raise Error, "trusted-base selected hosted CI executable metadata is unavailable: " \
+                     "#{failure_output(stdout, stderr)}"
+      end
+
+      match = stdout.match(/\A(?<mode>\d{6}) blob [0-9a-f]+\t(?<path>[^\r\n]+)\n?\z/)
+      unless match && match[:mode] == "100755" && match[:path] == executable
+        raise Error, "trusted-base selected hosted CI executable must be one executable regular file"
+      end
+
+      trusted_bytes.b
+    end
+
+    def trusted_blob!(repo_root, base_sha, relative_path, label)
+      stdout, stderr, status = git_capture(
+        "-C", repo_root, "cat-file", "blob", "#{base_sha}:#{relative_path}", chdir: repo_root
+      )
+      raise Error, "#{label} is unavailable: #{failure_output(stdout, stderr)}" unless status.success?
+
+      stdout
+    end
+
+    def run_selected_hosted_ci_seam!(repo_root:, base_sha:, executable:, trusted_bytes:, request:)
+      directory = Dir.mktmpdir("merge-assurance-selected-hosted-ci")
+      File.chmod(0o700, directory)
+      snapshot_root = File.join(directory, "trusted-base")
+      FileUtils.mkdir_p(snapshot_root, mode: 0o700)
+      archive, archive_error, archive_status = git_capture(
+        "-C", repo_root, "archive", "--format=tar", base_sha, chdir: repo_root
+      )
+      unless archive_status.success?
+        raise Error, "could not materialize trusted-base selected hosted CI seam: " \
+                     "#{failure_output(archive, archive_error)}"
+      end
+      tar = resolve_system_tool!("tar", outside_root: repo_root)
+      _tar_out, tar_error, tar_status = Open3.capture3(
+        system_tool_environment, tar, "-xf", "-", "-C", snapshot_root,
+        stdin_data: archive, chdir: snapshot_root, unsetenv_others: true
+      )
+      raise Error, "could not extract trusted-base selected hosted CI seam: #{tar_error.strip}" unless
+        tar_status.success?
+
+      validate_snapshot_symlinks!(snapshot_root)
+      materialized = File.join(snapshot_root, executable)
+      validate_materialized_executable!(snapshot_root, materialized, trusted_bytes)
+      launch = selected_hosted_ci_launch_command!(trusted_bytes, materialized, repo_root)
+      stdout, stderr, status = Open3.capture3(
+        selected_hosted_ci_environment(request), *launch,
+        stdin_data: JSON.generate(request), chdir: snapshot_root, unsetenv_others: true
+      )
+      unless status.success?
+        raise Error, "trusted-base selected hosted CI seam failed: #{failure_output(stdout, stderr)}"
+      end
+
+      parsed = JSON.parse(stdout)
+      raise Error, "trusted-base selected hosted CI seam returned non-object JSON" unless parsed.is_a?(Hash)
+
+      parsed
+    rescue JSON::ParserError => e
+      raise Error, "trusted-base selected hosted CI seam returned invalid JSON: #{e.message}"
+    ensure
+      FileUtils.remove_entry(directory) if directory && File.exist?(directory)
+    end
+
+    def validate_materialized_executable!(snapshot_root, executable, trusted_bytes)
+      realpath = File.realpath(executable)
+      prefix = "#{File.realpath(snapshot_root)}#{File::SEPARATOR}"
+      stat = File.lstat(executable)
+      unless realpath.start_with?(prefix) && !stat.symlink? && stat.file? &&
+             File.executable?(realpath) && File.binread(realpath) == trusted_bytes
+        raise Error, "materialized selected hosted CI executable is unsafe or mismatched"
+      end
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "materialized selected hosted CI executable is unavailable: #{e.message}"
+    end
+
+    def validate_snapshot_symlinks!(snapshot_root)
+      root = File.realpath(snapshot_root)
+      prefix = "#{root}#{File::SEPARATOR}"
+      Find.find(root) do |path|
+        next unless File.lstat(path).symlink?
+
+        resolved = File.realpath(path)
+        next if resolved == root || resolved.start_with?(prefix)
+
+        raise Error, "trusted-base selected hosted CI snapshot contains an escaping symlink"
+      rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe symlink"
+      end
+    end
+
+    def selected_hosted_ci_launch_command!(trusted_bytes, executable, repo_root)
+      shebang = trusted_bytes.lines.first
+      match = shebang&.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
+      raise Error, "trusted-base selected hosted CI executable needs a supported explicit shebang" unless match
+
+      interpreter = match[:interpreter]
+      argument = match[:argument]
+      if interpreter == "/usr/bin/env"
+        unless argument&.match?(/\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/)
+          raise Error, "trusted-base selected hosted CI /usr/bin/env shebang must name one fixed program"
+        end
+
+        interpreter = resolve_env_interpreter!(argument, repo_root)
+        [interpreter, executable]
+      else
+        [resolve_absolute_interpreter!(interpreter, repo_root), *[argument].compact, executable]
+      end
+    end
+
+    def resolve_env_interpreter!(program, repo_root)
+      candidate = if program == File.basename(RbConfig.ruby)
+                    RbConfig.ruby
+                  else
+                    TRUSTED_INTERPRETER_DIRS
+                      .map { |directory| File.join(directory, program) }
+                      .find { |path| File.file?(path) && File.executable?(path) }
+                  end
+      raise Error, "trusted-base selected hosted CI interpreter is unavailable: #{program}" unless candidate
+
+      resolve_absolute_interpreter!(candidate, repo_root)
+    end
+
+    def resolve_absolute_interpreter!(path, repo_root)
+      realpath = File.realpath(path)
+      repo_prefix = "#{File.realpath(repo_root)}#{File::SEPARATOR}"
+      stat = File.stat(realpath)
+      unless !realpath.start_with?(repo_prefix) && stat.file? && File.executable?(realpath)
+        raise Error, "trusted-base selected hosted CI interpreter is unsafe: #{path}"
+      end
+
+      realpath
+    rescue Errno::ENOENT, Errno::EACCES
+      raise Error, "trusted-base selected hosted CI interpreter is unavailable: #{path}"
+    end
+
+    def selected_hosted_ci_environment(request)
+      environment = system_tool_environment.merge(
+        "GH_HOST" => request.fetch("host"),
+        "GH_REPO" => request.fetch("repository"),
+        "SELECTED_HOSTED_CI_PR" => request.fetch("pr").to_s,
+        "SELECTED_HOSTED_CI_HEAD_SHA" => request.fetch("head_sha").to_s
+      )
+      ENV.each do |name, value|
+        environment[name] = value if name.match?(/\A[A-Z][A-Z0-9_]*(?:TOKEN|API_KEY)\z/) &&
+                                     !value.empty?
+      end
+      environment
+    end
+
+    def system_tool_environment
+      account = Etc.getpwuid(Process.uid)
+      {
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_NO_REPLACE_OBJECTS" => "1",
+        "GIT_OPTIONAL_LOCKS" => "0",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+    rescue ArgumentError
+      raise Error, "local account identity is unavailable"
+    end
+
+    def git_capture(*args, chdir:)
+      git = resolve_system_tool!("git", outside_root: chdir)
+      Open3.capture3(
+        system_tool_environment, git, *args, chdir:, unsetenv_others: true
+      )
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "git could not be launched after trusted resolution: #{e.message}"
+    end
+
+    def resolve_system_tool!(name, outside_root:)
+      candidate = SYSTEM_TOOL_DIRS
+                  .map { |directory| File.join(directory, name) }
+                  .find { |path| File.file?(path) && File.executable?(path) }
+      raise Error, "#{name} is unavailable in approved system tool directories" unless candidate
+
+      realpath = File.realpath(candidate)
+      root = File.realpath(outside_root)
+      prefix = "#{root}#{File::SEPARATOR}"
+      raise Error, "#{name} must resolve outside the consumer repository" if
+        realpath == root || realpath.start_with?(prefix)
+
+      realpath
+    rescue Errno::ENOENT, Errno::EACCES
+      raise Error, "#{name} is unavailable in approved system tool directories"
+    end
+
+    def failure_output(stdout, stderr)
+      text = [stderr, stdout].map(&:to_s).map(&:strip).reject(&:empty?).join(" | ")
+      text.empty? ? "no diagnostic output" : text.lines.first.to_s.strip
+    end
 
     def parse_options(argv)
       options = {}

@@ -77,6 +77,50 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty guard_log
   end
 
+  def test_selected_hosted_ci_non_success_receipts_block_queue_and_guarded_direct
+    cases = %i[
+      selected_hosted_missing
+      selected_hosted_cancelled
+      selected_hosted_failed
+      selected_hosted_nonterminal
+    ]
+    routes = {
+      "queue" => { mode: "queue", merge_submission: SOURCE_REPO_POLICY },
+      "guarded-direct" => {
+        mode: "guard_success", merge_submission: guarded_direct_policy
+      }
+    }
+
+    unexpectedly_mutated = routes.each_with_object([]) do |(route, route_options), failures|
+      cases.each do |receipt_mode|
+        result, log, guard_log = run_cli(
+          **route_options, receipt_mode:
+        )
+        failures << "#{route}/#{receipt_mode}" if
+          result.fetch(:status).success? || !log.empty? || !guard_log.empty?
+      end
+    end
+
+    assert_empty unexpectedly_mutated
+  end
+
+  def test_selected_hosted_ci_success_receipt_replays_for_queue_and_guarded_direct
+    queue_result, queue_log = run_cli(
+      mode: "queue", receipt_mode: :selected_hosted_success
+    )
+    guard_result, guard_log, guard_command_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      receipt_mode: :selected_hosted_success
+    )
+
+    assert queue_result.fetch(:status).success?, queue_result.fetch(:stderr)
+    assert_includes queue_log, "enqueuePullRequest"
+    assert guard_result.fetch(:status).success?, guard_result.fetch(:stderr)
+    refute_empty guard_log
+    refute_empty guard_command_log
+  end
+
   def test_explicit_queue_only_policy_also_refuses_queue_disabled_submission
     result, log, guard_log = run_cli(
       mode: "direct",
@@ -1799,6 +1843,11 @@ class PrMergeSubmitTest < Minitest::Test
     }
     tracker = semantic_tracker(host:, repo:, pr_number:)
     semantic = mode.to_s.start_with?("semantic")
+    selected_hosted = mode.to_s.start_with?("selected_hosted")
+    selected_hosted_run = {
+      "provider" => "circleci",
+      "run_id" => "selected-workflow"
+    }
     context = {
       "contract" => "merge-assurance-context",
       "version" => 1,
@@ -1812,11 +1861,25 @@ class PrMergeSubmitTest < Minitest::Test
       "human_merge_decision" => nil,
       "walkthrough" => nil,
       "semantic_github_actions_change" => semantic,
+      "selected_hosted_runs" => selected_hosted ? [selected_hosted_run] : [],
       "operations" => semantic ? [tracker] : []
     }
+    selected_hosted_receipts = MergeAssurance.empty_selected_hosted_ci_receipts
+    if selected_hosted
+      selected_hosted_receipts["records"] = [{
+        **selected_hosted_run,
+        "repository" => repo,
+        "pr" => pr_number,
+        "head_sha" => head,
+        "selected_at" => checked_at,
+        "terminal_result" => "success"
+      }]
+    end
     receipt = with_fake_gh(gh_dir) do
       MergeAssurance.assess(
-        ci_result:, autonomous_result:, context:, now:
+        ci_result:, autonomous_result:, context:,
+        selected_hosted_ci_receipts: selected_hosted_receipts,
+        now:
       )
     end
     raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
@@ -1851,6 +1914,14 @@ class PrMergeSubmitTest < Minitest::Test
       receipt.dig(
         "evidence", "authenticated_tracker_reads", 0, "issue_metadata"
       )["title"] = "UNKNOWN"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :selected_hosted_missing
+      receipt.dig("evidence", "selected_hosted_ci_receipts")["records"] = []
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :selected_hosted_cancelled, :selected_hosted_failed, :selected_hosted_nonterminal
+      receipt.dig(
+        "evidence", "selected_hosted_ci_receipts", "records", 0
+      )["terminal_result"] = mode.to_s.delete_prefix("selected_hosted_")
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     end
     File.write(path, JSON.generate(receipt))

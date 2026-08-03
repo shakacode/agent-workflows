@@ -563,6 +563,17 @@ a trusted coordinator-owned merge context. `pr-ci-readiness` v2 owns the scoped,
 exact-head required-status, GitHub Actions, Dependabot, and other CI evidence;
 legacy v1 CI output is not sufficient.
 
+When a hosted workflow outside the ordinary GitHub check scopes is explicitly
+selected, add its exact `{provider, run_id}` to merge-context
+`selected_hosted_runs`. A nonempty selection requires the trusted-base
+`selected_hosted_ci_receipts.executable` seam. `merge-assurance` runs that one
+repository-owned `.agents/bin` executable from a private materialization of the
+trusted base, never from PR-head bytes. Its provider-neutral records bind
+repository, PR, exact head, run ID, selection time, and terminal result.
+Missing, mismatched, cancelled, failed, nonterminal, malformed, or `UNKNOWN`
+selected-run evidence blocks. `success` is the only passing result. An empty
+selection invokes no seam and gates no incidental hosted run.
+
 Run:
 
 ```bash
@@ -575,9 +586,10 @@ Run:
 `merge-assurance` alone owns merge-authority, follow-up accounting, and
 `UNKNOWN` policy at this final boundary. Every merge caller must generate a
 fresh eligible receipt and pass it to `pr-merge-submit`; the submit helper
-requires it unconditionally. `merge_authority: none` remains a no-merge state
-and can never produce an eligible receipt. Keep this gate conceptually separate
-from batch-plan preflight.
+requires it unconditionally and replays the selected-run records before either
+queue or guarded-direct submission. `merge_authority: none` remains a no-merge
+state and can never produce an eligible receipt. Keep this gate conceptually
+separate from batch-plan preflight.
 
 ## Goal Prompt Template
 
