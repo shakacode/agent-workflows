@@ -10,6 +10,20 @@ require "openssl"
 require "tmpdir"
 
 HELPER = File.expand_path("dispatcher-capability-preflight", __dir__)
+ROOT = File.expand_path("../../..", __dir__)
+LAUNCH_OBSERVATION_FIELDS = %w[
+  type version confirmation_id key_id lane_id route dispatcher instance_id launch_token actual_host actual_model
+  actual_effort binding_source attestation observed_at routing_mode inherited evidence_ref
+].freeze
+LAUNCH_OBSERVATION_PROSE_FIELDS = [
+  "type: dispatcher-launch-observation", "version: 1",
+  *LAUNCH_OBSERVATION_FIELDS.drop(2)
+].freeze
+LAUNCH_OBSERVATION_GUIDES = %w[
+  skills/pr-batch/SKILL.md
+  workflows/pr-processing.md
+  skills/triage/SKILL.md
+].freeze
 
 class DispatcherCapabilityPreflightTest < Minitest::Test
   def dispatch(input, env_or_helper = {}, helper = HELPER)
@@ -51,6 +65,31 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     payload = JSON.generate(canonicalize(launch_observation_payload(confirmation)))
     signature = signing_key.sign(OpenSSL::Digest.new("SHA256"), payload)
     confirmation.merge("signature" => Base64.strict_encode64(signature))
+  end
+
+  def test_launch_observation_helper_shape_and_authoritative_field_lists_have_exact_order_parity
+    helper_source = File.read(HELPER, encoding: "UTF-8")
+    payload_source = helper_source[/def launch_observation_payload\(confirmation\)(.*?)^end$/m, 1]
+    refute_nil payload_source
+    helper_fields = payload_source.scan(/^\s+"([^"]+)"\s*=>/).flatten
+    assert_equal LAUNCH_OBSERVATION_FIELDS, helper_fields
+
+    shape_source = helper_source[/def confirmation_shape\?\(confirmation\)(.*?)^end$/m, 1]
+    refute_nil shape_source
+    host_validator = 'nonempty_string?(confirmation["actual_host"])'
+    assert_includes shape_source, host_validator
+    assert_operator shape_source.index(host_validator), :<, shape_source.index('confirmation["actual_model"]'),
+                    "actual_host validation must precede route-field validation"
+
+    LAUNCH_OBSERVATION_GUIDES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      field_sentence = text.match(
+        /fields (`type: dispatcher-launch-observation`.*?); `signature` is its strict Base64/m
+      )
+      refute_nil field_sentence, "#{relative_path} must carry the canonical signed field list"
+      assert_equal LAUNCH_OBSERVATION_PROSE_FIELDS, field_sentence[1].scan(/`([^`]+)`/).flatten,
+                   "#{relative_path} signed field list must match helper order exactly"
+    end
   end
 
   def dispatcher_signing_key
