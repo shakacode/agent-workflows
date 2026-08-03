@@ -2839,8 +2839,8 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", data.dig("scopes", "required_status_check_rollup", "state")
       assert_equal false, data.dig("scopes", "other", "gates_verdict")
       assert_equal "NOT_APPLICABLE", data.dig("scopes", "other", "state")
-      assert_equal ["approval-held external check"],
-                   data.dig("scopes", "other", "informational_rows").map { |row| row.fetch("name") }
+      informational_names = data.dig("scopes", "other", "informational_rows").map { |row| row.fetch("name") }
+      assert_equal ["approval-held external check"], informational_names
     end
   end
 
