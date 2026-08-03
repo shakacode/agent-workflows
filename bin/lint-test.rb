@@ -103,17 +103,23 @@ class LintCommandTest < Minitest::Test
     Dir.mktmpdir("lint-ruby-files") do |directory|
       ruby_file = File.join(directory, "tool.rb")
       rake_file = File.join(directory, "tasks.rake")
+      gemspec_file = File.join(directory, "example.gemspec")
+      rackup_file = File.join(directory, "config.ru")
       gemfile = File.join(directory, "Gemfile")
       script = File.join(directory, "script")
       markdown = File.join(directory, "README.md")
       File.write(ruby_file, "puts :ruby\n")
       File.write(rake_file, "task :default\n")
+      File.write(gemspec_file, "Gem::Specification.new\n")
+      File.write(rackup_file, "run ->(_env) { [200, {}, []] }\n")
       File.write(gemfile, "source 'https://rubygems.org'\n")
       File.write(script, "#!/usr/bin/env ruby\n")
       File.write(markdown, "# Not Ruby\n")
 
       assert runner.send(:ruby_file?, ruby_file)
       assert runner.send(:ruby_file?, rake_file)
+      assert runner.send(:ruby_file?, gemspec_file)
+      assert runner.send(:ruby_file?, rackup_file)
       assert runner.send(:ruby_file?, gemfile)
       assert runner.send(:ruby_file?, script)
       refute runner.send(:ruby_file?, markdown)
@@ -140,6 +146,7 @@ class LintCommandTest < Minitest::Test
     assert_includes workflow, "bin/lint --version markdownlint-cli2"
     assert_includes workflow, "bin/lint --version yamllint"
     assert_includes workflow, "sha256sum --check"
+    assert_includes workflow, "persist-credentials: false"
     assert_includes workflow, "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
     assert_includes workflow, "ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b"
     assert_includes workflow, "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"

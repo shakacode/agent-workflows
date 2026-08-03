@@ -64,7 +64,7 @@ class LintRunner
   end
 
   def ruby_file?(path)
-    return true if path.end_with?(".rb", ".rake")
+    return true if path.end_with?(".rb", ".rake", ".gemspec", ".ru")
     return true if File.basename(path).match?(/\A(?:Gemfile|Rakefile)\z/)
 
     first_line(path)&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)ruby(?:\s|\z)})
