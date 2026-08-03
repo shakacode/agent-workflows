@@ -355,6 +355,56 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_cli_blocks_duplicate_selected_hosted_runs_before_seam_launch
+    with_selected_hosted_ci_cli_fixture do |fixture|
+      selections = fixture.fetch(:context).fetch("selected_hosted_runs")
+      selections << selections.first.dup
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+      result = JSON.parse(stdout)
+
+      assert_empty stderr
+      assert_equal 1, status.exitstatus
+      assert_equal ["context selected_hosted_runs contain duplicates"], result.fetch("failures")
+      refute File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was launched"
+    end
+  end
+
+  def test_runner_resamples_time_after_seam_before_rechecking_ci_freshness
+    preflight_now = Time.iso8601("2026-08-03T00:00:00Z")
+    final_now = preflight_now + MergeAssurance::MAX_EVIDENCE_AGE_SECONDS + 1
+    with_selected_hosted_ci_cli_fixture(selected_at: preflight_now.iso8601) do |fixture|
+      set_fixture_ci_checked_at(fixture, preflight_now - 1)
+      stdout, stderr, exit_code, clock_calls = run_selected_hosted_ci_runner_fixture(
+        fixture, times: [preflight_now, final_now]
+      )
+      result = JSON.parse(stdout)
+
+      assert_empty stderr
+      assert_equal 1, exit_code, "post-seam assessment reused the preflight clock"
+      assert_equal 2, clock_calls
+      assert_includes result.fetch("failures"), "ci_result evidence is stale"
+      assert File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was not launched"
+    end
+  end
+
+  def test_runner_uses_post_seam_time_for_selected_at_and_issued_at
+    preflight_now = Time.iso8601("2026-08-03T00:00:00Z")
+    final_now = preflight_now + MergeAssurance::MAX_FUTURE_SKEW_SECONDS + 1
+    with_selected_hosted_ci_cli_fixture(selected_at: final_now.iso8601) do |fixture|
+      set_fixture_ci_checked_at(fixture, preflight_now - 1)
+      stdout, stderr, exit_code, clock_calls = run_selected_hosted_ci_runner_fixture(
+        fixture, times: [preflight_now, final_now]
+      )
+      result = JSON.parse(stdout)
+
+      assert_empty stderr
+      assert_equal 0, exit_code, "fresh post-seam selected_at was compared to the preflight clock"
+      assert_equal 2, clock_calls
+      assert_equal final_now.iso8601, result.fetch("issued_at")
+      assert File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was not launched"
+    end
+  end
+
   def test_selected_hosted_ci_policy_credential_allowlist_is_exact_and_fail_closed
     runner = MergeAssurance::Runner.new
     executable = ".agents/bin/selected-hosted-ci-receipts"
@@ -813,6 +863,49 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes failures.fetch("missing"), "selected hosted run circleci/selected-run is missing"
     assert_includes failures.fetch("stale-head"), "selected hosted run circleci/selected-run head mismatch"
     assert_includes failures.fetch("mismatched-pr"), "selected hosted run circleci/selected-run PR mismatch"
+  end
+
+  def test_direct_assess_preserves_duplicate_selected_run_failure_order
+    selection = { "provider" => "circleci", "run_id" => "selected-run" }
+    merge_context = context(
+      "auto_merge_when_gates_pass", selected_hosted_runs: [selection, selection.dup]
+    )
+    receipts = MergeAssurance.empty_selected_hosted_ci_receipts
+    receipts["records"] = [{
+      **selection,
+      "repository" => merge_context.fetch("repo"),
+      "pr" => merge_context.fetch("pr"),
+      "head_sha" => merge_context.fetch("head_sha"),
+      "selected_at" => "2026-07-30T11:59:00Z",
+      "terminal_result" => "failed"
+    }]
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      selected_hosted_ci_receipts: receipts,
+      now: NOW
+    )
+
+    assert_equal [
+      "context selected_hosted_runs contain duplicates",
+      "selected hosted run circleci/selected-run is failed"
+    ], result.fetch("failures")
+  end
+
+  def test_direct_assess_preserves_nil_selected_hosted_runs_as_empty
+    merge_context = context("auto_merge_when_gates_pass")
+    merge_context["selected_hosted_runs"] = nil
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
   end
 
   def test_malformed_selected_hosted_ci_record_has_only_primary_and_missing_failures
@@ -2389,7 +2482,9 @@ class MergeAssuranceTest < Minitest::Test
     File.chmod(0o755, path)
   end
 
-  def with_selected_hosted_ci_cli_fixture(host: "github.com")
+  def with_selected_hosted_ci_cli_fixture(
+    host: "github.com", selected_at: (Time.now.utc - 1).iso8601
+  )
     Dir.mktmpdir("merge-assurance-local-preflight") do |repo_root|
       seam_marker = File.join(repo_root, "selected-hosted-ci-seam-called")
       run_git!(repo_root, "init", "-q")
@@ -2410,6 +2505,7 @@ class MergeAssuranceTest < Minitest::Test
         selected_hosted_ci_seam_script(
           marker: seam_marker,
           terminal_result: "success",
+          selected_at:,
           required_credential: %w[HOSTED_CI_TOKEN preflight-secret]
         )
       )
@@ -2449,6 +2545,56 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def run_selected_hosted_ci_cli_fixture(fixture)
+    arguments = write_selected_hosted_ci_cli_fixture(fixture)
+    Open3.capture3(
+      { "PATH" => @original_path, "HOSTED_CI_TOKEN" => "preflight-secret" },
+      RbConfig.ruby, SCRIPT, *arguments,
+      chdir: fixture.fetch(:repo_root)
+    )
+  end
+
+  def run_selected_hosted_ci_runner_fixture(fixture, times:)
+    arguments = write_selected_hosted_ci_cli_fixture(fixture)
+    clock_calls = 0
+    original_time_now = Time.method(:now)
+    clock = lambda do
+      caller_location = caller_locations(1, 1).first
+      if caller_location&.absolute_path == SCRIPT && caller_location.base_label == "run"
+        value = times.fetch(clock_calls)
+        clock_calls += 1
+        value
+      else
+        original_time_now.call
+      end
+    end
+    exit_code = nil
+    previous_credential = ENV["HOSTED_CI_TOKEN"]
+    ENV["HOSTED_CI_TOKEN"] = "preflight-secret"
+    Time.define_singleton_method(:now, &clock)
+    stdout, stderr = capture_io do
+      Dir.chdir(fixture.fetch(:repo_root)) do
+        exit_code = MergeAssurance::Runner.new.run(arguments)
+      end
+    end
+    [stdout, stderr, exit_code, clock_calls]
+  ensure
+    Time.define_singleton_method(:now, original_time_now) if original_time_now
+    if previous_credential
+      ENV["HOSTED_CI_TOKEN"] = previous_credential
+    else
+      ENV.delete("HOSTED_CI_TOKEN")
+    end
+  end
+
+  def set_fixture_ci_checked_at(fixture, checked_at)
+    ci_result = fixture.fetch(:ci_result)
+    ci_result["checked_at"] = checked_at.iso8601
+    ci_result.fetch("scopes").each_value do |scope|
+      scope["checked_at"] = checked_at.iso8601
+    end
+  end
+
+  def write_selected_hosted_ci_cli_fixture(fixture)
     repo_root = fixture.fetch(:repo_root)
     paths = {
       ci: File.join(repo_root, "ci.json"),
@@ -2458,14 +2604,11 @@ class MergeAssuranceTest < Minitest::Test
     File.write(paths.fetch(:ci), JSON.generate(fixture.fetch(:ci_result)))
     File.write(paths.fetch(:autonomous), JSON.generate(fixture.fetch(:autonomous_result)))
     File.write(paths.fetch(:context), JSON.generate(fixture.fetch(:context)))
-    Open3.capture3(
-      { "PATH" => @original_path, "HOSTED_CI_TOKEN" => "preflight-secret" },
-      RbConfig.ruby, SCRIPT,
+    [
       "--ci-result", paths.fetch(:ci),
       "--autonomous-result", paths.fetch(:autonomous),
-      "--context", paths.fetch(:context),
-      chdir: repo_root
-    )
+      "--context", paths.fetch(:context)
+    ]
   end
 
   def capture_process_group_with_deadline(environment, *command, chdir:, deadline_seconds:)
@@ -2521,7 +2664,7 @@ class MergeAssuranceTest < Minitest::Test
 
   def selected_hosted_ci_seam_script(
     marker:, terminal_result:, required_credential: nil, absent_credential: nil,
-    account_home: nil
+    account_home: nil, selected_at: (Time.now.utc - 1).iso8601
   )
     record = {
       "provider" => "circleci",
@@ -2529,7 +2672,7 @@ class MergeAssuranceTest < Minitest::Test
       "pr" => 42,
       "head_sha" => HEAD_SHA,
       "run_id" => "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa",
-      "selected_at" => (Time.now.utc - 1).iso8601,
+      "selected_at" => selected_at,
       "terminal_result" => terminal_result
     }
     payload = {
