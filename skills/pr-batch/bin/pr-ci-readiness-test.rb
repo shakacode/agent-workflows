@@ -2805,10 +2805,21 @@ class PrCiReadinessCliTest < Minitest::Test
     with_fake_gh(
       required_json: "",
       full_json: '[{"name":"unrelated advisory","bucket":"pending"}]',
-      pr_head: "abc123",
+      pr_head: "a" * 40,
+      exact_check_runs: [
+        {
+          "id" => 99,
+          "name" => "test-suite",
+          "status" => "in_progress",
+          "conclusion" => nil,
+          "head_sha" => "a" * 40,
+          "html_url" => "https://example.test/checks/99",
+          "app" => { "slug" => "circleci-checks" }
+        }
+      ],
       runs: {
         "42" => {
-          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "a" * 40, "status" => "completed",
                  "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
           jobs: [
             { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "success",
@@ -2824,6 +2835,8 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal false, data["required_used"]
       assert_empty data["pending"]
       assert_empty data.fetch("requested_hosted").fetch("pending")
+      assert_equal "NOT_APPLICABLE", data.dig("scopes", "other", "state")
+      assert_equal ["test-suite"], data.dig("scopes", "other", "informational_rows").map { |row| row.fetch("name") }
     end
   end
 

@@ -125,7 +125,7 @@ module PrCiReadiness
     "UNKNOWN"
   end
 
-  def evidence_scope(source:, head_sha:, complete:, rows:, checked_at:, error: nil)
+  def evidence_scope(source:, head_sha:, complete:, rows:, checked_at:, error: nil, informational_rows: [])
     normalized_rows = rows.is_a?(Array) ? rows : []
     row_states = normalized_rows.map { |row| evidence_row_state(row) }
     state =
@@ -148,6 +148,8 @@ module PrCiReadiness
       "rows" => normalized_rows,
       "checked_at" => checked_at
     }
+    normalized_informational_rows = informational_rows.is_a?(Array) ? informational_rows : []
+    result["informational_rows"] = normalized_informational_rows if normalized_informational_rows.any?
     result["error"] = error.to_s unless error.to_s.empty?
     result["error"] ||= "one or more rows had an unknown state" if state == "UNKNOWN" && complete == true
     result
@@ -178,7 +180,7 @@ module PrCiReadiness
   def inventory_scopes(
     head_sha:, checked_at:, required_rows:, required_complete:, actions_rows:,
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
-    statuses_complete:, errors: {}
+    statuses_complete:, errors: {}, gate_other_rows: true
   )
     required_identities = required_rows.filter_map do |row|
       producer = row["workflow"].to_s.strip
@@ -214,7 +216,9 @@ module PrCiReadiness
       "other" => evidence_scope(
         source: "github.checks_and_statuses.exact_head.non_required",
         head_sha:, complete: check_runs_complete && statuses_complete,
-        rows: other_rows, checked_at:, error: errors["other"]
+        rows: gate_other_rows ? other_rows : [],
+        informational_rows: gate_other_rows ? [] : other_rows,
+        checked_at:, error: errors["other"]
       )
     }
   end
@@ -562,7 +566,8 @@ module PrCiReadiness
         check_runs_complete: inventory.fetch(:check_runs_complete),
         statuses: inventory.fetch(:statuses),
         statuses_complete: inventory.fetch(:statuses_complete),
-        errors: inventory.fetch(:errors)
+        errors: inventory.fetch(:errors),
+        gate_other_rows: !requested_hosted_only
       )
       contract = PrCiReadiness.evidence_contract(
         repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
