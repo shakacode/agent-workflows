@@ -485,10 +485,15 @@ keys. `credential_env` is a unique array of uppercase names ending in exactly
 one of `_TOKEN`, `_API_KEY`, `_SECRET`, `_PASSWORD`, `_CREDENTIALS`,
 `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, or `_PRIVATE_KEY`; every declared value
 must be present and nonempty. Loader controls and arbitrary names are rejected.
-Only declared credentials are forwarded, and target-binding or hardened runtime
-variables cannot be declared. `merge-assurance` runs the one repository-owned
-`.agents/bin` executable from a private materialization of the trusted base,
-never from PR-head bytes. Its provider-neutral records bind repository, PR,
+Only declared credential environment values are forwarded, and target-binding
+or hardened runtime variables cannot be declared. `merge-assurance` runs the
+one repository-owned `.agents/bin` executable from a private materialization of
+the trusted base, never from PR-head bytes. The seam process alone receives a
+fresh empty `0700` `HOME` inside that private temp directory, distinct from the
+account home; git/archive/tar setup does not receive it. Account dotfiles and
+provider credential files are therefore absent from that private `HOME`.
+Credential values copied into the seam environment enter only through declared
+`credential_env` names. Its provider-neutral records bind repository, PR,
 exact head, run ID, selection time, and terminal result.
 Seam execution defaults to a 60-second bound, configurable only as a positive
 finite `MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS` value. Timeout or a
