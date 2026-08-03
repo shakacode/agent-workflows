@@ -79,6 +79,143 @@ When a backend lacks one of those optional capabilities, agents should write
 fallback rules in the workflow. Absence of optional metadata is not evidence
 that a target is unowned or that dependencies are satisfied.
 
+## Batch Provenance Manifest
+
+When the selected private backend supports batch registration, register the
+batch only after the coordinator has assembled provenance for the exact Agent
+Workflows pack and routes that will run it. The manifest is backend-neutral and
+remains ordinary JSON; an `agent-coord` compatible backend accepts it through
+its batch-registration seam. A representative dry-run manifest is:
+
+```json
+{
+  "batch_id": "batch-20260723-a",
+  "repo": "OWNER/REPO",
+  "objective": "Process the approved targets",
+  "pack_sha": "0123456789abcdef0123456789abcdef01234567",
+  "coordinator_route": {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "binding_source": "instance-bound-runtime-metadata"
+  },
+  "lanes": [
+    {
+      "name": "implementation",
+      "owner": "batch-a-implementation",
+      "targets": ["issue:123"],
+      "host": "codex",
+      "worker_route": {
+        "model": "gpt-5.6-terra",
+        "effort": "high",
+        "binding_source": "dispatcher-bound"
+      }
+    }
+  ]
+}
+```
+
+`pack_sha` is the verified full git SHA of the loaded Agent Workflows pack, or
+the verified installed-release identifier when the pack is not a git checkout.
+Resolve it from the pack that supplied the loaded skill and workflow, not the
+consumer repository, a different installed copy, or the latest remote ref. A
+dirty source checkout does not identify its loaded contents by `HEAD` alone;
+record literal `UNKNOWN` unless a trusted installed-release identifier covers
+those exact files.
+
+`coordinator_route` and each lane's `worker_route` carry `model`, `effort`, and
+`binding_source`. Each lane also carries its actual host (`codex`, `claude`, or
+another verified host identifier). Take route and binding values from launch
+assurance and the persisted dispatcher selection; do not infer them from prompt
+text, mutable defaults, or the coordinator's route. Any unverifiable scalar is
+literal `UNKNOWN`. Register this manifest after dispatcher selection is
+persisted and before the worker launch so downstream consumers can group batch
+outcomes by `pack_sha`, coordinator route, worker route, and host.
+
+After every accepted host-observed `launch-confirmation v2`, reconcile and
+update the registered manifest before treating that lane as active. When
+fallback, escalation, or replacement changes the observed actual host, model,
+effort, or binding source, persist the observed value for that exact field,
+preserve every other verified field, and write literal `UNKNOWN` only for each
+individual field the observation cannot verify. Never replace a whole route or
+lane entry with `UNKNOWN`.
+
+The accepted confirmation's actual host comes only from the signed
+`actual_host` field in its canonical dispatcher observation payload. A missing,
+blank, unsigned, or literal `UNKNOWN` actual host cannot satisfy exact-policy
+activation; keep the lane `launch-pending` until a fresh qualifying observation
+verifies it.
+
+Before requiring a reconciliation write, detect whether the backend advertises
+a registration update/upsert/reconciliation capability. For an unadvertised or
+unsupported create-only backend, record each affected registration field
+`UNKNOWN`; this does not undo an authenticated confirmation, but activation
+proceeds only when every launch-acceptance field is verified and otherwise
+remains `launch-pending`. An advertised update uses the same bounded safe
+executable-plus-opaque-argv contract below; timeout or failure records affected
+fields `UNKNOWN` and must not wedge activation or reconciliation handoff.
+
+Every advertised batch-registration invocation must provide a safe executable
+and ordered opaque argv as separate values. Resolve that backend-advertised
+executable-plus-argv seam without shell evaluation, preserve every argument as
+one argument, and run it with a finite hard deadline in its own process group.
+On expiry terminate the whole group with `TERM`, then `KILL` after a finite
+grace period. Timeout, forced termination, or an unsafe advertisement records
+best-effort field-granular `UNKNOWN`; worker launch continues and the durable
+handoff names the exact reconciliation needed.
+
+When the backend is `n/a`, keep the same provenance in the durable coordinator
+handoff instead of inventing a registration surface. A degraded registration
+write is `UNKNOWN`; preserve the manifest locally and report the exact retry or
+reconciliation needed.
+
+## Operational Signal Events
+
+An active private backend may expose a typed event interface. The portable
+workflow emits these signals at existing checkpoints, alongside its prose
+packets and handoffs:
+
+- `help_requested` requires `reason`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+- `escalation_requested` requires nonempty `from_route`, `to_route`, and
+  `evidence`.
+- `error` requires `severity` (`P0`, `P1`, `P2`, or `P3`), nonempty `category`,
+  and nonempty `message`.
+- `human_intervention` requires `kind`: `takeover`, `supersede`, `manual-fix`,
+  or `drain`.
+
+Include batch, lane, agent, repository, target, branch, and status context when
+known. Typed payload fields remain data rather than path components. Event
+writes are best-effort for the primary operation. Backend `n/a` skips silently.
+Typed-event transport is optional: when an active private backend does not
+advertise it or reports it unsupported, record
+`typed event transport: unavailable`, skip the emission, and continue without
+marking the event emission `UNKNOWN`. Only after the transport is advertised
+does an attempted write that fails, degrades, or is rejected become `UNKNOWN`
+handoff evidence. Every attempted advertised typed-event write must resolve the
+backend-advertised event executable and ordered opaque argv; a missing,
+malformed, or unsafe advertisement is an attempted-write failure. Run that
+exact executable and separate argv without shell evaluation, with a finite
+deadline in its own process group, preserving each opaque argument; on expiry
+terminate the whole group with `TERM`, then `KILL` after a finite grace period.
+A deadline expiry, forced termination, or any other advertised-support write
+failure records best-effort `UNKNOWN` event evidence; the primary operation
+continues immediately without waiting further on the event. Public claim
+comments are not a typed event transport.
+
+Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
+own those lifecycle events; workers do not duplicate them. After terminal
+releases, run a read-only check only when the active backend advertises an
+`agent-coord`-compatible telemetry-completeness audit capability bound to the
+following process contract. Executable: `agent-coord`. Arguments, in order and
+as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.
+Pass the opaque batch ID as exactly one argument value through a
+process/argument-vector API. Shell interpolation, `eval`, `sh -c`, and
+equivalent shell-evaluation paths are forbidden. When that compatible
+capability is advertised, an incomplete result, command failure, or `UNKNOWN`
+readback blocks telemetry closeout. If the active backend does not
+advertise that compatible capability or its advertisement is `UNKNOWN`, record
+`telemetry audit: unavailable` in the durable handoff and continue; backend
+`n/a` skips the check.
+
 ## Typed Dependency Facts
 
 Backend `depends_on` and `blocked_on` values describe coordination state; they

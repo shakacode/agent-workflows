@@ -10,6 +10,26 @@ require "openssl"
 require "tmpdir"
 
 HELPER = File.expand_path("dispatcher-capability-preflight", __dir__)
+ROOT = File.expand_path("../../..", __dir__)
+LAUNCH_OBSERVATION_FIELDS = %w[
+  type version confirmation_id key_id lane_id route dispatcher instance_id launch_token actual_host actual_model
+  actual_effort binding_source attestation observed_at routing_mode inherited evidence_ref
+].freeze
+LAUNCH_OBSERVATION_PROSE_FIELDS = [
+  "type: dispatcher-launch-observation", "version: 1",
+  *LAUNCH_OBSERVATION_FIELDS.drop(2)
+].freeze
+LAUNCH_OBSERVATION_GUIDES = %w[
+  skills/pr-batch/SKILL.md
+  workflows/pr-processing.md
+  skills/triage/SKILL.md
+].freeze
+PRE_ACTUAL_HOST_V2_MIGRATION_RULE =
+  "A persisted pre-`actual_host` version 2 confirmation remains parseable only as signed history for the same " \
+  "`confirmed-active` assignment identity: verify its signature against the legacy canonical payload that omits " \
+  "`actual_host`, never synthesize that field, and never use the record to qualify or activate `launch-pending`; " \
+  "any tampering or identity mismatch fails closed, and every new activation still requires a current signed " \
+  "nonempty `actual_host`."
 
 class DispatcherCapabilityPreflightTest < Minitest::Test
   def dispatch(input, env_or_helper = {}, helper = HELPER)
@@ -34,6 +54,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "version" => 2,
       "id" => "launch-confirmation-v2",
       "assignment" => assignment,
+      "actual_host" => "codex",
       "actual_model" => assignment.dig("route", "model"),
       "actual_effort" => assignment.dig("route", "effort"),
       "binding_source" => "dispatcher-bound",
@@ -50,6 +71,57 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     payload = JSON.generate(canonicalize(launch_observation_payload(confirmation)))
     signature = signing_key.sign(OpenSSL::Digest.new("SHA256"), payload)
     confirmation.merge("signature" => Base64.strict_encode64(signature))
+  end
+
+  def pre_actual_host_v2_confirmation(assignment, overrides = {}, signing_key = dispatcher_signing_key)
+    confirmation = launch_confirmation(assignment, { "signature" => nil }.merge(overrides))
+                   .reject { |field, _value| %w[actual_host signature].include?(field) }
+    return confirmation.merge("signature" => overrides["signature"]) if overrides.key?("signature")
+
+    payload = JSON.generate(canonicalize(launch_observation_payload(confirmation).reject { |field, _value| field == "actual_host" }))
+    signature = signing_key.sign(OpenSSL::Digest.new("SHA256"), payload)
+    confirmation.merge("signature" => Base64.strict_encode64(signature))
+  end
+
+  def test_launch_observation_helper_shape_and_authoritative_field_lists_have_exact_order_parity
+    helper_source = File.read(HELPER, encoding: "UTF-8")
+    payload_source = helper_source[/def launch_observation_payload\(confirmation\)(.*?)^end$/m, 1]
+    refute_nil payload_source
+    helper_fields = payload_source.scan(/^\s+"([^"]+)"\s*=>/).flatten
+    assert_equal LAUNCH_OBSERVATION_FIELDS, helper_fields
+
+    shape_source = helper_source[/def confirmation_shape\?\(confirmation\)(.*?)^end$/m, 1]
+    current_v2_source = helper_source[/def current_v2_confirmation_shape\?\(confirmation\)(.*?)^end$/m, 1]
+    qualifies_source = helper_source[/def confirmation_qualifies\?\(confirmation\)(.*?)^end$/m, 1]
+    refute_nil shape_source
+    refute_nil current_v2_source
+    refute_nil qualifies_source
+    host_validator = 'nonempty_string?(confirmation["actual_host"])'
+    assert_includes current_v2_source, host_validator
+    assert_operator current_v2_source.index(host_validator), :<,
+                    current_v2_source.index("v2_confirmation_evidence_shape?(confirmation)"),
+                    "actual_host validation must precede the shared v2 evidence validation"
+    assert_includes shape_source, "current_v2_confirmation_shape?(confirmation)"
+    assert_includes shape_source, "pre_actual_host_v2_confirmation_shape?(confirmation)"
+    assert_includes qualifies_source, "current_v2_confirmation_shape?(confirmation)"
+    refute_includes qualifies_source, "pre_actual_host_v2_confirmation_shape?(confirmation)"
+
+    LAUNCH_OBSERVATION_GUIDES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      field_sentence = text.match(
+        /fields (`type: dispatcher-launch-observation`.*?); `signature` is its strict Base64/m
+      )
+      refute_nil field_sentence, "#{relative_path} must carry the canonical signed field list"
+      assert_equal LAUNCH_OBSERVATION_PROSE_FIELDS, field_sentence[1].scan(/`([^`]+)`/).flatten,
+                   "#{relative_path} signed field list must match helper order exactly"
+    end
+  end
+
+  def test_pre_actual_host_v2_migration_rule_is_synchronized_across_authoritative_guides
+    LAUNCH_OBSERVATION_GUIDES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+      assert_includes text, PRE_ACTUAL_HOST_V2_MIGRATION_RULE, relative_path
+    end
   end
 
   def dispatcher_signing_key
@@ -137,6 +209,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "dispatcher" => assignment["dispatcher"],
       "instance_id" => confirmation["instance_id"],
       "launch_token" => assignment["launch_token"],
+      "actual_host" => confirmation["actual_host"],
       "actual_model" => confirmation["actual_model"],
       "actual_effort" => confirmation["actual_effort"],
       "binding_source" => confirmation["binding_source"],
@@ -2034,6 +2107,87 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute output.key?("launch_confirmation")
   end
 
+  def test_pre_actual_host_v2_confirmation_replays_only_as_confirmed_history
+    input = {
+      "lane_id" => "incident-pre-actual-host-v2",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "pre-actual-host-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = pre_actual_host_v2_confirmation(pending.fetch("dispatch"))
+    trusted_helper = fixed_dispatcher_trust
+
+    active_replay = dispatch(
+      input.merge(
+        "active_assignments" => [pending.fetch("dispatch").merge("lifecycle" => "confirmed-active")],
+        "launch_confirmation" => confirmation
+      ),
+      {},
+      trusted_helper
+    )
+    pending_replay = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => confirmation
+      ),
+      {},
+      trusted_helper
+    )
+
+    assert_equal "replay-already-active", active_replay.fetch("status")
+    assert_equal confirmation, active_replay.fetch("launch_confirmation")
+    refute active_replay.key?("dispatch")
+    assert_equal "launch-pending", pending_replay.fetch("status")
+    assert_equal pending.fetch("dispatch"), pending_replay.fetch("dispatch")
+    refute pending_replay.key?("launch_confirmation")
+  end
+
+  def test_pre_actual_host_v2_confirmation_still_rejects_tampering_and_identity_mismatch
+    input = {
+      "lane_id" => "incident-pre-actual-host-v2-invalid",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "operator-selected",
+        "attestation" => "instance-bound",
+        "instance_id" => "pre-actual-host-invalid-instance"
+      }]
+    }
+    pending = dispatch(input)
+    confirmation = pre_actual_host_v2_confirmation(pending.fetch("dispatch"))
+    trusted_helper = fixed_dispatcher_trust
+    active_assignment = pending.fetch("dispatch").merge("lifecycle" => "confirmed-active")
+
+    tampered = dispatch(
+      input.merge(
+        "active_assignments" => [active_assignment],
+        "launch_confirmation" => confirmation.merge("evidence_ref" => "dispatcher-receipt://tampered")
+      ),
+      {},
+      trusted_helper
+    )
+    identity_mismatch = dispatch(
+      input.merge(
+        "active_assignments" => [active_assignment.merge("launch_token" => "different-launch-token")],
+        "launch_confirmation" => confirmation
+      ),
+      {},
+      trusted_helper
+    )
+
+    assert_equal "invalid-input", tampered.fetch("status")
+    assert_equal "launch_confirmation must be a well-formed identity-bound confirmation", tampered.fetch("reason")
+    assert_equal "invalid-input", identity_mismatch.fetch("status")
+    assert_equal "launch_confirmation requires a matching active assignment identity", identity_mismatch.fetch("reason")
+  end
+
   def test_launch_confirmation_requires_a_well_formed_observation_timestamp
     input = {
       "lane_id" => "incident-launch-observation-time",
@@ -2080,6 +2234,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assignment = pending.fetch("dispatch")
     valid_confirmation = launch_confirmation(assignment)
     malformed_confirmations = {
+      "blank actual host" => valid_confirmation.merge("actual_host" => " "),
+      "tampered actual host" => valid_confirmation.merge("actual_host" => "claude"),
       "actual model mismatch" => valid_confirmation.merge("actual_model" => "Terra"),
       "actual effort mismatch" => valid_confirmation.merge("actual_effort" => "medium"),
       "request-only operator binding" => valid_confirmation.merge("binding_source" => "operator-selected"),
@@ -2095,7 +2251,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       )
     }
     evidence_fields = %w[
-      actual_model actual_effort binding_source attestation instance_id observed_at routing_mode inherited
+      actual_host actual_model actual_effort binding_source attestation instance_id observed_at routing_mode inherited
       evidence_ref key_id signature
     ]
     %w[type version id assignment].concat(evidence_fields).each do |field|
