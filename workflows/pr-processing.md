@@ -2386,9 +2386,9 @@ zero required status-check contexts, so the helper falls back to the full list;
 if required checks are later configured per #3844 option (a), it uses them.)
 When hosted CI was explicitly requested for the current head, pass each requested
 Actions run id or URL as `--requested-hosted-run <run-id-or-url>`; the helper
-then blocks only those requested current-head hosted runs while leaving unrelated
-advisory checks advisory. Exact-head non-required checks from other providers
-remain in the v2 receipt as informational rows. When no usable required checks
+then blocks only those requested current-head hosted runs. Exact-head
+non-required provider checks remain advisory and appear in the v2 receipt as
+informational rows. When no usable required checks
 exist, the requested runs become the gate instead of the full advisory list. A
 repository that depends on hosted Markdown formatting should configure that
 check as required or explicitly select its run; required checks continue to
