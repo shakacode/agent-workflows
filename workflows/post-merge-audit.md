@@ -97,6 +97,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
     followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>
     -->
     ```
+
   - For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:
 
     ```markdown
@@ -106,6 +107,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
     **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
     <!-- completed-batch-audit-summary:end -->
     ```
+
   - For `non-backend` and `not-applicable`, the structured `scope_evidence` grammar is `targets=<exact refs>; source=<durable ref>`: name the exact verified target set and durable evidence source. `batch_id: UNKNOWN` is allowed only for genuinely unresolved batch identity, never for release/archive readiness.
   - The replay rule above is fail-closed: malformed, missing, duplicate, `UNKNOWN`, or cross-field-inconsistent marker data blocks; the parent later replays only this durable handoff and never reruns or owns the audit.
 - Create follow-up issues by default unless the user explicitly asks for report-only or no issue creation. For

@@ -92,6 +92,7 @@ echo "== downstream registry dry-run =="
 bin/push-downstream --config downstream.yml >/dev/null
 
 echo "== helper tests =="
+ruby bin/lint-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb

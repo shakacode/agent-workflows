@@ -1,0 +1,99 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "open3"
+
+ROOT = File.expand_path("..", __dir__)
+VERSIONS = {
+  "rubocop" => File.read(File.join(ROOT, ".rubocop-version"), encoding: "UTF-8").strip,
+  "shellcheck" => "0.11.0",
+  "actionlint" => "1.7.12",
+  "markdownlint-cli2" => "0.23.2",
+  "yamllint" => "1.37.1"
+}.freeze
+
+class LintRunner
+  VERSION_ARGUMENTS = {
+    "rubocop" => ->(version) { ["_#{version}_", "--version"] },
+    "shellcheck" => ->(_version) { ["--version"] },
+    "actionlint" => ->(_version) { ["-version"] },
+    "markdownlint-cli2" => ->(_version) { ["--version"] },
+    "yamllint" => ->(_version) { ["--version"] }
+  }.freeze
+
+  def run
+    Dir.chdir(ROOT)
+    files = tracked_files
+    commands(files).each do |tool, arguments|
+      check_version!(tool)
+      puts "== #{tool} #{VERSIONS.fetch(tool)} =="
+      return 1 unless system(tool, *arguments)
+    rescue Errno::ENOENT
+      warn missing_tool_message(tool)
+      return 1
+    end
+    puts "PASS agent-workflows lint"
+    0
+  end
+
+  private
+
+  def tracked_files
+    stdout, stderr, status = Open3.capture3("git", "ls-files", "-z", "--")
+    abort "git ls-files failed: #{stderr.strip}" unless status.success?
+
+    stdout.split("\0").select { |path| File.file?(path) }.sort
+  end
+
+  def commands(files)
+    shell_files = files.select { |path| shell_file?(path) }
+    markdown_files = files.grep(/\.md\z/)
+    yaml_files = files.grep(/\.ya?ml\z/)
+    workflow_files = yaml_files.select { |path| path.start_with?(".github/workflows/") }
+    [
+      ["rubocop", ["_#{VERSIONS.fetch('rubocop')}_"]],
+      ["shellcheck", shell_files],
+      ["markdownlint-cli2", markdown_files],
+      ["yamllint", ["--strict", *yaml_files]],
+      ["actionlint", workflow_files]
+    ]
+  end
+
+  def shell_file?(path)
+    return true if path.end_with?(".bash", ".sh", ".zsh")
+
+    first_line = File.open(path, "rb", &:gets)
+    first_line&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)(?:ba|z|k)?sh(?:\s|\z)})
+  rescue ArgumentError, Errno::EACCES, Errno::ENOENT
+    false
+  end
+
+  def check_version!(tool)
+    arguments = VERSION_ARGUMENTS.fetch(tool).call(VERSIONS.fetch(tool))
+    stdout, stderr, status = Open3.capture3(tool, *arguments)
+    abort "#{tool} version check failed: #{stderr.strip}" unless status.success?
+
+    actual = stdout[/\d+\.\d+\.\d+/]
+    expected = VERSIONS.fetch(tool)
+    abort "Expected #{tool} #{expected}, got #{actual || stdout.strip.inspect}" unless actual == expected
+  rescue Errno::ENOENT
+    abort missing_tool_message(tool)
+  end
+
+  def missing_tool_message(tool)
+    "Install #{tool} #{VERSIONS.fetch(tool)} before running bin/lint"
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  if ARGV.length == 2 && ARGV.first == "--version"
+    version = VERSIONS[ARGV.last]
+    abort "unknown linter: #{ARGV.last}" unless version
+    puts version
+    exit
+  end
+
+  abort "Usage: bin/lint [--version TOOL]" unless ARGV.empty?
+
+  exit LintRunner.new.run
+end
