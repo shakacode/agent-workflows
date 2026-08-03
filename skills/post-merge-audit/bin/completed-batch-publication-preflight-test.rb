@@ -537,6 +537,25 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_includes result.fetch("blockers"), "shakacode/hichee#pull_request:10048 target is not merged"
   end
 
+  def test_abandoned_lane_preserves_historical_open_state_when_target_later_authenticates_as_merged
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane["pr_state"] = "open"
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                            .find { |row| row.dig("target", "number") == 10_048 }
+    assert_equal "open", reconciled_lane.fetch("target_state")
+    assert_equal "authenticated_target_after_coordination_closeout",
+                 reconciled_lane.fetch("completion_mode")
+  end
+
   def test_authenticated_target_completion_does_not_rescue_nonterminal_lane
     input = fixture("completed-batch-publication-hichee-terminal.json")
     lane = input.dig("coordination_status", "batches", 0, "lanes")

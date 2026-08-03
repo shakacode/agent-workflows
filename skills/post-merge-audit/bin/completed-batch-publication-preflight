@@ -467,9 +467,7 @@ module CompletedBatchPublicationPreflight
       lane = entry.fetch("lane")
       target = entry.fetch("target")
       terminal_state = lane["terminal"]
-      terminal = TERMINAL_LANE_STATES.include?(terminal_state) &&
-                 lane["status"] == terminal_state &&
-                 valid_timestamp?(lane["closed_at"])
+      terminal = valid_terminal_lane?(lane)
       blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
@@ -562,8 +560,11 @@ module CompletedBatchPublicationPreflight
       end
       source = normalized_known_string(row["source"])
       blockers << "#{target_label(target)} target snapshot source is absent" unless source
-      lane_state = lanes_by_target.dig(key, "lane", "pr_state")
-      if lane_state && state && lane_state != state
+      lane = lanes_by_target.dig(key, "lane")
+      lane_state = lane&.fetch("pr_state", nil)
+      historical_incomplete_closeout = valid_terminal_lane?(lane) &&
+                                       %w[abandoned superseded].include?(lane["terminal"])
+      if lane_state && state && lane_state != state && !historical_incomplete_closeout
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
       verified = target_verifier&.call(target:)
@@ -880,6 +881,15 @@ module CompletedBatchPublicationPreflight
     true
   rescue ArgumentError
     false
+  end
+
+  def valid_terminal_lane?(lane)
+    return false unless lane.is_a?(Hash)
+
+    terminal_state = lane["terminal"]
+    TERMINAL_LANE_STATES.include?(terminal_state) &&
+      lane["status"] == terminal_state &&
+      valid_timestamp?(lane["closed_at"])
   end
 
   def canonicalize(value)
