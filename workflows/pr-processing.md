@@ -3814,14 +3814,24 @@ selected_hosted_ci_receipts:
 The mapping has exactly `executable` and `credential_env`. The executable is one
 tracked executable regular file under `.agents/bin`, not a command string. The
 credential allowlist is a unique array of uppercase environment-variable names;
-each declared variable must be present and nonempty. Target-binding and hardened
-runtime variable names are reserved. No undeclared credential is forwarded.
-Use an empty array when the seam needs no credential. `merge-assurance` reads
-the mapping and executable from the context-bound base commit, privately
-materializes that exact trusted-base tree, and runs only those bytes. PR-head
-config, scripts, dependencies, PATH, loader settings, and undeclared ambient
-credentials cannot replace or influence the policy or command. A generic
-`#!/usr/bin/env ruby` seam resolves to the verified current `RbConfig.ruby`.
+each name must end in exactly one of `_TOKEN`, `_API_KEY`, `_SECRET`,
+`_PASSWORD`, `_CREDENTIALS`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, or
+`_PRIVATE_KEY`, and each declared value must be present and nonempty.
+Target-binding and hardened runtime names are reserved; loader controls and
+arbitrary non-credential names fail closed. No undeclared credential is
+forwarded. Use an empty array when the seam needs no credential.
+`merge-assurance` reads the mapping and executable from the context-bound base
+commit, privately materializes that exact trusted-base tree, and runs only those
+bytes. PR-head config, scripts, dependencies, PATH, loader settings, and
+undeclared ambient credentials cannot replace or influence the policy or
+command. A generic `#!/usr/bin/env ruby` seam resolves to the verified current
+`RbConfig.ruby`.
+
+The seam has a 60-second default bound. A positive finite
+`MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS` may select another bound.
+Timeout, incomplete forced cleanup, or a leader that exits while descendants
+remain terminates the whole process group and produces exact fail-closed merge
+assurance evidence; it never yields an eligible receipt.
 
 The seam receives one JSON object on stdin with contract
 `selected-hosted-ci-receipt-request`, version `1`, and exact `host`,

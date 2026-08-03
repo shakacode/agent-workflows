@@ -120,10 +120,19 @@ module MergeAssurance
   TRACKER_GH_TIMEOUT_SECONDS = 60
   TRACKER_GH_TERMINATION_GRACE_SECONDS = 0.25
   TRACKER_GH_POLL_SECONDS = 0.01
+  SELECTED_HOSTED_CI_TIMEOUT_SECONDS = 60
+  SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS = 0.25
+  SELECTED_HOSTED_CI_POLL_SECONDS = 0.01
   POLICY_CONFIG = ".agents/agent-workflow.yml"
   SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
   SELECTED_HOSTED_CI_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
-  SELECTED_HOSTED_CI_CREDENTIAL_ENV = /\A[A-Z][A-Z0-9_]*\z/
+  SELECTED_HOSTED_CI_ENV_NAME = /\A[A-Z][A-Z0-9_]*\z/
+  SELECTED_HOSTED_CI_CREDENTIAL_ENV = /
+    \A[A-Z][A-Z0-9_]*(?:
+      _TOKEN|_API_KEY|_SECRET|_PASSWORD|_CREDENTIALS|_ACCESS_KEY_ID|
+      _SECRET_ACCESS_KEY|_PRIVATE_KEY
+    )\z
+  /x
   SELECTED_HOSTED_CI_RESERVED_ENV = %w[
     GH_HOST GH_REPO SELECTED_HOSTED_CI_PR SELECTED_HOSTED_CI_HEAD_SHA
     HOME USER LOGNAME PATH
@@ -1243,7 +1252,7 @@ module MergeAssurance
 
       credential_env = seam["credential_env"]
       unless credential_env.is_a?(Array) && credential_env.all? do |name|
-        name.is_a?(String) && name.match?(SELECTED_HOSTED_CI_CREDENTIAL_ENV)
+        name.is_a?(String) && name.match?(SELECTED_HOSTED_CI_ENV_NAME)
       end
         raise Error, "trusted-base selected hosted CI credential_env must contain uppercase environment names"
       end
@@ -1255,6 +1264,13 @@ module MergeAssurance
       unless reserved.empty?
         raise Error, "trusted-base selected hosted CI credential_env contains reserved names: " \
                      "#{reserved.sort.join(', ')}"
+      end
+      noncredentials = credential_env.reject do |name|
+        name.match?(SELECTED_HOSTED_CI_CREDENTIAL_ENV)
+      end
+      unless noncredentials.empty?
+        raise Error, "trusted-base selected hosted CI credential_env contains non-credential names: " \
+                     "#{noncredentials.sort.join(', ')}"
       end
 
       [executable, credential_env]
@@ -1315,9 +1331,11 @@ module MergeAssurance
       materialized = File.join(snapshot_root, executable)
       validate_materialized_executable!(snapshot_root, materialized, trusted_bytes)
       launch = selected_hosted_ci_launch_command!(trusted_bytes, materialized, repo_root)
-      stdout, stderr, status = Open3.capture3(
-        selected_hosted_ci_environment(request, credential_env), *launch,
-        stdin_data: JSON.generate(request), chdir: snapshot_root, unsetenv_others: true
+      stdout, stderr, status = run_selected_hosted_ci_process!(
+        selected_hosted_ci_environment(request, credential_env),
+        launch,
+        request,
+        chdir: snapshot_root
       )
       unless status.success?
         raise Error, "trusted-base selected hosted CI seam failed: #{failure_output(stdout, stderr)}"
@@ -1331,6 +1349,138 @@ module MergeAssurance
       raise Error, "trusted-base selected hosted CI seam returned invalid JSON: #{e.message}"
     ensure
       FileUtils.remove_entry(directory) if directory && File.exist?(directory)
+    end
+
+    def run_selected_hosted_ci_process!(environment, launch, request, chdir:)
+      stdin_file = Tempfile.new("merge-assurance-selected-hosted-ci-stdin")
+      stdout_file = Tempfile.new("merge-assurance-selected-hosted-ci-stdout")
+      stderr_file = Tempfile.new("merge-assurance-selected-hosted-ci-stderr")
+      stdin_file.write(JSON.generate(request))
+      stdin_file.rewind
+      timeout_seconds = selected_hosted_ci_timeout_seconds
+      pid = Process.spawn(
+        environment, *launch,
+        in: stdin_file.path, out: stdout_file.path, err: stderr_file.path,
+        pgroup: true, chdir:, unsetenv_others: true
+      )
+      deadline = selected_hosted_ci_monotonic_time + timeout_seconds
+      status = nil
+      timed_out = false
+      lingering_group = false
+      cleanup_complete = true
+      loop do
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        if waited
+          status = waited[1]
+          break
+        end
+        if selected_hosted_ci_monotonic_time >= deadline
+          timed_out = true
+          status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          break
+        end
+
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+      end
+      unless timed_out
+        group_deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+        unless wait_for_selected_hosted_ci_process_group_exit(pid, group_deadline)
+          lingering_group = true
+          _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        end
+      end
+      stdout_file.rewind
+      stderr_file.rewind
+      stdout = stdout_file.read
+      stderr = stderr_file.read
+      unless cleanup_complete
+        raise Error, "trusted-base selected hosted CI seam process group did not exit after forced termination"
+      end
+      if timed_out
+        raise Error, "trusted-base selected hosted CI seam timed out after #{timeout_seconds} seconds " \
+                     "and its process group was terminated"
+      end
+      if lingering_group
+        raise Error, "trusted-base selected hosted CI seam left a running process group, which was terminated"
+      end
+
+      [stdout, stderr, status]
+    rescue Errno::EACCES, Errno::ENOENT => e
+      raise Error, "trusted-base selected hosted CI seam could not be launched: #{e.message}"
+    ensure
+      terminate_selected_hosted_ci_process_group(pid) if
+        pid && selected_hosted_ci_process_group_alive?(pid)
+      stdin_file&.close!
+      stdout_file&.close!
+      stderr_file&.close!
+    end
+
+    def selected_hosted_ci_timeout_seconds
+      value = Float(
+        ENV.fetch(
+          "MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS",
+          SELECTED_HOSTED_CI_TIMEOUT_SECONDS.to_s
+        )
+      )
+      unless value.positive? && value.finite?
+        raise Error, "selected hosted CI seam timeout must be a positive finite number"
+      end
+
+      value
+    rescue ArgumentError
+      raise Error, "selected hosted CI seam timeout must be a positive finite number"
+    end
+
+    def terminate_selected_hosted_ci_process_group(pid)
+      signal_selected_hosted_ci_process_group("TERM", pid)
+      deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+      status = wait_for_selected_hosted_ci_child(pid, deadline)
+      return [status, true] if wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+
+      signal_selected_hosted_ci_process_group("KILL", pid)
+      deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+      status ||= wait_for_selected_hosted_ci_child(pid, deadline)
+      [status, wait_for_selected_hosted_ci_process_group_exit(pid, deadline)]
+    end
+
+    def signal_selected_hosted_ci_process_group(signal, pid)
+      Process.kill(signal, -pid)
+    rescue Errno::ESRCH
+      nil
+    end
+
+    def wait_for_selected_hosted_ci_child(pid, deadline)
+      while selected_hosted_ci_monotonic_time < deadline
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        return waited[1] if waited
+
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+      end
+      nil
+    rescue Errno::ECHILD
+      nil
+    end
+
+    def selected_hosted_ci_process_group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+      while selected_hosted_ci_monotonic_time < deadline
+        return true unless selected_hosted_ci_process_group_alive?(pid)
+
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+      end
+      !selected_hosted_ci_process_group_alive?(pid)
+    end
+
+    def selected_hosted_ci_monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def validate_materialized_executable!(snapshot_root, executable, trusted_bytes)
