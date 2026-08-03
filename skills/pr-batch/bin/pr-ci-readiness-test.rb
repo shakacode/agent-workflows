@@ -2799,6 +2799,51 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_requested_hosted_success_keeps_pending_exact_head_external_check_informational_with_required_lint
+    head = "a" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"Markdown Lint","name":"lint","bucket":"pass"}]',
+      full_json: '[{"workflow":"Markdown Lint","name":"lint","bucket":"pass"}]',
+      pr_head: head,
+      exact_check_runs: [
+        {
+          "id" => 99,
+          "name" => "approval-held external check",
+          "status" => "queued",
+          "conclusion" => nil,
+          "head_sha" => head,
+          "html_url" => "https://example.test/checks/99",
+          "app" => { "slug" => "circleci-checks" }
+        }
+      ],
+      runs: {
+        "42" => {
+          run: {
+            "id" => 42,
+            "name" => "selected hosted",
+            "head_sha" => head,
+            "status" => "completed",
+            "conclusion" => "success",
+            "html_url" => "https://example.test/runs/42"
+          },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal true, data.dig("scopes", "required_status_check_rollup", "gates_verdict")
+      assert_equal "READY", data.dig("scopes", "required_status_check_rollup", "state")
+      assert_equal false, data.dig("scopes", "other", "gates_verdict")
+      assert_equal "NOT_APPLICABLE", data.dig("scopes", "other", "state")
+      assert_equal ["approval-held external check"],
+                   data.dig("scopes", "other", "informational_rows").map { |row| row.fetch("name") }
+    end
+  end
+
   def test_requested_hosted_success_does_not_fetch_jobs
     with_fake_gh(
       required_json: '[{"name":"unit","bucket":"pass"}]',

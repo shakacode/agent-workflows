@@ -501,11 +501,12 @@ module PrCiReadiness
       full_query_known = nil
       required_rows = PrCiReadiness.parse_rows(required_raw)
       required_cancellations = required_rows.select { |row| row["bucket"].to_s == "cancel" }
+      requested_hosted_runs_supplied = requested_hosted_runs.any?
       if PrCiReadiness.usable_checks?(required_raw)
         rows = required_rows
         required_used = true
         requested_hosted_only = false
-      elsif requested_hosted_runs.any?
+      elsif requested_hosted_runs_supplied
         rows = []
         required_used = false
         requested_hosted_only = true
@@ -582,7 +583,7 @@ module PrCiReadiness
         statuses: inventory.fetch(:statuses),
         statuses_complete: inventory.fetch(:statuses_complete),
         errors: inventory.fetch(:errors),
-        gate_advisory_rows: !requested_hosted_only
+        gate_advisory_rows: !requested_hosted_runs_supplied
       )
       contract = PrCiReadiness.evidence_contract(
         repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
