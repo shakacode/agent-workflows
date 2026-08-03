@@ -708,19 +708,37 @@ def suspicious_added_lines(diff, pattern:)
   current_file = nil
   current_new_line = nil
   in_hunk = false
+  file_header_allowed = true
+  awaiting_new_file_header = false
 
   diff.lines.filter_map.with_index(1) do |line, index|
     if line.start_with?("diff --git ")
       current_file = nil
       current_new_line = nil
       in_hunk = false
+      file_header_allowed = true
+      awaiting_new_file_header = false
       next
     end
 
-    if !in_hunk && line.start_with?("+++ ")
-      current_file = line.delete_prefix("+++ b/").chomp if line.start_with?("+++ b/")
-      current_new_line = nil
+    if !in_hunk && file_header_allowed && line.start_with?("--- ")
+      awaiting_new_file_header = true
       next
+    end
+
+    if !in_hunk && awaiting_new_file_header
+      awaiting_new_file_header = false
+      if line.start_with?("+++ ")
+        current_file = line.start_with?("+++ b/") ? line.delete_prefix("+++ b/").chomp : nil
+        current_new_line = nil
+        file_header_allowed = false
+        next
+      end
+    end
+
+    if line.start_with?("@@")
+      file_header_allowed = false
+      awaiting_new_file_header = false
     end
 
     hunk_new_start = unified_diff_hunk_new_start(line)

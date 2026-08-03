@@ -1527,8 +1527,10 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_OK"
-      assert_includes out, ".github/workflows/test.yml (diff output line 6)"
+      assert_includes out, ".github/workflows/test.yml (diff output line 7)"
+      assert_includes out, ".github/workflows/test.yml (diff output line 8)"
       refute_includes out, ".github/workflows/test.yml:"
+      refute_includes out, "example.invalid"
       assert_includes out, "Suspicious text findings: none"
       assert_equal 1, full_diff_call_count(log_path)
     end
@@ -2731,6 +2733,7 @@ class PrSecurityPreflightTest < Minitest::Test
       warning_diff_line="$(printf 'echo "$GITHUB_%s"' 'TOKEN')"
       warning_diff_line_2="$(printf '%s example.invalid' 'curl')"
       plusplus_warning_diff_line="$(printf '++ %s example.invalid' 'curl')"
+      minusminus_diff_line="$(printf -- '-- removed payload')"
 
       mode_uses_issue_author_payload() {
         case "$1" in
@@ -3170,6 +3173,8 @@ class PrSecurityPreflightTest < Minitest::Test
       --- a/.github/workflows/test.yml
       +++ b/.github/workflows/test.yml
       @@ malformed hunk header @@
+      -${minusminus_diff_line}
+      +${plusplus_warning_diff_line}
       +${warning_diff_line}
       DIFF
           exit 0
