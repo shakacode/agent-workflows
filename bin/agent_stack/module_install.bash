@@ -1,3 +1,5 @@
+# Shared globals are populated by options.bash after all modules are sourced.
+declare source_root agent_coord_install_dir
 agent_stack_install_module_directory() {
   local module_name="$1"
   local source_directory="$source_root/agent-workflows/bin/$module_name"

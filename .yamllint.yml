@@ -1,0 +1,16 @@
+extends: default
+
+rules:
+  # GitHub Actions and workflow metadata use readable inline comments.
+  comments:
+    min-spaces-from-content: 1
+  # The repository does not require YAML document markers.
+  document-start: disable
+  # Agent prompts and action SHAs are intentionally kept as copy-safe lines.
+  line-length: disable
+  # GitHub Actions uses `on` as a mapping key.
+  truthy:
+    check-keys: false
+  # downstream.yml contains Liquid-style expressions such as `{{ value }}`.
+  braces:
+    max-spaces-inside: 1

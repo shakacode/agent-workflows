@@ -1,3 +1,5 @@
+# Shared globals are populated by options.bash after all modules are sourced.
+declare source_root agent_coord_install_dir mode host delivery_mode target
 agent_stack_command_destination_safe() {
   local destination="$1"
   if [[ -d "$destination" || ( -e "$destination" && ! -f "$destination" && ! -L "$destination" ) ]]; then
@@ -59,7 +61,8 @@ agent_stack_workflow_doctor_symlink() {
 }
 
 agent_stack_recorded_workflow_doctor_symlink() {
-  local destination="$agent_coord_install_dir/agent_doctor" metadata="$(dirname "$agent_coord_install_dir")/.agent-workflows-install.json" link_target
+  local destination="$agent_coord_install_dir/agent_doctor" metadata link_target
+  metadata="$(dirname "$agent_coord_install_dir")/.agent-workflows-install.json"
   [[ -L "$destination" && -f "$metadata" && ! -L "$metadata" ]] || return 1
   link_target="$(readlink "$destination")" || return 1
   "${RUBY_BIN:-ruby}" -rjson -e '

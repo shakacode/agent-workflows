@@ -1,0 +1,25 @@
+# These settings preserve existing portable-skill and changelog conventions.
+# All other markdownlint rules remain enabled repository-wide.
+config:
+  # Changelogs and procedure references use semantic levels intentionally.
+  MD001: false
+  # Skill protocols and changelog entries keep long, copy-safe lines.
+  MD013: false
+  MD024:
+    siblings_only: true
+  # Protocol lists preserve stable, externally referenced step numbers.
+  MD029: false
+  # The canonical AGENTS.md seam pointer is an exact compact list contract.
+  MD032: false
+  # Protocol examples and attribution records preserve copy-safe bare URLs.
+  MD034: false
+  # Historical plans may preserve an imported title alongside the local title.
+  MD025: false
+  # Historical plans use bold lead-ins as part of their source format.
+  MD036: false
+  # Skill front matter may be followed by a short summary before the first H1.
+  MD041: false
+  # Portable examples deliberately mix emphasis markers inside literal syntax.
+  MD049: false
+  # Protocol tables optimize copy safety rather than one column-spacing style.
+  MD060: false
