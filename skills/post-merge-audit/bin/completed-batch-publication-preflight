@@ -483,6 +483,9 @@ module CompletedBatchPublicationPreflight
       later_target_completion =
         RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state) && target_completed_after_closeout
       unless coordination_completion || later_target_completion
+        if RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
+          blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
+        end
         blockers << "#{target_label(target)} coordination target state is not #{expected_state}" \
           unless lane["pr_state"] == expected_state
         blockers << "#{target_label(target)} coordination terminal evidence is absent" unless evidence

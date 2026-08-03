@@ -579,6 +579,23 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute reconciled_lane.key?("completion_mode")
   end
 
+  def test_abandoned_lane_cannot_reuse_pre_closeout_coordination_state_and_evidence
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    input.fetch("target_snapshots")
+         .find { |row| row.dig("target", "number") == 10_048 }["completed_at"] = "2026-07-30T08:43:03Z"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 target completion is not authenticated after " \
+                    "coordination closeout"
+  end
+
   def test_abandoned_lane_preserves_historical_open_state_when_target_later_authenticates_as_merged
     input = fixture("completed-batch-publication-hichee-terminal.json")
     lane = input.dig("coordination_status", "batches", 0, "lanes")
