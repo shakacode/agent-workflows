@@ -1513,7 +1513,9 @@ class PrSecurityPreflightTest < Minitest::Test
       assert status.success?, out
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       assert_includes out, ".github/workflows/test.yml:12 (diff output line 9)"
-      assert_includes out, ".github/workflows/test.yml:31 (diff output line 13)"
+      assert_includes out, ".github/workflows/test.yml:13 (diff output line 10)"
+      assert_includes out, ".github/workflows/test.yml:31 (diff output line 14)"
+      refute_includes out, "example.invalid"
       assert_includes out, "Suspicious text findings: none"
       assert_equal 1, full_diff_call_count(log_path)
     end
@@ -2728,6 +2730,7 @@ class PrSecurityPreflightTest < Minitest::Test
       warning_review_body="$(printf 'mentions GITHUB_%s in status metadata' 'TOKEN')"
       warning_diff_line="$(printf 'echo "$GITHUB_%s"' 'TOKEN')"
       warning_diff_line_2="$(printf '%s example.invalid' 'curl')"
+      plusplus_warning_diff_line="$(printf '++ %s example.invalid' 'curl')"
 
       mode_uses_issue_author_payload() {
         case "$1" in
@@ -3147,10 +3150,11 @@ class PrSecurityPreflightTest < Minitest::Test
       index 0000000..1111111 100644
       --- a/.github/workflows/test.yml
       +++ b/.github/workflows/test.yml
-      @@ -4,3 +10,4 @@
+      @@ -4,3 +10,5 @@
        unchanged
       -removed
       +safe addition
+      +${plusplus_warning_diff_line}
       +${warning_diff_line}
        trailing
       @@ -20,2 +30,3 @@
