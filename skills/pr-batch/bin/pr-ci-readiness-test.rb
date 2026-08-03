@@ -2861,6 +2861,69 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_requested_hosted_only_keeps_unselected_github_actions_runs_informational
+    head = "a" * 40
+    unrelated_runs = [
+      {
+        "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "Unselected CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [], "status" => "in_progress", "conclusion" => nil,
+        "actor" => { "login" => "octocat" }, "html_url" => "https://example.test/runs/100"
+      },
+      {
+        "id" => 101, "workflow_id" => 11, "event" => "pull_request",
+        "run_number" => 1, "run_attempt" => 1, "name" => "Dependabot CI", "head_sha" => head,
+        "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+        "pull_requests" => [], "status" => "in_progress", "conclusion" => nil,
+        "actor" => { "login" => "dependabot[bot]" }, "html_url" => "https://example.test/runs/101"
+      }
+    ]
+    runs = unrelated_runs.to_h do |run|
+      [run.fetch("id").to_s, { run:, jobs: [] }]
+    end
+    runs["42"] = {
+      run: {
+        "id" => 42, "name" => "selected hosted", "head_sha" => head,
+        "status" => "completed", "conclusion" => "success",
+        "html_url" => "https://example.test/runs/42"
+      },
+      jobs: []
+    }
+
+    with_fake_gh(
+      required_json: "",
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: unrelated_runs,
+      runs:
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal [{
+        "run_id" => "42",
+        "name" => "selected hosted",
+        "status" => "completed",
+        "conclusion" => "success",
+        "url" => "https://example.test/runs/42",
+        "head_sha" => head
+      }], data.dig("requested_hosted", "completed")
+      assert_equal false, data.dig("scopes", "github_actions", "gates_verdict")
+      github_actions_names = data.dig("scopes", "github_actions", "informational_rows").map do |row|
+        row.fetch("name")
+      end
+      assert_equal ["Unselected CI"],
+                   github_actions_names
+      assert_equal false, data.dig("scopes", "dependabot", "gates_verdict")
+      dependabot_names = data.dig("scopes", "dependabot", "informational_rows").map { |row| row.fetch("name") }
+      assert_equal ["Dependabot CI"],
+                   dependabot_names
+    end
+  end
+
   def test_requested_hosted_success_is_ready_when_advisory_status_inventory_is_unavailable
     with_fake_gh(
       required_json: "",

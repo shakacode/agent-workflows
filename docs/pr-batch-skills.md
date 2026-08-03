@@ -315,8 +315,11 @@ record it and proceed to consolidated triage instead of parking in
   readiness waits for the explicitly requested current-head hosted runs only; in
   repos with no usable required checks, those requested runs gate readiness
   instead of the full advisory check list. Exact-head non-required checks from
-  other providers remain recorded as informational rows, so approval-held or
-  otherwise unselected workflows stay visible without becoming gates. A
+  GitHub Actions, Dependabot, and external providers remain recorded as
+  informational rows, so approval-held or otherwise unselected workflows stay
+  visible without becoming gates. The receipt records every successfully
+  completed selected run with its exact head SHA so merge assurance can verify
+  the non-gating scopes came from this mode. A
   repository that relies on a hosted Markdown formatter or linter should make
   that check required or explicitly select its run; required checks always keep
   gating readiness.

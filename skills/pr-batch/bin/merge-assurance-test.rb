@@ -142,6 +142,21 @@ class MergeAssuranceTest < Minitest::Test
 
   def test_ci_accepts_incomplete_non_gating_other_scope
     ci_result = ready_ci
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"],
+      "completed" => [{
+        "run_id" => "42",
+        "name" => "hosted",
+        "status" => "completed",
+        "conclusion" => "success",
+        "head_sha" => HEAD_SHA,
+        "url" => "https://example.test/runs/42"
+      }],
+      "pending" => [],
+      "failing" => [],
+      "stale" => [],
+      "unknown" => []
+    }
     ci_result.fetch("scopes")["other"] = {
       "state" => "NOT_APPLICABLE",
       "source" => "github.checks_and_statuses.exact_head.non_required",
@@ -149,8 +164,8 @@ class MergeAssuranceTest < Minitest::Test
       "gates_verdict" => false,
       "head_sha" => HEAD_SHA,
       "rows" => [],
-      "informational_rows" => [],
-      "error" => "status inventory unavailable",
+      "informational_rows" => [{ "name" => "UNKNOWN advisory status" }],
+      "error" => "UNKNOWN advisory status inventory unavailable",
       "checked_at" => "2026-07-30T11:59:00Z"
     }
 
@@ -162,6 +177,71 @@ class MergeAssuranceTest < Minitest::Test
     )
 
     assert_equal true, result.fetch("eligible")
+  end
+
+  def test_ci_rejects_non_gating_scope_without_completed_exact_head_requested_run
+    ci_result = ready_ci
+    ci_result.fetch("scopes")["other"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.checks_and_statuses.exact_head.non_required",
+      "complete" => true,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => [],
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result non-gating scopes require completed exact-head requested hosted runs"
+  end
+
+  def test_ci_rejects_non_gating_scope_with_stale_completed_requested_run
+    ci_result = ready_ci
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"],
+      "completed" => [{
+        "run_id" => "42",
+        "name" => "hosted",
+        "status" => "completed",
+        "conclusion" => "success",
+        "head_sha" => "d" * 40,
+        "url" => "https://example.test/runs/42"
+      }],
+      "pending" => [],
+      "failing" => [],
+      "stale" => [],
+      "unknown" => []
+    }
+    ci_result.fetch("scopes")["github_actions"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.actions.exact_head",
+      "complete" => true,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => [],
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result non-gating scopes require completed exact-head requested hosted runs"
   end
 
   def test_ci_rejects_non_gating_marker_outside_other_scope

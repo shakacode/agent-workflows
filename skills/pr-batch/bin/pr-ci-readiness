@@ -187,7 +187,7 @@ module PrCiReadiness
   def inventory_scopes(
     head_sha:, checked_at:, required_rows:, required_complete:, actions_rows:,
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
-    statuses_complete:, errors: {}, gate_other_rows: true
+    statuses_complete:, errors: {}, gate_advisory_rows: true
   )
     required_identities = required_rows.filter_map do |row|
       producer = row["workflow"].to_s.strip
@@ -213,19 +213,25 @@ module PrCiReadiness
       "github_actions" => evidence_scope(
         source: "github.actions.exact_head",
         head_sha:, complete: actions_complete && check_runs_complete,
-        rows: github_actions_rows, checked_at:, error: errors["github_actions"]
+        rows: gate_advisory_rows ? github_actions_rows : [],
+        informational_rows: gate_advisory_rows ? [] : github_actions_rows,
+        gates_verdict: gate_advisory_rows,
+        checked_at:, error: errors["github_actions"]
       ),
       "dependabot" => evidence_scope(
         source: "github.dependabot.exact_head",
         head_sha:, complete: actions_complete && check_runs_complete,
-        rows: dependabot_rows, checked_at:, error: errors["dependabot"]
+        rows: gate_advisory_rows ? dependabot_rows : [],
+        informational_rows: gate_advisory_rows ? [] : dependabot_rows,
+        gates_verdict: gate_advisory_rows,
+        checked_at:, error: errors["dependabot"]
       ),
       "other" => evidence_scope(
         source: "github.checks_and_statuses.exact_head.non_required",
         head_sha:, complete: check_runs_complete && statuses_complete,
-        rows: gate_other_rows ? other_rows : [],
-        informational_rows: gate_other_rows ? [] : other_rows,
-        gates_verdict: gate_other_rows,
+        rows: gate_advisory_rows ? other_rows : [],
+        informational_rows: gate_advisory_rows ? [] : other_rows,
+        gates_verdict: gate_advisory_rows,
         checked_at:, error: errors["other"]
       )
     }
@@ -337,6 +343,7 @@ module PrCiReadiness
         },
         "requested_hosted": {
           "run_ids": [ "1234567890", ... ],
+          "completed": [ { "run_id": "1234567890", "head_sha": "current", "status": "completed", "conclusion": "success" }, ... ],
           "pending": [ { "run_id": "1234567890", "name": "job", "url": "..." }, ... ],
           "failing": [ { "run_id": "1234567890", "name": "job", "url": "..." }, ... ],
           "stale": [ { "run_id": "1234567890", "head_sha": "old", "expected_head_sha": "new" }, ... ],
@@ -575,7 +582,7 @@ module PrCiReadiness
         statuses: inventory.fetch(:statuses),
         statuses_complete: inventory.fetch(:statuses_complete),
         errors: inventory.fetch(:errors),
-        gate_other_rows: !requested_hosted_only
+        gate_advisory_rows: !requested_hosted_only
       )
       contract = PrCiReadiness.evidence_contract(
         repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
@@ -1012,6 +1019,7 @@ module PrCiReadiness
     def empty_requested_hosted
       {
         "run_ids" => [],
+        "completed" => [],
         "pending" => [],
         "failing" => [],
         "stale" => [],
@@ -1128,8 +1136,13 @@ module PrCiReadiness
         return
       end
 
+      if run.fetch("status", "").to_s == "completed" &&
+         successful_conclusion?(run.fetch("conclusion", "").to_s)
+        summary["completed"] << run_record(run_id, run).merge("head_sha" => actual_head_sha)
+        return
+      end
+
       classify_status_row(summary, "run", run_id, run_record(run_id, run))
-      return if run.fetch("status", "").to_s == "completed" && successful_conclusion?(run.fetch("conclusion", "").to_s)
 
       fetch_actions_jobs(repo, run_id).each do |job|
         classify_status_row(summary, "job", run_id, run_record(run_id, job))

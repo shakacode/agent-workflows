@@ -2387,9 +2387,11 @@ if required checks are later configured per #3844 option (a), it uses them.)
 When hosted CI was explicitly requested for the current head, pass each requested
 Actions run id or URL as `--requested-hosted-run <run-id-or-url>`; the helper
 then blocks only those requested current-head hosted runs. Exact-head
-non-required provider checks remain advisory and appear in the v2 receipt as
-informational rows. When no usable required checks
-exist, the requested runs become the gate instead of the full advisory list. A
+non-required GitHub Actions, Dependabot, and external-provider checks remain
+advisory and appear in the v2 receipt as informational rows. When no usable
+required checks exist, the requested runs become the gate instead of the full
+advisory list, and their completed records carry the exact head SHA that merge
+assurance requires before accepting any non-gating scope. A
 repository that depends on hosted Markdown formatting should configure that
 check as required or explicitly select its run; required checks continue to
 gate. A stale requested run for an older head is `UNKNOWN`, not success.
