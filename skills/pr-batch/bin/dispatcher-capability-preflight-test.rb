@@ -125,7 +125,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     helper
   end
 
-  def installed_unsupported_dispatcher_helper
+  def installed_unsupported_dispatcher_helper(host: "codex", installer_metadata: true)
     root = secure_mktmpdir("dispatcher-unsupported-install")
     File.chmod(0o700, root)
     (@dispatcher_install_roots ||= []) << root
@@ -140,6 +140,15 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver.rb", __dir__), module_root)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver_record.rb", __dir__), module_root)
     File.chmod(0o755, helper)
+    if installer_metadata
+      write_install_metadata(
+        root,
+        File.expand_path("../../..", __dir__),
+        host:,
+        mode: "copy",
+        delivery_mode: "flat"
+      )
+    end
     [helper, root]
   end
 
@@ -184,11 +193,11 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     [File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight"), root]
   end
 
-  def write_symlink_install_metadata(root, source)
+  def write_install_metadata(root, source, host: "codex", mode: "symlink", delivery_mode: "flat")
     metadata = {
-      "host" => "codex",
-      "mode" => "symlink",
-      "delivery_mode" => "flat",
+      "host" => host,
+      "mode" => mode,
+      "delivery_mode" => delivery_mode,
       "source" => source,
       "version" => "0.1.0",
       "source_revision" => "a" * 40,
@@ -200,6 +209,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     File.write(path, JSON.generate(metadata))
     File.chmod(0o600, path)
   end
+
+  alias write_symlink_install_metadata write_install_metadata
 
   def source_owner_mismatch_env(root)
     shim = File.join(root, "source-owner-mismatch.rb")
@@ -1880,6 +1891,78 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal activated.fetch("active_assignments"), replay.fetch("active_assignments")
     assert_equal "matching-persisted-waived-active-assignment", replay.fetch("reason")
     refute replay.key?("dispatch")
+  end
+
+  def test_human_waiver_rejects_a_clean_unsupported_claude_installation
+    helper, root = installed_unsupported_dispatcher_helper(host: "claude")
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      helper
+    )
+
+    assert_equal "invalid-input", activated.fetch("status")
+    assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
+  end
+
+  def test_plugin_source_helper_cannot_waive_against_its_own_clean_agents_directory
+    helper, root = installed_unsupported_dispatcher_helper(installer_metadata: false)
+    companion = secure_mktmpdir("dispatcher-plugin-companion")
+    FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
+    write_install_metadata(
+      companion,
+      root,
+      host: "codex",
+      mode: "copy",
+      delivery_mode: "plugin-companion"
+    )
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, { "CODEX_HOME" => companion }, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+
+    activated = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      { "CODEX_HOME" => companion },
+      helper
+    )
+
+    assert_equal "invalid-input", activated.fetch("status")
+    assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
   end
 
   def test_symlink_install_assesses_readiness_against_the_installed_home

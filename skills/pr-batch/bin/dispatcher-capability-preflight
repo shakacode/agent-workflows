@@ -23,6 +23,7 @@ INSTALLATION = AgentDoctor::SignedLaunchInstallation.resolve(
 )
 INSTALLATION_ROOT = INSTALLATION&.fetch("root", nil)
 INSTALLATION_OWNER_UID = INSTALLATION&.fetch("owner_uid", nil)
+INSTALLATION_HOST = INSTALLATION&.fetch("host", nil)
 TRUST_CONFIG_DIR = INSTALLATION_ROOT && File.join(INSTALLATION_ROOT, ".agents")
 TRUST_CONFIG_PATH = TRUST_CONFIG_DIR && File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
 TRUSTED_KEY_ID_FIELD = "agent_workflow_dispatcher_trusted_key_id"
@@ -666,7 +667,7 @@ def validated_launch_waiver(input, assignment)
     batch_id: input["batch_id"],
     lane_id: input["lane_id"],
     assignment:,
-    host: "codex",
+    host: INSTALLATION_HOST,
     target: INSTALLATION_ROOT
   )
   fail_input(reason) unless waiver

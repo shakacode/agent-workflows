@@ -8,6 +8,7 @@ module AgentDoctor
     METADATA_KEYS = %w[
       delivery_mode host installed_at mode source source_branch source_remote source_revision version
     ].freeze
+    HOSTS = %w[codex claude].freeze
 
     module_function
 
@@ -22,15 +23,27 @@ module AgentDoctor
       root_stat = File.lstat(lexical_root)
       return unless safe_directory_stat?(root_stat, root_stat.uid)
 
+      metadata = validated_flat_metadata(
+        root: lexical_root,
+        owner_uid: root_stat.uid,
+        direct_helper: lexical_helper == physical_helper
+      )
+
       return unless lexical_helper == physical_helper ||
                     valid_symlink_install?(
                       root: lexical_root,
                       physical_root:,
                       relative_helper_path:,
-                      owner_uid: root_stat.uid
+                      owner_uid: root_stat.uid,
+                      metadata:
                     )
 
-      { "root" => lexical_root, "owner_uid" => root_stat.uid }
+      {
+        "root" => lexical_root,
+        "owner_uid" => root_stat.uid,
+        "host" => metadata&.fetch("host", nil),
+        "delivery_mode" => metadata&.fetch("delivery_mode", nil)
+      }
     rescue ArgumentError, JSON::ParserError, SystemCallError
       nil
     end
@@ -54,7 +67,7 @@ module AgentDoctor
     end
     private_class_method :root_for
 
-    def valid_symlink_install?(root:, physical_root:, relative_helper_path:, owner_uid:)
+    def valid_symlink_install?(root:, physical_root:, relative_helper_path:, owner_uid:, metadata:)
       components = relative_helper_path.split("/")
       return false unless components.first == "skills" && components.length >= 4
 
@@ -71,17 +84,29 @@ module AgentDoctor
       return false unless exact_symlink?(skill_link, File.join(physical_root, "skills", skill_name))
       return false unless exact_symlink?(doctor_link, File.join(physical_root, "bin", "agent_doctor"))
 
-      metadata = read_metadata(File.join(root, METADATA_FILE), owner_uid)
       metadata &&
-        metadata.keys.sort == METADATA_KEYS &&
         metadata["mode"] == "symlink" &&
-        metadata["delivery_mode"] == "flat" &&
-        %w[codex claude].include?(metadata["host"]) &&
-        metadata["source"].is_a?(String) &&
-        File.absolute_path(metadata["source"]) == metadata["source"] &&
         File.realpath(metadata["source"]) == physical_root
     end
     private_class_method :valid_symlink_install?
+
+    def validated_flat_metadata(root:, owner_uid:, direct_helper:)
+      metadata = read_metadata(File.join(root, METADATA_FILE), owner_uid)
+      return unless metadata && metadata.keys.sort == METADATA_KEYS
+      return unless HOSTS.include?(metadata["host"])
+      return unless metadata["delivery_mode"] == "flat"
+      return unless %w[copy symlink].include?(metadata["mode"])
+      return unless metadata["source"].is_a?(String) &&
+                    File.absolute_path(metadata["source"]) == metadata["source"]
+
+      expected_mode = direct_helper ? "copy" : "symlink"
+      return unless metadata["mode"] == expected_mode
+
+      metadata
+    rescue ArgumentError
+      nil
+    end
+    private_class_method :validated_flat_metadata
 
     def safe_directory?(path, owner_uid)
       safe_directory_stat?(File.lstat(path), owner_uid)

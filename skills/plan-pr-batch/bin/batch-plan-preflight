@@ -69,6 +69,7 @@ module BatchPlanPreflight
   )
   INSTALLATION_ROOT = INSTALLATION&.fetch("root", nil)
   INSTALLATION_OWNER_UID = INSTALLATION&.fetch("owner_uid", nil)
+  INSTALLATION_HOST = INSTALLATION&.fetch("host", nil)
   WORKFLOW_CONTROL_TRUST_CONFIG_DIR = INSTALLATION_ROOT && File.join(INSTALLATION_ROOT, ".agents")
   WORKFLOW_CONTROL_TRUST_CONFIG_PATH =
     WORKFLOW_CONTROL_TRUST_CONFIG_DIR &&
@@ -191,7 +192,7 @@ module BatchPlanPreflight
 
   def validate_plan(plan)
     violations = []
-    unless nonempty_identity?(plan["id"])
+    unless lifecycle_receipt_component?(plan["id"])
       violations << violation("batch-plan-id-invalid", "$.plan.id",
                               "Batch plan id must be a nonempty known identity.")
     end
@@ -200,12 +201,12 @@ module BatchPlanPreflight
                               "Backend must be exactly codex, claude, or generic.")
     end
     lane_ids = plan.fetch("lanes").map { |lane| lane["id"] }
-    if lane_ids.any? { |lane_id| !nonempty_identity?(lane_id) } || lane_ids.uniq.length != lane_ids.length
+    if lane_ids.any? { |lane_id| !lifecycle_receipt_component?(lane_id) } || lane_ids.uniq.length != lane_ids.length
       violations << violation("lane-id-invalid-or-duplicate", "$.plan.lanes",
                               "Lane ids must be nonempty, known, and unique.")
     end
     lane_waves = plan.fetch("lanes").filter_map { |lane| lane["wave"] }
-    unless nonempty_identity?(plan["active_wave"]) && lane_waves.include?(plan["active_wave"])
+    unless lifecycle_receipt_component?(plan["active_wave"]) && lane_waves.include?(plan["active_wave"])
       violations << violation("active-wave-invalid", "$.plan.active_wave",
                               "Active wave must be a nonempty known wave declared by at least one lane.")
     end
@@ -219,7 +220,7 @@ module BatchPlanPreflight
           lane_ids: [lane["id"]].compact
         )
       end
-      unless nonempty_identity?(lane["id"]) && nonempty_identity?(lane["wave"]) &&
+      unless lifecycle_receipt_component?(lane["id"]) && lifecycle_receipt_component?(lane["wave"]) &&
              PURPOSES.include?(lane["purpose"])
         violations << violation("lane-record-invalid", path,
                                 "Lane requires id, wave, and purpose implementation or investigation.")
@@ -352,7 +353,7 @@ module BatchPlanPreflight
       batch_plan_id: plan.fetch("id"),
       stage_dependency_plan_id:,
       lane:,
-      host: "codex",
+      host: INSTALLATION_HOST,
       target: INSTALLATION_ROOT
     )
     !validated.nil?
@@ -587,7 +588,7 @@ module BatchPlanPreflight
 
   def validate_stage_dependencies(plan, gate, lane_ids)
     unless plan.is_a?(Hash) && plan["contract"] == "stage-dependency-plan" &&
-           plan["version"] == 1 && nonempty_identity?(plan["id"]) &&
+           plan["version"] == 1 && lifecycle_receipt_component?(plan["id"]) &&
            plan["edges"].is_a?(Array)
       return [violation("stage-dependency-plan-invalid", "$.stage_dependency_plan",
                         "Provide the trusted stage-dependency-plan v1 object.")]
@@ -894,6 +895,10 @@ module BatchPlanPreflight
 
   def nonempty_identity?(value)
     value.is_a?(String) && !value.strip.empty? && value != "UNKNOWN"
+  end
+
+  def lifecycle_receipt_component?(value)
+    nonempty_identity?(value) && value.match?(LIFECYCLE_RECEIPT_COMPONENT_PATTERN)
   end
 
   def iso_date?(value)

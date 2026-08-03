@@ -183,7 +183,7 @@ class BatchPlanPreflightTest < Minitest::Test
     @workflow_control_helper ||= installed_workflow_control_helper.first
   end
 
-  def installed_unsupported_workflow_control_helper
+  def installed_unsupported_workflow_control_helper(host: "codex", installer_metadata: true)
     root = secure_mktmpdir("workflow-control-unsupported-install")
     File.chmod(0o700, root)
     (@workflow_control_install_roots ||= []) << root
@@ -198,6 +198,15 @@ class BatchPlanPreflightTest < Minitest::Test
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver.rb", __dir__), module_root)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver_record.rb", __dir__), module_root)
     File.chmod(0o755, helper)
+    if installer_metadata
+      write_install_metadata(
+        root,
+        File.expand_path("../../..", __dir__),
+        host:,
+        mode: "copy",
+        delivery_mode: "flat"
+      )
+    end
     [helper, root]
   end
 
@@ -250,11 +259,11 @@ class BatchPlanPreflightTest < Minitest::Test
     [helper, root]
   end
 
-  def write_symlink_install_metadata(root, source)
+  def write_install_metadata(root, source, host: "codex", mode: "symlink", delivery_mode: "flat")
     metadata = {
-      "host" => "codex",
-      "mode" => "symlink",
-      "delivery_mode" => "flat",
+      "host" => host,
+      "mode" => mode,
+      "delivery_mode" => delivery_mode,
       "source" => source,
       "version" => "0.1.0",
       "source_revision" => "a" * 40,
@@ -266,6 +275,8 @@ class BatchPlanPreflightTest < Minitest::Test
     File.write(path, JSON.generate(metadata))
     File.chmod(0o600, path)
   end
+
+  alias write_symlink_install_metadata write_install_metadata
 
   def source_owner_mismatch_env(root)
     shim = File.join(root, "source-owner-mismatch.rb")
@@ -629,6 +640,39 @@ class BatchPlanPreflightTest < Minitest::Test
                     "batch-plan-id-invalid"
   end
 
+  def test_lifecycle_identifiers_must_be_receipt_safe_before_any_lane_launches
+    cases = {
+      "batch plan" => ["batch-plan-id-invalid", ->(input) { input["plan"]["id"] = "batch/plan" }],
+      "stage plan" => ["stage-dependency-plan-invalid", lambda do |input|
+        input["stage_dependency_plan"]["id"] = "stage%plan"
+        input["stage_dependency_gate"]["trusted_plan_id"] = "stage%plan"
+        input["stage_dependency_gate"]["trusted_plan_binding"] =
+          stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
+      end],
+      "active wave" => ["active-wave-invalid", lambda do |input|
+        input["plan"]["active_wave"] = "wave/a"
+        input.dig("plan", "lanes", 0)["wave"] = "wave/a"
+      end],
+      "lane wave" => ["lane-record-invalid", ->(input) { input.dig("plan", "lanes", 0)["wave"] = "wave%a" }],
+      "lane id" => ["lane-id-invalid-or-duplicate", lambda do |input|
+        input.dig("plan", "lanes", 0)["id"] = "lane/a"
+        input["file_touch_map"] = { "lane/a" => touch_map(1, ["lib/lane.rb"]) }
+        input.dig("stage_dependency_gate", "lanes", 0)["id"] = "lane/a"
+        input.dig("stage_dependency_gate", "critical_path")["lane_ids"] = ["lane/a"]
+      end]
+    }
+
+    cases.each do |label, (expected_code, mutation)|
+      input = input_for
+      mutation.call(input)
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") }, expected_code, label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
   def test_each_risky_changed_surface_requires_qa
     RISK_SURFACES.each do |surface|
       risky_lane = lane(surfaces: [surface])
@@ -781,6 +825,53 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["lane-b"], first.dig("launch", "eligible_lane_ids")
     assert_equal ["lane-a"], first.dig("launch", "completed_lane_ids")
     assert_equal first, replay
+  end
+
+  def test_human_lifecycle_waiver_rejects_a_clean_unsupported_claude_installation
+    helper, root = installed_unsupported_workflow_control_helper(host: "claude")
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+
+    result, _stderr, status = evaluate(
+      input_for(backend: "codex", lifecycle_waivers: [waiver]), helper:
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-waiver-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_plugin_source_workflow_helper_cannot_waive_against_its_own_clean_agents_directory
+    helper, root = installed_unsupported_workflow_control_helper(installer_metadata: false)
+    companion = secure_mktmpdir("workflow-plugin-companion")
+    FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
+    write_install_metadata(
+      companion,
+      root,
+      host: "codex",
+      mode: "copy",
+      delivery_mode: "plugin-companion"
+    )
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+
+    result, _stderr, status = evaluate(
+      input_for(backend: "codex", lifecycle_waivers: [waiver]),
+      helper:,
+      env: { "CODEX_HOME" => companion }
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-waiver-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
   end
 
   def test_lifecycle_waiver_encodes_a_colon_in_the_batch_plan_authority
@@ -1114,11 +1205,11 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def test_signed_lifecycle_receipt_rejects_slash_bearing_or_uri_ambiguous_identifiers
     cases = {
-      "batch" => lambda do
+      "batch" => ["lane-lifecycle-receipt-invalid", lambda do
         batch_id = "batch/plan"
         [input_for(batch_plan_id: batch_id, lifecycle_receipts: [lane_lifecycle_receipt(batch_plan_id: batch_id)])]
-      end,
-      "stage plan" => lambda do
+      end],
+      "stage plan" => ["lane-lifecycle-receipt-invalid", lambda do
         input = input_for
         stage_id = "trusted/plan"
         input.fetch("stage_dependency_plan")["id"] = stage_id
@@ -1127,28 +1218,28 @@ class BatchPlanPreflightTest < Minitest::Test
           stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
         input["lane_lifecycle_receipts"] = [lane_lifecycle_receipt(stage_dependency_plan_id: stage_id)]
         [input]
-      end,
-      "wave" => lambda do
+      end],
+      "wave" => ["lane-lifecycle-receipt-invalid", lambda do
         unsafe_lane = lane("lane-a", wave: "wave/a")
         [input_for(lanes: [unsafe_lane], active_wave: "wave/a",
                    lifecycle_receipts: [lane_lifecycle_receipt(wave: "wave/a")])]
-      end,
-      "lane" => lambda do
+      end],
+      "lane" => ["lane-id-invalid-or-duplicate", lambda do
         unsafe_lane = lane("lane/a")
         [input_for(lanes: [unsafe_lane], lifecycle_receipts: [lane_lifecycle_receipt(lane_id: "lane/a")])]
-      end,
-      "percent escape" => lambda do
+      end],
+      "percent escape" => ["lane-lifecycle-receipt-invalid", lambda do
         batch_id = "batch%2Fplan"
         [input_for(batch_plan_id: batch_id, lifecycle_receipts: [lane_lifecycle_receipt(batch_plan_id: batch_id)])]
-      end
+      end]
     }
 
-    cases.each do |label, build_input|
+    cases.each do |label, (expected_code, build_input)|
       result, _stderr, status = evaluate(build_input.call.fetch(0), helper: workflow_control_helper)
 
       refute status.success?, label
       assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                      "lane-lifecycle-receipt-invalid", label
+                      expected_code, label
     end
   end
 
@@ -1156,14 +1247,14 @@ class BatchPlanPreflightTest < Minitest::Test
     helper, root = installed_unsupported_workflow_control_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     cases = {
-      "batch" => { batch: "batch/plan" },
-      "stage plan" => { stage: "trusted/plan" },
-      "wave" => { wave: "wave/a" },
-      "lane" => { lane: "lane/a" },
-      "percent escape" => { batch: "batch%2Fplan" }
+      "batch" => ["lane-lifecycle-waiver-invalid", { batch: "batch/plan" }],
+      "stage plan" => ["lane-lifecycle-waiver-invalid", { stage: "trusted/plan" }],
+      "wave" => ["lane-lifecycle-waiver-invalid", { wave: "wave/a" }],
+      "lane" => ["lane-id-invalid-or-duplicate", { lane: "lane/a" }],
+      "percent escape" => ["lane-lifecycle-waiver-invalid", { batch: "batch%2Fplan" }]
     }
 
-    cases.each do |label, overrides|
+    cases.each do |label, (expected_code, overrides)|
       batch_id = overrides.fetch(:batch, "batch-plan-1")
       stage_id = overrides.fetch(:stage, "trusted-plan-1")
       wave = overrides.fetch(:wave, "wave-a")
@@ -1186,7 +1277,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
       refute status.success?, label
       assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                      "lane-lifecycle-waiver-invalid", label
+                      expected_code, label
     end
   end
 
