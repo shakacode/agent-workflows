@@ -3807,13 +3807,21 @@ closed trusted-base seam:
 ```yaml
 selected_hosted_ci_receipts:
   executable: ".agents/bin/selected-hosted-ci-receipts"
+  credential_env:
+    - CIRCLECI_TOKEN
 ```
 
-The executable is one tracked executable regular file under `.agents/bin`, not
-a command string. `merge-assurance` reads the mapping and executable from the
-context-bound base commit, privately materializes that exact trusted-base tree,
-and runs only those bytes. PR-head config, scripts, dependencies, PATH, and
-loader settings cannot replace the policy or command.
+The mapping has exactly `executable` and `credential_env`. The executable is one
+tracked executable regular file under `.agents/bin`, not a command string. The
+credential allowlist is a unique array of uppercase environment-variable names;
+each declared variable must be present and nonempty. Target-binding and hardened
+runtime variable names are reserved. No undeclared credential is forwarded.
+Use an empty array when the seam needs no credential. `merge-assurance` reads
+the mapping and executable from the context-bound base commit, privately
+materializes that exact trusted-base tree, and runs only those bytes. PR-head
+config, scripts, dependencies, PATH, loader settings, and undeclared ambient
+credentials cannot replace or influence the policy or command. A generic
+`#!/usr/bin/env ruby` seam resolves to the verified current `RbConfig.ruby`.
 
 The seam receives one JSON object on stdin with contract
 `selected-hosted-ci-receipt-request`, version `1`, and exact `host`,

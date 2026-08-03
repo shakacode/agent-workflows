@@ -123,6 +123,13 @@ module MergeAssurance
   POLICY_CONFIG = ".agents/agent-workflow.yml"
   SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
   SELECTED_HOSTED_CI_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  SELECTED_HOSTED_CI_CREDENTIAL_ENV = /\A[A-Z][A-Z0-9_]*\z/
+  SELECTED_HOSTED_CI_RESERVED_ENV = %w[
+    GH_HOST GH_REPO SELECTED_HOSTED_CI_PR SELECTED_HOSTED_CI_HEAD_SHA
+    HOME USER LOGNAME PATH
+    GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_NO_REPLACE_OBJECTS
+    GIT_OPTIONAL_LOCKS GIT_TERMINAL_PROMPT
+  ].freeze
   SYSTEM_TOOL_DIRS = %w[
     /opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin
   ].freeze
@@ -1180,7 +1187,7 @@ module MergeAssurance
 
       repo_root = trusted_repo_root!
       config = load_trusted_policy!(repo_root, base_sha)
-      executable = selected_hosted_ci_executable!(config)
+      executable, credential_env = selected_hosted_ci_policy!(config)
       trusted_bytes = trusted_executable!(repo_root, base_sha, executable)
       request = {
         "contract" => "selected-hosted-ci-receipt-request",
@@ -1192,7 +1199,7 @@ module MergeAssurance
         "selected_runs" => selections
       }
       run_selected_hosted_ci_seam!(
-        repo_root:, base_sha:, executable:, trusted_bytes:, request:
+        repo_root:, base_sha:, executable:, trusted_bytes:, request:, credential_env:
       )
     end
 
@@ -1223,18 +1230,34 @@ module MergeAssurance
       raise Error, "trusted-base selected hosted CI policy is invalid YAML: #{e.message.lines.first.to_s.strip}"
     end
 
-    def selected_hosted_ci_executable!(config)
+    def selected_hosted_ci_policy!(config)
       seam = config[SELECTED_HOSTED_CI_POLICY_KEY]
-      unless seam.is_a?(Hash) && seam.keys == ["executable"]
+      unless seam.is_a?(Hash) && seam.keys.sort == %w[credential_env executable]
         raise Error, "selected hosted runs require an exact trusted-base " \
-                     "#{SELECTED_HOSTED_CI_POLICY_KEY}.executable seam"
+                     "#{SELECTED_HOSTED_CI_POLICY_KEY} executable and credential_env seam"
       end
       executable = seam["executable"]
       unless executable.is_a?(String) && executable.match?(SELECTED_HOSTED_CI_EXECUTABLE)
         raise Error, "trusted-base selected hosted CI executable must name one file under .agents/bin"
       end
 
-      executable
+      credential_env = seam["credential_env"]
+      unless credential_env.is_a?(Array) && credential_env.all? do |name|
+        name.is_a?(String) && name.match?(SELECTED_HOSTED_CI_CREDENTIAL_ENV)
+      end
+        raise Error, "trusted-base selected hosted CI credential_env must contain uppercase environment names"
+      end
+      if credential_env.uniq.length != credential_env.length
+        raise Error, "trusted-base selected hosted CI credential_env must not contain duplicates"
+      end
+
+      reserved = credential_env & SELECTED_HOSTED_CI_RESERVED_ENV
+      unless reserved.empty?
+        raise Error, "trusted-base selected hosted CI credential_env contains reserved names: " \
+                     "#{reserved.sort.join(', ')}"
+      end
+
+      [executable, credential_env]
     end
 
     def trusted_executable!(repo_root, base_sha, executable)
@@ -1266,7 +1289,9 @@ module MergeAssurance
       stdout
     end
 
-    def run_selected_hosted_ci_seam!(repo_root:, base_sha:, executable:, trusted_bytes:, request:)
+    def run_selected_hosted_ci_seam!(
+      repo_root:, base_sha:, executable:, trusted_bytes:, request:, credential_env:
+    )
       directory = Dir.mktmpdir("merge-assurance-selected-hosted-ci")
       File.chmod(0o700, directory)
       snapshot_root = File.join(directory, "trusted-base")
@@ -1291,7 +1316,7 @@ module MergeAssurance
       validate_materialized_executable!(snapshot_root, materialized, trusted_bytes)
       launch = selected_hosted_ci_launch_command!(trusted_bytes, materialized, repo_root)
       stdout, stderr, status = Open3.capture3(
-        selected_hosted_ci_environment(request), *launch,
+        selected_hosted_ci_environment(request, credential_env), *launch,
         stdin_data: JSON.generate(request), chdir: snapshot_root, unsetenv_others: true
       )
       unless status.success?
@@ -1355,7 +1380,7 @@ module MergeAssurance
     end
 
     def resolve_env_interpreter!(program, repo_root)
-      candidate = if program == File.basename(RbConfig.ruby)
+      candidate = if program == "ruby" || program == File.basename(RbConfig.ruby)
                     RbConfig.ruby
                   else
                     TRUSTED_INTERPRETER_DIRS
@@ -1380,16 +1405,20 @@ module MergeAssurance
       raise Error, "trusted-base selected hosted CI interpreter is unavailable: #{path}"
     end
 
-    def selected_hosted_ci_environment(request)
+    def selected_hosted_ci_environment(request, credential_env)
       environment = system_tool_environment.merge(
         "GH_HOST" => request.fetch("host"),
         "GH_REPO" => request.fetch("repository"),
         "SELECTED_HOSTED_CI_PR" => request.fetch("pr").to_s,
         "SELECTED_HOSTED_CI_HEAD_SHA" => request.fetch("head_sha").to_s
       )
-      ENV.each do |name, value|
-        environment[name] = value if name.match?(/\A[A-Z][A-Z0-9_]*(?:TOKEN|API_KEY)\z/) &&
-                                     !value.empty?
+      credential_env.each do |name|
+        value = ENV[name]
+        if value.nil? || value.empty?
+          raise Error, "declared selected hosted CI credential is missing or empty: #{name}"
+        end
+
+        environment[name] = value
       end
       environment
     end

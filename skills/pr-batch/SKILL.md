@@ -566,10 +566,14 @@ legacy v1 CI output is not sufficient.
 When a hosted workflow outside the ordinary GitHub check scopes is explicitly
 selected, add its exact `{provider, run_id}` to merge-context
 `selected_hosted_runs`. A nonempty selection requires the trusted-base
-`selected_hosted_ci_receipts.executable` seam. `merge-assurance` runs that one
-repository-owned `.agents/bin` executable from a private materialization of the
-trusted base, never from PR-head bytes. Its provider-neutral records bind
-repository, PR, exact head, run ID, selection time, and terminal result.
+`selected_hosted_ci_receipts` seam with exact `executable` and `credential_env`
+keys. `credential_env` is a unique array of uppercase environment-variable
+names; every declared value must be present and nonempty. Only those declared
+credentials are forwarded, and target-binding or hardened runtime variables
+cannot be declared. `merge-assurance` runs the one repository-owned
+`.agents/bin` executable from a private materialization of the trusted base,
+never from PR-head bytes. Its provider-neutral records bind repository, PR,
+exact head, run ID, selection time, and terminal result.
 Missing, mismatched, cancelled, failed, nonterminal, malformed, or `UNKNOWN`
 selected-run evidence blocks. `success` is the only passing result. An empty
 selection invokes no seam and gates no incidental hosted run.
