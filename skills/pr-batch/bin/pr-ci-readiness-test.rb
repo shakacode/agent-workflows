@@ -2836,7 +2836,8 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_empty data["pending"]
       assert_empty data.fetch("requested_hosted").fetch("pending")
       assert_equal "NOT_APPLICABLE", data.dig("scopes", "other", "state")
-      assert_equal ["test-suite"], data.dig("scopes", "other", "informational_rows").map { |row| row.fetch("name") }
+      informational_names = data.dig("scopes", "other", "informational_rows").map { |row| row.fetch("name") }
+      assert_equal ["test-suite"], informational_names
     end
   end
 
