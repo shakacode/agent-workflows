@@ -1,3 +1,5 @@
+# Shared globals are populated by options.bash after all modules are sourced.
+declare target host agent_coord_install_dir repo_names source_root compat_root runtime_root install_tools
 agent_stack_timestamp() {
   date -u '+%Y%m%dT%H%M%SZ'
 }

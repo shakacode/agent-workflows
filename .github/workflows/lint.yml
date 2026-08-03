@@ -1,0 +1,72 @@
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Keep these hashes in sync with the shellcheck/actionlint versions in bin/lint.
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install package linters
+        run: |
+          gem install rubocop -v "$(bin/lint --version rubocop)" --no-document
+          npm install --global --ignore-scripts \
+            "markdownlint-cli2@$(bin/lint --version markdownlint-cli2)"
+          python -m pip install "yamllint==$(bin/lint --version yamllint)"
+
+      - name: Install binary linters
+        run: |
+          tool_dir="${RUNNER_TEMP}/lint-bin"
+          mkdir -p "$tool_dir"
+
+          shellcheck_version="$(bin/lint --version shellcheck)"
+          shellcheck_archive="${RUNNER_TEMP}/shellcheck.tar.xz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$shellcheck_archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${shellcheck_version}/shellcheck-v${shellcheck_version}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  ${shellcheck_archive}" | sha256sum --check
+          tar -xJf "$shellcheck_archive" --strip-components=1 -C "$tool_dir"
+
+          actionlint_version="$(bin/lint --version actionlint)"
+          actionlint_archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$actionlint_archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${actionlint_version}/actionlint_${actionlint_version}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  ${actionlint_archive}" | sha256sum --check
+          tar -xzf "$actionlint_archive" -C "$tool_dir" actionlint
+
+          echo "$tool_dir" >> "$GITHUB_PATH"
+
+      - name: Run repository lint
+        run: bin/lint

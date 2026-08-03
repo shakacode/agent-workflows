@@ -11,9 +11,11 @@ agent_stack_parse_options() {
   replace_compat=false
   fetch=true
   install_tools=true
+  # shellcheck disable=SC2034 # Consumed by sourced sibling modules.
   repo_names=(agent-workflows agent-coordination agent-coordination-dashboard)
 
   while [[ $# -gt 0 ]]; do
+    # shellcheck disable=SC2034 # Option values are consumed by sourced sibling modules.
     case "$1" in
       --source-root) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--source-root requires a directory" >&2; exit 64; }; source_root="$2"; shift 2 ;;
       --compat-root) [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--compat-root requires a directory" >&2; exit 64; }; compat_root="$2"; shift 2 ;;

@@ -7,9 +7,10 @@ focused, and easy for consumer repos to adopt.
 
 - Start from the current `main` branch and keep each PR focused on one workflow,
   helper, or documentation concern.
-- Run `bin/validate` before opening or updating a PR. It includes the pinned
-  RuboCop check; do not autocorrect the tree unless the PR is explicitly a
-  formatting cleanup.
+- Run `.agents/bin/lint` and `bin/validate` before opening or updating a PR.
+  The lint command checks the tracked Ruby, shell, Markdown, YAML, and GitHub
+  Actions surfaces with pinned tools. Do not autocorrect the tree unless the PR
+  is explicitly a formatting cleanup.
 - Review changed Markdown manually for stale paths, broken links, and accidental
   consumer-repo assumptions.
 
