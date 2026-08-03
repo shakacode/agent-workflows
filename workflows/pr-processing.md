@@ -3798,7 +3798,7 @@ the coordinator explicitly selected outside the ordinary GitHub check scopes,
 put exactly one record in merge-context `selected_hosted_runs`:
 
 ```json
-{"provider":"circleci","run_id":"<selected-workflow-or-run-id>"}
+{"provider":"external-ci","run_id":"<selected-workflow-or-run-id>"}
 ```
 
 Do not add advisory or merely observed runs. A nonempty list requires this
@@ -3808,7 +3808,7 @@ closed trusted-base seam:
 selected_hosted_ci_receipts:
   executable: ".agents/bin/selected-hosted-ci-receipts"
   credential_env:
-    - CIRCLECI_TOKEN
+    - HOSTED_CI_TOKEN
 ```
 
 The mapping has exactly `executable` and `credential_env`. The executable is one
@@ -3854,7 +3854,7 @@ same target for provider tooling. It returns one JSON object:
   "version": 1,
   "complete": true,
   "records": [{
-    "provider": "circleci",
+    "provider": "external-ci",
     "repository": "OWNER/REPO",
     "pr": 123,
     "head_sha": "<FULL_HEAD_SHA>",

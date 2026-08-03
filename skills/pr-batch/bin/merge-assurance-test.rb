@@ -299,6 +299,62 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_cli_blocks_local_evidence_before_selected_hosted_ci_seam_launch
+    cases = {
+      "malformed-ci" => [
+        ->(ci_result, _autonomous_result, _merge_context) { ci_result.clear },
+        "invalid pr-ci-readiness contract or version"
+      ],
+      "stale-ci" => [
+        lambda do |ci_result, _autonomous_result, _merge_context|
+          ci_result["checked_at"] = (
+            Time.now.utc - MergeAssurance::MAX_EVIDENCE_AGE_SECONDS - 1
+          ).iso8601
+        end,
+        "ci_result evidence is stale"
+      ],
+      "not-ready-ci" => [
+        ->(ci_result, _autonomous_result, _merge_context) { ci_result["verdict"] = "NOT_READY" },
+        "ci_result is not READY"
+      ],
+      "authority-none" => [
+        ->(_ci_result, _autonomous_result, merge_context) { merge_context["authority"] = "none" },
+        "merge authority none can never produce an eligible receipt"
+      ]
+    }
+    launched = []
+
+    cases.each do |name, (mutate, expected_failure)|
+      with_selected_hosted_ci_cli_fixture do |fixture|
+        mutate.call(
+          fixture.fetch(:ci_result),
+          fixture.fetch(:autonomous_result),
+          fixture.fetch(:context)
+        )
+        stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+        result = JSON.parse(stdout)
+
+        assert_equal 1, status.exitstatus, "#{name}: #{stderr}"
+        assert_includes result.fetch("failures"), expected_failure, name
+        launched << name if File.exist?(fixture.fetch(:seam_marker))
+      end
+    end
+
+    assert_empty launched, "selected hosted CI seam launched for: #{launched.join(', ')}"
+  end
+
+  def test_cli_blocks_non_string_host_before_selected_hosted_ci_seam_launch
+    with_selected_hosted_ci_cli_fixture(host: 123) do |fixture|
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+
+      assert_empty stderr, "unexpected CLI exception: #{stderr}"
+      result = JSON.parse(stdout)
+      assert_equal 1, status.exitstatus
+      assert_equal ["context host is invalid"], result.fetch("failures")
+      refute File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was launched"
+    end
+  end
+
   def test_selected_hosted_ci_policy_credential_allowlist_is_exact_and_fail_closed
     runner = MergeAssurance::Runner.new
     executable = ".agents/bin/selected-hosted-ci-receipts"
@@ -370,13 +426,20 @@ class MergeAssuranceTest < Minitest::Test
         selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
       )
       merge_context["base"]["sha"] = base_sha
+      now = Time.now.utc
+      ci_result = ready_ci
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
       paths = {
         ci: File.join(repo_root, "ci.json"),
         autonomous: File.join(repo_root, "autonomous.json"),
         context: File.join(repo_root, "context.json")
       }
-      File.write(paths.fetch(:ci), JSON.generate(ready_ci))
-      File.write(paths.fetch(:autonomous), JSON.generate(autonomous_result("autonomous-merge-eligible")))
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
       File.write(paths.fetch(:context), JSON.generate(merge_context))
       exit_code = nil
       arguments = [
@@ -2324,6 +2387,85 @@ class MergeAssuranceTest < Minitest::Test
       puts JSON.generate(response)
     RUBY
     File.chmod(0o755, path)
+  end
+
+  def with_selected_hosted_ci_cli_fixture(host: "github.com")
+    Dir.mktmpdir("merge-assurance-local-preflight") do |repo_root|
+      seam_marker = File.join(repo_root, "selected-hosted-ci-seam-called")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env:
+              - HOSTED_CI_TOKEN
+        YAML
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        selected_hosted_ci_seam_script(
+          marker: seam_marker,
+          terminal_result: "success",
+          required_credential: %w[HOSTED_CI_TOKEN preflight-secret]
+        )
+      )
+      FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
+      run_git!(repo_root, "add", "--all")
+      run_git!(repo_root, "commit", "-qm", "trusted selected hosted CI seam")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      selected = {
+        "provider" => "circleci",
+        "run_id" => "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa"
+      }
+      merge_context = context(
+        "auto_merge_when_gates_pass", selected_hosted_runs: [selected]
+      )
+      merge_context["host"] = host
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["context"]["host"] = host
+      now = Time.now.utc
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value do |scope|
+        scope["checked_at"] = (now - 1).iso8601
+      end
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      fixture = {
+        repo_root:,
+        seam_marker:,
+        ci_result:,
+        autonomous_result: autonomous,
+        context: merge_context
+      }
+
+      yield fixture
+    end
+  end
+
+  def run_selected_hosted_ci_cli_fixture(fixture)
+    repo_root = fixture.fetch(:repo_root)
+    paths = {
+      ci: File.join(repo_root, "ci.json"),
+      autonomous: File.join(repo_root, "autonomous.json"),
+      context: File.join(repo_root, "context.json")
+    }
+    File.write(paths.fetch(:ci), JSON.generate(fixture.fetch(:ci_result)))
+    File.write(paths.fetch(:autonomous), JSON.generate(fixture.fetch(:autonomous_result)))
+    File.write(paths.fetch(:context), JSON.generate(fixture.fetch(:context)))
+    Open3.capture3(
+      { "PATH" => @original_path, "HOSTED_CI_TOKEN" => "preflight-secret" },
+      RbConfig.ruby, SCRIPT,
+      "--ci-result", paths.fetch(:ci),
+      "--autonomous-result", paths.fetch(:autonomous),
+      "--context", paths.fetch(:context),
+      chdir: repo_root
+    )
   end
 
   def capture_process_group_with_deadline(environment, *command, chdir:, deadline_seconds:)
