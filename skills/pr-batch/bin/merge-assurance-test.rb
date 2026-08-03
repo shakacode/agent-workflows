@@ -4,6 +4,7 @@
 require "fileutils"
 require "json"
 require "minitest/autorun"
+require "open3"
 require "rbconfig"
 require "tmpdir"
 
@@ -15,6 +16,16 @@ class MergeAssuranceTest < Minitest::Test
   BASE_SHA = "b" * 40
   DIFF_IDENTITY = "c" * 64
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
+  SYSTEM_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
+    candidate = File.join(directory, "git")
+    candidate if File.file?(candidate) && File.executable?(candidate)
+  end.first
+  HOSTED_CI_REPLAYS = JSON.parse(
+    File.read(
+      File.expand_path("../fixtures/selected-hosted-ci-hichee-replays.json", __dir__),
+      encoding: "UTF-8"
+    )
+  ).freeze
 
   def setup
     @fake_gh_dir = Dir.mktmpdir("merge-assurance-gh")
@@ -81,6 +92,196 @@ class MergeAssuranceTest < Minitest::Test
     )
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("evidence_digest"))
     assert MergeAssurance.valid_evidence_digest?(result)
+  end
+
+  def test_selected_hosted_ci_hichee_10049_cancelled_replay_blocks
+    replay = HOSTED_CI_REPLAYS.fetch("cases").find { |item| item.fetch("pr") == 10_049 }
+    context = context(
+      "auto_merge_when_gates_pass",
+      repo: HOSTED_CI_REPLAYS.fetch("repository"),
+      pull_request: replay.fetch("pr"),
+      head_sha: replay.fetch("head_sha"),
+      selected_hosted_runs: replay.fetch("selected_runs").map do |run|
+        run.slice("provider", "run_id")
+      end
+    )
+    records = selected_hosted_ci_receipts(replay, context)
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci(
+        repo: context.fetch("repo"), pull_request: context.fetch("pr"), head_sha: context.fetch("head_sha")
+      ),
+      autonomous_result: autonomous_result(
+        "autonomous-merge-eligible", head_sha: context.fetch("head_sha")
+      ),
+      context:,
+      selected_hosted_ci_receipts: records,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes(
+      result.fetch("failures"),
+      "selected hosted run circleci/c506a91e-5b3b-4bb6-b136-2bcfa06f69aa is cancelled"
+    )
+  end
+
+  def test_cli_executes_selected_hosted_ci_receipt_seam_from_trusted_base
+    Dir.mktmpdir("merge-assurance-hosted-ci") do |repo_root|
+      base_marker = File.join(repo_root, "base-seam-called")
+      attacker_marker = File.join(repo_root, "pr-head-seam-called")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+        YAML
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        selected_hosted_ci_seam_script(
+          marker: base_marker, terminal_result: "cancelled"
+        )
+      )
+      FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
+      run_git!(repo_root, "add", "--all")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        selected_hosted_ci_seam_script(
+          marker: attacker_marker, terminal_result: "success"
+        )
+      )
+      run_git!(repo_root, "commit", "-qam", "untrusted PR-head replacement")
+
+      now = Time.now.utc
+      selected = {
+        "provider" => "circleci",
+        "run_id" => "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa"
+      }
+      merge_context = context(
+        "auto_merge_when_gates_pass", selected_hosted_runs: [selected]
+      )
+      merge_context["host"] = "github.example"
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["context"]["host"] = merge_context.fetch("host")
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value do |scope|
+        scope["checked_at"] = (now - 1).iso8601
+      end
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+
+      stdout, stderr, status = Open3.capture3(
+        { "PATH" => @original_path },
+        RbConfig.ruby, SCRIPT,
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context),
+        chdir: repo_root
+      )
+      result = JSON.parse(stdout)
+
+      refute status.success?, stderr
+      assert_includes(
+        result.fetch("failures"),
+        "selected hosted run circleci/c506a91e-5b3b-4bb6-b136-2bcfa06f69aa is cancelled"
+      )
+      assert File.exist?(base_marker), "trusted-base receipt seam was not invoked"
+      assert_equal(
+        "github.example",
+        JSON.parse(File.read(base_marker)).fetch("host")
+      )
+      refute File.exist?(attacker_marker), "PR-head receipt seam was invoked"
+    end
+  end
+
+  def test_selected_hosted_ci_hichee_incident_replays
+    actual = HOSTED_CI_REPLAYS.fetch("cases").to_h do |replay|
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        repo: HOSTED_CI_REPLAYS.fetch("repository"),
+        pull_request: replay.fetch("pr"),
+        head_sha: replay.fetch("head_sha"),
+        selected_hosted_runs: replay.fetch("selected_runs").map do |run|
+          run.slice("provider", "run_id")
+        end
+      )
+      result = MergeAssurance.assess(
+        ci_result: ready_ci(
+          repo: merge_context.fetch("repo"),
+          pull_request: merge_context.fetch("pr"),
+          head_sha: merge_context.fetch("head_sha")
+        ),
+        autonomous_result: autonomous_result(
+          "autonomous-merge-eligible", head_sha: merge_context.fetch("head_sha")
+        ),
+        context: merge_context,
+        selected_hosted_ci_receipts: selected_hosted_ci_receipts(replay, merge_context),
+        now: NOW
+      )
+      [replay.fetch("pr"), result.fetch("eligible")]
+    end
+
+    assert_equal(
+      { 10_049 => false, 10_048 => false, 10_026 => false, 10_036 => true },
+      actual
+    )
+  end
+
+  def test_selected_hosted_ci_receipts_reject_missing_stale_head_and_mismatched_pr
+    selection = { "provider" => "circleci", "run_id" => "selected-run" }
+    merge_context = context(
+      "auto_merge_when_gates_pass", selected_hosted_runs: [selection]
+    )
+    valid = MergeAssurance.empty_selected_hosted_ci_receipts
+    valid["records"] = [{
+      **selection,
+      "repository" => merge_context.fetch("repo"),
+      "pr" => merge_context.fetch("pr"),
+      "head_sha" => merge_context.fetch("head_sha"),
+      "selected_at" => "2026-07-30T11:55:00Z",
+      "terminal_result" => "success"
+    }]
+    cases = {
+      "missing" => MergeAssurance.empty_selected_hosted_ci_receipts,
+      "stale-head" => Marshal.load(Marshal.dump(valid)).tap do |receipts|
+        receipts.dig("records", 0)["head_sha"] = "d" * 40
+      end,
+      "mismatched-pr" => Marshal.load(Marshal.dump(valid)).tap do |receipts|
+        receipts.dig("records", 0)["pr"] = 43
+      end
+    }
+
+    failures = cases.transform_values do |receipts|
+      MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: merge_context,
+        selected_hosted_ci_receipts: receipts,
+        now: NOW
+      ).fetch("failures")
+    end
+
+    assert_includes failures.fetch("missing"), "selected hosted run circleci/selected-run is missing"
+    assert_includes failures.fetch("stale-head"), "selected hosted run circleci/selected-run head mismatch"
+    assert_includes failures.fetch("mismatched-pr"), "selected hosted run circleci/selected-run PR mismatch"
   end
 
   def test_ci_evidence_host_must_match_merge_context
@@ -1435,6 +1636,48 @@ class MergeAssuranceTest < Minitest::Test
 
   private
 
+  def run_git!(root, *args)
+    stdout, stderr, status = Open3.capture3(
+      {
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "commit.gpgSign",
+        "GIT_CONFIG_VALUE_0" => "false"
+      },
+      SYSTEM_GIT, *args, chdir: root
+    )
+    raise "git fixture failed: #{stderr}" unless status.success?
+
+    stdout
+  end
+
+  def selected_hosted_ci_seam_script(marker:, terminal_result:)
+    record = {
+      "provider" => "circleci",
+      "repository" => "owner/repo",
+      "pr" => 42,
+      "head_sha" => HEAD_SHA,
+      "run_id" => "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa",
+      "selected_at" => (Time.now.utc - 1).iso8601,
+      "terminal_result" => terminal_result
+    }
+    payload = {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => [record]
+    }
+    <<~RUBY
+      #!#{RbConfig.ruby}
+      require "json"
+      request = JSON.parse(STDIN.read)
+      raise "host binding mismatch" unless ENV.fetch("GH_HOST") == request.fetch("host")
+      File.write(#{marker.inspect}, JSON.generate("host" => request.fetch("host")))
+      puts #{JSON.generate(payload).inspect}
+    RUBY
+  end
+
   def fake_gh_call_count
     return 0 unless File.exist?(@fake_gh_calls)
 
@@ -1505,7 +1748,7 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
-  def ready_ci
+  def ready_ci(repo: "owner/repo", pull_request: 42, head_sha: HEAD_SHA)
     rows = {
       "required_status_check_rollup" => [
         { "name" => "required", "bucket" => "pass" }
@@ -1523,7 +1766,7 @@ class MergeAssuranceTest < Minitest::Test
           "state" => scope_rows.empty? ? "NOT_APPLICABLE" : "READY",
           "source" => "github.test.#{name}",
           "complete" => true,
-          "head_sha" => HEAD_SHA,
+          "head_sha" => head_sha,
           "rows" => scope_rows,
           "checked_at" => "2026-07-30T11:59:00Z"
         }
@@ -1533,9 +1776,9 @@ class MergeAssuranceTest < Minitest::Test
       "contract" => "pr-ci-readiness",
       "version" => 2,
       "context" => { "host" => "github.com" },
-      "repo" => "owner/repo",
-      "pr" => 42,
-      "head_sha" => HEAD_SHA,
+      "repo" => repo,
+      "pr" => pull_request,
+      "head_sha" => head_sha,
       "checked_at" => "2026-07-30T11:59:00Z",
       "verdict" => "READY",
       "ordinary_verdict" => "READY",
@@ -1543,7 +1786,7 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
-  def autonomous_result(verdict)
+  def autonomous_result(verdict, head_sha: HEAD_SHA)
     triggered_gates, human_decision_evidence =
       case verdict
       when "human-approval-required"
@@ -1564,7 +1807,7 @@ class MergeAssuranceTest < Minitest::Test
       end
     {
       "verdict" => verdict,
-      "head_sha" => HEAD_SHA,
+      "head_sha" => head_sha,
       "policy_provenance" => "git:#{BASE_SHA}",
       "helper_provenance" => "trusted-base:#{BASE_SHA}",
       "helper_trust" => {
@@ -1599,22 +1842,39 @@ class MergeAssuranceTest < Minitest::Test
 
   def context(
     authority, operations: [], human_merge_decision: nil, walkthrough: nil,
-    semantic_github_actions_change: false
+    semantic_github_actions_change: false, repo: "owner/repo", pull_request: 42,
+    head_sha: HEAD_SHA, selected_hosted_runs: []
   )
     {
       "contract" => "merge-assurance-context",
       "version" => 1,
       "host" => "github.com",
-      "repo" => "owner/repo",
-      "pr" => 42,
+      "repo" => repo,
+      "pr" => pull_request,
       "base" => { "ref" => "main", "sha" => BASE_SHA },
-      "head_sha" => HEAD_SHA,
+      "head_sha" => head_sha,
       "authority" => authority,
       "diff_identity" => DIFF_IDENTITY,
       "human_merge_decision" => human_merge_decision,
       "walkthrough" => walkthrough,
       "semantic_github_actions_change" => semantic_github_actions_change,
+      "selected_hosted_runs" => selected_hosted_runs,
       "operations" => operations
+    }
+  end
+
+  def selected_hosted_ci_receipts(replay, context)
+    {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => replay.fetch("selected_runs").map do |run|
+        run.merge(
+          "repository" => context.fetch("repo"),
+          "pr" => context.fetch("pr"),
+          "head_sha" => context.fetch("head_sha")
+        )
+      end
     }
   end
 
