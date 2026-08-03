@@ -128,6 +128,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_cli_executes_selected_hosted_ci_receipt_seam_from_trusted_base
+    account_home = File.realpath(Etc.getpwuid(Process.uid).dir)
     Dir.mktmpdir("merge-assurance-hosted-ci") do |repo_root|
       base_marker = File.join(repo_root, "base-seam-called")
       attacker_marker = File.join(repo_root, "pr-head-seam-called")
@@ -150,7 +151,8 @@ class MergeAssuranceTest < Minitest::Test
           marker: base_marker,
           terminal_result: "cancelled",
           required_credential: %w[CIRCLECI_TOKEN allowlisted-secret],
-          absent_credential: "UNRELATED_TOKEN"
+          absent_credential: "UNRELATED_TOKEN",
+          account_home:
         )
       )
       FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
@@ -218,11 +220,82 @@ class MergeAssuranceTest < Minitest::Test
         {
           "host" => "github.example",
           "credential_forwarded" => true,
-          "unrelated_credential_present" => false
+          "unrelated_credential_present" => false,
+          "home_exists" => true,
+          "home_private" => true,
+          "home_distinct_from_account" => true,
+          "home_empty" => true
         },
         JSON.parse(File.read(base_marker))
       )
       refute File.exist?(attacker_marker), "PR-head receipt seam was invoked"
+    end
+  end
+
+  def test_selected_hosted_ci_seam_private_home_hides_fake_account_provider_file
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-fake-account") do |fake_account_home|
+      credential_relative_path = File.join(".config", "provider", "credentials")
+      account_credential = File.join(fake_account_home, credential_relative_path)
+      FileUtils.mkdir_p(File.dirname(account_credential))
+      File.write(account_credential, "fake-account-secret")
+      Dir.mktmpdir("merge-assurance-private-materialization") do |directory|
+        private_home = File.join(directory, "home")
+        marker = File.join(directory, "home-evidence.json")
+        seam = File.join(directory, "seam.rb")
+        FileUtils.mkdir_p(private_home, mode: 0o700)
+        File.chmod(0o700, private_home)
+        File.write(
+          seam,
+          <<~RUBY
+            require "json"
+            home = ENV.fetch("HOME")
+            File.write(
+              #{marker.inspect},
+              JSON.generate(
+                "home" => File.realpath(home),
+                "private" => (File.stat(home).mode & 0o777) == 0o700,
+                "empty" => Dir.empty?(home),
+                "provider_credential_visible" => File.exist?(
+                  File.join(home, #{credential_relative_path.inspect})
+                )
+              )
+            )
+          RUBY
+        )
+        account_environment = runner.send(:system_tool_environment).merge("HOME" => fake_account_home)
+        runner.define_singleton_method(:system_tool_environment) { account_environment }
+        request = {
+          "host" => "github.com",
+          "repository" => "owner/repo",
+          "pr" => 42,
+          "head_sha" => HEAD_SHA
+        }
+        environment = runner.send(
+          :selected_hosted_ci_environment, request, [], home: private_home
+        )
+
+        _stdout, stderr, status = runner.send(
+          :run_selected_hosted_ci_process!,
+          environment,
+          [RbConfig.ruby, seam],
+          request,
+          chdir: directory
+        )
+        evidence = JSON.parse(File.read(marker))
+
+        assert status.success?, stderr
+        assert File.exist?(account_credential)
+        assert_equal(
+          {
+            "home" => File.realpath(private_home),
+            "private" => true,
+            "empty" => true,
+            "provider_credential_visible" => false
+          },
+          evidence
+        )
+      end
     end
   end
 
@@ -271,6 +344,62 @@ class MergeAssuranceTest < Minitest::Test
       refute_empty error.message
       assert_includes error.message, seam.fetch("credential_env").first if
         label.start_with?("non-credential")
+    end
+  end
+
+  def test_cli_blocks_mixed_selected_hosted_ci_policy_keys_without_argument_error
+    Dir.mktmpdir("merge-assurance-mixed-policy") do |repo_root|
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env: []
+            1: mixed-key
+        YAML
+      )
+      run_git!(repo_root, "add", ".agents/agent-workflow.yml")
+      run_git!(repo_root, "commit", "-qm", "trusted mixed policy")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
+      )
+      merge_context["base"]["sha"] = base_sha
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ready_ci))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous_result("autonomous-merge-eligible")))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+      exit_code = nil
+      arguments = [
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context)
+      ]
+
+      stdout, stderr = capture_io do
+        Dir.chdir(repo_root) do
+          exit_code = MergeAssurance::Runner.new.run(arguments)
+        end
+      end
+      result = JSON.parse(stdout)
+
+      assert_equal 1, exit_code
+      assert_empty stderr
+      assert_equal [
+        "selected hosted runs require an exact trusted-base " \
+        "selected_hosted_ci_receipts executable and credential_env seam"
+      ], result.fetch("failures")
+      assert_equal ["merge-assurance-result", "BLOCKED", false],
+                   result.values_at("contract", "verdict", "eligible")
     end
   end
 
@@ -518,7 +647,12 @@ class MergeAssuranceTest < Minitest::Test
     [nil, ""].each do |value|
       value.nil? ? ENV.delete(credential) : ENV[credential] = value
       error = assert_raises(MergeAssurance::Error) do
-        runner.send(:selected_hosted_ci_environment, request, [credential])
+        runner.send(
+          :selected_hosted_ci_environment,
+          request,
+          [credential],
+          home: "/private/merge-assurance-test-home"
+        )
       end
       assert_includes error.message, credential
     end
@@ -616,6 +750,28 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes failures.fetch("missing"), "selected hosted run circleci/selected-run is missing"
     assert_includes failures.fetch("stale-head"), "selected hosted run circleci/selected-run head mismatch"
     assert_includes failures.fetch("mismatched-pr"), "selected hosted run circleci/selected-run PR mismatch"
+  end
+
+  def test_malformed_selected_hosted_ci_record_has_only_primary_and_missing_failures
+    selection = { "provider" => "circleci", "run_id" => "selected-run" }
+    merge_context = context(
+      "auto_merge_when_gates_pass", selected_hosted_runs: [selection]
+    )
+    receipts = MergeAssurance.empty_selected_hosted_ci_receipts
+    receipts["records"] = [{}]
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      selected_hosted_ci_receipts: receipts,
+      now: NOW
+    )
+
+    assert_equal [
+      "selected hosted CI receipt is malformed",
+      "selected hosted run circleci/selected-run is missing"
+    ], result.fetch("failures")
   end
 
   def test_ci_evidence_host_must_match_merge_context
@@ -2222,7 +2378,8 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def selected_hosted_ci_seam_script(
-    marker:, terminal_result:, required_credential: nil, absent_credential: nil
+    marker:, terminal_result:, required_credential: nil, absent_credential: nil,
+    account_home: nil
   )
     record = {
       "provider" => "circleci",
@@ -2249,6 +2406,12 @@ class MergeAssuranceTest < Minitest::Test
         ENV[#{credential_name.inspect}] == #{credential_value.inspect}
       unrelated_credential_present = !#{absent_credential.inspect}.nil? &&
         ENV.key?(#{absent_credential.inspect})
+      home = ENV.fetch("HOME")
+      home_exists = File.directory?(home)
+      home_private = home_exists && (File.stat(home).mode & 0o777) == 0o700
+      home_distinct_from_account = #{account_home.inspect}.nil? ||
+        File.realpath(home) != File.realpath(#{account_home.inspect})
+      home_empty = home_exists && Dir.empty?(home)
       raise "allowlisted credential missing" unless credential_forwarded
       raise "unrelated credential leaked" if unrelated_credential_present
       File.write(
@@ -2256,7 +2419,11 @@ class MergeAssuranceTest < Minitest::Test
         JSON.generate(
           "host" => request.fetch("host"),
           "credential_forwarded" => credential_forwarded,
-          "unrelated_credential_present" => unrelated_credential_present
+          "unrelated_credential_present" => unrelated_credential_present,
+          "home_exists" => home_exists,
+          "home_private" => home_private,
+          "home_distinct_from_account" => home_distinct_from_account,
+          "home_empty" => home_empty
         )
       )
       puts #{JSON.generate(payload).inspect}

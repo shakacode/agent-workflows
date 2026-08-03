@@ -360,7 +360,10 @@ module MergeAssurance
     end
 
     record_ids = records.filter_map do |record|
-      selected_hosted_identity(record) if record.is_a?(Hash)
+      next unless exact_keys?(record, SELECTED_HOSTED_RECEIPT_KEYS)
+      next unless valid_selected_hosted_identity?(record["provider"], record["run_id"])
+
+      selected_hosted_identity(record)
     end
     failures << "selected hosted CI receipts contain duplicates" unless
       record_ids.length == record_ids.uniq.length
@@ -1241,7 +1244,7 @@ module MergeAssurance
 
     def selected_hosted_ci_policy!(config)
       seam = config[SELECTED_HOSTED_CI_POLICY_KEY]
-      unless seam.is_a?(Hash) && seam.keys.sort == %w[credential_env executable]
+      unless MergeAssurance.exact_keys?(seam, %w[credential_env executable])
         raise Error, "selected hosted runs require an exact trusted-base " \
                      "#{SELECTED_HOSTED_CI_POLICY_KEY} executable and credential_env seam"
       end
@@ -1311,7 +1314,10 @@ module MergeAssurance
       directory = Dir.mktmpdir("merge-assurance-selected-hosted-ci")
       File.chmod(0o700, directory)
       snapshot_root = File.join(directory, "trusted-base")
+      seam_home = File.join(directory, "home")
       FileUtils.mkdir_p(snapshot_root, mode: 0o700)
+      FileUtils.mkdir_p(seam_home, mode: 0o700)
+      File.chmod(0o700, seam_home)
       archive, archive_error, archive_status = git_capture(
         "-C", repo_root, "archive", "--format=tar", base_sha, chdir: repo_root
       )
@@ -1332,7 +1338,7 @@ module MergeAssurance
       validate_materialized_executable!(snapshot_root, materialized, trusted_bytes)
       launch = selected_hosted_ci_launch_command!(trusted_bytes, materialized, repo_root)
       stdout, stderr, status = run_selected_hosted_ci_process!(
-        selected_hosted_ci_environment(request, credential_env),
+        selected_hosted_ci_environment(request, credential_env, home: seam_home),
         launch,
         request,
         chdir: snapshot_root
@@ -1555,8 +1561,9 @@ module MergeAssurance
       raise Error, "trusted-base selected hosted CI interpreter is unavailable: #{path}"
     end
 
-    def selected_hosted_ci_environment(request, credential_env)
+    def selected_hosted_ci_environment(request, credential_env, home:)
       environment = system_tool_environment.merge(
+        "HOME" => home,
         "GH_HOST" => request.fetch("host"),
         "GH_REPO" => request.fetch("repository"),
         "SELECTED_HOSTED_CI_PR" => request.fetch("pr").to_s,

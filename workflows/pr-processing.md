@@ -3818,14 +3818,23 @@ each name must end in exactly one of `_TOKEN`, `_API_KEY`, `_SECRET`,
 `_PASSWORD`, `_CREDENTIALS`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, or
 `_PRIVATE_KEY`, and each declared value must be present and nonempty.
 Target-binding and hardened runtime names are reserved; loader controls and
-arbitrary non-credential names fail closed. No undeclared credential is
-forwarded. Use an empty array when the seam needs no credential.
+arbitrary non-credential names fail closed. No undeclared credential environment
+value is forwarded. Use an empty array when the seam needs no credential.
 `merge-assurance` reads the mapping and executable from the context-bound base
 commit, privately materializes that exact trusted-base tree, and runs only those
 bytes. PR-head config, scripts, dependencies, PATH, loader settings, and
 undeclared ambient credentials cannot replace or influence the policy or
 command. A generic `#!/usr/bin/env ruby` seam resolves to the verified current
 `RbConfig.ruby`.
+
+Only the seam process receives a fresh empty `0700` `HOME` inside the private
+materialization temp directory. It is distinct from the account home, so
+account dotfiles and provider credential files are not discovered implicitly.
+Git/archive/tar setup retains its separate minimal system environment and never
+uses this isolated seam `HOME`. Credential values copied into the seam
+environment enter only through the declared `credential_env` names above.
+Mixed, non-string, missing, or extra policy keys produce a blocked
+merge-assurance result rather than escaping the fail-closed boundary.
 
 The seam has a 60-second default bound. A positive finite
 `MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS` may select another bound.
