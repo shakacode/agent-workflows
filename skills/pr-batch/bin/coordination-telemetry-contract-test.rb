@@ -144,10 +144,18 @@ CREATE_ONLY_BRANCH_PATTERNS = {
 }.freeze
 ADVERTISED_UPDATE_BRANCH_PATTERNS = {
   "bounded safe executable and opaque argv" => /bounded safe executable-plus-opaque-argv/,
-  "no shell evaluation" => /without shell evaluation/,
   "failure fields unknown" => /failure records affected fields `UNKNOWN`/,
   "nonwedging failure" => /without wedging|must not wedge/
 }.freeze
+GENERIC_REGISTRATION_INVOCATION_PATTERNS = {
+  "safe executable and opaque argv" =>
+    /backend-advertised safe executable plus ordered opaque argv|safe executable and ordered opaque argv/,
+  "no shell evaluation" => /without shell evaluation/,
+  "hard deadline and process group" => /finite hard deadline in its own process group/,
+  "whole-group termination" => /whole-group `TERM` then `KILL`|whole group with `TERM`, then `KILL`/,
+  "failure fields unknown" => /field-granular `UNKNOWN`/
+}.freeze
+POSITIVE_SHELL_EVALUATION_PATTERN = /(?:uses|with) shell evaluation/
 
 EXPECTED_OPERATIONAL_SIGNALS = {
   "help-needed pause" => {
@@ -373,19 +381,31 @@ def assert_registration_capability_branches(section, location)
   normalized_section = section.gsub(/\s+/, " ")
   create_start = normalized_section.index(/unadvertised or unsupported create-only backend/)
   update_start = normalized_section.index(/An advertised update/)
+  generic_start = normalized_section.index(/Every advertised (?:batch-)?registration invocation/)
   refute_nil create_start, "#{location} must expose the create-only branch"
   refute_nil update_start, "#{location} must expose the advertised-update branch"
+  refute_nil generic_start, "#{location} must expose the generic registration invocation clause"
   assert_operator create_start, :<, update_start,
                   "#{location} must decide create-only fallback before advertised update execution"
+  assert_operator update_start, :<, generic_start,
+                  "#{location} must delimit advertised update before generic invocation"
 
   create_clause = normalized_section[create_start...update_start]
-  update_clause = normalized_section[update_start..]
+  update_clause = normalized_section[update_start...generic_start]
+  generic_clause = normalized_section[generic_start..]
   CREATE_ONLY_BRANCH_PATTERNS.each do |concept, pattern|
     assert_match pattern, create_clause, "#{location} create-only branch must include #{concept}"
   end
   ADVERTISED_UPDATE_BRANCH_PATTERNS.each do |concept, pattern|
     assert_match pattern, update_clause, "#{location} advertised-update branch must include #{concept}"
   end
+  GENERIC_REGISTRATION_INVOCATION_PATTERNS.each do |concept, pattern|
+    assert_match pattern, generic_clause, "#{location} generic invocation must include #{concept}"
+  end
+  refute_match POSITIVE_SHELL_EVALUATION_PATTERN, update_clause,
+               "#{location} advertised-update branch must reject positive shell evaluation"
+  refute_match POSITIVE_SHELL_EVALUATION_PATTERN, generic_clause,
+               "#{location} generic invocation must reject positive shell evaluation"
 end
 
 def authoritative_registration_sections
@@ -642,7 +662,9 @@ class CoordinationTelemetryContractTest < Minitest::Test
           normalized.sub(CREATE_ONLY_BRANCH_PATTERNS.fetch("verified acceptance fields gate activation"),
                          "activation proceeds without verified launch-acceptance fields"),
         "advertised update enables shell evaluation" =>
-          normalized.sub(REGISTRATION_NO_SHELL_MARKER, "with shell evaluation")
+          normalized.sub(REGISTRATION_NO_SHELL_MARKER, "with shell evaluation"),
+        "advertised update locally uses shell evaluation" =>
+          normalized.sub("An advertised update", "An advertised update uses shell evaluation and")
       }
       hostile_mutants.each do |name, mutant|
         refute_equal normalized, mutant, "#{path} must expose #{name}"
