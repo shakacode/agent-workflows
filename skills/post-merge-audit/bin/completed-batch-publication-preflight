@@ -81,14 +81,19 @@ module CompletedBatchPublicationPreflight
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
     validate_batch_terminal(batch, blockers) unless no_backend
-    canonical_targets = canonical_target_snapshots(
+    canonical_targets, authenticated_later_target_keys = canonical_target_snapshots(
       expected_targets,
       snapshots,
       lane_entries,
       blockers,
       target_verifier:
     )
-    canonical_lanes = canonical_lane_snapshots(lane_entries, canonical_targets, blockers)
+    canonical_lanes = canonical_lane_snapshots(
+      lane_entries,
+      canonical_targets,
+      authenticated_later_target_keys,
+      blockers
+    )
     canonical_qa = canonical_qa_snapshots(
       expected_targets,
       snapshots,
@@ -462,7 +467,7 @@ module CompletedBatchPublicationPreflight
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
-  def canonical_lane_snapshots(entries, target_snapshots, blockers)
+  def canonical_lane_snapshots(entries, target_snapshots, authenticated_later_target_keys, blockers)
     targets_by_key = target_snapshots.to_h { |snapshot| [target_key(snapshot.fetch("target")), snapshot] }
     entries.map do |entry|
       lane = entry.fetch("lane")
@@ -474,9 +479,9 @@ module CompletedBatchPublicationPreflight
       evidence = normalized_known_string(lane["evidence_url"])
       target_snapshot = targets_by_key[target_key(target)]
       coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
-      later_target_completion = authenticated_later_target_completion?(lane, target_snapshot)
+      later_target_completion = authenticated_later_target_keys[target_key(target)] == true
       unless coordination_completion || later_target_completion
-        if RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
+        if terminal && RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
           blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
         end
         blockers << "#{target_label(target)} coordination target state is not #{expected_state}" \
@@ -528,7 +533,8 @@ module CompletedBatchPublicationPreflight
 
   def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
     lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
-    expected_targets.map do |target|
+    authenticated_later_target_keys = {}
+    canonical_targets = expected_targets.map do |target|
       key = target_key(target)
       row = snapshots[key]
       unless row
@@ -593,8 +599,10 @@ module CompletedBatchPublicationPreflight
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
       snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_later_completion
+      authenticated_later_target_keys[key] = true if authenticated_later_completion
       snapshot
     end
+    [canonical_targets, authenticated_later_target_keys]
   end
 
   def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)

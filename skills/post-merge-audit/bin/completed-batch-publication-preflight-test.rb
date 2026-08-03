@@ -491,7 +491,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal Digest::SHA256.hexdigest(expected_body), waiver.fetch("body_sha256")
     assert_equal "57e048ed10551eb3cf8414a4de0064443bef730d", waiver.fetch("head_sha")
     assert_equal 10_026, waiver.dig("target", "number")
-    refute result.dig("snapshot", "targets").any? { |target| target.key?("completed_at") }
+    refute(result.dig("snapshot", "targets").any? { |target| target.key?("completed_at") })
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
     assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
                  result.fetch("snapshot_digest")
@@ -633,6 +633,9 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
                     "shakacode/hichee#pull_request:10048 coordination lane is nonterminal"
+    refute_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 target completion is not authenticated after " \
+                    "coordination closeout"
   end
 
   def test_abandoned_lane_stays_blocked_without_authenticated_target_completion
