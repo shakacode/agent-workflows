@@ -90,7 +90,6 @@ module CompletedBatchPublicationPreflight
     )
     canonical_lanes = canonical_lane_snapshots(
       lane_entries,
-      canonical_targets,
       authenticated_later_target_keys,
       blockers
     )
@@ -467,8 +466,7 @@ module CompletedBatchPublicationPreflight
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
-  def canonical_lane_snapshots(entries, target_snapshots, authenticated_later_target_keys, blockers)
-    targets_by_key = target_snapshots.to_h { |snapshot| [target_key(snapshot.fetch("target")), snapshot] }
+  def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers)
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
@@ -477,7 +475,6 @@ module CompletedBatchPublicationPreflight
       blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
-      target_snapshot = targets_by_key[target_key(target)]
       coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
       later_target_completion = authenticated_later_target_keys[target_key(target)] == true
       unless coordination_completion || later_target_completion
