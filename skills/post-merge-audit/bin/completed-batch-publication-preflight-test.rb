@@ -518,6 +518,25 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_abandoned_issue_lane_accepts_later_authenticated_close
+    input = no_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10036"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                            .find { |row| row.dig("target", "number") == 10_036 }
+    assert_equal "issue", reconciled_lane.dig("target", "type")
+    assert_equal "authenticated_target_after_coordination_closeout",
+                 reconciled_lane.fetch("completion_mode")
+  end
+
   def test_abandoned_lane_stays_blocked_when_target_is_not_later_completed
     input = fixture("completed-batch-publication-hichee-terminal.json")
     lane = input.dig("coordination_status", "batches", 0, "lanes")
