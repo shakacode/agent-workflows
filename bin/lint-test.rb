@@ -67,6 +67,7 @@ class LintCommandTest < Minitest::Test
     runner = LintRunner.new
 
     Dir.mktmpdir("lint-shell-files") do |directory|
+      ksh_file = File.join(directory, "tool.ksh")
       {
         "env" => "#!/usr/bin/env bash\n",
         "bin" => "#!/bin/bash\n",
@@ -75,10 +76,12 @@ class LintCommandTest < Minitest::Test
       }.each do |name, shebang|
         File.write(File.join(directory, name), shebang)
       end
+      File.write(ksh_file, "print -r -- ksh\n")
 
       assert runner.send(:shell_file?, File.join(directory, "env"))
       assert runner.send(:shell_file?, File.join(directory, "bin"))
       assert runner.send(:shell_file?, File.join(directory, "usr-bin"))
+      assert runner.send(:shell_file?, ksh_file)
       refute runner.send(:shell_file?, File.join(directory, "ruby"))
     end
   end
