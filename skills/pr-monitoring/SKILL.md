@@ -145,10 +145,18 @@ optional: when an active private backend does not advertise it or reports it
 unsupported, record `typed event transport: unavailable`, skip the emission,
 and continue without marking the event emission `UNKNOWN`. Only after the
 transport is advertised does an attempted write that fails, degrades, or is
-rejected become `UNKNOWN` handoff evidence. Do not attempt an event with a
-missing required field; preserve the missing payload fact as `UNKNOWN`
-separately from event-emission status. Typed events do not replace the primary
-monitoring action.
+rejected become `UNKNOWN` handoff evidence. Every attempted advertised
+typed-event write must resolve the backend-advertised event executable and
+ordered opaque argv; a missing, malformed, or unsafe advertisement is an
+attempted-write failure. Run that exact executable and separate argv without
+shell evaluation, with a finite deadline in its own process group, preserving
+each opaque argument; on expiry terminate the whole group with `TERM`, then
+`KILL` after a finite grace period. A deadline expiry, forced termination, or
+any other advertised-support write failure records best-effort `UNKNOWN` event
+evidence; the primary operation continues immediately without waiting further
+on the event. Do not attempt an event with a missing required field; preserve
+the missing payload fact as `UNKNOWN` separately from event-emission status.
+Typed events do not replace the primary monitoring action.
 
 ## Final States
 

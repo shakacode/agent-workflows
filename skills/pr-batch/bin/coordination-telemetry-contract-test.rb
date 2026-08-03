@@ -80,7 +80,17 @@ EVENT_TRANSPORT_REQUIRED_CONCEPTS = {
     "skip the emission, and continue without marking the event emission `UNKNOWN`",
   "advertised attempted-write failure" =>
     "Only after the transport is advertised does an attempted write that fails, degrades, or is rejected " \
-    "become `UNKNOWN` handoff evidence"
+    "become `UNKNOWN` handoff evidence",
+  "advertised executable and opaque argv seam" =>
+    "Every attempted advertised typed-event write must resolve the backend-advertised event executable and " \
+    "ordered opaque argv; a missing, malformed, or unsafe advertisement is an attempted-write failure.",
+  "shell-safe finite process-group bound" =>
+    "Run that exact executable and separate argv without shell evaluation, with a finite deadline in its own " \
+    "process group, preserving each opaque argument; on expiry terminate the whole group with `TERM`, then `KILL` " \
+    "after a finite grace period.",
+  "failure evidence and primary-operation continuation" =>
+    "A deadline expiry, forced termination, or any other advertised-support write failure records best-effort " \
+    "`UNKNOWN` event evidence; the primary operation continues immediately without waiting further on the event."
 }.freeze
 COOPERATIVE_DRAIN_EMISSION_REQUIREMENT =
   "When a worker first observes cancellation at its cooperative drain checkpoint, that worker emits one " \
@@ -99,15 +109,16 @@ DRAIN_TRANSPORT_FALLBACK_REQUIREMENT =
   "For either drain path, backend `n/a` skips the emission; unadvertised or unsupported typed-event capability " \
   "records `typed event transport: unavailable` and remains nonblocking."
 HARD_ESCAPE_DRAIN_BOUNDED_EXECUTION_REQUIREMENT =
-  "For the coordinator/operator hard-escape path only, resolve the active backend's advertised drain-event " \
+  "For either drain path with advertised support, resolve the active backend's advertised drain-event " \
   "executable and ordered opaque argv; reject a missing, malformed, or unsafe advertisement as an emission failure. " \
   "Run that exact executable and separate argv without shell evaluation, with a finite deadline in its own process " \
   "group, preserving each opaque argument; on expiry terminate the whole group with `TERM`, then `KILL` after a " \
   "finite grace period. No `agent-coord` compatibility or generic private typed-event transport is required."
 DRAIN_EMISSION_FAILURE_REQUIREMENT =
   "A deadline expiry, forced termination, or any other advertised-support emission failure records best-effort " \
-  "`UNKNOWN` evidence; the coordinator/operator then proceeds immediately to worker process termination and claim " \
-  "release without waiting further on the drain event."
+  "`UNKNOWN` evidence; the worker continues its cooperative drain and claim release, while the coordinator/operator " \
+  "hard-escape path proceeds immediately to worker process termination and claim release, without waiting further " \
+  "on the drain event."
 REGISTRATION_RECONCILIATION_FRAGMENTS = [
   "After every accepted host-observed `launch-confirmation v2`, reconcile",
   "fallback, escalation, or replacement",
@@ -522,7 +533,10 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "unsupported transport",
       "distinct unavailable outcome",
       "nonblocking skip and continuation",
-      "advertised attempted-write failure"
+      "advertised attempted-write failure",
+      "advertised executable and opaque argv seam",
+      "shell-safe finite process-group bound",
+      "failure evidence and primary-operation continuation"
     ]
     assert_equal expected_concepts, EVENT_TRANSPORT_REQUIRED_CONCEPTS.keys
 

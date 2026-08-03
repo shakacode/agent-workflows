@@ -31,7 +31,16 @@ Print operator prompts for safe agent-runner restarts.
   `typed event transport: unavailable`, skip the emission, and continue without
   marking the event emission `UNKNOWN`. Only after the transport is advertised
   does an attempted write that fails, degrades, or is rejected become `UNKNOWN`
-  handoff evidence.
+  handoff evidence. Every attempted advertised typed-event write must resolve
+  the backend-advertised event executable and ordered opaque argv; a missing,
+  malformed, or unsafe advertisement is an attempted-write failure. Run that
+  exact executable and separate argv without shell evaluation, with a finite
+  deadline in its own process group, preserving each opaque argument; on expiry
+  terminate the whole group with `TERM`, then `KILL` after a finite grace
+  period. A deadline expiry, forced termination, or any other
+  advertised-support write failure records best-effort `UNKNOWN` event
+  evidence; the primary operation continues immediately without waiting
+  further on the event.
 - Include the new-chat restart prompt when the user asks how to restart,
   resume after an app restart, move to a new chat, or preserve copy/paste
   handoff state.
