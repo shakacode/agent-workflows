@@ -28,6 +28,7 @@ module CompletedBatchPublicationPreflight
   TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
+  PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
   COORDINATION_CAPTURE_TIMEOUT_SECONDS = 25
@@ -217,8 +218,9 @@ module CompletedBatchPublicationPreflight
 
     qa_rows.all? do |row|
       next false unless row.keys.sort ==
-                        %w[evidence_sha256 head_sha maintainer_waiver status target verdict]
+                        %w[evidence_sha256 head_sha maintainer_waiver status target user_visible_ui_change verdict]
       next false unless row.fetch("evidence_sha256").to_s.match?(DIGEST_PATTERN)
+      next false unless %w[yes no].include?(row.fetch("user_visible_ui_change"))
 
       verdict = row.fetch("verdict")
       status = row.fetch("status")
@@ -578,18 +580,35 @@ module CompletedBatchPublicationPreflight
       unless row
         blockers << "#{target_label(target)} QA evidence is absent"
         next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
-               "evidence_sha256" => nil, "maintainer_waiver" => nil })
+               "user_visible_ui_change" => nil, "evidence_sha256" => nil, "maintainer_waiver" => nil })
+      end
+      raw_user_visible_ui_change = row["user_visible_ui_change"]
+      user_visible_ui_change = raw_user_visible_ui_change if %w[yes no].include?(raw_user_visible_ui_change)
+      unless user_visible_ui_change
+        blockers << "#{target_label(target)} trusted QA UI classification is absent or invalid"
       end
       evidence = row["evidence"]
       unless evidence.is_a?(String) && !evidence.empty?
         blockers << "#{target_label(target)} QA evidence is absent"
         next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
+               "user_visible_ui_change" => user_visible_ui_change,
                "evidence_sha256" => nil, "maintainer_waiver" => nil })
       end
-      replay = CloseoutEvidenceReplay.replay(evidence, expected_head_sha: head_sha)
+      replay = CloseoutEvidenceReplay.replay(
+        evidence,
+        expected_head_sha: head_sha,
+        require_visual_evidence_v2: user_visible_ui_change == "yes"
+      )
       qa = replay.fetch("qa_evidence")
       verdict = qa.fetch("verdict")
       status = qa.dig("fields", "status")
+      if %w[yes no].include?(user_visible_ui_change) &&
+         qa["marker_version"] == 2 &&
+         qa.dig("fields", "user_visible_ui_change") != user_visible_ui_change
+        blockers << "#{target_label(target)} QA UI classification contradicts trusted input"
+        verdict = "UNKNOWN"
+        status = nil
+      end
       if no_pr_disposition && !valid_no_pr_qa_disposition?(qa)
         blockers << "#{target_label(target)} QA evidence contradicts typed no-PR disposition"
       end
@@ -613,6 +632,7 @@ module CompletedBatchPublicationPreflight
         "head_sha" => head_sha,
         "verdict" => verdict,
         "status" => status,
+        "user_visible_ui_change" => user_visible_ui_change,
         "evidence_sha256" => "sha256:#{Digest::SHA256.hexdigest(evidence.encode(Encoding::UTF_8))}",
         "maintainer_waiver" => waiver
       }
@@ -931,7 +951,9 @@ module CompletedBatchPublicationPreflight
   end
 
   def authenticated_coordination_status(backend:, batch_id:)
-    return unless normalized_known_string(backend) && backend.downcase != "n/a"
+    normalized_backend = normalized_known_string(backend)
+    return unless normalized_backend && normalized_backend.downcase != "n/a"
+    return if normalized_backend.match?(PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN)
 
     command = [
       AGENT_COORD_BOUNDED,

@@ -73,6 +73,41 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def qa_v2_evidence(head_sha:, user_visible_ui_change:)
+    ui_change = user_visible_ui_change == "yes"
+    destination = ui_change ? "github_pr" : "not_applicable"
+    visual_evidence = if ui_change
+                        "durable: before and after https://github.com/shakacode/hichee/pull/10049#visual"
+                      else
+                        "not applicable: no user-visible UI change"
+                      end
+    paint_check = ui_change ? "passed: painted target inspected" : "not applicable: no painted surface changed"
+    <<~MARKER
+      <!-- qa-evidence v2
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR/head #{head_sha}
+      scope: exact-head QA
+      automated_checks: focused specs
+      manual_checks: verified
+      user_visible_ui_change: #{user_visible_ui_change}
+      visual_evidence_destination: #{destination}
+      visual_evidence: #{visual_evidence}
+      paint_check: #{paint_check}
+      interaction_change: no
+      interaction_evidence: not applicable: no interaction changed
+      visual_fix: no
+      negative_control: not applicable: no visual fix
+      performance_impact: not_applicable
+      performance_evidence: not applicable: no rendered-page, asset, or bundle impact
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKER
+  end
+
   def assess_input(
     input,
     backend: BACKEND,
@@ -362,6 +397,47 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_public_claim_comment_fallback_never_invokes_private_coordination
+    calls = []
+    capture = lambda do |command, input:, timeout:|
+      calls << { "command" => command, "input" => input, "timeout" => timeout }
+      payload = {
+        "scope" => { "kind" => "batch", "batch_id" => "batch-public" },
+        "batches" => []
+      }
+      [JSON.generate(payload), "", Struct.new(:success?).new(true)]
+    end
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+
+    [
+      "public claim-comment fallback",
+      " Public　claim-comment \n fallback. "
+    ].each do |backend|
+      result = CompletedBatchPublicationPreflight.authenticated_coordination_status(
+        backend:,
+        batch_id: "batch-public"
+      )
+
+      assert_nil result, backend.inspect
+    end
+    assert_empty calls
+
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    assessment = assess_input(
+      input,
+      backend: "public claim-comment fallback",
+      coordination_verifier: CompletedBatchPublicationPreflight.method(:authenticated_coordination_status)
+    )
+    refute assessment.fetch("eligible")
+    assert_includes assessment.fetch("blockers"), "coordination status is not authenticated or fresh"
+    assert_empty calls
+  ensure
+    if original_capture
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+    end
+  end
+
   def test_premature_hichee_publication_replays_blocked_for_coordination_target_and_qa
     result = assess_input(fixture("completed-batch-publication-hichee-premature.json"))
 
@@ -376,7 +452,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     target_numbers = result.fetch("targets").map { |target| target.fetch("number") }
     assert_equal [10_026, 10_036, 10_048, 10_049], target_numbers
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("snapshot_digest"))
-    assert_equal "sha256:ad03e39faca482023cba75d7ea46b33fd26051fc1528002ca07e3e74d8b831b5",
+    assert_equal "sha256:2e73bd93cdf88b511d2865d9572d6e9ba4ee3c13a65bf8048f8cded7f37e5ca5",
                  result.fetch("snapshot_digest")
   end
 
@@ -414,7 +490,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal "57e048ed10551eb3cf8414a4de0064443bef730d", waiver.fetch("head_sha")
     assert_equal 10_026, waiver.dig("target", "number")
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
-    assert_equal "sha256:a3e1067977f6ad217c74cbd8b54acea13538bd85f701f5591c8ad7d8973740d5",
+    assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
                  result.fetch("snapshot_digest")
   end
 
@@ -532,6 +608,81 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       refute result.fetch("eligible"), status
       assert_includes result.fetch("blockers"),
                       "shakacode/hichee#pull_request:10049 QA disposition is #{status}", status
+    end
+  end
+
+  def test_trusted_current_ui_classification_requires_visual_evidence_v2
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    input.fetch("qa_evidence").each { |row| row["user_visible_ui_change"] = "no" }
+    qa = input.fetch("qa_evidence").first
+    qa["user_visible_ui_change"] = "yes"
+    qa["evidence"] = qa.fetch("evidence").sub(
+      "scope: PR #10049 exact-head checks",
+      "scope: current user-visible UI change"
+    )
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 QA disposition is UNKNOWN"
+    snapshot = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == 10_049 }
+    assert_equal "yes", snapshot.fetch("user_visible_ui_change")
+    assert_equal "UNKNOWN", snapshot.fetch("verdict")
+  end
+
+  def test_visual_evidence_v2_must_match_the_trusted_ui_classification
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    input.fetch("qa_evidence").each { |row| row["user_visible_ui_change"] = "no" }
+    qa = input.fetch("qa_evidence").first
+    qa["user_visible_ui_change"] = "yes"
+    head_sha = input.fetch("target_snapshots").first.fetch("head_sha")
+    qa["evidence"] = qa_v2_evidence(head_sha:, user_visible_ui_change: "no")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 QA UI classification contradicts trusted input"
+  end
+
+  def test_non_ui_v1_remains_eligible_and_v2_must_not_self_classify_as_ui
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    v1_result = assess_input(input)
+
+    assert v1_result.fetch("eligible"), v1_result.fetch("blockers").join("\n")
+    assert_equal(
+      ["no"] * 4,
+      v1_result.dig("snapshot", "qa").map { |row| row.fetch("user_visible_ui_change") }
+    )
+
+    qa = input.fetch("qa_evidence").first
+    head_sha = input.fetch("target_snapshots").first.fetch("head_sha")
+    qa["evidence"] = qa_v2_evidence(head_sha:, user_visible_ui_change: "yes")
+    v2_result = assess_input(input)
+
+    refute v2_result.fetch("eligible")
+    assert_includes v2_result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 QA UI classification contradicts trusted input"
+  end
+
+  def test_missing_or_invalid_trusted_ui_classification_blocks
+    [nil, "true", true, "YES", "UNKNOWN"].each do |classification|
+      input = fixture("completed-batch-publication-hichee-terminal.json")
+      input.fetch("qa_evidence").each { |row| row["user_visible_ui_change"] = "no" }
+      qa = input.fetch("qa_evidence").first
+      if classification.nil?
+        qa.delete("user_visible_ui_change")
+      else
+        qa["user_visible_ui_change"] = classification
+      end
+
+      result = assess_input(input)
+
+      refute result.fetch("eligible"), classification.inspect
+      assert_includes result.fetch("blockers"),
+                      "shakacode/hichee#pull_request:10049 trusted QA UI classification is absent or invalid",
+                      classification.inspect
     end
   end
 

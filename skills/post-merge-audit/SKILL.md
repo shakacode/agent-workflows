@@ -445,6 +445,11 @@ the same `expected_targets`, raw successful targeted `coordination_status`,
 same-target #issuecomment URL>"}` only for `WAIVED`). The CLI reads
 `coordination_backend` only from `--workflow-config`; do not
 replace the bounded coordination result with a caller-written lane summary.
+Each `qa_evidence` row must carry a coordinator-owned
+`user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
+canonical target and publication snapshot; `yes` requires strict visual-evidence
+v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or
+v2-contradictory classification blocks.
 
 The preflight receipt embeds the canonical raw v1 input as `source_input` with
 `source_input_digest`; digests prove integrity only and never authenticate
@@ -455,6 +460,11 @@ backend applies, and re-authenticates any waiver; missing, altered, stale, or
 mismatched terminal facts block before POST or ready replay.
 
 Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay.
+
+Configured `public claim-comment fallback` is advisory ownership state only; it
+must not invoke private `agent-coord`, and without a separate authenticated
+terminal coordination contract it leaves completed-batch publication blocked as
+`UNKNOWN`.
 
 When `coordination_backend: n/a`, `coordination_status` must instead be a
 `completed-batch-coordination-not-applicable` v1 object with the exact batch ID

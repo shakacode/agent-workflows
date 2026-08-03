@@ -457,6 +457,43 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal [[REAL_BACKEND, "batch-184"]], coordination_calls
   end
 
+  def test_complete_publication_blocks_public_claim_fallback_without_private_coordination
+    backend = " Public　claim-comment \n fallback. "
+    preflight = publication_preflight(coordination_backend: backend)
+    target = {
+      "host" => "github.com",
+      "repo" => "acme/widgets",
+      "type" => "pull_request",
+      "number" => 184
+    }
+    capture_calls = []
+    capture = lambda do |command, input:, timeout:|
+      capture_calls << { "command" => command, "input" => input, "timeout" => timeout }
+      status = preflight.dig("source_input", "coordination_status")
+      [JSON.generate(status), "", Struct.new(:success?).new(true)]
+    end
+    target_payload = publication_target_payload
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/pulls/184"
+
+      target_payload
+    end
+
+    with_stubbed_gh_api(authenticated_api) do
+      with_stubbed_preflight_capture_process(capture) do
+        assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+          CompletedBatchAuditReceipt.validate_publication_preflight!(
+            preflight,
+            expected_batch_id: "batch-184",
+            targets: [target],
+            coordination_backend: backend
+          )
+        end
+      end
+    end
+    assert_empty capture_calls
+  end
+
   def test_complete_publication_accepts_matching_no_backend_without_live_coordination_call
     preflight = publication_preflight
     assert_equal "n/a", preflight.fetch("coordination_backend")
@@ -2603,7 +2640,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       process_gap_disposition: script
       -->
     MARKER
-    qa_row = { "target" => target, "evidence" => evidence }
+    qa_row = { "target" => target, "user_visible_ui_change" => "no", "evidence" => evidence }
     qa_row["maintainer_waiver"] = { "url" => waiver_url } if waived
     coordination_status = if coordination_backend == "n/a"
                             {
@@ -2714,6 +2751,14 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     yield
   ensure
     CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_coordination_status, original)
+  end
+
+  def with_stubbed_preflight_capture_process(callable)
+    original = CompletedBatchPublicationPreflight.method(:capture_process)
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, callable)
+    yield
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, original)
   end
 
   def with_fake_gh(mode: nil, target_type: "pull_request", coordination_backend: "n/a")

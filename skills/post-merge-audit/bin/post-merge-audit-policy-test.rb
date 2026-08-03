@@ -56,6 +56,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts."
   REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay."
   REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG = "Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay."
+  REQUIRED_TRUSTED_UI_CLASSIFICATION = "Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks."
+  REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK = "Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`."
   REQUIRED_TYPED_NO_BACKEND_EVIDENCE = "When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks."
   REQUIRED_TYPED_NO_PR_EVIDENCE = "An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks."
   REQUIRED_LEGACY_PUBLICATION_REFRESH = "A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness."
@@ -374,6 +376,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should reacquire terminal facts before publication and replay"
       assert_includes normalized_text, REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG,
                       "#{relative_path} should bind receipt replay to the trusted workflow config backend"
+      assert_includes normalized_text, REQUIRED_TRUSTED_UI_CLASSIFICATION,
+                      "#{relative_path} should bind trusted per-target UI classification to strict QA replay"
+      assert_includes normalized_text, REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK,
+                      "#{relative_path} should keep advisory public claims out of terminal publication proof"
       assert_includes normalized_text, REQUIRED_TYPED_NO_BACKEND_EVIDENCE,
                       "#{relative_path} should require typed bounded no-backend evidence"
       assert_includes normalized_text, REQUIRED_TYPED_NO_PR_EVIDENCE,
