@@ -1,3 +1,4 @@
+# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
 agent_stack_command_destination_safe() {
   local destination="$1"
   if [[ -d "$destination" || ( -e "$destination" && ! -f "$destination" && ! -L "$destination" ) ]]; then

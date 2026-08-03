@@ -46,12 +46,13 @@ class LintRunner
   end
 
   def commands(files)
+    ruby_files = files.select { |path| ruby_file?(path) }
     shell_files = files.select { |path| shell_file?(path) }
     markdown_files = files.grep(/\.md\z/)
     yaml_files = files.grep(/\.ya?ml\z/)
     workflow_files = yaml_files.select { |path| path.start_with?(".github/workflows/") }
     [
-      ["rubocop", ["_#{VERSIONS.fetch('rubocop')}_"]],
+      ["rubocop", ["_#{VERSIONS.fetch('rubocop')}_", *ruby_files]],
       ["shellcheck", shell_files],
       ["markdownlint-cli2", markdown_files],
       ["yamllint", ["--strict", *yaml_files]],
@@ -62,10 +63,20 @@ class LintRunner
   def shell_file?(path)
     return true if path.end_with?(".bash", ".sh", ".zsh")
 
-    first_line = File.open(path, "rb", &:gets)
-    first_line&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)(?:ba|z|k)?sh(?:\s|\z)})
+    first_line(path)&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)(?:ba|z|k)?sh(?:\s|\z)})
+  end
+
+  def ruby_file?(path)
+    return true if path.end_with?(".rb", ".rake")
+    return true if File.basename(path).match?(/\A(?:Gemfile|Rakefile)\z/)
+
+    first_line(path)&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)ruby(?:\s|\z)})
+  end
+
+  def first_line(path)
+    File.open(path, "rb") { |file| file.gets(nil, 256) }
   rescue ArgumentError, Errno::EACCES, Errno::ENOENT
-    false
+    nil
   end
 
   def check_version!(tool)

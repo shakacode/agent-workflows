@@ -237,7 +237,7 @@ test_deep_mode_runs_workflow_seam_check() {
 }
 
 test_missing_or_mismatched_status_helper_returns_failed_contract() {
-  local tmp output status mode
+  local tmp output status
   make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target/bin"
 

@@ -1,3 +1,4 @@
+# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
 agent_stack_timestamp() {
   date -u '+%Y%m%dT%H%M%SZ'
 }

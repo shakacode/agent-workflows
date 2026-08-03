@@ -1,3 +1,4 @@
+# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
 agent_stack_install_module_directory() {
   local module_name="$1"
   local source_directory="$source_root/agent-workflows/bin/$module_name"

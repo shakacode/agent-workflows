@@ -1,3 +1,4 @@
+# shellcheck disable=SC2034 # Variables are consumed by sourced sibling modules.
 agent_stack_parse_options() {
   source_root="${AGENT_STACK_SOURCE_ROOT:-$HOME/src}"
   compat_root="${AGENT_STACK_COMPAT_ROOT:-$HOME/codex/agent-repos}"

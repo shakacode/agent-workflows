@@ -1,3 +1,4 @@
+# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
 agent_stack_sync() {
   local repo_name
   agent_stack_parse_options "$@"

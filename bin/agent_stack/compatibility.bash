@@ -1,3 +1,4 @@
+# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
 agent_stack_link_compat() {
   local name="$1"
   local source_path="$source_root/$name"

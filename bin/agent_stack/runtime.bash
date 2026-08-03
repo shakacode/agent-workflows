@@ -1,3 +1,4 @@
+# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
 agent_stack_prepare_runtime() {
   local directory runtime_directory
   for directory in cache logs state; do

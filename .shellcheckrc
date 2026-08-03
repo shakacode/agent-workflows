@@ -1,5 +1,4 @@
-# agent-stack is split into sourced modules that deliberately share variables.
-# ShellCheck analyzes each tracked module independently, so cross-module
-# assignments and sources resolved only after installation cannot be proven.
+# Sourced agent-stack modules carry narrow file-level exceptions for variables
+# whose assignments live in sibling modules.
 # SC1007 preserves the validated `CDPATH= cd` portable binstub contract.
-disable=SC1007,SC1090,SC1091,SC2034,SC2154
+disable=SC1007,SC1090,SC1091

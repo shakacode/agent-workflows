@@ -53,6 +53,8 @@ class LintCommandTest < Minitest::Test
       by_tool = commands.to_h { |command| [command.first, command.drop(1)] }
       assert_equal %w[actionlint markdownlint-cli2 rubocop shellcheck yamllint], by_tool.keys.sort
       assert_includes by_tool.fetch("rubocop"), "_#{File.read(File.join(ROOT, '.rubocop-version')).strip}_"
+      assert_includes by_tool.fetch("rubocop"), "bin/lint"
+      refute_includes by_tool.fetch("rubocop"), "README.md"
       assert_includes by_tool.fetch("shellcheck"), ".agents/bin/lint"
       assert_includes by_tool.fetch("markdownlint-cli2"), "README.md"
       assert_includes by_tool.fetch("yamllint"), ".github/workflows/validate.yml"
@@ -78,6 +80,29 @@ class LintCommandTest < Minitest::Test
       assert runner.send(:shell_file?, File.join(directory, "bin"))
       assert runner.send(:shell_file?, File.join(directory, "usr-bin"))
       refute runner.send(:shell_file?, File.join(directory, "ruby"))
+    end
+  end
+
+  def test_ruby_surface_recognizes_extensions_entrypoints_and_shebangs
+    runner = LintRunner.new
+
+    Dir.mktmpdir("lint-ruby-files") do |directory|
+      ruby_file = File.join(directory, "tool.rb")
+      rake_file = File.join(directory, "tasks.rake")
+      gemfile = File.join(directory, "Gemfile")
+      script = File.join(directory, "script")
+      markdown = File.join(directory, "README.md")
+      File.write(ruby_file, "puts :ruby\n")
+      File.write(rake_file, "task :default\n")
+      File.write(gemfile, "source 'https://rubygems.org'\n")
+      File.write(script, "#!/usr/bin/env ruby\n")
+      File.write(markdown, "# Not Ruby\n")
+
+      assert runner.send(:ruby_file?, ruby_file)
+      assert runner.send(:ruby_file?, rake_file)
+      assert runner.send(:ruby_file?, gemfile)
+      assert runner.send(:ruby_file?, script)
+      refute runner.send(:ruby_file?, markdown)
     end
   end
 
