@@ -201,6 +201,29 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_signed_launch_readiness_degrades_invalid_utf8_records_to_unknown
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_signed_launch_capability(target)
+      capability = File.join(target, ".agents/signed-launch-capability.json")
+      payload = JSON.generate(
+        "type" => "agent-workflow-signed-launch-capability",
+        "version" => 1,
+        "host" => "codex",
+        "producer" => "invalid-marker",
+        "dispatcher_launch_key_id" => "dispatcher-key",
+        "workflow_control_lifecycle_key_id" => "workflow-key"
+      ).b
+      payload.sub!("invalid-marker".b, "invalid-\xFF".b)
+      File.binwrite(capability, payload)
+
+      readiness = AgentDoctor::SignedLaunchReadiness.assess(host: "codex", target:)
+
+      assert_equal "UNKNOWN", readiness.fetch("capability")
+      assert_equal false, readiness.fetch("ready")
+      assert_equal "not-permitted-while-capability-unknown", readiness.fetch("waiver")
+    end
+  end
+
   def test_codex_install_rejects_a_1024_bit_public_trust_anchor
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|

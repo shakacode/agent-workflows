@@ -67,11 +67,14 @@ on such a host are not partial-state remediation instructions.
 
 The installer creates or validates the real, owner-matched, non-group/world-
 writable `<target>/` and `<target>/.agents/` directories without replacing or
-chmodding unsafe user-owned paths. It never generates private keys, signatures,
-capability claims, trust anchors, or waiver records. A supported host integration
-owns its private keys and provisions the public files. The coordinator cannot
-select or replace that trust. A failed post-install readiness probe is
-non-fatal after a completed install: the installer warns and reports `UNKNOWN`.
+chmodding unsafe user-owned paths. An existing unsafe target is an intentional
+hard failure: inspect and remediate its ownership or permissions before retrying;
+the installer never silently repairs it. The installer never generates private
+keys, signatures, capability claims, trust anchors, or waiver records. A
+supported host integration owns its private keys and provisions the public
+files. The coordinator cannot select or replace that trust. A failed
+post-install readiness probe is non-fatal after a completed install: the
+installer warns and reports `UNKNOWN`.
 
 When readiness is exactly `unsupported`, a human may grant a one-time durable
 `agent-workflow-bootstrap-waiver v1`. It must record direct in-session human
@@ -104,7 +107,7 @@ This provides procedural record mutation and replay integrity, not
 cryptographic proof that a human spoke. The waiver
 file is opened once without following the final symlink, validated through its
 descriptor, and accepted only under a full real directory chain owned by root
-or the helper owner with no group/world write bits.
+or the validated installed-home owner with no group/world write bits.
 
 Workflow control accepts a
 separate terminal lifecycle waiver bound to the same durable human record,
@@ -112,7 +115,10 @@ batch plan, dependency plan, lane, the lane's exact non-`UNKNOWN` issue, wave,
 route, completion chronology, and evidence reference. Signed and waived lifecycle records are mutually
 deduplicated per lane. Interpolated receipt identifiers use only letters,
 digits, `.`, `_`, `:`, and `-`; slash-bearing or URI-ambiguous identifiers are
-rejected instead of being allowed to collide.
+rejected instead of being allowed to collide. Canonical signed and waived
+lifecycle receipt references encode `:` as `%3A` in the batch-plan URI
+authority; raw ambiguous authorities are rejected, while colon-free references
+remain unchanged.
 
 Upgrades from pre-v2 confirmation preserve version 1 launch confirmations as
 history only. They do not synthesize version 2 signatures or infer active
@@ -135,6 +141,16 @@ host/profile:
 It is separate from `--delivery-mode flat|plugin-companion`. New installs
 default to `flat`; metadata written before delivery modes existed is also read
 as `flat`.
+
+Signed-launch helpers in copy or repository mode derive their installation root
+from their physical helper path. In symlink mode, they use the lexical installed
+root only after validating the exact expected helper path, real and non-writable
+installed root, `skills`, `bin`, and `.agents` directories, the strict
+non-writable `.agent-workflows-install.json` receipt, its recorded source and
+symlink mode, and both installer-created skill and `bin/agent_doctor` symlinks
+against the same physical source pack. The validated installed-root owner is the
+principal for trust anchors and waiver records. Arbitrary invocation symlinks
+fail closed and cannot redirect signed-launch trust.
 
 ## Native Plugin Paths
 

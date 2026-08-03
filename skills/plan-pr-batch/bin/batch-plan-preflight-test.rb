@@ -148,7 +148,10 @@ class BatchPlanPreflightTest < Minitest::Test
     agents_dir = File.join(root, ".agents")
     config_path = File.join(agents_dir, "workflow-control-lifecycle-trust.json")
     FileUtils.mkdir_p(File.dirname(helper))
+    module_root = File.join(root, "bin/agent_doctor")
+    FileUtils.mkdir_p(module_root)
     FileUtils.cp(HELPER, helper)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_installation.rb", __dir__), module_root)
     File.chmod(0o755, helper)
     if agents_symlink
       actual_agents_dir = File.join(root, "caller-substitutable-agents")
@@ -191,13 +194,14 @@ class BatchPlanPreflightTest < Minitest::Test
     FileUtils.mkdir_p(File.join(root, ".agents"), mode: 0o700)
     FileUtils.cp(HELPER, helper)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_readiness.rb", __dir__), module_root)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_installation.rb", __dir__), module_root)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver.rb", __dir__), module_root)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver_record.rb", __dir__), module_root)
     File.chmod(0o755, helper)
     [helper, root]
   end
 
-  def symlinked_supported_workflow_control_helper
+  def symlinked_supported_workflow_control_helper(installer_metadata: true)
     root = secure_mktmpdir("workflow-control-symlink-install")
     File.chmod(0o700, root)
     (@workflow_control_install_roots ||= []) << root
@@ -234,7 +238,58 @@ class BatchPlanPreflightTest < Minitest::Test
       File.write(path, JSON.generate(record))
       File.chmod(0o600, path)
     end
+    write_symlink_install_metadata(root, File.expand_path("../../..", __dir__)) if installer_metadata
     [File.join(root, "skills/plan-pr-batch/bin/batch-plan-preflight"), root]
+  end
+
+  def symlinked_unsupported_workflow_control_helper
+    helper, root = symlinked_supported_workflow_control_helper
+    %w[
+      signed-launch-capability.json dispatcher-launch-trust.json workflow-control-lifecycle-trust.json
+    ].each { |name| FileUtils.rm_f(File.join(root, ".agents", name)) }
+    [helper, root]
+  end
+
+  def write_symlink_install_metadata(root, source)
+    metadata = {
+      "host" => "codex",
+      "mode" => "symlink",
+      "delivery_mode" => "flat",
+      "source" => source,
+      "version" => "0.1.0",
+      "source_revision" => "a" * 40,
+      "source_branch" => "main",
+      "source_remote" => "https://github.com/shakacode/agent-workflows.git",
+      "installed_at" => "2026-08-03T00:00:00Z"
+    }
+    path = File.join(root, ".agent-workflows-install.json")
+    File.write(path, JSON.generate(metadata))
+    File.chmod(0o600, path)
+  end
+
+  def source_owner_mismatch_env(root)
+    shim = File.join(root, "source-owner-mismatch.rb")
+    File.write(shim, <<~RUBY)
+      class << File
+        alias_method :agent_workflows_original_stat, :stat
+
+        def stat(path, *args)
+          result = agent_workflows_original_stat(path, *args)
+          source_root = ENV.fetch("AGENT_WORKFLOWS_TEST_SOURCE_OWNER_ROOT")
+          expanded = File.realpath(path.to_s)
+          return result unless expanded == source_root || expanded.start_with?("\#{source_root}/")
+
+          result.define_singleton_method(:uid) { Process.euid.zero? ? 1 : 0 }
+          result
+        rescue Errno::ENOENT, Errno::ENOTDIR
+          result
+        end
+      end
+    RUBY
+    {
+      "AGENT_WORKFLOWS_TEST_SOURCE_OWNER_ROOT" => File.expand_path("../../..", __dir__),
+      "RUBYOPT" => "-r#{shim}"
+    }
   end
 
   def bootstrap_waiver(root, batch_id:, lane_id:, route:, dispatcher: "codex-collaboration")
@@ -728,6 +783,35 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal first, replay
   end
 
+  def test_lifecycle_waiver_encodes_a_colon_in_the_batch_plan_authority
+    helper, root = installed_unsupported_workflow_control_helper
+    batch_plan_id = "batch:plan-1"
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: batch_plan_id, lane_id: "lane-a", route:
+    )
+    raw_waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+    raw_result, _raw_stderr, raw_status = evaluate(
+      input_for(backend: "codex", batch_plan_id:, lifecycle_waivers: [raw_waiver]),
+      helper:
+    )
+
+    refute raw_status.success?
+    assert_includes raw_result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-waiver-invalid"
+
+    encoded_waiver = raw_waiver.merge(
+      "receipt_ref" => raw_waiver.fetch("receipt_ref").sub("batch:plan-1", "batch%3Aplan-1")
+    )
+    encoded_result, encoded_stderr, encoded_status = evaluate(
+      input_for(backend: "codex", batch_plan_id:, lifecycle_waivers: [encoded_waiver]),
+      helper:
+    )
+
+    assert encoded_status.success?, "#{encoded_stderr}\n#{encoded_result.inspect}"
+    assert_equal ["lane-a"], encoded_result.dig("launch", "completed_lane_ids")
+  end
+
   def test_symlink_install_lifecycle_waiver_assesses_readiness_against_the_installed_home
     helper, root = symlinked_supported_workflow_control_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
@@ -744,6 +828,53 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "lane-lifecycle-waiver-invalid"
     assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_validated_symlink_install_uses_the_installed_home_owner_for_workflow_trust
+    helper, root = symlinked_supported_workflow_control_helper
+    receipt = lane_lifecycle_receipt
+
+    result, stderr, status = evaluate(
+      input_for(lifecycle_receipts: [receipt]),
+      helper:,
+      env: source_owner_mismatch_env(root)
+    )
+
+    assert status.success?, "#{stderr}\n#{result.inspect}"
+    assert_equal ["lane-a"], result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_arbitrary_symlink_invocation_cannot_select_workflow_trust
+    helper, = symlinked_supported_workflow_control_helper(installer_metadata: false)
+    receipt = lane_lifecycle_receipt
+
+    result, _stderr, status = evaluate(
+      input_for(lifecycle_receipts: [receipt]),
+      helper:
+    )
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_symlink_install_uses_the_installed_home_owner_for_waiver_records
+    helper, root = symlinked_unsupported_workflow_control_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: "batch-plan-1", lane_id: "lane-a", route:
+    )
+    waiver = lane_lifecycle_waiver(path: waiver_path, record: waiver_record, route:)
+
+    result, stderr, status = evaluate(
+      input_for(backend: "codex", lifecycle_waivers: [waiver]),
+      helper:,
+      env: source_owner_mismatch_env(root)
+    )
+
+    assert status.success?, "#{stderr}\n#{result.inspect}"
+    assert_equal ["lane-a"], result.dig("launch", "completed_lane_ids")
   end
 
   def test_positive_lifecycle_waiver_is_portable_when_tmpdir_is_world_writable
@@ -1074,6 +1205,34 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "lane-lifecycle-receipt-invalid"
     assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_lifecycle_receipt_encodes_a_colon_in_the_batch_plan_authority
+    batch_plan_id = "batch:plan-1"
+    raw_receipt = lane_lifecycle_receipt(batch_plan_id:)
+    raw_result, _raw_stderr, raw_status = evaluate(
+      input_for(batch_plan_id:, lifecycle_receipts: [raw_receipt]),
+      helper: workflow_control_helper
+    )
+
+    refute raw_status.success?
+    assert_includes raw_result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+
+    encoded_receipt = raw_receipt.merge(
+      "receipt_ref" => raw_receipt.fetch("receipt_ref").sub("batch:plan-1", "batch%3Aplan-1")
+    )
+    payload = JSON.generate(canonicalize(encoded_receipt.reject { |key, _value| key == "signature" }))
+    encoded_receipt["signature"] = Base64.strict_encode64(
+      workflow_control_signing_key.sign(OpenSSL::Digest.new("SHA256"), payload)
+    )
+    encoded_result, encoded_stderr, encoded_status = evaluate(
+      input_for(batch_plan_id:, lifecycle_receipts: [encoded_receipt]),
+      helper: workflow_control_helper
+    )
+
+    assert encoded_status.success?, "#{encoded_stderr}\n#{encoded_result.inspect}"
+    assert_equal ["lane-a"], encoded_result.dig("launch", "completed_lane_ids")
   end
 
   def test_lifecycle_receipt_rejects_an_rsa_1024_trust_anchor

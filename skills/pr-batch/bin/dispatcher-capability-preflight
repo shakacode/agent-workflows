@@ -8,17 +8,27 @@ require "openssl"
 require "time"
 require "uri"
 
+PHYSICAL_HELPER_PATH = File.realpath(__FILE__)
+PHYSICAL_INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(PHYSICAL_HELPER_PATH))
+require File.join(PHYSICAL_INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_installation")
+
 ACCEPTED_BINDING_EVIDENCE = %w[operator-selected dispatcher-bound].freeze
 NEGATIVE_BINDING_EVIDENCE = %w[unbound binding-rejected binding-failed].freeze
 ACCEPTED_ATTESTATION_EVIDENCE = %w[instance-bound dispatcher-attested].freeze
 NEGATIVE_ATTESTATION_EVIDENCE = %w[unattested attestation-rejected attestation-failed].freeze
 HELPER_PATH = File.expand_path(__FILE__)
-INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
-TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
-TRUST_CONFIG_PATH = File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
+INSTALLATION = AgentDoctor::SignedLaunchInstallation.resolve(
+  helper_path: HELPER_PATH,
+  relative_helper_path: "skills/pr-batch/bin/dispatcher-capability-preflight"
+)
+INSTALLATION_ROOT = INSTALLATION&.fetch("root", nil)
+INSTALLATION_OWNER_UID = INSTALLATION&.fetch("owner_uid", nil)
+TRUST_CONFIG_DIR = INSTALLATION_ROOT && File.join(INSTALLATION_ROOT, ".agents")
+TRUST_CONFIG_PATH = TRUST_CONFIG_DIR && File.join(TRUST_CONFIG_DIR, "dispatcher-launch-trust.json")
 TRUSTED_KEY_ID_FIELD = "agent_workflow_dispatcher_trusted_key_id"
 TRUSTED_PUBLIC_KEY_FIELD = "agent_workflow_dispatcher_trusted_public_key_pem"
-SIGNED_LAUNCH_WAIVER_LIBRARY = File.join(INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_waiver.rb")
+SIGNED_LAUNCH_WAIVER_LIBRARY =
+  INSTALLATION_ROOT && File.join(INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_waiver.rb")
 CALLER_TRUST_OVERRIDE_FIELDS = [
   TRUSTED_KEY_ID_FIELD,
   TRUSTED_PUBLIC_KEY_FIELD,
@@ -90,7 +100,9 @@ rescue ArgumentError
 end
 
 def dispatcher_trust_anchor
-  helper_uid = File.stat(HELPER_PATH).uid
+  return unless INSTALLATION_ROOT && INSTALLATION_OWNER_UID
+
+  helper_uid = INSTALLATION_OWNER_UID
   root_stat = File.lstat(INSTALLATION_ROOT)
   config_dir_stat = File.lstat(TRUST_CONFIG_DIR)
   config_stat = File.lstat(TRUST_CONFIG_PATH)
@@ -642,6 +654,7 @@ end
 def validated_launch_waiver(input, assignment)
   return unless input.key?("launch_waiver")
 
+  fail_input("launch_waiver validation support is unavailable") unless SIGNED_LAUNCH_WAIVER_LIBRARY
   begin
     require SIGNED_LAUNCH_WAIVER_LIBRARY
   rescue LoadError
@@ -654,8 +667,7 @@ def validated_launch_waiver(input, assignment)
     lane_id: input["lane_id"],
     assignment:,
     host: "codex",
-    target: INSTALLATION_ROOT,
-    helper_path: HELPER_PATH
+    target: INSTALLATION_ROOT
   )
   fail_input(reason) unless waiver
   if assignment["lifecycle"] == "waived-active" &&

@@ -9,6 +9,10 @@ require "openssl"
 require "time"
 require "uri"
 
+PHYSICAL_HELPER_PATH = File.realpath(__FILE__)
+PHYSICAL_INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(PHYSICAL_HELPER_PATH))
+require File.join(PHYSICAL_INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_installation")
+
 module BatchPlanPreflight
   BACKENDS = %w[codex claude generic].freeze
   PURPOSES = %w[implementation investigation].freeze
@@ -59,17 +63,22 @@ module BatchPlanPreflight
   LIFECYCLE_FUTURE_SKEW_SECONDS = 300
   LIFECYCLE_RECEIPT_COMPONENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/
   HELPER_PATH = File.expand_path(__FILE__)
-  INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
-  WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
-  WORKFLOW_CONTROL_TRUST_CONFIG_PATH = File.join(
-    WORKFLOW_CONTROL_TRUST_CONFIG_DIR,
-    "workflow-control-lifecycle-trust.json"
+  INSTALLATION = AgentDoctor::SignedLaunchInstallation.resolve(
+    helper_path: HELPER_PATH,
+    relative_helper_path: "skills/plan-pr-batch/bin/batch-plan-preflight"
   )
+  INSTALLATION_ROOT = INSTALLATION&.fetch("root", nil)
+  INSTALLATION_OWNER_UID = INSTALLATION&.fetch("owner_uid", nil)
+  WORKFLOW_CONTROL_TRUST_CONFIG_DIR = INSTALLATION_ROOT && File.join(INSTALLATION_ROOT, ".agents")
+  WORKFLOW_CONTROL_TRUST_CONFIG_PATH =
+    WORKFLOW_CONTROL_TRUST_CONFIG_DIR &&
+    File.join(WORKFLOW_CONTROL_TRUST_CONFIG_DIR, "workflow-control-lifecycle-trust.json")
   WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD =
     "agent_workflow_control_lifecycle_trusted_key_id"
   WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD =
     "agent_workflow_control_lifecycle_trusted_public_key_pem"
-  SIGNED_LAUNCH_WAIVER_LIBRARY = File.join(INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_waiver.rb")
+  SIGNED_LAUNCH_WAIVER_LIBRARY =
+    INSTALLATION_ROOT && File.join(INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_waiver.rb")
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -334,7 +343,7 @@ module BatchPlanPreflight
   end
 
   def valid_lane_lifecycle_waiver?(waiver, plan, stage_dependency_plan_id, lane)
-    return false unless plan["backend"] == "codex"
+    return false unless plan["backend"] == "codex" && SIGNED_LAUNCH_WAIVER_LIBRARY
 
     require SIGNED_LAUNCH_WAIVER_LIBRARY
     validated, = AgentDoctor::SignedLaunchWaiver.validate_lifecycle(
@@ -344,8 +353,7 @@ module BatchPlanPreflight
       stage_dependency_plan_id:,
       lane:,
       host: "codex",
-      target: INSTALLATION_ROOT,
-      helper_path: HELPER_PATH
+      target: INSTALLATION_ROOT
     )
     !validated.nil?
   rescue LoadError
@@ -368,15 +376,25 @@ module BatchPlanPreflight
     return false unless utc_timestamp?(receipt["completed_at"]) && utc_timestamp?(receipt["recorded_at"])
     return false unless Time.iso8601(receipt["completed_at"]) <= Time.iso8601(receipt["recorded_at"])
     return false unless Time.iso8601(receipt["recorded_at"]) <= Time.now.utc + LIFECYCLE_FUTURE_SKEW_SECONDS
-    return false unless receipt["receipt_ref"] == workflow_control_receipt_ref(receipt)
+    return false unless receipt["receipt_ref"] == workflow_control_receipt_ref(receipt) &&
+                        workflow_control_receipt_ref_addressable?(receipt["receipt_ref"])
 
     workflow_control_receipt_signature_verified?(receipt)
   end
 
   def workflow_control_receipt_ref(receipt)
-    "workflow-control-state://#{receipt['batch_plan_id']}/stage-dependency-plans/" \
+    authority = receipt["batch_plan_id"].gsub(":", "%3A")
+    "workflow-control-state://#{authority}/stage-dependency-plans/" \
       "#{receipt['stage_dependency_plan_id']}/waves/#{receipt['wave']}/lanes/" \
       "#{receipt['lane_id']}/#{receipt['state']}"
+  end
+
+  def workflow_control_receipt_ref_addressable?(value)
+    uri = URI.parse(value)
+    uri.absolute? && uri.scheme == "workflow-control-state" &&
+      uri.host.is_a?(String) && !uri.host.empty?
+  rescue URI::InvalidURIError
+    false
   end
 
   def utc_timestamp?(value)
@@ -406,7 +424,9 @@ module BatchPlanPreflight
   end
 
   def workflow_control_trust_anchor
-    helper_uid = File.stat(HELPER_PATH).uid
+    return unless INSTALLATION_ROOT && INSTALLATION_OWNER_UID
+
+    helper_uid = INSTALLATION_OWNER_UID
     root_stat = File.lstat(INSTALLATION_ROOT)
     config_dir_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_DIR)
     config_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_PATH)

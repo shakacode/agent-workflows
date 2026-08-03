@@ -89,7 +89,10 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     agents_dir = File.join(root, ".agents")
     config_path = File.join(agents_dir, "dispatcher-launch-trust.json")
     FileUtils.mkdir_p(File.dirname(helper))
+    module_root = File.join(root, "bin/agent_doctor")
+    FileUtils.mkdir_p(module_root)
     FileUtils.cp(HELPER, helper)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_installation.rb", __dir__), module_root)
     File.chmod(0o755, helper)
     if agents_symlink
       actual_agents_dir = File.join(root, "caller-substitutable-agents")
@@ -133,13 +136,14 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     FileUtils.mkdir_p(File.join(root, ".agents"), mode: 0o700)
     FileUtils.cp(HELPER, helper)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_readiness.rb", __dir__), module_root)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_installation.rb", __dir__), module_root)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver.rb", __dir__), module_root)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_waiver_record.rb", __dir__), module_root)
     File.chmod(0o755, helper)
     [helper, root]
   end
 
-  def symlinked_supported_dispatcher_helper
+  def symlinked_supported_dispatcher_helper(installer_metadata: true)
     root = secure_mktmpdir("dispatcher-symlink-install")
     File.chmod(0o700, root)
     (@dispatcher_install_roots ||= []) << root
@@ -176,7 +180,50 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       File.write(path, JSON.generate(record))
       File.chmod(0o600, path)
     end
+    write_symlink_install_metadata(root, File.expand_path("../../..", __dir__)) if installer_metadata
     [File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight"), root]
+  end
+
+  def write_symlink_install_metadata(root, source)
+    metadata = {
+      "host" => "codex",
+      "mode" => "symlink",
+      "delivery_mode" => "flat",
+      "source" => source,
+      "version" => "0.1.0",
+      "source_revision" => "a" * 40,
+      "source_branch" => "main",
+      "source_remote" => "https://github.com/shakacode/agent-workflows.git",
+      "installed_at" => "2026-08-03T00:00:00Z"
+    }
+    path = File.join(root, ".agent-workflows-install.json")
+    File.write(path, JSON.generate(metadata))
+    File.chmod(0o600, path)
+  end
+
+  def source_owner_mismatch_env(root)
+    shim = File.join(root, "source-owner-mismatch.rb")
+    File.write(shim, <<~RUBY)
+      class << File
+        alias_method :agent_workflows_original_stat, :stat
+
+        def stat(path, *args)
+          result = agent_workflows_original_stat(path, *args)
+          source_root = ENV.fetch("AGENT_WORKFLOWS_TEST_SOURCE_OWNER_ROOT")
+          expanded = File.realpath(path.to_s)
+          return result unless expanded == source_root || expanded.start_with?("\#{source_root}/")
+
+          result.define_singleton_method(:uid) { Process.euid.zero? ? 1 : 0 }
+          result
+        rescue Errno::ENOENT, Errno::ENOTDIR
+          result
+        end
+      end
+    RUBY
+    {
+      "AGENT_WORKFLOWS_TEST_SOURCE_OWNER_ROOT" => File.expand_path("../../..", __dir__),
+      "RUBYOPT" => "-r#{shim}"
+    }
   end
 
   def bootstrap_waiver(root, batch_id:, lane_id:, route:, dispatcher: "codex-collaboration")
@@ -1772,7 +1819,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       ),
       dispatcher_trust_env
     )
-    assert_equal "replay-already-active", confirmed.fetch("status")
+    assert_equal "replay-already-active", confirmed.fetch("status"), confirmed.inspect
     replay_active = dispatch(
       input.merge(
         "active_assignments" => confirmed.fetch("active_assignments"),
@@ -1864,6 +1911,61 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
     assert_equal "invalid-input", activated.fetch("status")
     assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
+  end
+
+  def test_validated_symlink_install_uses_the_installed_home_owner_for_dispatcher_trust
+    helper, root = symlinked_supported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    confirmed = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => launch_confirmation(pending.fetch("dispatch"))
+      ),
+      source_owner_mismatch_env(root),
+      helper
+    )
+
+    assert_equal "replay-already-active", confirmed.fetch("status"), confirmed.inspect
+    assert_equal "confirmed-active", confirmed.dig("active_assignments", 0, "lifecycle")
+  end
+
+  def test_arbitrary_symlink_invocation_cannot_select_dispatcher_trust
+    helper, = symlinked_supported_dispatcher_helper(installer_metadata: false)
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{
+        "route" => route,
+        "dispatcher" => "codex-collaboration",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "live-worker-299"
+      }]
+    }
+    pending = dispatch(input, helper)
+    replay = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => launch_confirmation(pending.fetch("dispatch"))
+      ),
+      helper
+    )
+
+    assert_equal "invalid-input", replay.fetch("status")
+    assert_includes replay.fetch("reason"), "launch_confirmation"
   end
 
   def test_waived_active_replay_accepts_a_fresh_exact_reobservation_after_the_prior_observation_ages_out
@@ -2153,7 +2255,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
   end
 
   def test_waiver_library_defensively_requires_nonempty_assignment_and_observation_runtime_identity
-    helper, root = installed_unsupported_dispatcher_helper
+    _helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     batch_id = "batch-299"
     lane_id = "aw299-implementation"
@@ -2175,7 +2277,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       )
       validated, reason = AgentDoctor::SignedLaunchWaiver.validate_dispatcher(
         wrapper:, expected_issue: waiver_record.fetch("issue"), batch_id:, lane_id:,
-        assignment: candidate_assignment, host: "codex", target: root, helper_path: helper
+        assignment: candidate_assignment, host: "codex", target: root
       )
 
       assert_nil validated, label
@@ -2316,7 +2418,10 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         unsafe_root, batch_id: "batch-299", lane_id: "aw299-implementation", route:
       )
 
-      assert_nil AgentDoctor::SignedLaunchWaiverRecord.read(waiver_path, helper_path: HELPER)
+      assert_nil AgentDoctor::SignedLaunchWaiverRecord.read(
+        waiver_path,
+        installation_root: File.expand_path("../../..", __dir__)
+      )
     end
   end
 
@@ -2331,12 +2436,15 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       File.chmod(0o600, path)
       aliased_path = File.join(root, "alias/nested/bootstrap-waiver.json")
 
-      assert_nil AgentDoctor::SignedLaunchWaiverRecord.read(aliased_path, helper_path: HELPER)
+      assert_nil AgentDoctor::SignedLaunchWaiverRecord.read(
+        aliased_path,
+        installation_root: File.expand_path("../../..", __dir__)
+      )
     end
   end
 
   def test_waiver_record_reads_from_the_single_validated_file_descriptor
-    helper, root = installed_unsupported_dispatcher_helper
+    _helper, root = installed_unsupported_dispatcher_helper
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     waiver_path, waiver_record = bootstrap_waiver(
       root, batch_id: "batch-299", lane_id: "aw299-implementation", route:
@@ -2347,7 +2455,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     original_path_read = File.method(:read)
     File.singleton_class.send(:define_method, :read, substitute_path_read)
     actual = begin
-      AgentDoctor::SignedLaunchWaiverRecord.read(waiver_path, helper_path: helper)
+      AgentDoctor::SignedLaunchWaiverRecord.read(waiver_path, installation_root: root)
     ensure
       File.singleton_class.send(:define_method, :read, original_path_read)
     end

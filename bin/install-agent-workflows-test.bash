@@ -208,6 +208,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
   assert_file "$target/bin/agent_doctor/process_runner.rb"
+  assert_file "$target/bin/agent_doctor/signed_launch_installation.rb"
   assert_file "$target/bin/agent_doctor/signed_launch_readiness.rb"
   assert_file "$target/bin/agent_doctor/signed_launch_waiver.rb"
   assert_file "$target/bin/agent_doctor/signed_launch_waiver_record.rb"
@@ -1464,6 +1465,23 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_file "$target/.agent-workflows-install.json"
 }
 
+test_symlink_mode_writes_nonwritable_install_metadata_under_permissive_umask() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+
+  (
+    umask 000
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+      >"$tmp/install-agent-workflows-test.out"
+  )
+
+  ruby -e '
+    mode = File.lstat(ARGV.fetch(0)).mode & 0o777
+    abort format("unsafe metadata mode: %04o", mode) unless (mode & 0o022).zero?
+  ' "$target/.agent-workflows-install.json"
+}
+
 test_symlink_mode_replaces_docs_directory_symlink() {
   local tmp target external_docs
   tmp="$(mktemp -d)"
@@ -1957,6 +1975,7 @@ main() {
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
+    test_symlink_mode_writes_nonwritable_install_metadata_under_permissive_umask
     test_symlink_mode_replaces_docs_directory_symlink
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation

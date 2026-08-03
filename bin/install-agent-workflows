@@ -200,6 +200,7 @@ prepare_metadata() {
     }
     File.write(path, JSON.pretty_generate(metadata) + "\n")
   ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at"
+  chmod 0600 "$metadata_tmp"
 }
 
 commit_metadata() {

@@ -16,23 +16,22 @@ module AgentDoctor
 
       root = File.expand_path(target.to_s)
       agents = File.join(root, ".agents")
+      owner_uid = installation_owner_uid(root)
       paths = {
         capability: File.join(agents, CAPABILITY_FILE),
         dispatcher: File.join(agents, DISPATCHER_TRUST_FILE),
         workflow: File.join(agents, WORKFLOW_TRUST_FILE)
       }
-      return unsupported(host) if clean_unsupported_host?(host:, root:, agents:, paths:)
+      return unsupported(host) if clean_unsupported_host?(host:, root:, agents:, paths:, owner_uid:)
 
-      capability = read_record(paths.fetch(:capability), root:, agents:)
-      dispatcher = read_record(paths.fetch(:dispatcher), root:, agents:)
-      workflow = read_record(paths.fetch(:workflow), root:, agents:)
+      capability = read_record(paths.fetch(:capability), root:, agents:, owner_uid:)
+      dispatcher = read_record(paths.fetch(:dispatcher), root:, agents:, owner_uid:)
+      workflow = read_record(paths.fetch(:workflow), root:, agents:, owner_uid:)
       if capability_record?(capability, host:) &&
          dispatcher_anchor?(dispatcher, capability.fetch("dispatcher_launch_key_id")) &&
          workflow_anchor?(workflow, capability.fetch("workflow_control_lifecycle_key_id"))
         return {
-          "type" => "agent-workflow-signed-launch-readiness",
-          "version" => 1,
-          "host" => host,
+          "type" => "agent-workflow-signed-launch-readiness", "version" => 1, "host" => host,
           "capability" => "supported",
           "ready" => true,
           "reason" => "host-producer-and-trust-anchors-ready",
@@ -50,9 +49,7 @@ module AgentDoctor
 
     def unsupported(host)
       {
-        "type" => "agent-workflow-signed-launch-readiness",
-        "version" => 1,
-        "host" => host,
+        "type" => "agent-workflow-signed-launch-readiness", "version" => 1, "host" => host,
         "capability" => "unsupported",
         "ready" => false,
         "reason" => "host-producer-unavailable",
@@ -64,9 +61,7 @@ module AgentDoctor
 
     def unknown(host, reason: "host-capability-unknown")
       {
-        "type" => "agent-workflow-signed-launch-readiness",
-        "version" => 1,
-        "host" => host,
+        "type" => "agent-workflow-signed-launch-readiness", "version" => 1, "host" => host,
         "capability" => "UNKNOWN",
         "ready" => false,
         "reason" => reason,
@@ -81,33 +76,47 @@ module AgentDoctor
     end
     private_class_method :path_present?
 
-    def clean_unsupported_host?(host:, root:, agents:, paths:)
+    def clean_unsupported_host?(host:, root:, agents:, paths:, owner_uid:)
       return false unless host == "codex" && paths.values.none? { |path| path_present?(path) }
-      return false unless safe_owned_directory?(root)
+      return false unless safe_owned_directory?(root, owner_uid)
       return true unless path_present?(agents)
 
-      safe_owned_directory?(agents)
+      safe_owned_directory?(agents, owner_uid)
     end
     private_class_method :clean_unsupported_host?
 
-    def safe_owned_directory?(path)
+    def installation_owner_uid(root)
+      stat = File.lstat(root)
+      return unless stat.directory? && !stat.symlink? && (stat.mode & 0o022).zero?
+
+      stat.uid
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      nil
+    end
+    private_class_method :installation_owner_uid
+
+    def safe_owned_directory?(path, owner_uid)
+      return false unless owner_uid
+
       stat = File.lstat(path)
-      stat.directory? && stat.uid == File.stat(__FILE__).uid && (stat.mode & 0o022).zero?
+      stat.directory? && !stat.symlink? && stat.uid == owner_uid && (stat.mode & 0o022).zero?
     rescue Errno::ENOENT, Errno::ENOTDIR
       false
     end
     private_class_method :safe_owned_directory?
 
-    def read_record(path, root:, agents:)
-      return unless [root, agents].all? { |directory| safe_owned_directory?(directory) }
+    def read_record(path, root:, agents:, owner_uid:)
+      return unless [root, agents].all? { |directory| safe_owned_directory?(directory, owner_uid) }
       return unless File.const_defined?(:NOFOLLOW)
 
-      helper_uid = File.stat(__FILE__).uid
       File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
         stat = file.stat
-        next unless stat.file? && stat.uid == helper_uid && (stat.mode & 0o022).zero?
+        next unless stat.file? && stat.uid == owner_uid && (stat.mode & 0o022).zero?
 
-        record = JSON.parse(file.read.force_encoding("UTF-8"))
+        contents = file.read.force_encoding("UTF-8")
+        next unless contents.valid_encoding?
+
+        record = JSON.parse(contents)
         record if record.is_a?(Hash)
       end
     rescue JSON::ParserError, SystemCallError

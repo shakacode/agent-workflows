@@ -4,6 +4,7 @@ require "digest"
 require "json"
 require "time"
 require "uri"
+require_relative "signed_launch_installation"
 
 module AgentDoctor
   module SignedLaunchWaiverRecord
@@ -14,13 +15,9 @@ module AgentDoctor
     ].freeze
     REQUIRED_GATES = [
       "security preflight", "stage dependency gate", "batch plan gate",
-      "TDD and focused tests",
-      "bin/validate",
-      "independent final-head QA and review",
-      "current-head CI and configured reviewer completion",
-      "unresolved review-thread gate",
-      "autonomous merge eligibility",
-      "merge assurance",
+      "TDD and focused tests", "bin/validate",
+      "independent final-head QA and review", "current-head CI and configured reviewer completion",
+      "unresolved review-thread gate", "autonomous merge eligibility", "merge assurance",
       "exact-head merge submission", "completed-batch audit"
     ].freeze
     DURABLE_REF_SCHEMES = %w[
@@ -31,29 +28,32 @@ module AgentDoctor
 
     module_function
 
-    def read(path, helper_path:)
+    def read(path, installation_root:)
       return unless absolute_path?(path)
 
-      helper_uid = File.stat(helper_path).uid
-      return unless safe_ancestor_chain?(path, helper_uid)
+      owner_uid = SignedLaunchInstallation.root_owner_uid(installation_root)
+      return unless owner_uid && safe_ancestor_chain?(path, owner_uid)
       return unless File.const_defined?(:NOFOLLOW)
 
       File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
         file_stat = file.stat
-        next unless file_stat.file? && file_stat.uid == helper_uid && (file_stat.mode & 0o022).zero?
+        next unless file_stat.file? && file_stat.uid == owner_uid && (file_stat.mode & 0o022).zero?
 
-        record = JSON.parse(file.read.force_encoding("UTF-8"))
+        contents = file.read.force_encoding("UTF-8")
+        next unless contents.valid_encoding?
+
+        record = JSON.parse(contents)
         record if record.is_a?(Hash)
       end
     rescue JSON::ParserError, SystemCallError
       nil
     end
 
-    def safe_ancestor_chain?(path, helper_uid)
+    def safe_ancestor_chain?(path, owner_uid)
       directory = File.dirname(path)
       loop do
         stat = File.lstat(directory)
-        return false unless stat.directory? && [0, helper_uid].include?(stat.uid) && (stat.mode & 0o022).zero?
+        return false unless stat.directory? && [0, owner_uid].include?(stat.uid) && (stat.mode & 0o022).zero?
 
         parent = File.dirname(directory)
         return true if parent == directory
