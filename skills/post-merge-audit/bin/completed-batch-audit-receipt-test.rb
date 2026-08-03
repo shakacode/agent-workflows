@@ -2699,6 +2699,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           "target" => target,
           "state" => "merged",
           "head_sha" => head_sha,
+          "completed_at" => "2026-07-18T17:59:59Z",
           "verification_source" => "authenticated gh api"
         }
       end,
