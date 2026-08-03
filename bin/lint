@@ -28,9 +28,6 @@ class LintRunner
       check_version!(tool)
       puts "== #{tool} #{VERSIONS.fetch(tool)} =="
       return 1 unless system(tool, *arguments)
-    rescue Errno::ENOENT
-      warn missing_tool_message(tool)
-      return 1
     end
     puts "PASS agent-workflows lint"
     0
@@ -51,13 +48,13 @@ class LintRunner
     markdown_files = files.grep(/\.md\z/)
     yaml_files = files.grep(/\.ya?ml\z/)
     workflow_files = yaml_files.select { |path| path.start_with?(".github/workflows/") }
-    [
-      ["rubocop", ["_#{VERSIONS.fetch('rubocop')}_", *ruby_files]],
-      ["shellcheck", shell_files],
-      ["markdownlint-cli2", markdown_files],
-      ["yamllint", ["--strict", *yaml_files]],
-      ["actionlint", workflow_files]
-    ]
+    commands = []
+    commands << ["rubocop", ["_#{VERSIONS.fetch('rubocop')}_", *ruby_files]] unless ruby_files.empty?
+    commands << ["shellcheck", shell_files] unless shell_files.empty?
+    commands << ["markdownlint-cli2", markdown_files] unless markdown_files.empty?
+    commands << ["yamllint", ["--strict", *yaml_files]] unless yaml_files.empty?
+    commands << ["actionlint", workflow_files] unless workflow_files.empty?
+    commands
   end
 
   def shell_file?(path)

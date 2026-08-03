@@ -1,4 +1,5 @@
-# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
+# Shared globals are populated by options.bash after all modules are sourced.
+declare source_root agent_coord_install_dir mode host delivery_mode target
 agent_stack_command_destination_safe() {
   local destination="$1"
   if [[ -d "$destination" || ( -e "$destination" && ! -f "$destination" && ! -L "$destination" ) ]]; then

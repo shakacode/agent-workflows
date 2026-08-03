@@ -106,6 +106,12 @@ class LintCommandTest < Minitest::Test
     end
   end
 
+  def test_skips_linters_without_matching_tracked_files
+    commands = LintRunner.new.send(:commands, ["notes.md"])
+
+    assert_equal [["markdownlint-cli2", ["notes.md"]]], commands
+  end
+
   def test_ci_installs_pinned_linters_and_runs_the_canonical_command
     assert File.file?(WORKFLOW), "expected a dedicated lint workflow"
 

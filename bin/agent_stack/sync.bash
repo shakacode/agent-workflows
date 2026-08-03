@@ -1,4 +1,5 @@
-# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
+# Shared globals are populated by options.bash after all modules are sourced.
+declare source_root compat_root runtime_root repo_names install_tools
 agent_stack_sync() {
   local repo_name
   agent_stack_parse_options "$@"

@@ -1,4 +1,5 @@
-# shellcheck disable=SC2154 # Variables are assigned in sourced sibling modules.
+# Shared globals are populated by options.bash after all modules are sourced.
+declare source_root force_stash fetch
 agent_stack_repo_url() {
   case "$1" in
     agent-workflows) printf '%s\n' "${AGENT_STACK_AGENT_WORKFLOWS_URL:-https://github.com/shakacode/agent-workflows.git}" ;;
