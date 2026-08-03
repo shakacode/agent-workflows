@@ -72,6 +72,8 @@ class LintCommandTest < Minitest::Test
         "env" => "#!/usr/bin/env bash\n",
         "bin" => "#!/bin/bash\n",
         "usr-bin" => "#!/usr/bin/sh\n",
+        "dash-bin" => "#!/bin/dash\n",
+        "dash-env" => "#!/usr/bin/env dash\n",
         "ruby" => "#!/usr/bin/env ruby\n"
       }.each do |name, shebang|
         File.write(File.join(directory, name), shebang)
@@ -81,6 +83,8 @@ class LintCommandTest < Minitest::Test
       assert runner.send(:shell_file?, File.join(directory, "env"))
       assert runner.send(:shell_file?, File.join(directory, "bin"))
       assert runner.send(:shell_file?, File.join(directory, "usr-bin"))
+      assert runner.send(:shell_file?, File.join(directory, "dash-bin"))
+      assert runner.send(:shell_file?, File.join(directory, "dash-env"))
       assert runner.send(:shell_file?, ksh_file)
       refute runner.send(:shell_file?, File.join(directory, "ruby"))
     end

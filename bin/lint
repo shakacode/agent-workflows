@@ -60,7 +60,7 @@ class LintRunner
   def shell_file?(path)
     return true if path.end_with?(".bash", ".ksh", ".sh")
 
-    first_line(path)&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)(?:ba|k)?sh(?:\s|\z)})
+    first_line(path)&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)(?:ba|da|k)?sh(?:\s|\z)})
   end
 
   def ruby_file?(path)
