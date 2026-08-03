@@ -129,6 +129,7 @@ module MergeAssurance
       _SECRET_ACCESS_KEY|_PRIVATE_KEY
     )\z
   /x
+  # Defense in depth if the accepted credential suffix grammar broadens.
   SELECTED_HOSTED_CI_RESERVED_ENV = %w[
     GH_HOST GH_REPO SELECTED_HOSTED_CI_PR SELECTED_HOSTED_CI_HEAD_SHA
     HOME USER LOGNAME PATH
@@ -147,21 +148,11 @@ module MergeAssurance
     now: Time.now.utc
   )
     failures = []
-    safe_context = context.is_a?(Hash) ? context : {}
-    validate_context(context, failures)
-    validate_ci(ci_result, safe_context, now, failures)
     selected_hosted_ci_receipts ||= empty_selected_hosted_ci_receipts
-    validate_selected_hosted_ci(
-      selected_hosted_ci_receipts, safe_context, now, failures
+    safe_context, follow_up_accounting, semantic_tracker = validate_evidence(
+      ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts:,
+      now:, failures:
     )
-    validate_autonomous(autonomous_result, safe_context, failures)
-    failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
-    failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
-    failures << "context contains UNKNOWN" if contains_unknown?(context)
-    failures << "selected_hosted_ci_receipts contains UNKNOWN" if
-      contains_unknown?(selected_hosted_ci_receipts)
-    validate_authority(safe_context, autonomous_result, now, failures)
-    follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
     authenticated_tracker_reads = []
     if failures.empty? && semantic_tracker
       tracker_read = authenticate_semantic_tracker(semantic_tracker, safe_context, now, failures)
@@ -204,6 +195,35 @@ module MergeAssurance
     receipt
   end
 
+  def local_evidence_failures(ci_result:, autonomous_result:, context:, now: Time.now.utc)
+    failures = []
+    validate_evidence(ci_result:, autonomous_result:, context:, now:, failures:)
+    failures.uniq
+  end
+
+  def validate_evidence(
+    ci_result:, autonomous_result:, context:, now:, failures:,
+    selected_hosted_ci_receipts: nil
+  )
+    safe_context = context.is_a?(Hash) ? context : {}
+    validate_context(context, failures)
+    validate_ci(ci_result, safe_context, now, failures)
+    if selected_hosted_ci_receipts
+      validate_selected_hosted_ci(
+        selected_hosted_ci_receipts, safe_context, now, failures
+      )
+    end
+    validate_autonomous(autonomous_result, safe_context, failures)
+    failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
+    failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
+    failures << "context contains UNKNOWN" if contains_unknown?(context)
+    failures << "selected_hosted_ci_receipts contains UNKNOWN" if
+      selected_hosted_ci_receipts && contains_unknown?(selected_hosted_ci_receipts)
+    validate_authority(safe_context, autonomous_result, now, failures)
+    follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
+    [safe_context, follow_up_accounting, semantic_tracker]
+  end
+
   def blocked_result(failures)
     {
       "contract" => "merge-assurance-result",
@@ -237,7 +257,8 @@ module MergeAssurance
     unknown_keys = context.keys - CONTEXT_KEYS
     failures << "context has unknown keys: #{unknown_keys.sort.join(', ')}" unless unknown_keys.empty?
     failures << "context host is invalid" unless valid_host?(context["host"])
-    failures << "context repo is invalid" unless context["repo"].to_s.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    failures << "context repo is invalid" unless
+      context["repo"].is_a?(String) && context["repo"].match?(%r{\A[^/\s]+/[^/\s]+\z})
     failures << "context PR is invalid" unless context["pr"].is_a?(Integer) && context["pr"].positive?
     base = context["base"]
     unless base.is_a?(Hash) && base.keys.sort == %w[ref sha] &&
@@ -1149,7 +1170,8 @@ module MergeAssurance
   end
 
   def valid_host?(value)
-    value.to_s.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?\z/i)
+    value.is_a?(String) &&
+      value.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?\z/i)
   end
 
   class Runner
@@ -1157,13 +1179,25 @@ module MergeAssurance
       options = parse_options(argv)
       return help if options[:help]
 
+      ci_result = read_json(options[:ci_result], "--ci-result")
+      autonomous_result = read_json(options[:autonomous_result], "--autonomous-result")
       context = read_json(options[:context], "--context")
+      now = Time.now.utc
+      local_failures = MergeAssurance.local_evidence_failures(
+        ci_result:, autonomous_result:, context:, now:
+      )
+      unless local_failures.empty?
+        puts JSON.pretty_generate(MergeAssurance.blocked_result(local_failures))
+        return 1
+      end
+
       selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(context)
       result = MergeAssurance.assess(
-        ci_result: read_json(options[:ci_result], "--ci-result"),
-        autonomous_result: read_json(options[:autonomous_result], "--autonomous-result"),
+        ci_result:,
+        autonomous_result:,
         context:,
-        selected_hosted_ci_receipts:
+        selected_hosted_ci_receipts:,
+        now:
       )
       puts JSON.pretty_generate(result)
       result["eligible"] ? 0 : 1
