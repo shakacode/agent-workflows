@@ -27,11 +27,16 @@ REPLACEMENT_PROOF_RULE = "A replacement proof is single-use and identity-bound t
 LAUNCH_CONFIRMATION_V2_RULE = "A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation` envelope version 2 transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction."
 LAUNCH_CONFIRMATION_V1_HISTORY_RULE = "Version 1 confirmations are history-only and cannot activate a launch-pending assignment."
 SIGNED_LAUNCH_OBSERVATION_RULE = "A qualifying confirmation envelope version 2 requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload."
-SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE = "Independently, the signed `dispatcher-launch-observation` payload is version 1 canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature."
+SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE = "Independently, the signed `dispatcher-launch-observation` payload is version 1 canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_host`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature."
 FIXED_DISPATCHER_TRUST_RULE = "The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it."
 DISPATCHER_TRUST_SCHEMA_RULE = "The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`."
 DISPATCHER_TRUST_PROVENANCE_RULE = "The helper accepts signed-launch trust only from a validated flat installation receipt at its canonical installation root. A direct plugin-source or repository helper has no authenticated host provenance and fails closed; caller-selected `CODEX_HOME`/`CLAUDE_HOME`, companion metadata, `.agents` files, and keys cannot establish it. A symlink-delivered helper accepts the lexical installed root only when the exact expected helper path, real non-writable root, `skills`, `bin`, and `.agents` directories, strict safe install receipt, recorded source, and installer-created skill and `bin/agent_doctor` symlinks all bind to the same physical source pack; arbitrary invocation symlinks fail closed. Require the trust file to be real, owned by the validated installed-root owner, not group- or world-writable, and to contain a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed."
 LAUNCH_CONFIRMATION_V1_MIGRATION_RULE = "During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed observation carried by a version 2 confirmation envelope verifies."
+PRE_ACTUAL_HOST_V2_MIGRATION_RULE = "A persisted pre-`actual_host` version 2 confirmation remains parseable only as signed history for the same " \
+                                    "`confirmed-active` assignment identity: verify its signature against the legacy canonical payload that omits " \
+                                    "`actual_host`, never synthesize that field, and never use the record to qualify or activate `launch-pending`; " \
+                                    "any tampering or identity mismatch fails closed, and every new activation still requires a current signed " \
+                                    "nonempty `actual_host`."
 OBSOLETE_V1_ACTIVATION_RULE = "only an identity-bound `launch-confirmation v1` transitions it to `confirmed-active`"
 DECISION_RESOLUTION_RULE = "Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`."
 SELF_CONTAINED_PERSISTENCE_RULE = "Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch."
@@ -55,6 +60,14 @@ CLAUDE_RECOMMENDED_ROUTES = [
   "High-risk or escalated work: Opus 4.8/xhigh",
   CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE,
   CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE
+].freeze
+SIGNED_OBSERVATION_CONTRACT_PATHS = %w[
+  CONTEXT.md
+  docs/pr-batch-skills.md
+  docs/agent-workflows-model-routing.md
+  skills/pr-batch/SKILL.md
+  workflows/pr-processing.md
+  skills/triage/SKILL.md
 ].freeze
 
 def read_repo_file(path)
@@ -93,7 +106,67 @@ def source_checkout?
   ENV[SOURCE_CHECKOUT_ENV] == "1"
 end
 
+def assert_signed_observation_contract(test, text, label)
+  test.assert_includes text, SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE,
+                       "#{label} must carry the exact current signed payload"
+  test.assert_includes text, PRE_ACTUAL_HOST_V2_MIGRATION_RULE,
+                       "#{label} must carry the exact pre-actual_host v2 migration contract"
+end
+
 class ModelRoutingContractTest < Minitest::Test
+  def test_signed_observation_payload_and_migration_match_across_all_six_surfaces
+    SIGNED_OBSERVATION_CONTRACT_PATHS.each do |path|
+      assert_signed_observation_contract(self, read_repo_file(path), path)
+    end
+  end
+
+  def test_signed_observation_payload_parity_mutants_fail_on_every_surface
+    legacy_payload = SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE.sub(", `actual_host`", "")
+
+    SIGNED_OBSERVATION_CONTRACT_PATHS.each do |path|
+      text = read_repo_file(path)
+      assert_signed_observation_contract(self, text, path)
+      mutants = {
+        "stale payload" => text.sub(SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE, legacy_payload),
+        "missing actual_host" => text.sub("`actual_host`", "`host`"),
+        "misordered actual_host" => text.sub(
+          "`launch_token`, `actual_host`, `actual_model`",
+          "`launch_token`, `actual_model`, `actual_host`"
+        )
+      }
+
+      mutants.each do |mutation, mutant|
+        assert_raises(Minitest::Assertion, "#{path} accepted #{mutation}") do
+          assert_signed_observation_contract(self, mutant, "#{path} #{mutation} mutant")
+        end
+      end
+    end
+  end
+
+  def test_signed_observation_migration_parity_mutants_fail_on_every_surface
+    SIGNED_OBSERVATION_CONTRACT_PATHS.each do |path|
+      text = read_repo_file(path)
+      assert_signed_observation_contract(self, text, path)
+      mutants = {
+        "missing migration" => text.sub(PRE_ACTUAL_HOST_V2_MIGRATION_RULE, ""),
+        "weakened pending fence" => text.sub(
+          "never use the record to qualify or activate `launch-pending`",
+          "avoid using the record to activate `launch-pending`"
+        ),
+        "weakened current host requirement" => text.sub(
+          "current signed nonempty `actual_host`",
+          "current `actual_host`"
+        )
+      }
+
+      mutants.each do |mutation, mutant|
+        assert_raises(Minitest::Assertion, "#{path} accepted #{mutation}") do
+          assert_signed_observation_contract(self, mutant, "#{path} #{mutation} mutant")
+        end
+      end
+    end
+  end
+
   def test_goal_prompts_separate_coordinator_assignment_from_worker_routes
     prompts = {
       "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
@@ -195,13 +268,15 @@ class ModelRoutingContractTest < Minitest::Test
       read_repo_file("workflows/pr-processing.md")
     ].each do |text|
       assert_includes text, SIGNED_LAUNCH_OBSERVATION_RULE
-      assert_includes text, SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE
       assert_includes text, FIXED_DISPATCHER_TRUST_RULE
       assert_includes text, DISPATCHER_TRUST_SCHEMA_RULE
       assert_includes text, DISPATCHER_TRUST_PROVENANCE_RULE
       assert_includes text, LAUNCH_CONFIRMATION_V1_MIGRATION_RULE
       refute_includes text, "AGENT_WORKFLOW_DISPATCHER_TRUSTED_PUBLIC_KEY_PEM"
       refute_includes text, "AGENT_WORKFLOW_DISPATCHER_TRUSTED_KEY_ID"
+    end
+    [triage, read_repo_file("skills/pr-batch/SKILL.md"), read_repo_file("workflows/pr-processing.md")].each do |text|
+      assert_includes text, SIGNED_LAUNCH_OBSERVATION_PAYLOAD_RULE
     end
 
     portable_call = '"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"'

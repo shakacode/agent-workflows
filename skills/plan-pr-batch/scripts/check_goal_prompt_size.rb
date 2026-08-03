@@ -11,22 +11,47 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
-BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>; wave:"
+BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/<effort>."
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
+OBJECTIVE_PROMPT_LINE = "Objective:..."
+MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
+                                  "coordinator_route=<model>/<effort>@<binding>;" \
+                                  "lanes=<lane-id:host+model/effort@binding>,...;" \
+                                  "UNKNOWN=field;no guesses"
+MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_FRAGMENT =
+  "coordinator_route=<model/effort@binding|UNKNOWN>"
+BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
+FINAL_CLOSEOUT_PROMPT_LINE =
+  "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
+CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
+  "Current wave:each target/disjoint lane exactly once"
+PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
+  "one target/lane/worker"
+CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
+  "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
+  "shared=>in-lane;serial/UNKNOWN apart".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort routes: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh"
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
+COORDINATION_DEPENDENCY_PROMPT_LINE =
+  "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
+  "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
+  "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
-                               "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam."
-STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
+                               "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
+STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                              "live=<replay/ref>; " \
-                              "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
+                              "live=<replay/ref>;" \
+                              "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN"
+TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
+                                     "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
+                                     "live=<replay/ref>; " \
+                                     "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v3: current-head CI/configured-reviewers " \
                              "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m " \
@@ -90,33 +115,50 @@ OVERSIZED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
   Dispatch docs: route policy preferred; requested remote@fastest-low-cost/low; fallbacks remote@balanced/medium; auth dispatch/route y/y.
   Dispatch release: route policy hard; requested remote@balanced/medium; fallbacks none; auth dispatch/route n/n.
 TEXT
-GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
-                             "block=>stop; no raw GitHub/override"
+GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;" \
+                             "block=>stop;no raw GitHub/override"
+TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
+  "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
+  "block=>stop; no raw GitHub/override"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
+  - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
+    Original:trusted ad-hoc prompt|n/a
+    Goal:one-line outcome
+    Notes:scope/branch/dependency
+    Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+TEXT
+TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
     Original: trusted ad-hoc prompt; else n/a.
     Goal: one-line outcome.
     Notes: scope/branch/dependency.
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 TEXT
-GOAL_PROMPT_BASE_RESOLUTION_LINE = "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
-                                   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
-GOAL_PROMPT_FALLBACK_LINE = "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
-                            "persist output before resume/launch; preflight issue/PR only."
+GOAL_PROMPT_BASE_RESOLUTION_LINE =
+  "Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN"
+TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
+  "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
+  "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
+GOAL_PROMPT_FALLBACK_LINE =
+  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
+  "persist output before resume/launch; preflight issue/PR only."
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
+READY_ITEM_DONE_WHEN_LINE =
+  "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
-  merge_authority: <none | ask | auto_merge_when_gates_pass>.
-  Batch size target: <codex|claude|generic>; wave: <cap/items>.
-  Coordinator model/effort: <model/class>/<effort>.
-  Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
-  Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-  Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
+  merge_authority:<none|ask|auto_merge_when_gates_pass>
+  Batch size target: <codex|claude|generic>;wave: <cap/items>
+  #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
+  #{LAUNCH_ASSURANCE_PROMPT_LINE}
+  #{MANIFEST_PROVENANCE_PROMPT_LINE}
+  #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
+  #{DISPATCH_PLAN_PROMPT_LINE}
   #{STAGE_DEPENDENCY_PROMPT_LINE}
   #{GOAL_MODE_COMPACT_CONTRACT}
 TEXT
@@ -289,6 +331,12 @@ def require_occurrence_count(text, phrase, expected_count, label)
   )
 end
 
+def reject_phrases(text, phrases, label)
+  phrases.each do |phrase|
+    abort_with_failure("#{label} contains forbidden phrase: #{phrase}") if text.include?(phrase)
+  end
+end
+
 def extract_goal_prompt_template(text, heading, label:)
   heading_index = text.index(heading)
   abort_with_failure("missing #{heading} section") unless heading_index
@@ -308,12 +356,12 @@ def extract_goal_prompt_template(text, heading, label:)
 end
 
 def with_items(prompt_template, items)
-  updated_prompt = prompt_template.sub(/Items:\n.*?\n{2,}Execution rules:/m) do
-    "Items:\n#{items}\n\nExecution rules:"
+  updated_prompt = prompt_template.sub(/Items:\n.*?\nExecution rules:/m) do
+    "Items:\n#{items}\nExecution rules:"
   end
   if updated_prompt == prompt_template
     abort_with_failure(
-      "goal prompt template must contain an Items section followed by a blank line and Execution rules:"
+      "goal prompt template must contain an Items section followed by Execution rules:"
     )
   end
 
@@ -480,6 +528,7 @@ required_codex_prompt_phrases = [
 required_all_prompt_phrases = [
   "Batch title:",
   "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
+  OBJECTIVE_PROMPT_LINE,
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
   "exact model/effort+binding",
@@ -491,6 +540,9 @@ required_all_prompt_phrases = [
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
   LAUNCH_ASSURANCE_PROMPT_LINE,
+  MANIFEST_PROVENANCE_PROMPT_LINE,
+  BATCH_QA_PROMPT_LINE,
+  CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE,
   WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
   MODEL_EFFORT_DISPATCH_LINE,
   DISPATCHER_PREFLIGHT_PROMPT_LINE,
@@ -498,15 +550,16 @@ required_all_prompt_phrases = [
   STAGE_DEPENDENCY_PROMPT_LINE,
   STAGE_DEPENDENCY_SCOPE_LINE,
   ASK_WALKTHROUGH_PROMPT_LINE,
-  "merge only when `merge_authority` is `auto_merge_when_gates_pass`",
+  "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
-  "document confidence data in the PR description",
-  "verifies live GitHub before edits",
-  "respect coordination claims and dependencies",
+  "document confidence data in PR description",
+  "Verify live GitHub before edits",
+  COORDINATION_DEPENDENCY_PROMPT_LINE,
   "register before launch when supported",
   "push holder/generation check",
-  "facts are UNKNOWN"
+  "facts are UNKNOWN",
+  FINAL_CLOSEOUT_PROMPT_LINE
 ]
 
 host_aware_batch_sizing_phrase_checks = {
@@ -615,28 +668,63 @@ end
   "pr-batch goal prompt" => pr_batch_prompt_template,
   "workflow plan-to-goal prompt" => workflow_prompt_template
 }.each do |label, template|
+  reject_phrases(
+    template,
+    [MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_FRAGMENT],
+    "#{label} manifest provenance contract"
+  )
   require_occurrence_count(template, GOAL_PROMPT_PREFLIGHT_LINE, 1, "#{label} preflight contract")
   require_occurrence_count(template, GOAL_PROMPT_ITEM_SHAPE, 1, "#{label} complete item shape")
   require_occurrence_count(template, GOAL_PROMPT_BASE_RESOLUTION_LINE, 1, "#{label} base-resolution contract")
   require_occurrence_count(template, GOAL_MODE_COMPACT_CONTRACT, 1, "#{label} compact completion contract")
   require_occurrence_count(template, STAGE_DEPENDENCY_PROMPT_LINE, 1, "#{label} stage-dependency contract")
   require_occurrence_count(template, STAGE_DEPENDENCY_SCOPE_LINE, 1, "#{label} stage-dependency scope")
+  require_occurrence_count(template, BATCH_QA_PROMPT_LINE, 1, "#{label} Batch QA contract")
+  require_occurrence_count(
+    template,
+    CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE,
+    1,
+    "#{label} complete exactly-once current-wave coverage"
+  )
+  require_occurrence_count(
+    template,
+    PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE,
+    1,
+    "#{label} per-worker single ownership"
+  )
+  require_occurrence_count(
+    template,
+    CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE,
+    1,
+    "#{label} synchronized current-wave assignment contract"
+  )
 end
+reject_phrases(
+  triage_prompt_contract_text,
+  [MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_FRAGMENT],
+  "triage generated-prompt manifest provenance contract"
+)
 require_occurrence_count(
   triage_prompt_contract_text,
-  GOAL_PROMPT_PREFLIGHT_LINE,
+  MANIFEST_PROVENANCE_PROMPT_LINE,
+  1,
+  "triage generated-prompt manifest provenance contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE,
   1,
   "triage generated-prompt preflight contract"
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  GOAL_PROMPT_ITEM_SHAPE,
+  TRIAGE_GOAL_PROMPT_ITEM_SHAPE,
   1,
   "triage generated-prompt complete item shape"
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  GOAL_PROMPT_BASE_RESOLUTION_LINE,
+  TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE,
   1,
   "triage generated-prompt base-resolution contract"
 )
@@ -654,9 +742,27 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  STAGE_DEPENDENCY_SCOPE_LINE,
+  TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE,
   1,
   "triage generated-prompt stage-dependency scope"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE,
+  1,
+  "triage generated-prompt complete exactly-once current-wave coverage"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE,
+  1,
+  "triage generated-prompt per-worker single ownership"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE,
+  1,
+  "triage generated-prompt synchronized current-wave assignment contract"
 )
 require_phrases(
   GOAL_MODE_COMPACT_CONTRACT,
@@ -802,19 +908,19 @@ bulky_items = (1..12).map do |number|
 end.join("\n")
 
 first_ready_item = <<~ITEM.chomp
-  - Target: Issue #1: https://github.com/shakacode/react_on_rails/issues/1
+  - Target: Issue #1: https://github.com/acme/x/issues/1
     Original: n/a.
-    Goal: Add size guard.
-    Notes: implementation lane.
-    Done when: requested authority state with current-head evidence.
+    Goal: Guard.
+    Notes: impl.
+    Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 
 second_ready_item = <<~ITEM.chomp
-  - Target: Issue #2: https://github.com/shakacode/react_on_rails/issues/2
+  - Target: Issue #2: https://github.com/acme/x/issues/2
     Original: n/a.
-    Goal: Review dispatcher routing.
-    Notes: QA lane; hard route.
-    Done when: requested authority state with current-head evidence.
+    Goal: Route.
+    Notes: QA.
+    Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 
 mixed_route_ready_items = [first_ready_item, second_ready_item].join("\n")
@@ -822,6 +928,11 @@ mixed_route_ready_items = [first_ready_item, second_ready_item].join("\n")
 [bulky_items, first_ready_item, second_ready_item].each do |fixture|
   ITEM_FIXTURE_FIELD_PREFIXES.each do |prefix|
     abort_with_failure("goal prompt fixture is missing current item field #{prefix}") unless fixture.include?(prefix)
+  end
+end
+[first_ready_item, second_ready_item].each do |fixture|
+  unless fixture.lines.map(&:strip).include?(READY_ITEM_DONE_WHEN_LINE)
+    abort_with_failure("ready-item fixture is missing the exact merge-authority completion contract")
   end
 end
 

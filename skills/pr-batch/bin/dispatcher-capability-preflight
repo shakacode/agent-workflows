@@ -151,6 +151,7 @@ def launch_observation_payload(confirmation)
     "dispatcher" => assignment["dispatcher"],
     "instance_id" => confirmation["instance_id"],
     "launch_token" => assignment["launch_token"],
+    "actual_host" => confirmation["actual_host"],
     "actual_model" => confirmation["actual_model"],
     "actual_effort" => confirmation["actual_effort"],
     "binding_source" => confirmation["binding_source"],
@@ -162,7 +163,11 @@ def launch_observation_payload(confirmation)
   }
 end
 
-def launch_observation_signature_verified?(confirmation)
+def pre_actual_host_launch_observation_payload(confirmation)
+  launch_observation_payload(confirmation).reject { |field, _value| field == "actual_host" }
+end
+
+def launch_observation_signature_verified?(confirmation, payload = launch_observation_payload(confirmation))
   trust_anchor = dispatcher_trust_anchor
   return false unless trust_anchor && confirmation["key_id"] == trust_anchor[TRUSTED_KEY_ID_FIELD]
 
@@ -170,8 +175,8 @@ def launch_observation_signature_verified?(confirmation)
   return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private? && public_key.n.num_bits >= 2048
 
   signature = Base64.strict_decode64(confirmation["signature"])
-  payload = JSON.generate(canonicalize(launch_observation_payload(confirmation)))
-  public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
+  canonical_payload = JSON.generate(canonicalize(payload))
+  public_key.verify(OpenSSL::Digest.new("SHA256"), signature, canonical_payload)
 rescue ArgumentError, OpenSSL::PKey::PKeyError
   false
 end
@@ -334,16 +339,7 @@ def requested_shape?(requested)
     (!requested.key?("hard_route") || [true, false].include?(requested["hard_route"]))
 end
 
-def confirmation_shape?(confirmation)
-  return false unless confirmation.is_a?(Hash) &&
-                      confirmation["type"] == "launch-confirmation" &&
-                      nonempty_string?(confirmation["id"]) &&
-                      assignment_identity?(confirmation["assignment"]) &&
-                      !nested_unknown_sentinel?(confirmation)
-
-  return true if confirmation["version"] == 1
-  return false unless confirmation["version"] == CONFIRMATION_ENVELOPE_VERSION
-
+def v2_confirmation_evidence_shape?(confirmation)
   confirmation["actual_model"] == confirmation.dig("assignment", "route", "model") &&
     confirmation["actual_effort"] == confirmation.dig("assignment", "route", "effort") &&
     confirmation["binding_source"] == "dispatcher-bound" &&
@@ -354,13 +350,37 @@ def confirmation_shape?(confirmation)
     confirmation["inherited"] == false &&
     durable_evidence_ref?(confirmation["evidence_ref"]) &&
     nonempty_string?(confirmation["key_id"]) &&
-    nonempty_string?(confirmation["signature"]) &&
+    nonempty_string?(confirmation["signature"])
+end
+
+def current_v2_confirmation_shape?(confirmation)
+  nonempty_string?(confirmation["actual_host"]) &&
+    v2_confirmation_evidence_shape?(confirmation) &&
     launch_observation_signature_verified?(confirmation)
+end
+
+def pre_actual_host_v2_confirmation_shape?(confirmation)
+  !confirmation.key?("actual_host") &&
+    v2_confirmation_evidence_shape?(confirmation) &&
+    launch_observation_signature_verified?(confirmation, pre_actual_host_launch_observation_payload(confirmation))
+end
+
+def confirmation_shape?(confirmation)
+  return false unless confirmation.is_a?(Hash) &&
+                      confirmation["type"] == "launch-confirmation" &&
+                      nonempty_string?(confirmation["id"]) &&
+                      assignment_identity?(confirmation["assignment"]) &&
+                      !nested_unknown_sentinel?(confirmation)
+
+  return true if confirmation["version"] == 1
+  return false unless confirmation["version"] == CONFIRMATION_ENVELOPE_VERSION
+
+  current_v2_confirmation_shape?(confirmation) || pre_actual_host_v2_confirmation_shape?(confirmation)
 end
 
 def confirmation_qualifies?(confirmation)
   confirmation.is_a?(Hash) && confirmation["version"] == CONFIRMATION_ENVELOPE_VERSION &&
-    confirmation_shape?(confirmation)
+    current_v2_confirmation_shape?(confirmation)
 end
 
 def replacement_proof_authorizes?(replacement, active_assignment, replacement_assignment)
@@ -732,8 +752,10 @@ if input.key?("launch_waiver")
   fail_input("launch_waiver requires one matching persisted launch assignment") unless
     input.fetch("active_assignments", []).length == 1
 end
+qualifying_launch_confirmation = input.key?("launch_confirmation") &&
+                                 confirmation_qualifies?(input["launch_confirmation"])
 if input.fetch("active_assignments", []).any? { |entry| entry["lifecycle"] == "waived-active" } &&
-   !input.key?("launch_waiver") && !input.key?("launch_confirmation")
+   !input.key?("launch_waiver") && !qualifying_launch_confirmation
   fail_input("waived-active assignment requires its durable launch_waiver")
 end
 if input.key?("launch_confirmation")

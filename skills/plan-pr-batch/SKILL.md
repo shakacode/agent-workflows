@@ -374,6 +374,38 @@ Plan a PR batch
      Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation` envelope version 2 transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
      A `selected` result may resume Goal mode; `blocked-user-input` carries one
      `dispatch-decision-request v1` and stops.
+   - Build the batch-registration provenance from the pack and actors that will
+     actually run the batch. Record `pack_sha` as the verified full git SHA of
+     the loaded Agent Workflows checkout, or its verified installed-release
+     identifier; a dirty checkout or unverified source is `UNKNOWN`, never the
+     consumer repo SHA or a remote guess. Record `coordinator_route` with model,
+     effort, and binding source. For every lane, record the actual `host` plus
+     `worker_route` model, effort, and binding source from the persisted
+     dispatcher selection; never inherit the coordinator route. When batch
+     registration is supported, persist this manifest after dispatcher
+     selection and before worker launch. Backend `n/a` keeps the same
+     provenance in the durable Batch Plan/handoff; a degraded registration is
+     `UNKNOWN` with exact retry evidence. After every accepted host-observed
+     `launch-confirmation v2`, reconcile registration before treating the lane
+     as active: update each actual host/model/effort/binding field changed by
+     fallback, escalation, or replacement, preserve verified fields, and use
+     `UNKNOWN` only per unverifiable field. Every advertised registration
+     observation takes actual host only from signed `actual_host`; missing,
+     blank, unsigned, or `UNKNOWN` host cannot satisfy exact-policy activation.
+     Before requiring a reconciliation write, detect advertised registration
+     update/upsert/reconciliation capability. An unadvertised or unsupported
+     create-only backend records each affected field `UNKNOWN`; authenticated
+     confirmation remains valid, but activation requires every launch-
+     acceptance field verified and otherwise stays `launch-pending`. An
+     advertised update uses the bounded safe executable-plus-opaque-argv
+     contract; failure records affected fields `UNKNOWN` without wedging.
+     Every advertised registration
+     invocation resolves a backend-advertised safe executable plus ordered
+     opaque argv without shell evaluation and runs with a finite hard deadline
+     in its own process group; timeout or whole-group `TERM` then `KILL` records
+     best-effort field-granular `UNKNOWN`, names reconciliation, and does not
+     block worker launch. Use the
+     [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -518,6 +550,9 @@ backend must say so in the declaration.
 - Worker model/effort routes: initial and escalation pairs or classes, lane ids,
   escalation threshold and maximum, and availability evidence; keep any
   `UNKNOWN` route out of a ready prompt.
+- Batch manifest provenance: `pack_sha`, `coordinator_route` model/effort/binding
+  source, and each lane's `host` plus `worker_route` model/effort/binding source;
+  name the registration evidence or the durable backend-`n/a` handoff.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
@@ -568,43 +603,39 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card: claim/PR-open/block/cancel/final; exact model/effort+binding; holder/branch/PR/phase/URLs/UNKNOWN
-
-Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override
-
-Repo: OWNER/REPO
-Objective: ...
-merge_authority: <none | ask | auto_merge_when_gates_pass>.
-Batch size target: <codex|claude|generic>; wave: <cap/items>.
+Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
+Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Repo:OWNER/REPO
+Objective:...
+merge_authority:<none|ask|auto_merge_when_gates_pass>
+Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_route=<model>/<effort>@<binding>;lanes=<lane-id:host+model/effort@binding>,...;UNKNOWN=field;no guesses
 Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
-- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.
+- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
-Batch QA Lane: <owner/scope|none+rationale>.
-Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.
-
+Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original: trusted ad-hoc prompt; else n/a.
-  Goal: one-line outcome.
-  Notes: scope/branch/dependency.
-  Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
-
+  Original:trusted ad-hoc prompt|n/a
+  Goal:one-line outcome
+  Notes:scope/branch/dependency
+  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
-- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
+Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Bind actors on-host; unbound -> stop; no inheritance/substitution; exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-- One subagent/disjoint item; group shared context only; serial/UNKNOWN separate.
-- Workers obey owned paths/envelope; unlisted path, contradiction/ambiguity, scope/risk growth, weaker verification=>stop.
-- Each worker verifies live GitHub before edits; unverifiable facts are UNKNOWN.
+Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
+Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
-- Apply Batch QA Lane; include QA Evidence.
-- Run gates; merge only when `merge_authority` is `auto_merge_when_gates_pass` or explicit merge approval exists, release+gates pass; document confidence data in the PR description.
+Apply Batch QA Lane;include QA Evidence
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
-- Final: canonical closeout; links/tests/blockers/next+confidence/UNKNOWN+authority+QA+state.
+Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
 
 ## Common Mistakes
