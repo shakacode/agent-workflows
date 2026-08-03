@@ -197,13 +197,16 @@ module MergeAssurance
 
   def local_evidence_failures(ci_result:, autonomous_result:, context:, now: Time.now.utc)
     failures = []
-    validate_evidence(ci_result:, autonomous_result:, context:, now:, failures:)
+    validate_evidence(
+      ci_result:, autonomous_result:, context:, now:, failures:,
+      preflight_selected_hosted_runs: true
+    )
     failures.uniq
   end
 
   def validate_evidence(
     ci_result:, autonomous_result:, context:, now:, failures:,
-    selected_hosted_ci_receipts: nil
+    selected_hosted_ci_receipts: nil, preflight_selected_hosted_runs: false
   )
     safe_context = context.is_a?(Hash) ? context : {}
     validate_context(context, failures)
@@ -212,6 +215,8 @@ module MergeAssurance
       validate_selected_hosted_ci(
         selected_hosted_ci_receipts, safe_context, now, failures
       )
+    elsif preflight_selected_hosted_runs
+      validate_selected_hosted_run_duplicates(safe_context, failures)
     end
     validate_autonomous(autonomous_result, safe_context, failures)
     failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
@@ -338,9 +343,7 @@ module MergeAssurance
       valid_selected_hosted_identity?(selection["provider"], selection["run_id"])
     end
     failures << "context selected_hosted_runs contain invalid identities" if invalid_selections.any?
-    selection_ids = selections.map { |selection| selected_hosted_identity(selection) }
-    failures << "context selected_hosted_runs contain duplicates" unless
-      selection_ids.length == selection_ids.uniq.length
+    selection_ids = validate_selected_hosted_run_duplicates(context, failures)
 
     unless exact_keys?(receipts, %w[complete contract records version]) &&
            receipts["contract"] == "selected-hosted-ci-receipts" &&
@@ -390,6 +393,20 @@ module MergeAssurance
     (record_ids - selection_ids).each do |identity|
       failures << "hosted run #{identity} was not explicitly selected"
     end
+  end
+
+  def validate_selected_hosted_run_duplicates(context, failures)
+    return unless context.is_a?(Hash)
+
+    selections = context["selected_hosted_runs"]
+    selections = [] if selections.nil?
+    return unless selections.is_a?(Array) &&
+                  selections.all? { |selection| exact_keys?(selection, SELECTED_HOSTED_RUN_KEYS) }
+
+    selection_ids = selections.map { |selection| selected_hosted_identity(selection) }
+    failures << "context selected_hosted_runs contain duplicates" unless
+      selection_ids.length == selection_ids.uniq.length
+    selection_ids
   end
 
   def valid_selected_hosted_identity?(provider, run_id)
@@ -1182,9 +1199,9 @@ module MergeAssurance
       ci_result = read_json(options[:ci_result], "--ci-result")
       autonomous_result = read_json(options[:autonomous_result], "--autonomous-result")
       context = read_json(options[:context], "--context")
-      now = Time.now.utc
+      preflight_now = Time.now.utc
       local_failures = MergeAssurance.local_evidence_failures(
-        ci_result:, autonomous_result:, context:, now:
+        ci_result:, autonomous_result:, context:, now: preflight_now
       )
       unless local_failures.empty?
         puts JSON.pretty_generate(MergeAssurance.blocked_result(local_failures))
@@ -1192,12 +1209,13 @@ module MergeAssurance
       end
 
       selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(context)
+      assessment_now = Time.now.utc
       result = MergeAssurance.assess(
         ci_result:,
         autonomous_result:,
         context:,
         selected_hosted_ci_receipts:,
-        now:
+        now: assessment_now
       )
       puts JSON.pretty_generate(result)
       result["eligible"] ? 0 : 1
@@ -1556,6 +1574,7 @@ module MergeAssurance
         interpreter = resolve_env_interpreter!(argument, repo_root)
         [interpreter, executable]
       else
+        # Trusted bytes pin this interpreter; resolution still rejects repo-local or non-executable paths.
         [resolve_absolute_interpreter!(interpreter, repo_root), *[argument].compact, executable]
       end
     end
