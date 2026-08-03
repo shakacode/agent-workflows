@@ -228,15 +228,20 @@ class MergeAssuranceTest < Minitest::Test
   def test_selected_hosted_ci_policy_credential_allowlist_is_exact_and_fail_closed
     runner = MergeAssurance::Runner.new
     executable = ".agents/bin/selected-hosted-ci-receipts"
+    credential_names = %w[
+      CIRCLECI_TOKEN BUILDKITE_API_KEY SERVICE_SECRET DATABASE_PASSWORD
+      GOOGLE_APPLICATION_CREDENTIALS AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+      DEPLOY_PRIVATE_KEY
+    ]
     valid = {
       "selected_hosted_ci_receipts" => {
         "executable" => executable,
-        "credential_env" => %w[CIRCLECI_TOKEN BUILDKITE_API_KEY]
+        "credential_env" => credential_names
       }
     }
 
     assert_equal(
-      [executable, %w[CIRCLECI_TOKEN BUILDKITE_API_KEY]],
+      [executable, credential_names],
       runner.send(:selected_hosted_ci_policy!, valid)
     )
 
@@ -251,12 +256,250 @@ class MergeAssuranceTest < Minitest::Test
       "reserved binding" => { "executable" => executable, "credential_env" => ["GH_HOST"] },
       "extra key" => { "executable" => executable, "credential_env" => [], "shell" => "ruby" }
     }
+    %w[
+      BASH_ENV RUBYOPT RUBYLIB LD_PRELOAD DYLD_INSERT_LIBRARIES PYTHONPATH
+      NODE_OPTIONS PERL5OPT ARBITRARY_NAME
+    ].each do |name|
+      invalid["non-credential #{name}"] = { "executable" => executable, "credential_env" => [name] }
+    end
 
-    invalid.each_value do |seam|
+    invalid.each do |label, seam|
       error = assert_raises(MergeAssurance::Error) do
         runner.send(:selected_hosted_ci_policy!, "selected_hosted_ci_receipts" => seam)
       end
       refute_empty error.message
+      assert_includes error.message, seam.fetch("credential_env").first if
+        label.start_with?("non-credential")
+    end
+  end
+
+  def test_cli_rejects_bash_env_before_ambient_loader_code_or_trusted_seam_runs
+    Dir.mktmpdir("merge-assurance-bash-env") do |repo_root|
+      loader_marker = File.join(repo_root, "ambient-loader-called")
+      seam_marker = File.join(repo_root, "trusted-seam-called")
+      bash_env = File.join(repo_root, "ambient-loader.bash")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(bash_env, "printf loader-ran > #{loader_marker}\n")
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env:
+              - BASH_ENV
+        YAML
+      )
+      payload = MergeAssurance.empty_selected_hosted_ci_receipts
+      payload["records"] = [{
+        "provider" => "circleci",
+        "repository" => "owner/repo",
+        "pr" => 42,
+        "head_sha" => HEAD_SHA,
+        "run_id" => "selected-workflow",
+        "selected_at" => (Time.now.utc - 1).iso8601,
+        "terminal_result" => "success"
+      }]
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        <<~BASH
+          #!/bin/bash
+          printf seam-ran > #{seam_marker}
+          printf '%s\n' #{JSON.generate(payload).inspect}
+        BASH
+      )
+      FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
+      run_git!(repo_root, "add", ".agents")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+
+      now = Time.now.utc
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
+      )
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+
+      stdout, stderr, status = Open3.capture3(
+        { "PATH" => @original_path, "BASH_ENV" => bash_env },
+        RbConfig.ruby, SCRIPT,
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context),
+        chdir: repo_root
+      )
+      result = JSON.parse(stdout)
+
+      refute File.exist?(loader_marker), "ambient BASH_ENV loader code ran"
+      refute File.exist?(seam_marker), "trusted seam ran before policy rejection"
+      refute status.success?, stderr
+      assert(result.fetch("failures").any? { |failure| failure.include?("BASH_ENV") })
+    end
+  end
+
+  def test_cli_times_out_selected_hosted_ci_seam_and_terminates_its_process_group
+    Dir.mktmpdir("merge-assurance-hosted-timeout") do |repo_root|
+      child_pid_path = File.join(repo_root, "hung-child.pid")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env: []
+        YAML
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/hanging-child"),
+        <<~BASH
+          #!/bin/bash
+          trap '' TERM
+          printf '%s' "$$" > "$1"
+          while :; do sleep 1; done
+        BASH
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        <<~BASH
+          #!/bin/bash
+          trap '' TERM
+          /bin/bash .agents/bin/hanging-child #{child_pid_path} &
+          while [ ! -s #{child_pid_path} ]; do sleep 0.01; done
+          while :; do sleep 1; done
+        BASH
+      )
+      FileUtils.chmod(
+        0o755,
+        [
+          File.join(repo_root, ".agents/bin/hanging-child"),
+          File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts")
+        ]
+      )
+      run_git!(repo_root, "add", ".agents")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+
+      now = Time.now.utc
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
+      )
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      stdout, stderr, status, harness_timed_out = capture_process_group_with_deadline(
+        {
+          "PATH" => @original_path,
+          "MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS" => "0.2"
+        },
+        RbConfig.ruby, SCRIPT,
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context),
+        chdir: repo_root,
+        deadline_seconds: 1.5
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      refute harness_timed_out, "merge-assurance did not bound the hosted seam"
+      result = JSON.parse(stdout)
+      child_pid = Integer(File.read(child_pid_path))
+      refute status.success?, stderr
+      assert_operator elapsed, :<, 1.5
+      assert_includes(
+        result.fetch("failures"),
+        "trusted-base selected hosted CI seam timed out after 0.2 seconds and its process group was terminated"
+      )
+      refute process_alive?(child_pid), "hung hosted seam child #{child_pid} leaked"
+    ensure
+      begin
+        Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_seam_leader_exit_with_lingering_child_fails_closed
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-lingering") do |directory|
+      child_pid_path = File.join(directory, "lingering-child.pid")
+      child = File.join(directory, "child")
+      leader = File.join(directory, "leader")
+      File.write(
+        child,
+        <<~BASH
+          #!/bin/bash
+          trap '' TERM
+          printf '%s' "$$" > "$1"
+          while :; do sleep 1; done
+        BASH
+      )
+      File.write(
+        leader,
+        <<~BASH
+          #!/bin/bash
+          /bin/bash #{child} #{child_pid_path} &
+          while [ ! -s #{child_pid_path} ]; do sleep 0.01; done
+        BASH
+      )
+      FileUtils.chmod(0o755, [child, leader])
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_selected_hosted_ci_process!,
+          runner.send(:system_tool_environment),
+          ["/bin/bash", leader],
+          { "contract" => "test-request" },
+          chdir: directory
+        )
+      end
+      child_pid = Integer(File.read(child_pid_path))
+
+      assert_equal(
+        "trusted-base selected hosted CI seam left a running process group, which was terminated",
+        error.message
+      )
+      refute process_alive?(child_pid), "lingering hosted seam child #{child_pid} leaked"
+    ensure
+      begin
+        Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+      rescue Errno::ESRCH
+        nil
+      end
     end
   end
 
@@ -1725,6 +1968,41 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   private
+
+  def capture_process_group_with_deadline(environment, *command, chdir:, deadline_seconds:)
+    stdout_file = Tempfile.new("merge-assurance-test-stdout")
+    stderr_file = Tempfile.new("merge-assurance-test-stderr")
+    pid = Process.spawn(
+      environment, *command,
+      out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:
+    )
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + deadline_seconds
+    status = nil
+    while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      if waited
+        status = waited[1]
+        break
+      end
+      sleep 0.01
+    end
+    harness_timed_out = status.nil?
+    unless status
+      Process.kill("KILL", -pid)
+      _waited_pid, status = Process.waitpid2(pid)
+    end
+    stdout_file.rewind
+    stderr_file.rewind
+    [stdout_file.read, stderr_file.read, status, harness_timed_out]
+  ensure
+    begin
+      Process.kill("KILL", -pid) if pid
+    rescue Errno::ESRCH
+      nil
+    end
+    stdout_file&.close!
+    stderr_file&.close!
+  end
 
   def run_git!(root, *args)
     stdout, stderr, status = Open3.capture3(
