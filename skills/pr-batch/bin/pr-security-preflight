@@ -691,15 +691,81 @@ rescue StandardError => e
   users
 end
 
+def unified_diff_hunk_new_start(line)
+  match = line.chomp.match(/\A@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(?: .*)?\z/)
+  Integer(match[1], exception: false) if match
+end
+
+def suspicious_diff_location(current_file, source_line, diff_output_line)
+  return "#{current_file}:#{source_line} (diff output line #{diff_output_line})" if current_file && source_line
+  return "new file line #{source_line} (diff output line #{diff_output_line})" if source_line
+  return "#{current_file} (diff output line #{diff_output_line})" if current_file
+
+  "diff output line #{diff_output_line}"
+end
+
 def suspicious_added_lines(diff, pattern:)
   current_file = nil
+  current_new_line = nil
+  in_hunk = false
+  file_header_allowed = true
+  awaiting_new_file_header = false
 
   diff.lines.filter_map.with_index(1) do |line, index|
-    current_file = line.delete_prefix("+++ b/").chomp if line.start_with?("+++ b/")
-    next unless line.start_with?("+") && !line.start_with?("+++")
-    next unless line.match?(pattern)
+    if line.start_with?("diff --git ")
+      current_file = nil
+      current_new_line = nil
+      in_hunk = false
+      file_header_allowed = true
+      awaiting_new_file_header = false
+      next
+    end
 
-    location = current_file ? "#{current_file} (diff output line #{index})" : "diff output line #{index}"
+    if !in_hunk && file_header_allowed && line.start_with?("--- ")
+      awaiting_new_file_header = true
+      next
+    end
+
+    if !in_hunk && awaiting_new_file_header
+      awaiting_new_file_header = false
+      if line.start_with?("+++ ")
+        current_file = line.start_with?("+++ b/") ? line.delete_prefix("+++ b/").chomp : nil
+        current_new_line = nil
+        file_header_allowed = false
+        next
+      end
+    end
+
+    if line.start_with?("@@")
+      file_header_allowed = false
+      awaiting_new_file_header = false
+    end
+
+    hunk_new_start = unified_diff_hunk_new_start(line)
+    if hunk_new_start
+      current_new_line = hunk_new_start
+      in_hunk = true
+      next
+    end
+
+    added_line = line.start_with?("+")
+    source_line = current_new_line if added_line
+
+    if current_new_line
+      case line
+      when /\A[ +]/
+        current_new_line += 1
+      when /\A[-\\]/
+        nil
+      else
+        current_new_line = nil
+        in_hunk = false
+      end
+    end
+
+    next unless added_line && line.match?(pattern)
+
+    location = suspicious_diff_location(current_file, source_line, index)
     { location: }
   end
 end
