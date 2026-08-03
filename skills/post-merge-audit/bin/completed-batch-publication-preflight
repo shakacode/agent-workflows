@@ -29,6 +29,7 @@ module CompletedBatchPublicationPreflight
   TRUSTED_HUMAN_TYPES = %w[User].freeze
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
+  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
@@ -476,7 +477,7 @@ module CompletedBatchPublicationPreflight
                                         target_snapshot["state"] == expected_state &&
                                         target_snapshot["verification_source"] == "authenticated gh api"
       coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
-      later_target_completion = %w[abandoned superseded].include?(terminal_state) &&
+      later_target_completion = RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state) &&
                                 authenticated_target_completion
       unless coordination_completion || later_target_completion
         blockers << "#{target_label(target)} coordination target state is not #{expected_state}" \
@@ -563,7 +564,7 @@ module CompletedBatchPublicationPreflight
       lane = lanes_by_target.dig(key, "lane")
       lane_state = lane&.fetch("pr_state", nil)
       historical_incomplete_closeout = valid_terminal_lane?(lane) &&
-                                       %w[abandoned superseded].include?(lane["terminal"])
+                                       RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
       if lane_state && state && lane_state != state && !historical_incomplete_closeout
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
