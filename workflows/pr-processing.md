@@ -2854,6 +2854,86 @@ restarts ordinary readiness and eligibility evaluation.
 After ordinary readiness, autonomous eligibility, and any required walkthrough
 or durable human decision are current for the exact head, run:
 
+External hosted CI is opt-in at this gate. For every hosted provider run that
+the coordinator explicitly selected outside the ordinary GitHub check scopes,
+put exactly one record in merge-context `selected_hosted_runs`:
+
+```json
+{"provider":"external-ci","run_id":"<selected-workflow-or-run-id>"}
+```
+
+Do not add advisory or merely observed runs. A nonempty list requires this
+closed trusted-base seam:
+
+```yaml
+selected_hosted_ci_receipts:
+  executable: ".agents/bin/selected-hosted-ci-receipts"
+  credential_env:
+    - HOSTED_CI_TOKEN
+```
+
+The mapping has exactly `executable` and `credential_env`. The executable is one
+tracked executable regular file under `.agents/bin`, not a command string. The
+credential allowlist is a unique array of uppercase environment-variable names;
+each name must end in exactly one of `_TOKEN`, `_API_KEY`, `_SECRET`,
+`_PASSWORD`, `_CREDENTIALS`, `_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, or
+`_PRIVATE_KEY`, and each declared value must be present and nonempty.
+Target-binding and hardened runtime names are reserved; loader controls and
+arbitrary non-credential names fail closed. No undeclared credential environment
+value is forwarded. Use an empty array when the seam needs no credential.
+`merge-assurance` reads the mapping and executable from the context-bound base
+commit, privately materializes that exact trusted-base tree, and runs only those
+bytes. PR-head config, scripts, dependencies, PATH, loader settings, and
+undeclared ambient credentials cannot replace or influence the policy or
+command. A generic `#!/usr/bin/env ruby` seam resolves to the verified current
+`RbConfig.ruby`.
+
+Only the seam process receives a fresh empty `0700` `HOME` inside the private
+materialization temp directory. It is distinct from the account home, so
+account dotfiles and provider credential files are not discovered implicitly.
+Git/archive/tar setup retains its separate minimal system environment and never
+uses this isolated seam `HOME`. Credential values copied into the seam
+environment enter only through the declared `credential_env` names above.
+Mixed, non-string, missing, or extra policy keys produce a blocked
+merge-assurance result rather than escaping the fail-closed boundary.
+
+The seam has a 60-second default bound. A positive finite
+`MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS` may select another bound.
+Timeout, incomplete forced cleanup, or a leader that exits while descendants
+remain terminates the whole process group and produces exact fail-closed merge
+assurance evidence; it never yields an eligible receipt.
+
+The seam receives one JSON object on stdin with contract
+`selected-hosted-ci-receipt-request`, version `1`, and exact `host`,
+`repository`, `pr`, `head_sha`, and `selected_runs` bindings. `GH_HOST`,
+`GH_REPO`, `SELECTED_HOSTED_CI_PR`, and `SELECTED_HOSTED_CI_HEAD_SHA` carry the
+same target for provider tooling. It returns one JSON object:
+
+```json
+{
+  "contract": "selected-hosted-ci-receipts",
+  "version": 1,
+  "complete": true,
+  "records": [{
+    "provider": "external-ci",
+    "repository": "OWNER/REPO",
+    "pr": 123,
+    "head_sha": "<FULL_HEAD_SHA>",
+    "run_id": "<SELECTED_RUN_ID>",
+    "selected_at": "<ISO8601>",
+    "terminal_result": "success"
+  }]
+}
+```
+
+The record set must match the explicitly selected `{provider, run_id}` set
+exactly. `success` is the only passing terminal result. Missing records,
+unselected extra records, duplicates, `cancelled`, `failed`, `nonterminal`,
+unknown results, malformed or future selection times, `UNKNOWN`, stale-head,
+mismatched-PR, or mismatched-repository records fail closed. If the explicit
+selection list is empty, the seam is not invoked and incidental hosted runs do
+not gate.
+
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
@@ -2863,9 +2943,10 @@ or durable human decision are current for the exact head, run:
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
 policy and emits a fresh integrity-bound receipt only when the exact-head
-evidence is eligible. It is separate from batch-plan preflight. Legacy merge
-callers must now generate and pass this receipt, and `merge_authority: none`
-remains a no-merge result.
+evidence is eligible. The selected hosted-CI record set is part of the receipt
+evidence digest. It is separate from batch-plan preflight. Legacy merge callers
+must now generate and pass this receipt, and `merge_authority: none` remains a
+no-merge result.
 
 ### Exact-Head Merge Submission
 
@@ -2887,7 +2968,10 @@ chain, then run:
 ```
 
 `pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings and freshness before any mutation.
+bindings, freshness, and selected hosted-CI records before any queue or
+guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
+or mismatched-PR selected record blocks before the first GitHub call or
+repository guard.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 preserves read-only, idempotent observation when the exact reviewed PR is

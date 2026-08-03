@@ -4,6 +4,7 @@
 require "fileutils"
 require "json"
 require "minitest/autorun"
+require "open3"
 require "rbconfig"
 require "tmpdir"
 
@@ -15,6 +16,16 @@ class MergeAssuranceTest < Minitest::Test
   BASE_SHA = "b" * 40
   DIFF_IDENTITY = "c" * 64
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
+  SYSTEM_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
+    candidate = File.join(directory, "git")
+    candidate if File.file?(candidate) && File.executable?(candidate)
+  end.first
+  HOSTED_CI_REPLAYS = JSON.parse(
+    File.read(
+      File.expand_path("../fixtures/selected-hosted-ci-hichee-replays.json", __dir__),
+      encoding: "UTF-8"
+    )
+  ).freeze
 
   def setup
     @fake_gh_dir = Dir.mktmpdir("merge-assurance-gh")
@@ -81,6 +92,841 @@ class MergeAssuranceTest < Minitest::Test
     )
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("evidence_digest"))
     assert MergeAssurance.valid_evidence_digest?(result)
+  end
+
+  def test_selected_hosted_ci_hichee_10049_cancelled_replay_blocks
+    replay = HOSTED_CI_REPLAYS.fetch("cases").find { |item| item.fetch("pr") == 10_049 }
+    context = context(
+      "auto_merge_when_gates_pass",
+      repo: HOSTED_CI_REPLAYS.fetch("repository"),
+      pull_request: replay.fetch("pr"),
+      head_sha: replay.fetch("head_sha"),
+      selected_hosted_runs: replay.fetch("selected_runs").map do |run|
+        run.slice("provider", "run_id")
+      end
+    )
+    records = selected_hosted_ci_receipts(replay, context)
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci(
+        repo: context.fetch("repo"), pull_request: context.fetch("pr"), head_sha: context.fetch("head_sha")
+      ),
+      autonomous_result: autonomous_result(
+        "autonomous-merge-eligible", head_sha: context.fetch("head_sha")
+      ),
+      context:,
+      selected_hosted_ci_receipts: records,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes(
+      result.fetch("failures"),
+      "selected hosted run circleci/c506a91e-5b3b-4bb6-b136-2bcfa06f69aa is cancelled"
+    )
+  end
+
+  def test_cli_executes_selected_hosted_ci_receipt_seam_from_trusted_base
+    account_home = File.realpath(Etc.getpwuid(Process.uid).dir)
+    Dir.mktmpdir("merge-assurance-hosted-ci") do |repo_root|
+      base_marker = File.join(repo_root, "base-seam-called")
+      attacker_marker = File.join(repo_root, "pr-head-seam-called")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env:
+              - CIRCLECI_TOKEN
+        YAML
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        selected_hosted_ci_seam_script(
+          marker: base_marker,
+          terminal_result: "cancelled",
+          required_credential: %w[CIRCLECI_TOKEN allowlisted-secret],
+          absent_credential: "UNRELATED_TOKEN",
+          account_home:
+        )
+      )
+      FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
+      run_git!(repo_root, "add", "--all")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        selected_hosted_ci_seam_script(
+          marker: attacker_marker, terminal_result: "success"
+        )
+      )
+      run_git!(repo_root, "commit", "-qam", "untrusted PR-head replacement")
+
+      now = Time.now.utc
+      selected = {
+        "provider" => "circleci",
+        "run_id" => "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa"
+      }
+      merge_context = context(
+        "auto_merge_when_gates_pass", selected_hosted_runs: [selected]
+      )
+      merge_context["host"] = "github.example"
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["context"]["host"] = merge_context.fetch("host")
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value do |scope|
+        scope["checked_at"] = (now - 1).iso8601
+      end
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+
+      stdout, stderr, status = Open3.capture3(
+        {
+          "PATH" => @original_path,
+          "CIRCLECI_TOKEN" => "allowlisted-secret",
+          "UNRELATED_TOKEN" => "must-not-be-forwarded"
+        },
+        RbConfig.ruby, SCRIPT,
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context),
+        chdir: repo_root
+      )
+      result = JSON.parse(stdout)
+
+      refute status.success?, stderr
+      assert_includes(
+        result.fetch("failures"),
+        "selected hosted run circleci/c506a91e-5b3b-4bb6-b136-2bcfa06f69aa is cancelled"
+      )
+      assert File.exist?(base_marker), "trusted-base receipt seam was not invoked"
+      assert_equal(
+        {
+          "host" => "github.example",
+          "credential_forwarded" => true,
+          "unrelated_credential_present" => false,
+          "home_exists" => true,
+          "home_private" => true,
+          "home_distinct_from_account" => true,
+          "home_empty" => true
+        },
+        JSON.parse(File.read(base_marker))
+      )
+      refute File.exist?(attacker_marker), "PR-head receipt seam was invoked"
+    end
+  end
+
+  def test_selected_hosted_ci_seam_private_home_hides_fake_account_provider_file
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-fake-account") do |fake_account_home|
+      credential_relative_path = File.join(".config", "provider", "credentials")
+      account_credential = File.join(fake_account_home, credential_relative_path)
+      FileUtils.mkdir_p(File.dirname(account_credential))
+      File.write(account_credential, "fake-account-secret")
+      Dir.mktmpdir("merge-assurance-private-materialization") do |directory|
+        private_home = File.join(directory, "home")
+        marker = File.join(directory, "home-evidence.json")
+        seam = File.join(directory, "seam.rb")
+        FileUtils.mkdir_p(private_home, mode: 0o700)
+        File.chmod(0o700, private_home)
+        File.write(
+          seam,
+          <<~RUBY
+            require "json"
+            home = ENV.fetch("HOME")
+            File.write(
+              #{marker.inspect},
+              JSON.generate(
+                "home" => File.realpath(home),
+                "private" => (File.stat(home).mode & 0o777) == 0o700,
+                "empty" => Dir.empty?(home),
+                "provider_credential_visible" => File.exist?(
+                  File.join(home, #{credential_relative_path.inspect})
+                )
+              )
+            )
+          RUBY
+        )
+        account_environment = runner.send(:system_tool_environment).merge("HOME" => fake_account_home)
+        runner.define_singleton_method(:system_tool_environment) { account_environment }
+        request = {
+          "host" => "github.com",
+          "repository" => "owner/repo",
+          "pr" => 42,
+          "head_sha" => HEAD_SHA
+        }
+        environment = runner.send(
+          :selected_hosted_ci_environment, request, [], home: private_home
+        )
+
+        _stdout, stderr, status = runner.send(
+          :run_selected_hosted_ci_process!,
+          environment,
+          [RbConfig.ruby, seam],
+          request,
+          chdir: directory
+        )
+        evidence = JSON.parse(File.read(marker))
+
+        assert status.success?, stderr
+        assert File.exist?(account_credential)
+        assert_equal(
+          {
+            "home" => File.realpath(private_home),
+            "private" => true,
+            "empty" => true,
+            "provider_credential_visible" => false
+          },
+          evidence
+        )
+      end
+    end
+  end
+
+  def test_cli_blocks_local_evidence_before_selected_hosted_ci_seam_launch
+    cases = {
+      "malformed-ci" => [
+        ->(ci_result, _autonomous_result, _merge_context) { ci_result.clear },
+        "invalid pr-ci-readiness contract or version"
+      ],
+      "stale-ci" => [
+        lambda do |ci_result, _autonomous_result, _merge_context|
+          ci_result["checked_at"] = (
+            Time.now.utc - MergeAssurance::MAX_EVIDENCE_AGE_SECONDS - 1
+          ).iso8601
+        end,
+        "ci_result evidence is stale"
+      ],
+      "not-ready-ci" => [
+        ->(ci_result, _autonomous_result, _merge_context) { ci_result["verdict"] = "NOT_READY" },
+        "ci_result is not READY"
+      ],
+      "authority-none" => [
+        ->(_ci_result, _autonomous_result, merge_context) { merge_context["authority"] = "none" },
+        "merge authority none can never produce an eligible receipt"
+      ]
+    }
+    launched = []
+
+    cases.each do |name, (mutate, expected_failure)|
+      with_selected_hosted_ci_cli_fixture do |fixture|
+        mutate.call(
+          fixture.fetch(:ci_result),
+          fixture.fetch(:autonomous_result),
+          fixture.fetch(:context)
+        )
+        stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+        result = JSON.parse(stdout)
+
+        assert_equal 1, status.exitstatus, "#{name}: #{stderr}"
+        assert_includes result.fetch("failures"), expected_failure, name
+        launched << name if File.exist?(fixture.fetch(:seam_marker))
+      end
+    end
+
+    assert_empty launched, "selected hosted CI seam launched for: #{launched.join(', ')}"
+  end
+
+  def test_cli_blocks_non_string_host_before_selected_hosted_ci_seam_launch
+    with_selected_hosted_ci_cli_fixture(host: 123) do |fixture|
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+
+      assert_empty stderr, "unexpected CLI exception: #{stderr}"
+      result = JSON.parse(stdout)
+      assert_equal 1, status.exitstatus
+      assert_equal ["context host is invalid"], result.fetch("failures")
+      refute File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was launched"
+    end
+  end
+
+  def test_cli_blocks_duplicate_selected_hosted_runs_before_seam_launch
+    with_selected_hosted_ci_cli_fixture do |fixture|
+      selections = fixture.fetch(:context).fetch("selected_hosted_runs")
+      selections << selections.first.dup
+      stdout, stderr, status = run_selected_hosted_ci_cli_fixture(fixture)
+      result = JSON.parse(stdout)
+
+      assert_empty stderr
+      assert_equal 1, status.exitstatus
+      assert_equal ["context selected_hosted_runs contain duplicates"], result.fetch("failures")
+      refute File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was launched"
+    end
+  end
+
+  def test_runner_resamples_time_after_seam_before_rechecking_ci_freshness
+    preflight_now = Time.iso8601("2026-08-03T00:00:00Z")
+    final_now = preflight_now + MergeAssurance::MAX_EVIDENCE_AGE_SECONDS + 1
+    with_selected_hosted_ci_cli_fixture(selected_at: preflight_now.iso8601) do |fixture|
+      set_fixture_ci_checked_at(fixture, preflight_now - 1)
+      stdout, stderr, exit_code, clock_calls = run_selected_hosted_ci_runner_fixture(
+        fixture, times: [preflight_now, final_now]
+      )
+      result = JSON.parse(stdout)
+
+      assert_empty stderr
+      assert_equal 1, exit_code, "post-seam assessment reused the preflight clock"
+      assert_equal 2, clock_calls
+      assert_includes result.fetch("failures"), "ci_result evidence is stale"
+      assert File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was not launched"
+    end
+  end
+
+  def test_runner_uses_post_seam_time_for_selected_at_and_issued_at
+    preflight_now = Time.iso8601("2026-08-03T00:00:00Z")
+    final_now = preflight_now + MergeAssurance::MAX_FUTURE_SKEW_SECONDS + 1
+    with_selected_hosted_ci_cli_fixture(selected_at: final_now.iso8601) do |fixture|
+      set_fixture_ci_checked_at(fixture, preflight_now - 1)
+      stdout, stderr, exit_code, clock_calls = run_selected_hosted_ci_runner_fixture(
+        fixture, times: [preflight_now, final_now]
+      )
+      result = JSON.parse(stdout)
+
+      assert_empty stderr
+      assert_equal 0, exit_code, "fresh post-seam selected_at was compared to the preflight clock"
+      assert_equal 2, clock_calls
+      assert_equal final_now.iso8601, result.fetch("issued_at")
+      assert File.exist?(fixture.fetch(:seam_marker)), "selected hosted CI seam was not launched"
+    end
+  end
+
+  def test_selected_hosted_ci_policy_credential_allowlist_is_exact_and_fail_closed
+    runner = MergeAssurance::Runner.new
+    executable = ".agents/bin/selected-hosted-ci-receipts"
+    credential_names = %w[
+      CIRCLECI_TOKEN BUILDKITE_API_KEY SERVICE_SECRET DATABASE_PASSWORD
+      GOOGLE_APPLICATION_CREDENTIALS AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+      DEPLOY_PRIVATE_KEY
+    ]
+    valid = {
+      "selected_hosted_ci_receipts" => {
+        "executable" => executable,
+        "credential_env" => credential_names
+      }
+    }
+
+    assert_equal(
+      [executable, credential_names],
+      runner.send(:selected_hosted_ci_policy!, valid)
+    )
+
+    invalid = {
+      "missing allowlist" => { "executable" => executable },
+      "non-array allowlist" => { "executable" => executable, "credential_env" => "CIRCLECI_TOKEN" },
+      "empty name" => { "executable" => executable, "credential_env" => [""] },
+      "duplicate name" => {
+        "executable" => executable,
+        "credential_env" => %w[CIRCLECI_TOKEN CIRCLECI_TOKEN]
+      },
+      "reserved binding" => { "executable" => executable, "credential_env" => ["GH_HOST"] },
+      "extra key" => { "executable" => executable, "credential_env" => [], "shell" => "ruby" }
+    }
+    %w[
+      BASH_ENV RUBYOPT RUBYLIB LD_PRELOAD DYLD_INSERT_LIBRARIES PYTHONPATH
+      NODE_OPTIONS PERL5OPT ARBITRARY_NAME
+    ].each do |name|
+      invalid["non-credential #{name}"] = { "executable" => executable, "credential_env" => [name] }
+    end
+
+    invalid.each do |label, seam|
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(:selected_hosted_ci_policy!, "selected_hosted_ci_receipts" => seam)
+      end
+      refute_empty error.message
+      assert_includes error.message, seam.fetch("credential_env").first if
+        label.start_with?("non-credential")
+    end
+  end
+
+  def test_cli_blocks_mixed_selected_hosted_ci_policy_keys_without_argument_error
+    Dir.mktmpdir("merge-assurance-mixed-policy") do |repo_root|
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env: []
+            1: mixed-key
+        YAML
+      )
+      run_git!(repo_root, "add", ".agents/agent-workflow.yml")
+      run_git!(repo_root, "commit", "-qm", "trusted mixed policy")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
+      )
+      merge_context["base"]["sha"] = base_sha
+      now = Time.now.utc
+      ci_result = ready_ci
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+      exit_code = nil
+      arguments = [
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context)
+      ]
+
+      stdout, stderr = capture_io do
+        Dir.chdir(repo_root) do
+          exit_code = MergeAssurance::Runner.new.run(arguments)
+        end
+      end
+      result = JSON.parse(stdout)
+
+      assert_equal 1, exit_code
+      assert_empty stderr
+      assert_equal [
+        "selected hosted runs require an exact trusted-base " \
+        "selected_hosted_ci_receipts executable and credential_env seam"
+      ], result.fetch("failures")
+      assert_equal ["merge-assurance-result", "BLOCKED", false],
+                   result.values_at("contract", "verdict", "eligible")
+    end
+  end
+
+  def test_cli_rejects_bash_env_before_ambient_loader_code_or_trusted_seam_runs
+    Dir.mktmpdir("merge-assurance-bash-env") do |repo_root|
+      loader_marker = File.join(repo_root, "ambient-loader-called")
+      seam_marker = File.join(repo_root, "trusted-seam-called")
+      bash_env = File.join(repo_root, "ambient-loader.bash")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(bash_env, "printf loader-ran > #{loader_marker}\n")
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env:
+              - BASH_ENV
+        YAML
+      )
+      payload = MergeAssurance.empty_selected_hosted_ci_receipts
+      payload["records"] = [{
+        "provider" => "circleci",
+        "repository" => "owner/repo",
+        "pr" => 42,
+        "head_sha" => HEAD_SHA,
+        "run_id" => "selected-workflow",
+        "selected_at" => (Time.now.utc - 1).iso8601,
+        "terminal_result" => "success"
+      }]
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        <<~BASH
+          #!/bin/bash
+          printf seam-ran > #{seam_marker}
+          printf '%s\n' #{JSON.generate(payload).inspect}
+        BASH
+      )
+      FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
+      run_git!(repo_root, "add", ".agents")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+
+      now = Time.now.utc
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
+      )
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+
+      stdout, stderr, status = Open3.capture3(
+        { "PATH" => @original_path, "BASH_ENV" => bash_env },
+        RbConfig.ruby, SCRIPT,
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context),
+        chdir: repo_root
+      )
+      result = JSON.parse(stdout)
+
+      refute File.exist?(loader_marker), "ambient BASH_ENV loader code ran"
+      refute File.exist?(seam_marker), "trusted seam ran before policy rejection"
+      refute status.success?, stderr
+      assert(result.fetch("failures").any? { |failure| failure.include?("BASH_ENV") })
+    end
+  end
+
+  def test_cli_times_out_selected_hosted_ci_seam_and_terminates_its_process_group
+    Dir.mktmpdir("merge-assurance-hosted-timeout") do |repo_root|
+      child_pid_path = File.join(repo_root, "hung-child.pid")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env: []
+        YAML
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/hanging-child"),
+        <<~BASH
+          #!/bin/bash
+          trap '' TERM
+          printf '%s' "$$" > "$1"
+          while :; do sleep 1; done
+        BASH
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        <<~BASH
+          #!/bin/bash
+          trap '' TERM
+          /bin/bash .agents/bin/hanging-child #{child_pid_path} &
+          while [ ! -s #{child_pid_path} ]; do sleep 0.01; done
+          while :; do sleep 1; done
+        BASH
+      )
+      FileUtils.chmod(
+        0o755,
+        [
+          File.join(repo_root, ".agents/bin/hanging-child"),
+          File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts")
+        ]
+      )
+      run_git!(repo_root, "add", ".agents")
+      run_git!(repo_root, "commit", "-qm", "trusted base")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+
+      now = Time.now.utc
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
+      )
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      paths = {
+        ci: File.join(repo_root, "ci.json"),
+        autonomous: File.join(repo_root, "autonomous.json"),
+        context: File.join(repo_root, "context.json")
+      }
+      File.write(paths.fetch(:ci), JSON.generate(ci_result))
+      File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
+      File.write(paths.fetch(:context), JSON.generate(merge_context))
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      stdout, stderr, status, harness_timed_out = capture_process_group_with_deadline(
+        {
+          "PATH" => @original_path,
+          "MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS" => "0.2"
+        },
+        RbConfig.ruby, SCRIPT,
+        "--ci-result", paths.fetch(:ci),
+        "--autonomous-result", paths.fetch(:autonomous),
+        "--context", paths.fetch(:context),
+        chdir: repo_root,
+        deadline_seconds: 1.5
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      refute harness_timed_out, "merge-assurance did not bound the hosted seam"
+      result = JSON.parse(stdout)
+      child_pid = Integer(File.read(child_pid_path))
+      refute status.success?, stderr
+      assert_operator elapsed, :<, 1.5
+      assert_includes(
+        result.fetch("failures"),
+        "trusted-base selected hosted CI seam timed out after 0.2 seconds and its process group was terminated"
+      )
+      refute process_alive?(child_pid), "hung hosted seam child #{child_pid} leaked"
+    ensure
+      begin
+        Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_seam_leader_exit_with_lingering_child_fails_closed
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-hosted-lingering") do |directory|
+      child_pid_path = File.join(directory, "lingering-child.pid")
+      child = File.join(directory, "child")
+      leader = File.join(directory, "leader")
+      File.write(
+        child,
+        <<~BASH
+          #!/bin/bash
+          trap '' TERM
+          printf '%s' "$$" > "$1"
+          while :; do sleep 1; done
+        BASH
+      )
+      File.write(
+        leader,
+        <<~BASH
+          #!/bin/bash
+          /bin/bash #{child} #{child_pid_path} &
+          while [ ! -s #{child_pid_path} ]; do sleep 0.01; done
+        BASH
+      )
+      FileUtils.chmod(0o755, [child, leader])
+
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :run_selected_hosted_ci_process!,
+          runner.send(:system_tool_environment),
+          ["/bin/bash", leader],
+          { "contract" => "test-request" },
+          chdir: directory
+        )
+      end
+      child_pid = Integer(File.read(child_pid_path))
+
+      assert_equal(
+        "trusted-base selected hosted CI seam left a running process group, which was terminated",
+        error.message
+      )
+      refute process_alive?(child_pid), "lingering hosted seam child #{child_pid} leaked"
+    ensure
+      begin
+        Process.kill("KILL", child_pid) if child_pid && process_alive?(child_pid)
+      rescue Errno::ESRCH
+        nil
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_declared_credentials_must_be_present_and_nonempty
+    runner = MergeAssurance::Runner.new
+    request = {
+      "host" => "github.com",
+      "repository" => "owner/repo",
+      "pr" => 42,
+      "head_sha" => HEAD_SHA
+    }
+    credential = "MERGE_ASSURANCE_SELECTED_TOKEN"
+    original = ENV[credential]
+
+    [nil, ""].each do |value|
+      value.nil? ? ENV.delete(credential) : ENV[credential] = value
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(
+          :selected_hosted_ci_environment,
+          request,
+          [credential],
+          home: "/private/merge-assurance-test-home"
+        )
+      end
+      assert_includes error.message, credential
+    end
+  ensure
+    original.nil? ? ENV.delete(credential) : ENV[credential] = original
+  end
+
+  def test_generic_env_ruby_resolves_to_verified_rbconfig_ruby
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-consumer") do |repo_root|
+      Dir.mktmpdir("merge-assurance-versioned-ruby") do |runtime_root|
+        versioned_ruby = File.join(runtime_root, "ruby3.4")
+        File.write(versioned_ruby, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, versioned_ruby)
+        original_ruby = RbConfig.method(:ruby)
+        RbConfig.define_singleton_method(:ruby) { versioned_ruby }
+
+        assert_equal(
+          File.realpath(versioned_ruby),
+          runner.send(:resolve_env_interpreter!, "ruby", repo_root)
+        )
+      ensure
+        RbConfig.define_singleton_method(:ruby, original_ruby) if original_ruby
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_hichee_incident_replays
+    actual = HOSTED_CI_REPLAYS.fetch("cases").to_h do |replay|
+      merge_context = context(
+        "auto_merge_when_gates_pass",
+        repo: HOSTED_CI_REPLAYS.fetch("repository"),
+        pull_request: replay.fetch("pr"),
+        head_sha: replay.fetch("head_sha"),
+        selected_hosted_runs: replay.fetch("selected_runs").map do |run|
+          run.slice("provider", "run_id")
+        end
+      )
+      result = MergeAssurance.assess(
+        ci_result: ready_ci(
+          repo: merge_context.fetch("repo"),
+          pull_request: merge_context.fetch("pr"),
+          head_sha: merge_context.fetch("head_sha")
+        ),
+        autonomous_result: autonomous_result(
+          "autonomous-merge-eligible", head_sha: merge_context.fetch("head_sha")
+        ),
+        context: merge_context,
+        selected_hosted_ci_receipts: selected_hosted_ci_receipts(replay, merge_context),
+        now: NOW
+      )
+      [replay.fetch("pr"), result.fetch("eligible")]
+    end
+
+    assert_equal(
+      { 10_049 => false, 10_048 => false, 10_026 => false, 10_036 => true },
+      actual
+    )
+  end
+
+  def test_selected_hosted_ci_receipts_reject_missing_stale_head_and_mismatched_pr
+    selection = { "provider" => "circleci", "run_id" => "selected-run" }
+    merge_context = context(
+      "auto_merge_when_gates_pass", selected_hosted_runs: [selection]
+    )
+    valid = MergeAssurance.empty_selected_hosted_ci_receipts
+    valid["records"] = [{
+      **selection,
+      "repository" => merge_context.fetch("repo"),
+      "pr" => merge_context.fetch("pr"),
+      "head_sha" => merge_context.fetch("head_sha"),
+      "selected_at" => "2026-07-30T11:55:00Z",
+      "terminal_result" => "success"
+    }]
+    cases = {
+      "missing" => MergeAssurance.empty_selected_hosted_ci_receipts,
+      "stale-head" => Marshal.load(Marshal.dump(valid)).tap do |receipts|
+        receipts.dig("records", 0)["head_sha"] = "d" * 40
+      end,
+      "mismatched-pr" => Marshal.load(Marshal.dump(valid)).tap do |receipts|
+        receipts.dig("records", 0)["pr"] = 43
+      end
+    }
+
+    failures = cases.transform_values do |receipts|
+      MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: merge_context,
+        selected_hosted_ci_receipts: receipts,
+        now: NOW
+      ).fetch("failures")
+    end
+
+    assert_includes failures.fetch("missing"), "selected hosted run circleci/selected-run is missing"
+    assert_includes failures.fetch("stale-head"), "selected hosted run circleci/selected-run head mismatch"
+    assert_includes failures.fetch("mismatched-pr"), "selected hosted run circleci/selected-run PR mismatch"
+  end
+
+  def test_direct_assess_preserves_duplicate_selected_run_failure_order
+    selection = { "provider" => "circleci", "run_id" => "selected-run" }
+    merge_context = context(
+      "auto_merge_when_gates_pass", selected_hosted_runs: [selection, selection.dup]
+    )
+    receipts = MergeAssurance.empty_selected_hosted_ci_receipts
+    receipts["records"] = [{
+      **selection,
+      "repository" => merge_context.fetch("repo"),
+      "pr" => merge_context.fetch("pr"),
+      "head_sha" => merge_context.fetch("head_sha"),
+      "selected_at" => "2026-07-30T11:59:00Z",
+      "terminal_result" => "failed"
+    }]
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      selected_hosted_ci_receipts: receipts,
+      now: NOW
+    )
+
+    assert_equal [
+      "context selected_hosted_runs contain duplicates",
+      "selected hosted run circleci/selected-run is failed"
+    ], result.fetch("failures")
+  end
+
+  def test_direct_assess_preserves_nil_selected_hosted_runs_as_empty
+    merge_context = context("auto_merge_when_gates_pass")
+    merge_context["selected_hosted_runs"] = nil
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+  end
+
+  def test_malformed_selected_hosted_ci_record_has_only_primary_and_missing_failures
+    selection = { "provider" => "circleci", "run_id" => "selected-run" }
+    merge_context = context(
+      "auto_merge_when_gates_pass", selected_hosted_runs: [selection]
+    )
+    receipts = MergeAssurance.empty_selected_hosted_ci_receipts
+    receipts["records"] = [{}]
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      selected_hosted_ci_receipts: receipts,
+      now: NOW
+    )
+
+    assert_equal [
+      "selected hosted CI receipt is malformed",
+      "selected hosted run circleci/selected-run is missing"
+    ], result.fetch("failures")
   end
 
   def test_ci_evidence_host_must_match_merge_context
@@ -1435,6 +2281,239 @@ class MergeAssuranceTest < Minitest::Test
 
   private
 
+  def with_selected_hosted_ci_cli_fixture(
+    host: "github.com", selected_at: (Time.now.utc - 1).iso8601
+  )
+    Dir.mktmpdir("merge-assurance-local-preflight") do |repo_root|
+      seam_marker = File.join(repo_root, "selected-hosted-ci-seam-called")
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents/bin"))
+      File.write(
+        File.join(repo_root, ".agents/agent-workflow.yml"),
+        <<~YAML
+          selected_hosted_ci_receipts:
+            executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env:
+              - HOSTED_CI_TOKEN
+        YAML
+      )
+      File.write(
+        File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
+        selected_hosted_ci_seam_script(
+          marker: seam_marker,
+          terminal_result: "success",
+          selected_at:,
+          required_credential: %w[HOSTED_CI_TOKEN preflight-secret]
+        )
+      )
+      FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
+      run_git!(repo_root, "add", "--all")
+      run_git!(repo_root, "commit", "-qm", "trusted selected hosted CI seam")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      selected = {
+        "provider" => "circleci",
+        "run_id" => "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa"
+      }
+      merge_context = context(
+        "auto_merge_when_gates_pass", selected_hosted_runs: [selected]
+      )
+      merge_context["host"] = host
+      merge_context["base"]["sha"] = base_sha
+      ci_result = ready_ci
+      ci_result["context"]["host"] = host
+      now = Time.now.utc
+      ci_result["checked_at"] = (now - 1).iso8601
+      ci_result.fetch("scopes").each_value do |scope|
+        scope["checked_at"] = (now - 1).iso8601
+      end
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["policy_provenance"] = "git:#{base_sha}"
+      autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      fixture = {
+        repo_root:,
+        seam_marker:,
+        ci_result:,
+        autonomous_result: autonomous,
+        context: merge_context
+      }
+
+      yield fixture
+    end
+  end
+
+  def run_selected_hosted_ci_cli_fixture(fixture)
+    arguments = write_selected_hosted_ci_cli_fixture(fixture)
+    Open3.capture3(
+      { "PATH" => @original_path, "HOSTED_CI_TOKEN" => "preflight-secret" },
+      RbConfig.ruby, SCRIPT, *arguments,
+      chdir: fixture.fetch(:repo_root)
+    )
+  end
+
+  def run_selected_hosted_ci_runner_fixture(fixture, times:)
+    arguments = write_selected_hosted_ci_cli_fixture(fixture)
+    clock_calls = 0
+    original_time_now = Time.method(:now)
+    clock = lambda do
+      caller_location = caller_locations(1, 1).first
+      if caller_location&.absolute_path == SCRIPT && caller_location.base_label == "run"
+        value = times.fetch(clock_calls)
+        clock_calls += 1
+        value
+      else
+        original_time_now.call
+      end
+    end
+    exit_code = nil
+    previous_credential = ENV["HOSTED_CI_TOKEN"]
+    ENV["HOSTED_CI_TOKEN"] = "preflight-secret"
+    Time.define_singleton_method(:now, &clock)
+    stdout, stderr = capture_io do
+      Dir.chdir(fixture.fetch(:repo_root)) do
+        exit_code = MergeAssurance::Runner.new.run(arguments)
+      end
+    end
+    [stdout, stderr, exit_code, clock_calls]
+  ensure
+    Time.define_singleton_method(:now, original_time_now) if original_time_now
+    if previous_credential
+      ENV["HOSTED_CI_TOKEN"] = previous_credential
+    else
+      ENV.delete("HOSTED_CI_TOKEN")
+    end
+  end
+
+  def set_fixture_ci_checked_at(fixture, checked_at)
+    ci_result = fixture.fetch(:ci_result)
+    ci_result["checked_at"] = checked_at.iso8601
+    ci_result.fetch("scopes").each_value do |scope|
+      scope["checked_at"] = checked_at.iso8601
+    end
+  end
+
+  def write_selected_hosted_ci_cli_fixture(fixture)
+    repo_root = fixture.fetch(:repo_root)
+    paths = {
+      ci: File.join(repo_root, "ci.json"),
+      autonomous: File.join(repo_root, "autonomous.json"),
+      context: File.join(repo_root, "context.json")
+    }
+    File.write(paths.fetch(:ci), JSON.generate(fixture.fetch(:ci_result)))
+    File.write(paths.fetch(:autonomous), JSON.generate(fixture.fetch(:autonomous_result)))
+    File.write(paths.fetch(:context), JSON.generate(fixture.fetch(:context)))
+    [
+      "--ci-result", paths.fetch(:ci),
+      "--autonomous-result", paths.fetch(:autonomous),
+      "--context", paths.fetch(:context)
+    ]
+  end
+
+  def capture_process_group_with_deadline(environment, *command, chdir:, deadline_seconds:)
+    stdout_file = Tempfile.new("merge-assurance-test-stdout")
+    stderr_file = Tempfile.new("merge-assurance-test-stderr")
+    pid = Process.spawn(
+      environment, *command,
+      out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:
+    )
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + deadline_seconds
+    status = nil
+    while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      if waited
+        status = waited[1]
+        break
+      end
+      sleep 0.01
+    end
+    harness_timed_out = status.nil?
+    unless status
+      Process.kill("KILL", -pid)
+      _waited_pid, status = Process.waitpid2(pid)
+    end
+    stdout_file.rewind
+    stderr_file.rewind
+    [stdout_file.read, stderr_file.read, status, harness_timed_out]
+  ensure
+    begin
+      Process.kill("KILL", -pid) if pid
+    rescue Errno::ESRCH
+      nil
+    end
+    stdout_file&.close!
+    stderr_file&.close!
+  end
+
+  def run_git!(root, *args)
+    stdout, stderr, status = Open3.capture3(
+      {
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_CONFIG_COUNT" => "1",
+        "GIT_CONFIG_KEY_0" => "commit.gpgSign",
+        "GIT_CONFIG_VALUE_0" => "false"
+      },
+      SYSTEM_GIT, *args, chdir: root
+    )
+    raise "git fixture failed: #{stderr}" unless status.success?
+
+    stdout
+  end
+
+  def selected_hosted_ci_seam_script(
+    marker:, terminal_result:, required_credential: nil, absent_credential: nil,
+    account_home: nil, selected_at: (Time.now.utc - 1).iso8601
+  )
+    record = {
+      "provider" => "circleci",
+      "repository" => "owner/repo",
+      "pr" => 42,
+      "head_sha" => HEAD_SHA,
+      "run_id" => "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa",
+      "selected_at" => selected_at,
+      "terminal_result" => terminal_result
+    }
+    payload = {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => [record]
+    }
+    credential_name, credential_value = required_credential
+    <<~RUBY
+      #!#{RbConfig.ruby}
+      require "json"
+      request = JSON.parse(STDIN.read)
+      raise "host binding mismatch" unless ENV.fetch("GH_HOST") == request.fetch("host")
+      credential_forwarded = #{credential_name.inspect}.nil? ||
+        ENV[#{credential_name.inspect}] == #{credential_value.inspect}
+      unrelated_credential_present = !#{absent_credential.inspect}.nil? &&
+        ENV.key?(#{absent_credential.inspect})
+      home = ENV.fetch("HOME")
+      home_exists = File.directory?(home)
+      home_private = home_exists && (File.stat(home).mode & 0o777) == 0o700
+      home_distinct_from_account = #{account_home.inspect}.nil? ||
+        File.realpath(home) != File.realpath(#{account_home.inspect})
+      home_empty = home_exists && Dir.empty?(home)
+      raise "allowlisted credential missing" unless credential_forwarded
+      raise "unrelated credential leaked" if unrelated_credential_present
+      File.write(
+        #{marker.inspect},
+        JSON.generate(
+          "host" => request.fetch("host"),
+          "credential_forwarded" => credential_forwarded,
+          "unrelated_credential_present" => unrelated_credential_present,
+          "home_exists" => home_exists,
+          "home_private" => home_private,
+          "home_distinct_from_account" => home_distinct_from_account,
+          "home_empty" => home_empty
+        )
+      )
+      puts #{JSON.generate(payload).inspect}
+    RUBY
+  end
+
   def fake_gh_call_count
     return 0 unless File.exist?(@fake_gh_calls)
 
@@ -1505,7 +2584,7 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
-  def ready_ci
+  def ready_ci(repo: "owner/repo", pull_request: 42, head_sha: HEAD_SHA)
     rows = {
       "required_status_check_rollup" => [
         { "name" => "required", "bucket" => "pass" }
@@ -1523,7 +2602,7 @@ class MergeAssuranceTest < Minitest::Test
           "state" => scope_rows.empty? ? "NOT_APPLICABLE" : "READY",
           "source" => "github.test.#{name}",
           "complete" => true,
-          "head_sha" => HEAD_SHA,
+          "head_sha" => head_sha,
           "rows" => scope_rows,
           "checked_at" => "2026-07-30T11:59:00Z"
         }
@@ -1533,9 +2612,9 @@ class MergeAssuranceTest < Minitest::Test
       "contract" => "pr-ci-readiness",
       "version" => 2,
       "context" => { "host" => "github.com" },
-      "repo" => "owner/repo",
-      "pr" => 42,
-      "head_sha" => HEAD_SHA,
+      "repo" => repo,
+      "pr" => pull_request,
+      "head_sha" => head_sha,
       "checked_at" => "2026-07-30T11:59:00Z",
       "verdict" => "READY",
       "ordinary_verdict" => "READY",
@@ -1543,7 +2622,7 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
-  def autonomous_result(verdict)
+  def autonomous_result(verdict, head_sha: HEAD_SHA)
     triggered_gates, human_decision_evidence =
       case verdict
       when "human-approval-required"
@@ -1564,7 +2643,7 @@ class MergeAssuranceTest < Minitest::Test
       end
     {
       "verdict" => verdict,
-      "head_sha" => HEAD_SHA,
+      "head_sha" => head_sha,
       "policy_provenance" => "git:#{BASE_SHA}",
       "helper_provenance" => "trusted-base:#{BASE_SHA}",
       "helper_trust" => {
@@ -1599,22 +2678,39 @@ class MergeAssuranceTest < Minitest::Test
 
   def context(
     authority, operations: [], human_merge_decision: nil, walkthrough: nil,
-    semantic_github_actions_change: false
+    semantic_github_actions_change: false, repo: "owner/repo", pull_request: 42,
+    head_sha: HEAD_SHA, selected_hosted_runs: []
   )
     {
       "contract" => "merge-assurance-context",
       "version" => 1,
       "host" => "github.com",
-      "repo" => "owner/repo",
-      "pr" => 42,
+      "repo" => repo,
+      "pr" => pull_request,
       "base" => { "ref" => "main", "sha" => BASE_SHA },
-      "head_sha" => HEAD_SHA,
+      "head_sha" => head_sha,
       "authority" => authority,
       "diff_identity" => DIFF_IDENTITY,
       "human_merge_decision" => human_merge_decision,
       "walkthrough" => walkthrough,
       "semantic_github_actions_change" => semantic_github_actions_change,
+      "selected_hosted_runs" => selected_hosted_runs,
       "operations" => operations
+    }
+  end
+
+  def selected_hosted_ci_receipts(replay, context)
+    {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => replay.fetch("selected_runs").map do |run|
+        run.merge(
+          "repository" => context.fetch("repo"),
+          "pr" => context.fetch("pr"),
+          "head_sha" => context.fetch("head_sha")
+        )
+      end
     }
   end
 
