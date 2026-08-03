@@ -165,6 +165,8 @@ test_adds_fallback_guidance_for_upgrade_without_remediation() {
   set -e
   [[ "$status" -eq 1 ]] || fail "upgrade without guidance returned $status instead of 1"
 
+  # The Ruby assertion must receive the backticked command literally.
+  # shellcheck disable=SC2016
   ruby -rjson -e '
     install = JSON.parse(STDIN.read).fetch("checks").find { |item| item["id"] == "workflows.installation" }
     abort install.inspect unless install["guidance"] == "Upgrade workflows with `agent-stack sync`."
@@ -235,7 +237,7 @@ test_deep_mode_runs_workflow_seam_check() {
 }
 
 test_missing_or_mismatched_status_helper_returns_failed_contract() {
-  local tmp output status mode
+  local tmp output status
   make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target/bin"
 

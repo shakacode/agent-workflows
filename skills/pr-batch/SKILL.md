@@ -309,11 +309,13 @@ Before implementation or worker launch, produce:
    - Include any `needs-customer-feedback` targets skipped from implementation, with that label as the reason.
 3. A repo preflight: resolve the base branch from `AGENTS.md`, run `git fetch --prune origin <base-branch>`, confirm the expected repository root, verify resolved workflow files, and verify nested repo paths before assigning work.
 4. For public issue/PR targets, a security preflight: run the following and report `SECURITY_PREFLIGHT_OK`, including any acknowledged findings, or stop on `SECURITY_PREFLIGHT_BLOCKED` with the exact finding.
+
    ```bash
    # Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
    PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
    "${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo <OWNER/REPO> <ISSUE_OR_PR...>
    ```
+
    Add `--fail-on-high-risk-files` when high-risk workflow, script, hook, or
    agent-instruction diffs should block worker launch instead of being reported
    as advisory exact-target context.
