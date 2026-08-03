@@ -170,10 +170,29 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal "NOT_APPLICABLE", not_applicable.fetch("state")
     assert_equal "UNKNOWN", unknown.fetch("state")
     assert_equal(
-      %w[checked_at complete head_sha rows source state],
+      %w[checked_at complete head_sha informational_rows rows source state],
       ready.keys.sort
     )
+    assert_empty ready.fetch("informational_rows")
     assert_equal "query failed", unknown.fetch("error")
+  end
+
+  def test_informational_evidence_scope_does_not_gate_when_inventory_is_incomplete
+    scope = PrCiReadiness.evidence_scope(
+      source: "github.checks_and_statuses.exact_head.non_required",
+      head_sha: "a" * 40,
+      complete: false,
+      rows: [],
+      informational_rows: [],
+      gates_verdict: false,
+      error: "status inventory unavailable",
+      checked_at: "2026-07-30T12:00:00Z"
+    )
+
+    assert_equal "NOT_APPLICABLE", scope.fetch("state")
+    assert_equal false, scope.fetch("complete")
+    assert_empty scope.fetch("informational_rows")
+    assert_equal "status inventory unavailable", scope.fetch("error")
   end
 
   def test_exact_head_evidence_contract_fails_closed_for_unknown_or_not_ready_scope
@@ -2841,14 +2860,49 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_requested_hosted_success_is_ready_when_advisory_status_inventory_is_unavailable
+    with_fake_gh(
+      required_json: "",
+      full_json: "[]",
+      pr_head: "a" * 40,
+      exact_inventory_error: "statuses",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "a" * 40, "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "NOT_APPLICABLE", data.dig("scopes", "other", "state")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      refute_empty data.dig("scopes", "other", "error")
+    end
+  end
+
   def test_requested_hosted_success_does_not_erase_cancelled_required_context
     with_fake_gh(
       required_json: '[{"workflow":"Security","name":"security","bucket":"cancel"}]',
       full_json: "[]",
-      pr_head: "abc123",
+      pr_head: "a" * 40,
+      exact_check_runs: [
+        {
+          "id" => 99,
+          "name" => "test-suite",
+          "status" => "in_progress",
+          "conclusion" => nil,
+          "head_sha" => "a" * 40,
+          "html_url" => "https://example.test/checks/99",
+          "app" => { "slug" => "circleci-checks" }
+        }
+      ],
       runs: {
         "42" => {
-          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "a" * 40, "status" => "completed",
                  "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
           jobs: []
         }
@@ -2860,6 +2914,8 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "NOT_READY", data["verdict"]
       assert_equal ["security"], data["pending"]
       assert_empty data.fetch("requested_hosted").fetch("failing")
+      informational_names = data.dig("scopes", "other", "informational_rows").map { |row| row.fetch("name") }
+      assert_equal ["test-suite"], informational_names
     end
   end
 

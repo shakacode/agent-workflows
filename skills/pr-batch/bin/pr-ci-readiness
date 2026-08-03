@@ -125,11 +125,16 @@ module PrCiReadiness
     "UNKNOWN"
   end
 
-  def evidence_scope(source:, head_sha:, complete:, rows:, checked_at:, error: nil, informational_rows: [])
+  def evidence_scope(
+    source:, head_sha:, complete:, rows:, checked_at:, error: nil,
+    informational_rows: [], gates_verdict: true
+  )
     normalized_rows = rows.is_a?(Array) ? rows : []
     row_states = normalized_rows.map { |row| evidence_row_state(row) }
     state =
-      if complete != true
+      if !gates_verdict
+        "NOT_APPLICABLE"
+      elsif complete != true
         "UNKNOWN"
       elsif !rows.is_a?(Array) || row_states.include?("UNKNOWN")
         "UNKNOWN"
@@ -146,10 +151,9 @@ module PrCiReadiness
       "complete" => complete == true,
       "head_sha" => head_sha,
       "rows" => normalized_rows,
+      "informational_rows" => informational_rows.is_a?(Array) ? informational_rows : [],
       "checked_at" => checked_at
     }
-    normalized_informational_rows = informational_rows.is_a?(Array) ? informational_rows : []
-    result["informational_rows"] = normalized_informational_rows if normalized_informational_rows.any?
     result["error"] = error.to_s unless error.to_s.empty?
     result["error"] ||= "one or more rows had an unknown state" if state == "UNKNOWN" && complete == true
     result
@@ -218,6 +222,7 @@ module PrCiReadiness
         head_sha:, complete: check_runs_complete && statuses_complete,
         rows: gate_other_rows ? other_rows : [],
         informational_rows: gate_other_rows ? [] : other_rows,
+        gates_verdict: gate_other_rows,
         checked_at:, error: errors["other"]
       )
     }
