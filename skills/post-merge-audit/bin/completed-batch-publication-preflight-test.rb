@@ -454,7 +454,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     target_numbers = result.fetch("targets").map { |target| target.fetch("number") }
     assert_equal [10_026, 10_036, 10_048, 10_049], target_numbers
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("snapshot_digest"))
-    assert_equal "sha256:77f784897b40eb5ddec704f0c1347afa9cbc090f66e58e647cfadd107cc3a23f",
+    assert_equal "sha256:2e73bd93cdf88b511d2865d9572d6e9ba4ee3c13a65bf8048f8cded7f37e5ca5",
                  result.fetch("snapshot_digest")
   end
 
@@ -491,8 +491,9 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal Digest::SHA256.hexdigest(expected_body), waiver.fetch("body_sha256")
     assert_equal "57e048ed10551eb3cf8414a4de0064443bef730d", waiver.fetch("head_sha")
     assert_equal 10_026, waiver.dig("target", "number")
+    refute result.dig("snapshot", "targets").any? { |target| target.key?("completed_at") }
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
-    assert_equal "sha256:7b3a27d37a28e6222bedaacde933537fd4b77614bc13e53de668790b48043273",
+    assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
                  result.fetch("snapshot_digest")
   end
 
@@ -515,6 +516,9 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       assert_equal terminal_state, reconciled_lane.fetch("terminal")
       assert_equal "authenticated_target_after_coordination_closeout",
                    reconciled_lane.fetch("completion_mode")
+      reconciled_target = result.dig("snapshot", "targets")
+                                .find { |row| row.dig("target", "number") == 10_048 }
+      assert_equal "2026-08-01T00:00:00Z", reconciled_target.fetch("completed_at")
       assert_nil reconciled_lane.fetch("target_state")
       assert_nil reconciled_lane.fetch("evidence")
     end

@@ -473,15 +473,8 @@ module CompletedBatchPublicationPreflight
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
       target_snapshot = targets_by_key[target_key(target)]
-      authenticated_target_completion =
-        target_snapshot &&
-        target_snapshot["state"] == expected_state &&
-        target_snapshot["verification_source"] == "authenticated gh api"
-      target_completed_after_closeout =
-        authenticated_target_completion && timestamp_after?(target_snapshot["completed_at"], lane["closed_at"])
       coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
-      later_target_completion =
-        RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state) && target_completed_after_closeout
+      later_target_completion = authenticated_later_target_completion?(lane, target_snapshot)
       unless coordination_completion || later_target_completion
         if RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
           blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
@@ -581,23 +574,26 @@ module CompletedBatchPublicationPreflight
       end
       lane = lanes_by_target.dig(key, "lane")
       lane_state = lane&.fetch("pr_state", nil)
-      authenticated_later_completion =
-        valid_terminal_lane?(lane) &&
-        RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"]) &&
-        verified_shape &&
-        timestamp_after?(verified["completed_at"], lane["closed_at"])
+      verified_target_facts = {
+        "target" => target,
+        "state" => state,
+        "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
+        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
+      }
+      authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
       if lane_state && state && lane_state != state && !authenticated_later_completion
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
-      {
+      snapshot = {
         "target" => target,
         "state" => state,
         "head_sha" => head_sha,
-        "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
         "no_pr_evidence" => no_pr_evidence,
         "source" => source,
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
+      snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_later_completion
+      snapshot
     end
   end
 
@@ -902,6 +898,20 @@ module CompletedBatchPublicationPreflight
     Time.iso8601(later) > Time.iso8601(earlier)
   rescue ArgumentError
     false
+  end
+
+  def authenticated_later_target_completion?(lane, target_snapshot)
+    return false unless valid_terminal_lane?(lane)
+    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
+    return false unless target_snapshot.is_a?(Hash)
+
+    target = validated_target(target_snapshot["target"])
+    return false unless target
+
+    expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+    target_snapshot["state"] == expected_state &&
+      target_snapshot["verification_source"] == "authenticated gh api" &&
+      timestamp_after?(target_snapshot["completed_at"], lane["closed_at"])
   end
 
   def valid_terminal_lane?(lane)
