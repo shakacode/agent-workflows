@@ -65,7 +65,7 @@ module AgentDoctor
     def bootstrap?(record)
       expected_keys = %w[
         authorized_dispatcher authorized_exception authorized_lanes authorized_route batch_id constraints
-        grant_source granted_at issue not_waived type version waiver_id
+        grant_source granted_at issue not_waived readiness type version waiver_id
       ]
       return false unless record.is_a?(Hash) && record.keys.sort == expected_keys
       return false unless record["type"] == "agent-workflow-bootstrap-waiver" && record["version"] == 1
@@ -80,7 +80,7 @@ module AgentDoctor
       return false unless record["not_waived"].is_a?(Array) &&
                           (REQUIRED_GATES - record["not_waived"]).empty?
 
-      !nested_unknown?(record)
+      !nested_unknown?(record.except("readiness"))
     end
 
     def canonical_digest(record)

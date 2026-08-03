@@ -12,6 +12,7 @@ require "rbconfig"
 require "tempfile"
 require "tmpdir"
 require "time"
+require_relative "../../../bin/agent_doctor/signed_launch_readiness"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
@@ -153,6 +154,9 @@ class BatchPlanPreflightTest < Minitest::Test
     FileUtils.cp(HELPER, helper)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_installation.rb", __dir__), module_root)
     File.chmod(0o755, helper)
+    write_install_metadata(
+      root, File.expand_path("../../..", __dir__), host: "codex", mode: "copy", delivery_mode: "flat"
+    )
     if agents_symlink
       actual_agents_dir = File.join(root, "caller-substitutable-agents")
       FileUtils.mkdir_p(actual_agents_dir)
@@ -317,6 +321,7 @@ class BatchPlanPreflightTest < Minitest::Test
       },
       "authorized_lanes" => [lane_id], "authorized_dispatcher" => dispatcher,
       "authorized_route" => route.merge("fallbacks" => []),
+      "readiness" => AgentDoctor::SignedLaunchReadiness.assess(host: "codex", target: root),
       "authorized_exception" => "Use live host-bound route metadata for this exact batch only.",
       "constraints" => {
         "serial_execution" => true, "preserve_validation_open_dependency" => true,
@@ -818,6 +823,8 @@ class BatchPlanPreflightTest < Minitest::Test
     )
 
     first, first_stderr, first_status = evaluate(input, helper: helper)
+    File.write(File.join(root, ".agents/signed-launch-capability.json"), "{}\n")
+    File.chmod(0o600, File.join(root, ".agents/signed-launch-capability.json"))
     replay, replay_stderr, replay_status = evaluate(input, helper: helper)
 
     assert first_status.success?, "#{first_stderr}\n#{first.inspect}"
@@ -845,7 +852,7 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "completed_lane_ids")
   end
 
-  def test_plugin_source_workflow_helper_binds_lifecycle_trust_to_a_validated_companion_home
+  def test_plugin_source_workflow_helper_rejects_caller_selected_companion_identity
     helper, source_root = installed_unsupported_workflow_control_helper(installer_metadata: false)
     companion = secure_mktmpdir("workflow-plugin-companion")
     FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
@@ -891,8 +898,10 @@ class BatchPlanPreflightTest < Minitest::Test
       env: { "CODEX_HOME" => companion }
     )
 
-    assert status.success?, "#{stderr}\n#{result.inspect}"
-    assert_equal ["lane-a"], result.dig("launch", "completed_lane_ids")
+    refute status.success?, "#{stderr}\n#{result.inspect}"
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-lifecycle-receipt-invalid"
+    assert_empty result.dig("launch", "completed_lane_ids")
   end
 
   def test_plugin_source_workflow_helper_rejects_an_unvalidated_companion_override
@@ -1106,9 +1115,8 @@ class BatchPlanPreflightTest < Minitest::Test
 
     File.write(File.join(root, ".agents/signed-launch-capability.json"), "{}\n")
     result, _stderr, status = evaluate(input_for(backend: "codex", lifecycle_waivers: [valid]), helper: helper)
-    refute status.success?
-    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                    "lane-lifecycle-waiver-invalid"
+    assert status.success?
+    assert_equal ["lane-a"], result.dig("launch", "completed_lane_ids")
   end
 
   def test_lifecycle_waiver_requires_the_exact_active_issue

@@ -85,10 +85,13 @@ post-install readiness probe is non-fatal after a completed install: the
 installer warns and reports `UNKNOWN`.
 
 When readiness is exactly `unsupported`, a human may grant a one-time durable
-`agent-workflow-bootstrap-waiver v1`. It must record direct in-session human
+`agent-workflow-bootstrap-waiver` version 1. It must record direct in-session human
 provenance and bind the exact batch, issue, authorized lanes, hard dispatcher,
-model, effort, and empty fallback list while expressly preserving every other
-gate. File ownership and permissions protect the durable record from ordinary
+model, effort, empty fallback list, and the exact typed unsupported readiness
+assessment observed when the waiver record is granted, while expressly preserving
+every other gate. Terminal lifecycle receipts replay against that recorded
+assessment, so a later supported or `UNKNOWN` probe cannot revoke completed work.
+File ownership and permissions protect the durable record from ordinary
 replacement; they do not cryptographically prove that a human spoke. The
 coordinator must therefore persist the exact direct-user message and thread as
 procedural provenance. The dispatcher additionally requires exact live, dispatcher-bound,
@@ -102,6 +105,26 @@ instance and launch-token identities. Durable evidence schemes are limited to
 `workflow-control-state`, and `workflow-control-waiver-state`; `http` and `file`
 are rejected. `merge_authority` is exactly `none`, `ask`, or
 `auto_merge_when_gates_pass`.
+
+Waiver authors must copy these exact, case-sensitive `not_waived` tokens (extra
+entries are allowed, but none of these may be omitted):
+
+```json
+[
+  "security preflight",
+  "stage dependency gate",
+  "batch plan gate",
+  "TDD and focused tests",
+  "bin/validate",
+  "independent final-head QA and review",
+  "current-head CI and configured reviewer completion",
+  "unresolved review-thread gate",
+  "autonomous merge eligibility",
+  "merge assurance",
+  "exact-head merge submission",
+  "completed-batch audit"
+]
+```
 
 The trusted helper canonicalizes the complete waiver record and binds its
 SHA-256 digest into dispatcher and workflow-control wrappers. Dispatcher replay

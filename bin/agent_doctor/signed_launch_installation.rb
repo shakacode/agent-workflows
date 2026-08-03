@@ -12,21 +12,22 @@ module AgentDoctor
 
     module_function
 
-    def resolve(helper_path:, relative_helper_path:, environment: ENV)
+    def resolve(helper_path:, relative_helper_path:)
       lexical_helper = File.expand_path(helper_path)
       physical_helper = File.realpath(helper_path)
       lexical_root = root_for(lexical_helper, relative_helper_path)
       physical_root = root_for(physical_helper, relative_helper_path)
       return unless lexical_root && physical_root
-      return unless File.realpath(lexical_root) == lexical_root
+
+      lexical_root = canonical_root(lexical_root)
+      return unless lexical_root
 
       root_stat = File.lstat(lexical_root)
       return unless safe_directory_stat?(root_stat, root_stat.uid)
 
-      direct_helper = lexical_helper == physical_helper
+      direct_helper = File.join(lexical_root, relative_helper_path) == physical_helper
       metadata = validated_flat_metadata(root: lexical_root, owner_uid: root_stat.uid, direct_helper:)
-      companion = validated_plugin_companion(source_root: physical_root, environment:) if direct_helper && !metadata
-      return companion if companion
+      return unless metadata
       return unless direct_helper || valid_symlink_install?(
         root: lexical_root, physical_root:, relative_helper_path:, owner_uid: root_stat.uid, metadata:
       )
@@ -39,7 +40,8 @@ module AgentDoctor
 
     def root_owner_uid(root)
       root = File.expand_path(root)
-      return unless File.realpath(root) == root
+      root = canonical_root(root)
+      return unless root
 
       stat = File.lstat(root)
       stat.uid if safe_directory_stat?(stat, stat.uid)
@@ -55,6 +57,29 @@ module AgentDoctor
       root if File.join(root, relative_path) == path
     end
     private_class_method :root_for
+
+    def canonical_root(root)
+      expanded = File.expand_path(root)
+      components = expanded.split(File::SEPARATOR).reject(&:empty?)
+      current = File::SEPARATOR
+      unsafe_symlink = components.each_with_index.any? do |component, index|
+        current = File.join(current, component)
+        next false unless File.lstat(current).symlink?
+
+        !index.zero? || !platform_alias?(current)
+      end
+      return if unsafe_symlink
+
+      File.realpath(expanded)
+    end
+    private_class_method :canonical_root
+
+    def platform_alias?(path)
+      { "/tmp" => "/private/tmp", "/var" => "/private/var" }.fetch(path, nil) == File.realpath(path)
+    rescue SystemCallError
+      false
+    end
+    private_class_method :platform_alias?
 
     def valid_symlink_install?(root:, physical_root:, relative_helper_path:, owner_uid:, metadata:)
       components = relative_helper_path.split("/")
@@ -93,48 +118,6 @@ module AgentDoctor
       nil
     end
     private_class_method :validated_flat_metadata
-
-    def validated_plugin_companion(source_root:, environment:)
-      companions = HOSTS.filter_map do |host|
-        validated_plugin_companion_for_host(host:, root: companion_root_for(host, environment), source_root:)
-      end
-      companions.one? ? companions.first : nil
-    end
-    private_class_method :validated_plugin_companion
-
-    def validated_plugin_companion_for_host(host:, root:, source_root:)
-      root = File.expand_path(root)
-      return unless File.realpath(root) == root
-
-      root_stat = File.lstat(root)
-      owner_uid = root_stat.uid
-      return unless safe_directory_stat?(root_stat, owner_uid)
-      return unless safe_directory?(File.join(root, ".agents"), owner_uid)
-
-      metadata = read_metadata(File.join(root, METADATA_FILE), owner_uid)
-      return unless metadata && metadata.keys.sort == METADATA_KEYS
-      return unless metadata["host"] == host
-      return unless metadata["delivery_mode"] == "plugin-companion"
-      return unless %w[copy symlink].include?(metadata["mode"])
-      return unless metadata["source"].is_a?(String) &&
-                    File.absolute_path(metadata["source"]) == metadata["source"] &&
-                    File.realpath(metadata["source"]) == source_root
-
-      { "root" => root, "owner_uid" => owner_uid, "host" => host,
-        "delivery_mode" => metadata.fetch("delivery_mode") }
-    rescue ArgumentError, SystemCallError
-      nil
-    end
-    private_class_method :validated_plugin_companion_for_host
-
-    def companion_root_for(host, environment)
-      variable = host == "codex" ? "CODEX_HOME" : "CLAUDE_HOME"
-      configured_root = environment[variable]
-      return configured_root unless configured_root.nil? || configured_root.empty?
-
-      File.join(environment.fetch("HOME", Dir.home), ".#{host}")
-    end
-    private_class_method :companion_root_for
 
     def safe_directory?(path, owner_uid)
       safe_directory_stat?(File.lstat(path), owner_uid)

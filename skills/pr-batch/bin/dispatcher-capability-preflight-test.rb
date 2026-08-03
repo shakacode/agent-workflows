@@ -94,6 +94,9 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     FileUtils.cp(HELPER, helper)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_installation.rb", __dir__), module_root)
     File.chmod(0o755, helper)
+    write_install_metadata(
+      root, File.expand_path("../../..", __dir__), host: "codex", mode: "copy", delivery_mode: "flat"
+    )
     if agents_symlink
       actual_agents_dir = File.join(root, "caller-substitutable-agents")
       FileUtils.mkdir_p(actual_agents_dir)
@@ -161,6 +164,12 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     FileUtils.mkdir_p(File.join(root, ".agents"), mode: 0o700)
     File.symlink(File.expand_path("..", __dir__), File.join(root, "skills/pr-batch"))
     File.symlink(File.expand_path("../../../bin/agent_doctor", __dir__), File.join(root, "bin/agent_doctor"))
+    write_supported_readiness(root)
+    write_symlink_install_metadata(root, File.expand_path("../../..", __dir__)) if installer_metadata
+    [File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight"), root]
+  end
+
+  def write_supported_readiness(root)
     key = dispatcher_signing_key
     records = {
       "signed-launch-capability.json" => {
@@ -189,8 +198,6 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       File.write(path, JSON.generate(record))
       File.chmod(0o600, path)
     end
-    write_symlink_install_metadata(root, File.expand_path("../../..", __dir__)) if installer_metadata
-    [File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight"), root]
   end
 
   def write_install_metadata(root, source, host: "codex", mode: "symlink", delivery_mode: "flat")
@@ -256,6 +263,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       "authorized_lanes" => [lane_id],
       "authorized_dispatcher" => dispatcher,
       "authorized_route" => route.merge("fallbacks" => []),
+      "readiness" => AgentDoctor::SignedLaunchReadiness.assess(host: "codex", target: root),
       "authorized_exception" => "Use live host-bound route metadata for this exact batch only.",
       "constraints" => {
         "serial_execution" => true,
@@ -1893,6 +1901,61 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute replay.key?("dispatch")
   end
 
+  def test_waived_active_transitions_to_confirmed_active_when_signed_support_appears
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{ "route" => route, "dispatcher" => "codex-collaboration",
+                         "binding" => "dispatcher-bound", "attestation" => "instance-bound",
+                         "instance_id" => "live-worker-299" }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    activated = dispatch(input.merge("active_assignments" => pending.fetch("active_assignments"),
+                                     "launch_waiver" => waiver), helper)
+    write_supported_readiness(root)
+    confirmation = launch_confirmation(activated.fetch("active_assignments").first)
+
+    confirmed = dispatch(input.merge("active_assignments" => activated.fetch("active_assignments"),
+                                     "launch_confirmation" => confirmation), helper)
+
+    assert_equal "replay-already-active", confirmed.fetch("status"), confirmed.inspect
+    assert_equal "confirmed-active", confirmed.dig("active_assignments", 0, "lifecycle")
+    refute confirmed.fetch("active_assignments").first.key?("waiver_id")
+    refute confirmed.key?("launch_waiver")
+  end
+
+  def test_human_waiver_rejects_new_activation_after_signed_support_appears
+    helper, root = installed_unsupported_dispatcher_helper
+    route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
+    input = {
+      "batch_id" => "batch-299", "expected_issue" => "shakacode/agent-workflows#299",
+      "lane_id" => "aw299-implementation",
+      "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
+      "candidates" => [{ "route" => route, "dispatcher" => "codex-collaboration",
+                         "binding" => "dispatcher-bound", "attestation" => "instance-bound",
+                         "instance_id" => "live-worker-299" }]
+    }
+    pending = dispatch(input, helper)
+    waiver_path, waiver_record = bootstrap_waiver(
+      root, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    write_supported_readiness(root)
+
+    activated = dispatch(input.merge("active_assignments" => pending.fetch("active_assignments"),
+                                     "launch_waiver" => waiver), helper)
+
+    assert_equal "invalid-input", activated.fetch("status"), activated.inspect
+    assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
+  end
+
   def test_human_waiver_rejects_a_clean_unsupported_claude_installation
     helper, root = installed_unsupported_dispatcher_helper(host: "claude")
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
@@ -1924,7 +1987,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
   end
 
-  def test_plugin_source_helper_binds_dispatcher_trust_to_a_validated_companion_home
+  def test_plugin_source_helper_rejects_caller_selected_companion_identity
     helper, source_root = installed_unsupported_dispatcher_helper(installer_metadata: false)
     companion = secure_mktmpdir("dispatcher-plugin-companion")
     FileUtils.mkdir_p(File.join(companion, ".agents"), mode: 0o700)
@@ -1965,6 +2028,8 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     end
     route = { "model" => "gpt-5.6-sol", "effort" => "xhigh" }
     input = {
+      "batch_id" => "batch-299",
+      "expected_issue" => "shakacode/agent-workflows#299",
       "lane_id" => "aw299-implementation",
       "requested" => { "route" => route, "dispatcher" => "codex-collaboration", "hard_route" => true },
       "candidates" => [{
@@ -1986,8 +2051,22 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       helper
     )
 
-    assert_equal "replay-already-active", confirmed.fetch("status"), confirmed.inspect
-    assert_equal "confirmed-active", confirmed.dig("active_assignments", 0, "lifecycle")
+    assert_equal "invalid-input", confirmed.fetch("status"), confirmed.inspect
+    refute_equal "confirmed-active", confirmed.dig("active_assignments", 0, "lifecycle")
+
+    records.each_key { |name| FileUtils.rm_f(File.join(companion, ".agents", name)) }
+    waiver_path, waiver_record = bootstrap_waiver(
+      companion, batch_id: input.fetch("batch_id"), lane_id: input.fetch("lane_id"), route:
+    )
+    waiver = launch_waiver(path: waiver_path, record: waiver_record, assignment: pending.fetch("dispatch"))
+    waived = dispatch(
+      input.merge("active_assignments" => pending.fetch("active_assignments"), "launch_waiver" => waiver),
+      environment,
+      helper
+    )
+
+    assert_equal "invalid-input", waived.fetch("status"), waived.inspect
+    assert_includes waived.fetch("reason"), "launch_waiver validation support is unavailable"
   end
 
   def test_plugin_source_helper_rejects_an_unvalidated_companion_override
@@ -2021,7 +2100,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     )
 
     assert_equal "invalid-input", activated.fetch("status")
-    assert_includes activated.fetch("reason"), "requires exact typed unsupported host readiness"
+    assert_includes activated.fetch("reason"), "launch_waiver validation support is unavailable"
   end
 
   def test_symlink_install_assesses_readiness_against_the_installed_home

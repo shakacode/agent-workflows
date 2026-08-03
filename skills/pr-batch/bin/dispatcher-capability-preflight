@@ -35,6 +35,8 @@ CALLER_TRUST_OVERRIDE_FIELDS = [
   TRUSTED_PUBLIC_KEY_FIELD,
   "dispatcher_trust_anchor"
 ].freeze
+CONFIRMATION_ENVELOPE_VERSION = 2
+SIGNED_OBSERVATION_VERSION = 1
 
 def fail_input(message)
   puts JSON.generate("status" => "invalid-input", "reason" => message)
@@ -141,7 +143,7 @@ def launch_observation_payload(confirmation)
   assignment = confirmation["assignment"]
   {
     "type" => "dispatcher-launch-observation",
-    "version" => 1,
+    "version" => SIGNED_OBSERVATION_VERSION,
     "confirmation_id" => confirmation["id"],
     "key_id" => confirmation["key_id"],
     "lane_id" => assignment["lane_id"],
@@ -293,6 +295,12 @@ def canonical_assignment(assignment)
   )
 end
 
+def confirmed_assignment(assignment)
+  canonical_assignment(assignment.merge("lifecycle" => "confirmed-active")).except(
+    "waiver_id", "waiver_ref", "waiver_digest"
+  )
+end
+
 def assignment_waiver_binding_valid?(assignment)
   has_binding = %w[waiver_id waiver_ref waiver_digest].any? { |field| assignment.key?(field) }
   if assignment["lifecycle"] == "waived-active"
@@ -334,7 +342,7 @@ def confirmation_shape?(confirmation)
                       !nested_unknown_sentinel?(confirmation)
 
   return true if confirmation["version"] == 1
-  return false unless confirmation["version"] == 2
+  return false unless confirmation["version"] == CONFIRMATION_ENVELOPE_VERSION
 
   confirmation["actual_model"] == confirmation.dig("assignment", "route", "model") &&
     confirmation["actual_effort"] == confirmation.dig("assignment", "route", "effort") &&
@@ -351,7 +359,8 @@ def confirmation_shape?(confirmation)
 end
 
 def confirmation_qualifies?(confirmation)
-  confirmation.is_a?(Hash) && confirmation["version"] == 2 && confirmation_shape?(confirmation)
+  confirmation.is_a?(Hash) && confirmation["version"] == CONFIRMATION_ENVELOPE_VERSION &&
+    confirmation_shape?(confirmation)
 end
 
 def replacement_proof_authorizes?(replacement, active_assignment, replacement_assignment)
@@ -723,7 +732,8 @@ if input.key?("launch_waiver")
   fail_input("launch_waiver requires one matching persisted launch assignment") unless
     input.fetch("active_assignments", []).length == 1
 end
-if input.fetch("active_assignments", []).any? { |entry| entry["lifecycle"] == "waived-active" } && !input.key?("launch_waiver")
+if input.fetch("active_assignments", []).any? { |entry| entry["lifecycle"] == "waived-active" } &&
+   !input.key?("launch_waiver") && !input.key?("launch_confirmation")
   fail_input("waived-active assignment requires its durable launch_waiver")
 end
 if input.key?("launch_confirmation")
@@ -861,7 +871,7 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
                input:,
                requested:,
                authority:,
-               assignment: persisted_assignment.merge("lifecycle" => "confirmed-active"),
+               assignment: confirmed_assignment(persisted_assignment),
                confirmation:,
                request: persisted_decision_history,
                resolution: history_resolution
@@ -945,7 +955,7 @@ if matching_assignment
                input:,
                requested:,
                authority:,
-               assignment: matching_assignment.merge("lifecycle" => "confirmed-active"),
+               assignment: confirmed_assignment(matching_assignment),
                confirmation:
              )
            elsif matching_assignment["lifecycle"] == "confirmed-active"

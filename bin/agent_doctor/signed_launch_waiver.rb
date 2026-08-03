@@ -30,12 +30,18 @@ module AgentDoctor
       [nil, "launch_waiver must be an exact v1 dispatcher waiver"]
     end
 
-    def validate_bootstrap(waiver_ref:, expected_issue:, batch_id:, lane_id:, dispatcher:, route:, host:, target:)
-      readiness = SignedLaunchReadiness.assess(host:, target:)
-      return [nil, "requires exact typed unsupported host readiness"] unless readiness["capability"] == "unsupported"
+    def validate_bootstrap(waiver_ref:, expected_issue:, batch_id:, lane_id:, dispatcher:, route:, host:, target:,
+                           require_current_readiness: true)
+      if require_current_readiness
+        readiness = SignedLaunchReadiness.assess(host:, target:)
+        return [nil, "requires exact typed unsupported host readiness"] unless
+          readiness == SignedLaunchReadiness.unsupported(host)
+      end
 
       record = SignedLaunchWaiverRecord.read(waiver_ref, installation_root: target)
       return [nil, "reference must name a safe durable human waiver file"] unless SignedLaunchWaiverRecord.bootstrap?(record)
+      return [nil, "requires exact typed unsupported host readiness"] unless
+        record["readiness"] == SignedLaunchReadiness.unsupported(host)
       return [nil, "issue binding does not match"] unless
         SignedLaunchWaiverRecord.known_string?(expected_issue) && record["issue"] == expected_issue
       return [nil, "batch binding does not match"] unless record["batch_id"] == batch_id
@@ -55,7 +61,8 @@ module AgentDoctor
 
       record, reason = validate_bootstrap(
         waiver_ref: wrapper.fetch("waiver_ref"), expected_issue:, batch_id: batch_plan_id, lane_id: lane.fetch("id"),
-        dispatcher: wrapper.fetch("dispatcher"), route: wrapper.fetch("route"), host:, target:
+        dispatcher: wrapper.fetch("dispatcher"), route: wrapper.fetch("route"), host:, target:,
+        require_current_readiness: false
       )
       return [nil, "lifecycle waiver #{reason}"] unless record
       return [nil, "lifecycle waiver canonical digest does not match the current waiver record"] unless
