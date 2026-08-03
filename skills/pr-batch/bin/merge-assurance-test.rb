@@ -139,12 +139,17 @@ class MergeAssuranceTest < Minitest::Test
         <<~YAML
           selected_hosted_ci_receipts:
             executable: ".agents/bin/selected-hosted-ci-receipts"
+            credential_env:
+              - CIRCLECI_TOKEN
         YAML
       )
       File.write(
         File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"),
         selected_hosted_ci_seam_script(
-          marker: base_marker, terminal_result: "cancelled"
+          marker: base_marker,
+          terminal_result: "cancelled",
+          required_credential: %w[CIRCLECI_TOKEN allowlisted-secret],
+          absent_credential: "UNRELATED_TOKEN"
         )
       )
       FileUtils.chmod(0o755, File.join(repo_root, ".agents/bin/selected-hosted-ci-receipts"))
@@ -189,7 +194,11 @@ class MergeAssuranceTest < Minitest::Test
       File.write(paths.fetch(:context), JSON.generate(merge_context))
 
       stdout, stderr, status = Open3.capture3(
-        { "PATH" => @original_path },
+        {
+          "PATH" => @original_path,
+          "CIRCLECI_TOKEN" => "allowlisted-secret",
+          "UNRELATED_TOKEN" => "must-not-be-forwarded"
+        },
         RbConfig.ruby, SCRIPT,
         "--ci-result", paths.fetch(:ci),
         "--autonomous-result", paths.fetch(:autonomous),
@@ -205,10 +214,91 @@ class MergeAssuranceTest < Minitest::Test
       )
       assert File.exist?(base_marker), "trusted-base receipt seam was not invoked"
       assert_equal(
-        "github.example",
-        JSON.parse(File.read(base_marker)).fetch("host")
+        {
+          "host" => "github.example",
+          "credential_forwarded" => true,
+          "unrelated_credential_present" => false
+        },
+        JSON.parse(File.read(base_marker))
       )
       refute File.exist?(attacker_marker), "PR-head receipt seam was invoked"
+    end
+  end
+
+  def test_selected_hosted_ci_policy_credential_allowlist_is_exact_and_fail_closed
+    runner = MergeAssurance::Runner.new
+    executable = ".agents/bin/selected-hosted-ci-receipts"
+    valid = {
+      "selected_hosted_ci_receipts" => {
+        "executable" => executable,
+        "credential_env" => %w[CIRCLECI_TOKEN BUILDKITE_API_KEY]
+      }
+    }
+
+    assert_equal(
+      [executable, %w[CIRCLECI_TOKEN BUILDKITE_API_KEY]],
+      runner.send(:selected_hosted_ci_policy!, valid)
+    )
+
+    invalid = {
+      "missing allowlist" => { "executable" => executable },
+      "non-array allowlist" => { "executable" => executable, "credential_env" => "CIRCLECI_TOKEN" },
+      "empty name" => { "executable" => executable, "credential_env" => [""] },
+      "duplicate name" => {
+        "executable" => executable,
+        "credential_env" => %w[CIRCLECI_TOKEN CIRCLECI_TOKEN]
+      },
+      "reserved binding" => { "executable" => executable, "credential_env" => ["GH_HOST"] },
+      "extra key" => { "executable" => executable, "credential_env" => [], "shell" => "ruby" }
+    }
+
+    invalid.each_value do |seam|
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(:selected_hosted_ci_policy!, "selected_hosted_ci_receipts" => seam)
+      end
+      refute_empty error.message
+    end
+  end
+
+  def test_selected_hosted_ci_declared_credentials_must_be_present_and_nonempty
+    runner = MergeAssurance::Runner.new
+    request = {
+      "host" => "github.com",
+      "repository" => "owner/repo",
+      "pr" => 42,
+      "head_sha" => HEAD_SHA
+    }
+    credential = "MERGE_ASSURANCE_SELECTED_TOKEN"
+    original = ENV[credential]
+
+    [nil, ""].each do |value|
+      value.nil? ? ENV.delete(credential) : ENV[credential] = value
+      error = assert_raises(MergeAssurance::Error) do
+        runner.send(:selected_hosted_ci_environment, request, [credential])
+      end
+      assert_includes error.message, credential
+    end
+  ensure
+    original.nil? ? ENV.delete(credential) : ENV[credential] = original
+  end
+
+  def test_generic_env_ruby_resolves_to_verified_rbconfig_ruby
+    runner = MergeAssurance::Runner.new
+    Dir.mktmpdir("merge-assurance-consumer") do |repo_root|
+      Dir.mktmpdir("merge-assurance-versioned-ruby") do |runtime_root|
+        versioned_ruby = File.join(runtime_root, "ruby3.4")
+        File.write(versioned_ruby, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, versioned_ruby)
+        original_ruby = RbConfig.method(:ruby)
+        RbConfig.define_singleton_method(:ruby) { versioned_ruby }
+
+        assert_equal(
+          File.realpath(versioned_ruby),
+          runner.send(:resolve_env_interpreter!, "ruby", repo_root)
+        )
+      ensure
+        RbConfig.define_singleton_method(:ruby, original_ruby) if original_ruby
+      end
     end
   end
 
@@ -1652,7 +1742,9 @@ class MergeAssuranceTest < Minitest::Test
     stdout
   end
 
-  def selected_hosted_ci_seam_script(marker:, terminal_result:)
+  def selected_hosted_ci_seam_script(
+    marker:, terminal_result:, required_credential: nil, absent_credential: nil
+  )
     record = {
       "provider" => "circleci",
       "repository" => "owner/repo",
@@ -1668,12 +1760,26 @@ class MergeAssuranceTest < Minitest::Test
       "complete" => true,
       "records" => [record]
     }
+    credential_name, credential_value = required_credential
     <<~RUBY
       #!#{RbConfig.ruby}
       require "json"
       request = JSON.parse(STDIN.read)
       raise "host binding mismatch" unless ENV.fetch("GH_HOST") == request.fetch("host")
-      File.write(#{marker.inspect}, JSON.generate("host" => request.fetch("host")))
+      credential_forwarded = #{credential_name.inspect}.nil? ||
+        ENV[#{credential_name.inspect}] == #{credential_value.inspect}
+      unrelated_credential_present = !#{absent_credential.inspect}.nil? &&
+        ENV.key?(#{absent_credential.inspect})
+      raise "allowlisted credential missing" unless credential_forwarded
+      raise "unrelated credential leaked" if unrelated_credential_present
+      File.write(
+        #{marker.inspect},
+        JSON.generate(
+          "host" => request.fetch("host"),
+          "credential_forwarded" => credential_forwarded,
+          "unrelated_credential_present" => unrelated_credential_present
+        )
+      )
       puts #{JSON.generate(payload).inspect}
     RUBY
   end
