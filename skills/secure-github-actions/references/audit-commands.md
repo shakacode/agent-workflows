@@ -31,14 +31,18 @@ symlink or non-regular file fails closed. A symlinked directory below the
 consumer root also blocks recursive composite-action coverage and is reported
 without enumerating its target. The explicit consumer root itself is resolved
 once to its real directory and bound to that directory's device/inode identity.
+The scanner revalidates that bound identity before discovery, so a replaced
+root fails closed even when the replacement contains no candidate files.
 
 For each candidate, the scanner validates every ancestor with `lstat`, requires
 a real regular final file, and uses `File::NOFOLLOW` and `File::NONBLOCK` when
 the Ruby/platform pair provides them. `NONBLOCK` prevents a concurrent
 regular-file-to-FIFO replacement from waiting for a writer before descriptor
 validation. It then requires the opened descriptor's `fstat` device/inode to
-match a fresh path `lstat`, revalidates the ancestor chain, and only then reads
-from the already-open descriptor.
+match both the pre-open path `lstat` and a fresh path `lstat`, revalidates the
+ancestor chain, and only then reads from the already-open descriptor. A
+regular-file-to-different-regular-file replacement therefore fails closed
+instead of parsing the replacement inode.
 
 On a Ruby/platform pair without `File::NONBLOCK`, a concurrently substituted
 FIFO is still rejected after `open` returns, but the portable layer cannot

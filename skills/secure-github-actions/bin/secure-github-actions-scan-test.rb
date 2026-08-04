@@ -329,6 +329,70 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_empty_root_replacement_after_initialization_fails_closed_before_discovery
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      original_root = File.join(outer, "original-consumer")
+      FileUtils.mkdir_p(root)
+      scanner = SecureGitHubActions::Scanner.new(root)
+      File.rename(root, original_root)
+      FileUtils.mkdir_p(root)
+      discovery_calls = []
+      scanner.define_singleton_method(:workflow_entries) do
+        discovery_calls << :workflows
+        []
+      end
+      scanner.define_singleton_method(:action_entries) do
+        discovery_calls << :actions
+        []
+      end
+
+      result = scanner.scan
+
+      refute_predicate result, :clean?
+      assert_empty discovery_calls
+      assert_equal ["."], result.files
+      assert_equal 1, result.findings.length
+      assert_equal "secure-github-actions/unsafe-file", result.findings.first.fetch("rule_id")
+      assert_equal "secure-github-actions/unsafe-file:.:<document>", result.findings.first.fetch("id")
+      assert_equal ".", result.findings.first.dig("location", "file")
+      assert_empty ValidateReviewFindings.validate_document(result.document, "replaced root")
+    end
+  end
+
+  def test_regular_file_inode_replacement_before_open_fails_closed_without_parsing_replacement
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      action_path = File.join(root, "components/example/action.yml")
+      replacement_path = File.join(outer, "replacement-action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, "runs:\n  using: composite\n  steps: []\n")
+      File.write(replacement_path, <<~YAML)
+        runs:
+          using: composite
+          steps:
+            - uses: owner/action@v1
+      YAML
+      scanner = SecureGitHubActions::Scanner.new(root)
+      original_open = File.method(:open)
+      replacement_open = lambda do |path, flags, &block|
+        File.rename(replacement_path, path)
+        original_open.call(path, flags, &block)
+      end
+      File.define_singleton_method(:open, &replacement_open)
+      result = begin
+        scanner.scan
+      ensure
+        File.define_singleton_method(:open, original_open)
+      end
+
+      assert_equal ["components/example/action.yml"], result.files
+      assert_equal 1, result.findings.length
+      assert_equal "secure-github-actions/unsafe-file", result.findings.first.fetch("rule_id")
+      assert_equal "components/example/action.yml", result.findings.first.dig("location", "file")
+    end
+  end
+
   private
 
   def scan_symlink_target(root, link_path, target_path)

@@ -51,6 +51,8 @@ module SecureGitHubActions
     end
 
     def scan
+      return unsafe_root_result unless bound_root?
+
       input_types = workflow_entries.to_h { |path, type| [path, type] }
       action_entries.each { |path, type| input_types[path] ||= type }
       inputs = input_types.sort_by(&:first)
@@ -70,6 +72,17 @@ module SecureGitHubActions
     end
 
     private
+
+    def bound_root?
+      root_stat = File.lstat(@root)
+      root_stat.directory? && !root_stat.symlink? && file_identity(root_stat) == @root_identity
+    rescue SystemCallError
+      false
+    end
+
+    def unsafe_root_result
+      Result.new(root: @root, files: ["."], findings: [unsafe_file(@root)])
+    end
 
     def workflow_entries
       github_directory = File.join(@root, ".github")
@@ -275,16 +288,19 @@ module SecureGitHubActions
       path_stat = File.lstat(path)
       raise UnsafeFileError unless path_stat.file? && !path_stat.symlink?
 
+      path_identity = file_identity(path_stat)
+
       flags = File::RDONLY
       flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
       flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
       File.open(path, flags) do |file|
         opened_stat = file.stat
         raise UnsafeFileError unless opened_stat.file?
+        raise UnsafeFileError unless file_identity(opened_stat) == path_identity
 
         current_stat = File.lstat(path)
         raise UnsafeFileError unless current_stat.file? && !current_stat.symlink?
-        raise UnsafeFileError unless file_identity(opened_stat) == file_identity(current_stat)
+        raise UnsafeFileError unless file_identity(current_stat) == path_identity
 
         validate_ancestor_chain!(path)
         file.read
@@ -296,10 +312,7 @@ module SecureGitHubActions
     def validate_ancestor_chain!(path)
       relative = relative_path(path)
       raise UnsafeFileError if relative == path || relative.empty?
-
-      root_stat = File.lstat(@root)
-      raise UnsafeFileError unless root_stat.directory? && !root_stat.symlink?
-      raise UnsafeFileError unless file_identity(root_stat) == @root_identity
+      raise UnsafeFileError unless bound_root?
 
       current = @root
       relative.split("/")[0...-1].each do |part|
