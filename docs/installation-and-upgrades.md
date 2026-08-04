@@ -398,6 +398,7 @@ The installer writes:
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
+- `<target>/bin/agent-workflows-refresh`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
@@ -450,6 +451,29 @@ evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
 ## Upgrade
+
+### Refresh a native plugin
+
+Use the installed refresh helper before starting work that requires the newest
+shared workflow behavior:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+For Codex, the helper upgrades the configured `agent-workflows` marketplace.
+For Claude, it updates that marketplace and then updates
+`scw@agent-workflows`. The newest marketplace commit is therefore available
+without creating a separate Agent Workflows release. The helper does not add a
+missing marketplace or install a missing plugin; follow the selected host's
+setup guidance first.
+
+This is an explicit preflight, not a background update. Restart any active agent
+session that must consume the refreshed instructions because a running session
+may retain skill text it already loaded.
+
+### Upgrade an installer-managed pack
 
 Upgrade the source clone, reinstall the pack, and validate a consumer repo seam:
 

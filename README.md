@@ -156,7 +156,7 @@ The selected delivery mode is durable install state. Repeated installs,
 explicit `--delivery-mode` changes it.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-doctor`, `agent-workflows-status`,
+`agent-workflows-doctor`, `agent-workflows-refresh`, `agent-workflows-status`,
 `agent-workflows-trust-audit`, and `upgrade-agent-workflows` available as normal
 commands.
 
@@ -201,6 +201,19 @@ Use a native plugin path for a host-qualified skill surface. Pair it with
 binaries, workflows, docs, metadata, status, or upgrades. The installer fails
 closed instead of creating native-plus-flat duplicates. Native plugin updates
 remain owned by the host plugin flow, not `upgrade-agent-workflows`.
+
+Refresh a native plugin from its configured marketplace before starting work
+that requires the latest shared workflows:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+This uses the host's native marketplace and plugin update commands, so the
+newest marketplace commit does not need a separate Agent Workflows release.
+Restart an already-running agent session after refreshing; it may retain skill
+instructions that it loaded before the update.
 
 ## Consumer Repo Adoption
 
