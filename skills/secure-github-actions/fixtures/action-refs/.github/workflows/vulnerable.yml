@@ -1,0 +1,9 @@
+name: Mutable action reference
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/action@v4
+      - uses: owner/action@v1@0123456789abcdef0123456789abcdef01234567
+      - uses: ./.github/actions/local

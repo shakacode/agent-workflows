@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+require_relative "../lib/secure_github_actions_scanner"
+
+options = { format: "text" }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: secure-github-actions-scan [--format text|json] CONSUMER_ROOT"
+  opts.on("--format FORMAT", %w[text json], "Output format: text or json") do |format|
+    options[:format] = format
+  end
+  opts.on("--json", "Alias for --format json") { options[:format] = "json" }
+end
+
+begin
+  parser.parse!(ARGV)
+rescue OptionParser::ParseError => e
+  warn "#{e.message}\n#{parser}"
+  exit 64
+end
+
+unless ARGV.length == 1 && File.directory?(ARGV.first)
+  warn parser
+  exit 64
+end
+
+result = SecureGitHubActions::Scanner.new(ARGV.first).scan
+
+if options[:format] == "json"
+  puts JSON.pretty_generate(result.document)
+elsif result.clean?
+  noun = result.files.length == 1 ? "file" : "files"
+  puts "secure-github-actions-scan: CLEAN (#{result.files.length} #{noun} scanned)"
+else
+  puts "secure-github-actions-scan: FINDINGS"
+  result.findings.each do |finding|
+    location = finding.fetch("location")
+    rendered_location = JSON.generate("#{location.fetch('file')}:#{location.fetch('symbol')}")
+    puts "- #{rendered_location} [#{finding.fetch('rule_id')}] #{finding.fetch('title')}"
+  end
+  puts "#{result.findings.length} finding(s) across #{result.files.length} scanned file(s)"
+end
+
+exit(result.clean? ? 0 : 1)

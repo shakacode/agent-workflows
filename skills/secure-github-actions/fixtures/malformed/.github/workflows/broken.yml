@@ -1,0 +1,5 @@
+name: Broken workflow
+jobs:
+  build:
+    steps:
+      - run: [
