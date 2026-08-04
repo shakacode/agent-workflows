@@ -69,8 +69,12 @@ address_review_templates = read_repo_file("skills/address-review/references/temp
 
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
-assert(batch.include?("Do not silently default it"), "single-target mode must require explicit merge authority")
-assert(batch.include?("an explicit `AGENTS.md` rule, or a resolved batch-plan instruction"), "single-target merge authority must use concrete authorization sources")
+assert(batch.include?("otherwise default to `ask` without pausing for a\n  choice"), "single-target mode must default missing merge authority to ask")
+assert(batch.include?("Only use `none` or\n     `auto_merge_when_gates_pass` when visible user or repository policy selects\n     it") ||
+       workflow.include?("default to\n  `ask` when the user and repository policy do not supply another value"),
+       "none and auto merge must require visible policy instead of becoming defaults")
+assert(!batch.include?("Do not silently default it"), "obsolete explicit-choice requirement must be removed")
+assert(batch.include?("an explicit `AGENTS.md` rule, or a resolved\n  batch-plan instruction"), "single-target merge authority must use concrete authorization sources")
 assert(batch.include?("fastest or balanced worker route"), "single-target mode must use cost-aware staged routing")
 assert(batch.include?("verified head branch cannot be pushed"), "single-target PR mode must preserve the unpushable-head fallback")
 assert(batch.include?("replacement branch/PR"), "single-target PR mode must explain the replacement path")

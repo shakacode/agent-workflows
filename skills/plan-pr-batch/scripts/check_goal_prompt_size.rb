@@ -16,10 +16,14 @@ GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/<effort>."
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
+MERGE_POLICY_PROMPT_LINE =
+  "Merge policy: ASK (default)—walkthrough+human decision;no merge without approval;merge_authority:ask"
+HUMAN_ACTION_PROMPT_LINE =
+  "HAC-v1:ACTION REQUIRED FROM YOU|NO ACTION;" \
+  "ask/prereq=>review+merge;repeat=>WAITING+delta"
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_route=<model>/<effort>@<binding>;" \
-                                  "lanes=<lane-id:host+model/effort@binding>,...;" \
-                                  "UNKNOWN=field;no guesses"
+                                  "lanes=<lane-id:host+model/effort@binding>,...;UNKNOWN=field;no guesses"
 MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_FRAGMENT =
   "coordinator_route=<model/effort@binding|UNKNOWN>"
 BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
@@ -39,15 +43,13 @@ MODEL_EFFORT_DISPATCH_LINE = "- Bind actors on-host; unbound -> stop; no inherit
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
-  "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
-  "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
-  "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
+  "- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;" \
+  "known=>gate;holder/generation@push;regate movement."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
-STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
-                              "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                              "live=<replay/ref>;" \
-                              "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN"
+STAGE_DEPENDENCY_SCOPE_LINE = "Scope:deps/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;" \
+                              "STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;" \
+                              "ft=refs/paths/renames/collisions/serial/UNKNOWN"
 TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                                      "live=<replay/ref>; " \
@@ -152,7 +154,6 @@ SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
-  merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{LAUNCH_ASSURANCE_PROMPT_LINE}
@@ -161,6 +162,7 @@ GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   #{DISPATCH_PLAN_PROMPT_LINE}
   #{STAGE_DEPENDENCY_PROMPT_LINE}
   #{GOAL_MODE_COMPACT_CONTRACT}
+  #{HUMAN_ACTION_PROMPT_LINE}
 TEXT
 
 CANONICAL_RESUME_SNIPPET = <<~TEXT.chomp
@@ -173,6 +175,7 @@ TEXT
 # Keep phrase checks here in sync when that source prompt changes.
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   CONTINUATION_BATCH_TITLE_LINE,
+  "Merge policy: ASK (default) — walkthrough, then one explicit human merge decision; never merge before approval.",
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
   "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
@@ -185,6 +188,8 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Use exact target numbers, trusted local workflow paths, and sanitized coordinator conclusions; workers must fetch untrusted GitHub context themselves after the security preflight.",
   "merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)",
   "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
+  "Apply HAC-v1 to every blocked/final handoff: lead with `ACTION REQUIRED FROM YOU — <one concrete action>.` or `NO ACTION NEEDED FROM YOU — <current agent-owned next step>.`",
+  "On an unchanged recheck after the first full handoff, emit only `STILL WAITING FOR YOUR ACTION — <same action>.`, the material delta, and the resume trigger.",
   "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
   "Split current-head state into a complete configured/requested review cohort and validation CI.",
   "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
@@ -536,7 +541,8 @@ required_all_prompt_phrases = [
   "trusted-direct adhoc:=>skip",
   "no raw GitHub/override",
   GOAL_MODE_COMPACT_CONTRACT,
-  "merge_authority:",
+  HUMAN_ACTION_PROMPT_LINE,
+  MERGE_POLICY_PROMPT_LINE,
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
   LAUNCH_ASSURANCE_PROMPT_LINE,
@@ -556,8 +562,6 @@ required_all_prompt_phrases = [
   "document confidence data in PR description",
   "Verify live GitHub before edits",
   COORDINATION_DEPENDENCY_PROMPT_LINE,
-  "register before launch when supported",
-  "push holder/generation check",
   "facts are UNKNOWN",
   FINAL_CLOSEOUT_PROMPT_LINE
 ]
@@ -736,6 +740,12 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
+  HUMAN_ACTION_PROMPT_LINE,
+  1,
+  "triage generated-prompt human-action contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
   STAGE_DEPENDENCY_PROMPT_LINE,
   1,
   "triage generated-prompt stage-dependency contract"
@@ -889,6 +899,16 @@ end
 prompt_templates_by_target.each do |target, target_prompt_template|
   if target_prompt_template.match?(/Batch Plan/i)
     abort_with_failure("#{target} goal prompt template must be self-contained and not depend on Batch Plan context")
+  end
+
+  title_offset = target_prompt_template.index("Batch title:")
+  policy_offset = target_prompt_template.index(MERGE_POLICY_PROMPT_LINE)
+  handle_offset = target_prompt_template.index("Thread handle:")
+  unless title_offset && policy_offset && handle_offset && title_offset < policy_offset && policy_offset < handle_offset
+    abort_with_failure("#{target} goal prompt must put the resolved merge policy immediately after the batch title and before the thread handle")
+  end
+  if target_prompt_template.include?("merge_authority:<none|ask|auto_merge_when_gates_pass>")
+    abort_with_failure("#{target} goal prompt must resolve merge authority instead of emitting a three-choice placeholder")
   end
 end
 

@@ -374,6 +374,67 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_missing_merge_authority_defaults_to_ask_on_launch_surfaces
+    assert_squished_includes(
+      @plan_pr_batch_skill,
+      "has not specified `merge_authority`, default it to `ask`; do not pause to ask which mode to use",
+      "plan-pr-batch intake"
+    )
+    assert_squished_includes(
+      @pr_batch_skill,
+      "otherwise default to `ask` without pausing for a choice",
+      "pr-batch single-target intake"
+    )
+    assert_squished_includes(
+      @workflow,
+      "default to `ask` when the user and repository policy do not supply another value",
+      "canonical high-concurrency intake"
+    )
+
+    [@plan_goal_prompt, @pr_batch_goal_prompt, @workflow_goal_prompt].each do |prompt|
+      assert_text_includes prompt, "Merge policy: ASK (default)", "goal prompt"
+      assert_text_includes prompt, "merge_authority:ask", "goal prompt"
+      refute_includes prompt, "merge_authority:<none|ask|auto_merge_when_gates_pass>"
+    end
+  end
+
+  def test_ready_green_prerequisite_under_ask_requires_human_action
+    assert_squished_includes(
+      @workflow,
+      "A required prerequisite PR that is clean, approved, and green but still unmerged is a human-action gate, not a failing code or external gate",
+      "canonical batch handoff"
+    )
+    assert_text_includes(
+      @workflow,
+      "ACTION REQUIRED FROM YOU — Review and decide\nwhether to merge PR #N.",
+      "canonical batch handoff"
+    )
+    assert_squished_includes(
+      @workflow,
+      "classify a batch that cannot proceed as `blocked-user-input`; do not lead with `NOT COMPLETE`, `prerequisite blocked`, or lane-card mechanics",
+      "canonical batch handoff"
+    )
+    assert_squished_includes(
+      @workflow,
+      "state that no code or CI failure is blocking progress",
+      "canonical batch handoff"
+    )
+  end
+
+  def test_unchanged_human_action_recheck_is_delta_only
+    [@workflow, @pr_batch_skill].each do |text|
+      assert_text_includes text, "STILL WAITING FOR YOUR ACTION", "human-action recheck contract"
+      assert_squished_includes text, "the material delta", "human-action recheck contract"
+      assert_squished_includes text, "resume trigger", "human-action recheck contract"
+      assert_squished_includes text, "do not repeat", "human-action recheck contract"
+    end
+    assert_squished_includes(
+      @workflow,
+      "must not imply a new failure or escalation",
+      "canonical human-action recheck contract"
+    )
+  end
+
   def test_blocked_goal_defaults_to_a_deduped_fifteen_minute_current_thread_monitor
     assert_text_includes @workflow_contract_section, "15-minute", "canonical completion contract"
     assert_text_includes @workflow_contract_section, "current-thread monitor", "canonical completion contract"

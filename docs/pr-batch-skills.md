@@ -240,9 +240,15 @@ Run issues #123, #124, and PR #130 as one agent batch. Use one worker per indepe
 
 For one target, `$pr-batch` uses single-target mode: one worker subagent when the
 host supports it, a separate coordinator, the canonical staged cost-aware worker
-route, and an explicit `merge_authority` choice before launch. It collapses only
+route, and a resolved `merge_authority` before launch. It collapses only
 multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
+
+When neither the user nor repository policy selects another value,
+`merge_authority` defaults to `ask`; planning does not stop to ask which mode to
+use. Pasteable batch prompts show this near the top as `Merge policy: ASK
+(default)` and explain that the workflow will run the exact-diff walkthrough,
+then stop for one explicit human merge decision without merging first.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
 after ordinary gates are clean, the coordinator automatically starts
@@ -253,6 +259,13 @@ restarts or stops it; a newly failing gate stops it. The coordinator asks the
 one final merge question only when the refreshed identity matches the recorded
 identity and readiness remains clean; a completed walkthrough must have
 explained that same diff. The walkthrough itself is not approval.
+
+Human-facing blocked and final handoffs lead with either `ACTION REQUIRED FROM
+YOU` or `NO ACTION NEEDED FROM YOU`. In particular, a clean, approved, green
+prerequisite PR that merely remains unmerged is reported as a human review/merge
+action under `ask`, not as a generic failed prerequisite. Rechecks of that same
+unchanged gate use a terse `STILL WAITING FOR YOUR ACTION` delta instead of
+repeating the full batch report.
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from
 [skills/pr-batch/SKILL.md](../skills/pr-batch/SKILL.md): workers must be able

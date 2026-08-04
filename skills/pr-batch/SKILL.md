@@ -97,10 +97,10 @@ facts remain fail-closed and stop before mutation.
   carries one `dispatch-decision-request v1` with canonical viable fallback choices and stops.
   Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_host`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. A persisted pre-`actual_host` version 2 confirmation remains parseable only as signed history for the same `confirmed-active` assignment identity: verify its signature against the legacy canonical payload that omits `actual_host`, never synthesize that field, and never use the record to qualify or activate `launch-pending`; any tampering or identity mismatch fails closed, and every new activation still requires a current signed nonempty `actual_host`. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
-  visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
-  for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
-  automatic interactive exact-diff walkthrough before the one final merge
-  decision. Do not silently default it.
+  visible user instruction, an explicit `AGENTS.md` rule, or a resolved
+  batch-plan instruction; otherwise default to `ask` without pausing for a
+  choice. `ask` includes an automatic interactive exact-diff walkthrough before
+  one final explicit merge decision and never permits merging before approval.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
 a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
@@ -183,9 +183,11 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
-   it before worker launch from visible authority or ask the user. Explain that
-   `ask` automatically walks through the exact-diff PR one conceptual change at
-   a time before the one final merge decision; do not silently default it.
+   it before worker launch from visible authority; when none is supplied,
+   default to `ask` without asking another intake question. Explain prominently
+   that `ask` automatically walks through the exact-diff PR one conceptual
+   change at a time, then stops for one explicit human merge decision and never
+   merges before approval.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
    user-requested host or paste destination wins. Use `codex` for up to 10
@@ -327,7 +329,8 @@ Before implementation or worker launch, produce:
    - risk
    - likely outcome: implementation PR, combined investigation PR, no-PR evidence comment, or product-decision blocker
    - assigned machine or worker
-6. The selected `merge_authority` value and how it affects final closeout.
+6. The selected `merge_authority` value, whether it was explicitly supplied or
+   defaulted to `ask`, and how it affects final closeout.
 7. The Batch QA Lane decision from `.agents/workflows/pr-processing.md`:
    required lane/owner/scope or `not required` with rationale, plus final QA
    Evidence expectations.
@@ -531,15 +534,20 @@ workflow rules instead of duplicating them.
 
 Use this template when creating Codex goal text:
 
+The template shows the missing-value default. Replace the complete `Merge
+policy:` line only when visible user or repository policy selected `none` or
+`auto_merge_when_gates_pass`, and keep its prose and machine-readable
+`merge_authority` value consistent.
+
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Merge policy: ASK (default)—walkthrough+human decision;no merge without approval;merge_authority:ask
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
 Repo:OWNER/REPO
 Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
@@ -548,8 +556,9 @@ Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escala
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+HAC-v1:ACTION REQUIRED FROM YOU|NO ACTION;ask/prereq=>review+merge;repeat=>WAITING+delta
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Scope:deps/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;ft=refs/paths/renames/collisions/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original:trusted ad-hoc prompt|n/a
@@ -563,7 +572,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;regate movement.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
@@ -651,6 +660,14 @@ Use the canonical Batch Handoff Format in
 requests already handled, no-PR rationales, autonomous nit outcomes,
 confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
 merge-ledger summaries.
+
+Apply its Human Action Contract (`HAC-v1`) before those sections. Lead with
+`ACTION REQUIRED FROM YOU — <one concrete action>.` or `NO ACTION NEEDED FROM
+YOU — <current agent-owned next step>.` A clean, approved, green prerequisite
+PR that remains unmerged is a human-action gate under `ask`, not a failing
+prerequisite. After the first full handoff, an unchanged recheck emits only
+`STILL WAITING FOR YOUR ACTION — <same action>.`, the material delta, and the
+resume trigger; do not repeat lane cards or unchanged evidence.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
