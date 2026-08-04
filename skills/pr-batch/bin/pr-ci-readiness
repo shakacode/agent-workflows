@@ -1111,6 +1111,8 @@ module PrCiReadiness
       expected_head_sha = fetch_pr_head_oid(repo, pr_number)
       requested_hosted_runs.each_with_object(empty_requested_hosted) do |input, summary|
         run_id = requested_hosted_run_id(input)
+        next if summary["run_ids"].include?(run_id)
+
         summary["run_ids"] << run_id
         run = fetch_actions_run(repo, run_id)
         classify_requested_run(summary, repo, run_id, run, expected_head_sha)

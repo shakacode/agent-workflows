@@ -2799,6 +2799,35 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_requested_hosted_run_selection_is_idempotent_across_id_and_url
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(
+        env,
+        "123", "--repo", "owner/repo",
+        "--requested-hosted-run", "42",
+        "--requested-hosted-run", "https://github.com/owner/repo/actions/runs/42"
+      )
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal ["42"], data.dig("requested_hosted", "run_ids")
+      completed_run_ids = data.dig("requested_hosted", "completed").map { |row| row.fetch("run_id") }
+      assert_equal ["42"], completed_run_ids
+    end
+  end
+
   def test_requested_hosted_success_keeps_pending_exact_head_external_check_informational_with_required_lint
     head = "a" * 40
     with_fake_gh(
