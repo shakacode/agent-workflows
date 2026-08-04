@@ -31,8 +31,9 @@ symlink or non-regular file fails closed. A symlinked directory below the
 consumer root also blocks recursive composite-action coverage and is reported
 without enumerating its target. The explicit consumer root itself is resolved
 once to its real directory and bound to that directory's device/inode identity.
-The scanner revalidates that bound identity before discovery, so a replaced
-root fails closed even when the replacement contains no candidate files.
+The scanner revalidates that bound identity before discovery, after discovery,
+and after candidate scanning before returning a result. A replaced root
+therefore fails closed even when the replacement contains no candidate files.
 
 For each candidate, the scanner validates every ancestor with `lstat`, requires
 a real regular final file, and uses `File::NOFOLLOW` and `File::NONBLOCK` when
@@ -50,9 +51,9 @@ guarantee that `open` itself will not wait. Other special-device open semantics
 are platform-specific; every non-regular descriptor is rejected once opened.
 Ruby's portable file API also does not expose a cross-platform
 component-by-component `openat` chain, so an attacker who can concurrently
-replace and restore ancestor directories retains a narrow TOCTOU window. Static
-symlink, non-regular, changed-inode, root-identity, and observed out-of-root
-escapes are never parsed.
+replace and restore the root or an ancestor entirely between discrete checks
+retains a narrow TOCTOU window. Static symlink, non-regular, changed-inode,
+root-identity, and observed out-of-root escapes are never parsed.
 
 The JSON document uses `schema: review-finding-v0` and a top-level
 `review_findings` array. Findings include a stable `id`, `rule_id`,

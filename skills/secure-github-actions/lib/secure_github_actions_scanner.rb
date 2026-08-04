@@ -55,6 +55,8 @@ module SecureGitHubActions
 
       input_types = workflow_entries.to_h { |path, type| [path, type] }
       action_entries.each { |path, type| input_types[path] ||= type }
+      return unsafe_root_result unless bound_root?
+
       inputs = input_types.sort_by(&:first)
       findings = inputs.flat_map do |path, type|
         case type
@@ -67,6 +69,7 @@ module SecureGitHubActions
         location = finding.fetch("location")
         [location.fetch("file"), location.fetch("symbol"), finding.fetch("rule_id")]
       end
+      return unsafe_root_result unless bound_root?
 
       Result.new(root: @root, files: inputs.map { |path, _type| relative_path(path) }, findings: findings)
     end

@@ -393,6 +393,50 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_empty_root_replacement_during_discovery_fails_closed
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      original_root = File.join(outer, "original-consumer")
+      FileUtils.mkdir_p(root)
+      scanner = SecureGitHubActions::Scanner.new(root)
+      scanner.define_singleton_method(:workflow_entries) do
+        File.rename(root, original_root)
+        FileUtils.mkdir_p(root)
+        []
+      end
+
+      result = scanner.scan
+
+      refute_predicate result, :clean?
+      assert_equal ["."], result.files
+      assert_equal 1, result.findings.length
+      assert_equal "secure-github-actions/unsafe-file:.:<document>", result.findings.first.fetch("id")
+    end
+  end
+
+  def test_root_replacement_during_candidate_scanning_fails_closed_before_return
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      original_root = File.join(outer, "original-consumer")
+      action_path = File.join(root, "components/example/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, "runs:\n  using: composite\n  steps: []\n")
+      scanner = SecureGitHubActions::Scanner.new(root)
+      scanner.define_singleton_method(:scan_action) do |_path|
+        File.rename(root, original_root)
+        FileUtils.mkdir_p(root)
+        []
+      end
+
+      result = scanner.scan
+
+      refute_predicate result, :clean?
+      assert_equal ["."], result.files
+      assert_equal 1, result.findings.length
+      assert_equal "secure-github-actions/unsafe-file:.:<document>", result.findings.first.fetch("id")
+    end
+  end
+
   private
 
   def scan_symlink_target(root, link_path, target_path)
