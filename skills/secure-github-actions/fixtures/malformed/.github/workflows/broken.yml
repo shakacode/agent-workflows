@@ -1,5 +1,2 @@
-name: Broken workflow
-jobs:
-  build:
-    steps:
-      - run: [
+---
+jobs: !ruby/object:Object {}
