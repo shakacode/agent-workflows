@@ -277,6 +277,7 @@ module SecureGitHubActions
 
       flags = File::RDONLY
       flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+      flags |= File::NONBLOCK if File.const_defined?(:NONBLOCK)
       File.open(path, flags) do |file|
         opened_stat = file.stat
         raise UnsafeFileError unless opened_stat.file?

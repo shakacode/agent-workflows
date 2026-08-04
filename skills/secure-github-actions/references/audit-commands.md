@@ -33,14 +33,22 @@ without enumerating its target. The explicit consumer root itself is resolved
 once to its real directory and bound to that directory's device/inode identity.
 
 For each candidate, the scanner validates every ancestor with `lstat`, requires
-a real regular final file, and uses `File::NOFOLLOW` when the Ruby/platform pair
-provides it. It then requires the opened descriptor's `fstat` device/inode to
+a real regular final file, and uses `File::NOFOLLOW` and `File::NONBLOCK` when
+the Ruby/platform pair provides them. `NONBLOCK` prevents a concurrent
+regular-file-to-FIFO replacement from waiting for a writer before descriptor
+validation. It then requires the opened descriptor's `fstat` device/inode to
 match a fresh path `lstat`, revalidates the ancestor chain, and only then reads
-from the already-open descriptor. Ruby's portable file API does not expose a
-cross-platform component-by-component `openat` chain, so an attacker who can
-concurrently replace and restore ancestor directories retains a narrow TOCTOU
-window. Static symlink, non-regular, changed-inode, root-identity, and observed
-out-of-root escapes are never parsed.
+from the already-open descriptor.
+
+On a Ruby/platform pair without `File::NONBLOCK`, a concurrently substituted
+FIFO is still rejected after `open` returns, but the portable layer cannot
+guarantee that `open` itself will not wait. Other special-device open semantics
+are platform-specific; every non-regular descriptor is rejected once opened.
+Ruby's portable file API also does not expose a cross-platform
+component-by-component `openat` chain, so an attacker who can concurrently
+replace and restore ancestor directories retains a narrow TOCTOU window. Static
+symlink, non-regular, changed-inode, root-identity, and observed out-of-root
+escapes are never parsed.
 
 The JSON document uses `schema: review-finding-v0` and a top-level
 `review_findings` array. Findings include a stable `id`, `rule_id`,

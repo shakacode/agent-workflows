@@ -298,6 +298,37 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_final_entry_swap_to_fifo_uses_nonblocking_open_and_fails_closed
+    skip "File::NONBLOCK is unavailable on this Ruby/platform" unless File.const_defined?(:NONBLOCK)
+
+    Dir.mktmpdir("secure-github-actions") do |root|
+      action_path = File.join(root, "components/example/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, "runs:\n  using: composite\n  steps: []\n")
+      opened_flags = nil
+      replacement_open = lambda do |path, flags, &block|
+        opened_flags = flags
+        File.unlink(path)
+        File.mkfifo(path)
+        fake_file = Struct.new(:stat).new(File.lstat(path))
+        block.call(fake_file)
+      end
+
+      original_open = File.method(:open)
+      File.define_singleton_method(:open, &replacement_open)
+      result = begin
+        SecureGitHubActions::Scanner.new(root).scan
+      ensure
+        File.define_singleton_method(:open, original_open)
+      end
+
+      assert_equal File::NONBLOCK, opened_flags & File::NONBLOCK
+      assert_equal 1, result.findings.length
+      assert_equal "secure-github-actions/unsafe-file", result.findings.first.fetch("rule_id")
+      assert_equal "components/example/action.yml", result.findings.first.dig("location", "file")
+    end
+  end
+
   private
 
   def scan_symlink_target(root, link_path, target_path)
