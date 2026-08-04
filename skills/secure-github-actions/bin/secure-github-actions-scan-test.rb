@@ -179,7 +179,132 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_workflow_file_symlink_fails_closed_without_parsing_external_content
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      workflow_path = File.join(root, ".github/workflows/linked.yml")
+      clean_target = File.join(outer, "clean-workflow.yml")
+      vulnerable_target = File.join(outer, "vulnerable-workflow.yml")
+      FileUtils.mkdir_p(File.dirname(workflow_path))
+      File.write(clean_target, "jobs: {}\n")
+      File.write(vulnerable_target, <<~YAML)
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+
+      clean_document = scan_symlink_target(root, workflow_path, clean_target)
+      vulnerable_document = scan_symlink_target(root, workflow_path, vulnerable_target)
+
+      assert_equal clean_document, vulnerable_document
+      assert_equal "secure-github-actions/unsafe-file",
+                   clean_document.fetch("review_findings").first.fetch("rule_id")
+    end
+  end
+
+  def test_composite_action_file_symlink_fails_closed_without_parsing_external_content
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      action_path = File.join(root, "actions/example/action.yml")
+      clean_target = File.join(outer, "clean-action.yml")
+      vulnerable_target = File.join(outer, "vulnerable-action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(clean_target, <<~YAML)
+        runs:
+          using: composite
+          steps:
+            - uses: owner/action@0123456789abcdef0123456789abcdef01234567
+      YAML
+      File.write(vulnerable_target, <<~YAML)
+        runs:
+          using: composite
+          steps:
+            - uses: owner/action@v1
+      YAML
+
+      clean_document = scan_symlink_target(root, action_path, clean_target)
+      vulnerable_document = scan_symlink_target(root, action_path, vulnerable_target)
+
+      assert_equal clean_document, vulnerable_document
+      assert_equal "secure-github-actions/unsafe-file",
+                   clean_document.fetch("review_findings").first.fetch("rule_id")
+    end
+  end
+
+  def test_symlinked_parent_directory_blocks_composite_action_discovery
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      outside = File.join(outer, "outside-actions")
+      linked_parent = File.join(root, "components/external")
+      FileUtils.mkdir_p([File.dirname(linked_parent), outside])
+      File.write(File.join(outside, "action.yml"), <<~YAML)
+        runs:
+          using: composite
+          steps:
+            - uses: owner/action@v1
+      YAML
+      File.symlink(outside, linked_parent)
+
+      result = SecureGitHubActions::Scanner.new(root).scan
+
+      assert_equal 1, result.findings.length
+      assert_equal "secure-github-actions/unsafe-file", result.findings.first.fetch("rule_id")
+      assert_equal "components/external", result.findings.first.dig("location", "file")
+    end
+  end
+
+  def test_symlinked_workflows_directory_fails_closed_without_enumerating_external_files
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      outside = File.join(outer, "outside-workflows")
+      workflows_directory = File.join(root, ".github/workflows")
+      FileUtils.mkdir_p([File.dirname(workflows_directory), outside])
+      File.write(File.join(outside, "vulnerable.yml"), <<~YAML)
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+      File.symlink(outside, workflows_directory)
+
+      result = SecureGitHubActions::Scanner.new(root).scan
+
+      assert_equal 1, result.findings.length
+      assert_equal "secure-github-actions/unsafe-file", result.findings.first.fetch("rule_id")
+      assert_equal ".github/workflows", result.findings.first.dig("location", "file")
+      refute_includes result.files, ".github/workflows/vulnerable.yml"
+    end
+  end
+
+  def test_non_regular_composite_action_entries_fail_closed_without_opening_them
+    Dir.mktmpdir("secure-github-actions") do |root|
+      directory_action = File.join(root, "components/directory/action.yml")
+      fifo_action = File.join(root, "components/fifo/action.yml")
+      FileUtils.mkdir_p([directory_action, File.dirname(fifo_action)])
+      File.mkfifo(fifo_action)
+
+      result = SecureGitHubActions::Scanner.new(root).scan
+
+      assert_equal 2, result.findings.length
+      assert result.findings.all? do |finding|
+        finding.fetch("rule_id") == "secure-github-actions/unsafe-file"
+      end
+      locations = result.findings.map { |finding| finding.dig("location", "file") }
+      assert_equal [
+        "components/directory/action.yml",
+        "components/fifo/action.yml"
+      ], locations
+    end
+  end
+
   private
+
+  def scan_symlink_target(root, link_path, target_path)
+    File.unlink(link_path) if File.symlink?(link_path)
+    File.symlink(target_path, link_path)
+    SecureGitHubActions::Scanner.new(root).scan.document
+  end
 
   def run_cli(*arguments)
     Open3.capture3(RbConfig.ruby, SCANNER, *arguments)

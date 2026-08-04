@@ -18,7 +18,8 @@ It provides a read-only deterministic scanner plus a short manual review route.
    machine-readable `review-finding-v0` report is needed. See
    [audit commands](references/audit-commands.md).
 3. Fix every scanner finding before readiness. The scanner fails closed on
-   malformed YAML and invalid values in security-sensitive scalar positions.
+   malformed YAML, unsafe file boundaries, and invalid values in
+   security-sensitive scalar positions.
 4. Apply the non-mechanical review questions in
    [public repository rules](references/public-repo-rules.md). The scanner does
    not prove that permissions, triggers, scripts, or selected actions are safe.

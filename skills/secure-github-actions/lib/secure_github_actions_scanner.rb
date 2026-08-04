@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
 require "date"
+require "find"
 require "yaml"
 
 module SecureGitHubActions
+  class UnsafeFileError < StandardError; end
+
   Result = Struct.new(:root, :files, :findings, keyword_init: true) do
     def clean?
       findings.empty?
@@ -32,6 +35,10 @@ module SecureGitHubActions
       raise ArgumentError, "consumer root must be a directory" unless File.directory?(expanded_root)
 
       @root = File.realpath(expanded_root)
+      root_stat = File.lstat(@root)
+      raise ArgumentError, "consumer root must resolve to a real directory" unless root_stat.directory?
+
+      @root_identity = file_identity(root_stat)
     end
 
     def self.acceptable_action_reference?(reference)
@@ -44,11 +51,15 @@ module SecureGitHubActions
     end
 
     def scan
-      input_types = workflow_paths.to_h { |path| [path, :workflow] }
-      action_paths.each { |path| input_types[path] ||= :action }
+      input_types = workflow_entries.to_h { |path, type| [path, type] }
+      action_entries.each { |path, type| input_types[path] ||= type }
       inputs = input_types.sort_by(&:first)
       findings = inputs.flat_map do |path, type|
-        type == :workflow ? scan_workflow(path) : scan_action(path)
+        case type
+        when :workflow then scan_workflow(path)
+        when :action then scan_action(path)
+        else [unsafe_file(path)]
+        end
       end
       findings.sort_by! do |finding|
         location = finding.fetch("location")
@@ -60,19 +71,71 @@ module SecureGitHubActions
 
     private
 
-    def workflow_paths
-      Dir.glob(File.join(@root, ".github/workflows/*.{yml,yaml}")).sort
+    def workflow_entries
+      github_directory = File.join(@root, ".github")
+      return [] unless path_entry_exists?(github_directory)
+      return [[github_directory, :unsafe]] unless real_directory?(github_directory)
+
+      workflows_directory = File.join(github_directory, "workflows")
+      return [] unless path_entry_exists?(workflows_directory)
+      return [[workflows_directory, :unsafe]] unless real_directory?(workflows_directory)
+
+      Dir.children(workflows_directory).sort.filter_map do |name|
+        next unless name.match?(/\.ya?ml\z/)
+
+        [File.join(workflows_directory, name), :workflow]
+      end
+    rescue SystemCallError
+      [[workflows_directory || github_directory, :unsafe]]
     end
 
-    def action_paths
-      Dir.glob(File.join(@root, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).reject do |path|
-        first_part = relative_path(path).split("/", 2).first
-        %w[.codex .git .tmp tmp].include?(first_part)
-      end.sort
+    def action_entries
+      entries = []
+      last_path = @root
+      Find.find(@root, ignore_error: false) do |path|
+        last_path = path
+        next if path == @root
+
+        relative = relative_path(path)
+        first_part = relative.split("/", 2).first
+        stat = File.lstat(path)
+        if %w[.codex .git .tmp tmp].include?(first_part)
+          Find.prune if stat.directory? || stat.symlink?
+          next
+        end
+
+        if stat.symlink?
+          if directory_target?(path)
+            entries << [path, :unsafe]
+            Find.prune
+          elsif action_filename?(path)
+            entries << [path, :action]
+          end
+          next
+        end
+
+        if stat.directory?
+          if action_filename?(path)
+            entries << [path, :unsafe]
+            Find.prune
+          end
+          next
+        end
+        next unless action_filename?(path)
+
+        entries << [path, :action]
+      rescue SystemCallError
+        entries << [path, :unsafe]
+        Find.prune
+      end
+      entries.sort_by(&:first)
+    rescue SystemCallError
+      entries << [last_path, :unsafe]
+      entries.sort_by(&:first)
     end
 
     def scan_workflow(path)
-      workflow = YAML.safe_load_file(path, permitted_classes: YAML_TIMESTAMP_CLASSES, aliases: true)
+      workflow = load_yaml(path)
       return [invalid_structure(path, "<document>", "a mapping")] unless workflow.is_a?(Hash)
 
       jobs = workflow["jobs"]
@@ -91,12 +154,14 @@ module SecureGitHubActions
         end
         findings
       end
-    rescue Psych::Exception, SystemCallError, EncodingError
+    rescue UnsafeFileError
+      [unsafe_file(path)]
+    rescue Psych::Exception, EncodingError
       [invalid_yaml(path)]
     end
 
     def scan_action(path)
-      action = YAML.safe_load_file(path, permitted_classes: YAML_TIMESTAMP_CLASSES, aliases: true)
+      action = load_yaml(path)
       return [invalid_structure(path, "<document>", "a mapping")] unless action.is_a?(Hash)
 
       runs = action["runs"]
@@ -105,7 +170,9 @@ module SecureGitHubActions
       return [invalid_structure(path, "runs.steps", "an array")] unless runs["steps"].is_a?(Array)
 
       scan_steps(path, runs["steps"], "runs.steps")
-    rescue Psych::Exception, SystemCallError, EncodingError
+    rescue UnsafeFileError
+      [unsafe_file(path)]
+    rescue Psych::Exception, EncodingError
       [invalid_yaml(path)]
     end
 
@@ -182,6 +249,97 @@ module SecureGitHubActions
       )
     end
 
+    def unsafe_file(path)
+      finding(
+        rule_id: "secure-github-actions/unsafe-file",
+        path: path,
+        symbol: "<document>",
+        title: "GitHub Actions input is outside the safe file boundary",
+        body: "Use a real regular file beneath real consumer-root directories before relying on the scan."
+      )
+    end
+
+    def load_yaml(path)
+      source = safely_read(path)
+      YAML.safe_load(
+        source,
+        permitted_classes: YAML_TIMESTAMP_CLASSES,
+        permitted_symbols: [],
+        aliases: true,
+        filename: path
+      )
+    end
+
+    def safely_read(path)
+      validate_ancestor_chain!(path)
+      path_stat = File.lstat(path)
+      raise UnsafeFileError unless path_stat.file? && !path_stat.symlink?
+
+      flags = File::RDONLY
+      flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
+      File.open(path, flags) do |file|
+        opened_stat = file.stat
+        raise UnsafeFileError unless opened_stat.file?
+
+        current_stat = File.lstat(path)
+        raise UnsafeFileError unless current_stat.file? && !current_stat.symlink?
+        raise UnsafeFileError unless file_identity(opened_stat) == file_identity(current_stat)
+
+        validate_ancestor_chain!(path)
+        file.read
+      end
+    rescue SystemCallError
+      raise UnsafeFileError
+    end
+
+    def validate_ancestor_chain!(path)
+      relative = relative_path(path)
+      raise UnsafeFileError if relative == path || relative.empty?
+
+      root_stat = File.lstat(@root)
+      raise UnsafeFileError unless root_stat.directory? && !root_stat.symlink?
+      raise UnsafeFileError unless file_identity(root_stat) == @root_identity
+
+      current = @root
+      relative.split("/")[0...-1].each do |part|
+        current = File.join(current, part)
+        stat = File.lstat(current)
+        raise UnsafeFileError unless stat.directory? && !stat.symlink?
+      end
+    rescue SystemCallError
+      raise UnsafeFileError
+    end
+
+    def real_directory?(path)
+      stat = File.lstat(path)
+      stat.directory? && !stat.symlink?
+    rescue SystemCallError
+      false
+    end
+
+    def path_entry_exists?(path)
+      File.lstat(path)
+      true
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      false
+    rescue SystemCallError
+      true
+    end
+
+    def directory_target?(path)
+      File.directory?(path)
+    rescue SystemCallError
+      false
+    end
+
+    def action_filename?(path)
+      %w[action.yml action.yaml].include?(File.basename(path))
+    end
+
+    def file_identity(stat)
+      [stat.dev, stat.ino]
+    end
+
     def finding(rule_id:, path:, symbol:, title:, body:)
       relative = relative_path(path)
       {
@@ -200,7 +358,12 @@ module SecureGitHubActions
     end
 
     def relative_path(path)
-      path.delete_prefix("#{@root}/")
+      return "." if path == @root
+
+      prefix = "#{@root}/"
+      return path.delete_prefix(prefix) if path.start_with?(prefix)
+
+      path
     end
   end
 end

@@ -42,7 +42,8 @@ references acceptable.
 - Keep action upgrades in the repository's dependency-review process. This
   skill neither resolves tags over the network nor changes pins.
 
-Malformed YAML and invalid scalar shapes are blocking because a partial scan
-must not be mistaken for a clean audit. Supporting fail-closed rule IDs are
-`secure-github-actions/invalid-yaml` and
+Malformed YAML, unsafe file boundaries, and invalid scalar shapes are blocking
+because a partial scan must not be mistaken for a clean audit. Supporting
+fail-closed rule IDs are `secure-github-actions/invalid-yaml`,
+`secure-github-actions/unsafe-file`, and
 `secure-github-actions/invalid-structure`.
