@@ -63,7 +63,9 @@ review; use `untrusted-contributor-intake` for that assessment first.
 ## Step 1 — Fast Exits Before Any Log Fetch
 
 Run these first. They use git and repository/issue metadata only, so they still
-resolve when CI logs have expired, and each one can end the task in a minute:
+resolve when CI logs have expired, and each one resolves in about a minute.
+Exits 1-3 end the task with `NOT_THIS_WORKFLOW`; exits 4 and 5 redirect the
+scope of the work and continue into this workflow:
 
 1. **Already fixed, not closed.** Check whether the test or its subject changed
    after the failing run. Compare the failing commit against the current head.
@@ -172,9 +174,12 @@ Close with exactly one of:
   and what evidence would settle it. This is an acceptable, honest outcome.
 - `NOT_THIS_WORKFLOW` — a Step 1 fast exit fired, so no flake investigation was
   owed. Valid only with a citation to work that exists outside this task: the
-  commit that already fixed it, the open PR that owns it, or run evidence
-  showing the test fails deterministically and is therefore an ordinary bug.
-  Name which fast exit fired and cite the artifact.
+  commit that already fixed it, the open PR that owns it, or **CI** run history
+  showing the test fails on every recent run and is therefore an ordinary bug.
+  Name which fast exit fired and cite the artifact. Local runs cannot establish
+  the determinism claim any more than they can establish a pass — a test that
+  fails every time on your machine and intermittently in CI is still a flake,
+  and that combination is a `replicate-ci` parity question, not this exit.
 
 There is no fourth outcome, and the third is not an escape hatch. It reports
 that someone else's work already covers the failure, so it requires a pointer
@@ -245,6 +250,8 @@ the supported mode here.
 - Infrastructure flakiness was claimed only with build-wide evidence.
 - Recurrence history was checked, and a repeated flake got a systemic fix.
 - Repo-specific commands and policy came from the seam, not from this text.
+- A `NOT_THIS_WORKFLOW` close named its fast exit and cited the external
+  artifact; a stalled investigation closed as `ROOT_CAUSE_NOT_IDENTIFIED`.
 
 ## Source Note
 
