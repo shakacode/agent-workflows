@@ -938,6 +938,139 @@ class PushDownstreamGitTest < Minitest::Test
   end
 end
 
+class PushDownstreamAuditTest < Minitest::Test
+  CONTRACT = PushDownstreamScaffoldTest::CONTRACT
+
+  def test_audit_reports_drifted_consumer_with_exact_changed_managed_paths
+    Dir.mktmpdir("push-downstream-audit") do |dir|
+      remote, = seed_bare_consumer(dir)
+
+      entry = audit(remote)
+
+      assert_equal "drifted", entry.fetch("status")
+      assert_equal "local/consumer", entry.fetch("repo")
+      assert_equal "main", entry.fetch("base_branch")
+      assert_match(/\A[0-9a-f]{40}\z/, entry.fetch("base_sha"))
+      # A stale/missing seam is detected by the doctor before reconciliation.
+      refute_empty entry.fetch("seam_doctor_issues")
+      changed = entry.fetch("changed_managed_paths")
+      assert_includes changed, ".agents/agent-workflow.yml"
+      assert_includes changed, ".agents/bin/README.md"
+      assert_includes changed, "AGENTS.md"
+      # The audit is read-only with respect to the consumer: the base branch is
+      # untouched and no sync branch is ever pushed.
+      branches = `git --git-dir=#{remote.shellescape} branch --list`.split.reject { |token| token == "*" }
+      assert_equal ["main"], branches
+    end
+  end
+
+  def test_audit_reports_current_consumer_as_clean_without_churn
+    Dir.mktmpdir("push-downstream-audit") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      PushDownstream.reconcile_scaffold(seed, CONTRACT)
+      system("git", "-C", seed, "add", ".")
+      system("git", "-C", seed, "commit", "-m", "adopt seam", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      entry = audit(remote)
+
+      assert_equal "clean", entry.fetch("status")
+      assert_empty entry.fetch("seam_doctor_issues")
+      assert_empty entry.fetch("changed_managed_paths")
+      assert_empty entry.fetch("follow_ups")
+    end
+  end
+
+  def test_audit_reports_unfetchable_consumer_as_blocked_with_unknown_values
+    Dir.mktmpdir("push-downstream-audit") do |dir|
+      entry = audit(File.join(dir, "does-not-exist.git"))
+
+      refute_equal "clean", entry.fetch("status")
+      assert_equal "blocked", entry.fetch("status")
+      assert_includes entry.fetch("reason"), "clone of main failed"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("base_sha")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("changed_managed_paths")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, entry.fetch("follow_ups")
+    end
+  end
+
+  # #317 follow-ups the synchronizer intentionally cannot apply are carried into
+  # the audit report rather than silently dropped.
+  def test_audit_reports_follow_ups_the_synchronizer_cannot_apply
+    Dir.mktmpdir("push-downstream-audit") do |dir|
+      remote, seed = seed_bare_consumer(dir)
+      PushDownstream.reconcile_scaffold(seed, CONTRACT)
+      File.write(File.join(seed, "CLAUDE.md"), "# CLAUDE.md\n\nRich rules naming AGENTS.md in prose.\n")
+      system("git", "-C", seed, "add", ".")
+      system("git", "-C", seed, "commit", "-m", "adopt seam with rich CLAUDE.md", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      entry = audit(remote)
+
+      assert_equal [PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP], entry.fetch("follow_ups")
+    end
+  end
+
+  def test_audit_report_binds_to_source_sha_and_separates_shared_skill_scope
+    consumers = [
+      { "repo" => "local/clean", "status" => "clean" },
+      { "repo" => "local/drifted", "status" => "drifted" },
+      { "repo" => "local/blocked", "status" => "blocked" }
+    ]
+
+    report = PushDownstream.audit_report(consumers)
+
+    assert_equal PushDownstream::AUDIT_SCHEMA, report.fetch("schema")
+    assert_equal({ "total" => 3, "clean" => 1, "drifted" => 1, "blocked" => 1 }, report.fetch("summary"))
+    source = report.fetch("source")
+    assert_equal "shakacode/agent-workflows", source.fetch("repo")
+    assert_match(/\A(?:[0-9a-f]{40}|UNKNOWN)\z/, source.fetch("sha"))
+    # Repo-seam freshness must stay distinguishable from host skill freshness.
+    scope = report.fetch("scope")
+    assert_equal "repo-local agent-workflow seam and scaffold drift", scope.fetch("audited")
+    assert_equal "host-installed shared skills and workflows", scope.fetch("not_audited")
+    assert_includes scope.fetch("note"), "does not imply that every upstream commit"
+    assert JSON.parse(JSON.generate(report)).is_a?(Hash)
+  end
+
+  private
+
+  def audit(remote_url)
+    repo = {
+      repo: "consumer", nwo: "local/consumer", base_branch: "main",
+      pr_branch: "agent-workflows/seam-sync", remote_url: remote_url
+    }
+    with_module_stub(PushDownstream, :resolve_contract, ->(_repo, _presets) { CONTRACT }) do
+      PushDownstream.audit_repo(repo, {})
+    end
+  end
+
+  def seed_bare_consumer(dir)
+    remote = File.join(dir, "remote.git")
+    seed = File.join(dir, "seed")
+    system("git", "init", "--bare", remote, out: File::NULL)
+    system("git", "clone", remote, seed, out: File::NULL)
+    system("git", "-C", seed, "config", "user.email", "test@example.com")
+    system("git", "-C", seed, "config", "user.name", "Test")
+    File.write(File.join(seed, "README.md"), "base\n")
+    system("git", "-C", seed, "add", "README.md")
+    system("git", "-C", seed, "commit", "-m", "base", out: File::NULL)
+    system("git", "-C", seed, "branch", "-M", "main")
+    system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+    [remote, seed]
+  end
+
+  def with_module_stub(mod, name, replacement)
+    singleton = mod.singleton_class
+    original = mod.method(name)
+    singleton.define_method(name, replacement)
+    yield
+  ensure
+    singleton.define_method(name, original)
+  end
+end
+
 class PushDownstreamPolicyFleetTest < Minitest::Test
   CONTRACT = PushDownstreamScaffoldTest::CONTRACT
   SOURCE_REGISTRY = File.expand_path("../downstream.yml", __dir__)
@@ -2694,6 +2827,24 @@ class PushDownstreamCliTest < Minitest::Test
       assert_includes body, "## Agent Workflow Configuration"
       assert_includes body, "React on Rails → SSR — overview."
     end
+  end
+
+  def test_audit_refuses_to_combine_with_applying_or_writing_modes
+    apply_out, apply_status = run_cli("--audit", "--apply")
+    refute apply_status.success?, apply_out
+    assert_includes apply_out, "--audit is read-only and cannot be combined with --apply"
+
+    root_out, root_status = run_cli("--audit", "--root", ".")
+    refute root_status.success?, root_out
+    assert_includes root_out, "--audit cannot be combined with --root or --policy-fleet"
+
+    fleet_out, fleet_status = run_cli("--audit", "--policy-fleet", "repo-prefix")
+    refute fleet_status.success?, fleet_out
+    assert_includes fleet_out, "--audit cannot be combined with --root or --policy-fleet"
+
+    trust_out, trust_status = run_cli("--audit", "--trusted-user", "justin808")
+    refute trust_status.success?, trust_out
+    assert_includes trust_out, "--audit never writes to a consumer"
   end
 
   def test_registry_dry_run_lists_enabled_targets
