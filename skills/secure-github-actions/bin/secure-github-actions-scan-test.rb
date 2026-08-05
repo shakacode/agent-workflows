@@ -36,20 +36,34 @@ class SecureGitHubActionsScanTest < Minitest::Test
     assert_equal "jobs.deploy.secrets", finding.dig("location", "symbol")
   end
 
-  def test_reports_mutable_external_action_references_without_flagging_local_actions
+  def test_reports_mutable_action_references_without_flagging_safe_local_or_docker_actions
     result = SecureGitHubActions::Scanner.new(File.join(FIXTURES, "action-refs")).scan
 
-    assert_equal 2, result.findings.length
+    assert_equal 4, result.findings.length
     rule_ids = result.findings.map { |finding| finding.fetch("rule_id") }
     assert_equal [
+      "secure-github-actions/unpinned-external-use",
+      "secure-github-actions/unpinned-external-use",
       "secure-github-actions/unpinned-external-use",
       "secure-github-actions/unpinned-external-use"
     ], rule_ids
     symbols = result.findings.map { |finding| finding.dig("location", "symbol") }
     assert_equal [
       "jobs.build.steps.0.uses",
-      "jobs.build.steps.1.uses"
+      "jobs.build.steps.1.uses",
+      "jobs.build.steps.2.uses",
+      "jobs.build.steps.3.uses"
     ], symbols
+    assert SecureGitHubActions::Scanner.acceptable_action_reference?(
+      "docker://alpine@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    )
+    refute SecureGitHubActions::Scanner.acceptable_action_reference?("docker://alpine:3.19")
+  end
+
+  def test_local_action_references_reject_parent_path_segments
+    assert SecureGitHubActions::Scanner.acceptable_action_reference?("./.github/actions/local")
+    refute SecureGitHubActions::Scanner.acceptable_action_reference?("./../outside/action")
+    refute SecureGitHubActions::Scanner.acceptable_action_reference?("./nested/../../outside/action")
   end
 
   def test_safe_consumer_fixture_is_clean_and_preserves_supported_yaml_scalars
@@ -158,6 +172,55 @@ class SecureGitHubActionsScanTest < Minitest::Test
       File.join(FIXTURES, "malformed")
     )
     assert_equal 1, malformed_status.exitstatus
+  end
+
+  def test_cli_maps_scanner_root_initialization_failures_to_usage_errors
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      FileUtils.mkdir_p(root)
+      hooks = [
+        <<~RUBY,
+          module SecureGitHubActionsRootHook
+            class << self
+              attr_accessor :directory_calls
+            end
+            self.directory_calls = 0
+          end
+
+          class << File
+            alias secure_github_actions_original_directory? directory?
+
+            def directory?(path)
+              return secure_github_actions_original_directory?(path) unless File.expand_path(path) == ENV.fetch("SECURE_GITHUB_ACTIONS_TEST_ROOT")
+
+              SecureGitHubActionsRootHook.directory_calls += 1
+              SecureGitHubActionsRootHook.directory_calls == 1
+            end
+          end
+        RUBY
+        <<~RUBY
+          class << File
+            alias secure_github_actions_original_realpath realpath
+
+            def realpath(path, *arguments)
+              if File.expand_path(path) == ENV.fetch("SECURE_GITHUB_ACTIONS_TEST_ROOT")
+                raise Errno::ENOENT, "simulated root invalidation"
+              end
+
+              secure_github_actions_original_realpath(path, *arguments)
+            end
+          end
+        RUBY
+      ]
+
+      hooks.each do |hook_source|
+        stdout, stderr, status = run_cli_with_root_hook(root, hook_source)
+
+        assert_equal 64, status.exitstatus
+        assert_empty stdout
+        assert_equal "secure-github-actions-scan: invalid consumer root\n", stderr
+      end
+    end
   end
 
   def test_scanning_never_executes_consumer_run_content
@@ -447,5 +510,17 @@ class SecureGitHubActionsScanTest < Minitest::Test
 
   def run_cli(*arguments)
     Open3.capture3(RbConfig.ruby, SCANNER, *arguments)
+  end
+
+  def run_cli_with_root_hook(root, hook_source)
+    Dir.mktmpdir("secure-github-actions-hook") do |hook_root|
+      hook_path = File.join(hook_root, "root-hook.rb")
+      File.write(hook_path, hook_source)
+      environment = {
+        "RUBYOPT" => "-r#{hook_path}",
+        "SECURE_GITHUB_ACTIONS_TEST_ROOT" => root
+      }
+      Open3.capture3(environment, RbConfig.ruby, SCANNER, root)
+    end
   end
 end

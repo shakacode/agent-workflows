@@ -27,7 +27,13 @@ unless ARGV.length == 1 && File.directory?(ARGV.first)
   exit 64
 end
 
-result = SecureGitHubActions::Scanner.new(ARGV.first).scan
+begin
+  scanner = SecureGitHubActions::Scanner.new(ARGV.first)
+rescue ArgumentError, SystemCallError
+  warn "secure-github-actions-scan: invalid consumer root"
+  exit 64
+end
+result = scanner.scan
 
 if options[:format] == "json"
   puts JSON.pretty_generate(result.document)

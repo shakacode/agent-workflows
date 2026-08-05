@@ -5,6 +5,7 @@ require "minitest/autorun"
 require "yaml"
 
 require_relative "../skills/secure-github-actions/lib/secure_github_actions_scanner"
+# Load-bearing: bin/validate runs this file, so keep the focused scanner suite required here.
 require_relative "../skills/secure-github-actions/bin/secure-github-actions-scan-test"
 
 class RepositorySecurityPolicyTest < Minitest::Test

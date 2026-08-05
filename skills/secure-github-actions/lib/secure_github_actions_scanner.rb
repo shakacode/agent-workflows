@@ -44,7 +44,7 @@ module SecureGitHubActions
     def self.acceptable_action_reference?(reference)
       return false unless reference.is_a?(String)
 
-      return true if reference.start_with?("./")
+      return reference.split("/").none? { |segment| segment == ".." } if reference.start_with?("./")
       return true if reference.match?(%r{\Adocker://[^\s@]+@sha256:[0-9a-fA-F]{64}\z})
 
       reference.match?(%r{\A[^\s@/]+/[^\s@/]+(?:/[^\s@/]+)*@[0-9a-f]{40}\z})
