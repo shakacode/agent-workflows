@@ -653,9 +653,11 @@ module PrCiReadiness
       current_runs.sort_by! { |run| [run["workflow_id"], run["event"]] }
       current_runs.each do |run|
         dependabot = dependabot_attributed?(run)
-        rows << normalize_actions_row(run, "run", dependabot:)
+        head_branch = run["head_branch"].to_s
+        pull_request_numbers = Array(run["pull_requests"]).filter_map { |association| association["number"] }.sort
+        rows << normalize_actions_row(run, "run", dependabot:, head_branch:, pull_request_numbers:)
         fetch_actions_jobs(repo, run.fetch("id")).each do |job|
-          rows << normalize_actions_row(job, "job", dependabot:, head_sha:)
+          rows << normalize_actions_row(job, "job", dependabot:, head_sha:, head_branch:, pull_request_numbers:)
         end
       end
       [rows, true, nil]
@@ -928,7 +930,14 @@ module PrCiReadiness
       raise Error, "#{context} was not bound to exact head #{head_sha} (found #{actual.empty? ? 'missing' : actual})"
     end
 
-    def normalize_actions_row(row, kind, dependabot:, head_sha: nil)
+    # `head_branch`/`pull_request_numbers` are passed explicitly by the run
+    # loop and reused for each of the run's job rows -- job payloads from the
+    # jobs endpoint carry neither field themselves, so without the explicit
+    # pass-through a job row's target identity would be unobservable in the
+    # emitted evidence. This is additive attribution for audit/replay only;
+    # `actions_run_targets_pr?` already owns the readiness-gating identity
+    # check upstream in `fetch_exact_head_actions`.
+    def normalize_actions_row(row, kind, dependabot:, head_sha: nil, head_branch: nil, pull_request_numbers: nil)
       {
         "kind" => kind,
         "id" => row["id"],
@@ -937,6 +946,9 @@ module PrCiReadiness
         "conclusion" => row["conclusion"],
         "url" => row["html_url"].to_s,
         "head_sha" => head_sha || row["head_sha"].to_s,
+        "head_branch" => head_branch || row["head_branch"].to_s,
+        "pull_requests" => pull_request_numbers ||
+          Array(row["pull_requests"]).filter_map { |association| association["number"] }.sort,
         "actor" => row.dig("actor", "login").to_s,
         "triggering_actor" => row.dig("triggering_actor", "login").to_s,
         "dependabot" => dependabot

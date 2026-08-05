@@ -1292,6 +1292,71 @@ class PrCiReadinessCliTest < Minitest::Test
     )
   end
 
+  # Regression for #282: `normalize_actions_row` dropped each run's target
+  # identity, so exact-head evidence rows (and any merge-assurance receipt
+  # built from them) could not be attributed to the PR they came from after
+  # the fact. `actions_run_targets_pr?` already scopes correctness (#279);
+  # this only adds the identity as observable data on both the run row and
+  # its job rows, sorted and de-duplicated, without gating readiness.
+  def test_exact_head_actions_rows_carry_head_branch_and_all_associated_pull_request_numbers
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    # A second PR sharing the same branch/head/repo does not conflict with
+    # the target identity check (only a partial id/number match would), so
+    # both associated numbers should appear in the emitted row, sorted.
+    other_association = {
+      "id" => 5_003, "number" => 45, "url" => "https://api.example/pulls/45",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [target_association, other_association],
+      "status" => "completed", "conclusion" => "success"
+    }
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: target_identity,
+      exact_actions: [run],
+      runs: {
+        "200" => {
+          run:,
+          jobs: [{
+            "id" => 2_000, "name" => "unit", "status" => "completed",
+            "conclusion" => "success"
+          }]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      rows = data.dig("scopes", "github_actions", "rows")
+      run_row = rows.find { |row| row.fetch("id") == 200 }
+      job_row = rows.find { |row| row.fetch("id") == 2_000 }
+
+      assert_equal "feature", run_row.fetch("head_branch")
+      assert_equal [45, 123], run_row.fetch("pull_requests")
+      assert_equal "feature", job_row.fetch("head_branch")
+      assert_equal [45, 123], job_row.fetch("pull_requests")
+    end
+  end
+
   def test_target_pr_identity_move_or_malformed_refetch_invalidates_every_evidence_scope
     head = "a" * 40
     target_identity = {
@@ -2090,7 +2155,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
     pages = [
       { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => page_one },
-      ["not", "an", "object"]
+      %w[not an object]
     ]
     with_fake_gh(
       required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
