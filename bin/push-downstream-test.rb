@@ -1012,6 +1012,38 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  # `git status --porcelain=v1 -z` emits a rename as two NUL-separated fields
+  # and the second, the origin path, carries no "XY " prefix. Slicing every
+  # field at [3..] silently turned "old.txt" into ".txt".
+  def test_audit_changed_paths_parses_staged_rename_without_corrupting_origin_path
+    Dir.mktmpdir("push-downstream-audit-rename") do |dir|
+      system("git", "init", dir, out: File::NULL, err: File::NULL)
+      system("git", "-C", dir, "config", "user.email", "test@example.com")
+      system("git", "-C", dir, "config", "user.name", "Test")
+      %w[old.txt keep.txt gone.txt].each { |name| File.write(File.join(dir, name), "#{name}\n") }
+      system("git", "-C", dir, "add", ".")
+      system("git", "-C", dir, "commit", "-m", "base", out: File::NULL, err: File::NULL)
+
+      system("git", "-C", dir, "mv", "old.txt", "new.txt")           # staged rename
+      File.write(File.join(dir, "keep.txt"), "modified\n")           # modified
+      system("git", "-C", dir, "rm", "--quiet", "gone.txt")          # deleted
+      File.write(File.join(dir, "fresh.txt"), "fresh\n")             # untracked
+
+      paths = PushDownstream.audit_changed_paths(dir)
+
+      # A rename reports both the new path and the origin it removed, and the
+      # add/modify/delete/untracked entries are unchanged.
+      assert_equal %w[fresh.txt gone.txt keep.txt new.txt old.txt], paths
+      refute_includes paths, ".txt"
+    end
+  end
+
+  def test_audit_changed_paths_fails_closed_on_uninterpretable_status_output
+    assert_nil PushDownstream.parse_porcelain_z_paths("R  new.txt\0")
+    assert_nil PushDownstream.parse_porcelain_z_paths("bogus\0")
+    assert_equal ["a.txt"], PushDownstream.parse_porcelain_z_paths(" M a.txt\0")
+  end
+
   def test_audit_report_binds_to_source_sha_and_separates_shared_skill_scope
     consumers = [
       { "repo" => "local/clean", "status" => "clean" },
@@ -1032,6 +1064,15 @@ class PushDownstreamAuditTest < Minitest::Test
     assert_equal "host-installed shared skills and workflows", scope.fetch("not_audited")
     assert_includes scope.fetch("note"), "does not imply that every upstream commit"
     assert JSON.parse(JSON.generate(report)).is_a?(Hash)
+
+    # The polymorphic Array-or-"UNKNOWN" fields are documented in the contract a
+    # report consumer reads, so callers know to type-check before iterating.
+    contract = report.fetch("contract")
+    assert_equal %w[seam_doctor_issues changed_managed_paths follow_ups],
+                 contract.fetch("polymorphic_fields")
+    assert_includes contract.fetch("polymorphic_note"), "Type-check before iterating"
+    assert_includes contract.fetch("polymorphic_note"), "\"UNKNOWN\""
+    assert_equal "at least one consumer is drifted or blocked", contract.fetch("exit_codes").fetch("1")
   end
 
   private

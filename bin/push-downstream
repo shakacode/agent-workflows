@@ -38,6 +38,22 @@ module PushDownstream
   # installed per host and are intentionally never copied into consumer repos,
   # so a drifted consumer must not be read as "every upstream commit needs a
   # downstream PR", and a clean consumer says nothing about host skill freshness.
+  AUDIT_POLYMORPHIC_FIELDS = %w[seam_doctor_issues changed_managed_paths follow_ups].freeze
+  # Consumers of the report must type-check these fields. They are deliberately
+  # polymorphic: a blocked consumer must never present an empty Array, which
+  # would read as "no issues, nothing to change" for a repo we could not inspect.
+  AUDIT_CONTRACT = {
+    "statuses" => %w[clean drifted blocked],
+    "polymorphic_fields" => AUDIT_POLYMORPHIC_FIELDS,
+    "polymorphic_note" => "For a clean or drifted consumer, #{AUDIT_POLYMORPHIC_FIELDS.join(', ')} are " \
+                          "each an Array. For a blocked consumer they are the string \"UNKNOWN\", because " \
+                          "the value could not be established. Type-check before iterating; an empty Array " \
+                          "is never used to represent an unknown value.",
+    "exit_codes" => {
+      "0" => "every selected consumer is clean",
+      "1" => "at least one consumer is drifted or blocked"
+    }
+  }.freeze
   AUDIT_SCOPE = {
     "audited" => "repo-local agent-workflow seam and scaffold drift",
     "not_audited" => "host-installed shared skills and workflows",
@@ -738,6 +754,7 @@ module PushDownstream
     {
       "schema" => AUDIT_SCHEMA,
       "source" => audit_source_provenance,
+      "contract" => AUDIT_CONTRACT,
       "scope" => AUDIT_SCOPE,
       "summary" => { "total" => consumers.length }.merge(counts),
       "consumers" => consumers
@@ -830,7 +847,38 @@ module PushDownstream
     )
     return nil unless status.success?
 
-    output.split("\0").filter_map { |record| record[3..].to_s unless record.empty? }.reject(&:empty?).sort
+    parse_porcelain_z_paths(output)&.sort
+  end
+
+  # `git status --porcelain=v1 -z` emits one NUL-terminated field per entry as
+  # "XY <path>", except that a rename or copy entry is followed by a second
+  # field holding the origin path with NO "XY " prefix. Slicing every field at
+  # [3..] would turn an origin path like "old.txt" into ".txt", so consume the
+  # paired field explicitly. Returns nil on any field we cannot interpret, so an
+  # unparseable status is reported blocked rather than as a corrupted path list.
+  def parse_porcelain_z_paths(output)
+    fields = output.split("\0")
+    paths = []
+    index = 0
+    while index < fields.length
+      field = fields[index]
+      index += 1
+      next if field.empty?
+      return nil unless field.length > 3 && field[2] == " "
+
+      codes = field[0, 2]
+      paths << field[3..]
+      renamed = codes.include?("R")
+      next unless renamed || codes.include?("C")
+
+      origin = fields[index]
+      index += 1
+      return nil if origin.nil? || origin.empty?
+
+      # A rename also removes its origin path; a copy leaves the origin intact.
+      paths << origin if renamed
+    end
+    paths.reject(&:empty?).uniq
   end
 
   def run_policy_fleet(config_path, fleet_name:, only:, apply:)
@@ -2208,7 +2256,12 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--only a,b", Array, "Restrict to these repo names") { |value| options[:only] = value }
     opts.on("--all", "Include repos marked enabled: false") { options[:include_disabled] = true }
     opts.on("--apply", "Apply changes (write files; push branches and open PRs)") { options[:apply] = true }
-    opts.on("--audit", "Read-only fleet seam-drift report as JSON; never writes, pushes, or opens PRs") do
+    opts.on("--audit",
+            "Read-only fleet seam-drift report as JSON; never writes, pushes, or opens PRs.",
+            "Exit 0 when every consumer is clean, 1 when any is drifted or blocked.",
+            "Per consumer, seam_doctor_issues, changed_managed_paths, and follow_ups are",
+            "each an Array, or the string \"UNKNOWN\" when the consumer is blocked and the",
+            "value could not be established. Type-check these fields before iterating.") do
       options[:audit] = true
     end
     opts.on("--base-branch NAME", "Base branch for --root mode (default: main)") { |value| options[:base_branch] = value }
