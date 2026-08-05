@@ -61,6 +61,55 @@ CLAUDE_RECOMMENDED_ROUTES = [
   CLAUDE_INDEPENDENT_ADVERSARIAL_QA_ROUTE,
   CLAUDE_ROUTINE_DETERMINISTIC_QA_ROUTE
 ].freeze
+MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
+ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
+ROUTE_PROVENANCE_RULES = [
+  "A requested route is an instruction; an observed route is host-reported evidence of what actually executed. The two are separate fields and never collapse into one.",
+  "Requested-route prose in a plan, handoff, comment, or PR description is never presentable as observed execution evidence; only host-reported session metadata binds.",
+  "When operator policy names an exact route, an unbound, unavailable, substituted, or `UNKNOWN` observed tuple stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins.",
+  "A worker never inherits the coordinator's model/effort pair, and an inherited pair is a route mismatch even when the inherited route is stronger than the requested one.",
+  "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule"
+].freeze
+SATISFIED_ROUTE_DISPOSITIONS = %w[proceed proceed-as-fallback].freeze
+# Every case that must never resolve to a satisfied route, whether or not an AW D
+# lane happened to exercise it. AW D exercised inheritance and substitution; the
+# unbound case is covered here so the table cannot be loosened untested.
+FAIL_CLOSED_ROUTE_CASES = %w[
+  unbound-exact-route
+  silent-substitution
+  coordinator-pair-inheritance
+].freeze
+# Replay of the AW D batch (PRs #146-#148) audited in shakacode/agent-workflows#151.
+# Each row maps an audited requested-versus-observed outcome onto the routing
+# guide's disposition table. The #148 rows and the #147 nested-spawn row are the
+# silent-inheritance regression this contract must keep failing closed.
+AW_D_ROUTE_REPLAY = [
+  { pr: 146, role: "implementation", case_id: "bound-exact-match", disposition: "proceed" },
+  { pr: 146, role: "review and QA", case_id: "bound-exact-match", disposition: "proceed" },
+  { pr: 147, role: "post-publication review fixes", case_id: "coordinator-pair-inheritance", disposition: "MODEL_ROUTE_MISMATCH" },
+  { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
+  { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
+].freeze
+# Pins the audited record itself, so the replay cannot be emptied or quietly
+# rewritten to claim #148 ran its requested route. Sorted so row order is free.
+AW_D_ROUTE_REPLAY_FINGERPRINT = [
+  "146|implementation|bound-exact-match|proceed",
+  "146|review and QA|bound-exact-match|proceed",
+  "147|post-publication review fixes|coordinator-pair-inheritance|MODEL_ROUTE_MISMATCH",
+  "148|QA|silent-substitution|MODEL_ROUTE_MISMATCH",
+  "148|implementation|silent-substitution|MODEL_ROUTE_MISMATCH"
+].freeze
+# The complete disposition table. FAIL_CLOSED_ROUTE_CASES and the AW D replay
+# together leave `authorized-fallback` unconstrained, so a mutation dropping its
+# recorded-authority requirement to a plain `proceed` would pass untested.
+# Pinning every row means the table cannot be loosened anywhere without failing.
+EXPECTED_ROUTE_DISPOSITIONS = {
+  "bound-exact-match" => "proceed",
+  "unbound-exact-route" => "MODEL_ROUTE_MISMATCH",
+  "silent-substitution" => "MODEL_ROUTE_MISMATCH",
+  "coordinator-pair-inheritance" => "MODEL_ROUTE_MISMATCH",
+  "authorized-fallback" => "proceed-as-fallback"
+}.freeze
 SIGNED_OBSERVATION_CONTRACT_PATHS = %w[
   CONTEXT.md
   docs/pr-batch-skills.md
@@ -111,6 +160,60 @@ def assert_signed_observation_contract(test, text, label)
                        "#{label} must carry the exact current signed payload"
   test.assert_includes text, PRE_ACTUAL_HOST_V2_MIGRATION_RULE,
                        "#{label} must carry the exact pre-actual_host v2 migration contract"
+end
+
+def route_dispositions(text)
+  section = extract_markdown_section(text, ROUTE_DISPOSITION_TABLE_HEADING)
+  rows = section.scan(/^\|\s*`([a-z-]+)`\s*\|[^|\n]*\|[^|\n]*\|\s*`([A-Za-z_-]+)`\s*\|\s*$/)
+  raise "missing route disposition rows under #{ROUTE_DISPOSITION_TABLE_HEADING}" if rows.empty?
+
+  rows.to_h
+end
+
+def mutate_route_disposition(text, case_id, disposition)
+  text.sub(/(^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\|\s*)`[A-Za-z_-]+`(\s*\|\s*$)/) do
+    "#{Regexp.last_match(1)}`#{disposition}`#{Regexp.last_match(2)}"
+  end
+end
+
+def assert_route_provenance_contract(test, text, label)
+  guide = normalized(text)
+  ROUTE_PROVENANCE_RULES.each do |rule|
+    test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
+  end
+end
+
+def aw_d_replay_fingerprint
+  AW_D_ROUTE_REPLAY.map do |row|
+    [row.fetch(:pr), row.fetch(:role), row.fetch(:case_id), row.fetch(:disposition)].join("|")
+  end.sort
+end
+
+def assert_aw_d_route_replay(test, text, label)
+  dispositions = route_dispositions(text)
+  FAIL_CLOSED_ROUTE_CASES.each do |case_id|
+    test.assert_equal "MODEL_ROUTE_MISMATCH", dispositions[case_id],
+                      "#{label}: #{case_id} must stay fail-closed"
+  end
+  EXPECTED_ROUTE_DISPOSITIONS.each do |case_id, expected|
+    test.assert_equal expected, dispositions[case_id],
+                      "#{label}: #{case_id} must dispose as #{expected}"
+  end
+  # The replay must stay load-bearing. Without these two assertions the whole
+  # table could be emptied, or #148's rows rewritten to claim the requested
+  # route ran, and every assertion below would still pass against the doc.
+  test.assert_equal AW_D_ROUTE_REPLAY_FINGERPRINT, aw_d_replay_fingerprint,
+                    "#{label}: the AW D replay rows changed; the audited #146-#148 record is the regression this contract exists to hold"
+  AW_D_ROUTE_REPLAY.each do |row|
+    expected = row.fetch(:disposition)
+    actual = dispositions[row.fetch(:case_id)]
+    test.assert_equal expected, actual,
+                      "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} (#{row.fetch(:case_id)}) must dispose as #{expected}"
+    next if SATISFIED_ROUTE_DISPOSITIONS.include?(expected)
+
+    test.assert_includes FAIL_CLOSED_ROUTE_CASES, row.fetch(:case_id),
+                         "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} replays a non-satisfied outcome, so #{row.fetch(:case_id)} must be a fail-closed case"
+  end
 end
 
 class ModelRoutingContractTest < Minitest::Test
@@ -510,6 +613,83 @@ class ModelRoutingContractTest < Minitest::Test
       text = normalized(read_repo_file(path))
       assert_includes text, "Any present or disputed high-risk boundary routes to Opus 4.8/xhigh"
       assert_includes text, "Any other missing or disputed simplicity criterion routes to Opus 4.8/xhigh"
+    end
+  end
+
+  def test_routing_guide_pins_requested_versus_observed_route_provenance
+    assert_route_provenance_contract(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
+  end
+
+  def test_aw_d_route_mismatch_replays_to_fail_closed_dispositions
+    assert_aw_d_route_replay(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
+  end
+
+  def test_route_provenance_rule_mutants_fail_closed
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
+    guide = normalized(text)
+    mutants = {
+      "collapsed requested into observed" => guide.sub("never collapse into one", "may be recorded as one field"),
+      "prose accepted as evidence" => guide.sub(
+        "is never presentable as observed execution evidence",
+        "should not usually be presented as observed execution evidence"
+      ),
+      "unbound exact route allowed to proceed" => guide.sub(
+        "stops the lane with `MODEL_ROUTE_MISMATCH` before any edit begins",
+        "is recorded as a note and the lane proceeds"
+      ),
+      "inheritance permitted when stronger" => guide.sub(
+        "an inherited pair is a route mismatch even when the inherited route is stronger than the requested one",
+        "an inherited pair is acceptable when the inherited route is stronger than the requested one"
+      ),
+      "nested spawns exempted" => guide.sub(
+        "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
+        "Nested subagents are exempt from this rule"
+      )
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal guide, mutant, "#{mutation} mutant did not change the guide text"
+      assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
+        assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_aw_d_replay_mutants_fail_closed_on_silent_inheritance
+    text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+    assert_aw_d_route_replay(self, text, MODEL_ROUTING_GUIDE_PATH)
+    mutants = {
+      "inherited coordinator pair allowed to proceed" =>
+        mutate_route_disposition(text, "coordinator-pair-inheritance", "proceed"),
+      "silent substitution downgraded to a fallback" =>
+        mutate_route_disposition(text, "silent-substitution", "proceed-as-fallback"),
+      "unbound exact route allowed to proceed" =>
+        mutate_route_disposition(text, "unbound-exact-route", "proceed"),
+      "authorized fallback stripped of its recorded-authority requirement" =>
+        mutate_route_disposition(text, "authorized-fallback", "proceed"),
+      "bound exact match downgraded to a mismatch" =>
+        mutate_route_disposition(text, "bound-exact-match", "MODEL_ROUTE_MISMATCH")
+    }
+
+    mutants.each do |mutation, mutant|
+      refute_equal text, mutant, "#{mutation} mutant did not change the disposition table"
+      assert_raises(Minitest::Assertion, "AW D replay accepted #{mutation}") do
+        assert_aw_d_route_replay(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
+      end
+    end
+  end
+
+  def test_routing_guide_marks_scenario_recommendations_unmeasured
+    guide = normalized(read_repo_file(MODEL_ROUTING_GUIDE_PATH))
+
+    [
+      "No measured route recommendation is published yet",
+      "priors chosen for fail-closed safety, not measurements",
+      "do not compare a requested route that lacks an observed receipt against one that has one",
+      "Route adherence is itself an outcome measure"
+    ].each do |phrase|
+      assert_includes guide, phrase, "model-routing guide is missing evidence-status rule: #{phrase}"
     end
   end
 
