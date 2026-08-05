@@ -170,9 +170,21 @@ Close with exactly one of:
 - `ROOT_CAUSE_NOT_IDENTIFIED` — an explicit statement of what was checked, what
   the CI error did and did not show, which hypotheses were tested and rejected,
   and what evidence would settle it. This is an acceptable, honest outcome.
+- `NOT_THIS_WORKFLOW` — a Step 1 fast exit fired, so no flake investigation was
+  owed. Valid only with a citation to work that exists outside this task: the
+  commit that already fixed it, the open PR that owns it, or run evidence
+  showing the test fails deterministically and is therefore an ordinary bug.
+  Name which fast exit fired and cite the artifact.
 
-There is no third outcome. A skip, a local-run-only pass claim, and a
-speculative fix are all failures of this workflow, not results.
+There is no fourth outcome, and the third is not an escape hatch. It reports
+that someone else's work already covers the failure, so it requires a pointer
+to that work — something an investigation that merely stalled cannot produce.
+Reaching a dead end is `ROOT_CAUSE_NOT_IDENTIFIED`, never `NOT_THIS_WORKFLOW`.
+The recurrence and prior-skip exits in Step 1 redirect scope rather than end the
+task: both continue into this workflow, aimed at the systemic cause.
+
+A skip, a local-run-only pass claim, and a speculative fix are all failures of
+this workflow, not results.
 
 ## Boundary With Replicate CI
 
@@ -219,7 +231,8 @@ the supported mode here.
 - Reproduction attempts and result:
 - Fix (systemic or single-test, and why):
 - CI verification (run URL, head SHA, conclusion):
-- Outcome: FIXED | ROOT_CAUSE_NOT_IDENTIFIED
+- Outcome: FIXED | ROOT_CAUSE_NOT_IDENTIFIED | NOT_THIS_WORKFLOW
+- Fast exit fired and its citation (NOT_THIS_WORKFLOW only):
 - UNKNOWN facts:
 ```
 
