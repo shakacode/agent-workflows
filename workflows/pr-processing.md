@@ -1154,15 +1154,19 @@ lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
 
-The template shows the missing-value default. Replace the complete `Merge
-policy:` line only when visible user or repository policy selected `none` or
-`auto_merge_when_gates_pass`, and keep its prose and machine-readable
-`merge_authority` value consistent.
+The template shows the missing-value default. Use exactly one of these complete
+resolved lines, keeping its prose and machine-readable value together:
+
+- `Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask`
+- `Merge policy: NONE—prepare only;do not merge;merge_authority:none`
+- `Merge policy: AUTO—merge when gates pass;merge_authority:auto_merge_when_gates_pass`
+
+Use `ASK` unless visible user or repository policy selected `NONE` or `AUTO`.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
-Merge policy: ASK (default)—walkthrough+human decision;no merge without approval;merge_authority:ask
+Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
@@ -1192,7 +1196,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
-- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;regate movement.
+- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;head/base move=>regate.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
@@ -1281,23 +1285,33 @@ plain-language action summary:
 - `NO ACTION NEEDED FROM YOU — <what the agent is doing or waiting on>.` when no
   human action is currently required.
 
-A required prerequisite PR that is clean, approved, and green but still
-unmerged is a human-action gate, not a failing code or external gate. Under
+A required prerequisite PR whose ordinary readiness gates are clean and whose
+only remaining progress gate is a human review/merge decision is a human-action
+gate, not a failing code or external gate. This applies before worker claim or
+launch and whether the prerequisite is a batch target or external. Under
 `merge_authority: ask`, report `ACTION REQUIRED FROM YOU — Review and decide
-whether to merge PR #N.` and classify a batch that cannot proceed as
+whether to merge PR #N.` Never say `no decision requested` when that decision is
+the next progress gate. Immediately classify a batch that cannot proceed as
 `blocked-user-input`; do not lead with `NOT COMPLETE`, `prerequisite blocked`,
-or lane-card mechanics. If the ready PR is an authorized batch target, start
-the exact-diff walkthrough automatically before requesting the one merge
-decision. If it is an external prerequisite, give its exact link and a
-paste-ready resume instruction.
+or lane-card mechanics, consume the external-blocker retry/blocked-audit
+threshold, or start or pause a monitor for that retry threshold. If the ready
+PR is an authorized batch target, start the exact-diff walkthrough
+automatically before requesting the one merge decision. If it is an external
+prerequisite, give its exact link and a paste-ready resume instruction.
 
-After the first full action-required handoff, refresh the exact blocker before
+Keep a `blocked-user-input` task discoverable while it waits. When the host
+supports task pinning, pin the current task after surfacing the action and unpin
+it when the gate clears. Otherwise include the exact task title or id and tell
+the user to search for that value before giving the paste-ready resume
+instruction.
+
+After the first full action-required handoff, refresh the exact gate before
 reporting again. If its identity and material evidence are unchanged, do not
 repeat the full handoff, lane cards, or unchanged validation details. Emit only
 `STILL WAITING FOR YOUR ACTION — <same concrete action>.`, the material delta
-(`No change` when there is none), and the exact resume trigger. A host may mark
-a goal formally blocked after its required repeated checks, but the human-facing
-message must not imply a new failure or escalation.
+(`No change` when there is none), and the exact resume trigger. Do not convert
+identical rechecks into an external-blocker escalation or pause the task's
+discoverability mechanism; the message must not imply a new failure.
 
 Every target must use one explicit final state:
 
@@ -2052,7 +2066,7 @@ Preflight first:
 - Split current-head state into a complete configured/requested review cohort and validation CI. While review agents settle, advance validation diagnosis and every other independent closeout task. After the whole review cohort settles, fetch and triage that review wave once even when validation remains pending. A push restarts both cohorts for the new head.
 
 Goal completion contract:
-- Apply HAC-v1 to every blocked/final handoff: lead with `ACTION REQUIRED FROM YOU — <one concrete action>.` or `NO ACTION NEEDED FROM YOU — <current agent-owned next step>.` A clean, approved, green prerequisite PR that remains unmerged is a human-action gate under `ask`, not a failing prerequisite. On an unchanged recheck after the first full handoff, emit only `STILL WAITING FOR YOUR ACTION — <same action>.`, the material delta, and the resume trigger.
+- Apply HAC-v1 to every blocked/final handoff: lead with `ACTION REQUIRED FROM YOU — <one concrete action>.` or `NO ACTION NEEDED FROM YOU — <current agent-owned next step>.` When a prerequisite PR's ordinary readiness is clean and its only remaining progress gate is a human review/merge decision under `ask`, before worker launch say `ACTION REQUIRED FROM YOU — Review and decide whether to merge PR #N.` Never say `no decision requested`; classify it immediately as `blocked-user-input` without consuming the external-blocker retry threshold or starting/pausing its monitor. Pin the waiting task until the gate clears when supported; otherwise include its exact title/id and a search-and-resume instruction. On an unchanged recheck after the first full handoff, emit only `STILL WAITING FOR YOUR ACTION — <same action>.`, the material delta, and the resume trigger.
 - Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.
 - If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll. Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage. If either cohort does not settle in the bounded watch/retry window, report NOT COMPLETE as `waiting-on-checks-or-review` with exact evidence and resume command. If a check fails, inspect and fix if in scope.
 - If only a real external blocker remains after a bounded watch/retry window, report NOT COMPLETE with exact blocker, evidence, and resume command; do not call the goal complete.

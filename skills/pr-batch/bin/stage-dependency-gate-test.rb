@@ -37,7 +37,8 @@ BACKEND_TYPED_GATE_CONTRACT = "Known backend `depends_on`/`blocked_on` facts ref
                               "action. Set a blocked heartbeat or move away only when that permission is false. " \
                               "Missing or `UNKNOWN` backend dependency state remains a blanket hard stop."
 COMPACT_BACKEND_TYPED_GATE_CONTRACT = "- Coordination:ids+heartbeats;register before launch when supported;" \
-                                      "refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;regate movement."
+                                      "refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;" \
+                                      "head/base move=>regate."
 REQUIRED_DEPENDENCY_CLOSEOUT_CONTRACT = "A lane may perform helper-permitted intermediate work while dependencies " \
                                         "are pending, but it cannot be reported ready or closed out until every " \
                                         "required dependency edge is terminally satisfied."

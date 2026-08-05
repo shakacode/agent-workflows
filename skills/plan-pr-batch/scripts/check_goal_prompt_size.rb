@@ -17,7 +17,16 @@ COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MERGE_POLICY_PROMPT_LINE =
-  "Merge policy: ASK (default)—walkthrough+human decision;no merge without approval;merge_authority:ask"
+  "Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask"
+MERGE_POLICY_NONE_PROMPT_LINE =
+  "Merge policy: NONE—prepare only;do not merge;merge_authority:none"
+MERGE_POLICY_AUTO_PROMPT_LINE =
+  "Merge policy: AUTO—merge when gates pass;merge_authority:auto_merge_when_gates_pass"
+RESOLVED_MERGE_POLICY_PROMPT_LINES = [
+  MERGE_POLICY_PROMPT_LINE,
+  MERGE_POLICY_NONE_PROMPT_LINE,
+  MERGE_POLICY_AUTO_PROMPT_LINE
+].freeze
 HUMAN_ACTION_PROMPT_LINE =
   "HAC-v1:ACTION REQUIRED FROM YOU|NO ACTION;" \
   "ask/prereq=>review+merge;repeat=>WAITING+delta"
@@ -44,7 +53,7 @@ DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; 
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
   "- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;" \
-  "known=>gate;holder/generation@push;regate movement."
+  "known=>gate;holder/generation@push;head/base move=>regate."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:deps/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;" \
@@ -334,6 +343,21 @@ def require_occurrence_count(text, phrase, expected_count, label)
   abort_with_failure(
     "#{label} has #{actual_count} occurrences of #{phrase.inspect}; expected #{expected_count}"
   )
+end
+
+def merge_policy_contract_error(template)
+  lines = template.lines.map(&:chomp)
+  title_index = lines.index { |line| line.start_with?("Batch title:") }
+  handle_index = lines.index { |line| line.start_with?("Thread handle:") }
+  policy_indices = lines.each_index.select do |index|
+    RESOLVED_MERGE_POLICY_PROMPT_LINES.include?(lines[index])
+  end
+
+  return "must contain exactly one resolved ASK, NONE, or AUTO merge policy line" unless policy_indices.length == 1
+  return "must put the resolved merge policy immediately after the batch title and before the thread handle" unless title_index && handle_index && policy_indices.first == title_index + 1 && policy_indices.first < handle_index
+  return "must resolve merge authority instead of emitting a three-choice placeholder" if template.include?("merge_authority:<none|ask|auto_merge_when_gates_pass>")
+
+  nil
 end
 
 def reject_phrases(text, phrases, label)
@@ -746,6 +770,12 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
+  MERGE_POLICY_PROMPT_LINE,
+  1,
+  "triage generated-prompt default merge-policy contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
   STAGE_DEPENDENCY_PROMPT_LINE,
   1,
   "triage generated-prompt stage-dependency contract"
@@ -901,14 +931,21 @@ prompt_templates_by_target.each do |target, target_prompt_template|
     abort_with_failure("#{target} goal prompt template must be self-contained and not depend on Batch Plan context")
   end
 
-  title_offset = target_prompt_template.index("Batch title:")
-  policy_offset = target_prompt_template.index(MERGE_POLICY_PROMPT_LINE)
-  handle_offset = target_prompt_template.index("Thread handle:")
-  unless title_offset && policy_offset && handle_offset && title_offset < policy_offset && policy_offset < handle_offset
-    abort_with_failure("#{target} goal prompt must put the resolved merge policy immediately after the batch title and before the thread handle")
+  policy_error = merge_policy_contract_error(target_prompt_template)
+  abort_with_failure("#{target} goal prompt #{policy_error}") if policy_error
+
+  [MERGE_POLICY_NONE_PROMPT_LINE, MERGE_POLICY_AUTO_PROMPT_LINE].each do |resolved_line|
+    variant = target_prompt_template.sub(MERGE_POLICY_PROMPT_LINE, resolved_line)
+    variant_error = merge_policy_contract_error(variant)
+    abort_with_failure("#{target} synthetic merge-policy variant #{variant_error}") if variant_error
   end
-  if target_prompt_template.include?("merge_authority:<none|ask|auto_merge_when_gates_pass>")
-    abort_with_failure("#{target} goal prompt must resolve merge authority instead of emitting a three-choice placeholder")
+
+  duplicate_variant = target_prompt_template.sub(
+    MERGE_POLICY_PROMPT_LINE,
+    "#{MERGE_POLICY_PROMPT_LINE}\n#{MERGE_POLICY_NONE_PROMPT_LINE}"
+  )
+  unless merge_policy_contract_error(duplicate_variant)&.include?("exactly one")
+    abort_with_failure("#{target} goal prompt validator must reject multiple resolved merge-policy lines")
   end
 end
 

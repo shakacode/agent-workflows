@@ -432,12 +432,13 @@ Plan a PR batch
      Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
-   - Immediately after `Batch title:`, put a resolved human-readable and
-     machine-readable merge line. When the user did not choose another mode,
-     use exactly `Merge policy: ASK (default)—walkthrough+human decision;no merge
-     without approval;merge_authority:ask`. Replace the whole line with equally
-     explicit `NONE` / `merge_authority:none` or `AUTO` /
-     `merge_authority:auto_merge_when_gates_pass` wording only when selected.
+   - Immediately after `Batch title:`, put exactly one resolved human-readable
+     and machine-readable merge line. Use
+     `Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask`
+     by default. Only when visible user or repository policy selects another
+     mode, replace that whole line with
+     `Merge policy: NONE—prepare only;do not merge;merge_authority:none` or
+     `Merge policy: AUTO—merge when gates pass;merge_authority:auto_merge_when_gates_pass`.
    - Add `Thread handle:` as the first worker-specific line. Derive
      `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
@@ -600,7 +601,7 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
-Merge policy: ASK (default)—walkthrough+human decision;no merge without approval;merge_authority:ask
+Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
@@ -630,7 +631,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
-- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;regate movement.
+- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;head/base move=>regate.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean

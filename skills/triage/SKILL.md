@@ -221,6 +221,13 @@ precise blocker.
    `Scope` data and carry the complete live replay inline or name its durable
    reference; persist or deliver both artifacts with stable planning state.
    Backend storage is optional and must not be assumed.
+   Immediately after `Batch title:`, every generated prompt must contain exactly
+   one resolved merge-policy line. Default to
+   `Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask`.
+   Only when visible user or repository policy selects another mode, replace
+   that entire line with
+   `Merge policy: NONE—prepare only;do not merge;merge_authority:none` or
+   `Merge policy: AUTO—merge when gates pass;merge_authority:auto_merge_when_gates_pass`.
    Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
    `Coordinator model/effort: <model/class>/<effort>.` and

@@ -398,10 +398,10 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_ready_green_prerequisite_under_ask_requires_human_action
+  def test_ready_prerequisite_under_ask_requires_human_action
     assert_squished_includes(
       @workflow,
-      "A required prerequisite PR that is clean, approved, and green but still unmerged is a human-action gate, not a failing code or external gate",
+      "A required prerequisite PR whose ordinary readiness gates are clean and whose only remaining progress gate is a human review/merge decision is a human-action gate, not a failing code or external gate",
       "canonical batch handoff"
     )
     assert_text_includes(
@@ -411,7 +411,7 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert_squished_includes(
       @workflow,
-      "classify a batch that cannot proceed as `blocked-user-input`; do not lead with `NOT COMPLETE`, `prerequisite blocked`, or lane-card mechanics",
+      "Immediately classify a batch that cannot proceed as `blocked-user-input`; do not lead with `NOT COMPLETE`, `prerequisite blocked`, or lane-card mechanics",
       "canonical batch handoff"
     )
     assert_squished_includes(
@@ -419,6 +419,26 @@ class GoalCompletionContractTest < Minitest::Test
       "state that no code or CI failure is blocking progress",
       "canonical batch handoff"
     )
+  end
+
+  def test_clean_prelaunch_overlap_is_immediate_discoverable_user_action
+    assert_squished_includes @workflow, "This applies before worker claim or launch", "prelaunch prerequisite"
+    assert_squished_includes @workflow,
+                             "whether the prerequisite is a batch target or external",
+                             "prelaunch prerequisite"
+    assert_text_includes @workflow, "Never say `no decision requested`", "prelaunch prerequisite"
+    assert_squished_includes @workflow,
+                             "consume the external-blocker retry/blocked-audit threshold",
+                             "prelaunch prerequisite"
+    assert_squished_includes @workflow,
+                             "start or pause a monitor for that retry threshold",
+                             "prelaunch prerequisite"
+    assert_squished_includes @workflow,
+                             "pin the current task after surfacing the action and unpin it when the gate clears",
+                             "discoverable user action"
+    assert_squished_includes @workflow,
+                             "include the exact task title or id and tell the user to search for that value",
+                             "discoverable user action fallback"
   end
 
   def test_unchanged_human_action_recheck_is_delta_only
@@ -430,7 +450,7 @@ class GoalCompletionContractTest < Minitest::Test
     end
     assert_squished_includes(
       @workflow,
-      "must not imply a new failure or escalation",
+      "must not imply a new failure",
       "canonical human-action recheck contract"
     )
   end

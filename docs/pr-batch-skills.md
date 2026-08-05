@@ -261,11 +261,16 @@ identity and readiness remains clean; a completed walkthrough must have
 explained that same diff. The walkthrough itself is not approval.
 
 Human-facing blocked and final handoffs lead with either `ACTION REQUIRED FROM
-YOU` or `NO ACTION NEEDED FROM YOU`. In particular, a clean, approved, green
-prerequisite PR that merely remains unmerged is reported as a human review/merge
-action under `ask`, not as a generic failed prerequisite. Rechecks of that same
-unchanged gate use a terse `STILL WAITING FOR YOUR ACTION` delta instead of
-repeating the full batch report.
+YOU` or `NO ACTION NEEDED FROM YOU`. In particular, when a prerequisite PR's
+ordinary readiness gates are clean and its only remaining progress gate is a
+human review/merge decision, the first handoff under `ask` says `ACTION REQUIRED
+FROM YOU — Review and decide whether to merge PR #N.` It does this before worker
+launch instead of reporting a generic failed prerequisite, retrying the same
+external blocker three times, or saying that no decision was requested. The
+waiting task stays pinned when the host supports pinning; otherwise its exact
+title or id and a search-and-resume instruction remain in the handoff. Rechecks
+of that same unchanged gate use a terse `STILL WAITING FOR YOUR ACTION` delta
+instead of repeating the full batch report or escalating the task.
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from
 [skills/pr-batch/SKILL.md](../skills/pr-batch/SKILL.md): workers must be able

@@ -47,7 +47,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
-- **Default missing PR-batch merge authority to `ask`, display the human merge policy prominently near the top of every batch prompt, and lead blocked/final handoffs with one concrete human-action summary; clean unmerged prerequisite PRs now read as review/merge actions rather than failed prerequisites, while unchanged rechecks collapse to a terse delta.**
+- **Default missing PR-batch merge authority to `ask`, display the human merge policy prominently near the top of every batch prompt, and lead blocked/final handoffs with one concrete human-action summary; clean unmerged prerequisite PRs under `ask` now become immediate, discoverable review/merge actions rather than failed prerequisites or repeated external-blocker retries, while unchanged rechecks collapse to a terse delta.**
 - **Require qualifying dispatcher `launch-confirmation v2` evidence to activate a pending worker while retaining v1 for history-only replay, migrate CI consumers to scoped `pr-ci-readiness` v2, and require every merge caller to generate and pass a fresh merge-assurance receipt; `merge_authority: none` remains no-merge.**
 - **Make `merge_authority: ask` automatically run the exact-diff `$pr-walkthrough` after ordinary readiness is clean—full and interactive for large or complex PRs, concise for smaller cohesive PRs—then refresh the diff identity/readiness before asking the one explicit merge question.**
 - **Emit a small managed PR-description summary for completed-batch audit status, keep its update separate from the comment-once receipt transaction, and reduce the durable comment to a concise replay-evidence header while retaining legacy receipt replay compatibility.**

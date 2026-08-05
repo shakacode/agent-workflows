@@ -184,10 +184,11 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 <!-- host-branch: codex-only end -->
 6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
    it before worker launch from visible authority; when none is supplied,
-   default to `ask` without asking another intake question. Explain prominently
-   that `ask` automatically walks through the exact-diff PR one conceptual
-   change at a time, then stops for one explicit human merge decision and never
-   merges before approval.
+   default to `ask` without asking another intake question. Only use `none` or
+   `auto_merge_when_gates_pass` when visible user or repository policy selects
+   it. Explain prominently that `ask` automatically walks through the exact-diff
+   PR one conceptual change at a time, then stops for one explicit human merge
+   decision and never merges before approval.
 7. **Concurrency**: one machine, multiple machines, or single-threaded.
 8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
    user-requested host or paste destination wins. Use `codex` for up to 10
@@ -534,15 +535,19 @@ workflow rules instead of duplicating them.
 
 Use this template when creating Codex goal text:
 
-The template shows the missing-value default. Replace the complete `Merge
-policy:` line only when visible user or repository policy selected `none` or
-`auto_merge_when_gates_pass`, and keep its prose and machine-readable
-`merge_authority` value consistent.
+The template shows the missing-value default. Use exactly one of these complete
+resolved lines, keeping its prose and machine-readable value together:
+
+- `Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask`
+- `Merge policy: NONE—prepare only;do not merge;merge_authority:none`
+- `Merge policy: AUTO—merge when gates pass;merge_authority:auto_merge_when_gates_pass`
+
+Use `ASK` unless visible user or repository policy selected `NONE` or `AUTO`.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
-Merge policy: ASK (default)—walkthrough+human decision;no merge without approval;merge_authority:ask
+Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
@@ -572,7 +577,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
-- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;regate movement.
+- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;head/base move=>regate.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
@@ -663,11 +668,19 @@ merge-ledger summaries.
 
 Apply its Human Action Contract (`HAC-v1`) before those sections. Lead with
 `ACTION REQUIRED FROM YOU — <one concrete action>.` or `NO ACTION NEEDED FROM
-YOU — <current agent-owned next step>.` A clean, approved, green prerequisite
-PR that remains unmerged is a human-action gate under `ask`, not a failing
-prerequisite. After the first full handoff, an unchanged recheck emits only
-`STILL WAITING FOR YOUR ACTION — <same action>.`, the material delta, and the
-resume trigger; do not repeat lane cards or unchanged evidence.
+YOU — <current agent-owned next step>.` A prerequisite whose ordinary readiness
+gates are clean and whose only remaining progress gate is a human review/merge
+decision is a human-action gate under `ask`, not a failing prerequisite. This
+applies before worker claim or launch and to batch-target or external
+prerequisites. Say `ACTION REQUIRED FROM YOU — Review and decide whether to
+merge PR #N.`; never say `no decision requested`. Classify it immediately as
+`blocked-user-input`, without consuming an external-blocker retry threshold or
+starting/pausing its monitor. Keep it discoverable by pinning the task until the
+gate clears when supported; otherwise include the exact task title or id and a
+search-and-resume instruction. After the first full handoff, an unchanged
+recheck emits only `STILL WAITING FOR YOUR ACTION — <same action>.`, the
+material delta, and the resume trigger; do not repeat lane cards or unchanged
+evidence or escalate it as an external blocker.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
