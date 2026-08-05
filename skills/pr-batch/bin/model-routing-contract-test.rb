@@ -149,6 +149,8 @@ AW_D_ROUTE_REPLAY = [
   { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
   { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
 ].freeze
+# Pins the audited record itself, so the replay cannot be emptied or quietly
+# rewritten to claim #148 ran its requested route. Sorted so row order is free.
 AW_D_ROUTE_REPLAY_FINGERPRINT = [
   "146|implementation|bound-exact-match|proceed",
   "146|review and QA|bound-exact-match|proceed",

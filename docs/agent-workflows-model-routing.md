@@ -374,6 +374,14 @@ An authorized fallback is explicit, recorded before launch, and names the
 authority that approved it. An unrecorded fallback is a silent substitution and
 takes that row's disposition.
 
+These dispositions are a normative contract for coordinators, handoffs, and
+execution receipts. They are not statuses any helper returns today:
+`dispatcher-capability-preflight` emits `selected`, `launch-pending`,
+`replay-already-active`, `blocked-user-input`, `blocked-replacement-fencing`,
+and `invalid-input`, and nothing yet observes an actual route at dispatch time. Do
+not read `MODEL_ROUTE_MISMATCH` as a value a script produces until the
+execution-provenance receipts land.
+
 A lane that resolves to `MODEL_ROUTE_MISMATCH` stops for relaunch or an
 explicitly authorized fallback. It must not be reported as having run the
 requested route, and its results must not be compared against results from a
