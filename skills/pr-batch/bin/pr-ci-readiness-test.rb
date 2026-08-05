@@ -2019,6 +2019,96 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  # Regression for #287: `fetch_paginated_collection` calls
+  # `validate_page&.call(payload)` unconditionally on every page, so the
+  # combined-status envelope's top-level `sha` should be asserted on page 2
+  # and beyond, not just page 1. The two existing single-page fixtures above
+  # (and `test_combined_commit_status_without_sha_fails_closed` /
+  # `test_hichee_data_431_wrong_combined_status_ref_remains_unknown`) only
+  # ever exercised a single page, so nothing proved the hook re-fires past
+  # its first call. This drives a well-formed 100-row first page (accepted)
+  # followed by a second page whose envelope `sha` is mismatched or missing
+  # entirely -- if the hook only ran once, neither defect would be caught and
+  # the run would incorrectly finish READY.
+  def test_combined_status_validate_page_hook_fires_on_every_page_not_just_the_first
+    head = "a" * 40
+    page_one = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    page_two_statuses = [
+      { "id" => 101, "context" => "status-100", "state" => "success",
+        "target_url" => "https://example/status/101" }
+    ]
+    bad_second_pages = {
+      "mismatched sha on page 2" => {
+        "sha" => "b" * 40, "state" => "success", "total_count" => 101, "statuses" => page_two_statuses
+      },
+      "missing sha on page 2" => {
+        "state" => "success", "total_count" => 101, "statuses" => page_two_statuses
+      }
+    }
+
+    accepted_bad_pages = bad_second_pages.filter_map do |label, bad_page_two|
+      pages = [
+        { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => page_one },
+        bad_page_two
+      ]
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        exact_status_pages: pages
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        other = data.dig("scopes", "other")
+        failed_closed = data.fetch("verdict") == "UNKNOWN" &&
+                        other.fetch("complete") == false &&
+                        other.fetch("rows").empty? &&
+                        other.fetch("error").include?("combined commit status was not bound to exact head #{head}")
+        label unless failed_closed
+      end
+    end
+
+    assert_empty accepted_bad_pages
+  end
+
+  # Follow-up from the #287 review comment: a page can be structurally
+  # malformed -- a JSON array instead of an object -- rather than merely
+  # missing/mismatching `sha`. `fetch_paginated_collection` already fails
+  # closed on this ("... response was not an object") before `validate_page`
+  # even runs; this is direct regression coverage for that branch on the
+  # combined commit status endpoint specifically, proven on the second page
+  # so it cannot be satisfied by only validating the first response.
+  def test_combined_status_second_page_returning_json_array_fails_closed
+    head = "a" * 40
+    page_one = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    pages = [
+      { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => page_one },
+      ["not", "an", "object"]
+    ]
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "statuses response was not an object"
+    end
+  end
+
   def test_single_page_combined_state_inconsistent_with_statuses_fails_closed
     head = "a" * 40
     pages = [{
