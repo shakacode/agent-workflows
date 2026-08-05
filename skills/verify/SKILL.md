@@ -31,7 +31,7 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
    - Stop immediately and report a regression if a later fix causes a command that previously passed to fail again on
      the same file, symbol, or test item. Ask the user how to proceed rather than attempting a blind revert.
    - Do not claim a failure is fixed until the command passes locally.
-7. Once the commands above are green, apply the **Coverage-Of-Change Gate** below and record its `COVERAGE` receipt(s).
+7. Once the commands above are green, apply the **Coverage-Of-Change Gate** below and record its `COVERAGE` receipt(s). If the gate routes to `tdd` and `tdd` adds or changes files, return to step 4 for those files before recording the receipt — see the Coverage-Of-Change Gate section for why.
 8. Apply the **Commit Message Contract** below when drafting or updating the commit message and PR body, and record its `COMMIT-CONTRACT` receipt.
 9. Finish with the exact commands run and their pass/fail status, including the `COVERAGE` and `COMMIT-CONTRACT` receipt lines.
 
@@ -104,7 +104,7 @@ For each distinct behavior change in the diff, produce exactly one of:
 
 **Test-only diffs.** When the entire diff is test files — a new regression test with no production change, or a fix to a previously broken or flaky test — there is no separate covering test to name, because the change *is* the test. Use the named-failing-test form on the test itself instead of a skip code: for a new regression test, show it fails against the current (unfixed) production code before any production change lands, and record that pre-fix run as the `COVERAGE <test path/name> fails without change` evidence; for a fixed broken/flaky test, show the old assertion actually catches the behavior it claims to catch (temporarily reintroduce the bug or flake condition and confirm the test now fails), then restore and confirm it passes. A test-only diff is never itself grounds for a skip code.
 
-If no test currently covers the behavior and the gate requires a named-failing-test receipt (no skip code honestly applies, or the repo seam below forbids a skip for this path), stop and invoke `tdd` (`skills/tdd/SKILL.md`) to add one RED test for that behavior, then return here with its test path. Do not reimplement the RED/GREEN loop inline; `tdd` is the mandatory entry point, not a second implementation of it.
+If no test currently covers the behavior and the gate requires a named-failing-test receipt (no skip code honestly applies, or the repo seam below forbids a skip for this path), stop and invoke `tdd` (`skills/tdd/SKILL.md`) to add one RED test for that behavior, then return here with its test path. Do not reimplement the RED/GREEN loop inline; `tdd` is the mandatory entry point, not a second implementation of it. `tdd` adds or changes files after the Default Verification Order above already ran green, so before recording the `COVERAGE` receipt, return to Instructions step 4 and rerun the relevant commands (formatter/lint, `.agents/bin/validate`, and the targeted test command) against the files `tdd` touched — a freshly added test and any accompanying production fix must pass the same gates as everything else in the diff, not skip them by arriving after the first green run.
 
 **Repo seam (tightening only, prose-level — not machine-enforced):** when `.agents/agent-workflow.yml` defines a `coverage_of_change.never_skip_paths` list (each entry a `pattern` plus `reason`), a changed file matching one of those patterns must use the named-failing-test form; `COVERAGE SKIPPED` is not available for it regardless of reason code. Unlike `autonomous_merge.human_review_paths`, which this pack parses and enforces in code (`bin/agent_doctor/autonomous_merge_policy.rb`, with a `HUMAN_REVIEW_PATH_KEYS`/`HUMAN_REVIEW_REASONS` allowlist), `coverage_of_change.never_skip_paths` has no parser anywhere in this pack — it takes effect only if the agent following this skill reads and honors the prose. Absent the key, all four skip codes above remain available. As written policy, this seam can only add `never_skip_paths` entries — it cannot disable the gate, weaken it to advisory, or add free-text reasons or skip codes beyond the four enumerated above; nothing here stops a non-compliant agent from ignoring it, since there is no code path checking it. A consumer repo that needs machine enforcement would have to add its own parser, the way `human_review_paths` has one.
 
@@ -123,17 +123,28 @@ Record the result as a receipt: `COMMIT-CONTRACT <concise|full>: <one-line reaso
 
 ## Output Format
 
-Use this concise summary:
+Use this concise summary. Per Instructions steps 4 and 7, a run stops at the first `FAIL`, before the Coverage-Of-Change Gate or Commit Message Contract are ever reached — so `COVERAGE` and `COMMIT-CONTRACT` receipts belong only in a fully green run's output, never alongside an unresolved `FAIL`.
+
+A failing run (still in progress; no receipts yet):
 
 ```text
 Verification:
 - PASS git diff --check "origin/${BASE_BRANCH}...HEAD"
 - FAIL <repo formatter check>
-- COVERAGE <test path/name> fails without change
-- COMMIT-CONTRACT concise: single mechanical fix, nothing in the PR body to collapse
 
 Next fix:
 - Run the repo's format/autofix command to fix formatting, then rerun the formatter check.
 ```
 
-If a command is intentionally skipped, explain why in one line. Prefer local verification over waiting for CI. A `COVERAGE SKIPPED <reason code>` receipt, or the docs-only exemption from the Coverage-Of-Change Gate, still needs its own line; do not omit the receipt.
+A fully green run (every command passed, so the gate and contract now apply):
+
+```text
+Verification:
+- PASS git diff --check "origin/${BASE_BRANCH}...HEAD"
+- PASS <repo formatter check>
+- PASS .agents/bin/validate
+- COVERAGE <test path/name> fails without change
+- COMMIT-CONTRACT concise: single mechanical fix, nothing in the PR body to collapse
+```
+
+If a command is intentionally skipped, explain why in one line. Prefer local verification over waiting for CI. In a green run, a `COVERAGE SKIPPED <reason code>` receipt, or the docs-only exemption from the Coverage-Of-Change Gate, still needs its own line; do not omit the receipt.
