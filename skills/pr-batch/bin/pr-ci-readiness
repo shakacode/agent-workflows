@@ -90,8 +90,38 @@ module PrCiReadiness
     rows.select { |row| %w[cancel pending].include?(row["bucket"].to_s) }.map { |row| row["name"].to_s }
   end
 
-  def verdict_for(rows, failing, pending)
-    if rows.empty?
+  # The only bucket values `gh pr checks --json ...,bucket,...` is documented
+  # to emit. A row outside this set (a non-object entry, a missing bucket, or
+  # an unrecognized bucket such as a future gh CLI state this script does not
+  # yet know about) must fail closed instead of silently counting as passing.
+  RECOGNIZED_BUCKETS = %w[pass skipping fail pending cancel].freeze
+
+  def invalid_row?(row)
+    return true unless row.is_a?(Hash)
+
+    bucket = row["bucket"]
+    !(bucket.is_a?(String) && RECOGNIZED_BUCKETS.include?(bucket))
+  end
+
+  def invalid_descriptor(row)
+    return "row was not an object (#{row.class})" unless row.is_a?(Hash)
+
+    name = row["name"]
+    label = name.is_a?(String) && !name.empty? ? name : "unnamed check"
+    "#{label} (bucket: #{row['bucket'].inspect})"
+  end
+
+  def invalid_names(rows)
+    rows.select { |row| invalid_row?(row) }.map { |row| invalid_descriptor(row) }
+  end
+
+  # Invalid rows take priority over the empty-rows UNKNOWN case: an invalid
+  # row is evidence we have and could not understand, which is a stronger,
+  # fail-closed signal than having no evidence at all.
+  def verdict_for(rows, failing, pending, invalid = [])
+    if invalid.any?
+      "NOT_READY"
+    elsif rows.empty?
       "UNKNOWN"
     elsif failing.empty? && pending.empty?
       "READY"
@@ -219,29 +249,37 @@ module PrCiReadiness
     }
   end
 
-  # Build the normalized result hash from the captured check rows.
+  # Build the normalized result hash from the captured check rows. Invalid
+  # rows (non-object entries, or an unrecognized/missing bucket) are pulled
+  # out before readiness classification so they cannot masquerade as a
+  # recognized bucket, and are reported separately in "invalid".
   def assess(pr_number:, required_used:, rows:, required_cancellations: [])
-    rows = readiness_rows(rows, required_used:, required_cancellations:)
-    failing = failing_names(rows)
-    pending = pending_names(rows)
+    invalid = invalid_names(rows)
+    valid_rows = rows.reject { |row| invalid_row?(row) }
+    gated_rows = readiness_rows(valid_rows, required_used:, required_cancellations:)
+    failing = failing_names(gated_rows)
+    pending = pending_names(gated_rows)
 
     {
       "pr" => pr_number.to_i,
-      "verdict" => verdict_for(rows, failing, pending),
+      "verdict" => verdict_for(gated_rows, failing, pending, invalid),
       "required_used" => required_used,
       "failing" => failing,
-      "pending" => pending
+      "pending" => pending,
+      "invalid" => invalid
     }
   end
 
   def text_summary(result)
     failing = result["failing"]
     pending = result["pending"]
+    invalid = result.fetch("invalid", [])
     lines = [
       result["verdict"],
       "required_used: #{result['required_used']}",
       "failing: #{failing.empty? ? '(none)' : failing.join(', ')}",
-      "pending: #{pending.empty? ? '(none)' : pending.join(', ')}"
+      "pending: #{pending.empty? ? '(none)' : pending.join(', ')}",
+      "invalid: #{invalid.empty? ? '(none)' : invalid.join(', ')}"
     ]
     requested = result.fetch("requested_hosted", {})
     if requested_hosted_present?(requested)
@@ -288,6 +326,10 @@ module PrCiReadiness
     required and full check list is UNKNOWN/not-ready. An unavailable check-query
     capability is also UNKNOWN and cannot be overridden by requested hosted runs.
     The PR is READY only when no failing or pending checks remain.
+    A check row that is not an object, or whose bucket is not one of the
+    buckets `gh pr checks` is documented to emit (pass, skipping, fail,
+    pending, cancel), fails closed to NOT_READY instead of being treated as
+    passing; it is named in "invalid" so the result explains why.
     Current-head PENDING review drafts visible to the current authenticated
     viewer also block readiness. The viewer-scoped inventory is paginated;
     complete means pagination completed only in that scope. Other reviewers'
@@ -317,6 +359,7 @@ module PrCiReadiness
         "required_used": true | false,
         "failing": [ "check name", ... ],
         "pending": [ "check name", ... ],
+        "invalid": [ "check name (bucket: ...)", ... ],
         "viewer_pending_review_drafts": [ { "id": "PRR_...", "commit_oid": "..." }, ... ],
         "viewer_review_inventory": {
           "scope": "authenticated_viewer",
@@ -1298,6 +1341,7 @@ module PrCiReadiness
         check_required_cancellation,
         check_cancel_only,
         check_empty,
+        check_unrecognized_bucket,
         check_parse_helpers
       ].flatten
     end
@@ -1340,6 +1384,14 @@ module PrCiReadiness
     def check_empty
       out = PrCiReadiness.assess(pr_number: 1, required_used: false, rows: [])
       out["verdict"] == "UNKNOWN" ? [] : ["empty did not yield UNKNOWN"]
+    end
+
+    def check_unrecognized_bucket
+      out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                   { "workflow" => "CI", "name" => "mystery", "bucket" => "future-state" }
+                                 ])
+      ok = out["verdict"] == "NOT_READY" && out["invalid"] == ['mystery (bucket: "future-state")']
+      ok ? [] : ["unrecognized bucket did not fail closed (mystery)"]
     end
 
     def check_parse_helpers

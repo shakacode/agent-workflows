@@ -96,6 +96,72 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal "NOT_READY", out["verdict"]
   end
 
+  # --- #202 contract 1: unknown/malformed check rows fail closed -----------
+  #
+  # Reconciled from React on Rails PR #4749's review of the pinned pack: an
+  # unrecognized `bucket` value (e.g. a future gh CLI state this script does
+  # not yet know about) or a structurally invalid row was silently treated
+  # as a pass-equivalent, so a single such row could produce READY on its
+  # own. Only the explicitly recognized buckets may contribute to READY now;
+  # anything else fails closed to NOT_READY with the offending row named in
+  # `invalid` so the result explains why.
+
+  def test_unrecognized_bucket_fails_closed_instead_of_ready
+    # Exact reproduction from #202.
+    out = PrCiReadiness.assess(
+      pr_number: 1, required_used: true,
+      rows: [{ "workflow" => "CI", "name" => "mystery", "bucket" => "future-state" }]
+    )
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["mystery (bucket: \"future-state\")"], out["invalid"]
+    assert_empty out["failing"]
+    assert_empty out["pending"]
+  end
+
+  def test_missing_bucket_field_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true,
+                               rows: [{ "workflow" => "CI", "name" => "unit" }])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["unit (bucket: nil)"], out["invalid"]
+  end
+
+  def test_non_string_bucket_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true,
+                               rows: [{ "workflow" => "CI", "name" => "unit", "bucket" => 1 }])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["unit (bucket: 1)"], out["invalid"]
+  end
+
+  def test_non_object_row_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: ["not-a-row"])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["row was not an object (String)"], out["invalid"]
+  end
+
+  def test_null_row_entry_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [nil])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["row was not an object (NilClass)"], out["invalid"]
+  end
+
+  def test_invalid_row_alongside_otherwise_passing_rows_still_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "workflow" => "CI", "name" => "unit", "bucket" => "pass" },
+                                 { "workflow" => "CI", "name" => "mystery", "bucket" => "future-state" }
+                               ])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["mystery (bucket: \"future-state\")"], out["invalid"]
+  end
+
+  def test_all_recognized_buckets_remain_unaffected_by_invalid_row_validation
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "name" => "rspec", "bucket" => "pass" },
+                                 { "name" => "examples", "bucket" => "skipping" }
+                               ])
+    assert_equal "READY", out["verdict"]
+    assert_empty out["invalid"]
+  end
+
   # --- parse helpers --------------------------------------------------------
 
   def test_usable_checks_discriminates_payloads
@@ -924,6 +990,23 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", data["verdict"]
       assert_equal true, data["required_used"]
       assert_equal 123, data["pr"]
+    end
+  end
+
+  # Regression for #202 contract 1, end to end through the CLI: a required
+  # row with an unrecognized bucket (e.g. a future gh CLI state) must not be
+  # silently treated as passing.
+  def test_cli_fails_closed_for_unrecognized_required_bucket
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"mystery","bucket":"future-state"}]',
+      full_json: "[]"
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal true, data["required_used"]
+      assert_equal ["mystery (bucket: \"future-state\")"], data["invalid"]
     end
   end
 
