@@ -1717,6 +1717,80 @@ test_upgrade_validates_consumer_root_after_install() {
   assert_contains "$output" "UPGRADE_COMPLETE"
 }
 
+test_fresh_install_applies_the_recorded_flat_default() {
+  local tmp target output
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+
+  assert_contains "$output" "flat (fresh-install default)"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["delivery_mode"] == "flat"' \
+    "$target/.agent-workflows-install.json"
+}
+
+test_delivery_mode_resolution_reports_explicit_and_recorded_sources() {
+  local tmp target explicit_output replay_output
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+
+  explicit_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  assert_contains "$explicit_output" "flat (explicit --delivery-mode)"
+
+  replay_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$replay_output" "flat (recorded install metadata)"
+  assert_not_contains "$replay_output" "fresh-install default"
+}
+
+test_legacy_metadata_without_delivery_mode_resolves_flat_by_compatibility_rule() {
+  local tmp target output
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target"
+  ruby -rjson -e '
+    path, source = ARGV
+    metadata = {
+      "host" => "codex",
+      "mode" => "copy",
+      "source" => source,
+      "version" => "0.0.1",
+      "source_revision" => "unknown",
+      "installed_at" => "2024-01-01T00:00:00Z"
+    }
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json" "$ROOT"
+
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+
+  assert_contains "$output" "flat (legacy install metadata)"
+  assert_not_contains "$output" "fresh-install default"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["delivery_mode"] == "flat"' \
+    "$target/.agent-workflows-install.json"
+}
+
+test_fresh_install_default_note_accompanies_native_plugin_conflict() {
+  local tmp target host output status
+
+  for host in codex claude; do
+    tmp="$(mktemp -d)"
+    target="$tmp/$host-home"
+    write_native_scw_state "$host" "$target"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host "$host" --target "$target" 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "$host fresh install with an active native plugin unexpectedly succeeded"
+    assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+    assert_contains "$output" "no delivery mode was recorded"
+    assert_contains "$output" "fresh-install default (flat)"
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "$host conflict note path wrote metadata"
+  done
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
@@ -1779,6 +1853,10 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
+    test_fresh_install_applies_the_recorded_flat_default
+    test_delivery_mode_resolution_reports_explicit_and_recorded_sources
+    test_legacy_metadata_without_delivery_mode_resolves_flat_by_compatibility_rule
+    test_fresh_install_default_note_accompanies_native_plugin_conflict
   )
 
   local test_name
