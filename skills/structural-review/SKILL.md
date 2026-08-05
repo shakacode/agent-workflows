@@ -75,11 +75,16 @@ the `base_branch` key in `.agents/agent-workflow.yml` (or from PR metadata when
 a PR is open), then pin the exact merge-base three-dot diff:
 
 ```bash
+base=$(ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
 git rev-parse --verify "origin/$base"
 git merge-base "origin/$base" HEAD
 git diff --stat "origin/$base...HEAD"
 git diff --name-only "origin/$base...HEAD"
 ```
+
+Resolve `base` before the first command; an unset `base` silently becomes
+`origin/`, which is exactly the unpinned review this step exists to prevent.
+Keep it exported for the later steps, or re-resolve it the same way.
 
 Stop and report if the ref does not resolve or the diff is empty. Do not
 substitute a two-dot diff, a working-tree diff, or "recent commits" — fail here
@@ -100,6 +105,7 @@ Get the post-change totals, because Standard 1 is evaluated on the resulting
 file, not on the lines added:
 
 ```bash
+# Reuse the `base` resolved in Step 1, or re-resolve it in a fresh shell.
 git diff --numstat "origin/$base...HEAD"
 wc -l path/to/changed_file
 ```
