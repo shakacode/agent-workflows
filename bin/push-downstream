@@ -788,7 +788,15 @@ module PushDownstream
       end
 
       base_sha = local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
-      issues = AgentWorkflowSeamDoctor.check(clone)
+
+      begin
+        issues = AgentWorkflowSeamDoctor.check(clone)
+      rescue RuntimeError, SystemCallError => e
+        # The doctor reads consumer files and shells out (bash -n), so a single
+        # consumer can fail under resource pressure. Record it as blocked rather
+        # than aborting the whole fleet audit.
+        return audit_blocked(repo, "consumer seam could not be interpreted: #{e.message}", base_sha: base_sha)
+      end
 
       begin
         result = reconcile_scaffold(clone, contract)

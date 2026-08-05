@@ -1012,6 +1012,45 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  # The seam doctor reads consumer files and shells out (`bash -n`), so it can
+  # raise for one consumer under resource pressure. That must not abort the
+  # whole fleet audit, and the consumer must not be reported clean.
+  def test_audit_records_uninterpretable_consumer_as_blocked_and_continues_the_fleet
+    Dir.mktmpdir("push-downstream-audit") do |dir|
+      remote, = seed_bare_consumer(dir)
+      original_check = AgentWorkflowSeamDoctor.method(:check)
+      calls = 0
+      raising_check = lambda do |root, **kwargs|
+        calls += 1
+        raise Errno::EMFILE if calls == 1
+
+        original_check.call(root, **kwargs)
+      end
+
+      entries = with_module_stub(AgentWorkflowSeamDoctor, :check, raising_check) do
+        with_module_stub(PushDownstream, :resolve_contract, ->(_repo, _presets) { CONTRACT }) do
+          %w[first second].map do |name|
+            PushDownstream.audit_repo(
+              { repo: name, nwo: "local/#{name}", base_branch: "main",
+                pr_branch: "agent-workflows/seam-sync", remote_url: remote }, {}
+            )
+          end
+        end
+      end
+
+      first, second = entries
+      assert_equal "blocked", first.fetch("status")
+      assert_includes first.fetch("reason"), "consumer seam could not be interpreted"
+      # Values established before the failure are kept; the rest stay UNKNOWN.
+      assert_match(/\A[0-9a-f]{40}\z/, first.fetch("base_sha"))
+      assert_equal PushDownstream::AUDIT_UNKNOWN, first.fetch("seam_doctor_issues")
+      assert_equal PushDownstream::AUDIT_UNKNOWN, first.fetch("changed_managed_paths")
+      # The fleet run continues: the next consumer is still audited normally.
+      assert_equal "drifted", second.fetch("status")
+      assert_equal 2, calls
+    end
+  end
+
   # `git status --porcelain=v1 -z` emits a rename as two NUL-separated fields
   # and the second, the origin path, carries no "XY " prefix. Slicing every
   # field at [3..] silently turned "old.txt" into ".txt".
