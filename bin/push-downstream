@@ -787,7 +787,15 @@ module PushDownstream
         return audit_blocked(repo, "clone of #{repo.fetch(:base_branch)} failed")
       end
 
-      base_sha = local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
+      # Open3.capture2 raises when the child cannot be spawned (Errno::EMFILE
+      # under fleet-wide resource pressure, Errno::ENOENT for a missing git),
+      # unlike Kernel#system above, which returns nil. Guard every shell-out so
+      # one consumer degrades to a blocked entry instead of aborting the fleet.
+      begin
+        base_sha = local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
+      rescue RuntimeError, SystemCallError => e
+        return audit_blocked(repo, "consumer base commit could not be resolved: #{e.message}")
+      end
 
       begin
         issues = AgentWorkflowSeamDoctor.check(clone)
@@ -804,7 +812,13 @@ module PushDownstream
         return audit_blocked(repo, "desired state could not be computed: #{e.message}", base_sha: base_sha)
       end
 
-      changed_paths = audit_changed_paths(clone)
+      begin
+        changed_paths = audit_changed_paths(clone)
+      rescue RuntimeError, SystemCallError => e
+        return audit_blocked(repo, "reconciled clone could not be inspected: #{e.message}", base_sha: base_sha)
+      end
+      # A non-success or uninterpretable status is a separate, already-handled
+      # case: audit_changed_paths returns nil and the consumer is still blocked.
       if changed_paths.nil?
         return audit_blocked(repo, "reconciled clone could not be compared with its base", base_sha: base_sha)
       end

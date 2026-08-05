@@ -1051,6 +1051,29 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  # Open3.capture2 raises when the child cannot be spawned, unlike Kernel#system
+  # which returns nil. Both audit shell-outs must degrade to a blocked entry.
+  def test_audit_records_base_commit_spawn_failure_as_blocked_and_continues_the_fleet
+    first, second = audit_with_spawn_failure("rev-parse")
+
+    assert_equal "blocked", first.fetch("status")
+    assert_includes first.fetch("reason"), "consumer base commit could not be resolved"
+    assert_equal PushDownstream::AUDIT_UNKNOWN, first.fetch("base_sha")
+    assert_equal PushDownstream::AUDIT_UNKNOWN, first.fetch("changed_managed_paths")
+    assert_equal "drifted", second.fetch("status")
+  end
+
+  def test_audit_records_status_spawn_failure_as_blocked_and_continues_the_fleet
+    first, second = audit_with_spawn_failure("status")
+
+    assert_equal "blocked", first.fetch("status")
+    assert_includes first.fetch("reason"), "reconciled clone could not be inspected"
+    # The base SHA was established before the failing step, so it is retained.
+    assert_match(/\A[0-9a-f]{40}\z/, first.fetch("base_sha"))
+    assert_equal PushDownstream::AUDIT_UNKNOWN, first.fetch("changed_managed_paths")
+    assert_equal "drifted", second.fetch("status")
+  end
+
   # `git status --porcelain=v1 -z` emits a rename as two NUL-separated fields
   # and the second, the origin path, carries no "XY " prefix. Slicing every
   # field at [3..] silently turned "old.txt" into ".txt".
@@ -1115,6 +1138,39 @@ class PushDownstreamAuditTest < Minitest::Test
   end
 
   private
+
+  # Forces the FIRST `git <subcommand>` shell-out to fail at spawn time, the way
+  # Errno::EMFILE does across a fleet, then audits a second consumer to prove
+  # the run continues.
+  def audit_with_spawn_failure(subcommand)
+    Dir.mktmpdir("push-downstream-audit") do |dir|
+      remote, = seed_bare_consumer(dir)
+      original_capture2 = Open3.method(:capture2)
+      failures = 0
+      replacement = lambda do |*args, **kwargs|
+        if failures.zero? && args.include?(subcommand)
+          failures += 1
+          raise Errno::EMFILE
+        end
+
+        original_capture2.call(*args, **kwargs)
+      end
+
+      entries = with_module_stub(Open3, :capture2, replacement) do
+        with_module_stub(PushDownstream, :resolve_contract, ->(_repo, _presets) { CONTRACT }) do
+          %w[first second].map do |name|
+            PushDownstream.audit_repo(
+              { repo: name, nwo: "local/#{name}", base_branch: "main",
+                pr_branch: "agent-workflows/seam-sync", remote_url: remote }, {}
+            )
+          end
+        end
+      end
+
+      assert_equal 1, failures, "expected exactly one forced #{subcommand} spawn failure"
+      entries
+    end
+  end
 
   def audit(remote_url)
     repo = {
