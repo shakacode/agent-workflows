@@ -223,7 +223,7 @@ precise blocker.
    Backend storage is optional and must not be assumed.
    Immediately after `Batch title:`, every generated prompt must contain exactly
    one resolved merge-policy line. Default to
-   `Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask`.
+   `Merge policy: ASK (default)—walkthrough;ask to merge;merge_authority:ask`.
    Only when visible user or repository policy selects another mode, replace
    that entire line with
    `Merge policy: NONE—prepare only;do not merge;merge_authority:none` or
@@ -239,7 +239,7 @@ precise blocker.
    and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
    Each prompt must also include this exact compact scope line:
-   `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.`
+   `Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN`
    Each prompt must include this exact compact preflight line:
    ``Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override``
    Each generated item must use this exact contiguous shape:

@@ -434,7 +434,7 @@ Plan a PR batch
      when creating the prompt, and use that output for `MM-DD HH:MM`.
    - Immediately after `Batch title:`, put exactly one resolved human-readable
      and machine-readable merge line. Use
-     `Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask`
+     `Merge policy: ASK (default)—walkthrough;ask to merge;merge_authority:ask`
      by default. Only when visible user or repository policy selects another
      mode, replace that whole line with
      `Merge policy: NONE—prepare only;do not merge;merge_authority:none` or
@@ -601,7 +601,7 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
-Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask
+Merge policy: ASK (default)—walkthrough;ask to merge;merge_authority:ask
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
@@ -617,7 +617,7 @@ Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
 HAC-v1:ACTION REQUIRED FROM YOU|NO ACTION;ask/prereq=>review+merge;repeat=>WAITING+delta
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
-Scope:deps/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;ft=refs/paths/renames/collisions/serial/UNKNOWN
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original:trusted ad-hoc prompt|n/a
@@ -631,7 +631,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
-- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;head/base move=>regate.
+- Coordination:ids+heartbeats;prelaunch register if able;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;head/base move=>regate
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean

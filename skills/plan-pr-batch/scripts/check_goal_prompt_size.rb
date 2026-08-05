@@ -17,7 +17,7 @@ COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort: <model/class>/
 LAUNCH_ASSURANCE_PROMPT_LINE = "Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
 OBJECTIVE_PROMPT_LINE = "Objective:..."
 MERGE_POLICY_PROMPT_LINE =
-  "Merge policy: ASK (default)—walkthrough+human decision;approval before merge;merge_authority:ask"
+  "Merge policy: ASK (default)—walkthrough;ask to merge;merge_authority:ask"
 MERGE_POLICY_NONE_PROMPT_LINE =
   "Merge policy: NONE—prepare only;do not merge;merge_authority:none"
 MERGE_POLICY_AUTO_PROMPT_LINE =
@@ -52,17 +52,13 @@ MODEL_EFFORT_DISPATCH_LINE = "- Bind actors on-host; unbound -> stop; no inherit
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>."
 COORDINATION_DEPENDENCY_PROMPT_LINE =
-  "- Coordination:ids+heartbeats;register before launch when supported;refusal/UNKNOWN deps=>stop;" \
-  "known=>gate;holder/generation@push;head/base move=>regate."
+  "- Coordination:ids+heartbeats;prelaunch register if able;refusal/UNKNOWN deps=>stop;" \
+  "known=>gate;holder/generation@push;head/base move=>regate"
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
-STAGE_DEPENDENCY_SCOPE_LINE = "Scope:deps/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;" \
+STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;" \
                               "STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;" \
-                              "ft=refs/paths/renames/collisions/serial/UNKNOWN"
-TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
-                                     "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                                     "live=<replay/ref>; " \
-                                     "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
+                              "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN"
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v3: current-head CI/configured-reviewers " \
                              "pending|missing|untriaged or threads unresolved|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m " \
@@ -782,7 +778,7 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE,
+  STAGE_DEPENDENCY_SCOPE_LINE,
   1,
   "triage generated-prompt stage-dependency scope"
 )
@@ -930,7 +926,13 @@ prompt_templates_by_target.each do |target, target_prompt_template|
   if target_prompt_template.match?(/Batch Plan/i)
     abort_with_failure("#{target} goal prompt template must be self-contained and not depend on Batch Plan context")
   end
+end
 
+merge_policy_templates_by_surface = prompt_templates_by_target.merge(
+  pr_batch: pr_batch_prompt_template,
+  workflow: workflow_prompt_template
+)
+merge_policy_templates_by_surface.each do |target, target_prompt_template|
   policy_error = merge_policy_contract_error(target_prompt_template)
   abort_with_failure("#{target} goal prompt #{policy_error}") if policy_error
 

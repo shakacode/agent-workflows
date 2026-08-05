@@ -589,9 +589,9 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }
     registration_patterns = {
-      "workflows/pr-processing.md goal prompt" => /register before launch when supported/i,
-      "skills/pr-batch goal prompt" => /register before launch when supported/i,
-      "skills/plan-pr-batch goal prompt" => /register before launch when supported/i
+      "workflows/pr-processing.md goal prompt" => /prelaunch register if able/i,
+      "skills/pr-batch goal prompt" => /prelaunch register if able/i,
+      "skills/plan-pr-batch goal prompt" => /prelaunch register if able/i
     }
 
     prompts.each do |label, text|
