@@ -149,6 +149,13 @@ AW_D_ROUTE_REPLAY = [
   { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
   { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
 ].freeze
+AW_D_ROUTE_REPLAY_FINGERPRINT = [
+  "146|implementation|bound-exact-match|proceed",
+  "146|review and QA|bound-exact-match|proceed",
+  "147|post-publication review fixes|coordinator-pair-inheritance|MODEL_ROUTE_MISMATCH",
+  "148|QA|silent-substitution|MODEL_ROUTE_MISMATCH",
+  "148|implementation|silent-substitution|MODEL_ROUTE_MISMATCH"
+].freeze
 EXPECTED_ROUTE_DISPOSITIONS = {
   "bound-exact-match" => "proceed",
   "unbound-exact-route" => "MODEL_ROUTE_MISMATCH",
@@ -196,6 +203,12 @@ def assert_route_provenance_contract(test, text, label)
   end
 end
 
+def aw_d_replay_fingerprint
+  AW_D_ROUTE_REPLAY.map do |row|
+    [row.fetch(:pr), row.fetch(:role), row.fetch(:case_id), row.fetch(:disposition)].join("|")
+  end.sort
+end
+
 def assert_aw_d_route_replay(test, text, label)
   dispositions = route_dispositions(text)
   FAIL_CLOSED_ROUTE_CASES.each do |case_id|
@@ -206,6 +219,8 @@ def assert_aw_d_route_replay(test, text, label)
     test.assert_equal expected, dispositions[case_id],
                       "#{label}: #{case_id} must dispose as #{expected}"
   end
+  test.assert_equal AW_D_ROUTE_REPLAY_FINGERPRINT, aw_d_replay_fingerprint,
+                    "#{label}: the AW D replay rows changed; the audited #146-#148 record is the regression this contract exists to hold"
   AW_D_ROUTE_REPLAY.each do |row|
     expected = row.fetch(:disposition)
     actual = dispositions[row.fetch(:case_id)]
@@ -213,8 +228,8 @@ def assert_aw_d_route_replay(test, text, label)
                       "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} (#{row.fetch(:case_id)}) must dispose as #{expected}"
     next if SATISFIED_ROUTE_DISPOSITIONS.include?(expected)
 
-    test.refute_includes SATISFIED_ROUTE_DISPOSITIONS, actual,
-                         "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} must never report a satisfied route"
+    test.assert_includes FAIL_CLOSED_ROUTE_CASES, row.fetch(:case_id),
+                         "#{label}: AW D PR ##{row.fetch(:pr)} #{row.fetch(:role)} replays a non-satisfied outcome, so #{row.fetch(:case_id)} must be a fail-closed case"
   end
 end
 
