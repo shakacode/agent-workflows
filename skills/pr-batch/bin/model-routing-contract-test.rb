@@ -90,10 +90,6 @@ AW_D_ROUTE_REPLAY = [
   { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
   { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
 ].freeze
-# The complete disposition table. FAIL_CLOSED_ROUTE_CASES and the AW D replay
-# together leave `authorized-fallback` unconstrained, so a mutation dropping its
-# recorded-authority requirement to a plain `proceed` would pass untested.
-# Pinning every row means the table cannot be loosened anywhere without failing.
 # Pins the audited record itself, so the replay cannot be emptied or quietly
 # rewritten to claim #148 ran its requested route. Sorted so row order is free.
 AW_D_ROUTE_REPLAY_FINGERPRINT = [
@@ -103,6 +99,10 @@ AW_D_ROUTE_REPLAY_FINGERPRINT = [
   "148|QA|silent-substitution|MODEL_ROUTE_MISMATCH",
   "148|implementation|silent-substitution|MODEL_ROUTE_MISMATCH"
 ].freeze
+# The complete disposition table. FAIL_CLOSED_ROUTE_CASES and the AW D replay
+# together leave `authorized-fallback` unconstrained, so a mutation dropping its
+# recorded-authority requirement to a plain `proceed` would pass untested.
+# Pinning every row means the table cannot be loosened anywhere without failing.
 EXPECTED_ROUTE_DISPOSITIONS = {
   "bound-exact-match" => "proceed",
   "unbound-exact-route" => "MODEL_ROUTE_MISMATCH",
