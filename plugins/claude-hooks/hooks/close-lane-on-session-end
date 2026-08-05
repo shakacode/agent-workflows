@@ -1,0 +1,117 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# SessionEnd adapter: record that a lane stopped deliberately, so an abandoned
+# lane stops being indistinguishable from a running one.
+#
+# A lane goes quiet for two very different reasons -- it finished, or its agent
+# stopped -- and an expired heartbeat looks identical either way. This emits the
+# already-canonical non-terminal signal `human_intervention` with `kind: drain`
+# at the moment the agent stops, which is the only moment the difference is
+# cheap to observe.
+#
+# What this deliberately does NOT do: release the claim. `pr-processing.md`
+# forbids `agent-coord release` for a normal agent-runner restart, and a
+# SessionEnd cannot tell a restart from an abandonment. Releasing here would
+# break a lane that is about to be resumed. Recording a non-terminal event is
+# safe in both cases; releasing is not.
+#
+# Emission follows the repository's typed-event contract exactly: backend `n/a`
+# skips silently; an unadvertised transport records `typed event transport:
+# unavailable` and skips; a missing, malformed, or unsafe advertisement is an
+# attempted-write failure; and an advertised write runs the exact executable and
+# ordered opaque argv without shell evaluation, with a finite deadline in its
+# own process group. Emission is best-effort and never blocks anything.
+
+require "json"
+require_relative "lib/hook_support"
+
+module CloseLaneOnSessionEnd
+  # SessionEnd output and exit status are ignored by the host; this hook is
+  # cleanup only and always exits 0.
+  DONE = 0
+
+  # The backend-advertised drain-event executable and ordered opaque argv, as a
+  # JSON array of strings. Whoever configures a lane also knows that lane's
+  # batch, lane, agent, repository, target, and branch context, so the argv is
+  # baked with that context and each argument is passed through unmodified.
+  # Its presence is this session's declaration that it holds a lane claim; with
+  # no advertisement there is nothing to close out.
+  ADVERTISEMENT_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_ARGV"
+  TIMEOUT_ENV = "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS"
+
+  # Claude Code budgets SessionEnd hooks tightly, so the default deadline is
+  # short. A slow backend records UNKNOWN rather than delaying shutdown.
+  DEFAULT_TIMEOUT_SECONDS = 1.0
+
+  # `resume` is excluded by the installed matcher; re-checked here so a
+  # hand-edited install cannot drain a session that is merely being resumed.
+  SKIPPED_REASONS = %w[resume].freeze
+
+  # A NUL byte cannot survive exec, so an argument containing one is unsafe.
+  NUL = 0.chr
+
+  module_function
+
+  def run(input: $stdin, err: $stderr, env: ENV)
+    err.puts("close-lane-on-session-end: #{outcome(input, env)}")
+    DONE
+  end
+
+  def outcome(input, env)
+    return "skipped: adapter disabled" if HookSupport.disabled?(env)
+
+    payload = HookSupport.read_payload(input)
+    return "skipped: unreadable SessionEnd payload" unless payload
+    return "skipped: session end reason is #{payload['reason']}" if SKIPPED_REASONS.include?(payload["reason"].to_s)
+
+    directory = working_directory(payload)
+    return "skipped: no coordination backend" unless HookSupport.coordination_backend(directory)
+
+    emit(advertisement(env), directory, env)
+  end
+
+  def emit(argv, directory, env)
+    return "skipped: typed event transport: unavailable" if argv.nil?
+    return "attempted-write failure: malformed drain-event advertisement" if argv == :malformed
+
+    result = HookSupport.run_bounded(argv, timeout_seconds: timeout_seconds(env), chdir: directory)
+    return "emitted human_intervention kind: drain" if result[:ok]
+    return "UNKNOWN: drain event write timed out" if result[:failure] == "timeout"
+
+    detail = result[:stderr].to_s.strip.lines.first.to_s.strip
+    "UNKNOWN: drain event write failed#{detail.empty? ? '' : ": #{detail}"}"
+  end
+
+  def working_directory(payload)
+    directory = payload["cwd"].to_s
+    File.directory?(directory) ? directory : Dir.pwd
+  end
+
+  # nil when nothing is advertised, :malformed when the advertisement cannot be
+  # trusted, otherwise the opaque argv to run verbatim.
+  def advertisement(env)
+    raw = env[ADVERTISEMENT_ENV].to_s.strip
+    return nil if raw.empty?
+
+    parsed = JSON.parse(raw)
+    return :malformed unless parsed.is_a?(Array) && !parsed.empty?
+    # Arguments may contain spaces: they are separate argv elements and never
+    # reach a shell. A NUL byte cannot survive exec, so it is unsafe.
+    return :malformed unless parsed.all? { |value| value.is_a?(String) && !value.include?(NUL) }
+    return :malformed if parsed.first.strip.empty?
+
+    parsed
+  rescue JSON::ParserError
+    :malformed
+  end
+
+  def timeout_seconds(env)
+    value = Float(env[TIMEOUT_ENV].to_s)
+    value.positive? && value.finite? ? value : DEFAULT_TIMEOUT_SECONDS
+  rescue ArgumentError
+    DEFAULT_TIMEOUT_SECONDS
+  end
+end
+
+exit(CloseLaneOnSessionEnd.run) if $PROGRAM_NAME == __FILE__

@@ -130,6 +130,11 @@ ruby skills/task-observer/bin/task-observer-test.rb
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contract-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
 
+echo "== hook adapter tests =="
+ruby plugins/claude-hooks/hooks/block-merge-without-ci-readiness-test.rb
+ruby plugins/claude-hooks/hooks/close-lane-on-session-end-test.rb
+ruby plugins/claude-hooks/hooks/hooks-install-contract-test.rb
+
 echo "== rubocop ${RUBOCOP_VERSION} =="
 RUBOCOP_VERSION="${RUBOCOP_VERSION}" ruby - <<'RUBY'
 version = ENV.fetch("RUBOCOP_VERSION")

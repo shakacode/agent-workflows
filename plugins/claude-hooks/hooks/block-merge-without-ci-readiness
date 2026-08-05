@@ -1,0 +1,181 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# PreToolUse(Bash) adapter: refuse `gh pr merge` unless current-head CI
+# readiness is established.
+#
+# This hook writes down no policy of its own. It shells out to the host-neutral
+# validator `skills/pr-batch/bin/pr-ci-readiness`, which already encodes the
+# readiness rule and is callable identically from a skill step, a human shell,
+# or this hook. If the hook is removed, the rule and its tests remain.
+#
+# Two fail directions, deliberately different:
+#
+#   * Applicability is fail-open. An unreadable payload, a non-Bash tool, or a
+#     command with no recognisable `gh pr merge` means this gate has no opinion,
+#     and it allows. Blocking every command on an inconclusive read would make
+#     the adapter a global breaker.
+#   * Readiness is fail-closed. Once a merge is recognised, anything other than
+#     a parsed READY verdict blocks: NOT_READY, UNKNOWN, a validator that fails,
+#     times out, or is missing, or a PR whose identity cannot be resolved.
+#     "We could not establish readiness" is exactly the state this gate exists
+#     to stop.
+#
+# The command-matching approach (strip quoted spans and heredoc bodies before
+# matching) is adapted from the MIT-licensed `intercom/2x-skills` pack; see
+# lib/shell_command_scan.rb for the attribution detail.
+
+require "json"
+require_relative "lib/hook_support"
+require_relative "lib/shell_command_scan"
+
+module BlockMergeWithoutCiReadiness
+  ALLOW = 0
+  BLOCK = 2
+
+  VALIDATOR_RELATIVE_PATH = "skills/pr-batch/bin/pr-ci-readiness"
+  VALIDATOR_ENV = "AGENT_WORKFLOWS_PR_CI_READINESS"
+  TIMEOUT_ENV = "AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS"
+  DEFAULT_TIMEOUT_SECONDS = 60.0
+
+  module_function
+
+  def run(input: $stdin, err: $stderr, env: ENV)
+    return ALLOW if HookSupport.disabled?(env)
+
+    payload = HookSupport.read_payload(input)
+    return ALLOW unless applicable?(payload)
+
+    command = payload.dig("tool_input", "command").to_s
+    merges = ShellCommandScan.invocations(command, executable: "gh", subcommands: %w[pr merge])
+    return ALLOW if merges.empty?
+
+    directory = working_directory(payload)
+    merges.each do |invocation|
+      reason = blocking_reason(invocation, directory: directory, env: env)
+      next unless reason
+
+      err.puts(message(reason))
+      return BLOCK
+    end
+
+    ALLOW
+  end
+
+  def applicable?(payload)
+    return false unless payload.is_a?(Hash)
+    return false unless payload["hook_event_name"].to_s == "PreToolUse"
+    return false unless payload["tool_name"].to_s == "Bash"
+
+    !payload.dig("tool_input", "command").to_s.strip.empty?
+  end
+
+  def working_directory(payload)
+    directory = payload["cwd"].to_s
+    File.directory?(directory) ? directory : Dir.pwd
+  end
+
+  # nil means "this merge is proven ready"; any string is the reason it is not.
+  def blocking_reason(invocation, directory:, env:)
+    number = pull_request_number(invocation, directory: directory, env: env)
+    return "could not resolve which pull request `gh pr merge` would merge" unless number
+
+    validator = validator_path(env)
+    return "readiness validator is not executable at #{validator}" unless File.executable?(validator)
+
+    arguments = [validator, number, "--json"]
+    arguments.push("--repo", invocation[:repo]) if invocation[:repo]
+    result = HookSupport.run_bounded(arguments, timeout_seconds: timeout_seconds(env), chdir: directory)
+    verdict_reason(result, number)
+  end
+
+  def verdict_reason(result, number)
+    return "readiness check for PR ##{number} timed out" if result[:failure] == "timeout"
+
+    unless result[:ok]
+      detail = result[:stderr].to_s.strip.lines.first.to_s.strip
+      return "readiness check for PR ##{number} could not run#{detail.empty? ? '' : ": #{detail}"}"
+    end
+
+    parsed = parse_json(result[:stdout])
+    return "readiness check for PR ##{number} returned unreadable output" unless parsed
+
+    verdict = parsed["verdict"].to_s
+    return nil if verdict == "READY"
+
+    "readiness for PR ##{number} is #{verdict.empty? ? 'UNKNOWN' : verdict}#{blockers(parsed)}"
+  end
+
+  def blockers(parsed)
+    parts = []
+    %w[failing pending].each do |bucket|
+      rows = parsed[bucket]
+      parts << "#{bucket}: #{rows.join(', ')}" if rows.is_a?(Array) && !rows.empty?
+    end
+    drafts = parsed["viewer_pending_review_drafts"]
+    parts << "pending review drafts: #{drafts.length}" if drafts.is_a?(Array) && !drafts.empty?
+    parts.empty? ? "" : " (#{parts.join('; ')})"
+  end
+
+  def pull_request_number(invocation, directory:, env:)
+    selector = invocation[:arguments].first
+    return selector if selector.to_s.match?(/\A[1-9]\d*\z/)
+
+    from_url = selector.to_s[%r{/pull/([1-9]\d*)(?:\D|\z)}, 1]
+    return from_url if from_url
+
+    resolve_with_gh(selector, invocation[:repo], directory: directory, env: env)
+  end
+
+  def resolve_with_gh(selector, repo, directory:, env:)
+    arguments = %w[gh pr view]
+    arguments << selector if selector
+    arguments.push("--repo", repo) if repo
+    arguments.push("--json", "number", "--jq", ".number")
+    result = HookSupport.run_bounded(arguments, timeout_seconds: timeout_seconds(env), chdir: directory)
+    return nil unless result[:ok]
+
+    number = result[:stdout].to_s.strip
+    number.match?(/\A[1-9]\d*\z/) ? number : nil
+  end
+
+  def validator_path(env)
+    override = env[VALIDATOR_ENV].to_s
+    return override unless override.empty?
+
+    File.join(HookSupport.pack_root, VALIDATOR_RELATIVE_PATH)
+  end
+
+  def timeout_seconds(env)
+    value = Float(env[TIMEOUT_ENV].to_s)
+    value.positive? && value.finite? ? value : DEFAULT_TIMEOUT_SECONDS
+  rescue ArgumentError
+    DEFAULT_TIMEOUT_SECONDS
+  end
+
+  def parse_json(text)
+    parsed = JSON.parse(text.to_s)
+    parsed.is_a?(Hash) ? parsed : nil
+  rescue JSON::ParserError
+    nil
+  end
+
+  def message(reason)
+    <<~MESSAGE.strip
+      Blocked by the agent-workflows merge readiness hook: #{reason}.
+
+      Merging without current-head readiness is the failure with the worst blast
+      radius, so this gate fails closed: an unestablished verdict blocks exactly
+      like a failing one.
+
+      Re-run the same host-neutral validator yourself to see the detail:
+        #{VALIDATOR_RELATIVE_PATH} <pr-number> --text
+      Resolve the blocking checks, then merge once the verdict is READY.
+
+      An operator (not this session) can switch the adapter off by setting
+      #{HookSupport::DISABLE_ENV}=off in the agent runner's environment.
+    MESSAGE
+  end
+end
+
+exit(BlockMergeWithoutCiReadiness.run) if $PROGRAM_NAME == __FILE__
