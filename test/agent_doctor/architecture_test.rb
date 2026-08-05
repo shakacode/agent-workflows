@@ -2,6 +2,10 @@
 
 require "minitest/autorun"
 
+# Architecture assertions here stand on their own against current code and
+# durable, continuously-maintained documentation (docs/installation-and-upgrades.md).
+# They deliberately do not read docs/plans/**: those are point-in-time
+# implementation-plan records, not a live source of truth. See #194.
 class AgentDoctorArchitectureTest < Minitest::Test
   ROOT = File.expand_path("../..", __dir__)
 
@@ -41,23 +45,33 @@ class AgentDoctorArchitectureTest < Minitest::Test
     assert_includes documentation, '--source "$HOME/src/agent-workflows"'
   end
 
+  # The behavioral half of this claim (the delegate's process group is
+  # terminated on timeout, and a descendant that escapes it via setsid is not
+  # guaranteed to be killed) is exercised directly, against real processes, by
+  # test_timeout_terminates_descendant_process_group and
+  # test_timeout_stays_bounded_when_descendant_escapes_with_setsid in
+  # test/agent_doctor/process_runner_test.rb. This test only bounds what the
+  # current user-facing documentation claims.
   def test_doctor_documentation_bounds_process_group_cleanup_claim
     installation = File.read(File.join(ROOT, "docs/installation-and-upgrades.md"))
-    plan = File.read(File.join(ROOT, "docs/plans/2026-07-12-001-feat-master-stack-doctor-plan.md"))
 
     assert_includes installation, "Component doctors are trusted local executables."
     assert_includes installation, "does not guarantee termination of descendants that deliberately escape"
-    assert_includes plan, "the delegate's process group"
-    refute_includes plan, "timeout cleanup terminates the entire process group"
   end
 
-  def test_focused_architecture_claim_excludes_pre_existing_installer_surfaces
-    plan = File.read(File.join(ROOT, "docs/plans/2026-07-12-001-feat-master-stack-doctor-plan.md"))
+  def test_focused_module_caps_exclude_pre_existing_installer_surfaces
+    installer = File.join(ROOT, "bin/install-agent-workflows")
+    installer_test = File.join(ROOT, "bin/install-agent-workflows-test.bash")
 
-    assert_includes plan, "The focused-module claim applies only to the new doctor and stack-sync modules"
-    assert_includes plan, "`bin/install-agent-workflows`"
-    assert_includes plan, "`bin/install-agent-workflows-test.bash`"
-    assert_match(/pre-existing compatibility surfaces\s+outside that claim/, plan)
+    assert_path_exists installer
+    assert_path_exists installer_test
+
+    doctor_modules = Dir.glob(File.join(ROOT, "bin", "agent_doctor", "*.rb"))
+    stack_sync_files = Dir.glob(File.join(ROOT, "bin", "agent_stack", "*.bash")) +
+                        Dir.glob(File.join(ROOT, "test", "agent_stack", "*.bash"))
+
+    refute_includes doctor_modules, installer
+    refute_includes stack_sync_files, installer_test
   end
 
   private
