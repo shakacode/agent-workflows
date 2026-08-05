@@ -44,10 +44,25 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       end
     RUBY
     FileUtils.chmod(0o755, @fake_codex)
+    warm_fake_codex
   end
 
   def teardown
     FileUtils.remove_entry(@fake_codex_dir)
+  end
+
+  # Pay the fake codex CLI's first-execution cost before anything is being
+  # timed. macOS assesses a newly written executable the first time it runs,
+  # and that first execution has a multi-second tail on a loaded machine --
+  # long enough to blow codex_plugin_cli_state's default 5s budget and report
+  # "Codex plugin state command timed out" for tests that never intended to
+  # exercise the timeout path (#260, same shape as `warm_stub` in
+  # skills/pr-batch/bin/pr-merge-submit-test.rb). Calling the stub with no
+  # arguments hits its own "unexpected arguments" guard before touching
+  # QA_CODEX_PLUGIN_STATE, so this warmup has no side effects any test
+  # asserts on; its exit status and output are both discarded.
+  def warm_fake_codex
+    system(@fake_codex, out: File::NULL, err: File::NULL)
   end
 
   def run_state(
