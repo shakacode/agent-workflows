@@ -327,6 +327,87 @@ with one stable `dispatch-decision-request v1`, including canonical viable
 fallback choices; replay does not create blocker churn. A selected result permits
 Goal-mode automatic resume only after the required persistence record is durable.
 
+## Requested Versus Observed Route Provenance
+
+A routing recommendation can only be evaluated against what actually ran. Batch
+AW D recorded requested routes in handoffs and PR prose while the observed
+session metadata for one lane showed a different tuple, so that batch produced
+no usable evidence for or against the routes it was meant to test. The rules
+below are what make route evidence trustworthy enough to evaluate.
+
+A requested route is an instruction; an observed route is host-reported
+evidence of what actually executed. The two are separate fields and never
+collapse into one.
+
+Requested-route prose in a plan, handoff, comment, or PR description is never
+presentable as observed execution evidence; only host-reported session metadata
+binds. Git author identity, branch name, commit trailer, prompt text, an
+installed model roster, and a model's own self-report are not proof of the
+route that executed.
+
+When operator policy names an exact route, an unbound, unavailable,
+substituted, or `UNKNOWN` observed tuple stops the lane with
+`MODEL_ROUTE_MISMATCH` before any edit begins.
+
+A worker never inherits the coordinator's model/effort pair, and an inherited
+pair is a route mismatch even when the inherited route is stronger than the
+requested one. Collaboration, review-fix, and helper subagents spawned inside a
+lane are workers for this rule; inheritance through a nested spawn is the exact
+mechanism that silently defeated an exact requested implementation route in
+batch AW D.
+
+### Disposition Table
+
+Every lane launch resolves to exactly one case. Only `proceed` and
+`proceed-as-fallback` may be reported as a satisfied route, and both require
+observed host evidence:
+
+| Case | Requested | Observed | Disposition |
+| --- | --- | --- | --- |
+| `bound-exact-match` | exact tuple | same exact tuple from host evidence | `proceed` |
+| `unbound-exact-route` | exact tuple | `UNKNOWN` | `MODEL_ROUTE_MISMATCH` |
+| `silent-substitution` | exact tuple | different tuple | `MODEL_ROUTE_MISMATCH` |
+| `coordinator-pair-inheritance` | exact worker tuple | coordinator tuple, inherited | `MODEL_ROUTE_MISMATCH` |
+| `authorized-fallback` | exact tuple | authorized fallback tuple with recorded authority | `proceed-as-fallback` |
+
+An authorized fallback is explicit, recorded before launch, and names the
+authority that approved it. An unrecorded fallback is a silent substitution and
+takes that row's disposition.
+
+A lane that resolves to `MODEL_ROUTE_MISMATCH` stops for relaunch or an
+explicitly authorized fallback. It must not be reported as having run the
+requested route, and its results must not be compared against results from a
+lane whose route was observed.
+
+### Evidence Status
+
+No measured route recommendation is published yet. Both conservative profiles
+above are priors chosen for fail-closed safety, not measurements. Every
+scenario class below carries sample count 0 and evidence strength `UNKNOWN`
+until observed receipts exist for it; do not cite a profile route as measured
+evidence, and do not compare a requested route that lacks an observed receipt
+against one that has one.
+
+| Scenario class | Risk | Recommended route | Samples | Evidence strength |
+| --- | --- | --- | --- | --- |
+| Bounded helper or localized bug fix | low | profile prior | 0 | `UNKNOWN` |
+| State machine, persistence, or authorization logic | high | profile prior | 0 | `UNKNOWN` |
+| Compact normative workflow or prompt contract | medium | profile prior | 0 | `UNKNOWN` |
+| Broad documentation or policy alignment | low | profile prior | 0 | `UNKNOWN` |
+| Adversarial review | high | profile prior | 0 | `UNKNOWN` |
+| Exact-head QA and replay | medium | profile prior | 0 | `UNKNOWN` |
+| Post-merge cross-PR audit | medium | profile prior | 0 | `UNKNOWN` |
+
+Record risk and expected decision count with each result so outcomes are never
+compared across unlike scenario classes. When samples exist, publish the
+recommendation with its sample count, date, host version, and model
+availability, and keep `UNKNOWN` where samples are insufficient.
+
+Route adherence is itself an outcome measure: record, per lane, the requested
+tuple, the observed tuple, the disposition above, and whether any replacement
+worker was launched. A batch with unobserved routes has not produced routing
+evidence, however clean its other results look.
+
 ## Replacement And Escalation
 
 Replacing a lane's worker instance, including an actual runtime model change,
