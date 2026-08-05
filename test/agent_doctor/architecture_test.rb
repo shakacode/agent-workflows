@@ -18,7 +18,7 @@ class AgentDoctorArchitectureTest < Minitest::Test
   end
 
   def test_doctor_modules_are_focused
-    modules = Dir.glob(File.join(ROOT, "bin", "agent_doctor", "*.rb"))
+    modules = doctor_module_paths
     refute_empty modules
     modules.each do |path|
       assert_operator File.foreach(path).count, :<=, 180, File.basename(path)
@@ -28,8 +28,7 @@ class AgentDoctorArchitectureTest < Minitest::Test
   def test_stack_sync_modules_and_suites_are_focused
     # These caps cover the newly split stack-sync modules, not the pre-existing
     # installer and installer-test compatibility surfaces.
-    files = Dir.glob(File.join(ROOT, "bin", "agent_stack", "*.bash")) +
-            Dir.glob(File.join(ROOT, "test", "agent_stack", "*.bash"))
+    files = stack_sync_module_paths
     refute_empty files
     files.each do |path|
       assert_operator File.foreach(path).count, :<=, 180, File.basename(path)
@@ -66,15 +65,27 @@ class AgentDoctorArchitectureTest < Minitest::Test
     assert_path_exists installer
     assert_path_exists installer_test
 
-    doctor_modules = Dir.glob(File.join(ROOT, "bin", "agent_doctor", "*.rb"))
-    stack_sync_files = Dir.glob(File.join(ROOT, "bin", "agent_stack", "*.bash")) +
-                        Dir.glob(File.join(ROOT, "test", "agent_stack", "*.bash"))
+    # The exemption is load-bearing: both pre-existing surfaces exceed the
+    # 180-line focused-module cap and would fail it if the cap applied to them.
+    assert_operator line_count("bin/install-agent-workflows"), :>, 180
+    assert_operator line_count("bin/install-agent-workflows-test.bash"), :>, 180
 
-    refute_includes doctor_modules, installer
-    refute_includes stack_sync_files, installer_test
+    # Reuses the exact path sets the cap tests glob, so widening either glob
+    # to reach these pre-existing files makes this assertion fail.
+    refute_includes doctor_module_paths, installer
+    refute_includes stack_sync_module_paths, installer_test
   end
 
   private
+
+  def doctor_module_paths
+    Dir.glob(File.join(ROOT, "bin", "agent_doctor", "*.rb"))
+  end
+
+  def stack_sync_module_paths
+    Dir.glob(File.join(ROOT, "bin", "agent_stack", "*.bash")) +
+      Dir.glob(File.join(ROOT, "test", "agent_stack", "*.bash"))
+  end
 
   def line_count(relative_path)
     File.foreach(File.join(ROOT, relative_path)).count
