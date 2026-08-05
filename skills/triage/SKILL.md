@@ -221,6 +221,13 @@ precise blocker.
    `Scope` data and carry the complete live replay inline or name its durable
    reference; persist or deliver both artifacts with stable planning state.
    Backend storage is optional and must not be assumed.
+   Immediately after `Batch title:`, every generated prompt must contain exactly
+   one resolved merge-policy line. Default to
+   `Merge policy: ASK (default)—walkthrough;ask to merge;merge_authority:ask`.
+   Only when visible user or repository policy selects another mode, replace
+   that entire line with
+   `Merge policy: NONE—prepare only;do not merge;merge_authority:none` or
+   `Merge policy: AUTO—merge when gates pass;merge_authority:auto_merge_when_gates_pass`.
    Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
    `Coordinator model/effort: <model/class>/<effort>.` and
@@ -232,7 +239,7 @@ precise blocker.
    and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
    Each prompt must also include this exact compact scope line:
-   `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.`
+   `Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN`
    Each prompt must include this exact compact preflight line:
    ``Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override``
    Each generated item must use this exact contiguous shape:
@@ -250,6 +257,7 @@ precise blocker.
    Each prompt must include this exact `ask` authority line:
    ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
    GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+   HAC-v1:ACTION REQUIRED FROM YOU|NO ACTION;ask/prereq=>review+merge;repeat=>WAITING+delta
    `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
    `ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.

@@ -95,11 +95,12 @@ Plan a PR batch
      checker instance's exact binding, freshness, and independence when it starts.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified
-     `merge_authority`, ask for `none`, `ask`, or
-     `auto_merge_when_gates_pass`; do not leave this field as an unresolved
-     placeholder in the generated prompt. Explain that `ask` automatically
-     walks through the exact-diff PR one conceptual change at a time before its
-     one final merge decision.
+     `merge_authority`, default it to `ask`; do not pause to ask which mode to
+     use and do not leave the field unresolved. Only use `none` or
+     `auto_merge_when_gates_pass` when visible user or repository policy selects
+     it. Explain prominently that `ask` automatically walks through the
+     exact-diff PR one conceptual change at a time, then stops for one explicit
+     human merge decision and never merges before that approval.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list.
 
 2. Verify
@@ -431,6 +432,13 @@ Plan a PR batch
      Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
+   - Immediately after `Batch title:`, put exactly one resolved human-readable
+     and machine-readable merge line. Use
+     `Merge policy: ASK (default)—walkthrough;ask to merge;merge_authority:ask`
+     by default. Only when visible user or repository policy selects another
+     mode, replace that whole line with
+     `Merge policy: NONE—prepare only;do not merge;merge_authority:none` or
+     `Merge policy: AUTO—merge when gates pass;merge_authority:auto_merge_when_gates_pass`.
    - Add `Thread handle:` as the first worker-specific line. Derive
      `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
@@ -560,7 +568,8 @@ backend must say so in the declaration.
 - Prompt-only conversation-status/archive expectation: use exactly `Conversation status: Ready for archiving.` only when all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat; no unhanded-off question or planner-owned `UNKNOWN` remains; a durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
 - Parent-orchestrator conversation-status/archive expectation: clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then use exactly `Conversation status: Ready for archiving.` Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
 - Keep this lifecycle metadata in the Batch Plan, outside the generated goal prompt.
-- `merge_authority`:
+- `merge_authority`: selected value, whether it was explicitly supplied or
+  defaulted to `ask`, and the exact human-facing closeout behavior.
 - Concurrent activity and dependency status:
 - Coordination hooks, including backend claim exclusions:
 - Batch QA Lane decision and QA Evidence expectations, including replay marker requirements:
@@ -592,12 +601,12 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+Merge policy: ASK (default)—walkthrough;ask to merge;merge_authority:ask
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
 Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
 Repo:OWNER/REPO
 Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort: <model/class>/<effort>.
 Launch assurance: parent <exact model>/<effort>@<source>; checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks.
@@ -606,8 +615,9 @@ Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escala
 Dispatch <lane_id>: route policy <hard|preferred>; requested <dispatcher>@<route>; fallbacks <dispatcher>@<route>->...|none; auth dispatch/route <y|n>/<y|n>.
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v3: current-head CI/configured-reviewers pending|missing|untriaged or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE; poll/fix; auto-clear=>1 15m same-thread-watch else exact manual resume; stop clear/done; no auth=>ready-no-merge-authority; auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority); else ready-human-review-required|autonomous-merge-evidence-unknown; merge+close PR/target/issue.
+HAC-v1:ACTION REQUIRED FROM YOU|NO ACTION;ask/prereq=>review+merge;repeat=>WAITING+delta
 Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>;STAGE_DEPENDENCY_PLAN_ID=<id>;live=<ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
 - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
   Original:trusted ad-hoc prompt|n/a
@@ -621,7 +631,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- Coordination:ids+heartbeats;prelaunch register if able;refusal/UNKNOWN deps=>stop;known=>gate;holder/generation@push;head/base move=>regate
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean

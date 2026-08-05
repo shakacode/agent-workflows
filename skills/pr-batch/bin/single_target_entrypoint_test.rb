@@ -13,6 +13,10 @@ def assert(condition, message)
   abort("FAIL: #{message}") unless condition
 end
 
+def requires_visible_non_ask_authority?(text)
+  text.include?("Only use `none` or\n   `auto_merge_when_gates_pass` when visible user or repository policy selects\n   it")
+end
+
 def extract_source_checkpoint_filter(text)
   marker = 'if SOURCE_VALID_CHECKPOINTS="$(jq -c --arg actor'
   marker_offset = text.index(marker)
@@ -69,8 +73,17 @@ address_review_templates = read_repo_file("skills/address-review/references/temp
 
 assert(batch.include?("A single target is\na batch of one"), "pr-batch must own single-target mode")
 assert(batch.include?("dispatch one\n  worker subagent"), "single-target mode must default to a worker subagent")
-assert(batch.include?("Do not silently default it"), "single-target mode must require explicit merge authority")
-assert(batch.include?("an explicit `AGENTS.md` rule, or a resolved batch-plan instruction"), "single-target merge authority must use concrete authorization sources")
+assert(batch.include?("otherwise default to `ask` without pausing for a\n  choice"), "single-target mode must default missing merge authority to ask")
+assert(requires_visible_non_ask_authority?(batch),
+       "none and auto merge must require visible policy instead of becoming defaults")
+mutated_batch = batch.sub(
+  "Only use `none` or\n   `auto_merge_when_gates_pass` when visible user or repository policy selects\n   it",
+  "Use `none` or\n   `auto_merge_when_gates_pass` when convenient"
+)
+assert(!requires_visible_non_ask_authority?(mutated_batch),
+       "the single-target assertion must fail when only the batch policy text is weakened")
+assert(!batch.include?("Do not silently default it"), "obsolete explicit-choice requirement must be removed")
+assert(batch.include?("an explicit `AGENTS.md` rule, or a resolved\n  batch-plan instruction"), "single-target merge authority must use concrete authorization sources")
 assert(batch.include?("fastest or balanced worker route"), "single-target mode must use cost-aware staged routing")
 assert(batch.include?("verified head branch cannot be pushed"), "single-target PR mode must preserve the unpushable-head fallback")
 assert(batch.include?("replacement branch/PR"), "single-target PR mode must explain the replacement path")

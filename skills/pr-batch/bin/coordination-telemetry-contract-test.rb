@@ -21,7 +21,7 @@ MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE =
   MANIFEST_PROMPT_LINE.sub("model/effort@binding>,...", "model/effort@binding|UNKNOWN>,...")
 MANIFEST_WHOLE_COORDINATOR_ROUTE_UNKNOWN_LINE =
   MANIFEST_PROMPT_LINE.sub("coordinator_route=<model>/<effort>@<binding>",
-                           "coordinator_route=<model/effort@binding|UNKNOWN>")
+                           "coordinator_route=<model>/<effort>@<binding>|UNKNOWN")
 HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
