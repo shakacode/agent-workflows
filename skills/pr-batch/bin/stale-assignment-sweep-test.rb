@@ -583,8 +583,14 @@ class StaleAssignmentSweepTest < Minitest::Test
       # immediately -- well before the grandchild's own 300s sleep. This
       # reproduces "leader dead, group still holds a live descendant" (#229)
       # without depending on process-group signal timing.
+      #
+      # The grandchild ignores TERM (mirrors the metadata_timeout_descendant
+      # stub in pr-merge-submit-test.rb), so it survives the initial TERM and
+      # only dies to the KILL escalation. A bare `sleep 300` has default TERM
+      # disposition and would die on the first signal, leaving
+      # terminate_remaining_process_group's KILL branch provably unreached.
       pid = Process.spawn(
-        "sh", "-c", "sleep 300 & echo \"$!\" > '#{pids_file}'; exit 7",
+        "sh", "-c", "(trap '' TERM; sleep 300) & echo \"$!\" > '#{pids_file}'; exit 7",
         out: File::NULL, err: File::NULL, pgroup: true
       )
       deadline = Time.now + 5

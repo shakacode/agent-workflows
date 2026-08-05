@@ -53,7 +53,7 @@ class PrMergeSubmitTest < Minitest::Test
   # ~10x the warm stub's measured max (0.101s), and the descendant deliberately
   # ignores TERM, so termination also consumes a full 1s TERM grace before
   # escalating to KILL -- leaving the total comfortably below the stub's
-  # deliberate 5s sleep.
+  # deliberate 30s sleep.
   DESCENDANT_TIMEOUT_GH_SECONDS = "1"
   NO_TIMEOUT_GH_SECONDS = "60"
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
@@ -1016,10 +1016,20 @@ class PrMergeSubmitTest < Minitest::Test
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
     assert_equal 1, status.exitstatus
     assert_includes stderr, "timed out"
-    # Well under the stub's deliberate 5s sleep (measured ~2.3-2.4s on an
-    # unloaded machine), so a pass proves termination was bounded rather than
-    # merely waiting out the sleep.
-    assert_operator elapsed, :<, 3.5
+    # The strongest evidence here is non-temporal: "was terminated" only
+    # appears on the diagnostic path where terminate_process_group actually
+    # confirmed the group exited. "timed out" alone does not discriminate --
+    # it is a substring of that same message and would also appear if the
+    # message were emitted without a genuine termination having happened.
+    assert_includes stderr, "was terminated"
+    # Loose sanity check, not the load-bearing assertion: well under the
+    # stub's deliberate 30s sleep (measured ~2.2-2.5s over 15 runs at load
+    # avg 11-14), so a pass still corroborates that termination was bounded
+    # rather than merely waiting out the sleep. The 30s stub / 10s bound gap
+    # (vs. the old 5s / 3.5s gap) makes this essentially load-insensitive; a
+    # genuine unbounded-termination regression now takes ~30s to surface
+    # instead of ~5s.
+    assert_operator elapsed, :<, 10
     assert descendant_terminated?(descendant_pid),
            "descendant #{descendant_pid} was orphaned instead of terminated with its process group"
   end
@@ -2077,11 +2087,11 @@ class PrMergeSubmitTest < Minitest::Test
         if #{mode.inspect} == "metadata_timeout_descendant"
           descendant_pid = fork do
             trap("TERM", "IGNORE")
-            sleep 5
+            sleep 30
             exit! 0
           end
           File.write(ENV.fetch("PR_TEST_DESCENDANT_PID_FILE"), descendant_pid.to_s)
-          sleep 5
+          sleep 30
         end
         sleep 5 if #{mode.inspect} == "metadata_timeout"
         query_count_path = ENV.fetch("GH_LOG") + ".queries"

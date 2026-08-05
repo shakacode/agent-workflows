@@ -832,8 +832,12 @@ module StaleAssignmentSweep
     # attempt to wait on an already-reaped pid. The leader can still be dead
     # while its group holds live children (it can fork and exit early), so
     # this does not skip termination outright -- it only skips *signalling*
-    # once the group itself is confirmed gone, so a kill can never target a
-    # pgid the OS may have recycled onto an unrelated group.
+    # once the group itself is confirmed gone, so a kill only proceeds right
+    # after process_group_alive? found the pgid still live. That check is a
+    # TOCTOU snapshot, not a lock: the pid can still be freed by a WNOHANG
+    # reap and recycled onto an unrelated group in the gap before the kill
+    # actually runs. This is strictly safer than the old no-check path, not
+    # race-free.
     def reap_after_timeout(pid)
       reaped = begin
         Process.waitpid2(pid, Process::WNOHANG)
