@@ -25,6 +25,11 @@ module PushDownstream
   FALLBACK_GIT_USER_EMAIL = "agent-workflows@users.noreply.github.com"
   NEW_AGENTS_HEADER = "# AGENTS.md\n"
   THIN_CLAUDE = "# CLAUDE.md\n\nSee @AGENTS.md for canonical agent instructions, commands, and policy.\n"
+  CLAUDE_CONSOLIDATION_FOLLOW_UP = "existing CLAUDE.md preserved; consolidate it to import @AGENTS.md"
+  # Claude follows an explicit `@AGENTS.md` import. A bare textual mention of
+  # AGENTS.md does not route Claude to the canonical rulebook, so only the
+  # import form clears the consolidation follow-up.
+  CLAUDE_AGENTS_IMPORT = /(?<![\w.-])@AGENTS\.md\b/
   COMMAND_PURPOSES = {
     "setup" => "Install dependencies",
     "validate" => "Pre-push gate",
@@ -603,9 +608,23 @@ module PushDownstream
   def reconcile_claude(root)
     path = File.join(root, "CLAUDE.md")
     return [write_if_changed(path, THIN_CLAUDE), nil] unless File.exist?(path)
-    return [false, nil] if File.read(path, encoding: "UTF-8") == THIN_CLAUDE
 
-    [false, "existing CLAUDE.md preserved; consolidate it to import @AGENTS.md"]
+    [false, claude_consolidation_follow_up(root)]
+  end
+
+  # Read-only compatibility audit of a consumer-owned CLAUDE.md. Returns a
+  # follow-up when the file neither matches the thin template nor routes Claude
+  # to canonical AGENTS.md, and nil otherwise. Never reads as a reason to
+  # rewrite or delete consumer-owned instruction content.
+  def claude_consolidation_follow_up(root)
+    path = File.join(root, "CLAUDE.md")
+    return nil unless File.file?(path)
+
+    content = File.binread(path).force_encoding("UTF-8").scrub
+    return nil if content == THIN_CLAUDE
+    return nil if content.match?(CLAUDE_AGENTS_IMPORT)
+
+    CLAUDE_CONSOLIDATION_FOLLOW_UP
   end
 
   def write_if_changed(path, content)
@@ -1028,6 +1047,12 @@ module PushDownstream
         return false
       end
 
+      # Advisory, read-only: policy-only sync never rewrites a consumer-owned
+      # CLAUDE.md, but it must still surface the same consolidation follow-up
+      # the full scaffold path reports, on stdout and in any PR it creates.
+      follow_ups = Array(claude_consolidation_follow_up(clone))
+      follow_ups.each { |follow_up| puts "FOLLOW_UP #{repo.fetch(:nwo)} #{follow_up}" }
+
       selected_policy = repo.fetch(:policy).slice(*policy_keys)
       unless selected_policy.keys.sort == policy_keys.sort
         warn "FAIL #{repo.fetch(:nwo)}: policy fleet selection is incomplete"
@@ -1123,7 +1148,7 @@ module PushDownstream
             return report_retained_policy_pr(repo, clone, open_pr_url)
           end
 
-          return refresh_policy_branch_from_base(repo, clone, selected_policy)
+          return refresh_policy_branch_from_base(repo, clone, selected_policy, follow_ups)
         end
 
         puts "UP_TO_DATE #{repo.fetch(:nwo)}"
@@ -1134,6 +1159,7 @@ module PushDownstream
         repo,
         clone,
         policy_keys: policy_keys,
+        follow_ups: follow_ups,
         expected_remote_branch_head: expected_remote_branch_head,
         require_new_remote_branch: branch_state == :new_local
       )
@@ -1580,7 +1606,7 @@ module PushDownstream
     true
   end
 
-  def refresh_policy_branch_from_base(repo, clone, selected_policy)
+  def refresh_policy_branch_from_base(repo, clone, selected_policy, follow_ups = [])
     open_pr_url, pr_query_succeeded = policy_open_pr_state(repo, any_base: true)
     unless pr_query_succeeded
       warn "FAIL #{repo.fetch(:nwo)}: could not prove whether the retained policy branch has an open PR on any base; rerun after GitHub is available"
@@ -1669,7 +1695,7 @@ module PushDownstream
       return false
     end
 
-    url = create_policy_pr(repo, branch)
+    url = create_policy_pr(repo, branch, follow_ups)
     if url.to_s.empty?
       warn "FAIL #{repo.fetch(:nwo)}: refreshed policy PR create failed"
       return false
@@ -1822,7 +1848,8 @@ module PushDownstream
     ensure_pull_request(repo, follow_ups)
   end
 
-  def open_policy_pull_request(repo, clone, policy_keys:, expected_remote_branch_head: nil, require_new_remote_branch: false)
+  def open_policy_pull_request(repo, clone, policy_keys:, follow_ups: [], expected_remote_branch_head: nil,
+                               require_new_remote_branch: false)
     commit_snapshot = policy_commit_snapshot(repo, clone)
     return false unless commit_snapshot
 
@@ -1874,7 +1901,7 @@ module PushDownstream
       return false
     end
 
-    ensure_policy_pull_request(repo, clone)
+    ensure_policy_pull_request(repo, clone, follow_ups)
   end
 
   def ensure_pull_request(repo, follow_ups)
@@ -1889,14 +1916,14 @@ module PushDownstream
     true
   end
 
-  def ensure_policy_pull_request(repo, clone = nil)
+  def ensure_policy_pull_request(repo, clone = nil, follow_ups = [])
     url, query_succeeded = policy_open_pr_state(repo)
     unless query_succeeded
       warn "FAIL #{repo.fetch(:nwo)}: could not prove whether the policy branch has an open PR; rerun after GitHub is available"
       return false
     end
 
-    url ||= create_policy_pr(repo, repo.fetch(:pr_branch))
+    url ||= create_policy_pr(repo, repo.fetch(:pr_branch), follow_ups)
     if url.to_s.empty?
       warn "FAIL #{repo.fetch(:nwo)}: policy PR create failed"
       return false
@@ -1973,10 +2000,10 @@ module PushDownstream
     normalize_url(status.success? ? out.strip.lines.last.to_s.strip : nil)
   end
 
-  def create_policy_pr(repo, branch)
+  def create_policy_pr(repo, branch, follow_ups = [])
     out, status = Open3.capture2(
       "gh", "pr", "create", "--repo", repo.fetch(:nwo), "--base", repo.fetch(:base_branch),
-      "--head", branch, "--title", POLICY_COMMIT_TITLE, "--body", policy_pr_body
+      "--head", branch, "--title", POLICY_COMMIT_TITLE, "--body", policy_pr_body(follow_ups)
     )
     normalize_url(status.success? ? out.strip.lines.last.to_s.strip : nil)
   end
@@ -1986,14 +2013,15 @@ module PushDownstream
     value.empty? || value == "null" ? nil : value
   end
 
+  def follow_up_section(follow_ups)
+    lines = Array(follow_ups).map { |follow_up| "- #{follow_up}" }
+    return "" if lines.empty?
+
+    "\n## Follow-ups\n\n#{lines.join("\n")}\n"
+  end
+
   def pr_body(follow_ups = [])
-    follow_up_lines = follow_ups.map { |follow_up| "- #{follow_up}" }
-    follow_up_section =
-      if follow_up_lines.empty?
-        ""
-      else
-        "\n## Follow-ups\n\n#{follow_up_lines.join("\n")}\n"
-      end
+    follow_up_section = follow_up_section(follow_ups)
 
     <<~BODY
       ## Summary
@@ -2012,7 +2040,7 @@ module PushDownstream
     BODY
   end
 
-  def policy_pr_body
+  def policy_pr_body(follow_ups = [])
     <<~BODY
       ## Summary
 
@@ -2021,7 +2049,7 @@ module PushDownstream
 
       Generated by the policy-only fleet mode of `bin/push-downstream` from
       [`shakacode/agent-workflows`](https://github.com/shakacode/agent-workflows).
-
+      #{follow_up_section(follow_ups)}
       ## Validation
 
       - `agent-workflow-seam-doctor --root . --shared <agent-workflows-root>`

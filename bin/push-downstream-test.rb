@@ -553,6 +553,43 @@ class PushDownstreamScaffoldTest < Minitest::Test
     end
   end
 
+  def test_claude_consolidation_audit_flags_only_rich_files_that_do_not_import_agents
+    Dir.mktmpdir("push-downstream-claude-audit") do |root|
+      claude = File.join(root, "CLAUDE.md")
+
+      assert_nil PushDownstream.claude_consolidation_follow_up(root)
+
+      File.write(claude, PushDownstream::THIN_CLAUDE)
+      assert_nil PushDownstream.claude_consolidation_follow_up(root)
+
+      # Negative control: a rich, consumer-owned file that already routes Claude
+      # to the canonical rulebook must not be reported as a follow-up.
+      File.write(claude, "# CLAUDE.md\n\nRich rules — keep me.\n\nAlso see @AGENTS.md for policy.\n")
+      assert_nil PushDownstream.claude_consolidation_follow_up(root)
+
+      File.write(claude, "# CLAUDE.md\n\nRich rules that only name AGENTS.md in prose.\n")
+      assert_equal PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP,
+                   PushDownstream.claude_consolidation_follow_up(root)
+
+      # An address-like `@AGENTS.md` is not an import.
+      File.write(claude, "# CLAUDE.md\n\nRich rules; mail ops@AGENTS.md instead.\n")
+      assert_equal PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP,
+                   PushDownstream.claude_consolidation_follow_up(root)
+    end
+  end
+
+  def test_apply_scaffold_does_not_follow_up_on_rich_claude_that_imports_agents
+    Dir.mktmpdir("push-downstream-scaffold") do |root|
+      rich = "# CLAUDE.md\n\nRich consumer rules.\n\nSee @AGENTS.md for canonical policy.\n"
+      File.write(File.join(root, "CLAUDE.md"), rich)
+
+      result = PushDownstream.reconcile_scaffold(root, CONTRACT)
+
+      assert_empty result.follow_ups
+      assert_equal rich, File.read(File.join(root, "CLAUDE.md"))
+    end
+  end
+
   def test_apply_scaffold_migrates_legacy_agents_command_values
     Dir.mktmpdir("push-downstream-scaffold") do |root|
       File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
@@ -1412,7 +1449,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
     )
 
     with_module_stub(Open3, :capture2, ->(*) { [JSON.generate([fork_pr]), status] }) do
-      with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/new" }) do
+      with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/new" }) do
         out, = capture_io { assert PushDownstream.ensure_policy_pull_request(repo) }
         assert_includes out, "PR shakacode/consumer https://example.test/pr/new"
       end
@@ -1497,7 +1534,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       }
 
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, = capture_io { assert PushDownstream.sync_policy_repo(repo, ["repo_prefix"]) }
           assert_includes out, "PR local/consumer https://example.test/pr/1"
         end
@@ -1533,7 +1570,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       clean_identity_env.each { |key, value| ENV[key] = value }
       begin
         with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-          with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+          with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
             out, = capture_io do
               assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
             end
@@ -1562,7 +1599,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
 
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, err = capture_io do
             assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
           end
@@ -1582,6 +1619,76 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
     end
   end
 
+  # Reproduces the shakacode/shakapacker shape from #317: a policy-only fleet
+  # sync against a consumer whose rich CLAUDE.md never imports @AGENTS.md.
+  def test_policy_apply_surfaces_rich_claude_consolidation_follow_up
+    Dir.mktmpdir("push-downstream-policy-git") do |dir|
+      remote, seed = seed_valid_remote(dir)
+      rich_claude = "# CLAUDE.md\n\nRich consumer rules — keep me.\n\nSee AGENTS.md for commands.\n"
+      File.write(File.join(seed, "CLAUDE.md"), rich_claude)
+      system("git", "-C", seed, "add", "CLAUDE.md")
+      system("git", "-C", seed, "commit", "-m", "rich CLAUDE.md", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      created = []
+      create_policy_pr = lambda do |_repo, _branch, follow_ups|
+        created << follow_ups
+        "https://example.test/pr/1"
+      end
+
+      with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
+        with_module_stub(PushDownstream, :create_policy_pr, create_policy_pr) do
+          out, err = capture_io do
+            assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
+          end
+          assert_empty err
+          assert_includes out, "FOLLOW_UP local/consumer #{PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP}"
+          assert_includes out, "PR local/consumer https://example.test/pr/1"
+        end
+      end
+
+      assert_equal [[PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP]], created
+      body = PushDownstream.policy_pr_body(created.fetch(0))
+      assert_includes body, "## Follow-ups"
+      assert_includes body, "- #{PushDownstream::CLAUDE_CONSOLIDATION_FOLLOW_UP}"
+
+      # The audit is advisory: the consumer-owned file is never rewritten.
+      branch = "refs/heads/agent-workflows/repo-prefix"
+      published = `git --git-dir=#{remote.shellescape} show #{branch.shellescape}:CLAUDE.md`
+      assert_equal rich_claude.b, published.b
+    end
+  end
+
+  def test_policy_apply_does_not_flag_rich_claude_that_already_imports_agents
+    Dir.mktmpdir("push-downstream-policy-git") do |dir|
+      remote, seed = seed_valid_remote(dir)
+      rich_claude = "# CLAUDE.md\n\nRich consumer rules.\n\nSee @AGENTS.md for canonical policy.\n"
+      File.write(File.join(seed, "CLAUDE.md"), rich_claude)
+      system("git", "-C", seed, "add", "CLAUDE.md")
+      system("git", "-C", seed, "commit", "-m", "rich CLAUDE.md with import", out: File::NULL)
+      system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
+
+      created = []
+      create_policy_pr = lambda do |_repo, _branch, follow_ups|
+        created << follow_ups
+        "https://example.test/pr/1"
+      end
+
+      with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
+        with_module_stub(PushDownstream, :create_policy_pr, create_policy_pr) do
+          out, err = capture_io do
+            assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
+          end
+          assert_empty err
+          refute_includes out, "FOLLOW_UP"
+        end
+      end
+
+      assert_equal [[]], created
+      refute_includes PushDownstream.policy_pr_body(created.fetch(0)), "## Follow-ups"
+    end
+  end
+
   def test_policy_apply_appends_selected_key_after_final_top_level_mapping
     Dir.mktmpdir("push-downstream-policy-git") do |dir|
       remote, seed = seed_valid_remote(dir)
@@ -1597,7 +1704,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
 
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, = capture_io do
             assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
           end
@@ -1623,7 +1730,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       pull_requests_created = 0
 
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, lambda { |_repo, _branch|
+        with_module_stub(PushDownstream, :create_policy_pr, lambda { |_repo, _branch, _follow_ups|
           pull_requests_created += 1
           "https://example.test/pr/1"
         }) do
@@ -1679,7 +1786,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       config_env.each { |key, value| ENV[key] = value }
       begin
         with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-          with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+          with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
             out, = capture_io do
               assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"])
             end
@@ -1784,7 +1891,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       original_git = PushDownstream.method(:git)
 
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { policy_states.shift }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           with_module_stub(PushDownstream, :git, lambda { |clone, *args|
             git_calls << args
             original_git.call(clone, *args)
@@ -1876,7 +1983,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       branch = "agent-workflows/repo-prefix"
 
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, lambda { |_repo, _branch|
+        with_module_stub(PushDownstream, :create_policy_pr, lambda { |_repo, _branch, _follow_ups|
           system("git", "-C", seed, "checkout", "-B", "policy-race", "main", out: File::NULL)
           File.write(File.join(seed, "README.md"), "raced after policy push\n")
           system("git", "-C", seed, "add", "README.md")
@@ -1942,7 +2049,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
 
       repo = policy_repo(remote, "ROR")
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, = capture_io { assert PushDownstream.sync_policy_repo(repo, ["repo_prefix"]) }
           assert_includes out, "PR local/consumer https://example.test/pr/1"
         end
@@ -2098,7 +2205,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       system("git", "-C", seed, "push", "origin", "main", out: File::NULL)
 
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, = capture_io { assert PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"]) }
           assert_includes out, "PR local/consumer https://example.test/pr/1"
         end
@@ -2167,7 +2274,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       branch_before = `git --git-dir=#{remote.shellescape} rev-parse refs/heads/agent-workflows/repo-prefix`.strip
       states = [[nil, true], [nil, true], [nil, true], ["https://example.test/pr/1", true]]
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { states.shift }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { flunk "must not create a PR after race" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { flunk "must not create a PR after race" }) do
           _out, err = capture_io { refute PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"]) }
           assert_includes err, "retained policy branch gained open PR on any base https://example.test/pr/1; refresh push cancelled"
         end
@@ -2215,7 +2322,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
         queries << any_base
         any_base ? ["https://example.test/pr/alternate-base", true, "release"] : [nil, true]
       }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { flunk "must not create a PR" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { flunk "must not create a PR" }) do
           _out, err = capture_io { refute PushDownstream.sync_policy_repo(policy_repo(remote, "ROR"), ["repo_prefix"]) }
           assert_includes err, "retained policy branch has open PR on alternate base release https://example.test/pr/alternate-base"
         end
@@ -2339,7 +2446,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
 
       repo = policy_repo(remote, "ROR")
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, = capture_io { assert PushDownstream.sync_policy_repo(repo, ["repo_prefix"]) }
           assert_includes out, "PR local/consumer https://example.test/pr/1"
         end
@@ -2363,7 +2470,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
 
       repo = policy_repo(remote, "ROR")
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, = capture_io { assert PushDownstream.sync_policy_repo(repo, ["repo_prefix"]) }
           assert_includes out, "PR local/consumer https://example.test/pr/1"
         end
@@ -2389,7 +2496,7 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
 
       repo = policy_repo(remote, "ROR")
       with_module_stub(PushDownstream, :policy_open_pr_state, ->(_repo, **) { [nil, true] }) do
-        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch) { "https://example.test/pr/1" }) do
+        with_module_stub(PushDownstream, :create_policy_pr, ->(_repo, _branch, _follow_ups) { "https://example.test/pr/1" }) do
           out, = capture_io { assert PushDownstream.sync_policy_repo(repo, ["repo_prefix"]) }
           assert_includes out, "PR local/consumer https://example.test/pr/1"
         end
