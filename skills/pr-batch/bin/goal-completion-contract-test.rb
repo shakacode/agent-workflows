@@ -139,10 +139,11 @@ PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " 
                       "letters or digits. If `repo_prefix` is absent, derive `<PROJECT>` deterministically " \
                       "from the repository name: use the basename of the `origin` remote after stripping " \
                       "`.git`, or the repository root basename when `origin` is unavailable; for a " \
-                      "multi-segment name take the first letter of each of the first six `-`, `_`, or " \
-                      "space-separated segments, and for a single-segment name take its first 4 letters " \
-                      "or the whole name when shorter, then uppercase the result (`agent-workflows` -> " \
-                      "`AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`). An invalid " \
+                      "multi-segment name take the first character of each of the first six `-`, `_`, or " \
+                      "space-separated segments, and for a single-segment name take its first 4 " \
+                      "characters or the whole name when shorter, then uppercase the result " \
+                      "(`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, " \
+                      "`go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid " \
                       "configured `repo_prefix` is a blocker; do not silently fall back."
 PROJECT_PREFIX_DOCS_RULE = "using the optional validated `repo_prefix` from " \
                            "`.agents/agent-workflow.yml` when present. Otherwise use the deterministic " \
@@ -192,11 +193,14 @@ def extract_goal_prompt_template(skill_text, heading, end_heading: /^##\s+/)
   section_body[0...fence_offsets.first]
 end
 
+# Anchor the heading to a whole line. Substring matching let `## X` bind inside
+# `### X`, so a heading quoted in prose or a sync comment could capture the
+# section -- making every in-section assertion positional rather than structural.
 def extract_markdown_section(text, heading, end_heading: /^###\s+/)
-  heading_index = text.index(heading)
-  raise "missing #{heading} section" unless heading_index
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing #{heading} section" unless heading_match
 
-  body_start = heading_index + heading.length
+  body_start = heading_match.end(0)
   next_heading = text.match(end_heading, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
@@ -227,6 +231,20 @@ end
 
 def assert_squished_includes(text, phrase, label)
   assert_text_includes(squish(text), squish(phrase), label)
+end
+
+# The canonical rule is the only place `<PROJECT>` may be tied to the repository
+# name. Strip the pinned rule, and any sentence that still pairs the two is a
+# permissive alternative added *alongside* the rule rather than replacing it --
+# the realistic regression, since an exact revert is already caught by the
+# positive pin. A literal phrase list is always one paraphrase behind.
+PROJECT_REPOSITORY_NAME_PATTERN = /reposit(?:ory|ories)[[:space:]-]name/i
+
+def permissive_project_name_sentences(text, pinned_rule)
+  remainder = squish(text).gsub(squish(pinned_rule), " ")
+  remainder.split(/(?<=\.)[[:space:]]+/).select do |sentence|
+    sentence.include?("<PROJECT>") && sentence.match?(PROJECT_REPOSITORY_NAME_PATTERN)
+  end
 end
 
 def invalid_readiness_marker_values(text)
@@ -691,6 +709,86 @@ class GoalCompletionContractTest < Minitest::Test
 
     error = assert_raises(RuntimeError) { extract_goal_prompt_template(skill_text, "## Goal Prompt Template") }
     assert_match(/nested bare fence/, error.message)
+  end
+
+  def test_extract_markdown_section_binds_to_a_real_heading_not_a_mention
+    document = <<~MARKDOWN
+      <!-- Keep this summary in sync with `### Batch Handoff Format`. -->
+      Decoy body that lives outside the real section.
+
+      ## Batch Handoff Format
+
+      Real body inside the canonical section.
+    MARKDOWN
+
+    section = extract_markdown_section(document, "## Batch Handoff Format", end_heading: /^##\s+/)
+
+    assert_includes section, "Real body inside the canonical section."
+    refute_includes section, "Decoy body",
+                    "a heading quoted in a comment must not capture the section"
+  end
+
+  def test_extract_markdown_section_requires_a_real_heading_line
+    document = "<!-- see `### Batch Handoff Format` for the contract -->\nbody\n"
+
+    error = assert_raises(RuntimeError) do
+      extract_markdown_section(document, "### Batch Handoff Format")
+    end
+
+    assert_match(/missing ### Batch Handoff Format section/, error.message)
+  end
+
+  # #244's verified failure scenario: move a comment quoting the heading above the
+  # real heading and delete the in-section copy of the rule. Under substring
+  # matching the extractor bound to the comment and the suite stayed green, so the
+  # archive-readiness pin was only positionally correct rather than structural.
+  def test_archive_readiness_pin_fails_when_the_rule_leaves_the_real_section
+    tampered = <<~MARKDOWN
+      <!-- Keep this rule in sync with `## Batch Handoff Format`. -->
+      #{ARCHIVE_READINESS_HANDOFF_RULE}
+
+      ## Batch Handoff Format
+
+      The real section no longer states the archive-readiness rule.
+
+      ## Next Section
+    MARKDOWN
+
+    section = extract_markdown_section(tampered, "## Batch Handoff Format", end_heading: /^##\s+/)
+
+    refute_includes squish(section), squish(ARCHIVE_READINESS_HANDOFF_RULE),
+                    "the archive-readiness pin must fail when the rule sits outside the real section"
+  end
+
+  def test_no_surface_pairs_project_with_the_repository_name_outside_the_pinned_rule
+    {
+      "workflows/pr-processing.md" => [@workflow, PROJECT_PREFIX_RULE],
+      "skills/pr-batch/SKILL.md" => [@pr_batch_skill, PROJECT_PREFIX_RULE],
+      "skills/plan-pr-batch/SKILL.md" => [@plan_pr_batch_skill, PROJECT_PREFIX_RULE],
+      "skills/triage/SKILL.md" => [@triage_skill, PROJECT_PREFIX_RULE],
+      "docs/pr-batch-skills.md" => [@pr_batch_docs, PROJECT_PREFIX_DOCS_RULE]
+    }.each do |label, (text, pinned_rule)|
+      assert_empty permissive_project_name_sentences(text, pinned_rule),
+                   "#{label} ties `<PROJECT>` to the repository name outside the pinned rule"
+    end
+  end
+
+  def test_permissive_project_guidance_is_caught_even_when_reworded
+    [
+      "Derive `<PROJECT>` from the repository name when convenient.",
+      "Derive <PROJECT> from the current repository name when convenient.",
+      "`<PROJECT>` may be the current repository name when it is short.",
+      "Use the current repository name for `<PROJECT>` when no prefix exists.",
+      "`<PROJECT>` is a short abbreviation of the current repository name.",
+      "Derive the `<PROJECT>` value from the current repository name."
+    ].each do |escape_hatch|
+      tampered = "#{@workflow}\n\n#{escape_hatch}\n"
+
+      refute_empty permissive_project_name_sentences(tampered, PROJECT_PREFIX_RULE),
+                   "a permissive alternative added alongside the rule must be caught: #{escape_hatch}"
+      assert_empty LEGACY_PROJECT_ABBREVIATION_PHRASES.select { |phrase| squish(tampered).include?(squish(phrase)) },
+                   "this rewording is exactly the case the literal phrase list misses: #{escape_hatch}"
+    end
   end
 
   def test_pending_hosted_checks_pressure_scenario_is_not_complete
