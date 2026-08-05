@@ -63,11 +63,23 @@ module PrCiReadiness
 
   # Current rows that count toward a full/advisory gate. Required cancellations
   # are reconciled separately so unrelated cancelled advisory noise stays out.
+  #
+  # `rows` here is raw `parse_rows` output, which only guarantees a JSON
+  # array -- individual elements may be non-Hash (parse_rows does not filter
+  # them). A non-object row is never a cancellation, so it is never rejected
+  # here; it passes through unchanged rather than crashing, so it still
+  # reaches PrCiReadiness.assess's invalid_row?/invalid_names classification
+  # instead of being silently dropped.
   def active_rows(rows)
-    rows.reject { |row| row["bucket"].to_s == "cancel" }
+    rows.reject { |row| row.is_a?(Hash) && row["bucket"].to_s == "cancel" }
   end
 
+  # A non-object row has no workflow/name to key off of. It cannot match (or
+  # be matched by) any real identity, so a distinct sentinel keeps it inert
+  # in identity comparisons without raising.
   def check_identity(row)
+    return [nil, nil] unless row.is_a?(Hash)
+
     [row["workflow"].to_s, row["name"].to_s]
   end
 
@@ -78,7 +90,7 @@ module PrCiReadiness
     gate_rows = required_used ? rows : current_rows + required_cancellations
     current_contexts = current_rows.map { |row| check_identity(row) }
     gate_rows.reject do |row|
-      row["bucket"].to_s == "cancel" && current_contexts.include?(check_identity(row))
+      row.is_a?(Hash) && row["bucket"].to_s == "cancel" && current_contexts.include?(check_identity(row))
     end
   end
 
@@ -210,7 +222,14 @@ module PrCiReadiness
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
     statuses_complete:, errors: {}
   )
+    # required_rows may still contain a non-Hash entry that survived
+    # readiness classification upstream (kept, not dropped, so it remains
+    # visible below in the required_status_check_rollup scope's own rows and
+    # is scored UNKNOWN there by evidence_row_state); it just contributes no
+    # producer identity here.
     required_identities = required_rows.filter_map do |row|
+      next unless row.is_a?(Hash)
+
       producer = row["workflow"].to_s.strip
       name = row["name"].to_s
       next if producer.empty? || producer == "UNKNOWN" || name.empty?
@@ -524,7 +543,14 @@ module PrCiReadiness
       required_query_known = required_fetch.fetch(:known_good)
       full_query_known = nil
       required_rows = PrCiReadiness.parse_rows(required_raw)
-      required_cancellations = required_rows.select { |row| row["bucket"].to_s == "cancel" }
+      # required_rows is raw parse_rows output and may contain non-Hash
+      # elements (e.g. a `null` entry in the gh CLI payload); parse_rows only
+      # guarantees a JSON array, not that every element is an object. Those
+      # rows are not cancellations, but they must still flow into
+      # PrCiReadiness.assess below so invalid_row?/invalid_names can classify
+      # and report them instead of this select raising before assess ever
+      # runs.
+      required_cancellations = required_rows.select { |row| row.is_a?(Hash) && row["bucket"].to_s == "cancel" }
       if PrCiReadiness.usable_checks?(required_raw)
         rows = required_rows
         required_used = true

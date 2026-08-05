@@ -1010,6 +1010,72 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  # Regression for the claude-review finding on #202: PrCiReadiness.assess
+  # was library-tested against non-object rows, but Runner#assess indexes
+  # PrCiReadiness.parse_rows output (`row["bucket"]`, `check_identity`,
+  # `active_rows`) several times *before* rows ever reach
+  # PrCiReadiness.assess -- e.g. required_cancellations = required_rows.select
+  # { |row| row["bucket"] ... }. parse_rows only validates that the parsed
+  # JSON is an Array; it does not filter non-Hash elements. A `null` or bare
+  # scalar entry in the gh CLI payload therefore raised an uncaught
+  # NoMethodError (Error is a distinct class from NoMethodError, and
+  # Runner#run only rescues Error) instead of the CLI exiting cleanly with
+  # NOT_READY and the row named in "invalid". Drive it through the real
+  # Runner/CLI path, not just the library function.
+  def test_cli_survives_and_fails_closed_for_non_object_required_rows
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"ok","bucket":"pass"},null,42]',
+      full_json: "[]"
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      refute_includes out, "NoMethodError"
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal true, data["required_used"]
+      assert_equal(
+        ["row was not an object (NilClass)", "row was not an object (Integer)"],
+        data["invalid"]
+      )
+    end
+  end
+
+  # A required-checks payload that is entirely non-object rows (e.g. `[null]`)
+  # must not be treated as "no usable required checks" -- that would fall
+  # back to the full advisory list and silently lose the malformed-evidence
+  # signal instead of failing closed on it directly.
+  def test_cli_required_only_malformed_rows_fails_closed_without_falling_back
+    with_fake_gh(
+      required_json: "[null]",
+      full_json: '[{"name":"advisory","bucket":"pass"}]'
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      refute_includes out, "NoMethodError"
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal true, data["required_used"]
+      assert_equal ["row was not an object (NilClass)"], data["invalid"]
+    end
+  end
+
+  # Same crash surface, reached via the full-list fallback path (no usable
+  # required checks) instead of the required-checks path.
+  def test_cli_full_list_fallback_survives_malformed_rows
+    with_fake_gh(
+      required_json: "",
+      full_json: '[{"workflow":"CI","name":"unit","bucket":"pass"},null]'
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      refute_includes out, "NoMethodError"
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal false, data["required_used"]
+      assert_equal ["row was not an object (NilClass)"], data["invalid"]
+    end
+  end
+
   def test_cli_emits_complete_exact_head_inventory_with_dynamic_and_dependabot_rows
     head = "a" * 40
     action_runs = [
