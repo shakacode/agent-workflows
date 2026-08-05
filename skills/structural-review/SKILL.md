@@ -75,15 +75,19 @@ the `base_branch` key in `.agents/agent-workflow.yml` (or from PR metadata when
 a PR is open), then pin the exact merge-base three-dot diff:
 
 ```bash
-base=$(ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
+base=$(gh pr view --json baseRefName --jq .baseRefName 2>/dev/null || ruby -ryaml -e 'p=(YAML.safe_load(File.read(".agents/agent-workflow.yml"), aliases: false) || {}); puts(p.fetch("base_branch", "main"))')
 git rev-parse --verify "origin/$base"
 git merge-base "origin/$base" HEAD
 git diff --stat "origin/$base...HEAD"
 git diff --name-only "origin/$base...HEAD"
 ```
 
-Resolve `base` before the first command; an unset `base` silently becomes
-`origin/`, which is exactly the unpinned review this step exists to prevent.
+Resolve `base` before the first command. PR metadata wins when a PR is open,
+because a PR targeting something other than the repo default would otherwise
+pin the review against the wrong baseline — the failure this step exists to
+prevent. The `.agents/agent-workflow.yml` value is the fallback when `gh` finds
+no PR. An unset `base` makes `git rev-parse --verify "origin/"` fail loudly;
+that is the intended fail-closed behavior, not a reason to skip the assignment.
 Keep it exported for the later steps, or re-resolve it the same way.
 
 Stop and report if the ref does not resolve or the diff is empty. Do not
