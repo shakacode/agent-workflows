@@ -48,5 +48,7 @@ review; do not replace it with assumptions about organization settings.
 ## Source note
 
 Adapted from Intercom's `secure-github-actions` skill in
-[`intercom/2x-skills`](https://github.com/intercom/2x-skills), used under the
-MIT License. This version is rewritten as a portable, consumer-root scanner.
+[`intercom/2x-skills`](https://github.com/intercom/2x-skills) at commit
+[`59213af0a2db9321ef10355ff24e9bd619151b6b`](https://github.com/intercom/2x-skills/commit/59213af0a2db9321ef10355ff24e9bd619151b6b),
+used under the [MIT License](LICENSE.intercom). This version is rewritten as a
+portable, consumer-root scanner.
