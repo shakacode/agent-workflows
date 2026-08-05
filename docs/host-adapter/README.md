@@ -214,6 +214,25 @@ Before matching, quoted spans and heredoc bodies are stripped so a phrase that
 only appears inside a quoted flag, a commit message, or a heredoc is never
 mistaken for a real invocation.
 
+Flags are then classified against an **allowlist of flags known to take no
+value**, plus the flags known to consume the next token. That direction is
+deliberate. A denylist of value-taking flags fails open by construction: any
+value-taking flag missing from it lets its value be read as the pull request
+selector, so `gh pr merge --match-head-commit <sha> 8` would check readiness for
+`<sha>` rather than for PR 8 — and allow the merge if that lookup happened to
+come back READY. `gh` can also add a flag tomorrow.
+
+So an unrecognised flag makes the invocation **ambiguous, and ambiguity blocks**
+with a message naming the flag. "I am not sure which pull request this targets"
+must never resolve to allow. Recognition also over-approximates: the command is
+parsed both as though unknown flags take a value and as though they do not, and
+a merge matching under *either* reading is treated as a merge, so an unknown
+flag cannot hide the subcommand from the gate either.
+
+If `gh` gains a flag and the gate starts blocking, add it to `MERGE_BOOLEAN_FLAGS`
+or `MERGE_VALUE_FLAGS` in the adapter. Naming the pull request explicitly as the
+first argument also resolves it.
+
 The accepted trade-off, the same one the reference implementation makes, is that
 a quoted subcommand token (`gh pr "merge" 7`) stops matching and is allowed.
 A missed match is fail-open, which is the correct bias for deciding whether the

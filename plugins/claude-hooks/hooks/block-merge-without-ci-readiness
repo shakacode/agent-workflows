@@ -54,6 +54,19 @@ module BlockMergeWithoutCiReadiness
   TOTAL_BUDGET_ENV = "AGENT_WORKFLOWS_MERGE_GATE_TOTAL_BUDGET_SECONDS"
   DEFAULT_TOTAL_BUDGET_SECONDS = 75.0
 
+  # Flag tables for `gh pr merge`. These are an allowlist of flags known to take
+  # no value, plus the flags known to consume the next token. Anything else is
+  # ambiguous and blocks, so a flag `gh` adds later fails closed rather than
+  # letting its value be mistaken for the pull request selector.
+  MERGE_BOOLEAN_FLAGS = %w[
+    --admin --auto --disable-auto -d --delete-branch
+    -m --merge -r --rebase -s --squash -h --help
+  ].freeze
+  MERGE_VALUE_FLAGS = %w[
+    --author-email -b --body -F --body-file --match-head-commit
+    -t --subject -R --repo --hostname
+  ].freeze
+
   module_function
 
   def run(input: $stdin, err: $stderr, env: ENV)
@@ -63,7 +76,13 @@ module BlockMergeWithoutCiReadiness
     return ALLOW unless applicable?(payload)
 
     command = payload.dig("tool_input", "command").to_s
-    merges = ShellCommandScan.invocations(command, executable: "gh", subcommands: %w[pr merge])
+    merges = ShellCommandScan.invocations(
+      command,
+      executable: "gh",
+      subcommands: %w[pr merge],
+      boolean_flags: MERGE_BOOLEAN_FLAGS,
+      value_flags: MERGE_VALUE_FLAGS
+    )
     return ALLOW if merges.empty?
 
     directory = working_directory(payload)
@@ -96,6 +115,16 @@ module BlockMergeWithoutCiReadiness
 
   # nil means "this merge is proven ready"; any string is the reason it is not.
   def blocking_reason(invocation, directory:, env:, deadline:)
+    # Ambiguity is itself a blocking reason. If an unrecognised flag might
+    # consume the next token, the token this hook would read as the pull request
+    # selector may actually be that flag's value -- so the gate could check a
+    # different PR than the one being merged, and report READY for it. "I am not
+    # sure which pull request this targets" must never resolve to allow.
+    if invocation[:ambiguous_flag]
+      return "cannot tell which pull request `gh pr merge` targets: unrecognised flag " \
+             "#{invocation[:ambiguous_flag]} may consume the next argument as its value"
+    end
+
     number = pull_request_number(invocation, directory: directory, env: env, deadline: deadline)
     return "could not resolve which pull request `gh pr merge` would merge" unless number
 
@@ -216,6 +245,9 @@ module BlockMergeWithoutCiReadiness
       Re-run the same host-neutral validator yourself to see the detail:
         #{VALIDATOR_RELATIVE_PATH} <pr-number> --text
       Resolve the blocking checks, then merge once the verdict is READY.
+
+      If the gate could not tell which pull request the command targets, name it
+      explicitly as the first argument: gh pr merge <pr-number> ...
 
       An operator (not this session) can switch the adapter off by setting
       #{HookSupport::DISABLE_ENV}=off in the agent runner's environment.

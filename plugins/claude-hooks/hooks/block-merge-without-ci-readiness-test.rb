@@ -149,6 +149,84 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
     end
   end
 
+  # --- value-taking flags must never be mistaken for the PR selector --------
+  #
+  # Regression: an incomplete denylist of value-taking flags let a flag's bare
+  # value land in the positional arguments, so the gate checked readiness for
+  # the wrong PR -- and would allow the real merge if that other PR was READY.
+
+  def test_value_taking_flags_do_not_steal_the_pull_request_selector
+    {
+      "--match-head-commit" => "a1b2c3d4",
+      "--subject" => "release",
+      "-t" => "release",
+      "--body" => "notes",
+      "-b" => "notes",
+      "--body-file" => "notes.md",
+      "-F" => "notes.md",
+      "--author-email" => "dev@example.com"
+    }.each do |flag, value|
+      with_stubs(stdout: verdict("READY")) do |env, calls|
+        status, stderr = run_hook("gh pr merge #{flag} #{value} 8", env)
+
+        assert_equal ALLOW, status.exitstatus, "#{flag}: #{stderr}"
+        assert_equal [["8", "--json"]], validator_calls(calls),
+                     "#{flag} #{value}: readiness must be checked for PR 8, never for #{value.inspect}"
+      end
+    end
+  end
+
+  def test_attached_flag_values_do_not_steal_the_pull_request_selector
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, = run_hook("gh pr merge --match-head-commit=a1b2c3d4 8", env)
+
+      assert_equal ALLOW, status.exitstatus
+      assert_equal [["8", "--json"]], validator_calls(calls)
+    end
+  end
+
+  def test_bundled_boolean_short_flags_are_understood
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, = run_hook("gh pr merge -sd 8", env)
+
+      assert_equal ALLOW, status.exitstatus
+      assert_equal [["8", "--json"]], validator_calls(calls)
+    end
+  end
+
+  # --- an unclassifiable flag blocks ---------------------------------------
+
+  def test_unknown_flag_blocks_because_it_may_consume_the_selector
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, stderr = run_hook("gh pr merge --brand-new-flag a1b2c3d4 8", env)
+
+      assert_equal BLOCK, status.exitstatus,
+                   "an unrecognised flag may consume the selector, so it must not resolve to allow"
+      assert_includes stderr, "cannot tell which pull request"
+      assert_includes stderr, "--brand-new-flag"
+      assert_empty validator_calls(calls), "readiness must not be checked against a guessed selector"
+    end
+  end
+
+  def test_unknown_flag_blocks_even_when_it_hides_the_subcommand
+    with_stubs(stdout: verdict("READY")) do |env, _calls|
+      status, stderr = run_hook("gh --brand-new-global x pr merge 8", env)
+
+      assert_equal BLOCK, status.exitstatus,
+                   "an unrecognised flag must not let a merge escape recognition entirely"
+      assert_includes stderr, "cannot tell which pull request"
+    end
+  end
+
+  def test_unknown_bundled_short_flags_block
+    with_stubs(stdout: verdict("READY")) do |env, _calls|
+      status, stderr = run_hook("gh pr merge -sz 8", env)
+
+      assert_equal BLOCK, status.exitstatus
+      assert_includes stderr, "cannot tell which pull request"
+    end
+  end
+
   # --- allow only on a proven READY ----------------------------------------
 
   def test_allows_a_merge_when_the_validator_reports_ready
@@ -302,11 +380,25 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
   end
 
   def test_invocations_ignore_flag_values_when_finding_subcommands
-    invocations = ShellCommandScan.invocations("gh --repo owner/name pr merge 3", executable: "gh", subcommands: %w[pr merge])
+    invocations = scan("gh --repo owner/name pr merge 3")
 
     assert_equal 1, invocations.length
     assert_equal "owner/name", invocations.first[:repo]
     assert_equal ["3"], invocations.first[:arguments]
+    assert_nil invocations.first[:ambiguous_flag]
+  end
+
+  def test_double_dash_ends_flag_parsing
+    invocations = scan("gh pr merge -- 8")
+
+    assert_equal ["8"], invocations.first[:arguments]
+    assert_nil invocations.first[:ambiguous_flag]
+  end
+
+  def test_unknown_flag_is_reported_as_ambiguous
+    invocations = scan("gh pr merge --brand-new-flag deadbeef 8")
+
+    assert_equal "--brand-new-flag", invocations.first[:ambiguous_flag]
   end
 
   def test_invocations_match_an_absolute_executable_path
@@ -315,7 +407,30 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
     assert_equal ["4"], invocations.first[:arguments]
   end
 
+  def test_allows_a_different_hook_event
+    with_stubs(stdout: verdict("NOT_READY")) do |env, calls|
+      payload = { "hook_event_name" => "PostToolUse", "tool_name" => "Bash", "cwd" => Dir.pwd,
+                  "tool_input" => { "command" => "gh pr merge 7" } }
+      _stdout, _stderr, status = Open3.capture3(env, HOOK, stdin_data: payload.to_json)
+
+      assert_equal ALLOW, status.exitstatus, "this adapter only gates the pre-tool decision point"
+      assert_empty validator_calls(calls)
+    end
+  end
+
   private
+
+  # Scan with the same flag tables the hook itself uses.
+  def scan(command)
+    load HOOK unless defined?(BlockMergeWithoutCiReadiness)
+    ShellCommandScan.invocations(
+      command,
+      executable: "gh",
+      subcommands: %w[pr merge],
+      boolean_flags: BlockMergeWithoutCiReadiness::MERGE_BOOLEAN_FLAGS,
+      value_flags: BlockMergeWithoutCiReadiness::MERGE_VALUE_FLAGS
+    )
+  end
 
   def verdict(state, failing: [], pending: [])
     { "pr" => 7, "verdict" => state, "failing" => failing, "pending" => pending }.to_json
