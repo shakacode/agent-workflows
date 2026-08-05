@@ -85,7 +85,11 @@ Use this order unless the changed files make a narrower or broader set clearly a
 
 ## Coverage-Of-Change Gate
 
-A green run of the Default Verification Order above proves the existing suite still passes; it does not prove the change under review is covered by any test. Apply this gate whenever the branch diff from Instructions step 2 includes any file not covered by the "Documentation-only changes" classification in the Scope Guide above (that is, the diff touches non-docs source). That classification is scoped to the repo's documented docs directories; it does not cover `skills/**` or `workflows/**` prose. Those files are agent-followed behavior specifications, not documentation, and always count as non-docs source for this gate even when the diff is Markdown-only — a change to this section of this file is itself an example (see the `COVERAGE SKIPPED NO_HARNESS` treatment such a change gets, not a docs-only exemption). Skip the gate entirely only when every changed file is docs-only under the narrower, documented-docs-directory classification.
+A green run of the Default Verification Order above proves the existing suite still passes; it does not prove the change under review is covered by any test.
+
+- **When it applies:** any branch diff from Instructions step 2 that touches non-docs source — any file not covered by the "Documentation-only changes" classification in the Scope Guide above. Skip the gate entirely only when every changed file is docs-only under that classification.
+- **What counts as docs:** that classification is scoped to the repo's documented docs directories. It does not cover `skills/**` or `workflows/**` prose — those are agent-followed behavior specifications, not documentation, and always count as non-docs source for this gate even when the diff is Markdown-only.
+- **Worked example:** this file's own Coverage-Of-Change Gate section is `skills/**` prose, so a change to it takes the `COVERAGE SKIPPED NO_HARNESS` path (see Output Format below), never the docs-only exemption.
 
 For each distinct behavior change in the diff, produce exactly one of:
 
@@ -102,7 +106,12 @@ For each distinct behavior change in the diff, produce exactly one of:
    - `NO_HARNESS` — infrastructure the repo has no test harness for; name the missing harness.
    - Record the receipt as `COVERAGE SKIPPED <reason code>: <one-line factual basis>`.
 
-**Test-only diffs.** When the entire diff is test files — a new regression test with no production change, or a fix to a previously broken or flaky test — there is no separate covering test to name, because the change *is* the test. Use the named-failing-test form on the test itself instead of a skip code: for a new regression test, show it fails against the current (unfixed) production code before any production change lands, and record that pre-fix run as the `COVERAGE <test path/name> fails without change` evidence; for a fixed broken/flaky test, show the old assertion actually catches the behavior it claims to catch (temporarily reintroduce the bug or flake condition and confirm the test now fails), then restore and confirm it passes. A test-only diff is never itself grounds for a skip code.
+**Test-only diffs.** When the entire diff is test files — a new regression test with no production change, or a fix to a previously broken or flaky test — there is no separate covering test to name, because the change *is* the test. Use the named-failing-test form on the test itself instead of a skip code:
+
+- For a new regression test, show it fails against the current (unfixed) production code before any production change lands, and record that pre-fix run as the `COVERAGE <test path/name> fails without change` evidence.
+- For a fixed broken/flaky test, reintroduce the bug or flake condition and confirm the test now fails, then restore and confirm it passes. Bound this the way Instructions step 6 bounds its loop: attempt reproduction up to 3 times, not indefinitely — flakes are by definition not reliably reproducible on demand. If the condition does not reproduce within 3 attempts, stop and record `COVERAGE <test path/name>: flake not reproduced in 3 attempts; evidence: <the prior failing CI run, issue, or commit proving the test used to catch this>` instead of continuing to loop. This fallback still requires citing real prior-failure evidence; it is not a free pass, and it is never available when no such evidence exists.
+
+A test-only diff is never itself grounds for one of the four skip codes above.
 
 If no test currently covers the behavior and the gate requires a named-failing-test receipt (no skip code honestly applies, or the repo seam below forbids a skip for this path), stop and invoke `tdd` (`skills/tdd/SKILL.md`) to add one RED test for that behavior, then return here with its test path. Do not reimplement the RED/GREEN loop inline; `tdd` is the mandatory entry point, not a second implementation of it. `tdd` adds or changes files after the Default Verification Order above already ran green, so before recording the `COVERAGE` receipt, return to Instructions step 4 and rerun the relevant commands (formatter/lint, `.agents/bin/validate`, and the targeted test command) against the files `tdd` touched — a freshly added test and any accompanying production fix must pass the same gates as everything else in the diff, not skip them by arriving after the first green run.
 
@@ -123,7 +132,7 @@ Record the result as a receipt: `COMMIT-CONTRACT <concise|full>: <one-line reaso
 
 ## Output Format
 
-Use this concise summary. Per Instructions steps 4 and 7, a run stops at the first `FAIL`, before the Coverage-Of-Change Gate or Commit Message Contract are ever reached — so `COVERAGE` and `COMMIT-CONTRACT` receipts belong only in a fully green run's output, never alongside an unresolved `FAIL`.
+Use this concise summary. Per Instructions steps 4, 7, and 8, a run stops at the first `FAIL`, before the Coverage-Of-Change Gate or Commit Message Contract are ever reached — so `COVERAGE` and `COMMIT-CONTRACT` receipts belong only in a fully green run's output, never alongside an unresolved `FAIL`.
 
 A failing run (still in progress; no receipts yet):
 
