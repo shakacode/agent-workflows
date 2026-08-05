@@ -101,6 +101,21 @@ Build a complete current-state inventory for the requested repo or repos:
   and list it as reserved; owned means skip for agents as for humans.
 - Links and edges: issue to PR, PR to PR, issue to issue, shared files, external
   blockers, release gates, and cross-repo dependencies.
+- Native GitHub issue dependencies are first-class graph input, not a hint to be
+  re-derived from prose. Read each issue's `blockedBy` and `blocking` edges
+  directly and treat them as authoritative declared edges, including cross-repo
+  ones. Edges inferred from links or text supplement the native set and never
+  silently override it; when the two disagree, report the conflict instead of
+  picking one. Record each edge's provenance as native or inferred so a later
+  reader knows what the graph relied on.
+- Bucket an issue as blocked when its `blockedBy` set is nonempty and any blocker
+  is still open, regardless of labels. When every blocker is closed, the issue is
+  actionable, and a stale blocked-work label on it is reported as a correction to
+  make — labels follow the edges, not the reverse. See
+  [Deferred-Until-Unblocked Recommendations](../../workflows/pr-processing.md#deferred-until-unblocked-recommendations)
+  for how these edges are created at posting time.
+- If the host cannot query native dependency edges, say so and mark that
+  provenance `UNKNOWN`; do not report an inferred-only graph as complete.
 - Live coordination state from the selected backend: active claims, live/stale/dead
   heartbeats, blocked lanes, done-but-unmerged work, and dependency
   `blocked_on` refs.

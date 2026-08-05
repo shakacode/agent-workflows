@@ -318,7 +318,7 @@ record it and proceed to consolidated triage instead of parking in
 - Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
-- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, and explicit `UNKNOWN` entries.
+- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, explicit `UNKNOWN` entries, and the exact archive-readiness status line required by [`workflows/pr-processing.md` -> Batch Handoff Format](../workflows/pr-processing.md#batch-handoff-format), either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`. That status line belongs to the batch-level final message only; a lane-level worker handoff does not carry it.
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
