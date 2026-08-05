@@ -80,6 +80,56 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
     end
   end
 
+  # Regression: the two subprocess stages used to get independent budgets, so a
+  # slow `gh pr view` followed by a slow readiness check could run past the
+  # timeout hooks.json registers for this adapter. They now share one deadline.
+  def test_shared_deadline_bounds_the_combined_resolution_and_readiness_path
+    with_stubs(stdout: verdict("READY"), sleep_seconds: 30, gh_stdout: "42", gh_sleep_seconds: 0.6) do |env, _calls|
+      # Stage timeout deliberately far larger than the total budget: before the
+      # fix this path took gh(0.6s) + validator(30s capped at 60s stage) and the
+      # budget was never consulted.
+      env["AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS"] = "60"
+      env["AGENT_WORKFLOWS_MERGE_GATE_TOTAL_BUDGET_SECONDS"] = "1.5"
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      status, stderr = run_hook("gh pr merge", env)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      assert_equal BLOCK, status.exitstatus, "the combined slow path must still block"
+      assert_operator elapsed, :<, 15,
+                      "hook took #{elapsed.round(1)}s; it must finish inside its shared budget, not stack per-stage timeouts"
+      assert_includes stderr, "PR #42"
+    end
+  end
+
+  def test_stage_timeout_is_clamped_to_the_total_budget
+    with_stubs(stdout: verdict("READY"), sleep_seconds: 30) do |env, _calls|
+      env["AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS"] = "300"
+      env["AGENT_WORKFLOWS_MERGE_GATE_TOTAL_BUDGET_SECONDS"] = "1.0"
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      status, stderr = run_hook("gh pr merge 7", env)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      assert_equal BLOCK, status.exitstatus
+      assert_operator elapsed, :<, 15, "an operator-raised stage timeout must not escape the total budget"
+      assert_includes stderr, "timed out"
+    end
+  end
+
+  def test_blocks_when_the_budget_is_exhausted_before_the_readiness_check
+    with_stubs(stdout: verdict("READY"), gh_stdout: "42", gh_sleep_seconds: 1.2) do |env, calls|
+      env["AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS"] = "60"
+      env["AGENT_WORKFLOWS_MERGE_GATE_TOTAL_BUDGET_SECONDS"] = "1.0"
+
+      status, stderr = run_hook("gh pr merge", env)
+
+      assert_equal BLOCK, status.exitstatus
+      assert_includes stderr, "could not resolve which pull request"
+      assert_empty validator_calls(calls), "the validator must not run once the budget is spent"
+    end
+  end
+
   def test_blocks_when_the_validator_is_missing
     with_stubs(stdout: verdict("READY")) do |env, _calls|
       env["AGENT_WORKFLOWS_PR_CI_READINESS"] = File.join(Dir.tmpdir, "definitely-absent-validator")
@@ -272,7 +322,7 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
   end
 
   # Builds a fake validator and a fake `gh`, both of which record their argv.
-  def with_stubs(stdout:, stderr: "", exit_code: 0, sleep_seconds: nil, gh_stdout: "", gh_exit_code: 0)
+  def with_stubs(stdout:, stderr: "", exit_code: 0, sleep_seconds: nil, gh_stdout: "", gh_exit_code: 0, gh_sleep_seconds: nil)
     Dir.mktmpdir("merge-gate-test") do |dir|
       calls = File.join(dir, "calls.txt")
       validator = File.join(dir, "pr-ci-readiness")
@@ -280,7 +330,7 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
 
       bin = File.join(dir, "bin")
       FileUtils.mkdir_p(bin)
-      write_script(File.join(bin, "gh"), calls, "gh", gh_stdout, "", gh_exit_code, nil)
+      write_script(File.join(bin, "gh"), calls, "gh", gh_stdout, "", gh_exit_code, gh_sleep_seconds)
 
       env = {
         "AGENT_WORKFLOWS_PR_CI_READINESS" => validator,

@@ -38,6 +38,22 @@ module BlockMergeWithoutCiReadiness
   TIMEOUT_ENV = "AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS"
   DEFAULT_TIMEOUT_SECONDS = 60.0
 
+  # Total wall-clock budget for one hook invocation, shared across every
+  # subprocess it runs. This MUST stay below the `timeout` that hooks.json
+  # registers for this adapter (90s), with margin, so the hook always reaches
+  # its own blocking decision before the host's deadline can fire.
+  #
+  # Without a shared deadline the stages stack: resolving the PR number and
+  # then checking readiness would each get the full per-stage timeout, so a
+  # slow-but-not-timing-out `gh pr view` followed by a slow readiness check
+  # could outlive the registered timeout. "We could not establish readiness in
+  # time" is precisely the case this gate must catch, so it must never be the
+  # case that escapes by outrunning the host.
+  #
+  # `hooks-install-contract-test.rb` asserts the margin against hooks.json.
+  TOTAL_BUDGET_ENV = "AGENT_WORKFLOWS_MERGE_GATE_TOTAL_BUDGET_SECONDS"
+  DEFAULT_TOTAL_BUDGET_SECONDS = 75.0
+
   module_function
 
   def run(input: $stdin, err: $stderr, env: ENV)
@@ -51,8 +67,11 @@ module BlockMergeWithoutCiReadiness
     return ALLOW if merges.empty?
 
     directory = working_directory(payload)
+    # One deadline for the whole invocation, shared by every stage and by every
+    # merge in a chained command.
+    deadline = HookSupport.monotonic_now + total_budget(env)
     merges.each do |invocation|
-      reason = blocking_reason(invocation, directory: directory, env: env)
+      reason = blocking_reason(invocation, directory: directory, env: env, deadline: deadline)
       next unless reason
 
       err.puts(message(reason))
@@ -76,17 +95,29 @@ module BlockMergeWithoutCiReadiness
   end
 
   # nil means "this merge is proven ready"; any string is the reason it is not.
-  def blocking_reason(invocation, directory:, env:)
-    number = pull_request_number(invocation, directory: directory, env: env)
+  def blocking_reason(invocation, directory:, env:, deadline:)
+    number = pull_request_number(invocation, directory: directory, env: env, deadline: deadline)
     return "could not resolve which pull request `gh pr merge` would merge" unless number
 
     validator = validator_path(env)
     return "readiness validator is not executable at #{validator}" unless File.executable?(validator)
 
+    budget = stage_budget(env, deadline)
+    return "ran out of time budget before readiness for PR ##{number} could be established" unless budget
+
     arguments = [validator, number, "--json"]
     arguments.push("--repo", invocation[:repo]) if invocation[:repo]
-    result = HookSupport.run_bounded(arguments, timeout_seconds: timeout_seconds(env), chdir: directory)
+    result = HookSupport.run_bounded(arguments, timeout_seconds: budget, chdir: directory)
     verdict_reason(result, number)
+  end
+
+  # Seconds this stage may use: the configured per-stage timeout, capped by what
+  # is left of the shared deadline. nil once the budget is spent.
+  def stage_budget(env, deadline)
+    remaining = deadline - HookSupport.monotonic_now
+    return nil unless remaining.positive?
+
+    [timeout_seconds(env), remaining].min
   end
 
   def verdict_reason(result, number)
@@ -117,22 +148,25 @@ module BlockMergeWithoutCiReadiness
     parts.empty? ? "" : " (#{parts.join('; ')})"
   end
 
-  def pull_request_number(invocation, directory:, env:)
+  def pull_request_number(invocation, directory:, env:, deadline:)
     selector = invocation[:arguments].first
     return selector if selector.to_s.match?(/\A[1-9]\d*\z/)
 
     from_url = selector.to_s[%r{/pull/([1-9]\d*)(?:\D|\z)}, 1]
     return from_url if from_url
 
-    resolve_with_gh(selector, invocation[:repo], directory: directory, env: env)
+    resolve_with_gh(selector, invocation[:repo], directory: directory, env: env, deadline: deadline)
   end
 
-  def resolve_with_gh(selector, repo, directory:, env:)
+  def resolve_with_gh(selector, repo, directory:, env:, deadline:)
+    budget = stage_budget(env, deadline)
+    return nil unless budget
+
     arguments = %w[gh pr view]
     arguments << selector if selector
     arguments.push("--repo", repo) if repo
     arguments.push("--json", "number", "--jq", ".number")
-    result = HookSupport.run_bounded(arguments, timeout_seconds: timeout_seconds(env), chdir: directory)
+    result = HookSupport.run_bounded(arguments, timeout_seconds: budget, chdir: directory)
     return nil unless result[:ok]
 
     number = result[:stdout].to_s.strip
@@ -146,11 +180,22 @@ module BlockMergeWithoutCiReadiness
     File.join(HookSupport.pack_root, VALIDATOR_RELATIVE_PATH)
   end
 
+  # Per-stage timeout, clamped to the total budget. Raising the stage timeout
+  # past the budget must not reintroduce the stacking hazard from the other
+  # direction, so the clamp is applied here rather than trusting the operator.
   def timeout_seconds(env)
-    value = Float(env[TIMEOUT_ENV].to_s)
-    value.positive? && value.finite? ? value : DEFAULT_TIMEOUT_SECONDS
+    [positive_float(env, TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS), total_budget(env)].min
+  end
+
+  def total_budget(env)
+    positive_float(env, TOTAL_BUDGET_ENV, DEFAULT_TOTAL_BUDGET_SECONDS)
+  end
+
+  def positive_float(env, key, fallback)
+    value = Float(env[key].to_s)
+    value.positive? && value.finite? ? value : fallback
   rescue ArgumentError
-    DEFAULT_TIMEOUT_SECONDS
+    fallback
   end
 
   def parse_json(text)

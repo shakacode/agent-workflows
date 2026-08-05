@@ -37,6 +37,22 @@ class HooksInstallContractTest < Minitest::Test
     assert_adapter(entry.fetch("hooks").fetch(0), "close-lane-on-session-end")
   end
 
+  # The adapter must reach its own blocking decision before the host's
+  # registered timeout can fire, otherwise "readiness could not be established
+  # in time" is decided by the host rather than by the gate.
+  def test_merge_gate_internal_budget_stays_under_its_registered_timeout
+    load File.expand_path("block-merge-without-ci-readiness", __dir__)
+    registered = @hooks.fetch("PreToolUse").fetch(0).fetch("hooks").fetch(0).fetch("timeout")
+    budget = BlockMergeWithoutCiReadiness::DEFAULT_TOTAL_BUDGET_SECONDS
+
+    assert_operator budget, :<, registered,
+                    "internal budget #{budget}s must be below the registered #{registered}s timeout"
+    assert_operator registered - budget, :>=, 10,
+                    "leave at least 10s of margin for process teardown and hook startup"
+    assert_operator BlockMergeWithoutCiReadiness::DEFAULT_TIMEOUT_SECONDS, :<=, budget,
+                    "a single stage must not be able to consume more than the whole budget"
+  end
+
   def test_every_adapter_has_a_finite_timeout
     @hooks.each_value do |entries|
       entries.each do |entry|

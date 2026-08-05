@@ -64,6 +64,28 @@ Two fail directions, deliberately different:
 The blocked command's stderr tells the agent which validator to run itself, so
 the agent can resolve the blockers rather than guess.
 
+#### It must decide before the host's deadline
+
+The adapter runs up to two subprocesses — resolving which pull request `gh pr
+merge` targets, then checking readiness — and they share **one** wall-clock
+budget for the whole invocation, not one budget each.
+
+This matters because the hook is registered in `hooks.json` with a `timeout`.
+If the stages each took the full per-stage timeout they would stack, and a slow
+`gh pr view` followed by a slow readiness check could still be running when the
+host's deadline fired. Claude Code does not document what it does with a hook
+that exceeds its timeout, and the available indication is that a timed-out hook
+is treated as a non-blocking error and the tool call proceeds. A fail-closed
+gate cannot rest on that: the gate must reach its own decision first.
+
+So the total budget defaults to 75s against a registered timeout of 90s, and
+the per-stage timeout is clamped to the total budget — raising
+`AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS` cannot push the invocation past
+its deadline. When the budget runs out the gate blocks, because "readiness
+could not be established in time" is the state it exists to stop.
+`hooks-install-contract-test.rb` asserts the margin, so shrinking it fails the
+suite. If you change the `timeout` in `hooks.json`, change the budget with it.
+
 ### close-lane-on-session-end
 
 A lane goes quiet for two very different reasons — it finished, or its agent
@@ -143,7 +165,8 @@ re-read settings, for the change to take effect.
 | --- | --- | --- |
 | `AGENT_WORKFLOWS_HOOKS` | both | Set to `off` to disable every adapter |
 | `AGENT_WORKFLOWS_PR_CI_READINESS` | merge gate | Absolute path to the readiness validator, for unusual installs |
-| `AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS` | merge gate | Validator deadline; defaults to 60 |
+| `AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS` | merge gate | Per-stage subprocess deadline; defaults to 60, clamped to the total budget |
+| `AGENT_WORKFLOWS_MERGE_GATE_TOTAL_BUDGET_SECONDS` | merge gate | Wall-clock budget shared by every stage of one invocation; defaults to 75 and must stay below the `timeout` registered in `hooks.json` |
 | `AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` | lane closeout | The backend-advertised drain-event executable and argv, as a JSON array of strings |
 | `AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS` | lane closeout | Emission deadline; defaults to 1, because Claude Code budgets `SessionEnd` tightly |
 
