@@ -149,6 +149,13 @@ AW_D_ROUTE_REPLAY = [
   { pr: 148, role: "implementation", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" },
   { pr: 148, role: "QA", case_id: "silent-substitution", disposition: "MODEL_ROUTE_MISMATCH" }
 ].freeze
+EXPECTED_ROUTE_DISPOSITIONS = {
+  "bound-exact-match" => "proceed",
+  "unbound-exact-route" => "MODEL_ROUTE_MISMATCH",
+  "silent-substitution" => "MODEL_ROUTE_MISMATCH",
+  "coordinator-pair-inheritance" => "MODEL_ROUTE_MISMATCH",
+  "authorized-fallback" => "proceed-as-fallback"
+}.freeze
 
 def read_repo_file(path)
   File.read(File.join(ROOT, path), encoding: "UTF-8")
@@ -194,6 +201,10 @@ def assert_aw_d_route_replay(test, text, label)
   FAIL_CLOSED_ROUTE_CASES.each do |case_id|
     test.assert_equal "MODEL_ROUTE_MISMATCH", dispositions[case_id],
                       "#{label}: #{case_id} must stay fail-closed"
+  end
+  EXPECTED_ROUTE_DISPOSITIONS.each do |case_id, expected|
+    test.assert_equal expected, dispositions[case_id],
+                      "#{label}: #{case_id} must dispose as #{expected}"
   end
   AW_D_ROUTE_REPLAY.each do |row|
     expected = row.fetch(:disposition)
@@ -462,7 +473,11 @@ class ModelRoutingContractTest < Minitest::Test
       "silent substitution downgraded to a fallback" =>
         mutate_route_disposition(text, "silent-substitution", "proceed-as-fallback"),
       "unbound exact route allowed to proceed" =>
-        mutate_route_disposition(text, "unbound-exact-route", "proceed")
+        mutate_route_disposition(text, "unbound-exact-route", "proceed"),
+      "authorized fallback stripped of its recorded-authority requirement" =>
+        mutate_route_disposition(text, "authorized-fallback", "proceed"),
+      "bound exact match downgraded to a mismatch" =>
+        mutate_route_disposition(text, "bound-exact-match", "MODEL_ROUTE_MISMATCH")
     }
 
     mutants.each do |mutation, mutant|
