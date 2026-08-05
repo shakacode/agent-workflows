@@ -70,8 +70,13 @@ class AgentDoctorArchitectureTest < Minitest::Test
     assert_operator line_count("bin/install-agent-workflows"), :>, 180
     assert_operator line_count("bin/install-agent-workflows-test.bash"), :>, 180
 
-    # Reuses the exact path sets the cap tests glob, so widening either glob
-    # to reach these pre-existing files makes this assertion fail.
+    # Reuses the exact path sets the cap tests glob. The .bash half is fully
+    # protected: widening stack_sync_module_paths's directory scope alone
+    # would sweep in bin/install-agent-workflows-test.bash (it already
+    # matches "*.bash") and fail this assertion. The .rb half is narrower:
+    # bin/install-agent-workflows has no .rb extension, so widening
+    # doctor_module_paths's directory scope alone would not reach it; only a
+    # change to its extension filter would.
     refute_includes doctor_module_paths, installer
     refute_includes stack_sync_module_paths, installer_test
   end
