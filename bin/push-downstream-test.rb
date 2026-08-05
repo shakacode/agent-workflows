@@ -1572,9 +1572,13 @@ class PushDownstreamPolicyFleetTest < Minitest::Test
       end
 
       branch = "refs/heads/agent-workflows/repo-prefix"
-      policy_content = `git --git-dir=#{remote.shellescape} show #{branch.shellescape}:.agents/agent-workflow.yml`
-      assert_includes policy_content, "# café policy"
-      assert_includes policy_content, "repo_prefix: ROR"
+      # Compare as bytes, per this test's name. `git show` output is tagged with
+      # Encoding.default_external, so on a host with no locale exported (US-ASCII)
+      # matching it against a UTF-8 source literal raises
+      # Encoding::CompatibilityError instead of asserting.
+      policy_content = `git --git-dir=#{remote.shellescape} show #{branch.shellescape}:.agents/agent-workflow.yml`.b
+      assert_includes policy_content, "# café policy".b
+      assert_includes policy_content, "repo_prefix: ROR".b
     end
   end
 
