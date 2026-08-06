@@ -1475,7 +1475,11 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
       if [ "$1" = "--warmup" ]; then
         exit 0
       fi
-      printf '%s' "$$" >#{Shellwords.escape(pid_path)}
+      # The trailing newline is a completion terminator, not formatting: the
+      # reader requires it, so a read that catches this write mid-flight is
+      # distinguishable from a finished one. Without it a truncated pid is
+      # still all digits and would be indistinguishable from a real one.
+      printf '%s\\n' "$$" >#{Shellwords.escape(pid_path)}
       sleep 10
     SH
     FileUtils.chmod(0o755, git_path)
@@ -1500,12 +1504,18 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
     # File.exist? only proves the stub created the file, not that its write
-    # finished. A read caught mid-flight returns "", and "".to_i is 0 -- which
-    # is truthy in Ruby, so it would satisfy the caller's `break if pid` and
-    # its refute_nil, then send Process.kill(0, 0) to this process's own group
-    # (which exists, so no ESRCH) and fail confusingly. Treat a non-positive
-    # read as "not recorded yet" so the caller retries instead.
-    pid = File.exist?(pid_path) ? File.read(pid_path).to_i : nil
+    # finished, and `to_i` accepts both halves of that race: an empty read
+    # yields 0 -- truthy in Ruby, so it satisfies the caller's `break if pid`
+    # and refute_nil, then sends Process.kill(0, 0) to this process's own
+    # group (which exists, so no ESRCH) and fails confusingly -- while a
+    # truncated read yields a plausible but wrong pid.
+    #
+    # A digits-only check does not close the truncated case: half of "42917"
+    # is "4", which is still all digits. The stub therefore terminates its
+    # write with a newline and we require it, so an unterminated file means
+    # "still being written" and the caller retries instead.
+    recorded = File.exist?(pid_path) ? File.read(pid_path) : nil
+    pid = recorded&.match?(/\A\d+\n\z/) ? recorded.to_i : nil
     pid = nil unless pid&.positive?
     [pid, error, elapsed]
   end
