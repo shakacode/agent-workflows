@@ -21,6 +21,13 @@ module CloseoutEvidenceReplay
   VALID_VISUAL_DESTINATIONS = %w[
     github_pr linked_tracker repo_artifact_store human_attachment_pending not_applicable
   ].freeze
+  # A blocked upload must name which state it is in, because the remedies differ:
+  # uploader_absent needs a host with an uploader, uploader_denied needs a human to
+  # pre-provision the permission, and no_configured_store needs a configured destination.
+  VALID_VISUAL_BLOCKED_REASONS = %w[
+    uploader_absent uploader_denied no_configured_store
+  ].freeze
+  UPLOAD_FAILED_REASON = /\Aupload_failed:\s*\S/
   # private-user-images.githubusercontent.com is deliberately excluded because copied signed URLs expire.
   DURABLE_GITHUB_EVIDENCE_HOSTS = %w[
     github.com
@@ -333,6 +340,9 @@ module CloseoutEvidenceReplay
       missing << "visual_evidence_destination" unless destination == "human_attachment_pending"
       missing << "status" unless fields.fetch("status", "") == "blocked"
       missing << "release_blocking" unless fields.fetch("release_blocking", "") == "blocked"
+      unless valid_visual_blocked_reason?(fields.fetch("visual_evidence_blocked_reason", ""))
+        missing << "visual_evidence_blocked_reason"
+      end
     else
       missing << "visual_evidence"
     end
@@ -341,6 +351,10 @@ module CloseoutEvidenceReplay
     validate_interaction_evidence(interaction_change, interaction_evidence, missing)
     validate_negative_control(visual_fix, negative_control, missing)
     validate_performance_evidence(performance_impact, performance_evidence, missing)
+  end
+
+  def valid_visual_blocked_reason?(value)
+    VALID_VISUAL_BLOCKED_REASONS.include?(value) || UPLOAD_FAILED_REASON.match?(value)
   end
 
   def validate_durable_visual_evidence(evidence, destination, missing)

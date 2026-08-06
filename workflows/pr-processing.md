@@ -898,12 +898,27 @@ For each user-visible UI change:
    destination and contain its reviewer-visible HTTPS URL.
 3. GitHub documents no public REST or GraphQL attachment-upload route. Do not
    depend on an undocumented direct-upload endpoint unless the repository has
-   explicitly configured and verified that integration. If no authenticated UI
+   explicitly configured and verified that integration. This is a constraint on
+   GitHub's API, not a statement that agents cannot attach images: a host whose
+   browser tooling can set a file input on an authenticated github.com session
+   completes the UI upload flow normally. Before recording a blocked upload,
+   resolve which of three states applies, because the remedies differ and only
+   the third is actionable by the lane itself:
+   - `uploader_absent` — the host exposes no file-input upload tool at all.
+   - `uploader_denied` — the tool exists but the host's permission policy
+     refused the call. A worker cannot lift this at runtime and must not try;
+     a human pre-provisions the permission before the lane launches.
+   - usable — perform the upload and record a durable destination.
+
+   If no authenticated UI
    uploader or configured integration is available, prepare clearly named local
    before/after artifacts and report their absolute paths, but record
-   `human_attachment_pending` and keep QA/release readiness `blocked` until a
-   human attaches them and the receipt contains the resulting durable GitHub
-   URL. A local absolute or relative path (`./`, `../`, `~/`, Windows
+   `human_attachment_pending` with the matching
+   `visual_evidence_blocked_reason` and keep QA/release readiness `blocked`
+   until a human attaches them and the receipt contains the resulting durable
+   GitHub URL. Report the blocked reason in the handoff in plain language, with
+   the remedy, rather than only asserting that evidence was unavailable.
+   A local absolute or relative path (`./`, `../`, `~/`, Windows
    slash/backslash forms), a plain local media filename, `file:` URL,
    inaccessible private blob/camo URL, “captured locally”, or any
    blank/unpainted capture token never satisfies a durable visual-evidence
@@ -999,7 +1014,7 @@ includes this evidence block:
 - Automated checks: <commands, CI links, or "covered by worker validation: ...">
 - Manual checks: <workflow/app smoke checks, screenshots, or "not applicable: ...">
 - User-visible UI change: <yes | no>
-- Visual evidence: <durable before/after URL(s), destination, and paint check; blocked human-attachment paths; or reasoned "not applicable: no user-visible UI change">
+- Visual evidence: <durable before/after URL(s), destination, and paint check; blocked human-attachment paths with the blocked reason and the remedy it implies (a denied uploader names the permission a human must pre-provision, not a missing capability); or reasoned "not applicable: no user-visible UI change">
 - Interaction change: <yes | no; yes requires clip/measured substitute, no requires reasoned not applicable>
 - Interaction evidence: <durable clip URL, exact measured_substitute with labeled before/after/tolerance values and units, or reasoned "not applicable: ...">
 - Visual fix: <yes | no; yes requires observed unfixed failure, no requires reasoned not applicable>
@@ -1027,6 +1042,7 @@ automated_checks: <commands, CI links, or covered-by-worker-validation note>
 manual_checks: <manual smoke checks or not applicable>
 user_visible_ui_change: <yes | no>
 visual_evidence_destination: <github_pr | linked_tracker | repo_artifact_store | human_attachment_pending | not_applicable>
+visual_evidence_blocked_reason: <uploader_absent | uploader_denied | no_configured_store | upload_failed: reason>
 visual_evidence: <durable: before/after https URL(s) | blocked: human attachment required; prepared local artifacts: absolute paths | not applicable: reason>
 paint_check: <passed: painted/rendered target inspected | not applicable: reason>
 interaction_change: <yes | no>
@@ -1044,6 +1060,12 @@ process_gap_disposition: <script | schema | checklist+replay | park | not applic
 For `required: no`, record `status: not_applicable` and
 `release_blocking: not_applicable`. Replay treats any other terminal pair as an
 inconsistent omission record and returns `UNKNOWN`.
+
+`visual_evidence_blocked_reason` is required whenever
+`visual_evidence_destination: human_attachment_pending`, and omitted otherwise.
+A blocked receipt that does not name why the uploader was unavailable returns
+`UNKNOWN`, so an unprovisioned permission cannot be recorded as though the
+capability did not exist.
 
 Historical `qa-evidence v1` receipts remain replayable for backward
 compatibility. Do not emit v1 for new closeout evidence. The presence of any v2

@@ -75,7 +75,14 @@ blocker. Do not fake a manual pass from static inspection.
      intended reviewer has access; link that evidence from the PR.
    - GitHub documents no public REST or GraphQL attachment-upload route. Do not
      depend on an undocumented direct-upload endpoint unless the repository has
-     explicitly configured and verified that integration. If no authenticated
+     explicitly configured and verified that integration. That limits GitHub's
+     API, not agents: a host whose browser tooling can set a file input on an
+     authenticated github.com session completes the UI upload flow normally.
+     Distinguish `uploader_absent` (no upload tool exists) from
+     `uploader_denied` (the tool exists but the host permission policy refused
+     the call, which only a human can pre-provision before the lane runs), and
+     record the matching `visual_evidence_blocked_reason`. Do not report a
+     denied permission as a missing capability. If no authenticated
      UI uploader or configured integration is available, prepare clearly named
      local files and report their absolute paths, but keep the QA evidence and
      readiness status `blocked` until a human attaches them and the PR contains
