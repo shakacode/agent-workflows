@@ -1161,7 +1161,8 @@ class GoalCompletionContractTest < Minitest::Test
   # #188 -----------------------------------------------------------------
 
   def test_workflow_defines_the_deferred_until_unblocked_convention
-    section = extract_markdown_section(@workflow, "### Deferred-Until-Unblocked Recommendations")
+    section = extract_markdown_section(@workflow, "### Deferred-Until-Unblocked Recommendations",
+                                       end_heading: /^##\s+/)
 
     {
       "encodes the edge at posting time" =>

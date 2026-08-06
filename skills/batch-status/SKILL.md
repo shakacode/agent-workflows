@@ -46,9 +46,9 @@ cannot stall the report:
 ```bash
 # Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
 PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
-"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" doctor --json
-"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" status --batch-id <resolved-id> --json
-"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" status --repo <owner/repo> --target <pr-N|issue-N> --json
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id <resolved-id> --json
+"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <owner/repo> --target <pr-N|issue-N> --json
 ```
 
 Run the per-target probe only for the items in the batch plan or the supplied
