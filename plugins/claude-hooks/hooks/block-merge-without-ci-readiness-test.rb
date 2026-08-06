@@ -197,6 +197,90 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
     end
   end
 
+  # --- a URL selector carries its own repository ----------------------------
+  #
+  # Regression: the URL parse kept the number and discarded owner/repo, so
+  # readiness was checked for that number in the *local* repository. If the
+  # local PR happened to be READY, an unrelated merge was allowed.
+
+  def test_url_selector_checks_the_repository_named_in_the_url
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, = run_hook("gh pr merge https://github.com/other/repo/pull/9", env)
+
+      assert_equal ALLOW, status.exitstatus
+      assert_equal [["9", "--json", "--repo", "other/repo"]], validator_calls(calls),
+                   "readiness must be checked against the repository the URL names"
+    end
+  end
+
+  def test_enterprise_url_selector_carries_its_host
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, = run_hook("gh pr merge https://gh.example.com/team/app/pull/4", env)
+
+      assert_equal ALLOW, status.exitstatus
+      assert_equal [["4", "--json", "--repo", "gh.example.com/team/app"]], validator_calls(calls)
+    end
+  end
+
+  def test_url_and_repo_flag_naming_different_repositories_blocks
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, stderr = run_hook("gh pr merge https://github.com/other/repo/pull/9 --repo mine/thing", env)
+
+      assert_equal BLOCK, status.exitstatus
+      assert_includes stderr, "different repositories"
+      assert_empty validator_calls(calls)
+    end
+  end
+
+  def test_url_and_matching_repo_flag_are_not_a_conflict
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, stderr = run_hook("gh pr merge https://github.com/other/repo/pull/9 --repo other/repo", env)
+
+      assert_equal ALLOW, status.exitstatus, stderr
+      assert_equal [["9", "--json", "--repo", "other/repo"]], validator_calls(calls)
+    end
+  end
+
+  # --- redirections must not eat the selector -------------------------------
+
+  def test_redirection_with_attached_target_does_not_swallow_the_selector
+    assert_equal ["7"], scan("gh pr merge 2>&1 7").first[:arguments]
+    assert_equal ["7"], scan("gh pr merge 7 >out.log").first[:arguments]
+    assert_equal ["7"], scan("gh pr merge 7 > out.log").first[:arguments], "a bare `>` still takes the next token"
+  end
+
+  def test_merge_with_a_redirect_still_blocks_for_the_right_pull_request
+    with_stubs(stdout: verdict("NOT_READY")) do |env, calls|
+      status, stderr = run_hook("gh pr merge 2>&1 7", env)
+
+      assert_equal BLOCK, status.exitstatus
+      assert_includes stderr, "PR #7"
+      assert_equal [["7", "--json"]], validator_calls(calls)
+    end
+  end
+
+  # --- flag table completeness ---------------------------------------------
+
+  def test_author_email_short_flag_does_not_block_a_valid_merge
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, stderr = run_hook("gh pr merge -A dev@example.com 8", env)
+
+      assert_equal ALLOW, status.exitstatus, stderr
+      assert_equal [["8", "--json"]], validator_calls(calls)
+    end
+  end
+
+  def test_help_invocations_are_not_treated_as_merges
+    with_stubs(stdout: verdict("NOT_READY")) do |env, calls|
+      ["gh pr merge --help", "gh pr merge 7 --help"].each do |command|
+        status, = run_hook(command, env)
+
+        assert_equal ALLOW, status.exitstatus, "#{command} prints usage and merges nothing"
+      end
+      assert_empty validator_calls(calls)
+    end
+  end
+
   # --- an unclassifiable flag blocks ---------------------------------------
 
   def test_unknown_flag_blocks_because_it_may_consume_the_selector
@@ -433,7 +517,8 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
       status, = run_hook("gh pr merge https://github.com/owner/name/pull/9", env)
 
       assert_equal ALLOW, status.exitstatus
-      assert_equal [["9", "--json"]], validator_calls(calls)
+      # The repository travels with the number: see the URL-selector tests below.
+      assert_equal [["9", "--json", "--repo", "owner/name"]], validator_calls(calls)
     end
   end
 

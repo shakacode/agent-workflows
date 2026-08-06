@@ -112,11 +112,22 @@ module CloseLaneOnSessionEnd
     :malformed
   end
 
+  # Clamped, for the same reason the merge gate clamps its own stages: hooks.json
+  # registers a 5s SessionEnd timeout, and an operator-set value above that would
+  # let the host kill this hook mid-write instead of letting it finish and record
+  # its own outcome. The cap leaves room for the termination grace period too.
+  # `hooks-install-contract-test.rb` asserts the margin against hooks.json.
+  MAX_TIMEOUT_SECONDS = 3.0
+
   def timeout_seconds(env)
-    value = Float(env[TIMEOUT_ENV].to_s)
-    value.positive? && value.finite? ? value : DEFAULT_TIMEOUT_SECONDS
+    [positive_float(env, TIMEOUT_ENV, DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS].min
+  end
+
+  def positive_float(env, key, fallback)
+    value = Float(env[key].to_s)
+    value.positive? && value.finite? ? value : fallback
   rescue ArgumentError
-    DEFAULT_TIMEOUT_SECONDS
+    fallback
   end
 end
 

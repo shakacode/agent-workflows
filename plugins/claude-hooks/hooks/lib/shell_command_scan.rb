@@ -27,7 +27,12 @@ module ShellCommandScan
   # correct decision is to block.
   #
   # Shell operators that end one simple command and begin another.
-  SEGMENT_SPLIT = /\|\||&&|;|\||&|\n|\(|\)/
+  #
+  # The bare `&` must not match the one inside a redirection such as `2>&1`,
+  # `>&2`, or `&>log`: splitting there tears the redirection in half, and the
+  # fragments no longer look like a redirection to the token scan, so the
+  # following argument gets consumed. `gh pr merge 2>&1 7` lost its `7` that way.
+  SEGMENT_SPLIT = /\|\||&&|;|\||(?<![>&])&(?![>&])|\n|\(|\)/
 
   ASSIGNMENT_PREFIX = /\A[A-Za-z_][A-Za-z0-9_]*=/
 
@@ -202,7 +207,7 @@ module ShellCommandScan
   # `value_flags` are the flags known to consume the following token. Anything
   # else is ambiguous, and the caller must decide -- see the note at the top of
   # this file for why that is an allowlist rather than a denylist.
-  def invocations(command, executable:, subcommands:, boolean_flags: [], value_flags: [])
+  def invocations(command, executable:, subcommands:, boolean_flags: [], value_flags: [], help_flags: [])
     segments = strip_quoted_and_heredocs(command).split(SEGMENT_SPLIT)
 
     segments.filter_map do |segment|
@@ -227,15 +232,23 @@ module ShellCommandScan
       {
         arguments: matched.drop(subcommands.length),
         repo: repo_flag(tokens),
-        ambiguous_flag: unknown_a || unknown_b
+        ambiguous_flag: unknown_a || unknown_b,
+        # A help invocation prints usage and performs no action, so callers can
+        # skip it rather than trying to resolve a target it will never touch.
+        help: rest.any? { |token| help_flags.include?(token) }
       }
     end
   end
 
-  # A bare redirection operator, whose target is the next token.
-  REDIRECTION_OPERATOR = /\A\d*(?:>>|>|<<<|<)(?:&\d+-?)?\z/
+  # A bare redirection operator, whose target is the *next* token (`> out.log`).
+  # It must not match a form that already carries its target, or it would eat
+  # the following argument.
+  REDIRECTION_OPERATOR = /\A\d*(?:>>|>|<<<|<)\z/
 
-  # A redirection with its target attached, such as `>out.log` or `2>&1`.
+  # A redirection carrying its own target: `>out.log`, `2>&1`, `<<<word`. These
+  # consume no following token. `2>&1` used to match the bare-operator pattern
+  # through an `&\d+` tail and swallow the next argument, so `gh pr merge 2>&1 7`
+  # lost the `7` and the gate could no longer tell which pull request it was.
   REDIRECTION_WITH_TARGET = /\A\d*(?:>>|>|<<<|<)\S+\z/
 
   # Positional tokens, plus the first flag that could not be classified.

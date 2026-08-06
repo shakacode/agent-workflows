@@ -30,7 +30,9 @@ class HooksInstallContractTest < Minitest::Test
     entry = @hooks.fetch("SessionEnd").fetch(0)
     matcher = Regexp.new(entry.fetch("matcher"))
 
-    %w[clear logout prompt_input_exit other].each do |reason|
+    # bypass_permissions_disabled is a real termination reason: the lane stops,
+    # so it must be recorded like any other stop.
+    %w[clear logout prompt_input_exit bypass_permissions_disabled other].each do |reason|
       assert_match matcher, reason, "SessionEnd must fire for #{reason}"
     end
     refute_match matcher, "resume", "SessionEnd must not fire for a resumed session"
@@ -66,6 +68,18 @@ class HooksInstallContractTest < Minitest::Test
 
     assert_empty offenders.map { |path| path.sub("#{PACK_ROOT}/", "") },
                  "a NUL byte makes these files binary to git and invisible in review diffs"
+  end
+
+  # Same rule as the merge gate: the adapter must finish on its own terms rather
+  # than being killed mid-write by the host.
+  def test_session_end_budget_stays_under_its_registered_timeout
+    load File.expand_path("close-lane-on-session-end", __dir__)
+    registered = @hooks.fetch("SessionEnd").fetch(0).fetch("hooks").fetch(0).fetch("timeout")
+    cap = CloseLaneOnSessionEnd::MAX_TIMEOUT_SECONDS
+
+    assert_operator cap, :<, registered,
+                    "emission cap #{cap}s must be below the registered #{registered}s timeout"
+    assert_operator registered - cap, :>=, 1.5, "leave room for termination grace and hook startup"
   end
 
   def test_every_adapter_has_a_finite_timeout

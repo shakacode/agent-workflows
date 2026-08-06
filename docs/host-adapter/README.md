@@ -151,7 +151,7 @@ plugin form and is the copy source:
     ],
     "SessionEnd": [
       {
-        "matcher": "clear|logout|prompt_input_exit|other",
+        "matcher": "clear|logout|prompt_input_exit|bypass_permissions_disabled|other",
         "hooks": [
           {
             "type": "command",
@@ -177,7 +177,7 @@ re-read settings, for the change to take effect.
 | `AGENT_WORKFLOWS_MERGE_GATE_TIMEOUT_SECONDS` | merge gate | Per-stage subprocess deadline; defaults to 60, clamped to the total budget |
 | `AGENT_WORKFLOWS_MERGE_GATE_TOTAL_BUDGET_SECONDS` | merge gate | Wall-clock budget shared by every stage of one invocation; defaults to 75 and must stay below the `timeout` registered in `hooks.json` |
 | `AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` | lane closeout | The backend-advertised drain-event executable and argv, as a JSON array of strings |
-| `AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS` | lane closeout | Emission deadline; defaults to 1, because Claude Code budgets `SessionEnd` tightly |
+| `AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS` | lane closeout | Emission deadline; defaults to 1 and is clamped to 3, staying below the 5s `SessionEnd` timeout registered in `hooks.json` so the host cannot kill the hook mid-write |
 
 `AGENT_WORKFLOWS_DRAIN_EVENT_ARGV` is both the transport advertisement and the
 session's declaration that it holds a lane claim. Whoever launches a lane knows

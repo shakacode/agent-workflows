@@ -118,6 +118,22 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     end
   end
 
+  # Regression: any positive value was accepted, but hooks.json registers a 5s
+  # SessionEnd timeout, so a larger value let the host kill the hook mid-write.
+  def test_emission_deadline_is_clamped_below_the_registered_session_end_timeout
+    with_repo(backend: "private-http", emitter_sleep: 30) do |repo, emitter, _calls|
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      status, stderr = run_hook(repo, advertisement: [emitter, "event"],
+                                      env: { "AGENT_WORKFLOWS_DRAIN_EVENT_TIMEOUT_SECONDS" => "10" })
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      assert_equal 0, status.exitstatus
+      assert_includes stderr, "UNKNOWN: drain event write timed out"
+      assert_operator elapsed, :<, 5,
+                      "took #{elapsed.round(1)}s; must finish inside the registered 5s SessionEnd timeout"
+    end
+  end
+
   def test_survives_an_unreadable_payload
     _stdout, stderr, status = Open3.capture3(SESSION_END_HOOK, stdin_data: "not json")
 

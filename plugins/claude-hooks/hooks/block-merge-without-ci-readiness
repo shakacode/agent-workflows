@@ -63,9 +63,18 @@ module BlockMergeWithoutCiReadiness
     -m --merge -r --rebase -s --squash -h --help
   ].freeze
   MERGE_VALUE_FLAGS = %w[
-    --author-email -b --body -F --body-file --match-head-commit
+    -A --author-email -b --body -F --body-file --match-head-commit
     -t --subject -R --repo --hostname
   ].freeze
+
+  # `gh pr merge --help` prints usage and merges nothing, so it is not a merge
+  # to gate. Treating it as one would try to resolve a pull request for a
+  # command that never touches it.
+  MERGE_HELP_FLAGS = %w[-h --help].freeze
+
+  # A pull request URL names its own repository. Ignoring that and checking the
+  # number against the local repository answers a different question entirely.
+  PULL_REQUEST_URL = %r{\Ahttps?://([^/\s]+)/([^/\s]+)/([^/\s]+)/pull/([1-9]\d*)(?:[/?#]|\z)}i
 
   module_function
 
@@ -109,8 +118,10 @@ module BlockMergeWithoutCiReadiness
       executable: "gh",
       subcommands: %w[pr merge],
       boolean_flags: MERGE_BOOLEAN_FLAGS,
-      value_flags: MERGE_VALUE_FLAGS
+      value_flags: MERGE_VALUE_FLAGS,
+      help_flags: MERGE_HELP_FLAGS
     )
+    merges = merges.reject { |invocation| invocation[:help] }
     return ALLOW if merges.empty?
 
     directory = working_directory(payload)
@@ -175,8 +186,16 @@ module BlockMergeWithoutCiReadiness
       return "the `--repo` value in this command cannot be used safely (it contains a NUL byte)"
     end
 
-    number = pull_request_number(invocation, directory: directory, env: env, deadline: deadline)
-    return "could not resolve which pull request `gh pr merge` would merge" unless number
+    target = resolve_target(invocation, directory: directory, env: env, deadline: deadline)
+    if target == :conflict
+      return "the pull request URL and `--repo` in this command name different repositories"
+    end
+    return "could not resolve which pull request `gh pr merge` would merge" unless target
+
+    number, repo = target
+    unless repo.nil? || HookSupport.safe_argument?(repo)
+      return "the repository for this merge cannot be used safely (it contains a NUL byte)"
+    end
 
     validator = validator_path(env)
     return "readiness validator path is unusable" unless HookSupport.safe_argument?(validator)
@@ -186,7 +205,7 @@ module BlockMergeWithoutCiReadiness
     return "ran out of time budget before readiness for PR ##{number} could be established" unless budget
 
     arguments = [validator, number, "--json"]
-    arguments.push("--repo", invocation[:repo]) if invocation[:repo]
+    arguments.push("--repo", repo) if repo
     result = HookSupport.run_bounded(arguments, timeout_seconds: budget, chdir: directory)
     verdict_reason(result, number)
   end
@@ -228,14 +247,39 @@ module BlockMergeWithoutCiReadiness
     parts.empty? ? "" : " (#{parts.join('; ')})"
   end
 
-  def pull_request_number(invocation, directory:, env:, deadline:)
-    selector = invocation[:arguments].first
-    return selector if selector.to_s.match?(/\A[1-9]\d*\z/)
+  # Returns [pull request number, repository or nil], :conflict when the command
+  # names two different repositories, or nil when the target cannot be pinned.
+  #
+  # The repository travels with the number. A URL selector carries its own
+  # owner/repo, and checking that number against the local repository would
+  # answer a different question -- possibly a READY one, for a pull request
+  # nobody is merging.
+  def resolve_target(invocation, directory:, env:, deadline:)
+    selector = invocation[:arguments].first.to_s
+    explicit = invocation[:repo]
 
-    from_url = selector.to_s[%r{/pull/([1-9]\d*)(?:\D|\z)}, 1]
-    return from_url if from_url
+    return [selector, explicit] if selector.match?(/\A[1-9]\d*\z/)
 
-    resolve_with_gh(selector, invocation[:repo], directory: directory, env: env, deadline: deadline)
+    match = PULL_REQUEST_URL.match(selector)
+    if match
+      host, owner, name, number = match.captures
+      from_url = host.casecmp("github.com").zero? ? "#{owner}/#{name}" : "#{host}/#{owner}/#{name}"
+      return :conflict if explicit && !same_repository?(explicit, from_url)
+
+      return [number, from_url]
+    end
+
+    number = resolve_with_gh(selector.empty? ? nil : selector, explicit,
+                             directory: directory, env: env, deadline: deadline)
+    number ? [number, explicit] : nil
+  end
+
+  def same_repository?(left, right)
+    normalise_repository(left) == normalise_repository(right)
+  end
+
+  def normalise_repository(value)
+    value.to_s.downcase.sub(%r{\Agithub\.com/}, "").delete_suffix(".git")
   end
 
   def resolve_with_gh(selector, repo, directory:, env:, deadline:)
