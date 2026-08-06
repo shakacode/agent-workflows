@@ -143,8 +143,9 @@ detailed test; the summary below is the working checklist.
    controllers, views, serializers, migrations, or scripts is a finding even
    when the code is correct there.
 7. **Feature flags must not become permanent branching debt.** Flag a new flag
-   with three or more conditional sites, no named cleanup path, or nested flag
-   conditions.
+   with three or more conditional sites, no named cleanup path, nested flag
+   conditions, or a branch that guards a data write — that last one can leave
+   the two paths writing incompatible state, so it is a finding at one site.
 8. **Orchestration shape** — sequencing and atomicity only; see the overlap
    rule above.
 
