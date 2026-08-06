@@ -1051,6 +1051,67 @@ class PushDownstreamAuditTest < Minitest::Test
     end
   end
 
+  # audit_source_provenance runs after every consumer has been audited, so a
+  # spawn failure there must not discard the completed report.
+  def test_audit_report_marks_source_provenance_unknown_without_discarding_results
+    consumers = [
+      { "repo" => "local/clean", "status" => "clean" },
+      { "repo" => "local/drifted", "status" => "drifted" }
+    ]
+    original_capture2 = Open3.method(:capture2)
+    replacement = lambda do |*args, **kwargs|
+      raise Errno::EMFILE if args.include?("rev-parse") || args.include?("--porcelain")
+
+      original_capture2.call(*args, **kwargs)
+    end
+
+    report = with_module_stub(Open3, :capture2, replacement) do
+      PushDownstream.audit_report(consumers)
+    end
+
+    source = report.fetch("source")
+    assert_equal PushDownstream::AUDIT_UNKNOWN, source.fetch("sha")
+    assert_equal PushDownstream::AUDIT_UNKNOWN, source.fetch("worktree_clean")
+    # The completed audit survives: provenance is honestly unknown, not lost.
+    assert_equal consumers, report.fetch("consumers")
+    assert_equal({ "total" => 2, "clean" => 1, "drifted" => 1, "blocked" => 0 }, report.fetch("summary"))
+  end
+
+  # Kernel#system returns nil when exec fails, but raises when fork itself fails.
+  def test_audit_records_clone_fork_failure_as_blocked_and_continues_the_fleet
+    Dir.mktmpdir("push-downstream-audit") do |dir|
+      remote, = seed_bare_consumer(dir)
+      original_system = PushDownstream.method(:system)
+      failures = 0
+      replacement = lambda do |*args, **kwargs|
+        if failures.zero? && args.include?("clone")
+          failures += 1
+          raise Errno::EAGAIN
+        end
+
+        original_system.call(*args, **kwargs)
+      end
+
+      entries = with_module_stub(PushDownstream, :system, replacement) do
+        with_module_stub(PushDownstream, :resolve_contract, ->(_repo, _presets) { CONTRACT }) do
+          %w[first second].map do |name|
+            PushDownstream.audit_repo(
+              { repo: name, nwo: "local/#{name}", base_branch: "main",
+                pr_branch: "agent-workflows/seam-sync", remote_url: remote }, {}
+            )
+          end
+        end
+      end
+
+      first, second = entries
+      assert_equal 1, failures
+      assert_equal "blocked", first.fetch("status")
+      assert_includes first.fetch("reason"), "could not be started"
+      assert_equal PushDownstream::AUDIT_UNKNOWN, first.fetch("base_sha")
+      assert_equal "drifted", second.fetch("status")
+    end
+  end
+
   # Open3.capture2 raises when the child cannot be spawned, unlike Kernel#system
   # which returns nil. Both audit shell-outs must degrade to a blocked entry.
   def test_audit_records_base_commit_spawn_failure_as_blocked_and_continues_the_fleet

@@ -762,14 +762,28 @@ module PushDownstream
   end
 
   # Binds the report to the exact agent-workflows source state that produced it.
+  # This runs after every consumer has been audited, so a failure here must not
+  # discard a completed report: each field degrades to UNKNOWN on its own.
   def audit_source_provenance(root = File.expand_path("..", __dir__))
-    sha, sha_status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
-    porcelain, porcelain_status = Open3.capture2("git", "-C", root, "status", "--porcelain")
     {
       "repo" => "shakacode/agent-workflows",
-      "sha" => sha_status.success? && !sha.strip.empty? ? sha.strip : AUDIT_UNKNOWN,
-      "worktree_clean" => porcelain_status.success? ? porcelain.strip.empty? : AUDIT_UNKNOWN
+      "sha" => audit_source_sha(root),
+      "worktree_clean" => audit_source_worktree_clean(root)
     }
+  end
+
+  def audit_source_sha(root)
+    sha, status = Open3.capture2("git", "-C", root, "rev-parse", "HEAD")
+    status.success? && !sha.strip.empty? ? sha.strip : AUDIT_UNKNOWN
+  rescue RuntimeError, SystemCallError
+    AUDIT_UNKNOWN
+  end
+
+  def audit_source_worktree_clean(root)
+    porcelain, status = Open3.capture2("git", "-C", root, "status", "--porcelain")
+    status.success? ? porcelain.strip.empty? : AUDIT_UNKNOWN
+  rescue RuntimeError, SystemCallError
+    AUDIT_UNKNOWN
   end
 
   def audit_repo(repo, presets)
@@ -781,16 +795,23 @@ module PushDownstream
 
     Dir.mktmpdir("push-downstream-audit") do |dir|
       clone = File.join(dir, repo.fetch(:repo))
-      unless system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
-                    "clone", "--depth", "1", "--branch", repo.fetch(:base_branch),
-                    repo_url(repo), clone, out: File::NULL, err: File::NULL)
+
+      # Every shell-out below is guarded so one consumer degrades to a blocked
+      # entry instead of aborting the fleet audit. Open3.capture2 raises when the
+      # child cannot be spawned. Kernel#system returns nil when exec fails in the
+      # forked child, but still raises when fork itself fails (Errno::EAGAIN,
+      # Errno::ENOMEM), so it needs the same guard under resource pressure.
+      begin
+        cloned = system("git", "-c", "core.hooksPath=#{DISABLED_HOOKS_PATH}",
+                        "clone", "--depth", "1", "--branch", repo.fetch(:base_branch),
+                        repo_url(repo), clone, out: File::NULL, err: File::NULL)
+      rescue RuntimeError, SystemCallError => e
+        return audit_blocked(repo, "clone of #{repo.fetch(:base_branch)} could not be started: #{e.message}")
+      end
+      unless cloned
         return audit_blocked(repo, "clone of #{repo.fetch(:base_branch)} failed")
       end
 
-      # Open3.capture2 raises when the child cannot be spawned (Errno::EMFILE
-      # under fleet-wide resource pressure, Errno::ENOENT for a missing git),
-      # unlike Kernel#system above, which returns nil. Guard every shell-out so
-      # one consumer degrades to a blocked entry instead of aborting the fleet.
       begin
         base_sha = local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
       rescue RuntimeError, SystemCallError => e
