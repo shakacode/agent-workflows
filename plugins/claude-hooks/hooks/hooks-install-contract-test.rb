@@ -53,6 +53,21 @@ class HooksInstallContractTest < Minitest::Test
                     "a single stage must not be able to consume more than the whole budget"
   end
 
+  # A literal NUL byte makes git classify a source file as binary, so it renders
+  # as "Bin 0 -> N bytes" and its contents vanish from every diff-based review --
+  # the defect and its own invisibility arrive together, which is why no reviewer
+  # or bot catches it. It also breaks `grep` without `-a` and `git diff --check`.
+  # This happened twice while writing these adapters, so it is asserted rather
+  # than remembered.
+  def test_no_shipped_hook_source_contains_a_nul_byte
+    offenders = Dir.glob(File.join(__dir__, "**/*"), File::FNM_DOTMATCH).select do |path|
+      File.file?(path) && File.binread(path).include?(0.chr)
+    end
+
+    assert_empty offenders.map { |path| path.sub("#{PACK_ROOT}/", "") },
+                 "a NUL byte makes these files binary to git and invisible in review diffs"
+  end
+
   def test_every_adapter_has_a_finite_timeout
     @hooks.each_value do |entries|
       entries.each do |entry|
