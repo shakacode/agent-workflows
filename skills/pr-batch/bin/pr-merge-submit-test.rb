@@ -1016,11 +1016,13 @@ class PrMergeSubmitTest < Minitest::Test
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
     assert_equal 1, status.exitstatus
     assert_includes stderr, "timed out"
-    # The strongest evidence here is non-temporal: "was terminated" only
-    # appears on the diagnostic path where terminate_process_group actually
-    # confirmed the group exited. "timed out" alone does not discriminate --
-    # it is a substring of that same message and would also appear if the
-    # message were emitted without a genuine termination having happened.
+    # Both substrings come from the same literal on the :timed_out diagnostic
+    # path, so together they pin its exact shape without a clock. "timed out"
+    # is the stronger discriminator of the two: the :undead path raises
+    # UnknownOutcome before any diagnostic is built and warns a message
+    # containing neither substring, and the interrupt path emits
+    # "was terminated" without "timed out". Asserting both keeps the message
+    # from drifting into either neighbour.
     assert_includes stderr, "was terminated"
     # Loose sanity check, not the load-bearing assertion: well under the
     # stub's deliberate 30s sleep (measured ~2.2-2.5s over 15 runs at load
