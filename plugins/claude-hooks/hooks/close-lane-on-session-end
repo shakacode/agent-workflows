@@ -64,7 +64,8 @@ module CloseLaneOnSessionEnd
     return "skipped: adapter disabled" if HookSupport.disabled?(env)
 
     payload = HookSupport.read_payload(input)
-    return "skipped: unreadable SessionEnd payload" unless payload
+    return "skipped: SessionEnd payload too large to read" if payload == :oversized
+    return "skipped: unreadable SessionEnd payload" unless payload.is_a?(Hash)
     return "skipped: session end reason is #{payload['reason']}" if SKIPPED_REASONS.include?(payload["reason"].to_s)
 
     directory = working_directory(payload)
@@ -87,6 +88,9 @@ module CloseLaneOnSessionEnd
 
   def working_directory(payload)
     directory = payload["cwd"].to_s
+    # File.directory? raises on a NUL byte, so screen it before use.
+    return Dir.pwd unless HookSupport.safe_argument?(directory)
+
     File.directory?(directory) ? directory : Dir.pwd
   end
 

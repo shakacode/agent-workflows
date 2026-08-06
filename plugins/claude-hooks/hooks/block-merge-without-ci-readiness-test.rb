@@ -304,6 +304,81 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
     end
   end
 
+  # --- arithmetic is not a heredoc -----------------------------------------
+  #
+  # Regression: `<<` inside `$(( ))` is a left shift. Reading it as a heredoc
+  # named `2` swallowed the rest of the command, so a following merge -- which
+  # the shell really does run -- was never seen.
+
+  def test_arithmetic_left_shift_does_not_swallow_a_following_merge
+    ["echo $((1 << 2))\ngh pr merge 7", "echo $(( 1 << 2 )); gh pr merge 7", "(( 1 << 2 ))\ngh pr merge 7"].each do |command|
+      assert_equal ["7"], scan(command).first&.dig(:arguments),
+                   "arithmetic must not hide the merge in: #{command.inspect}"
+    end
+  end
+
+  def test_arithmetic_left_shift_blocks_end_to_end
+    with_stubs(stdout: verdict("NOT_READY")) do |env, _calls|
+      status, stderr = run_hook("echo $((1 << 2))\ngh pr merge 7", env)
+
+      assert_equal BLOCK, status.exitstatus
+      assert_includes stderr, "NOT_READY"
+    end
+  end
+
+  # The opposite direction: a genuine heredoc must still swallow its body, or a
+  # too-strict parse would rescan body text as live commands.
+  def test_a_real_heredoc_still_hides_its_body_after_the_arithmetic_fix
+    assert_empty scan("cat <<EOF\ngh pr merge 7\nEOF")
+    assert_empty scan("cat <<2\ngh pr merge 7\n2"), "a numeric heredoc delimiter is still a heredoc"
+  end
+
+  def test_a_merge_after_a_heredoc_that_follows_arithmetic_is_still_seen
+    command = "echo $((1 << 2))\ncat <<EOF\nbody\nEOF\ngh pr merge 7"
+
+    assert_equal ["7"], scan(command).first[:arguments]
+  end
+
+  # --- oversized and non-UTF-8 payloads ------------------------------------
+
+  def test_padding_a_command_past_the_read_cap_blocks_rather_than_allows
+    with_stubs(stdout: verdict("NOT_READY")) do |env, _calls|
+      padded = "gh pr merge 7 # #{'x' * 1_100_000}"
+      payload = { "hook_event_name" => "PreToolUse", "tool_name" => "Bash", "cwd" => Dir.pwd,
+                  "tool_input" => { "command" => padded } }
+      _stdout, stderr, status = Open3.capture3(env, HOOK, stdin_data: payload.to_json)
+
+      assert_equal BLOCK, status.exitstatus, "padding must not turn a blocked merge into an allow"
+      assert_includes stderr, "too large"
+    end
+  end
+
+  def test_unrelated_non_utf8_commands_are_not_blocked
+    with_stubs(stdout: verdict("NOT_READY")) do |env, calls|
+      {
+        "grep" => "grep \xFF\xFE file.txt",
+        "cat" => "cat /tmp/caf\xE9.bin",
+        "printf" => "printf '\xE9\xE8'",
+        "rsync" => "rsync -a src/ dst\xC3/"
+      }.each do |label, command|
+        _stdout, stderr, status = Open3.capture3(env, HOOK, stdin_data: non_utf8_payload(command))
+
+        assert_equal ALLOW, status.exitstatus,
+                     "#{label}: a command with no `gh` in it must never be blocked (#{stderr.lines.first})"
+      end
+      assert_empty validator_calls(calls)
+    end
+  end
+
+  def test_a_merge_carrying_non_utf8_bytes_is_still_recognised
+    with_stubs(stdout: verdict("NOT_READY")) do |env, _calls|
+      _stdout, stderr, status = Open3.capture3(env, HOOK, stdin_data: non_utf8_payload("gh pr merge 7 # caf\xE9"))
+
+      assert_equal BLOCK, status.exitstatus, "scrubbing must preserve recognition, not lose it"
+      assert_includes stderr, "NOT_READY"
+    end
+  end
+
   # --- heredoc terminators follow the shell's own rules --------------------
 
   def test_plain_heredoc_is_not_closed_by_an_indented_terminator
@@ -525,6 +600,17 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
   end
 
   private
+
+  # Hand-built JSON: these bytes are not valid UTF-8 so the generator rejects
+  # them, but a host can still deliver them on stdin.
+  def non_utf8_payload(command)
+    body = +'{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":'
+    body << Dir.pwd.to_json
+    body << ',"tool_input":{"command":"'
+    body << command.b.gsub('"', '\"')
+    body << '"}}'
+    body
+  end
 
   # Scan with the same flag tables the hook itself uses.
   def scan(command)

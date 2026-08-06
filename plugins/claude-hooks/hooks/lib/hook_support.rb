@@ -44,15 +44,42 @@ module HookSupport
     env[DISABLE_ENV].to_s.strip.downcase == "off"
   end
 
-  # Parse the hook payload from stdin. Returns nil when the payload is absent or
-  # unreadable; callers treat that as "this gate cannot tell whether it applies"
-  # and fail open rather than blocking every command on a malformed stream.
+  # Parse the hook payload from stdin. Returns the payload Hash, :oversized when
+  # the stream is larger than the read cap, or nil when it is absent or
+  # unparseable.
+  #
+  # Three outcomes rather than two, because "genuinely unparseable" and "merely
+  # unusual" deserve opposite answers:
+  #
+  #   * Oversized is unparseable and vanishingly rare. Truncating the stream
+  #     turns a well-formed payload into a parse failure, so a command whose
+  #     merge is plainly visible at the start would be silently allowed just for
+  #     being long. Callers block; a Bash command over a megabyte essentially
+  #     never happens, so the cost is close to zero.
+  #   * Invalid UTF-8 is unusual but entirely ordinary -- `cat` on a binary
+  #     filename, `grep` for a byte pattern. JSON.parse raises EncodingError on
+  #     those bytes, so they are scrubbed first and the payload still parses,
+  #     preserving recognition. Blocking everyday commands is how a guardrail
+  #     gets switched off, which costs far more safety than it buys.
+  #   * Anything still unparseable stays nil, the documented applicability
+  #     fail-open. The model cannot reach this case: it supplies only the value
+  #     of `tool_input.command`, and the host serialises the envelope.
   def read_payload(input = $stdin)
-    raw = input.read(MAX_PAYLOAD_BYTES)
-    payload = JSON.parse(raw.to_s)
+    raw = input.read(MAX_PAYLOAD_BYTES + 1)
+    return :oversized if raw && raw.bytesize > MAX_PAYLOAD_BYTES
+
+    payload = JSON.parse(decodable(raw))
     payload.is_a?(Hash) ? payload : nil
-  rescue JSON::ParserError, IOError, SystemCallError
+  rescue JSON::ParserError, EncodingError, IOError, SystemCallError
     nil
+  end
+
+  # Best-effort UTF-8 view of arbitrary bytes. Scrubbing only removes invalid
+  # sequences, so it can reveal a command but never conceal one.
+  def decodable(raw)
+    text = raw.to_s
+    text = text.dup.force_encoding(Encoding::UTF_8) unless text.encoding == Encoding::UTF_8
+    text.valid_encoding? ? text : text.scrub("")
   end
 
   # Nearest `.agents/agent-workflow.yml` at or above `start_dir`.
@@ -86,17 +113,18 @@ module HookSupport
     nil
   end
 
+  # True when this single value can legally be passed to exec.
+  def safe_argument?(value)
+    value.is_a?(String) && !value.include?(NUL)
+  end
+
   # Run `argv` with a finite deadline in its own process group, with no shell
   # evaluation of any argument. On expiry the whole group gets TERM, then KILL
   # after a finite grace period.
   #
   # Returns a hash with :ok (the command exited 0 within the deadline), :status,
-  # :stdout, :stderr, and :failure (nil, "spawn_error", or "timeout").
-  # True when every element can legally be passed to exec.
-  def safe_argument?(value)
-    value.is_a?(String) && !value.include?(NUL)
-  end
-
+  # :stdout, :stderr, and :failure -- nil, "spawn_error", "unsafe_argument", or
+  # "timeout".
   def run_bounded(argv, timeout_seconds:, grace_seconds: 0.5, chdir: nil)
     return { ok: false, status: nil, stdout: "", stderr: "", failure: "spawn_error" } if argv.nil? || argv.empty?
 

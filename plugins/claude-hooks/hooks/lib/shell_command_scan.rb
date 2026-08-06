@@ -43,6 +43,13 @@ module ShellCommandScan
     open_heredoc = nil
     in_single = false
     in_double = false
+    # Inside `$(( ))` or `(( ))`, `<<` is the left-shift operator, not a heredoc.
+    # Misreading `echo $((1 << 2))` as a heredoc named `2` swallows the rest of
+    # the command, so a real `gh pr merge` after it is never seen -- and the
+    # shell does run that merge. Over-detecting arithmetic is the safe
+    # direction: it means less text is treated as heredoc body, so more of the
+    # command is scanned, never less.
+    arith_depth = 0
 
     while index < source.length
       if open_heredoc
@@ -73,6 +80,22 @@ module ShellCommandScan
         next
       end
 
+      # Track arithmetic context before anything else in the unquoted state.
+      if source[index, 3] == "$((" || (arith_depth.zero? && source[index, 2] == "((")
+        width = source[index, 3] == "$((" ? 3 : 2
+        arith_depth += 1
+        out << source[index, width]
+        index += width
+        next
+      end
+
+      if arith_depth.positive? && source[index, 2] == "))"
+        arith_depth -= 1
+        out << "))"
+        index += 2
+        next
+      end
+
       case char
       when "\\"
         out << " "
@@ -86,6 +109,13 @@ module ShellCommandScan
         out << " "
         index += 1
       when "<"
+        # Inside arithmetic this is a shift operator, never a heredoc.
+        if arith_depth.positive?
+          out << char
+          index += 1
+          next
+        end
+
         # A `<<<` here-string is a redirection, not a heredoc: keep it whole so
         # the token scan can recognise and skip it.
         if source[index, 3] == "<<<"

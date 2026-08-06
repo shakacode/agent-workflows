@@ -55,6 +55,15 @@ Two fail directions, deliberately different:
   or a command with no recognisable `gh pr merge` means the gate has no opinion
   and allows. Blocking on an inconclusive read would make the adapter a global
   breaker for unrelated work.
+- **Except where "cannot read it" is reachable from the command itself.** A
+  payload larger than the 1 MiB read cap blocks, because padding a command is
+  the one way the command can force its own illegibility: a merge sitting in
+  plain sight at the start would otherwise be allowed just for being long.
+  Commands that large essentially never occur, so the cost is close to zero.
+  Invalid UTF-8 is treated the opposite way — the bytes are scrubbed and the
+  command is still examined, because `cat` on a binary filename or `grep` for a
+  byte pattern is an everyday command and blocking those would get the hook
+  switched off, which costs far more safety than it buys.
 - **Readiness is fail-closed.** Once a merge is recognised, anything other than
   a parsed `READY` blocks: `NOT_READY`, `UNKNOWN`, a validator that exits
   non-zero, times out, or is missing, and a pull request whose identity cannot
@@ -262,7 +271,12 @@ top of GitHub's own required checks, never as a replacement for them.
 
 Any unexpected error inside the merge gate exits `2` and blocks. An uncaught
 exception would exit `1`, and the host treats an exit that is neither `0` nor
-`2` as a non-blocking error — so a crash would silently allow the merge. Every
+`2` as a non-blocking error — so a crash would silently allow the merge.
+
+That rescue is a backstop, not a substitute for handling a known input. An error
+that unrelated commands can reach routinely is a bug in the gate, not a reason
+to block them: invalid UTF-8 used to reach it and blocked `grep`, `cat`, and
+`rsync` on binary paths, so it is now handled where it arises instead. Every
 value that reaches `Process.spawn` or the filesystem is also screened for NUL
 bytes first, since JSON can carry one into any string from the hook payload.
 

@@ -94,11 +94,16 @@ module BlockMergeWithoutCiReadiness
 
   def gate(input:, err:, env:)
     payload = HookSupport.read_payload(input)
+    # A payload too large to read is a payload we cannot examine, and padding is
+    # the one way a command itself can force that. Truncating it would turn a
+    # merge sitting in plain sight at the start of the command into an allow.
+    if payload == :oversized
+      return block(err, "the hook payload is too large to examine, so this command cannot be cleared")
+    end
+
     return ALLOW unless applicable?(payload)
 
-    # Invalid UTF-8 would make the scan raise; scrubbing keeps the gate able to
-    # recognise a merge rather than blocking every command carrying odd bytes.
-    command = payload.dig("tool_input", "command").to_s.scrub("")
+    command = payload.dig("tool_input", "command").to_s
     merges = ShellCommandScan.invocations(
       command,
       executable: "gh",
@@ -110,8 +115,7 @@ module BlockMergeWithoutCiReadiness
 
     directory = working_directory(payload)
     unless directory
-      err.puts(message("the working directory in this hook payload cannot be used (it contains a NUL byte)"))
-      return BLOCK
+      return block(err, "the working directory in this hook payload cannot be used (it contains a NUL byte)")
     end
 
     # One deadline for the whole invocation, shared by every stage and by every
@@ -121,11 +125,15 @@ module BlockMergeWithoutCiReadiness
       reason = blocking_reason(invocation, directory: directory, env: env, deadline: deadline)
       next unless reason
 
-      err.puts(message(reason))
-      return BLOCK
+      return block(err, reason)
     end
 
     ALLOW
+  end
+
+  def block(err, reason)
+    err.puts(message(reason))
+    BLOCK
   end
 
   def applicable?(payload)
