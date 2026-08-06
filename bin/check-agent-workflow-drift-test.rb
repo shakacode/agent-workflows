@@ -1499,7 +1499,14 @@ class CheckAgentWorkflowDriftTest < Minitest::Test
     end
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
+    # File.exist? only proves the stub created the file, not that its write
+    # finished. A read caught mid-flight returns "", and "".to_i is 0 -- which
+    # is truthy in Ruby, so it would satisfy the caller's `break if pid` and
+    # its refute_nil, then send Process.kill(0, 0) to this process's own group
+    # (which exists, so no ESRCH) and fail confusingly. Treat a non-positive
+    # read as "not recorded yet" so the caller retries instead.
     pid = File.exist?(pid_path) ? File.read(pid_path).to_i : nil
+    pid = nil unless pid&.positive?
     [pid, error, elapsed]
   end
 

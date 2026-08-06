@@ -58,9 +58,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   # "Codex plugin state command timed out" for tests that never intended to
   # exercise the timeout path (#260, same shape as `warm_stub` in
   # skills/pr-batch/bin/pr-merge-submit-test.rb). Calling the stub with no
-  # arguments hits its own "unexpected arguments" guard before touching
-  # QA_CODEX_PLUGIN_STATE, so this warmup has no side effects any test
-  # asserts on; its exit status and output are both discarded.
+  # arguments still reads QA_CODEX_PLUGIN_STATE (an inert ENV.fetch) but then
+  # hits its own "unexpected arguments" guard before dispatching on that
+  # value, so the warmup never reaches the sleep branch the deliberate-timeout
+  # test relies on; its exit status and output are both discarded.
   def warm_fake_codex
     system(@fake_codex, out: File::NULL, err: File::NULL)
   end
