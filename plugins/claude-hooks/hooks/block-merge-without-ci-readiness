@@ -69,13 +69,36 @@ module BlockMergeWithoutCiReadiness
 
   module_function
 
+  # Any unexpected error must fail closed. An uncaught exception exits 1, and
+  # the host treats an exit that is neither 0 nor 2 as a non-blocking error --
+  # so a crash silently allows the merge. Every previous defect in this gate was
+  # a variation on "uncertainty produced ALLOW"; this makes the whole class
+  # impossible by construction rather than one input at a time.
+  #
+  # The cost is deliberate: an unexpected error blocks an unrelated Bash command
+  # rather than letting an unverified merge through. That is the correct bias
+  # for a fail-closed gate, and it is documented.
   def run(input: $stdin, err: $stderr, env: ENV)
     return ALLOW if HookSupport.disabled?(env)
 
+    gate(input: input, err: err, env: env)
+  rescue StandardError, SystemStackError, NoMemoryError => e
+    err.puts(message("the readiness gate itself failed (#{e.class}: #{truncate(e.message)})"))
+    BLOCK
+  end
+
+  def truncate(text, limit: 200)
+    value = text.to_s.tr("\n", " ")
+    value.length > limit ? "#{value[0, limit]}..." : value
+  end
+
+  def gate(input:, err:, env:)
     payload = HookSupport.read_payload(input)
     return ALLOW unless applicable?(payload)
 
-    command = payload.dig("tool_input", "command").to_s
+    # Invalid UTF-8 would make the scan raise; scrubbing keeps the gate able to
+    # recognise a merge rather than blocking every command carrying odd bytes.
+    command = payload.dig("tool_input", "command").to_s.scrub("")
     merges = ShellCommandScan.invocations(
       command,
       executable: "gh",
@@ -86,6 +109,11 @@ module BlockMergeWithoutCiReadiness
     return ALLOW if merges.empty?
 
     directory = working_directory(payload)
+    unless directory
+      err.puts(message("the working directory in this hook payload cannot be used (it contains a NUL byte)"))
+      return BLOCK
+    end
+
     # One deadline for the whole invocation, shared by every stage and by every
     # merge in a chained command.
     deadline = HookSupport.monotonic_now + total_budget(env)
@@ -108,8 +136,15 @@ module BlockMergeWithoutCiReadiness
     !payload.dig("tool_input", "command").to_s.strip.empty?
   end
 
+  # nil when the payload names a working directory that cannot be used at all.
+  # An absent or stale cwd falls back to the process's own directory, but a cwd
+  # carrying a NUL byte is corrupt or crafted: substituting a different
+  # directory would silently check readiness somewhere else, so the caller
+  # blocks instead. File.directory? would also raise on such a value.
   def working_directory(payload)
     directory = payload["cwd"].to_s
+    return nil unless HookSupport.safe_argument?(directory)
+
     File.directory?(directory) ? directory : Dir.pwd
   end
 
@@ -125,10 +160,18 @@ module BlockMergeWithoutCiReadiness
              "#{invocation[:ambiguous_flag]} may consume the next argument as its value"
     end
 
+    # A repository that cannot be passed to exec must block, never be silently
+    # dropped: dropping it would check readiness against whatever repository the
+    # working directory happens to point at, which is a different question.
+    unless invocation[:repo].nil? || HookSupport.safe_argument?(invocation[:repo])
+      return "the `--repo` value in this command cannot be used safely (it contains a NUL byte)"
+    end
+
     number = pull_request_number(invocation, directory: directory, env: env, deadline: deadline)
     return "could not resolve which pull request `gh pr merge` would merge" unless number
 
     validator = validator_path(env)
+    return "readiness validator path is unusable" unless HookSupport.safe_argument?(validator)
     return "readiness validator is not executable at #{validator}" unless File.executable?(validator)
 
     budget = stage_budget(env, deadline)

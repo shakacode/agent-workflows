@@ -47,7 +47,7 @@ module ShellCommandScan
     while index < source.length
       if open_heredoc
         line_end = source.index("\n", index) || source.length
-        open_heredoc = pending_heredocs.shift if source[index...line_end].strip == open_heredoc
+        open_heredoc = pending_heredocs.shift if heredoc_terminated?(source[index...line_end], open_heredoc)
         out << "\n" if line_end < source.length
         index = line_end + 1
         next
@@ -115,15 +115,34 @@ module ShellCommandScan
     out
   end
 
+  # Does this line close the open heredoc? Match the shell's own rules rather
+  # than stripping unconditionally: a plain `<<EOF` only ends on a terminator at
+  # column 0, `<<-EOF` additionally tolerates leading tabs, and `<<~EOF`
+  # tolerates leading whitespace. Stripping every variant would let an indented
+  # terminator inside a plain heredoc end it early, and the body text after it
+  # would then be rescanned as if it were a live command.
+  def heredoc_terminated?(line, entry)
+    delimiter, variant = entry
+    case variant
+    when "-" then line.sub(/\A\t+/, "") == delimiter
+    when "~" then line.strip == delimiter
+    else line == delimiter
+    end
+  end
+
   # Detect a `<<`, `<<-`, or `<<~` heredoc operator at `index`. Returns the
-  # index just past the delimiter and queues the terminator, or nil when this is
-  # not a heredoc (a `<<<` here-string or a plain redirection).
+  # index just past the delimiter and queues [terminator, variant], or nil when
+  # this is not a heredoc (a `<<<` here-string or a plain redirection).
   def scan_heredoc_operator(source, index, pending_heredocs)
     return nil unless source[index, 2] == "<<"
     return nil if source[index + 2] == "<"
 
     cursor = index + 2
-    cursor += 1 if ["-", "~"].include?(source[cursor])
+    variant = nil
+    if ["-", "~"].include?(source[cursor])
+      variant = source[cursor]
+      cursor += 1
+    end
     cursor += 1 while [" ", "\t"].include?(source[cursor])
 
     quote = source[cursor] if ["'", '"'].include?(source[cursor])
@@ -140,7 +159,7 @@ module ShellCommandScan
     cursor += 1 if quote && source[cursor] == quote
     return nil if delimiter.empty?
 
-    pending_heredocs << delimiter
+    pending_heredocs << [delimiter, variant]
     cursor
   end
 

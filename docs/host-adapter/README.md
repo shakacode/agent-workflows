@@ -233,12 +233,43 @@ If `gh` gains a flag and the gate starts blocking, add it to `MERGE_BOOLEAN_FLAG
 or `MERGE_VALUE_FLAGS` in the adapter. Naming the pull request explicitly as the
 first argument also resolves it.
 
-The accepted trade-off, the same one the reference implementation makes, is that
-a quoted subcommand token (`gh pr "merge" 7`) stops matching and is allowed.
 A missed match is fail-open, which is the correct bias for deciding whether the
 gate *applies*, and is not the bias used for deciding whether the merge is safe.
-Command matching is a best-effort recogniser, not a sandbox: it raises the cost
-of an unverified merge, and does not claim to make one impossible.
+Command matching is a best-effort recogniser, **not a sandbox**: it raises the
+cost of an unverified merge, and does not claim to make one impossible.
+
+Be concrete about what that means, because this is a security boundary and an
+adopter will rely on it. The recogniser inspects the literal command text, so
+anything that hides `gh` behind another program is not matched:
+
+- **Command substitution** — `` `echo gh` pr merge 7 `` and `$(echo gh) pr merge 7`.
+- **Wrapper programs** — the merge runs, but the first token is the wrapper, not
+  `gh`: `env gh pr merge 7`, `sh -c "gh pr merge 7"`, `bash -lc '...'`,
+  `nohup gh pr merge 7`, `timeout 60 gh pr merge 7`, `command gh pr merge 7`,
+  `xargs gh pr merge`, and `eval "gh pr merge 7"`. Quoted forms are additionally
+  removed by the stripping step above.
+- **A quoted subcommand token** — `gh pr "merge" 7`, the same trade-off the
+  reference implementation makes.
+
+Independent QA confirmed 12 such inputs pass the matcher. These are *intended*
+applicability fail-open, not defects: the gate's threat model is an agent that
+forgot or never loaded the rule, not one deliberately evading it. An adopter who
+needs coverage against deliberate evasion needs a sandbox or a server-side
+branch-protection rule, not a hook. Treat this adapter as defence in depth on
+top of GitHub's own required checks, never as a replacement for them.
+
+### Unexpected errors block
+
+Any unexpected error inside the merge gate exits `2` and blocks. An uncaught
+exception would exit `1`, and the host treats an exit that is neither `0` nor
+`2` as a non-blocking error — so a crash would silently allow the merge. Every
+value that reaches `Process.spawn` or the filesystem is also screened for NUL
+bytes first, since JSON can carry one into any string from the hook payload.
+
+The cost is deliberate and worth stating: an unexpected error blocks the Bash
+command rather than letting an unverified merge through, so a bug in the adapter
+surfaces as a refusal rather than as a silent hole. Set `AGENT_WORKFLOWS_HOOKS=off`
+if a defect ever makes that intolerable.
 
 ## Attribution
 

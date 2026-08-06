@@ -5,7 +5,10 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
+
+NUL = 0.chr
 
 require_relative "lib/shell_command_scan"
 
@@ -225,6 +228,109 @@ class BlockMergeWithoutCiReadinessTest < Minitest::Test
       assert_equal BLOCK, status.exitstatus
       assert_includes stderr, "cannot tell which pull request"
     end
+  end
+
+  # --- crashes must not become allows --------------------------------------
+  #
+  # Regression: a NUL byte reached Process.spawn, which raises ArgumentError.
+  # The uncaught exception exited 1, and the host reads any exit that is neither
+  # 0 nor 2 as a non-blocking error, so the merge proceeded.
+
+  def test_nul_byte_in_the_repo_flag_blocks_instead_of_crashing
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      status, stderr = run_hook("gh pr merge 8 --repo owner/na#{NUL}me", env)
+
+      assert_equal BLOCK, status.exitstatus, "a NUL byte must block, not exit 1 (which the host would allow)"
+      refute_equal 1, status.exitstatus
+      assert_includes stderr, "NUL byte"
+      assert_empty validator_calls(calls)
+    end
+  end
+
+  # The stub reports READY here on purpose: with a NOT_READY stub this test
+  # would pass for the wrong reason, proving nothing about the crafted cwd.
+  def test_nul_byte_in_the_working_directory_blocks_instead_of_crashing
+    with_stubs(stdout: verdict("READY")) do |env, calls|
+      payload = { "hook_event_name" => "PreToolUse", "tool_name" => "Bash",
+                  "cwd" => "/tmp/craft#{NUL}ed",
+                  "tool_input" => { "command" => "gh pr merge 8" } }
+      _stdout, stderr, status = Open3.capture3(env, HOOK, stdin_data: payload.to_json)
+
+      assert_equal BLOCK, status.exitstatus, "a crafted cwd must block, not fall back to another directory"
+      refute_equal 1, status.exitstatus
+      assert_includes stderr, "NUL byte"
+      assert_empty validator_calls(calls), "readiness must not be checked in a substituted directory"
+    end
+  end
+
+  def test_absent_working_directory_still_allows_a_ready_merge
+    with_stubs(stdout: verdict("READY")) do |env, _calls|
+      payload = { "hook_event_name" => "PreToolUse", "tool_name" => "Bash",
+                  "tool_input" => { "command" => "gh pr merge 8" } }
+      _stdout, stderr, status = Open3.capture3(env, HOOK, stdin_data: payload.to_json)
+
+      assert_equal ALLOW, status.exitstatus, "an omitted cwd is normal and must not block: #{stderr}"
+    end
+  end
+
+  def test_a_nul_byte_survives_json_transport
+    parsed = JSON.parse(%({"command": "gh pr merge 8 --repo a\\u0000b"}))
+
+    assert_includes parsed.fetch("command"), NUL, "the crafted-input premise must hold"
+  end
+
+  def test_top_level_rescue_converts_an_internal_failure_into_a_block
+    script = <<~RUBY
+      require "json"
+      require "stringio"
+      load #{HOOK.inspect}
+      module BlockMergeWithoutCiReadiness
+        def self.applicable?(_payload)
+          raise "simulated internal failure"
+        end
+      end
+      payload = { "hook_event_name" => "PreToolUse", "tool_name" => "Bash",
+                  "cwd" => Dir.pwd, "tool_input" => { "command" => "gh pr merge 8" } }
+      exit(BlockMergeWithoutCiReadiness.run(input: StringIO.new(payload.to_json)))
+    RUBY
+    Dir.mktmpdir("rescue-test") do |dir|
+      path = File.join(dir, "raise.rb")
+      File.write(path, script)
+      _stdout, stderr, status = Open3.capture3(RbConfig.ruby, path)
+
+      assert_equal BLOCK, status.exitstatus, "an unexpected exception must exit 2, never 1"
+      assert_includes stderr, "the readiness gate itself failed"
+      assert_includes stderr, "simulated internal failure"
+    end
+  end
+
+  # --- heredoc terminators follow the shell's own rules --------------------
+
+  def test_plain_heredoc_is_not_closed_by_an_indented_terminator
+    # bash only ends a plain `<<EOF` on a terminator at column 0, so the merge
+    # below is heredoc content, not a command, and must not be scanned.
+    command = "cat <<EOF\n  EOF\ngh pr merge 7\nEOF"
+
+    assert_empty scan(command), "content inside a plain heredoc must stay inside it"
+  end
+
+  def test_dash_heredoc_is_closed_by_a_tab_indented_terminator
+    command = "cat <<-EOF\nbody\n\tEOF\ngh pr merge 7"
+
+    assert_equal ["7"], scan(command).first[:arguments]
+  end
+
+  def test_squiggly_heredoc_is_closed_by_a_space_indented_terminator
+    command = "cat <<~EOF\nbody\n   EOF\ngh pr merge 7"
+
+    assert_equal ["7"], scan(command).first[:arguments]
+  end
+
+  def test_dash_heredoc_is_not_closed_by_a_space_indented_terminator
+    # `<<-` strips tabs only, so a space-indented terminator does not close it.
+    command = "cat <<-EOF\n   EOF\ngh pr merge 7\nEOF"
+
+    assert_empty scan(command)
   end
 
   # --- allow only on a proven READY ----------------------------------------

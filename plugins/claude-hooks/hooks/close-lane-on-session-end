@@ -48,13 +48,15 @@ module CloseLaneOnSessionEnd
   # hand-edited install cannot drain a session that is merely being resumed.
   SKIPPED_REASONS = %w[resume].freeze
 
-  # A NUL byte cannot survive exec, so an argument containing one is unsafe.
-  NUL = 0.chr
-
   module_function
 
   def run(input: $stdin, err: $stderr, env: ENV)
     err.puts("close-lane-on-session-end: #{outcome(input, env)}")
+    DONE
+  rescue StandardError => e
+    # This adapter can never block anything, so an unexpected error is reported
+    # and swallowed rather than dumping a backtrace into the session teardown.
+    err.puts("close-lane-on-session-end: UNKNOWN: #{e.class}: #{e.message}")
     DONE
   end
 
@@ -98,7 +100,7 @@ module CloseLaneOnSessionEnd
     return :malformed unless parsed.is_a?(Array) && !parsed.empty?
     # Arguments may contain spaces: they are separate argv elements and never
     # reach a shell. A NUL byte cannot survive exec, so it is unsafe.
-    return :malformed unless parsed.all? { |value| value.is_a?(String) && !value.include?(NUL) }
+    return :malformed unless parsed.all? { |value| HookSupport.safe_argument?(value) }
     return :malformed if parsed.first.strip.empty?
 
     parsed
