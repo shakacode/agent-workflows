@@ -39,8 +39,8 @@ submission remain mandatory.
   mechanism. Prompt compatibility moved to separate
   [issue #372](https://github.com/shakacode/agent-workflows/issues/372).
 
-Issue #273 resumes separately after #299 removes the unsupported launch gate;
-#299 does not implement or redefine #273. Track that resumed work only in
+Issue #273 resumes separately after #299 removes the unsupported launch
+gate; #299 does not implement or redefine #273. Track that resumed work only in
 [issue #273](https://github.com/shakacode/agent-workflows/issues/273).
 
 ## Impact
