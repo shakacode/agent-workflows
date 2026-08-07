@@ -25,7 +25,8 @@ the production receipt parser loaded by the sibling `pr-batch` contract test;
 an isolated pinned copy must include both companions or stop with a precise
 missing-companion blocker.
 
-For a verified Codex GPT-5.6 batch, preserve the originating route profile:
+For a verified Codex GPT-5.6 batch, record the originating preferences and use
+this recommended advisory route profile:
 
 - Multi-lane coordinator: Sol/xhigh
 - Simple, positively classified worker: Terra/high
@@ -34,8 +35,8 @@ For a verified Codex GPT-5.6 batch, preserve the originating route profile:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-For a verified Claude batch, preserve the provisional originating route
-profile (`claude-profile v0`):
+For a verified Claude batch, record the originating preferences and use this
+provisional recommended advisory route profile (`claude-profile v0`):
 
 - Multi-lane coordinator: Opus 4.8/xhigh
 - Simple, positively classified worker: Sonnet 5/high
@@ -56,19 +57,20 @@ prompt, response, or transcript data in the receipt.
 Start by resolving the exact audit range and, when auditing a named agent
 batch/run, the exact worked-issue scope.
 
-For a completed-batch audit, also resolve launch assurance before deep audit:
-the checker must be a fresh instance independent from every maker, with exact
-model/effort and binding evidence satisfying the batch's operator policy. Under
-the conservative GPT-5.6 profile the qualifying audit is independent
-adversarial QA on Sol/xhigh; Sol/high is limited to routine deterministic QA.
-Terra may collect mechanical evidence but does not issue the qualifying verdict.
-Under the provisional Claude profile (`claude-profile v0`) the qualifying audit
-is independent adversarial QA on Opus 4.8/xhigh; Opus 4.8/high is limited to
-routine deterministic QA. Sonnet may collect mechanical evidence but does not
-issue the qualifying verdict. If
-checker route or independence is below policy or `UNKNOWN`, the audit cannot be
-clean; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
-qualifying-checker reservation needed.
+For a completed-batch audit, resolve checker independence before deep audit:
+the checker must be a fresh instance independent from every maker.
+Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+Under the conservative GPT-5.6 profile, prefer Sol/xhigh for independent
+adversarial QA and Sol/high for routine deterministic QA. Under the provisional
+Claude profile (`claude-profile v0`), prefer Opus 4.8/xhigh for independent
+adversarial QA and Opus 4.8/high for routine deterministic QA. Terra and Sonnet
+may collect mechanical evidence or serve as the qualifying checker when the
+role, independence, scope, current-head evidence, and evidence quality qualify.
+If checker independence is unavailable or `UNKNOWN`, the audit cannot be clean.
+Record unavailable host-observed model/effort as `UNKNOWN`; preference mismatch
+alone does not block an otherwise qualifying verdict.
 
 Default batch selection: when the current visible chat, active goal, restart
 handoff, or immediately preceding batch closeout names exactly one just-run

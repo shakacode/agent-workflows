@@ -85,6 +85,12 @@ bin/install-agent-workflows --host codex
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
 explicit shared agent home.
 
+Ordinary batches require no project-generated signing keys, fixed trust
+anchors, signed launch or lifecycle receipts, or human waivers. Model and
+reasoning-effort values are advisory preferences; hosts may report observed
+host/model/effort fields when available and otherwise record field-granular
+`UNKNOWN` without blocking execution.
+
 For the full ShakaCode agent stack setup (`agent-workflows`,
 `agent-coordination`, and `agent-coordination-dashboard`), see
 [Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup).

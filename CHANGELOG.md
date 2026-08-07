@@ -26,7 +26,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Add a portable report-first safe intake skill for untrusted outside-contributor fork pull requests.**
 - **Add `agent-stack doctor` as a read-only master aggregator for uniform component-owned diagnostics, with generic checkout/link discovery, bounded delegates, contract validation, secret-safe human/JSON rendering, and stable `0/1/2/64` exits.**
 - **Add `bin/check-agent-workflow-drift` as a public, pinned drift check with a portable downstream-adoption contract.** [PR 182](https://github.com/shakacode/agent-workflows/pull/182) by [justin808](https://github.com/justin808).
-- **Add a portable dispatcher-capability preflight that records bound, attested route/dispatcher selection or one durable decision request without launching workers or mutating coordination.**
+- **Add a portable dispatcher-capability preflight that records advisory route preferences, dispatcher selection, ordinary pending/active lifecycle, idempotent replay, and fenced replacement without launching workers or mutating coordination.**
 - **Add deterministic stage-typed dependency gates and raw hostile replay fixtures for separately persisted trusted edge plans, preparation replay, edit, validation/open, merge-order, base-refresh, critical-path, fail-closed maker/checker identity, hosted-CI, and combined-tip decisions.**
 - **Add portable autoreview risk/coverage receipts and independent validation evidence for consequential review findings.**
 - **Add durable `flat` and `plugin-companion` delivery modes so native `scw` users can retain installer-managed workflows, docs, helpers, metadata, status, and upgrades without a duplicate flat skill tree.**
@@ -47,7 +47,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
-- **Require qualifying dispatcher `launch-confirmation v2` evidence to activate a pending worker while retaining v1 for history-only replay, migrate CI consumers to scoped `pr-ci-readiness` v2, and require every merge caller to generate and pass a fresh merge-assurance receipt; `merge_authority: none` remains no-merge.**
+- **Remove unsupported project-level signed launch and lifecycle enforcement, fixed trust anchors, hard model/effort binding, and waiver paths; restore advisory routing and ordinary durable lane state while preserving duplicate-launch prevention, replacement fencing, batch serialization, exact-head CI, merge assurance, and guarded merge submission.** [issue 299](https://github.com/shakacode/agent-workflows/issues/299).
 - **Make `merge_authority: ask` automatically run the exact-diff `$pr-walkthrough` after ordinary readiness is clean—full and interactive for large or complex PRs, concise for smaller cohesive PRs—then refresh the diff identity/readiness before asking the one explicit merge question.**
 - **Emit a small managed PR-description summary for completed-batch audit status, keep its update separate from the comment-once receipt transaction, and reduce the durable comment to a concise replay-evidence header while retaining legacy receipt replay compatibility.**
 - **Allow consumer seams to set an optional validated `repo_prefix` for consistent batch titles and thread handles, while preserving a deterministic repository-name fallback for existing consumers.**
@@ -64,7 +64,7 @@ All notable changes to this portable workflow pack are documented here.
 - **Clarify the portable planning-chat lifecycle: batch coordinators own completed-batch audits, prompt-only chats may archive after durable worker handoff, and parents reconcile only durable audit handoffs before release or archive.**
 - **Clarify same-chat launch selection, complete triage response ordering, and completed-batch audit handoffs so only outstanding work blocks archival while fully evidenced terminal dispositions remain durable.**
 - **Keep `agent-stack` and `agent-stack-doctor` as thin entrypoints over focused, installable sync and diagnostic modules, with small test drivers loading responsibility-specific suites.**
-- **Harden model-routed batches with fail-closed launch assurance, Sol-controlled conservative GPT-5.6 coordination and checking, bounded Terra execution envelopes, and auditable worker assignment evidence.**
+- **Keep recommended Sol/Terra and Opus/Sonnet profiles as advisory preferences, preserve bounded worker execution envelopes and independent checker evidence, and record host-observed route fields only when the host exposes them.**
 - **Change the public Codex native-plugin identifier from `agent-workflows` to `scw`; existing native-plugin users must remove the old entry and reinstall `scw`, while the repository, marketplace, helper, installer, status, and upgrade identities remain `agent-workflows`.**
 - **Make `$pr-batch` the sole workflow for one or more targets, with a default single-target worker subagent, staged cost-aware model routing, and explicit merge authority before launch.**
 - **Require parent batch coordinators to run a completed-batch audit after every target reaches final state, then end the conversation with either an archive-ready confirmation or every remaining follow-up and blocker.**
