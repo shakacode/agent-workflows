@@ -204,6 +204,34 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "dispatch-decision-fallback", selected.dig("dispatch", "selection_provenance")
   end
 
+  def test_operator_decision_authorizes_fallback_whose_candidate_omitted_optional_route
+    fallback = candidate(
+      dispatcher: "other", instance_id: "other-1", fallback_authorized: true
+    ).reject { |key, _value| key == "route" }
+    input = input_for(candidates: [fallback])
+    request = dispatch(input).fetch("dispatch_decision_request")
+    choice = request.fetch("viable_fallback_choices").fetch(0)
+    decision = {
+      "type" => "dispatch-decision",
+      "version" => 1,
+      "id" => "decision-materialized-route",
+      "request_id" => request.fetch("id"),
+      "lane_id" => "lane-a",
+      "choice_id" => choice.fetch("choice_id"),
+      "updated_authority" => { "dispatch" => true }
+    }
+
+    assert_equal requested_route.fetch("route"), choice.fetch("route")
+    selected = dispatch(
+      input.merge("dispatch_decision_request" => request, "operator_decision" => decision)
+    )
+
+    assert_equal "selected", selected.fetch("status")
+    assert_equal choice.fetch("choice_id"), selected.dig("decision_resolution", "choice_id")
+    assert_equal requested_route.fetch("route"), selected.dig("dispatch", "route_preference")
+    assert_equal "dispatch-decision-fallback", selected.dig("dispatch", "selection_provenance")
+  end
+
   def test_persisted_decision_resolution_replays_without_transient_operator_decision
     fallback = candidate(dispatcher: "other", instance_id: "other-1", fallback_authorized: true)
     input = input_for(candidates: [fallback])
@@ -239,6 +267,62 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal pending.fetch("launch_token"), pending_replay.dig("dispatch", "launch_token")
     assert_equal "replay-already-active", active_replay.fetch("status")
     refute active_replay.key?("dispatch")
+  end
+
+  def test_pending_replay_ignores_malformed_optional_route_telemetry_for_same_identity
+    input = input_for
+    pending = select(input).fetch("active_assignments").first
+    malformed_candidate = candidate.merge("route" => { "model" => "Sol" })
+
+    replay = dispatch(
+      input.merge("candidates" => [malformed_candidate], "active_assignments" => [pending])
+    )
+
+    assert_equal "launch-pending", replay.fetch("status")
+    assert_equal pending.fetch("launch_token"), replay.dig("dispatch", "launch_token")
+    assert_equal pending.fetch("route_preference"), replay.fetch("selected_route_preference")
+    refute_equal "blocked-replacement-fencing", replay.fetch("status")
+  end
+
+  def test_active_replay_ignores_malformed_optional_host_telemetry_for_same_identity
+    observed_host = { "host" => "codex", "model" => "gpt-5.6-sol", "effort" => "high" }
+    input = input_for(candidates: [candidate(observed_host:)])
+    active = select(input).fetch("active_assignments").first.merge("lifecycle" => "active")
+    malformed_candidate = candidate.merge("observed_host" => { "host" => "" })
+
+    replay = dispatch(
+      input.merge("candidates" => [malformed_candidate], "active_assignments" => [active])
+    )
+
+    assert_equal "replay-already-active", replay.fetch("status")
+    assert_equal active.fetch("launch_token"), replay.dig("active_assignments", 0, "launch_token")
+    assert_equal active.fetch("observed_host"), replay.fetch("observed_host")
+    refute replay.key?("replacement_transition")
+  end
+
+  def test_partial_current_host_telemetry_merges_field_by_field_for_pending_and_active_replay
+    persisted_host = {
+      "host" => "codex", "model" => "gpt-5.6-sol", "effort" => "high",
+      "observed_at" => "2026-08-06T12:00:00Z", "evidence_ref" => "host://codex/first"
+    }
+    input = input_for(candidates: [candidate(observed_host: persisted_host)])
+    pending = select(input).fetch("active_assignments").first
+    current_candidate = candidate(observed_host: { "host" => "codex-desktop" })
+    expected_host = persisted_host.merge("host" => "codex-desktop")
+
+    {
+      "launch-pending" => pending,
+      "replay-already-active" => pending.merge("lifecycle" => "active")
+    }.each do |expected_status, assignment|
+      replay = dispatch(
+        input.merge("candidates" => [current_candidate], "active_assignments" => [assignment])
+      )
+
+      assert_equal expected_status, replay.fetch("status")
+      assert_equal expected_host, replay.fetch("observed_host")
+      assert_equal expected_host, replay.dig("active_assignments", 0, "observed_host")
+      assert_equal assignment.fetch("launch_token"), replay.dig("active_assignments", 0, "launch_token")
+    end
   end
 
   def test_launch_confirmation_input_cannot_activate_an_ordinary_pending_assignment

@@ -513,6 +513,25 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["lane-a"], second_result.dig("launch", "completed_lane_ids")
   end
 
+  def test_active_lane_occupies_max_one_group_and_never_reenters_launch_partition
+    active_lane = lane("lane-active").merge("serialization_group" => "changelog-writers")
+    planned_lane = lane("lane-planned").merge("serialization_group" => "changelog-writers")
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    state = lane_lifecycle_state(lane_id: "lane-active", state: "active")
+
+    [[planned_lane, active_lane], [active_lane, planned_lane], [planned_lane, active_lane]].each do |lanes|
+      result, stderr, status = evaluate(
+        input_for(lanes: lanes, groups: groups, lifecycle_states: [state])
+      )
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.dig("launch", "eligible_lane_ids")
+      assert_equal ["lane-planned"], result.dig("launch", "held_lane_ids")
+      assert_empty result.dig("launch", "completed_lane_ids")
+    end
+  end
+
   def test_inline_lane_completion_claim_is_rejected
     input = input_for
     planned_lane = input.dig("plan", "lanes", 0)

@@ -78,6 +78,10 @@ def normalized_observed_host(observed_host)
                        .merge(observed_host.slice("observed_at", "evidence_ref"))
 end
 
+def merged_observed_host(persisted_observed_host, current_observed_host)
+  normalized_observed_host(persisted_observed_host).merge(current_observed_host || {})
+end
+
 def unusable_reason(candidate)
   return "candidate-invalid" unless candidate.is_a?(Hash)
   return "candidate-invalid" unless nonempty_string?(candidate["dispatcher"])
@@ -92,6 +96,10 @@ def unusable_reason(candidate)
   return "instance-id-unknown" if unknown_sentinel?(candidate["instance_id"])
 
   nil
+end
+
+def replay_identity_candidate?(candidate)
+  [nil, "candidate-route-invalid", "candidate-observed-host-invalid"].include?(unusable_reason(candidate))
 end
 
 def requested_tuple?(candidate, requested)
@@ -261,8 +269,13 @@ def replacement_consumption_persistence(replacement, assignment)
   )
 end
 
-def choice_id(lane_id, candidate)
-  "choice-#{stable_digest([lane_id, candidate.slice('route', 'dispatcher', 'instance_id')])[0, 16]}"
+def choice_id(lane_id, candidate, fallback_route: nil)
+  materialized_choice = {
+    "route" => candidate["route"] || fallback_route,
+    "dispatcher" => candidate["dispatcher"],
+    "instance_id" => candidate["instance_id"]
+  }
+  "choice-#{stable_digest([lane_id, materialized_choice])[0, 16]}"
 end
 
 def canonical_viable_fallback_choices(candidates, requested, lane_id)
@@ -271,7 +284,7 @@ def canonical_viable_fallback_choices(candidates, requested, lane_id)
     next if candidate["dispatcher"] == requested["dispatcher"] || unusable_reason(candidate)
 
     {
-      "choice_id" => choice_id(lane_id, candidate),
+      "choice_id" => choice_id(lane_id, candidate, fallback_route: requested["route"]),
       "route" => candidate["route"] || requested["route"],
       "dispatcher" => candidate["dispatcher"],
       "instance_id" => candidate["instance_id"],
@@ -599,12 +612,12 @@ history_resolution = persisted_resolution ||
 if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] && !input.key?("replacement")
   same_requested_identity = requested["dispatcher"] == persisted_assignment["dispatcher"]
   current_candidate_matches = candidate_inputs.any? do |entry|
-    entry.is_a?(Hash) && unusable_reason(entry).nil? &&
+    entry.is_a?(Hash) && replay_identity_candidate?(entry) &&
       entry["dispatcher"] == persisted_assignment["dispatcher"] &&
       entry["instance_id"] == persisted_assignment["instance_id"]
   end
   current_fallback_candidate_matches = candidate_inputs.any? do |entry|
-    entry.is_a?(Hash) && unusable_reason(entry).nil? && fallback_authorized?(entry, requested, authority) &&
+    entry.is_a?(Hash) && replay_identity_candidate?(entry) && fallback_authorized?(entry, requested, authority) &&
       entry["dispatcher"] == persisted_assignment["dispatcher"] &&
       entry["instance_id"] == persisted_assignment["instance_id"]
   end
@@ -648,7 +661,10 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
   replay_assignment = canonical_assignment(persisted_assignment).merge(
     "requested" => requested,
     "route_preference" => current_candidate&.fetch("route", nil) || requested["route"],
-    "observed_host" => normalized_observed_host(current_candidate&.fetch("observed_host", nil) || persisted_assignment["observed_host"])
+    "observed_host" => merged_observed_host(
+      persisted_assignment["observed_host"],
+      current_candidate&.fetch("observed_host", nil)
+    )
   )
   output = if persisted_assignment["lifecycle"] == "active"
              active_replay_output(
