@@ -532,6 +532,55 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_blocked_lane_is_held_and_never_reenters_launch_partition
+    state = lane_lifecycle_state(state: "blocked")
+
+    result, stderr, status = evaluate(input_for(lifecycle_states: [state]))
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-a"], result.dig("launch", "held_lane_ids")
+    assert_empty result.dig("launch", "completed_lane_ids")
+  end
+
+  def test_blocked_lane_occupies_max_one_group_until_its_state_changes
+    blocked_lane = lane("lane-a").merge("serialization_group" => "changelog-writers")
+    sibling_lane = lane("lane-b").merge("serialization_group" => "changelog-writers")
+    lanes = [sibling_lane, blocked_lane]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+
+    blocked_result, blocked_stderr, blocked_status = evaluate(
+      input_for(
+        lanes: lanes,
+        groups: groups,
+        lifecycle_states: [lane_lifecycle_state(lane_id: "lane-a", state: "blocked")]
+      )
+    )
+    assert blocked_status.success?, blocked_stderr
+    assert_empty blocked_result.dig("launch", "eligible_lane_ids")
+    assert_equal %w[lane-a lane-b], blocked_result.dig("launch", "held_lane_ids")
+
+    completed_result, completed_stderr, completed_status = evaluate(
+      input_for(lanes: lanes, groups: groups, lifecycle_states: [lane_lifecycle_state(lane_id: "lane-a")])
+    )
+    assert completed_status.success?, completed_stderr
+    assert_equal ["lane-b"], completed_result.dig("launch", "eligible_lane_ids")
+    assert_empty completed_result.dig("launch", "held_lane_ids")
+  end
+
+  def test_planned_and_claimed_lanes_remain_launch_eligible
+    %w[planned claimed].each do |lifecycle_state|
+      result, stderr, status = evaluate(
+        input_for(lifecycle_states: [lane_lifecycle_state(state: lifecycle_state)])
+      )
+
+      assert status.success?, stderr
+      assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids"), lifecycle_state
+      assert_empty result.dig("launch", "held_lane_ids"), lifecycle_state
+    end
+  end
+
   def test_inline_lane_completion_claim_is_rejected
     input = input_for
     planned_lane = input.dig("plan", "lanes", 0)

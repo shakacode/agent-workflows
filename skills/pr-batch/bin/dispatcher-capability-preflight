@@ -359,6 +359,19 @@ def revised_decision_request(output, prior_request, decision)
   output
 end
 
+def reconciled_decision_request(output, prior_request)
+  request = output.fetch("dispatch_decision_request")
+  revision = prior_request.fetch("revision", 1) + 1
+  identity = [
+    prior_request["id"], request["requested"], request["authority"], request["reason"],
+    request["viable_fallback_choices"], revision
+  ]
+  request["id"] = "ddr-#{stable_digest(identity)[0, 16]}"
+  request["revision"] = revision
+  request["prior_request"] = prior_request
+  output
+end
+
 def with_decision_history(output, request, decision = nil, resolution: nil)
   return output unless request
 
@@ -411,6 +424,29 @@ def approved_operator_decision?(decision, request, choice, lane_id)
     choice.fetch("required_authority").all? { |key, required| !required || decision.dig("updated_authority", key) == true }
 end
 
+def request_history_entry(request, request_id)
+  current = request
+  current = current["prior_request"] while current && current["id"] != request_id
+  current
+end
+
+def approved_operator_decision_match(decision, request, lane_id)
+  current = request
+  while current
+    choice = current.fetch("viable_fallback_choices", []).find do |entry|
+      approved_operator_decision?(decision, current, entry, lane_id)
+    end
+    return [current, choice] if choice
+
+    current = current["prior_request"]
+  end
+  nil
+end
+
+def choice_identity_matches?(left, right)
+  left && right && left["dispatcher"] == right["dispatcher"] && left["instance_id"] == right["instance_id"]
+end
+
 def persisted_request_shape?(request, lane_id)
   current = request
   expected_revision = nil
@@ -454,13 +490,10 @@ def persisted_resolution_valid?(resolution, request, lane_id)
                       nonempty_string?(resolution["decision_id"]) &&
                       %w[dispatch-decision dispatch-decision-refresh].include?(resolution["action"])
 
-  resolved_request = request
-  resolved_request = resolved_request["prior_request"] while resolved_request && resolved_request["id"] != resolution["request_id"]
+  resolved_request = request_history_entry(request, resolution["request_id"])
   return false unless resolved_request && resolved_request["revision"] == resolution["request_revision"]
 
   if resolution["action"] == "dispatch-decision"
-    return false unless resolution["request_id"] == request["id"] &&
-                        resolution["request_revision"] == request["revision"]
     return false unless nonempty_string?(resolution["choice_id"]) && authority_shape?(resolution["updated_authority"])
 
     choice = resolved_request["viable_fallback_choices"].find { |entry| entry["choice_id"] == resolution["choice_id"] }
@@ -543,6 +576,7 @@ fail_input("decision_resolution requires a persisted dispatch_decision_request")
 authority = { "dispatch" => input.dig("authority", "dispatch") == true }
 persisted_decision_history = nil
 resolved_operator_decision = nil
+resolved_decision_request = nil
 refreshing_persisted_decision = false
 candidate_inputs = input.fetch("candidates", [])
 persisted_resolution = input["decision_resolution"]
@@ -565,13 +599,21 @@ if (persisted_decision = input["dispatch_decision_request"])
 
   persisted_choices = persisted_decision.fetch("viable_fallback_choices", [])
   valid_choices = persisted_choices.select { |choice| decision_choice_valid?(choice, input["lane_id"], persisted_requested) }
-  selected_choice = if persisted_resolution&.fetch("action") == "dispatch-decision"
-                      valid_choices.find { |choice| choice["choice_id"] == persisted_resolution["choice_id"] }
-                    else
-                      valid_choices.find do |choice|
-                        approved_operator_decision?(input["operator_decision"], persisted_decision, choice, input["lane_id"])
-                      end
-                    end
+  decision_match = approved_operator_decision_match(
+    input["operator_decision"], persisted_decision, input["lane_id"]
+  )
+  resolved_choice, resolved_decision_request = if persisted_resolution&.fetch("action") == "dispatch-decision"
+                                                 request = request_history_entry(
+                                                   persisted_decision, persisted_resolution["request_id"]
+                                                 )
+                                                 choice = request.fetch("viable_fallback_choices").find do |entry|
+                                                   entry["choice_id"] == persisted_resolution["choice_id"]
+                                                 end
+                                                 [choice, request]
+                                               elsif decision_match
+                                                 [decision_match.fetch(1), decision_match.fetch(0)]
+                                               end
+  selected_choice = valid_choices.find { |choice| choice_identity_matches?(choice, resolved_choice) }
 
   if selected_choice
     requested = persisted_requested
@@ -590,15 +632,24 @@ if (persisted_decision = input["dispatch_decision_request"])
     resolved_operator_decision = input.fetch("operator_decision")
     refreshing_persisted_decision = true
   else
+    route_preference_changed = !route_equal?(requested["route"], persisted_requested["route"])
     output = blocked_output(
       input:,
-      requested: persisted_requested,
+      requested: route_preference_changed ? requested : persisted_requested,
       authority: persisted_authority,
       reason: persisted_decision.fetch("reason", "no-authorized-dispatcher-candidate"),
       rejections: [],
-      viable_fallback_choices: persisted_choices
+      viable_fallback_choices: if route_preference_changed
+                                 canonical_viable_fallback_choices(candidate_inputs, requested, input["lane_id"])
+                               else
+                                 persisted_choices
+                               end
     )
-    output["dispatch_decision_request"] = persisted_decision
+    if route_preference_changed
+      output = reconciled_decision_request(output, persisted_decision)
+    else
+      output["dispatch_decision_request"] = persisted_decision
+    end
     output["decision_resolution"] = persisted_resolution if persisted_resolution
     puts JSON.generate(output)
     exit
@@ -607,8 +658,11 @@ end
 
 existing_assignments = input.fetch("active_assignments", [])
 persisted_assignment = existing_assignments.first
-history_resolution = persisted_resolution ||
-                     (decision_resolution(persisted_decision_history, resolved_operator_decision) if persisted_decision_history && resolved_operator_decision)
+history_resolution = if resolved_decision_request && resolved_operator_decision
+                       decision_resolution(resolved_decision_request, resolved_operator_decision)
+                     else
+                       persisted_resolution
+                     end
 if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] && !input.key?("replacement")
   same_requested_identity = requested["dispatcher"] == persisted_assignment["dispatcher"]
   current_candidate_matches = candidate_inputs.any? do |entry|

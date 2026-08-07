@@ -204,6 +204,134 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     assert_equal "dispatch-decision-fallback", selected.dig("dispatch", "selection_provenance")
   end
 
+  def test_persisted_decision_request_refreshes_advisory_route_metadata_deterministically
+    fallback = candidate(
+      dispatcher: "other", instance_id: "other-1", fallback_authorized: true
+    ).reject { |key, _value| key == "route" }
+    old_input = input_for(
+      requested: requested_route(model: "Sol", effort: "high"), candidates: [fallback]
+    )
+    prior_request = dispatch(old_input).fetch("dispatch_decision_request")
+    current_route = { "model" => "Terra", "effort" => "medium" }
+    current_input = input_for(
+      requested: requested_route(model: "Terra", effort: "medium"), candidates: [fallback]
+    ).merge("dispatch_decision_request" => prior_request)
+
+    first = dispatch(current_input)
+    second = dispatch(current_input)
+    refreshed_request = first.fetch("dispatch_decision_request")
+
+    assert_equal "blocked-user-input", first.fetch("status")
+    assert_equal current_route, first.fetch("preferred_route")
+    assert_equal current_route, refreshed_request.dig("requested", "route")
+    assert_equal current_route, refreshed_request.dig("viable_fallback_choices", 0, "route")
+    assert_equal prior_request.fetch("revision") + 1, refreshed_request.fetch("revision")
+    assert_equal prior_request, refreshed_request.fetch("prior_request")
+    assert_equal refreshed_request, second.fetch("dispatch_decision_request")
+    assert_equal prior_request.fetch("authority"), refreshed_request.fetch("authority")
+    assert_equal true, refreshed_request.dig("viable_fallback_choices", 0, "required_authority", "dispatch")
+    assert_equal false, first.fetch("resume_goal")
+  end
+
+  def test_route_refresh_accepts_and_replays_an_in_flight_prior_request_decision
+    fallback = candidate(
+      dispatcher: "other", instance_id: "other-1", fallback_authorized: true
+    ).reject { |key, _value| key == "route" }
+    old_input = input_for(
+      requested: requested_route(model: "Sol", effort: "high"), candidates: [fallback]
+    )
+    prior_request = dispatch(old_input).fetch("dispatch_decision_request")
+    current_route = { "model" => "Terra", "effort" => "medium" }
+    current_input = input_for(
+      requested: requested_route(model: "Terra", effort: "medium"), candidates: [fallback]
+    )
+    refreshed_request = dispatch(
+      current_input.merge("dispatch_decision_request" => prior_request)
+    ).fetch("dispatch_decision_request")
+    decision = {
+      "type" => "dispatch-decision",
+      "version" => 1,
+      "id" => "decision-prior-route-request",
+      "request_id" => prior_request.fetch("id"),
+      "lane_id" => "lane-a",
+      "choice_id" => prior_request.dig("viable_fallback_choices", 0, "choice_id"),
+      "updated_authority" => { "dispatch" => true }
+    }
+
+    selected = dispatch(
+      current_input.merge(
+        "dispatch_decision_request" => refreshed_request,
+        "operator_decision" => decision
+      )
+    )
+
+    assert_equal "selected", selected.fetch("status")
+    assert_equal current_route, selected.fetch("preferred_route")
+    assert_equal current_route, selected.dig("dispatch", "route_preference")
+    assert_equal "other-1", selected.dig("dispatch", "instance_id")
+    assert_equal refreshed_request, selected.fetch("dispatch_decision_request")
+    assert_equal prior_request.fetch("id"), selected.dig("decision_resolution", "request_id")
+
+    replay = dispatch(
+      current_input.merge(
+        "dispatch_decision_request" => refreshed_request,
+        "decision_resolution" => selected.fetch("decision_resolution")
+      )
+    )
+
+    assert_equal "selected", replay.fetch("status")
+    assert_equal selected.dig("dispatch", "launch_token"), replay.dig("dispatch", "launch_token")
+  end
+
+  def test_late_prior_request_decision_supersedes_a_persisted_refresh_resolution
+    fallback = candidate(dispatcher: "other", instance_id: "other-1", fallback_authorized: true)
+    input = input_for(candidates: [fallback])
+    prior_request = dispatch(input).fetch("dispatch_decision_request")
+    refresh = {
+      "type" => "dispatch-decision-refresh",
+      "version" => 1,
+      "id" => "refresh-prior-request",
+      "request_id" => prior_request.fetch("id"),
+      "lane_id" => "lane-a"
+    }
+    refreshed = dispatch(
+      input.merge("dispatch_decision_request" => prior_request, "operator_decision" => refresh)
+    )
+    refreshed_request = refreshed.fetch("dispatch_decision_request")
+    decision = {
+      "type" => "dispatch-decision",
+      "version" => 1,
+      "id" => "decision-after-refresh",
+      "request_id" => prior_request.fetch("id"),
+      "lane_id" => "lane-a",
+      "choice_id" => prior_request.dig("viable_fallback_choices", 0, "choice_id"),
+      "updated_authority" => { "dispatch" => true }
+    }
+
+    selected = dispatch(
+      input.merge(
+        "dispatch_decision_request" => refreshed_request,
+        "decision_resolution" => refreshed.fetch("decision_resolution"),
+        "operator_decision" => decision
+      )
+    )
+
+    assert_equal "selected", selected.fetch("status")
+    assert_equal "dispatch-decision", selected.dig("decision_resolution", "action")
+    assert_equal decision.fetch("id"), selected.dig("decision_resolution", "decision_id")
+
+    replay = dispatch(
+      input.merge(
+        "dispatch_decision_request" => refreshed_request,
+        "decision_resolution" => selected.fetch("decision_resolution"),
+        "active_assignments" => selected.fetch("active_assignments")
+      )
+    )
+
+    assert_equal "launch-pending", replay.fetch("status")
+    assert_equal selected.dig("dispatch", "launch_token"), replay.dig("dispatch", "launch_token")
+  end
+
   def test_operator_decision_authorizes_fallback_whose_candidate_omitted_optional_route
     fallback = candidate(
       dispatcher: "other", instance_id: "other-1", fallback_authorized: true

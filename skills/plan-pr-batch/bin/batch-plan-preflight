@@ -106,8 +106,9 @@ module BatchPlanPreflight
     changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
     completed_lane_ids = []
     active_lane_ids = []
+    blocked_lane_ids = []
     if lane_ids_valid
-      lifecycle_violations, completed_lane_ids, active_lane_ids = validate_lane_lifecycle_states(
+      lifecycle_violations, completed_lane_ids, active_lane_ids, blocked_lane_ids = validate_lane_lifecycle_states(
         input["lane_lifecycle_states"],
         input["plan"],
         input["stage_dependency_plan"]
@@ -152,7 +153,8 @@ module BatchPlanPreflight
           input["plan"]["active_wave"],
           input["plan"]["serialization_groups"],
           completed_lane_ids,
-          active_lane_ids
+          active_lane_ids,
+          blocked_lane_ids
         )
       else
         [[], []]
@@ -232,6 +234,7 @@ module BatchPlanPreflight
           "Provide the separate durable lane lifecycle state collection, even when empty."
         )],
         [],
+        [],
         []
       ]
     end
@@ -239,6 +242,7 @@ module BatchPlanPreflight
     lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
     completed_lane_ids = []
     active_lane_ids = []
+    blocked_lane_ids = []
     violations = []
     seen_lane_ids = []
     states.each_with_index do |state, index|
@@ -260,6 +264,7 @@ module BatchPlanPreflight
       seen_lane_ids << state["lane_id"]
       completed_lane_ids << state["lane_id"] if state["state"] == "completed"
       active_lane_ids << state["lane_id"] if state["state"] == "active"
+      blocked_lane_ids << state["lane_id"] if state["state"] == "blocked"
     end
     if seen_lane_ids.uniq.length != seen_lane_ids.length
       violations << violation(
@@ -268,7 +273,7 @@ module BatchPlanPreflight
         "Provide at most one durable lifecycle state per lane."
       )
     end
-    [violations, completed_lane_ids.uniq, active_lane_ids.uniq]
+    [violations, completed_lane_ids.uniq, active_lane_ids.uniq, blocked_lane_ids.uniq]
   end
 
   def valid_lane_lifecycle_state?(state, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
@@ -580,13 +585,19 @@ module BatchPlanPreflight
     end
   end
 
-  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids, active_lane_ids)
+  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids, active_lane_ids,
+                       blocked_lane_ids)
     gate_lanes = gate.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
     eligible = []
     held = []
     lanes.each do |lane|
       lane_id = lane.fetch("id")
       next if completed_lane_ids.include?(lane_id) || active_lane_ids.include?(lane_id)
+
+      if blocked_lane_ids.include?(lane_id)
+        held << lane_id
+        next
+      end
 
       gate_lane = gate_lanes.fetch(lane_id)
       if lane["wave"] != active_wave
@@ -612,7 +623,7 @@ module BatchPlanPreflight
       group_lane_ids = eligible.select do |lane_id|
         lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
       end.sort
-      group_occupied = active_lane_ids.any? do |lane_id|
+      group_occupied = (active_lane_ids + blocked_lane_ids).any? do |lane_id|
         lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
       end
       held_group_lane_ids = group_occupied ? group_lane_ids : group_lane_ids.drop(1)
