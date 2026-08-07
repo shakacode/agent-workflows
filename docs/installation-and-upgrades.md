@@ -70,6 +70,16 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin install scw@agent-workflows
 ```
 
+The Claude plugin deliberately omits an explicit `version`. Claude therefore
+uses the Git commit SHA as the plugin version, so every commit on the
+marketplace's tracked branch is updateable without maintaining duplicate
+release numbers. Enable auto-update for the `agent-workflows` marketplace in
+Claude's **Plugins → Marketplaces** UI when the installation should follow that
+branch automatically; third-party marketplace auto-update is disabled by
+default. Claude checks after startup and may delay the check by up to ten
+minutes. Run `/reload-plugins` to load an installed update in the current
+session, or start a new session.
+
 For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
 
@@ -454,8 +464,8 @@ invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
 ### Refresh a native plugin
 
-Use the installed refresh helper before starting work that requires the newest
-shared workflow behavior:
+Use the installed refresh helper when you need the newest shared workflow
+behavior immediately rather than waiting for the host's normal update cycle:
 
 ```bash
 agent-workflows-refresh --host codex
@@ -469,9 +479,13 @@ without creating a separate Agent Workflows release. The helper does not add a
 missing marketplace or install a missing plugin; follow the selected host's
 setup guidance first.
 
-This is an explicit preflight, not a background update. Restart any active agent
-session that must consume the refreshed instructions because a running session
-may retain skill text it already loaded.
+This command is an explicit on-demand refresh; it does not replace native
+automatic updates. Codex refreshes configured Git marketplaces when it starts.
+Claude can check third-party marketplaces after startup when marketplace
+auto-update is enabled, but that setting is off by default and the check may be
+delayed. After refreshing Claude, run `/reload-plugins` to load the update in the
+current session. Restart Codex when an existing session must rediscover changed
+skills or instructions.
 
 ### Upgrade an installer-managed pack
 

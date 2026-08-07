@@ -35,8 +35,11 @@ with concise setup guidance instead.
    select the only detected host, default to Codex when neither exists, and
    reject an ambiguous machine with both homes.
 
-Refresh is an explicit session/task preflight. It does not mutate workflows in
-the background while an operation is running.
+Refresh is an explicit on-demand request for the host to update immediately. It
+does not replace Codex's startup marketplace refresh or Claude's optional
+marketplace auto-update. Loading changed instructions into an existing session
+remains host-specific: Claude supports `/reload-plugins`, while Codex sessions
+should be restarted when they must rediscover changed skills or instructions.
 
 ## Non-goals
 
