@@ -660,7 +660,8 @@ if persisted_assignment && persisted_assignment["lane_id"] == input["lane_id"] &
   end
   replay_assignment = canonical_assignment(persisted_assignment).merge(
     "requested" => requested,
-    "route_preference" => current_candidate&.fetch("route", nil) || requested["route"],
+    "route_preference" => current_candidate&.fetch("route", nil) ||
+                          persisted_assignment["route_preference"] || requested["route"],
     "observed_host" => merged_observed_host(
       persisted_assignment["observed_host"],
       current_candidate&.fetch("observed_host", nil)

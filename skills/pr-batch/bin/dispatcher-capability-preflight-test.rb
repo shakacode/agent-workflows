@@ -284,6 +284,28 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     refute_equal "blocked-replacement-fencing", replay.fetch("status")
   end
 
+  def test_malformed_current_route_preserves_different_persisted_fallback_route_on_replay
+    input = input_for(candidates: [candidate(model: "Terra", effort: "medium")])
+    pending = select(input).fetch("active_assignments").first
+    malformed_candidate = candidate(model: "Terra", effort: "medium")
+                          .merge("route" => { "model" => "Terra" })
+
+    {
+      "launch-pending" => pending,
+      "replay-already-active" => pending.merge("lifecycle" => "active")
+    }.each do |expected_status, assignment|
+      replay = dispatch(
+        input.merge("candidates" => [malformed_candidate], "active_assignments" => [assignment])
+      )
+
+      assert_equal expected_status, replay.fetch("status")
+      assert_equal pending.fetch("launch_token"), replay.dig("active_assignments", 0, "launch_token")
+      assert_equal({ "model" => "Terra", "effort" => "medium" }, replay.fetch("selected_route_preference"))
+      assert_equal pending.fetch("route_preference"), replay.dig("active_assignments", 0, "route_preference")
+      refute_equal "blocked-replacement-fencing", replay.fetch("status")
+    end
+  end
+
   def test_active_replay_ignores_malformed_optional_host_telemetry_for_same_identity
     observed_host = { "host" => "codex", "model" => "gpt-5.6-sol", "effort" => "high" }
     input = input_for(candidates: [candidate(observed_host:)])
