@@ -253,6 +253,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_a_blocked_reason_on_a_durable_receipt
+    satisfied = run_replay(durable_github_marker(""))
+    assert_equal "SATISFIED", satisfied.fetch("qa_evidence").fetch("verdict")
+
+    stray = run_replay(durable_github_marker("visual_evidence_blocked_reason: uploader_absent\n"))
+    assert_equal "UNKNOWN", stray.fetch("qa_evidence").fetch("verdict")
+    assert_includes stray.fetch("qa_evidence").fetch("missing"), "visual_evidence_blocked_reason.unexpected"
+  end
+
+  def durable_github_marker(reason_line)
+    <<~MARKDOWN
+      <!-- qa-evidence v2
+      required: yes
+      status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
+      tested_at: PR #123 head 1111111111111111111111111111111111111111
+      scope: current UI change
+      automated_checks: bin/validate
+      manual_checks: browser path complete
+      user_visible_ui_change: yes
+      visual_evidence_destination: github_pr
+      #{reason_line}visual_evidence: durable: before https://github.com/user-attachments/assets/1111 and after https://github.com/user-attachments/assets/2222
+      paint_check: passed: rendered screenshots inspected
+      interaction_change: no
+      interaction_evidence: not applicable: no interaction behavior changed
+      visual_fix: yes
+      negative_control: observed_failure: unfixed implementation failed the visual assertion
+      performance_impact: not_applicable
+      performance_evidence: not applicable: no rendered-page, asset-delivery, or bundle impact
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+  end
+
   def blocked_visual_evidence_marker(reason_line)
     <<~MARKDOWN
       <!-- qa-evidence v2

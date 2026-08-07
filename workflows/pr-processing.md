@@ -902,13 +902,20 @@ For each user-visible UI change:
    GitHub's API, not a statement that agents cannot attach images: a host whose
    browser tooling can set a file input on an authenticated github.com session
    completes the UI upload flow normally. Before recording a blocked upload,
-   resolve which of three states applies, because the remedies differ and only
-   the third is actionable by the lane itself:
-   - `uploader_absent` — the host exposes no file-input upload tool at all.
+   resolve which state applies, because the remedies differ. Record the matching
+   `visual_evidence_blocked_reason` and state its remedy in the handoff:
+   - `uploader_absent` — the host exposes no file-input upload tool at all. A
+     host that has one must run the lane, or a human attaches the artifacts.
    - `uploader_denied` — the tool exists but the host's permission policy
      refused the call. A worker cannot lift this at runtime and must not try;
      a human pre-provisions the permission before the lane launches.
-   - usable — perform the upload and record a durable destination.
+   - `no_configured_store` — no linked tracker or repo artifact destination is
+     configured or reachable. Configure one, or a human attaches the artifacts.
+   - `upload_failed: reason` — an available uploader was exercised and failed.
+     Name the observed failure; a retry or a human attachment resolves it.
+
+   When none of these apply the uploader is usable: perform the upload, record a
+   durable destination, and omit `visual_evidence_blocked_reason` entirely.
 
    If no authenticated UI
    uploader or configured integration is available, prepare clearly named local

@@ -277,6 +277,7 @@ module CloseoutEvidenceReplay
     unless destination.empty? || VALID_VISUAL_DESTINATIONS.include?(destination)
       missing << "visual_evidence_destination"
     end
+    validate_visual_blocked_reason(fields, destination, missing)
     missing << "interaction_change" unless interaction_change.empty? || VALID_QA_REQUIRED.include?(interaction_change)
     missing << "visual_fix" unless visual_fix.empty? || VALID_QA_REQUIRED.include?(visual_fix)
     missing << "performance_impact" unless performance_impact.empty? || VALID_PERFORMANCE_IMPACTS.include?(performance_impact)
@@ -340,9 +341,6 @@ module CloseoutEvidenceReplay
       missing << "visual_evidence_destination" unless destination == "human_attachment_pending"
       missing << "status" unless fields.fetch("status", "") == "blocked"
       missing << "release_blocking" unless fields.fetch("release_blocking", "") == "blocked"
-      unless valid_visual_blocked_reason?(fields.fetch("visual_evidence_blocked_reason", ""))
-        missing << "visual_evidence_blocked_reason"
-      end
     else
       missing << "visual_evidence"
     end
@@ -355,6 +353,17 @@ module CloseoutEvidenceReplay
 
   def valid_visual_blocked_reason?(value)
     VALID_VISUAL_BLOCKED_REASONS.include?(value) || UPLOAD_FAILED_REASON.match?(value)
+  end
+
+  # Required for human_attachment_pending and omitted otherwise, so a durable receipt
+  # cannot carry a stale blocked reason that contradicts the destination it records.
+  def validate_visual_blocked_reason(fields, destination, missing)
+    reason = fields.fetch("visual_evidence_blocked_reason", "")
+    if destination == "human_attachment_pending"
+      missing << "visual_evidence_blocked_reason" unless valid_visual_blocked_reason?(reason)
+    elsif !reason.empty?
+      missing << "visual_evidence_blocked_reason.unexpected"
+    end
   end
 
   def validate_durable_visual_evidence(evidence, destination, missing)
