@@ -84,6 +84,8 @@ Plan a PR batch
      worker, and checker model/effort preferences. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
      Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
      Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+     Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+     A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified
      `merge_authority`, ask for `none`, `ask`, or
@@ -307,9 +309,10 @@ Plan a PR batch
      but preserve lane ownership, dependencies, serial discovery, collision
      rules, and wave caps; grouping never combines targets into one worker.
      Keep coordinator and worker preferences independent; workers must not inherit
-     the coordinator preference. Reserve the checker as a fresh strongest-capability
-     instance distinct from every maker. A cheaper route may collect mechanical
-     evidence but may not issue the qualifying intent, risk, or readiness verdict.
+     the coordinator preference. Prefer a fresh strongest-capability checker
+     instance distinct from every maker. A lower-cost route may collect mechanical
+     evidence or issue the intent, risk, or readiness verdict when the checker
+     role, independence, scope, current-head evidence, and evidence quality qualify.
      Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
      Give every lower-capability worker a
      coordinator-approved execution envelope containing goal/non-goals, owned

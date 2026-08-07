@@ -12,14 +12,15 @@ normal style review and not a code-editing workflow.
 Use `.agents/workflows/adversarial-pr-review.md` for reusable prompts, Claude
 handoffs, Codex/Claude comparison, and output templates.
 
-For a verified Codex GPT-5.6 route profile:
+For a verified Codex GPT-5.6 host, use this recommended advisory route profile:
 
 - Independent adversarial QA: Sol/xhigh
 
 Sol/xhigh is the preferred adversarial route; Sol/high is the routine
 deterministic QA preference.
 
-For a verified Claude route profile (`claude-profile v0`, provisional):
+For a verified Claude host, use this provisional recommended advisory route
+profile (`claude-profile v0`):
 
 - Independent adversarial QA: Opus 4.8/xhigh
 
@@ -34,6 +35,9 @@ use literal `UNKNOWN` for every unavailable field, and never infer observations
 from the preference, prompt text, or model self-report.
 Reviewer independence and evidence quality remain mandatory regardless of the
 preferred or observed route.
+Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
 
 ## Contract
 

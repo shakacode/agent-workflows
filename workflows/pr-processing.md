@@ -665,11 +665,15 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   scope, classify risk, challenge and approve plans, decide escalation, integrate
   results, and close out the batch. This high-leverage parent role does not imply
   the same pair for every worker.
-- **Independent checker assignment:** reserve a fresh strongest-capability
+- **Independent checker assignment:** prefer a fresh strongest-capability
   instance, distinct from every maker, for intent achievement, consequential
-  review, and completed-batch evaluation. Mechanical QA or evidence collection
-  may use a cheaper route; the qualifying risk/readiness verdict may not.
+  review, and completed-batch evaluation. A lower-cost route may perform
+  mechanical QA, collect evidence, or issue a risk/readiness verdict when the
+  checker role, independence, scope, current-head evidence, and evidence quality
+  qualify.
   Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+  Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+  A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
 - **Initial worker assignment:** use the least expensive pair that can safely
   complete the bounded lane. Light deterministic work uses `fastest-low-cost`
   with low effort; ordinary implementation of a credible plan uses `balanced`
@@ -2289,7 +2293,7 @@ The closeout lane is:
     audit is owned by its batch coordinator. A parent orchestration agent only
     reconciles the durable audit handoff. Use an independent checker and enforce
     its evidence-quality requirements. Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
-    If independence from every maker is below policy or `UNKNOWN`, record the
+    If independence from every maker is absent or `UNKNOWN`, record the
     audit as `UNKNOWN` and stop short of a clean verdict. Scope the deep audit to the verified batch subset, with the commit
     range used as evidence/discovery context. Start the audit's scope gate even
     when it cannot proceed to a clean deep audit: a scope-confirmation need,

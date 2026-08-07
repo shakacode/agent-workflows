@@ -160,6 +160,8 @@ omit the queue summary and note that queue state is unavailable.
 4. Record coordinator, worker, and checker model/effort preferences separately.
    Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
    Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+   Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+   A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
    Before worker launch, resolve `PR_BATCH_SKILL_DIR` through the explicit
    env-var / loaded-skill / repo-local pinned-copy chain, then use
    `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`: a

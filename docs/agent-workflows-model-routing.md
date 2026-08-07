@@ -10,6 +10,8 @@ and `strongest`. Exact model names and supported effort levels come from the
 operator or the verified runtime roster. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
 Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
 Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
 
 ## Default Policy
 
@@ -59,10 +61,11 @@ Prefer Sol at the stated effort for the initiating parent. If the host exposes
 the running model or effort, record it as observed metadata; otherwise keep the
 field `UNKNOWN` and continue with the same safeguards.
 
-The independent adversarial checker is a fresh Sol/xhigh instance, distinct
-from every maker. Routine deterministic QA uses Sol/high. Terra may gather
-mechanical evidence for the checker, but Terra does not issue the qualifying
-intent-achievement, risk, or final-readiness verdict.
+The preferred independent adversarial checker route is a fresh Sol/xhigh
+instance, distinct from every maker. The preferred routine deterministic QA
+route is Sol/high. Terra may gather mechanical evidence or serve as the
+independent checker; either route's verdict qualifies only when the checker
+role, independence, scope, current-head evidence, and evidence quality qualify.
 
 Terra/high is allowed only after the coordinator positively classifies the work
 as simple: explicit acceptance criteria, a known bounded file surface, a strong
@@ -117,10 +120,11 @@ defaults, prompt text, model self-report, and an installed model list are not
 observations. A different or `UNKNOWN` parent route does not alone block target
 interpretation, planning, dispatch, review, or audit.
 
-The independent adversarial checker is a fresh Opus 4.8/xhigh instance,
-distinct from every maker. Routine deterministic QA uses Opus 4.8/high. Sonnet
-may gather mechanical evidence for the checker, but Sonnet does not issue the
-qualifying intent-achievement, risk, or final-readiness verdict.
+The preferred independent adversarial checker route is a fresh Opus 4.8/xhigh
+instance, distinct from every maker. The preferred routine deterministic QA
+route is Opus 4.8/high. Sonnet may gather mechanical evidence or serve as the
+independent checker; either route's verdict qualifies only when the checker
+role, independence, scope, current-head evidence, and evidence quality qualify.
 
 Sonnet 5/high is allowed only after the coordinator positively classifies the
 work as simple: explicit acceptance criteria, a known bounded file surface, a

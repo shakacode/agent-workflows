@@ -21,6 +21,10 @@ REPLACEMENT_FENCING_RULE =
   "A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities."
 CHECKER_RULE =
   "Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict."
+VERDICT_QUALIFICATION_RULE =
+  "Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route."
+ROUTE_NONDISQUALIFICATION_RULE =
+  "A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict."
 ADVERSARIAL_ADVISORY_RULE =
   "Preferred route, model, and effort are advisory for adversarial review; mismatch or unavailability alone does not disqualify an otherwise independent, evidence-backed adversarial verdict."
 ADVERSARIAL_OBSERVATION_RULE =
@@ -43,15 +47,34 @@ ROUTING_SURFACES = %w[
 ].freeze
 
 CHECKER_SURFACES = %w[
+  CONTEXT.md
   docs/agent-workflows-model-routing.md
+  docs/pr-batch-skills.md
+  skills/adversarial-pr-review/SKILL.md
   skills/plan-pr-batch/SKILL.md
   skills/post-merge-audit/SKILL.md
   skills/pr-batch/SKILL.md
   skills/triage/SKILL.md
+  workflows/adversarial-pr-review.md
   workflows/continuous-evaluation-loop.md
   workflows/post-merge-audit.md
   workflows/pr-processing.md
 ].freeze
+
+ROUTE_DISQUALIFICATION_PATTERNS = {
+  "named route forbidden from qualifying verdict" =>
+    /\b(?:Sol|Terra|Opus|Sonnet)\b.{0,160}(?:may not|must not|does not) issue.{0,80}qualifying/im,
+  "qualifying verdict assigned to a named route" =>
+    /qualifying.{0,120}\b(?:uses|is)\b.{0,80}\b(?:Sol|Terra|Opus|Sonnet)\b/im,
+  "named route limited below qualifying review" =>
+    /\b(?:Sol|Terra|Opus|Sonnet)\b.{0,80}limited to routine deterministic QA/im,
+  "cheaper route forbidden from qualifying verdict" =>
+    /cheaper route.{0,120}(?:may not|must not|does not).{0,80}qualifying/im,
+  "route compliance used as checker qualification" => /checker_route_compliance/i,
+  "route classified below policy" => /below-policy/i,
+  "route mismatch used to downgrade a verdict" => /do not downgrade/i,
+  "launch assurance used to qualify a checker" => /launch-assured policy-compliant run/i
+}.freeze
 
 CODEX_RECOMMENDATIONS = [
   "Multi-lane coordinator: Sol/xhigh",
@@ -160,6 +183,18 @@ class ModelRoutingContractTest < Minitest::Test
 
       assert_includes text, CHECKER_RULE, path
       assert_includes text.downcase, "independent", path
+    end
+  end
+
+  def test_review_audit_and_planning_surfaces_never_qualify_verdicts_by_route
+    CHECKER_SURFACES.each do |path|
+      text = normalized(read_repo_file(path))
+
+      assert_includes text, VERDICT_QUALIFICATION_RULE, path
+      assert_includes text, ROUTE_NONDISQUALIFICATION_RULE, path
+      ROUTE_DISQUALIFICATION_PATTERNS.each do |label, pattern|
+        refute_match pattern, text, "#{path}: #{label}"
+      end
     end
   end
 

@@ -12,19 +12,22 @@ role, not a maker role.
   current user or coordinator instruction remain the authority.
 - Use a checker instance distinct from every maker; unavailable or `UNKNOWN`
   independence blocks a clean/`realized` verdict. Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
-  Under the conservative
-  GPT-5.6 profile, use these QA routes:
+  Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+  A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+  Under the conservative GPT-5.6 profile, prefer these recommended advisory QA
+  routes:
   - Independent adversarial QA: Sol/xhigh
   - Routine deterministic QA: Sol/high
-  Under the provisional Claude profile (`claude-profile v0`), use these QA
-  routes:
+  Under the provisional Claude profile (`claude-profile v0`), prefer these
+  recommended advisory QA routes:
   - Independent adversarial QA: Opus 4.8/xhigh
   - Routine deterministic QA: Opus 4.8/high
-  Terra may collect mechanical evidence but may not issue the qualifying
-  intent-achievement or final-risk verdict; the same limit applies to Sonnet
-  under the Claude profile. Record host-observed model and effort only when
-  exposed; otherwise keep them `UNKNOWN`. A different or unavailable preferred
-  route alone does not block an evidence-backed `realized` classification.
+  Terra and Sonnet are lower-cost route recommendations; either may collect
+  mechanical evidence or issue an intent-achievement or final-risk verdict when
+  the checker role, independence, scope, current-head evidence, and evidence
+  quality qualify. Record host-observed model and effort only when exposed;
+  otherwise keep them `UNKNOWN`. A different or unavailable preferred route
+  alone does not block an evidence-backed `realized` classification.
 - Do not create issues, comments, labels, branches, fixes, reverts, PRs, or
   tracker edits during the independent evaluation loop. Draft follow-up entries
   only; one coordinator dedupes them and asks for approval before any GitHub
@@ -139,8 +142,9 @@ Return a report with these sections:
 1. **Scope And Sources**
    - repository, batch id or range, base/head SHAs when applicable
    - exact commands, API queries, and artifacts used
-   - checker identity, preferred model/effort, optional observed model/effort, independence from
-     every maker, and `checker_route_compliance`
+   - checker identity, preferred model/effort, optional observed model/effort,
+     independence from every maker, and `checker_qualification` based on role
+     separation, independence, scope, current-head evidence, and evidence quality
 2. **Ranked Findings**
    - ranked list of `regressed`, `missed`, `stalled`, `partial`, and `unknown`
      items
