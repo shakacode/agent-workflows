@@ -64,6 +64,7 @@ benchmark_labels: "n/a"
 merge_ledger: "n/a"
 ci_parity_environment: "n/a"
 hosted_ci_trigger: "n/a"
+hosted_qa_gate: "n/a"
 ci_change_detector: "n/a"
 ```
 
@@ -106,6 +107,7 @@ repos:
         test: yarn test --runInBand
       policy:
         hosted_ci_trigger: "n/a — CI runs on every PR"
+        hosted_qa_gate: "n/a — no hosted runtime QA target configured"
       trust:
         trusted_users:
           - maintainer-login

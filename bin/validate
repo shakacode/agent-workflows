@@ -120,6 +120,7 @@ ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/merge-assurance-test.rb
+ruby skills/pr-batch/bin/hosted-qa-gate-contract-test.rb
 ruby skills/pr-batch/bin/pr-merge-submit-test.rb
 ruby skills/pr-batch/bin/stage-dependency-gate-test.rb
 ruby skills/pr-batch/bin/agent-coord-bounded-test.rb

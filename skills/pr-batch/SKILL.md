@@ -23,6 +23,14 @@ test intentionally loads the production receipt parser from the sibling
 `post-merge-audit` skill; an isolated pinned copy must include that companion
 or stop with a precise missing-companion blocker.
 
+Resolve `hosted_qa_gate` from the trusted-base `.agents/agent-workflow.yml`.
+When `hosted_qa_gate` applies, only exact-current-head hosted runtime QA with
+every required acceptance criterion observed may satisfy readiness; a
+successful deployment, local tests, system tests, or static review cannot
+substitute. A `hosted_qa_gate` that declares itself non-waivable remains a hard
+blocker until satisfied; hosted-CI waivers, maintainer risk acceptance, and
+application-level readiness do not bypass it.
+
 Memorable invocation:
 
 ```text

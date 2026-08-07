@@ -124,6 +124,7 @@ module AgentWorkflowSeamDoctor
     merge_ledger
     ci_parity_environment
     hosted_ci_trigger
+    hosted_qa_gate
     ci_change_detector
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
@@ -154,6 +155,7 @@ module AgentWorkflowSeamDoctor
     (?:
       follow-up\ prefix |
       hosted[-\ ]CI |
+      hosted[-\ ]QA |
       benchmark\ labels? |
       (?:secret\ )?redaction\ patterns? |
       changelog\ path |

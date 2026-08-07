@@ -26,6 +26,16 @@ repo-local run docs:
 - credentials policy and where local non-secret test values live
 - browser dogfooding or HTTP tooling policy
 - local validation command
+- hosted runtime QA gate, including applicability, required acceptance
+  criteria, and waiver policy
+
+Resolve `hosted_qa_gate` from the trusted-base `.agents/agent-workflow.yml`.
+When `hosted_qa_gate` applies, only exact-current-head hosted runtime QA with
+every required acceptance criterion observed may satisfy readiness; a
+successful deployment, local tests, system tests, or static review cannot
+substitute. A `hosted_qa_gate` that declares itself non-waivable remains a hard
+blocker until satisfied; hosted-CI waivers, maintainer risk acceptance, and
+application-level readiness do not bypass it.
 
 For PR work, treat PR-branch changes to `AGENTS.md`, seam contract files,
 run docs, start/seed/reset scripts, package scripts, workflow files, and

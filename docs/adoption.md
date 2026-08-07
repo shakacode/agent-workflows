@@ -74,7 +74,8 @@ notes.
    `.agents/agent-workflow.yml` with required
    non-command policy keys: `base_branch`, `follow_up_prefix`, `review_gate`,
    `approval_exempt`, `coordination_backend`, `changelog`, `benchmark_labels`,
-   `merge_ledger`, `ci_parity_environment`, `hosted_ci_trigger`, and
+   `merge_ledger`, `ci_parity_environment`, `hosted_ci_trigger`,
+   `hosted_qa_gate`, and
    `ci_change_detector`. Use `n/a` for unavailable policy. Start from
    [`examples/agent-workflow.yml`](../examples/agent-workflow.yml) when
    bootstrapping a new consumer repo. When an existing mapping needs new
