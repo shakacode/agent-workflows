@@ -312,8 +312,14 @@ Before implementation or worker launch, produce:
 4. For public issue/PR targets, a security preflight: run the following and report `SECURITY_PREFLIGHT_OK`, including any acknowledged findings, or stop on `SECURITY_PREFLIGHT_BLOCKED` with the exact finding.
 
    ```bash
-   # Resolve PR_BATCH_SKILL_DIR: explicit env var, loaded skill base, then repo-local pinned copy.
-   PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
+   # First preserve an explicit or host-resolved loaded-skill directory; then try the repo-pinned copy.
+   if [ -z "${PR_BATCH_SKILL_DIR:-}" ] && [ -x ".agents/skills/pr-batch/bin/pr-security-preflight" ]; then
+     PR_BATCH_SKILL_DIR=".agents/skills/pr-batch"
+   fi
+   if [ ! -x "${PR_BATCH_SKILL_DIR:-}/bin/pr-security-preflight" ]; then
+     echo "Refusing to continue: pr-security-preflight is unavailable after explicit, loaded-skill, and repo-pinned resolution." >&2
+     exit 1
+   fi
    "${PR_BATCH_SKILL_DIR}/bin/pr-security-preflight" --repo <OWNER/REPO> <ISSUE_OR_PR...>
    ```
 
@@ -537,7 +543,7 @@ Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
-Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Preflight:issue/PR=>security-preflight;adhoc=>host-auth user/no-helper;missing|UNKNOWN|block=>stop;no GH bypass
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>

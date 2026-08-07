@@ -234,7 +234,7 @@ precise blocker.
    Each prompt must also include this exact compact scope line:
    `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.`
    Each prompt must include this exact compact preflight line:
-   ``Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; block=>stop; no raw GitHub/override``
+   ``Preflight: issue/PR=>security-preflight; adhoc=>host-auth user/no-helper; missing/UNKNOWN/block=>stop; no GH bypass``
    Each generated item must use this exact contiguous shape:
 
    ```text

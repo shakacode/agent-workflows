@@ -426,22 +426,27 @@ module BatchPlanPreflight
 
   def workflow_control_trust_anchor
     return unless INSTALLATION_ROOT && INSTALLATION_OWNER_UID
+    return unless File.const_defined?(:NOFOLLOW)
 
     helper_uid = INSTALLATION_OWNER_UID
     root_stat = File.lstat(INSTALLATION_ROOT)
     config_dir_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_DIR)
-    config_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_PATH)
     return unless root_stat.directory? &&
                   root_stat.uid == helper_uid &&
                   (root_stat.mode & 0o022).zero? &&
                   config_dir_stat.directory? &&
                   config_dir_stat.uid == helper_uid &&
-                  (config_dir_stat.mode & 0o022).zero? &&
-                  config_stat.file? &&
-                  config_stat.uid == helper_uid &&
-                  (config_stat.mode & 0o022).zero?
+                  (config_dir_stat.mode & 0o022).zero?
 
-    record = JSON.parse(File.read(WORKFLOW_CONTROL_TRUST_CONFIG_PATH, encoding: "UTF-8"))
+    record = File.open(WORKFLOW_CONTROL_TRUST_CONFIG_PATH, File::RDONLY | File::NOFOLLOW) do |file|
+      stat = file.stat
+      next unless stat.file? && stat.uid == helper_uid && (stat.mode & 0o022).zero?
+
+      contents = file.read.force_encoding("UTF-8")
+      next unless contents.valid_encoding?
+
+      JSON.parse(contents)
+    end
     expected_keys = [
       WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD,
       WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD,

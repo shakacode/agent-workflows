@@ -115,11 +115,12 @@ OVERSIZED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
   Dispatch docs: route policy preferred; requested remote@fastest-low-cost/low; fallbacks remote@balanced/medium; auth dispatch/route y/y.
   Dispatch release: route policy hard; requested remote@balanced/medium; fallbacks none; auth dispatch/route n/n.
 TEXT
-GOAL_PROMPT_PREFLIGHT_LINE = "Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;" \
-                             "block=>stop;no raw GitHub/override"
+GOAL_PROMPT_PREFLIGHT_LINE =
+  "Preflight:issue/PR=>security-preflight;adhoc=>host-auth user/no-helper;" \
+  "missing|UNKNOWN|block=>stop;no GH bypass"
 TRIAGE_GOAL_PROMPT_PREFLIGHT_LINE =
-  "Preflight: issue/PR=>pr-security-preflight; trusted-direct adhoc:=>skip; " \
-  "block=>stop; no raw GitHub/override"
+  "Preflight: issue/PR=>security-preflight; adhoc=>host-auth user/no-helper; " \
+  "missing/UNKNOWN/block=>stop; no GH bypass"
 GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
   - Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
     Original:trusted ad-hoc prompt|n/a
@@ -532,9 +533,9 @@ required_all_prompt_phrases = [
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
   "exact model/effort+binding",
-  "Preflight: issue/PR=>pr-security-preflight;",
-  "trusted-direct adhoc:=>skip",
-  "no raw GitHub/override",
+  "Preflight:issue/PR=>security-preflight;",
+  "adhoc=>host-auth user/no-helper",
+  "no GH bypass",
   GOAL_MODE_COMPACT_CONTRACT,
   "merge_authority:",
   BATCH_SIZE_TARGET_PROMPT_PHRASE,

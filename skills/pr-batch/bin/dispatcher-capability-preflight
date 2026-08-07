@@ -11,6 +11,7 @@ require "uri"
 PHYSICAL_HELPER_PATH = File.realpath(__FILE__)
 PHYSICAL_INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(PHYSICAL_HELPER_PATH))
 require File.join(PHYSICAL_INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_installation")
+require File.join(PHYSICAL_INSTALLATION_ROOT, "bin/agent_doctor/signed_launch_readiness")
 
 ACCEPTED_BINDING_EVIDENCE = %w[operator-selected dispatcher-bound].freeze
 NEGATIVE_BINDING_EVIDENCE = %w[unbound binding-rejected binding-failed].freeze
@@ -104,22 +105,27 @@ end
 
 def dispatcher_trust_anchor
   return unless INSTALLATION_ROOT && INSTALLATION_OWNER_UID
+  return unless File.const_defined?(:NOFOLLOW)
 
   helper_uid = INSTALLATION_OWNER_UID
   root_stat = File.lstat(INSTALLATION_ROOT)
   config_dir_stat = File.lstat(TRUST_CONFIG_DIR)
-  config_stat = File.lstat(TRUST_CONFIG_PATH)
   return unless root_stat.directory? &&
                 root_stat.uid == helper_uid &&
                 (root_stat.mode & 0o022).zero? &&
                 config_dir_stat.directory? &&
                 config_dir_stat.uid == helper_uid &&
-                (config_dir_stat.mode & 0o022).zero? &&
-                config_stat.file? &&
-                config_stat.uid == helper_uid &&
-                (config_stat.mode & 0o022).zero?
+                (config_dir_stat.mode & 0o022).zero?
 
-  record = JSON.parse(File.read(TRUST_CONFIG_PATH))
+  record = File.open(TRUST_CONFIG_PATH, File::RDONLY | File::NOFOLLOW) do |file|
+    stat = file.stat
+    next unless stat.file? && stat.uid == helper_uid && (stat.mode & 0o022).zero?
+
+    contents = file.read.force_encoding("UTF-8")
+    next unless contents.valid_encoding?
+
+    JSON.parse(contents)
+  end
   return unless record.is_a?(Hash) &&
                 record["type"] == "agent-workflow-dispatcher-trust-anchor" &&
                 record["version"] == 1 &&
@@ -359,6 +365,15 @@ def current_v2_confirmation_shape?(confirmation)
     launch_observation_signature_verified?(confirmation)
 end
 
+def signed_launch_supported?
+  return false unless INSTALLATION_ROOT && INSTALLATION_HOST
+
+  readiness = AgentDoctor::SignedLaunchReadiness.assess(host: INSTALLATION_HOST, target: INSTALLATION_ROOT)
+  readiness["capability"] == "supported" && readiness["ready"] == true &&
+    readiness["dispatcher_launch"] == "supported" &&
+    readiness["workflow_control_lifecycle"] == "supported"
+end
+
 def pre_actual_host_v2_confirmation_shape?(confirmation)
   !confirmation.key?("actual_host") &&
     v2_confirmation_evidence_shape?(confirmation) &&
@@ -380,7 +395,7 @@ end
 
 def confirmation_qualifies?(confirmation)
   confirmation.is_a?(Hash) && confirmation["version"] == CONFIRMATION_ENVELOPE_VERSION &&
-    current_v2_confirmation_shape?(confirmation)
+    current_v2_confirmation_shape?(confirmation) && signed_launch_supported?
 end
 
 def replacement_proof_authorizes?(replacement, active_assignment, replacement_assignment)
@@ -742,6 +757,11 @@ if input.fetch("active_assignments", []).any? { |entry| entry["lane_id"] != inpu
 end
 fail_input("replacement must be a well-formed replacement proof") if input.key?("replacement") && !replacement_proof_shape?(input["replacement"])
 fail_input("launch_confirmation must be a well-formed identity-bound confirmation") if input.key?("launch_confirmation") && !confirmation_shape?(input["launch_confirmation"])
+if input.key?("launch_confirmation") &&
+   input.fetch("active_assignments", []).any? { |entry| entry["lifecycle"] != "confirmed-active" } &&
+   current_v2_confirmation_shape?(input["launch_confirmation"]) && !signed_launch_supported?
+  fail_input("launch_confirmation requires exact supported signed-launch readiness")
+end
 if input.key?("launch_waiver")
   batch_id_valid = nonempty_string?(input["batch_id"]) && !unknown_sentinel?(input["batch_id"])
   fail_input("launch_waiver requires a non-UNKNOWN batch_id") unless batch_id_valid

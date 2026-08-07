@@ -1159,7 +1159,7 @@ Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;exact model/effort+binding;holder/branch/PR/phase/URLs/UNKNOWN
-Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Preflight:issue/PR=>security-preflight;adhoc=>host-auth user/no-helper;missing|UNKNOWN|block=>stop;no GH bypass
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
@@ -2094,10 +2094,12 @@ hatch**, not a single kill switch:
      `claude -p` process, or close the Conductor workspace running an in-process
      `Agent`/`Workflow` coordinator.
   4. Run `agent-coord release` for the lane, or manually clear the orphaned
-     claim, so relaunch does not wait for lease expiry, and remove the mirrored
-     claim label (the daemon backstop also reconciles it on lease expiry). This
-     is safe because the cancellation state still prevents another worker from
-     reclaiming the lane while cleanup is in progress.
+     claim, so relaunch does not wait for lease expiry. Remove the mirrored
+     claim label only after a fresh status read still matches the released
+     holder and generation; do not remove a label re-applied by a replacement
+     claim. The daemon backstop also reconciles the released claim's label on
+     lease expiry. Cancellation state prevents an unsafe relaunch while this
+     claim-specific cleanup is in progress.
   5. Clean the lane worktree. If the directory still exists, run
      `git worktree remove --force` on that path. If the directory is already
      gone, confirm no other active lane depends on deleted worktree metadata,

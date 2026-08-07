@@ -11,6 +11,9 @@ LAUNCH_ASSURANCE = "Launch assurance: parent <exact model>/<effort>@<source>; " 
                    "checker <exact model>/<effort>@<source>; exact-policy UNKNOWN blocks."
 WORKER_ROUTE = "Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; " \
                "escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
+TRUSTED_ADHOC_PREFLIGHT_LINE =
+  "Preflight:issue/PR=>security-preflight;adhoc=>host-auth user/no-helper;" \
+  "missing|UNKNOWN|block=>stop;no GH bypass"
 DISPATCH_RULE = "Bind actors on-host; unbound -> stop; no inheritance/substitution; " \
                 "exact-policy parent mismatch/UNKNOWN -> relaunch; checker mismatch/UNKNOWN -> reserve fresh"
 DISPATCH_PREFLIGHT_RULE = "Dispatch preflight: JSON-in/JSON-out; select only bound+attested requested tuple or first explicitly authorized ordered fallback; otherwise one dispatch-decision-request v1."
@@ -114,6 +117,26 @@ def assert_signed_observation_contract(test, text, label)
 end
 
 class ModelRoutingContractTest < Minitest::Test
+  def test_goal_prompts_fail_closed_on_ad_hoc_targets_without_trusted_user_provenance
+    prompts = {
+      "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
+      "pr-batch" => extract_prompt(read_repo_file("skills/pr-batch/SKILL.md"), "## Goal Prompt Template"),
+      "plan-pr-batch" => extract_prompt(read_repo_file("skills/plan-pr-batch/SKILL.md"), "## Goal Prompt for pr-batch")
+    }
+
+    prompts.each do |label, prompt|
+      assert_includes prompt, TRUSTED_ADHOC_PREFLIGHT_LINE, "#{label} must fail closed on untrusted ad-hoc work"
+    end
+  end
+
+  def test_pr_batch_security_preflight_snippet_checks_the_resolved_helper
+    skill = read_repo_file("skills/pr-batch/SKILL.md")
+    section = extract_markdown_section(skill, "## Planning Output")
+
+    assert_includes section, 'if [ ! -x "${PR_BATCH_SKILL_DIR:-}/bin/pr-security-preflight" ]; then'
+    assert_includes section, "Refusing to continue: pr-security-preflight is unavailable"
+  end
+
   def test_signed_observation_payload_and_migration_match_across_all_six_surfaces
     SIGNED_OBSERVATION_CONTRACT_PATHS.each do |path|
       assert_signed_observation_contract(self, read_repo_file(path), path)

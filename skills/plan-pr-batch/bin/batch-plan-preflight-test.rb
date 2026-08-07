@@ -38,6 +38,16 @@ class BatchPlanPreflightTest < Minitest::Test
     broad_runtime
   ].freeze
 
+  def test_workflow_control_trust_anchor_reads_the_opened_nofollow_descriptor
+    helper_source = File.read(HELPER, encoding: "UTF-8")
+    trust_reader = helper_source[/def workflow_control_trust_anchor(.*?)^  end$/m, 1]
+
+    refute_nil trust_reader
+    assert_includes trust_reader, "File::RDONLY | File::NOFOLLOW"
+    assert_includes trust_reader, "file.stat"
+    refute_includes trust_reader, "File.read(WORKFLOW_CONTROL_TRUST_CONFIG_PATH"
+  end
+
   def lane(id = "lane-a", wave: "wave-a", purpose: "implementation", surfaces: [])
     {
       "id" => id,

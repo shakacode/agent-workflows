@@ -60,6 +60,16 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     JSON.parse(stdout)
   end
 
+  def test_dispatcher_trust_anchor_reads_the_opened_nofollow_descriptor
+    helper_source = File.read(HELPER, encoding: "UTF-8")
+    trust_reader = helper_source[/def dispatcher_trust_anchor(.*?)^end$/m, 1]
+
+    refute_nil trust_reader
+    assert_includes trust_reader, "File::RDONLY | File::NOFOLLOW"
+    assert_includes trust_reader, "file.stat"
+    refute_includes trust_reader, "File.read(TRUST_CONFIG_PATH)"
+  end
+
   def launch_confirmation(assignment, overrides = {}, signing_key = dispatcher_signing_key)
     confirmation = {
       "type" => "launch-confirmation",
@@ -153,7 +163,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
   def installed_dispatcher_helper(key_id: "test-dispatcher-key", key: dispatcher_signing_key,
                                   config_mode: 0o600, agents_mode: 0o700, root_mode: 0o700, config_symlink: false,
-                                  agents_symlink: false)
+                                  agents_symlink: false, supported_readiness: true)
     root = secure_mktmpdir("dispatcher-trust-install")
     File.chmod(root_mode, root)
     (@dispatcher_install_roots ||= []) << root
@@ -165,6 +175,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     FileUtils.mkdir_p(module_root)
     FileUtils.cp(HELPER, helper)
     FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_installation.rb", __dir__), module_root)
+    FileUtils.cp(File.expand_path("../../../bin/agent_doctor/signed_launch_readiness.rb", __dir__), module_root)
     File.chmod(0o755, helper)
     write_install_metadata(
       root, File.expand_path("../../..", __dir__), host: "codex", mode: "copy", delivery_mode: "flat"
@@ -178,6 +189,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
       FileUtils.mkdir_p(agents_dir)
       File.chmod(agents_mode, agents_dir)
     end
+    write_supported_readiness(root, dispatcher_key_id: key_id, dispatcher_key: key) if supported_readiness
     trust_record = {
       "type" => "agent-workflow-dispatcher-trust-anchor",
       "version" => 1,
@@ -187,6 +199,7 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     if config_symlink
       target = File.join(root, "caller-substitutable-trust.json")
       File.write(target, JSON.generate(trust_record))
+      FileUtils.rm_f(config_path)
       File.symlink(target, config_path)
     else
       File.write(config_path, JSON.generate(trust_record))
@@ -241,28 +254,28 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
     [File.join(root, "skills/pr-batch/bin/dispatcher-capability-preflight"), root]
   end
 
-  def write_supported_readiness(root)
-    key = dispatcher_signing_key
+  def write_supported_readiness(root, dispatcher_key_id: "test-dispatcher-key", dispatcher_key: dispatcher_signing_key)
+    workflow_key = dispatcher_signing_key
     records = {
       "signed-launch-capability.json" => {
         "type" => "agent-workflow-signed-launch-capability",
         "version" => 1,
         "host" => "codex",
         "producer" => "test-host-producer",
-        "dispatcher_launch_key_id" => "test-dispatcher-key",
+        "dispatcher_launch_key_id" => dispatcher_key_id,
         "workflow_control_lifecycle_key_id" => "test-workflow-control-key"
       },
       "dispatcher-launch-trust.json" => {
         "type" => "agent-workflow-dispatcher-trust-anchor",
         "version" => 1,
-        "agent_workflow_dispatcher_trusted_key_id" => "test-dispatcher-key",
-        "agent_workflow_dispatcher_trusted_public_key_pem" => key.public_to_pem
+        "agent_workflow_dispatcher_trusted_key_id" => dispatcher_key_id,
+        "agent_workflow_dispatcher_trusted_public_key_pem" => dispatcher_key.public_to_pem
       },
       "workflow-control-lifecycle-trust.json" => {
         "type" => "agent-workflow-control-lifecycle-trust-anchor",
         "version" => 1,
         "agent_workflow_control_lifecycle_trusted_key_id" => "test-workflow-control-key",
-        "agent_workflow_control_lifecycle_trusted_public_key_pem" => key.public_to_pem
+        "agent_workflow_control_lifecycle_trusted_public_key_pem" => workflow_key.public_to_pem
       }
     }
     records.each do |name, record|
@@ -300,12 +313,14 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
         def stat(path, *args)
           result = agent_workflows_original_stat(path, *args)
           source_root = ENV.fetch("AGENT_WORKFLOWS_TEST_SOURCE_OWNER_ROOT")
-          expanded = File.realpath(path.to_s)
+          expanded = begin
+            File.realpath(path.to_s)
+          rescue Errno::ENOENT, Errno::ENOTDIR
+            nil
+          end
           return result unless expanded == source_root || expanded.start_with?("\#{source_root}/")
 
           result.define_singleton_method(:uid) { Process.euid.zero? ? 1 : 0 }
-          result
-        rescue Errno::ENOENT, Errno::ENOTDIR
           result
         end
       end
@@ -2951,6 +2966,36 @@ class DispatcherCapabilityPreflightTest < Minitest::Test
 
     assert_equal "invalid-input", output.fetch("status")
     assert_equal "caller input cannot override dispatcher trust", output.fetch("reason")
+    refute output.key?("dispatch")
+  end
+
+  def test_v2_confirmation_rejects_partial_unknown_host_readiness
+    input = {
+      "lane_id" => "incident-partial-host-readiness",
+      "requested" => { "route" => { "model" => "Sol", "effort" => "high" }, "dispatcher" => "remote" },
+      "candidates" => [{
+        "route" => { "model" => "Sol", "effort" => "high" },
+        "dispatcher" => "remote",
+        "binding" => "dispatcher-bound",
+        "attestation" => "instance-bound",
+        "instance_id" => "partial-host-readiness-instance"
+      }]
+    }
+    pending = dispatch(input)
+    partial_helper, = installed_dispatcher_helper(supported_readiness: false)
+
+    output = dispatch(
+      input.merge(
+        "active_assignments" => pending.fetch("active_assignments"),
+        "launch_confirmation" => launch_confirmation(pending.fetch("dispatch"))
+      ),
+      partial_helper
+    )
+
+    assert_equal "invalid-input", output.fetch("status")
+    refute(Array(output["active_assignments"]).any? do |assignment|
+      assignment["lifecycle"] == "confirmed-active"
+    end)
     refute output.key?("dispatch")
   end
 

@@ -10,7 +10,10 @@ class SignedLaunchInstallationTest < Minitest::Test
   RELATIVE_HELPER = "skills/example/bin/helper"
 
   def test_platform_symlink_ancestor_is_canonicalized
-    root = Dir.mktmpdir("signed-launch-installation", "/tmp")
+    platform_alias = "/tmp"
+    skip "#{platform_alias} is not a platform symlink on this host" unless File.lstat(platform_alias).symlink?
+
+    root = Dir.mktmpdir("signed-launch-installation", platform_alias)
     File.chmod(0o700, root)
     helper = write_helper(root)
     write_metadata(root)

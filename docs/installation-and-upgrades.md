@@ -65,13 +65,13 @@ v1. A clean non-Codex host is outside this producer contract and remains
 `UNKNOWN`/blocked until that host defines an equivalent contract; absent files
 on such a host are not partial-state remediation instructions.
 
-Waiver-capable helpers derive the host and trust root from safe installation
-metadata instead of assuming Codex. A native plugin helper may bind to its
-companion agent home only when that home's owner-protected metadata records the
-matching host, `plugin-companion` delivery mode, and the helper's physical
-plugin source. `CODEX_HOME`, `CLAUDE_HOME`, and their default locations nominate
-candidates but do not establish trust by themselves. Missing, unsafe,
-mismatched, or ambiguous companion bindings fail closed as `UNKNOWN`.
+Waiver-capable helpers derive the host and trust root from safe flat-installation
+metadata instead of assuming Codex. In v1, a helper invoked directly from a
+plugin source or cache cannot authenticate a companion agent home and therefore
+fails closed as `UNKNOWN`, even when `CODEX_HOME`, `CLAUDE_HOME`, or a companion
+receipt nominates one. Run the helper from its validated flat companion install;
+environment-selected homes, plugin-companion metadata, `.agents` files, and keys
+never establish trust for a plugin-source helper.
 
 The installer creates or validates the real, owner-matched, non-group/world-
 writable `<target>/` and `<target>/.agents/` directories without replacing or
