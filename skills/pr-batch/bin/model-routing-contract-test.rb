@@ -104,6 +104,11 @@ NAMED_EXECUTION_ENFORCEMENT_PATTERNS = {
   "exact model identity required for routing" => /require an exact model/im
 }.freeze
 
+ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS = {
+  "route preference described as requiring authority" =>
+    /\b(?:(?:explicit\s+)?route(?:\s+and\s+dispatch)?\s+authority|explicit authority for (?:the )?route)\b/im
+}.freeze
+
 CODEX_RECOMMENDATIONS = [
   "Multi-lane coordinator: Sol/xhigh",
   "Simple, positively classified worker: Terra/high",
@@ -239,6 +244,9 @@ class ModelRoutingContractTest < Minitest::Test
         assert_includes text, rule, "#{path} is missing: #{rule}"
       end
       NAMED_EXECUTION_ENFORCEMENT_PATTERNS.each do |label, pattern|
+        refute_match pattern, text, "#{path}: #{label}"
+      end
+      ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS.each do |label, pattern|
         refute_match pattern, text, "#{path}: #{label}"
       end
     end

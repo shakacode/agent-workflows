@@ -305,8 +305,8 @@ loaded-skill, and repo-local pinned-copy chain, then call
 `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` with one JSON
 object on standard input. It writes one JSON result to standard output and does
 not launch a worker or mutate a coordination backend. The caller supplies the
-lane state, requested route/dispatcher, explicit route and dispatch authority,
-    and ordered dispatcher candidates with stable instance identities.
+lane state, requested route preference and dispatcher, explicit dispatch
+authority, and ordered dispatcher candidates with stable instance identities.
 
 Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
 
