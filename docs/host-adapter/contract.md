@@ -71,6 +71,15 @@ Claude Code slash commands or subagent runtime support for Claude Code. If those
 signals are absent or mixed, use the `generic` prompt target and conservative
 batch sizing.
 
+Model and effort selections remain advisory preferences across every host. A
+host adapter may report observed host, model, and effort only from runtime state
+it actually exposes; every unavailable field is `UNKNOWN`, and absence or
+mismatch never alone blocks workflow progress. The host owns any route-exposure
+mechanism. Agent Workflows does not provision or require signing keys, fixed
+trust anchors, launch-confirmation receipts, or human waivers. Prompt conversion
+for incompatible runtime instructions is tracked separately in
+[issue #372](https://github.com/shakacode/agent-workflows/issues/372).
+
 ## Invocation Syntax
 
 Shared docs may mention the portable skill name, but user-facing prompts must

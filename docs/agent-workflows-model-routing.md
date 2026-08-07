@@ -7,8 +7,9 @@ the least expensive safe route, and escalates only with evidence.
 
 Shared workflow policy uses portable classes: `fastest-low-cost`, `balanced`,
 and `strongest`. Exact model names and supported effort levels come from the
-operator or the verified runtime roster. An operator-required exact model is a
-launch invariant, not a preference that a dispatcher may silently substitute.
+operator or the verified runtime roster. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
 
 ## Default Policy
 
@@ -32,8 +33,8 @@ verification, migration safeguards, least privilege, or human approval.
 
 ## Conservative GPT-5.6 Profile
 
-Use this recommended fail-closed profile for Codex GPT-5.6 batches. It is an
-informative exact binding, not a portable default for runtimes that do not
+Use this recommended advisory profile for Codex GPT-5.6 batches. It is an
+informative preference, not a portable default for runtimes that do not
 expose these models. `Sol` means GPT-5.6 Sol, `Terra` means GPT-5.6 Terra, and
 `xhigh` is the extra-high reasoning-effort tier above `high`; verify that exact
 effort token on the selected runtime before launch:
@@ -54,14 +55,9 @@ ambiguity, consequence, and verification strength.
 GPT-5.5 remains available only for an explicitly requested independent
 comparison or family-specific fallback.
 
-The initiating parent must already be bound to Sol at the required effort before
-it interprets targets, approves the plan, or dispatches workers. Record the
-binding source from host session metadata, effective instance-bound runtime
-state, or explicit operator-selected launch configuration. Mutable default
-configuration alone, prompt text, a model's self-report, an installed model
-list, or a dispatch-resolved `strongest` class does not prove the active parent
-assignment. A mismatch or `UNKNOWN` stops the batch for relaunch on the required
-parent.
+Prefer Sol at the stated effort for the initiating parent. If the host exposes
+the running model or effort, record it as observed metadata; otherwise keep the
+field `UNKNOWN` and continue with the same safeguards.
 
 The independent adversarial checker is a fresh Sol/xhigh instance, distinct
 from every maker. Routine deterministic QA uses Sol/high. Terra may gather
@@ -86,15 +82,16 @@ Luna is outside this conservative profile.
 
 ## Conservative Claude Profile (provisional)
 
-Use this recommended fail-closed profile for Claude batches. Version marker:
-`claude-profile v0`, provisional pending the observed route receipts and
+Use this recommended advisory profile for Claude batches. Version marker:
+`claude-profile v0`, provisional pending observed route metadata and
 comparative evidence tracked in shakacode/agent-workflows#151 (adopted via
-shakacode/agent-workflows#171). It is an informative exact binding, not a
+shakacode/agent-workflows#171). It is a planning preference, not a
 portable default for runtimes that do not expose these models. The roster is
 Opus 4.8 (`claude-opus-4-8`), Sonnet 5 (`claude-sonnet-5`), and Fable 5
 (`claude-fable-5`), and `xhigh` is the extra-high reasoning-effort tier above
-`high`; exact effort-token support on Claude runtimes is unverified, so verify
-that exact effort token on the selected runtime before launch:
+`high`; exact effort-token support on Claude runtimes is unverified, so record
+the host-observed effort when exposed and otherwise use `UNKNOWN` without
+blocking launch:
 
 - Multi-lane coordinator: Opus 4.8/xhigh
 - Simple, positively classified worker: Sonnet 5/high
@@ -114,14 +111,11 @@ coordination, but it stays experimental until the
 shakacode/agent-workflows#151 evidence supports promotion. Never make Fable 5
 or `max` effort a default route.
 
-The initiating parent must already be bound to Opus 4.8 at the required effort
-before it interprets targets, approves the plan, or dispatches workers. Record
-the binding source from host session metadata, effective instance-bound
-runtime state, or explicit operator-selected launch configuration. Mutable
-default configuration alone, prompt text, a model's self-report, an installed
-model list, or a dispatch-resolved `strongest` class does not prove the active
-parent assignment. A mismatch or `UNKNOWN` stops the batch for relaunch on the
-required parent.
+Prefer Opus 4.8 at the recommended effort for the initiating parent. Record
+host-observed parent metadata only from runtime state the host exposes; mutable
+defaults, prompt text, model self-report, and an installed model list are not
+observations. A different or `UNKNOWN` parent route does not alone block target
+interpretation, planning, dispatch, review, or audit.
 
 The independent adversarial checker is a fresh Opus 4.8/xhigh instance,
 distinct from every maker. Routine deterministic QA uses Opus 4.8/high. Sonnet
@@ -298,20 +292,22 @@ loaded-skill, and repo-local pinned-copy chain, then call
 object on standard input. It writes one JSON result to standard output and does
 not launch a worker or mutate a coordination backend. The caller supplies the
 lane state, requested route/dispatcher, explicit route and dispatch authority,
-and ordered candidates with binding and attestation evidence.
+    and ordered dispatcher candidates with stable instance identities.
 
 Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
 
-Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice.
+Prospective `instance_id` equal to `UNKNOWN` is unusable. Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
 
-Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch.
-Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_host`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. A persisted pre-`actual_host` version 2 confirmation remains parseable only as signed history for the same `confirmed-active` assignment identity: verify its signature against the legacy canonical payload that omits `actual_host`, never synthesize that field, and never use the record to qualify or activate `launch-pending`; any tampering or identity mismatch fails closed, and every new activation still requires a current signed nonempty `actual_host`. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
+Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
+A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
 
-The helper selects the requested tuple or the first explicitly authorized viable
-fallback. It never derives authority from generic subagent wording or inherits
-the coordinator route. It records requested/actual route and dispatcher, reason,
-authority, `resume_goal`, and one active assignment/launch token. A hard route
-forbids route substitution; an existing different assignment requires a stopped,
+The helper prefers the requested route and dispatcher, but route is advisory;
+only a dispatcher substitution requires explicit dispatch authority. It never
+derives authority from generic subagent wording or inherits the coordinator
+preference. It records preferred and selected route metadata, selected dispatcher,
+reason, authority, optional observed host fields, and one active assignment/launch
+token. An existing different dispatcher or instance requires a stopped,
 reconciled replacement. If none is authorized, it returns `blocked-user-input`
 with one stable `dispatch-decision-request v1`, including canonical viable
 fallback choices; replay does not create blocker churn. A selected result permits
@@ -319,7 +315,8 @@ Goal-mode automatic resume only after the required persistence record is durable
 
 ## Replacement And Escalation
 
-Changing a lane’s model means replacing its worker instance. Follow the
+Replacing a lane's worker instance, including an actual runtime model change,
+uses the
 canonical workflow’s **Worker Model Replacement And Escalation** protocol:
 
 1. Reach a safe checkpoint.
@@ -327,7 +324,7 @@ canonical workflow’s **Worker Model Replacement And Escalation** protocol:
 3. Preserve the lane identity, worktree, branch, useful changes, and claim.
 4. Stop the old instance.
 5. Reconcile or fence ownership.
-6. Bind the replacement’s exact pair.
+6. Record the replacement's advisory route preference and stable instance.
 7. Start the replacement without overlap.
 
 A `MODEL_ESCALATION_REQUEST` is evidence for the coordinator, not permission to

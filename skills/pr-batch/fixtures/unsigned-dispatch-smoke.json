@@ -1,0 +1,31 @@
+{
+  "lane_id": "install-smoke",
+  "requested": {
+    "route": {
+      "model": "preferred-model",
+      "effort": "high"
+    },
+    "dispatcher": "installed-host"
+  },
+  "authority": {},
+  "candidates": [
+    {
+      "route": {
+        "model": "available-model",
+        "effort": "medium"
+      },
+      "dispatcher": "installed-host",
+      "instance_id": "installed-host-1",
+      "observed_host": {
+        "host": "UNKNOWN",
+        "model": "UNKNOWN",
+        "effort": "UNKNOWN"
+      }
+    }
+  ],
+  "lane_state": {
+    "claim": "install-smoke-claim",
+    "branch": "codex/install-smoke",
+    "worktree": "/tmp/install-smoke"
+  }
+}

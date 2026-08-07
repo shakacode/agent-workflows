@@ -47,18 +47,18 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   PR was never audited unless the repo has a durable audit coverage marker or
   ledger that records completed audit coverage.
 - Run Codex and Claude independently first. Do not give either agent the other agent's report until both reports are complete.
-- For completed-batch audit, verify launch assurance before deep audit. The
-  qualifying checker is a fresh instance independent from every maker and its
-  exact model/effort plus binding source must satisfy operator policy. Under the
+- For completed-batch audit, verify checker independence before deep audit. The
+  qualifying checker is a fresh instance independent from every maker.
+  Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict. Under the
   conservative GPT-5.6 profile, qualifying independent adversarial QA uses
   Sol/xhigh; Sol/high is limited to routine deterministic QA. Terra may collect
   mechanical evidence but does not issue the qualifying verdict. Under the
   provisional Claude profile (`claude-profile v0`), qualifying independent
   adversarial QA uses Opus 4.8/xhigh; Opus 4.8/high is limited to routine
   deterministic QA. Sonnet may collect mechanical evidence but does not issue
-  the qualifying verdict. Below-policy,
-  non-independent, or `UNKNOWN` checker state makes the audit non-clean and must
-  be reported as `checker_route_compliance: UNKNOWN|failed`.
+  the qualifying verdict. Non-independent or `UNKNOWN` checker identity makes
+  the audit non-clean. Record unavailable observed model/effort as `UNKNOWN`
+  without treating preference mismatch alone as a blocker.
 - During independent audits, agents may draft issue bodies but must not create issues, comments, labels, fixes, reverts, branches, or PRs.
 - Use one coordinator to compare reports, dedupe findings, finalize the issue plan, and create follow-up issues.
 - In completed-batch mode only:
@@ -215,21 +215,18 @@ GitHub, and agent-coord ground truth for every audit fact.
 
 For completed-batch audit with `Audit role: qualifying-checker`, before deep
 audit verify that the checker is a fresh instance independent from every maker.
-Record its identity, exact model/effort, binding source, the maker identities,
-checker independence, and `checker_route_compliance`. Host session metadata,
-effective instance-bound runtime state, or explicit operator-selected launch
-configuration qualify as binding evidence; mutable default configuration,
-installed rosters, dispatch-resolved classes, prompt text, and model self-report
-do not. Under the conservative GPT-5.6 profile, qualifying independent
+Record its identity, preferred model/effort, optional host-observed model/effort,
+the maker identities, checker independence, and `checker_route_compliance`.
+Never infer observed values from preferences, prompt text, or model self-report.
+Under the conservative GPT-5.6 profile, qualifying independent
 adversarial QA uses Sol/xhigh; Sol/high is limited to routine deterministic QA.
 Terra may collect mechanical evidence but must not issue the qualifying audit
 verdict. Under the provisional Claude profile, qualifying independent
 adversarial QA uses Opus 4.8/xhigh; Opus 4.8/high is limited to routine
 deterministic QA. Sonnet may collect mechanical evidence but must not issue the
-qualifying audit verdict. If checker identity, exact model/effort, binding source, or
-independence is unavailable, below policy, or `UNKNOWN`, do not return a clean
-verdict; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
-qualifying-checker reservation needed. For `Audit role: advisory-auditor`,
+qualifying audit verdict. If checker identity or independence is unavailable or
+`UNKNOWN`, do not return a clean verdict. An unavailable preferred model or
+effort alone does not block an otherwise qualifying verdict. For `Audit role: advisory-auditor`,
 record `checker_route_compliance: not_applicable (advisory)`; collect evidence
 and report concrete findings, but do not issue the qualifying clean/ready
 verdict. Concrete advisory findings still require coordinator triage. If
