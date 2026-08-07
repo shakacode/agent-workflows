@@ -16,15 +16,24 @@ For a verified Codex GPT-5.6 route profile:
 
 - Independent adversarial QA: Sol/xhigh
 
-Do not downgrade this qualifying adversarial verdict to the Sol/high route
-reserved for routine deterministic QA.
+Sol/xhigh is the preferred adversarial route; Sol/high is the routine
+deterministic QA preference.
 
 For a verified Claude route profile (`claude-profile v0`, provisional):
 
 - Independent adversarial QA: Opus 4.8/xhigh
 
-Do not downgrade this qualifying adversarial verdict to the Opus 4.8/high
-route reserved for routine deterministic QA.
+Opus 4.8/xhigh is the preferred adversarial route; Opus 4.8/high is the routine
+deterministic QA preference.
+
+Preferred route, model, and effort are advisory for adversarial review;
+mismatch or unavailability alone does not disqualify an otherwise independent,
+evidence-backed adversarial verdict.
+Record observed host, model, and effort only from host-exposed runtime evidence;
+use literal `UNKNOWN` for every unavailable field, and never infer observations
+from the preference, prompt text, or model self-report.
+Reviewer independence and evidence quality remain mandatory regardless of the
+preferred or observed route.
 
 ## Contract
 

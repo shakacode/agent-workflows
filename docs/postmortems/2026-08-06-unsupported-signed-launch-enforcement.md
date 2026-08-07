@@ -39,6 +39,10 @@ submission remain mandatory.
   mechanism. Prompt compatibility moved to separate
   [issue #372](https://github.com/shakacode/agent-workflows/issues/372).
 
+Issue #273 resumes separately after #299 removes the unsupported launch gate;
+#299 does not implement or redefine #273. Track that resumed work only in
+[issue #273](https://github.com/shakacode/agent-workflows/issues/273).
+
 ## Impact
 
 - A clean Codex or Claude installation could evaluate the verifier but could
@@ -75,8 +79,8 @@ Confirmed:
   or provision the evidence.
 - Installer tests checked copied files and metadata but did not execute a clean
   installed dispatcher and batch-plan lifecycle from end to end.
-- No producer/verifier/installer matrix was required before new evidence became
-  a portable hard gate.
+- No producer/verifier/provisioner/installer matrix was required before new
+  evidence became a portable hard gate.
 
 Inferred from the change shape:
 
@@ -106,11 +110,11 @@ an unusable integrated workflow.
 | Remove signed launch/lifecycle activation, fixed anchors, hard route binding, and waiver logic. | Agent Workflows maintainers | Dispatcher and batch-plan contract tests contain no signing dependency. |
 | Preserve one active assignment, stable replay tokens, replacement fencing, single-use proofs, serialization, dependency, QA, CI, review, and merge gates. | Agent Workflows maintainers | Focused helper suites plus `bin/validate`. |
 | Run unsigned lifecycle acceptance from clean Codex and Claude install trees. | Installer maintainers | `bin/install-agent-workflows-test.bash` executes both installed helpers and asserts no anchor files. |
-| Require a producer/verifier/provisioner/installer matrix before any future portable evidence becomes mandatory. | Feature author and reviewer | PR checklist or design record names each owner and an end-to-end clean-install test; an absent producer blocks rollout. |
+| Require a producer/verifier/provisioner/installer matrix before any future portable evidence becomes mandatory. | Agent Workflows maintainers | The active host-adapter contract requires named ownership for all four roles and clean-install acceptance on every supported host. |
 | Stage host-owned evidence as optional capability-negotiated telemetry until every supported host produces it. | Host-adapter owners | Unsupported or absent observation is field-granular `UNKNOWN` and never alone blocks execution. |
 | Keep model/effort recommendations advisory while retaining independent checker and evidence-quality requirements. | Routing and audit workflow owners | Routing contract tests cover unavailable preferences and observed metadata separately. |
-| Convert incompatible Codex/Claude prompts without executing task work. | [Issue #372](https://github.com/shakacode/agent-workflows/issues/372) owners | Host-prompt conversion acceptance tests, independent of route enforcement. |
-| Use observed routing evidence to refine recommendations rather than gate launches. | [Issue #151](https://github.com/shakacode/agent-workflows/issues/151) owners | Calibration data distinguishes requested preferences from host-observed fields. |
+| Convert incompatible Codex/Claude prompts without executing task work. | [justin808](https://github.com/justin808); tracking: [issue #372](https://github.com/shakacode/agent-workflows/issues/372) | Host-prompt conversion acceptance tests, independent of route enforcement. |
+| Use observed routing evidence to refine recommendations rather than gate launches. | [justin808](https://github.com/justin808); tracking: [issue #151](https://github.com/shakacode/agent-workflows/issues/151) | Calibration data distinguishes requested preferences from host-observed fields. |
 
 ## Rollout rule
 

@@ -21,6 +21,16 @@ REPLACEMENT_FENCING_RULE =
   "A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities."
 CHECKER_RULE =
   "Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict."
+ADVERSARIAL_ADVISORY_RULE =
+  "Preferred route, model, and effort are advisory for adversarial review; mismatch or unavailability alone does not disqualify an otherwise independent, evidence-backed adversarial verdict."
+ADVERSARIAL_OBSERVATION_RULE =
+  "Record observed host, model, and effort only from host-exposed runtime evidence; use literal `UNKNOWN` for every unavailable field, and never infer observations from the preference, prompt text, or model self-report."
+ADVERSARIAL_QUALITY_RULE =
+  "Reviewer independence and evidence quality remain mandatory regardless of the preferred or observed route."
+HOST_ROLLOUT_MATRIX_RULE =
+  "Before any host-owned fact becomes a portable mandatory gate, the proposal must name an accountable owner for each producer, verifier, provisioner, and installer role and define clean-install acceptance for every supported host."
+HOST_ROLLOUT_OPTIONAL_RULE =
+  "If any role or clean-install acceptance is absent, the capability remains optional and advisory; unavailable host-owned fields use `UNKNOWN` and do not block otherwise valid workflow progress."
 
 ROUTING_SURFACES = %w[
   CONTEXT.md
@@ -151,6 +161,42 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes text, CHECKER_RULE, path
       assert_includes text.downcase, "independent", path
     end
+  end
+
+  def test_adversarial_review_surfaces_keep_route_advisory_without_weakening_the_verdict
+    %w[
+      skills/adversarial-pr-review/SKILL.md
+      workflows/adversarial-pr-review.md
+    ].each do |path|
+      text = normalized(read_repo_file(path))
+
+      assert_includes text, ADVERSARIAL_ADVISORY_RULE, path
+      assert_includes text, ADVERSARIAL_OBSERVATION_RULE, path
+      assert_includes text, ADVERSARIAL_QUALITY_RULE, path
+      refute_includes text, "Do not downgrade this qualifying adversarial verdict", path
+      refute_includes text,
+                      "remains the route for routine deterministic QA, not this qualifying adversarial verdict",
+                      path
+    end
+  end
+
+  def test_host_owned_hard_gates_require_an_owned_end_to_end_rollout
+    contract = normalized(read_repo_file("docs/host-adapter/contract.md"))
+
+    assert_includes contract, HOST_ROLLOUT_MATRIX_RULE
+    assert_includes contract, HOST_ROLLOUT_OPTIONAL_RULE
+  end
+
+  def test_signed_launch_postmortem_has_accountable_followup_owners_and_resumption_boundary
+    postmortem = normalized(
+      read_repo_file("docs/postmortems/2026-08-06-unsupported-signed-launch-enforcement.md")
+    )
+
+    assert_match %r{Convert incompatible Codex/Claude prompts.*\[justin808\]\(https://github\.com/justin808\).*\[issue #372\]\(https://github\.com/shakacode/agent-workflows/issues/372\)}, postmortem
+    assert_match %r{Use observed routing evidence.*\[justin808\]\(https://github\.com/justin808\).*\[issue #151\]\(https://github\.com/shakacode/agent-workflows/issues/151\)}, postmortem
+    assert_includes postmortem,
+                    "Issue #273 resumes separately after #299 removes the unsupported launch gate; #299 does not implement or redefine #273."
+    assert_includes postmortem, "https://github.com/shakacode/agent-workflows/issues/273"
   end
 
   def test_recommended_profiles_remain_advisory_across_routing_surfaces

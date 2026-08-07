@@ -80,6 +80,29 @@ trust anchors, launch-confirmation receipts, or human waivers. Prompt conversion
 for incompatible runtime instructions is tracked separately in
 [issue #372](https://github.com/shakacode/agent-workflows/issues/372).
 
+## Host-Owned Fact Rollout
+
+Before any host-owned fact becomes a portable mandatory gate, the proposal must
+name an accountable owner for each producer, verifier, provisioner, and
+installer role and define clean-install acceptance for every supported host.
+Record that ownership in the design or PR with this minimum matrix:
+
+| Host-owned fact | Producer owner | Verifier owner | Provisioner owner | Installer owner | Clean-install acceptance |
+| --- | --- | --- | --- | --- | --- |
+| Named fact and schema | Accountable component/person | Accountable component/person | Accountable component/person | Accountable component/person | Commands and expected evidence for Codex and Claude |
+
+Every owner must be named and every role must have an implemented path. The
+clean-install acceptance must start from an empty supported host target, install
+through the public installer path, exercise the real producer and verifier, and
+prove that provisioning makes the evidence available without fixture-generated
+keys, receipts, or pre-seeded local state.
+
+If any role or clean-install acceptance is absent, the capability remains
+optional and advisory; unavailable host-owned fields use `UNKNOWN` and do not
+block otherwise valid workflow progress. Unit-tested verification without its
+producer, provisioning, installation, and clean-install path is not rollout
+readiness.
+
 ## Invocation Syntax
 
 Shared docs may mention the portable skill name, but user-facing prompts must
