@@ -12,6 +12,10 @@ Record host-observed host, model, and effort only when the host exposes them; ot
 Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
 Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
 A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 
 ## Default Policy
 
@@ -54,8 +58,9 @@ plan is the high-leverage work. They do not imply maximum effort for every
 worker or for routine deterministic QA; task-specific routing still follows
 ambiguity, consequence, and verification strength.
 
-GPT-5.5 remains available only for an explicitly requested independent
-comparison or family-specific fallback.
+GPT-5.5 is recommended for an explicitly requested independent comparison or
+family-specific fallback. Selecting it elsewhere remains permitted but falls
+outside this profile's evidence-backed recommendation.
 
 Prefer Sol at the stated effort for the initiating parent. If the host exposes
 the running model or effort, record it as observed metadata; otherwise keep the
@@ -67,19 +72,22 @@ route is Sol/high. Terra may gather mechanical evidence or serve as the
 independent checker; either route's verdict qualifies only when the checker
 role, independence, scope, current-head evidence, and evidence quality qualify.
 
-Terra/high is allowed only after the coordinator positively classifies the work
+Terra/high is recommended after the coordinator positively classifies the work
 as simple: explicit acceptance criteria, a known bounded file surface, a strong
 deterministic verification oracle, no unresolved design decision, no security,
 authorization, concurrency, persistence, lifecycle, routing, or public-contract
-change, and easy failure detection and rollback. Every Terra worker receives a
-Sol-approved execution envelope with the exact goal and non-goals, owned paths,
-supported diagnosis, invariants, acceptance criteria, required verification,
-and stop conditions. Any present or disputed high-risk boundary routes to
-Sol/xhigh. Other unknown or uncertainty routes to Sol/high. Terra stops without
-editing further and returns to Sol when evidence contradicts the diagnosis,
-scope or blast radius grows, a high-risk boundary appears, verification
-weakens, or consequential judgment is required. High-risk or qualified
-escalated work uses Sol/xhigh.
+change, and easy failure detection and rollback. When lane risk or bounded
+delegation requires an execution envelope, the coordinator role supplies the
+exact goal and non-goals, owned paths, supported diagnosis, invariants,
+acceptance criteria, required verification, and stop conditions regardless of
+the selected model. The recommended route is Sol/xhigh for a present or disputed
+high-risk boundary and Sol/high for other unknown or uncertainty; if unavailable,
+use the closest available route or runtime default and record it honestly. Every
+worker stops without editing further and returns to the coordinator when evidence
+contradicts the diagnosis, scope or blast radius grows, a high-risk boundary
+appears, verification weakens, or consequential judgment is required. Sol/xhigh
+is the recommendation for high-risk or qualified escalated work, not a
+prerequisite.
 
 Luna is outside this conservative profile.
 
@@ -126,19 +134,21 @@ route is Opus 4.8/high. Sonnet may gather mechanical evidence or serve as the
 independent checker; either route's verdict qualifies only when the checker
 role, independence, scope, current-head evidence, and evidence quality qualify.
 
-Sonnet 5/high is allowed only after the coordinator positively classifies the
+Sonnet 5/high is recommended after the coordinator positively classifies the
 work as simple: explicit acceptance criteria, a known bounded file surface, a
 strong deterministic verification oracle, no unresolved design decision, no
 security, authorization, concurrency, persistence, lifecycle, routing, or
-public-contract change, and easy failure detection and rollback. Every Sonnet
-worker receives an Opus-approved execution envelope with the exact goal and
-non-goals, owned paths, supported diagnosis, invariants, acceptance criteria,
-required verification, and stop conditions. Any present or disputed high-risk
-boundary routes to Opus 4.8/xhigh. Any other missing or disputed simplicity
-criterion routes to Opus 4.8/xhigh. Sonnet stops without editing further and
-returns to Opus when evidence contradicts the diagnosis, scope or blast radius
-grows, a high-risk boundary appears, verification weakens, or consequential
-judgment is required.
+public-contract change, and easy failure detection and rollback. When lane risk
+or bounded delegation requires an execution envelope, the coordinator role
+supplies the exact goal and non-goals, owned paths, supported diagnosis,
+invariants, acceptance criteria, required verification, and stop conditions
+regardless of the selected model. Opus 4.8/xhigh is the recommended route for a
+present or disputed high-risk boundary or another missing or disputed simplicity
+criterion; if unavailable, use the closest available route or runtime default
+and record it honestly. Every worker stops without editing further and returns
+to the coordinator when evidence contradicts the diagnosis, scope or blast
+radius grows, a high-risk boundary appears, verification weakens, or
+consequential judgment is required.
 
 Haiku 4.5 is outside this provisional profile.
 

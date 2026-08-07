@@ -70,6 +70,10 @@ facts remain fail-closed and stop before mutation.
   Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
   Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
   A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+  Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+  When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+  Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+  Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 - **Recommended Codex GPT-5.6 profile**: apply only after verifying the exact
   routes on the actual host; portable classes remain the fallback elsewhere.
   - Multi-lane coordinator: Sol/xhigh
@@ -344,9 +348,12 @@ Before implementation or worker launch, produce:
     grouped by initial/escalation pair with
     the planner's rationale. Require `MODEL_ESCALATION_REQUEST` before a worker
     uses the stronger route. Revalidate every supplied exact pair on the actual
-    host; carry any dispatch-resolved class as an advisory preference before work starts. Workers must not
-    inherit the coordinator preference. Every lower-capability worker gets the
-    coordinator-approved execution envelope from the canonical workflow. If a
+    host; carry any dispatch-resolved class as an advisory preference before work starts. Keep worker
+    requested preferences distinct from the coordinator preference; if the
+    dispatcher or runtime inherits or defaults to that route, record it honestly
+    and continue unless an independent gate blocks. Every lane whose risk or
+    bounded delegation requires an execution envelope gets one from the
+    coordinator role under the canonical workflow, regardless of route. If a
     route preference is unavailable, preserve it as `UNKNOWN` and continue with
     the same ownership, verification, and review gates.
 12. Batch-registration provenance: verified loaded-pack `pack_sha` (or verified
@@ -743,7 +750,8 @@ or updates the PR emits the PR-open Lane Card when the PR is opened. The card
 shows claim holder and `dashboard_url` from backend metadata or `UNKNOWN`;
 `pr_url` comes from backend metadata, verified GitHub PR state, or `UNKNOWN`.
 It also records preferred model/effort, optional observed host/model/effort, and
-whether the coordinator-approved execution envelope was received. Unavailable
+whether a coordinator-role-approved execution envelope was received when lane
+risk or bounded delegation required one. Unavailable
 observations remain field-granular `UNKNOWN`.
 For host-aware sizing, Codex-targeted waves may use up to 10 independent
 file-disjoint lanes, or 8 when shared/risky conditions apply.
@@ -751,15 +759,17 @@ Claude and generic waves use up to 5 lanes, or up to 3 under those same
 conditions. Keep `UNKNOWN` path lanes serial until discovery resolves their real
 paths. Queue spillover as later waves rather than overfilling the active worker
 set. Preserve the coordinator model/effort preference and each lane's staged
-worker model/effort preference at dispatch. Workers must not inherit the
-coordinator preference. Model collation does not combine lane ownership, and an
+worker model/effort preference at dispatch. Keep worker requested preferences
+distinct from the coordinator preference; if the dispatcher or runtime inherits
+or defaults to that route, record it honestly and continue. Model collation does not combine lane ownership, and an
 unavailable preference remains `UNKNOWN` without blocking. Workers remain on the initial route for
 a focused correction after a small first failure and emit
 `MODEL_ESCALATION_REQUEST` only at the canonical evidence threshold.
 Alongside that packet, a private-backend worker emits
 `escalation_requested` with `from_route`, `to_route`, and `evidence`.
-Before editing, lower-capability workers restate the coordinator-approved
-execution envelope. Contradictory evidence, ambiguous criteria, scope/risk
+Before editing, workers in lanes whose risk or bounded delegation requires an
+execution envelope restate the coordinator-role-approved envelope regardless of
+route. Contradictory evidence, ambiguous criteria, scope/risk
 growth, weakened verification, or consequential judgment returns control to the
 coordinator immediately rather than authorizing worker re-planning.
 

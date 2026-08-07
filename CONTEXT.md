@@ -109,17 +109,23 @@ Optional runtime metadata exposed by the host for a running assignment. Record h
 Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
 Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
 A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 _Avoid_: requested model as observation, prompt model
 
 **Worker model/effort route**:
 The staged policy for one lane: its initial assignment, optional escalation
 assignment and role, evidence gate, and maximum escalation cycles. Use exact
-pairs or host-stable aliases when the roster is known; dispatch-resolved classes
-may temporarily stand in when it is not.
+pairs or host-stable aliases as preferences when the roster is known;
+dispatch-resolved classes, the closest available route, or the runtime default
+may stand in when it is not. Record any inherited/default route honestly.
 _Avoid_: worker model (singular static choice), coordinator assignment
 
 **Worker execution envelope**:
-The coordinator-approved bounded contract a lower-capability worker executes:
+The coordinator-role-approved bounded contract used when lane risk or bounded
+delegation requires it, regardless of the worker route:
 goal and non-goals, owned paths, supported diagnosis, invariants, acceptance
 criteria, verification, and stop conditions. Contradictory evidence, ambiguity,
 scope growth, high-risk judgment, or weakened verification returns control to
@@ -167,7 +173,9 @@ A portable roster-unavailable fallback — `fastest-low-cost`, `balanced`, or
 `strongest` — paired with an effort level, optionally scoped to a known host,
 and carried as an advisory preference before any worker starts. A host may
 resolve it to an available pair when the runtime exposes one; the prompt target
-does not prove the worker roster or authorize inheritance from the coordinator.
+does not prove the worker roster. If the dispatcher or runtime inherits or
+defaults to the coordinator route, record the actual route honestly and
+continue unless an independent gate blocks.
 _Avoid_: guessed model, default model
 
 **Model/effort route group**:

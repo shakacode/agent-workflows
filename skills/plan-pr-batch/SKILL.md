@@ -86,6 +86,10 @@ Plan a PR batch
      Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
      Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
      A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+     Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+     When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+     Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+     Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified
      `merge_authority`, ask for `none`, `ask`, or
@@ -297,7 +301,7 @@ Plan a PR batch
      different credible failed attempts, or an earlier high-risk trigger from
      the canonical workflow, require `MODEL_ESCALATION_REQUEST`. Prefer
      stronger-model plan review followed by implementation on the initial tier;
-     stronger-led implementation is the exception. When the current roster is available, require an exact model
+     stronger-led implementation is the exception. When the current roster is available, prefer an exact model
      name or host-stable alias and compatible effort. If the worker host is known but its roster is unavailable,
      or only the `generic` prompt target is known, use a dispatch-resolved model class
      (`fastest-low-cost`, `balanced`, or `strongest`) with the classified
@@ -308,16 +312,18 @@ Plan a PR batch
      or dispatch-resolved class/effort route, for review and dispatch,
      but preserve lane ownership, dependencies, serial discovery, collision
      rules, and wave caps; grouping never combines targets into one worker.
-     Keep coordinator and worker preferences independent; workers must not inherit
-     the coordinator preference. Prefer a fresh strongest-capability checker
+     Keep coordinator and worker requested preferences independent. If the
+     dispatcher or runtime inherits or defaults to the coordinator route, record
+     it honestly and continue unless an independent gate blocks. Prefer a fresh strongest-capability checker
      instance distinct from every maker. A lower-cost route may collect mechanical
      evidence or issue the intent, risk, or readiness verdict when the checker
      role, independence, scope, current-head evidence, and evidence quality qualify.
      Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
-     Give every lower-capability worker a
-     coordinator-approved execution envelope containing goal/non-goals, owned
-     paths, supported diagnosis, invariants, acceptance criteria, verification,
-     and immediate stop conditions. Contradictory evidence, ambiguous criteria,
+     Give every lane whose risk or bounded delegation requires an execution
+     envelope a coordinator-role-approved envelope containing goal/non-goals,
+     owned paths, supported diagnosis, invariants, acceptance criteria,
+     verification, and immediate stop conditions regardless of route.
+     Contradictory evidence, ambiguous criteria,
      scope or risk growth, weakened verification, or consequential judgment
      returns control to the coordinator before further edits.
      Before any worker launch, resolve `PLAN_PR_BATCH_SKILL_DIR` through the
@@ -358,8 +364,10 @@ Plan a PR batch
      identifier; a dirty checkout or unverified source is `UNKNOWN`, never the
      consumer repo SHA or a remote guess. Record `coordinator_preference` as a
      preference. For every lane, record the worker route preference and optional
-     observed host/model/effort from the host; never inherit the coordinator
-     preference. When batch
+     observed host/model/effort from the host. Keep the worker's requested
+     preference distinct; if the runtime inherits or defaults to the coordinator
+     route, record that actual host observation honestly and never infer it from
+     the preference. When batch
      registration is supported, persist this manifest after dispatcher
      selection and before worker launch. Backend `n/a` keeps the same
      provenance in the durable Batch Plan/handoff; a degraded registration is

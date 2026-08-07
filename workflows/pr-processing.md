@@ -674,6 +674,10 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
   Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
   A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+  Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+  When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+  Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+  Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
 - **Initial worker assignment:** use the least expensive pair that can safely
   complete the bounded lane. Light deterministic work uses `fastest-low-cost`
   with low effort; ordinary implementation of a credible plan uses `balanced`
@@ -688,7 +692,9 @@ escalation assignment, its evidence gate, and a maximum escalation count.
   or handing implementation back would create material risk.
 - **Independent fallback:** a different model family may provide a second
   opinion or isolate a family-specific failure, but it is not the default
-  implementation route and still needs an exact supported pair.
+  implementation route. Prefer an exact supported pair when the host exposes
+  one; otherwise use the closest available route or runtime default and record
+  the requested and observed fields honestly.
 
 For a Codex GPT-5.6 host, use this recommended advisory profile:
 
@@ -699,15 +705,19 @@ For a Codex GPT-5.6 host, use this recommended advisory profile:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-Terra/high requires an affirmative simple-task classification: explicit
+Terra/high is recommended for an affirmative simple-task classification: explicit
 acceptance criteria, a known bounded file surface, a strong deterministic
 verification oracle, no unresolved design decision, no security,
 authorization, concurrency, persistence, lifecycle, routing, or public-contract
-change, and easy failure detection and rollback. Any present or disputed
-high-risk boundary routes to Sol/xhigh. Any other missing or disputed simplicity
-criterion routes to Sol/high. Terra and Luna may not initiate or coordinate the
-batch, and Luna is not a worker route in this profile. Shared workflow text
-remains portable for other providers and model generations.
+change, and easy failure detection and rollback. Sol/xhigh is the recommended
+route for a present or disputed high-risk boundary, and Sol/high is the
+recommendation for another missing or disputed simplicity criterion. If either
+is unavailable, use the closest available route or runtime default and record it
+honestly. Sol/xhigh is the preferred initiating/coordinating route; Terra or
+Luna may still serve as a fallback coordinator or worker, with the actual route
+recorded honestly. Luna remains outside this profile's recommended worker
+roster. Shared workflow text remains portable for other providers and model
+generations.
 
 For a Claude host, use this provisional recommended advisory profile
 (`claude-profile v0`; see the Conservative Claude Profile in
@@ -720,20 +730,25 @@ For a Claude host, use this provisional recommended advisory profile
 - Independent adversarial QA: Opus 4.8/xhigh
 - Routine deterministic QA: Opus 4.8/high
 
-Sonnet 5/high requires the same affirmative simple-task classification and an
-Opus-approved execution envelope. Any present or disputed high-risk boundary
-routes to Opus 4.8/xhigh. Any other missing or disputed simplicity criterion
-routes to Opus 4.8/xhigh. Sonnet and Haiku may not initiate or coordinate the
-batch, and Haiku is not a worker route in this profile. Fable 5 stays an
-experimental candidate, never a default route.
+Sonnet 5/high is recommended for the same affirmative simple-task
+classification. When lane risk or bounded delegation requires an execution
+envelope, the coordinator role supplies it regardless of the selected model.
+Opus 4.8/xhigh is the recommended route for a present or disputed high-risk
+boundary or another missing or disputed simplicity criterion; if unavailable,
+use the closest available route or runtime default and record it honestly. Opus
+4.8/xhigh is the preferred initiating/coordinating route; Sonnet or Haiku may
+still serve as a fallback coordinator or worker, with the actual route recorded
+honestly. Haiku remains outside this profile's recommended worker roster. Fable
+5 stays an experimental candidate, never a default route.
 
 Classify the route from what is difficult (diagnosis/strategy versus execution),
 blast radius, verification strength, acceptance-criteria clarity, and previous
 attempts. File count alone is not a capability signal. Security, authorization,
 billing, customer data, destructive migrations, public compatibility,
 production reliability, cross-system changes, consequential performance, and
-weak verification require strongest coordinator or review involvement plus any
-human gates from `AGENTS.md`.
+weak verification warrant a stronger coordinator or review preference plus any
+human gates from `AGENTS.md`; route availability never replaces or removes
+those gates.
 
 Require evidence before non-trivial edits: characterize or reproduce the
 problem, identify the code path, state assumptions and invariants, define the
@@ -746,15 +761,15 @@ verification, or a local fix turns into an unjustified rewrite. Operational
 waits such as pending CI/review, permissions, coordination conflicts, external
 outages, or quota exhaustion do not by themselves prove a capability problem.
 
-Every balanced or fastest-low-cost worker receives a coordinator-approved
-execution envelope before editing: exact goal and non-goals, owned paths,
-supported diagnosis, invariants, acceptance criteria, required verification,
-and stop conditions. The worker does not redefine scope or substitute a new
-diagnosis. Contradictory evidence, ambiguity, scope or blast-radius growth, a
-new high-risk boundary, weakened verification, or architecture, security,
-performance, compatibility, or product judgment triggers an immediate stop and
-return to the coordinator; it does not wait for two failed implementation
-attempts.
+Every lane whose risk or bounded delegation requires an execution envelope
+receives one from the coordinator role before editing, regardless of route:
+exact goal and non-goals, owned paths, supported diagnosis, invariants,
+acceptance criteria, required verification, and stop conditions. The worker
+does not redefine scope or substitute a new diagnosis. Contradictory evidence,
+ambiguity, scope or blast-radius growth, a new high-risk boundary, weakened
+verification, or architecture, security, performance, compatibility, or product
+judgment triggers an immediate stop and return to the coordinator; it does not
+wait for two failed implementation attempts.
 
 Before escalating, the worker stops at a safe checkpoint and emits a
 `MODEL_ESCALATION_REQUEST` with lane/claim state, branch/worktree/HEAD, current
@@ -768,8 +783,10 @@ host-exposed runtime/config state. Official vendor docs may confirm capability
 but do not prove account access; prompt target and installed agent homes do not
 prove the roster. When a host does not expose its roster, use a portable class
 (`fastest-low-cost`, `balanced`, or `strongest`) plus effort. At dispatch,
-preserve unavailable model or effort as `UNKNOWN`; workers must not inherit the
-coordinator preference.
+preserve unavailable model or effort as `UNKNOWN`; keep each worker's requested
+preference distinct from the coordinator preference. If the dispatcher or
+runtime inherits or defaults to the same route, record that actual route
+honestly and continue unless an independent gate blocks.
 
 Dispatch preflight is JSON-in/JSON-out: prefer the requested dispatcher and require explicit dispatch authority for another dispatcher; otherwise emit one `dispatch-decision-request v1`. Resolve `PR_BATCH_SKILL_DIR` through the explicit env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"` before launch. Its input supplies lane state, route preference, requested dispatcher, dispatch authority, and ordered candidates. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
 Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
@@ -1598,11 +1615,13 @@ When worker subagents are explicitly authorized:
   branch, and working tree as workers overwrite each other.
 - Tell workers they are not alone in the codebase and must not revert others' edits.
 - Keep write scopes disjoint unless the main agent serializes integration.
-- Before editing, restate the coordinator-approved execution envelope: exact
-  goal/non-goals, owned paths, supported diagnosis, invariants, acceptance
-  criteria, verification, and stop conditions. Stop and return control rather
-  than re-plan when evidence contradicts it, criteria are ambiguous, scope or
-  risk grows, verification weakens, or consequential judgment is required.
+- Before editing, when lane risk or bounded delegation requires an execution
+  envelope, restate the coordinator-role-approved goal/non-goals, owned paths,
+  supported diagnosis, invariants, acceptance criteria, verification, and stop
+  conditions regardless of route. With or without an envelope, stop and return
+  control rather than re-plan when evidence contradicts the diagnosis, criteria
+  are ambiguous, scope or risk grows, a security boundary appears, verification
+  weakens, or consequential judgment is required.
 - Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
   PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
 - Emit a portable Lane Card after a successful claim, on blocked/cancelled state,

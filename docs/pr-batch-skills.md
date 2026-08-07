@@ -37,7 +37,9 @@ For a verified Claude host, the provisional recommended exact routing profile
 - Routine deterministic QA: Opus 4.8/high
 
 Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
-`strongest` classes until dispatch binds an exact supported pair.
+`strongest` classes as advisory preferences. Dispatch may bind an exact
+supported pair, the closest available route, or the runtime default; record the
+requested and observed route honestly without blocking on the binding alone.
 
 ## Skill Roles
 
@@ -162,6 +164,10 @@ omit the queue summary and note that queue state is unavailable.
    Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
    Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
    A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+   Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+   When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+   Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+   Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
    Before worker launch, resolve `PR_BATCH_SKILL_DIR` through the explicit
    env-var / loaded-skill / repo-local pinned-copy chain, then use
    `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`: a
@@ -190,8 +196,9 @@ omit the queue summary and note that queue state is unavailable.
    Keep the coordinator model/effort preference separate from every worker
    preference. Resolve the roster on each actual host, start routine workers on the
    fastest or balanced pair justified by lane risk and verification, and reserve
-   the strongest pair for evidence-gated escalation. Workers must not inherit
-   the coordinator pair. A small first failure gets a focused correction on the
+   the strongest pair for evidence-gated escalation. Do not silently copy the
+   coordinator pair into a worker's requested preference; if the runtime inherits
+   or defaults to that pair, record it honestly and continue. A small first failure gets a focused correction on the
    initial route; two materially different credible failures, or an earlier
    canonical high-risk trigger, require `MODEL_ESCALATION_REQUEST`. Prefer
    stronger-model plan review followed by implementation on the initial tier.
@@ -199,10 +206,10 @@ omit the queue summary and note that queue state is unavailable.
    dependencies, collision ordering, or wave schedule. When a known host's
    roster is unavailable, use portable dispatch-resolved initial and escalation
    classes. Keep an unresolved preference `UNKNOWN`; it never alone blocks the
-   prompt, launch, or readiness. Give lower-capability
-   workers a coordinator-approved execution envelope and require immediate
-   return to the coordinator on contradictory evidence, ambiguity, scope/risk
-   growth, weakened verification, or consequential judgment.
+   prompt, launch, or readiness. Give every lane whose risk or bounded delegation
+   requires an execution envelope a coordinator-role-approved envelope regardless
+   of route. Require immediate return to the coordinator on contradictory evidence,
+   ambiguity, scope/risk growth, weakened verification, or consequential judgment.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`

@@ -498,9 +498,9 @@ required_skill_rule_phrases = [
   "worker host is known but its roster is unavailable",
   "advisory preferences",
   "host-observed host, model, and effort",
-  "coordinator-approved execution envelope",
+  "coordinator-role-approved envelope",
   "collated by initial/escalation pair",
-  "never inherit the coordinator",
+  "inherits or defaults to the coordinator route",
   "target-specific prompt",
   "including the `/goal` line",
   "prepend only the `/goal` line",
@@ -578,7 +578,7 @@ host_aware_batch_sizing_phrase_checks = {
     ["Claude-sized 5/3", 1],
     ["Codex-targeted waves may use up to 10 independent", 1],
     ["Claude and generic waves use up to 5 lanes, or up to 3", 1],
-    ["Workers must not inherit", 1]
+    ["if the dispatcher or runtime inherits", 1]
   ],
   "skills/triage/SKILL.md" => [
     ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
@@ -628,7 +628,7 @@ if enforce_restart_docs_drift
 
   require_phrases(
     pr_batch_docs_text,
-    ["Group lanes by model/effort preference", "MODEL_ESCALATION_REQUEST", "stronger-model plan review", "Workers must not inherit"],
+    ["Group lanes by model/effort preference", "MODEL_ESCALATION_REQUEST", "stronger-model plan review", "if the runtime inherits"],
     "docs/pr-batch-skills.md model/effort routing"
   )
   require_phrases(

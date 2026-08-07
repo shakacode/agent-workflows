@@ -25,6 +25,14 @@ VERDICT_QUALIFICATION_RULE =
   "Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route."
 ROUTE_NONDISQUALIFICATION_RULE =
   "A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict."
+EXECUTION_ROUTE_ADVISORY_RULE =
+  "Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback."
+EXECUTION_ROUTE_FALLBACK_RULE =
+  "When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks."
+MODEL_NEUTRAL_RISK_RULE =
+  "Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity."
+MODEL_NEUTRAL_ENVELOPE_RULE =
+  "Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model."
 ADVERSARIAL_ADVISORY_RULE =
   "Preferred route, model, and effort are advisory for adversarial review; mismatch or unavailability alone does not disqualify an otherwise independent, evidence-backed adversarial verdict."
 ADVERSARIAL_OBSERVATION_RULE =
@@ -74,6 +82,26 @@ ROUTE_DISQUALIFICATION_PATTERNS = {
   "route classified below policy" => /below-policy/i,
   "route mismatch used to downgrade a verdict" => /do not downgrade/i,
   "launch assurance used to qualify a checker" => /launch-assured policy-compliant run/i
+}.freeze
+
+NAMED_EXECUTION_ENFORCEMENT_PATTERNS = {
+  "named model denied coordinator or initiator work" =>
+    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,100}may not initiate or coordinate/im,
+  "named model allowed only for a worker class" =>
+    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}(?:is |remains )?(?:allowed|available) only/im,
+  "named model required to stop editing" =>
+    /\b(?:Sol|Terra|Opus|Sonnet|Fable|Luna|Haiku|GPT-5\.5)\b.{0,40}stops without editing/im,
+  "execution envelope approved by a named model" =>
+    /\b(?:Sol|Opus)-approved execution envelope/im,
+  "named worker route requires simple classification" =>
+    %r{\b(?:Terra|Sonnet)(?: 5)?/high requires\b}im,
+  "named route forced by risk classification" =>
+    /(?:boundary|criterion|uncertainty) routes? to \b(?:Sol|Opus|Terra|Sonnet)\b/im,
+  "runtime fallback prohibited from inheriting a route" =>
+    /workers must not inherit the coordinator preference/im,
+  "exact supported pair required before execution" =>
+    /(?:needs?|requires?|until dispatch binds).{0,80}exact supported pair|exact supported pair.{0,80}(?:required|prerequisite)/im,
+  "exact model identity required for routing" => /require an exact model/im
 }.freeze
 
 CODEX_RECOMMENDATIONS = [
@@ -193,6 +221,24 @@ class ModelRoutingContractTest < Minitest::Test
       assert_includes text, VERDICT_QUALIFICATION_RULE, path
       assert_includes text, ROUTE_NONDISQUALIFICATION_RULE, path
       ROUTE_DISQUALIFICATION_PATTERNS.each do |label, pattern|
+        refute_match pattern, text, "#{path}: #{label}"
+      end
+    end
+  end
+
+  def test_active_execution_surfaces_never_enforce_named_model_routes
+    ROUTING_SURFACES.each do |path|
+      text = normalized(read_repo_file(path))
+
+      [
+        EXECUTION_ROUTE_ADVISORY_RULE,
+        EXECUTION_ROUTE_FALLBACK_RULE,
+        MODEL_NEUTRAL_RISK_RULE,
+        MODEL_NEUTRAL_ENVELOPE_RULE
+      ].each do |rule|
+        assert_includes text, rule, "#{path} is missing: #{rule}"
+      end
+      NAMED_EXECUTION_ENFORCEMENT_PATTERNS.each do |label, pattern|
         refute_match pattern, text, "#{path}: #{label}"
       end
     end
