@@ -492,7 +492,17 @@ module SecureGitHubActions
     end
 
     def excluded_action_root?(relative)
-      EXCLUDED_ACTION_ROOTS.include?(relative.split("/", 2).first)
+      root_segment = relative.split("/", 2).first
+      return true if EXCLUDED_ACTION_ROOTS.include?(root_segment)
+
+      normalized = root_segment.downcase
+      return false unless EXCLUDED_ACTION_ROOTS.include?(normalized)
+
+      # Preserve distinct uppercase roots on case-sensitive filesystems; reject
+      # only when the alias and reserved spelling resolve to the same entry.
+      File.identical?(File.join(@root, root_segment), File.join(@root, normalized))
+    rescue SystemCallError
+      true
     end
 
     def external_use?(reference)

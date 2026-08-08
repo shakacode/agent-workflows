@@ -916,6 +916,67 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_case_aliased_excluded_roots_are_rejected_when_they_resolve_to_the_same_directory
+    skip "filesystem is case-sensitive" unless filesystem_case_insensitive?
+
+    aliases = {
+      ".git" => ".GIT",
+      ".codex" => ".CODEX",
+      ".tmp" => ".TMP",
+      "tmp" => "TMP"
+    }
+    actual = aliases.to_h do |excluded_root, reference_root|
+      with_repository(<<~YAML) do |root|
+        jobs:
+          build:
+            steps:
+              - uses: ./#{reference_root}/local
+      YAML
+        action_path = File.join(root, excluded_root, "local/action.yml")
+        FileUtils.mkdir_p(File.dirname(action_path))
+        File.write(action_path, "runs: { using: composite, steps: [] }\n")
+
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+        [excluded_root, [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]]
+      end
+    end
+
+    assert_equal aliases.keys.to_h { |root| [root, [1, "", ["secure-github-actions/unsafe-local-use"]]] }, actual
+  end
+
+  def test_distinct_case_variant_root_is_allowed_on_case_sensitive_filesystems
+    skip "filesystem is case-insensitive" if filesystem_case_insensitive?
+
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./TMP/local
+    YAML
+      excluded_action = File.join(root, "tmp/hidden/action.yml")
+      allowed_action = File.join(root, "TMP/local/action.yml")
+      FileUtils.mkdir_p(File.dirname(excluded_action))
+      FileUtils.mkdir_p(File.dirname(allowed_action))
+      File.write(excluded_action, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      File.write(allowed_action, "runs: { using: composite, steps: [] }\n")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_predicate status, :success?
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_empty rule_ids(document)
+      assert_includes document.dig("scan", "files_scanned"), "TMP/local/action.yml"
+      refute_includes document.dig("scan", "files_scanned"), "tmp/hidden/action.yml"
+    end
+  end
+
   def test_step_local_action_requires_a_regular_descriptor
     with_repository(<<~YAML) do |root|
       jobs:
@@ -1040,6 +1101,15 @@ class SecureGitHubActionsScanTest < Minitest::Test
   end
 
   private
+
+  def filesystem_case_insensitive?
+    Dir.mktmpdir("secure-github-actions-case-probe") do |root|
+      lower = File.join(root, "case-probe")
+      upper = File.join(root, "CASE-PROBE")
+      Dir.mkdir(lower)
+      return File.identical?(lower, upper)
+    end
+  end
 
   def with_repository(workflow, trusted_actions: nil)
     Dir.mktmpdir("secure-github-actions") do |root|
