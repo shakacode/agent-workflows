@@ -383,6 +383,59 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_malformed_reserved_declarations_take_precedence_over_duplicate_header_counts
+    reserved_labels = ["Prompt host", "Prompt mode", "Preferred route", "Route requirement"]
+    prompt_builders = {
+      "complete Codex headers" => ->(body) { direct_prompt(host: "codex", body:) },
+      "complete Claude headers" => ->(body) { direct_prompt(host: "claude", body:) },
+      "legacy Codex wrapper" => ->(body) { legacy_prompt(host: "codex", body:) },
+      "legacy Claude wrapper" => ->(body) { legacy_prompt(host: "claude", body:) }
+    }
+
+    reserved_labels.each_with_index do |label, label_index|
+      prompt_builders.each do |surface, build_prompt|
+        marker = "SECRET_MALFORMED_PRECEDENCE_#{label_index}_#{surface.upcase.gsub(/\W+/, '_')}"
+        prompt = build_prompt.call("#{label}:: hostile-#{marker}")
+
+        %w[codex claude].each do |active_host|
+          result, stderr, status, stdout = run_adapter(prompt, active_host:)
+
+          assert status.success?, stderr
+          assert_equal "ambiguous", result.fetch("classification"), "#{surface}: #{label}"
+          assert_equal "malformed-headers", result.fetch("reason_code"), "#{surface}: #{label}"
+          assert_equal false, result.fetch("execute_allowed"), "#{surface}: #{label}"
+          assert_nil result.fetch("prompt"), "#{surface}: #{label}"
+          refute_includes stdout, marker
+        end
+      end
+    end
+
+    canonical_values = {
+      "Prompt host" => ->(declared_host) { declared_host },
+      "Prompt mode" => ->(_declared_host) { "direct" },
+      "Preferred route" => ->(_declared_host) { "default" },
+      "Route requirement" => ->(_declared_host) { "advisory" }
+    }
+    %w[codex claude].each do |declared_host|
+      canonical_values.each_with_index do |(label, value_for), label_index|
+        marker = "SECRET_EXACT_DUPLICATE_#{declared_host.upcase}_#{label_index}"
+        body = "#{label}: #{value_for.call(declared_host)}\nObjective: #{marker}"
+        prompt = direct_prompt(host: declared_host, body:)
+
+        %w[codex claude].each do |active_host|
+          result, stderr, status, stdout = run_adapter(prompt, active_host:)
+
+          assert status.success?, stderr
+          assert_equal "ambiguous", result.fetch("classification"), "#{declared_host}: #{label}"
+          assert_equal "duplicate-headers", result.fetch("reason_code"), "#{declared_host}: #{label}"
+          assert_equal false, result.fetch("execute_allowed"), "#{declared_host}: #{label}"
+          assert_nil result.fetch("prompt"), "#{declared_host}: #{label}"
+          refute_includes stdout, marker
+        end
+      end
+    end
+  end
+
   def test_legacy_malformed_or_contradictory_batch_size_target_fails_closed_without_echo
     cases = [
       ["Codex matching unsupported", "codex", "codex", "rust; wave: 1/1.", "invalid-batch-size-target"],

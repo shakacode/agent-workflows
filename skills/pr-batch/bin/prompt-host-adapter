@@ -252,10 +252,10 @@ reason_code = if classification != "ambiguous"
                 nil
               elsif !active_host_known
                 "unknown-active-host"
-              elsif header_counts.values.any? { |count| count > 1 }
-                "duplicate-headers"
               elsif malformed_reserved_headers
                 "malformed-headers"
+              elsif header_counts.values.any? { |count| count > 1 }
+                "duplicate-headers"
               elsif some_headers && !valid_header_counts
                 "partial-headers"
               elsif some_headers && !ordered_headers
