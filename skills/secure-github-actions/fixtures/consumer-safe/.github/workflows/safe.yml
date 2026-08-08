@@ -1,0 +1,18 @@
+name: Safe workflow
+on: pull_request
+generated_on: 2026-08-02
+generated_at: 2026-08-02T12:34:56Z
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/action@0123456789abcdef0123456789abcdef01234567
+      - uses: ./.github/actions/local
+      - uses: docker://alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      - env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE"
+  deploy:
+    uses: owner/workflows/.github/workflows/deploy.yml@0123456789abcdef0123456789abcdef01234567
+    secrets:
+      deploy_token: ${{ secrets.DEPLOY_TOKEN }}
