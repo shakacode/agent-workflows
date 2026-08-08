@@ -161,6 +161,9 @@ identical or conflicting, fail closed as `duplicate-batch-size-target`. A
 well-formed target that disagrees with the declared host fails closed as
 `contradictory-batch-size-target`. None of these invalid inputs is executed,
 rewritten, or returned as relaunch text.
+The same checks apply to an unmistakable legacy prompt using its inferred
+Codex or Claude host. Cross-host legacy conversion rewrites one valid
+source-matching target to the target host before returning inert relaunch text.
 Objectives, targets, scope, dependencies,
 permissions, safety, QA, review, merge authority, advisory route preference,
 and all ordinary workflow gates must remain semantically identical. The helper

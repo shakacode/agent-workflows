@@ -37,6 +37,14 @@ class PromptHostAdapterTest < Minitest::Test
     PROMPT
   end
 
+  def legacy_prompt(host:, body:)
+    invocation = {
+      "codex" => "/goal\nUse $pr-batch to complete the batch.",
+      "claude" => "/pr-batch complete the batch."
+    }.fetch(host)
+    "#{invocation}\n#{body}\n"
+  end
+
   def continuation_prompt
     workflow = File.read(WORKFLOW, encoding: "UTF-8")
     heading = workflow.index("### Generic PR-Batch Continuation Prompt")
@@ -285,6 +293,176 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal true, result.fetch("relaunch_required")
     assert_equal true, result.fetch("semantic_payload_preserved")
     assert_equal expected, result.fetch("prompt")
+  end
+
+  def test_legacy_malformed_or_contradictory_batch_size_target_fails_closed_without_echo
+    cases = [
+      ["Codex matching unsupported", "codex", "codex", "rust; wave: 1/1.", "invalid-batch-size-target"],
+      ["Codex cross malformed", "codex", "claude", "codex wave: 1/1.", "invalid-batch-size-target"],
+      ["Claude matching unsupported", "claude", "claude", "rust; wave: 1/1.", "invalid-batch-size-target"],
+      ["Claude cross malformed", "claude", "codex", "claude wave: 1/1.", "invalid-batch-size-target"],
+      ["Codex matching contradiction", "codex", "codex", "claude; wave: 1/1.",
+       "contradictory-batch-size-target"],
+      ["Codex cross source contradiction", "codex", "claude", "claude; wave: 1/1.",
+       "contradictory-batch-size-target"],
+      ["Claude matching contradiction", "claude", "claude", "codex; wave: 1/1.",
+       "contradictory-batch-size-target"],
+      ["Claude cross source contradiction", "claude", "codex", "codex; wave: 1/1.",
+       "contradictory-batch-size-target"]
+    ]
+
+    cases.each do |label, legacy_host, active_host, field_value, reason_code|
+      marker = "SECRET_#{label.upcase.gsub(/\W+/, '_')}"
+      prompt = legacy_prompt(
+        host: legacy_host,
+        body: "Batch size target: #{field_value}\nObjective: #{marker}"
+      )
+
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), label
+      assert_equal reason_code, result.fetch("reason_code"), label
+      assert_equal legacy_host, result.fetch("declared_host"), label
+      assert_equal false, result.fetch("execute_allowed"), label
+      assert_equal false, result.fetch("relaunch_required"), label
+      assert_equal false, result.fetch("replanning_required"), label
+      assert_nil result.fetch("semantic_payload_preserved"), label
+      assert_nil result.fetch("prompt"), label
+      refute_includes stdout, marker
+    end
+  end
+
+  def test_legacy_duplicate_batch_size_target_fails_closed_without_echo
+    cases = [
+      ["Codex matching identical", "codex", "codex", %w[codex codex]],
+      ["Codex matching conflicting", "codex", "codex", %w[codex claude]],
+      ["Codex cross identical", "codex", "claude", %w[codex codex]],
+      ["Codex cross conflicting", "codex", "claude", %w[codex claude]],
+      ["Claude matching identical", "claude", "claude", %w[claude claude]],
+      ["Claude matching conflicting", "claude", "claude", %w[claude codex]],
+      ["Claude cross identical", "claude", "codex", %w[claude claude]],
+      ["Claude cross conflicting", "claude", "codex", %w[claude codex]]
+    ]
+
+    cases.each do |label, legacy_host, active_host, targets|
+      marker = "SECRET_#{label.upcase.gsub(/\W+/, '_')}"
+      fields = targets.map { |target| "Batch size target: #{target}; wave: 1/1." }.join("\n")
+      prompt = legacy_prompt(host: legacy_host, body: "#{fields}\nObjective: #{marker}")
+
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), label
+      assert_equal "duplicate-batch-size-target", result.fetch("reason_code"), label
+      assert_equal legacy_host, result.fetch("declared_host"), label
+      assert_equal false, result.fetch("execute_allowed"), label
+      assert_equal false, result.fetch("relaunch_required"), label
+      assert_equal false, result.fetch("replanning_required"), label
+      assert_nil result.fetch("semantic_payload_preserved"), label
+      assert_nil result.fetch("prompt"), label
+      refute_includes stdout, marker
+    end
+  end
+
+  def test_legacy_valid_batch_size_target_matches_converts_and_relaunches_with_omission_preserved
+    cases = [
+      {
+        source_host: "codex",
+        target_host: "claude",
+        expected_with_field: <<~PROMPT,
+          Prompt host: claude
+          Prompt mode: batch
+          Preferred route: default
+          Route requirement: advisory
+          Use /pr-batch to complete the batch.
+          Batch size target: claude; wave: 1/1.
+          Objective: Preserve legacy Codex payload.
+        PROMPT
+        expected_without_field: <<~PROMPT
+          Prompt host: claude
+          Prompt mode: batch
+          Preferred route: default
+          Route requirement: advisory
+          Use /pr-batch to complete the batch.
+          Objective: Preserve legacy Codex payload.
+        PROMPT
+      },
+      {
+        source_host: "claude",
+        target_host: "codex",
+        expected_with_field: <<~PROMPT,
+          /goal
+          Prompt host: codex
+          Prompt mode: goal
+          Preferred route: default
+          Route requirement: advisory
+          Use $pr-batch complete the batch.
+          Batch size target: codex; wave: 1/1.
+          Objective: Preserve legacy Claude payload.
+        PROMPT
+        expected_without_field: <<~PROMPT
+          /goal
+          Prompt host: codex
+          Prompt mode: goal
+          Preferred route: default
+          Route requirement: advisory
+          Use $pr-batch complete the batch.
+          Objective: Preserve legacy Claude payload.
+        PROMPT
+      }
+    ]
+
+    cases.each do |entry|
+      source_host = entry.fetch(:source_host)
+      target_host = entry.fetch(:target_host)
+      objective = "Preserve legacy #{source_host.capitalize} payload."
+      matching_prompt = legacy_prompt(
+        host: source_host,
+        body: "Batch size target: #{source_host}; wave: 1/1.\nObjective: #{objective}"
+      )
+
+      matching, matching_stderr, matching_status = run_adapter(matching_prompt, active_host: source_host)
+      assert matching_status.success?, matching_stderr
+      assert_equal "compatible", matching.fetch("classification"), entry.inspect
+      assert_equal true, matching.fetch("execute_allowed"), entry.inspect
+      assert_equal matching_prompt, matching.fetch("prompt"), entry.inspect
+
+      converted, converted_stderr, converted_status = run_adapter(matching_prompt, active_host: target_host)
+      assert converted_status.success?, converted_stderr
+      assert_equal "conversion-required", converted.fetch("classification"), entry.inspect
+      assert_equal false, converted.fetch("execute_allowed"), entry.inspect
+      assert_equal true, converted.fetch("relaunch_required"), entry.inspect
+      assert_equal true, converted.fetch("replanning_required"), entry.inspect
+      assert_equal true, converted.fetch("semantic_payload_preserved"), entry.inspect
+      assert_equal entry.fetch(:expected_with_field), converted.fetch("prompt"), entry.inspect
+
+      relaunched, relaunch_stderr, relaunch_status = run_adapter(
+        entry.fetch(:expected_with_field),
+        active_host: target_host
+      )
+      assert relaunch_status.success?, relaunch_stderr
+      assert_equal "compatible", relaunched.fetch("classification"), entry.inspect
+      assert_equal true, relaunched.fetch("execute_allowed"), entry.inspect
+      assert_equal entry.fetch(:expected_with_field), relaunched.fetch("prompt"), entry.inspect
+
+      omitted_prompt = legacy_prompt(host: source_host, body: "Objective: #{objective}")
+      omitted_matching, omitted_stderr, omitted_status = run_adapter(omitted_prompt, active_host: source_host)
+      assert omitted_status.success?, omitted_stderr
+      assert_equal "compatible", omitted_matching.fetch("classification"), entry.inspect
+      assert_equal omitted_prompt, omitted_matching.fetch("prompt"), entry.inspect
+
+      omitted_converted, omitted_cross_stderr, omitted_cross_status = run_adapter(
+        omitted_prompt,
+        active_host: target_host
+      )
+      assert omitted_cross_status.success?, omitted_cross_stderr
+      assert_equal "conversion-required", omitted_converted.fetch("classification"), entry.inspect
+      assert_equal false, omitted_converted.fetch("execute_allowed"), entry.inspect
+      assert_equal true, omitted_converted.fetch("relaunch_required"), entry.inspect
+      assert_equal false, omitted_converted.fetch("replanning_required"), entry.inspect
+      assert_equal entry.fetch(:expected_without_field), omitted_converted.fetch("prompt"), entry.inspect
+    end
   end
 
   def test_legacy_codex_canonical_mechanics_convert_to_claude
