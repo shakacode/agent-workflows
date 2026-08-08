@@ -1571,7 +1571,6 @@ module AgentWorkflowSeamDoctor
   end
 
   def workflow_security_issues(root, shared_roots)
-    return [] unless workflow_security_surface?(root)
     unless load_secure_github_actions_scanner(shared_roots)
       return ["workflow security scan failed closed: trusted secure-github-actions scanner is unavailable"]
     end
@@ -1583,34 +1582,6 @@ module AgentWorkflowSeamDoctor
     end
   rescue ArgumentError, SystemCallError => e
     ["workflow security scan failed closed: #{e.message}"]
-  end
-
-  def workflow_security_surface?(root)
-    workflows = File.join(root, ".github/workflows")
-    return true if File.exist?(workflows) || File.symlink?(workflows)
-    return true if trusted_actions_policy_present?(root)
-
-    Dir.glob("**/action.{yml,yaml}", File::FNM_DOTMATCH, base: root).any?
-  end
-
-  def trusted_actions_policy_present?(root)
-    path = File.join(root, POLICY_CONFIG)
-    return true if File.symlink?(path)
-    return false unless File.file?(path)
-
-    stream = Psych.parse_stream(File.read(path, encoding: "UTF-8"), filename: path)
-    stream.children.any? do |document|
-      mapping = document.children.first
-      next false unless mapping.is_a?(Psych::Nodes::Mapping)
-
-      mapping.children.each_slice(2).any? do |key, _value|
-        key.is_a?(Psych::Nodes::Scalar) && key.value == "trusted_actions"
-      end
-    end
-  rescue Psych::Exception, EncodingError
-    false
-  rescue SystemCallError
-    true
   end
 
   def load_secure_github_actions_scanner(shared_roots)

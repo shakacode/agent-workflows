@@ -965,13 +965,17 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_only_explicit_trusted_actions_activates_no_actions_security_surface
-    with_repo do |root|
-      write_policy(root, POLICY)
-      refute AgentWorkflowSeamDoctor.workflow_security_surface?(root)
+  def test_required_policy_is_scanned_without_actions_or_trusted_actions
+    [POLICY, POLICY.merge("trusted_actions" => [])].each do |policy|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, policy)
+        write_skill(root, "No commands here.\n")
 
-      write_policy(root, POLICY.merge("trusted_actions" => []))
-      assert AgentWorkflowSeamDoctor.workflow_security_surface?(root)
+        out, status = run_doctor(root)
+
+        assert status.success?, out
+      end
     end
   end
 
@@ -981,11 +985,61 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_trusted_actions_policy_text_fails(policy_text)
   end
 
+  def test_trailing_policy_document_without_trusted_actions_fails_without_actions
+    policy_text = "#{POLICY.to_yaml}---\nmetadata: trailing\n"
+
+    assert_trusted_actions_policy_text_fails(policy_text)
+  end
+
   def test_duplicate_trusted_actions_keys_fail_without_actions
     policy_text = "#{POLICY.to_yaml}trusted_actions:\n  - owner/action\n" \
                   "trusted_actions:\n  - other/workflows\n"
 
     assert_trusted_actions_policy_text_fails(policy_text)
+  end
+
+  def test_policy_type_change_during_check_fails_closed_without_actions
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      original_policy_issues = AgentWorkflowSeamDoctor.method(:policy_issues)
+      singleton = AgentWorkflowSeamDoctor.singleton_class
+      changed = false
+      singleton.define_method(:policy_issues) do |checked_root|
+        issues = original_policy_issues.call(checked_root)
+        unless changed
+          File.rename(policy_path, "#{policy_path}.before-type-change")
+          Dir.mkdir(policy_path)
+          changed = true
+        end
+        issues
+      end
+
+      begin
+        issues = AgentWorkflowSeamDoctor.check(root)
+      ensure
+        singleton.define_method(:policy_issues, original_policy_issues)
+      end
+
+      assert_includes issues.join("\n"), "secure-github-actions/invalid-trusted-actions-policy"
+    end
+  end
+
+  def test_static_symlinked_policy_fails_closed_without_actions
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      target_path = File.join(root, ".agents/policy-target.yml")
+      File.rename(policy_path, target_path)
+      File.symlink(target_path, policy_path)
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "secure-github-actions/invalid-trusted-actions-policy"
+    end
   end
 
   def assert_malformed_trusted_actions_fails(value)
