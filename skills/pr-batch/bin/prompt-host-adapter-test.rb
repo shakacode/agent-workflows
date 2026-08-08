@@ -295,6 +295,65 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal expected, result.fetch("prompt")
   end
 
+  def test_header_like_malformed_declarations_block_legacy_inference_without_echo
+    malformed_lines = [
+      "Prompt host : claude",
+      " Prompt mode: batch",
+      "preferred route: default",
+      "Route-requirement: advisory",
+      "Prompt host:: claude",
+      "Prompt_host: claude",
+      "PREFERRED ROUTE: default",
+      "Route requirement = advisory"
+    ]
+
+    %w[codex claude].each do |legacy_host|
+      malformed_lines.each_with_index do |line, index|
+        marker = "SECRET_MALFORMED_HEADER_#{legacy_host.upcase}_#{index}"
+        prompt = legacy_prompt(host: legacy_host, body: "#{line}\nObjective: #{marker}")
+
+        %w[codex claude].each do |active_host|
+          result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+          assert status.success?, stderr
+          assert_equal "ambiguous", result.fetch("classification"), line
+          assert_equal "malformed-headers", result.fetch("reason_code"), line
+          assert_nil result.fetch("declared_host"), line
+          assert_equal false, result.fetch("execute_allowed"), line
+          assert_equal false, result.fetch("relaunch_required"), line
+          assert_nil result.fetch("prompt"), line
+          refute_includes stdout, marker
+        end
+      end
+    end
+
+    incidental_prose = [
+      "Discuss the Prompt host field as an incidental name.",
+      "Document Prompt host: claude as literal prose.",
+      "The preferred route is advisory prose.",
+      "Describe Route requirement: advisory without declaring a header."
+    ]
+    %w[codex claude].each do |host|
+      incidental_prose.each do |prose|
+        prompt = legacy_prompt(host: host, body: prose)
+        result, stderr, status = run_adapter(prompt, active_host: host)
+
+        assert status.success?, stderr
+        assert_equal "compatible", result.fetch("classification"), prose
+        assert_equal true, result.fetch("execute_allowed"), prose
+        assert_equal prompt, result.fetch("prompt"), prose
+      end
+
+      prompt = direct_prompt(host: host, body: "Objective: preserve complete valid headers.")
+      result, stderr, status = run_adapter(prompt, active_host: host)
+
+      assert status.success?, stderr
+      assert_equal "compatible", result.fetch("classification"), host
+      assert_equal true, result.fetch("execute_allowed"), host
+      assert_equal prompt, result.fetch("prompt"), host
+    end
+  end
+
   def test_legacy_malformed_or_contradictory_batch_size_target_fails_closed_without_echo
     cases = [
       ["Codex matching unsupported", "codex", "codex", "rust; wave: 1/1.", "invalid-batch-size-target"],

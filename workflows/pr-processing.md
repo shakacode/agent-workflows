@@ -1971,7 +1971,7 @@ too-expensive route. This is distinct from the closeout-only generic
 continuation prompt below.
 
 Before resuming, keep the current goal. Near its top, replace any conflicting
-static model-group line with the compact `Coordinator model/effort preference:`
+static model-group line with the compact `Preferred route:`
 and `Worker model/effort preferences:` fields from the Plan To Goal template. Do not clear the
 goal; its objective, targets, `merge_authority`, QA decision, and completion
 contract remain authoritative.
@@ -1995,7 +1995,6 @@ Route requirement: advisory
 Use $pr-batch to recover and continue this in-flight batch.
 Continue the existing goal; do not clear it or start a new batch.
 
-Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Treat model/effort as advisory during recovery. Preserve unavailable observations
 as UNKNOWN and continue with the same ownership, fencing, validation, and review

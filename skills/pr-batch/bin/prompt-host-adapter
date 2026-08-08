@@ -15,6 +15,11 @@ NEUTRAL_CANONICAL_HOST_MECHANICS = [
 BATCH_SIZE_TARGET_PREFIX = " {0,3}(?:[-*+] +)?"
 BATCH_SIZE_TARGET_FIELD = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target:/
 BATCH_SIZE_TARGET_VALUE = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target: (codex|claude|generic);/
+RESERVED_HEADER_LABEL =
+  "(?:prompt[ ._-]*(?:host|mode)|preferred[ ._-]*route|route[ ._-]*requirement)"
+RESERVED_HEADER_LIKE_DECLARATION = /\A[ \t]*#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
+CANONICAL_RESERVED_HEADER_DECLARATION =
+  /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): /
 
 def normalized_semantic_payload(prompt)
   text = prompt.delete_prefix("/goal\n")
@@ -117,6 +122,9 @@ headers = header_lines.to_h do |line|
 end
 header_names = ["Prompt host", "Prompt mode", "Preferred route", "Route requirement"]
 header_counts = header_names.to_h { |name| [name, prompt.scan(/^#{Regexp.escape(name)}:/).length] }
+malformed_reserved_headers = prompt.lines.any? do |line|
+  line.match?(RESERVED_HEADER_LIKE_DECLARATION) && !line.match?(CANONICAL_RESERVED_HEADER_DECLARATION)
+end
 valid_header_counts = header_counts.values.all?(1)
 no_headers = header_counts.values.all?(&:zero?)
 some_headers = header_counts.values.any?(&:positive?)
@@ -147,9 +155,9 @@ valid_declared_invocation = case headers["Prompt host"]
 complete_valid_headers = valid_header_counts && valid_host_mode_wrapper && valid_preferred_route &&
                          ordered_headers && valid_declared_invocation &&
                          headers["Route requirement"] == "advisory"
-legacy_host = if no_headers && prompt.start_with?("/goal\n")
+legacy_host = if no_headers && !malformed_reserved_headers && prompt.start_with?("/goal\n")
                 "codex"
-              elsif no_headers && prompt.match?(%r{\A/pr-batch(?:\s|\z)})
+              elsif no_headers && !malformed_reserved_headers && prompt.match?(%r{\A/pr-batch(?:\s|\z)})
                 "claude"
               end
 batch_size_target_count = prompt.scan(BATCH_SIZE_TARGET_FIELD).length
@@ -245,6 +253,8 @@ reason_code = if classification != "ambiguous"
                 "unknown-active-host"
               elsif header_counts.values.any? { |count| count > 1 }
                 "duplicate-headers"
+              elsif malformed_reserved_headers
+                "malformed-headers"
               elsif some_headers && !valid_header_counts
                 "partial-headers"
               elsif some_headers && !ordered_headers
