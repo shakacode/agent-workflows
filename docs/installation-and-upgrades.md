@@ -48,9 +48,76 @@ host/profile:
 | `plugin-companion` | Native `scw` plugin only | License, workflows, docs, helpers, metadata, status, and upgrades |
 
 `--mode copy|symlink` controls how installer-managed assets are materialized.
-It is separate from `--delivery-mode flat|plugin-companion`. New installs
-default to `flat`; metadata written before delivery modes existed is also read
-as `flat`.
+It is separate from `--delivery-mode flat|plugin-companion`.
+
+### Delivery Mode Resolution
+
+When `--delivery-mode` is omitted, `bin/install-agent-workflows` resolves the
+mode from the target's install metadata. The install summary reports the
+resolved mode and which rule produced it:
+
+| Target state | Resolved mode | Reported source |
+| --- | --- | --- |
+| `--delivery-mode` was passed | The requested mode | `explicit --delivery-mode` |
+| Metadata records `delivery_mode` | The recorded mode | `recorded install metadata` |
+| Metadata predates delivery modes | `flat` | `legacy install metadata` |
+| No install metadata (fresh install) | `flat` | `fresh-install default` |
+
+An invalid recorded `delivery_mode` fails before any mutation, and the resolved
+mode is always persisted as a concrete mode.
+
+### Fresh-Install Delivery Default
+
+**Decision (issue #248): the generic installer keeps `flat` as its fresh-install
+default. This is an explicit product decision, not an inherited side effect of
+the legacy-metadata compatibility rule.**
+
+The two rules are now separate constants in `bin/install-agent-workflows`
+(`fresh_install_delivery_mode` and `legacy_metadata_delivery_mode`). They
+resolve to the same value today for different reasons and can be changed
+independently.
+
+Rationale:
+
+- Companion mode cannot bootstrap itself. It requires an already enabled native
+  `scw` plugin, and the installer deliberately leaves host plugin installation
+  and updates to the host plugin flow. Defaulting a clean home to
+  `plugin-companion` would make the historical no-flag command fail on every
+  clean host.
+- Detecting an active plugin and silently selecting companion would make the
+  no-flag result depend on ambient machine state and would change what the
+  documented unattended command does on hosts that already have the plugin.
+- `flat` is the only mode that works on a clean home with no host plugin
+  support, no marketplace access, and no network, such as Codex IDE and
+  offline or restricted hosts.
+- The case for native delivery is real but is a documentation and
+  opinionated-setup concern rather than an unattended-default concern. Plugin
+  namespaces avoid collisions with unrelated personal skills, and native
+  delivery gives the host ownership of provider identity and updates. Prefer
+  the native `scw` plugin plus `--delivery-mode plugin-companion` on
+  plugin-capable Codex CLI/Desktop and Claude Code, and choose it explicitly
+  rather than having the installer infer it.
+- A fresh install that collides with an active native plugin already fails
+  closed with exact guidance instead of installing the wrong route. It now also
+  reports that the fresh-install default was applied because the target
+  recorded no delivery mode.
+
+Unchanged by this decision:
+
+- Deliberate `--delivery-mode flat` installation stays supported.
+- Metadata predating `delivery_mode` continues to resolve as `flat`.
+- Exactly one auto-invocable Agent Workflows surface stays enforced: `flat`
+  requires native `scw` to be inactive, `plugin-companion` requires it to be
+  active, and unknown native state fails closed.
+- Unrelated personal skills under `<target>/skills` are preserved in both modes.
+
+Revisit this decision when the installer can bootstrap and prove native `scw`
+from its own host contract, when partial-failure ownership between host plugin
+installation and companion installation is defined, and when
+`agent-workflows-status`, `upgrade-agent-workflows`, and `agent-stack` can
+report and replay an adaptive default consistently. A native-plugin-first
+default belongs to the opinionated ShakaCode `agent-stack` profile and is
+tracked separately from this generic installer default.
 
 ## Native Plugin Paths
 

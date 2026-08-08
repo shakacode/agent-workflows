@@ -7,6 +7,11 @@ Usage: install-agent-workflows [--host codex|claude|auto] [--target DIR] [--mode
 
 Installs this shared workflow pack into an agent home.
 
+Delivery mode resolution when --delivery-mode is omitted:
+  recorded install metadata replays its recorded mode; metadata written before
+  delivery modes existed reads as flat; a target with no install metadata uses
+  the fresh-install default (flat). See docs/installation-and-upgrades.md.
+
 Default targets:
   --host codex   ${CODEX_HOME:-$HOME/.codex}
   --host claude  ${CLAUDE_HOME:-$HOME/.claude}
@@ -34,6 +39,19 @@ host="codex"
 target=""
 mode="copy"
 delivery_mode=""
+delivery_mode_source=""
+# Recorded delivery-mode defaults. These two knobs resolve to the same value
+# today for deliberately different reasons and stay independently changeable:
+#
+#   fresh_install_delivery_mode    product decision for a target with no Agent
+#                                  Workflows install metadata at all (#248).
+#   legacy_metadata_delivery_mode  compatibility decision for metadata written
+#                                  before delivery modes existed (#131/#136).
+#
+# See "Fresh-Install Delivery Default" in docs/installation-and-upgrades.md
+# before changing either one.
+fresh_install_delivery_mode="flat"
+legacy_metadata_delivery_mode="flat"
 metadata_name=".agent-workflows-install.json"
 doctor_managed_marker=".agent-workflows-managed"
 doctor_ownership_helper="$repo_root/bin/agent_doctor/install_ownership.rb"
@@ -146,10 +164,15 @@ metadata_value() {
   esac
 }
 
+installed_metadata_present() {
+  local metadata_path="$target/$metadata_name"
+  [[ -f "$metadata_path" && ! -L "$metadata_path" ]]
+}
+
 installed_metadata_value() {
   local key="$1"
   local metadata_path="$target/$metadata_name"
-  [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 1
+  installed_metadata_present || return 1
 
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
@@ -168,6 +191,28 @@ validate_delivery_mode() {
       exit 64
       ;;
   esac
+}
+
+resolve_delivery_mode() {
+  if [[ -n "$delivery_mode" ]]; then
+    delivery_mode_source="explicit --delivery-mode"
+  elif ! installed_metadata_present; then
+    delivery_mode="$fresh_install_delivery_mode"
+    delivery_mode_source="fresh-install default"
+  elif delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null)"; then
+    delivery_mode_source="recorded install metadata"
+    validate_delivery_mode "Installed metadata delivery_mode"
+  else
+    delivery_mode="$legacy_metadata_delivery_mode"
+    delivery_mode_source="legacy install metadata"
+  fi
+}
+
+# A conflict on a target that never recorded a delivery mode usually means the
+# operator never chose one, not that the recorded route is broken.
+report_delivery_mode_default_note() {
+  [[ "$delivery_mode_source" = "fresh-install default" ]] || return 0
+  echo "NOTE: no delivery mode was recorded for $target, so the fresh-install default ($fresh_install_delivery_mode) was applied. Choose the route explicitly with --delivery-mode flat|plugin-companion." >&2
 }
 
 prepare_metadata() {
@@ -518,10 +563,7 @@ validate_delivery_mode "--delivery-mode"
 resolved="$(resolve_host_and_target)"
 host="${resolved%%:*}"
 target="${resolved#*:}"
-if [[ -z "$delivery_mode" ]]; then
-  delivery_mode="$(installed_metadata_value delivery_mode 2>/dev/null || printf 'flat\n')"
-  validate_delivery_mode "Installed metadata delivery_mode"
-fi
+resolve_delivery_mode
 
 pending_migration_receipt="$target/.agent-workflows-migration-staging"
 if [[ ! -f "$pending_migration_receipt" ]]; then
@@ -535,6 +577,7 @@ if [[ ! -f "$pending_migration_receipt" ]]; then
       warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
       warn payload.fetch("guidance")
     '
+    report_delivery_mode_default_note
     exit 1
   fi
 fi
@@ -615,6 +658,7 @@ if [[ "$delivery_status" -ne 0 ]]; then
     warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
     warn payload.fetch("guidance")
   '
+  report_delivery_mode_default_note
   exit 1
 fi
 prepare_metadata
@@ -737,6 +781,9 @@ printf '%s\n' \
   "" \
   "Host:" \
   "  $host" \
+  "" \
+  "Delivery mode:" \
+  "  $delivery_mode ($delivery_mode_source)" \
   "" \
   "Add this to PATH if needed:" \
   "  export PATH=\"$target/bin:\$PATH\"" \
