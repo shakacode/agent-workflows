@@ -54,3 +54,7 @@ RED -> GREEN -> REFACTOR -> repeat
 ## Done
 
 The loop is complete when each observable behavior specified in the task or issue has passing test coverage, or documented before-and-after closest-useful verification only when a direct automated regression test is not practical, and the pre-push validation passes clean. Report the behaviors implemented, the tests added, any fallback verification rationale and before/after result, and the result of the pre-push validation.
+
+## Coverage-Gate Entry Point
+
+`skills/verify/SKILL.md`'s Coverage-Of-Change Gate routes here whenever it finds no named test covering a changed behavior. Treat that entry the same as starting the Core Loop at RED for that one behavior: write the failing test, confirm it fails for the right reason, make it pass, then hand the resulting test path back to `verify` for its `COVERAGE <test path/name> fails without change` receipt. Do not skip straight to GREEN just because the production change already exists — RED first still applies, using the existing code as the target the new test must pass against.
