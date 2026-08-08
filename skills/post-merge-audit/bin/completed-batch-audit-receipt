@@ -492,7 +492,7 @@ module CompletedBatchAuditReceipt
 
     <<~MARKDOWN.chomp
       #{PR_SUMMARY_START}
-      ## Completed-batch audit
+      #### Completed-batch audit
 
       **Status:** #{status} [Durable receipt](#{receipt_url}).
       #{PR_SUMMARY_END}

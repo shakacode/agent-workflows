@@ -267,7 +267,7 @@ For each included PR:
   a process finding unless a maintainer explicitly waived replay for that
   scope.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.
-- Decision log: inspect any `Codex Decision Log` or equivalent section and verify the decisions still hold after the merge.
+- Decision log: inspect the canonical `### Decision log` subsection inside the PR description's `Agent details` disclosure first; also discover legacy `## Codex Decision Log` and consumer-equivalent sections, then verify their decisions still hold after the merge.
 
 For each worked issue, QA lane, or advisory `codex-claim` recovery row from
 coordination state, including no-PR, blocked, parked, done-unmerged, or
@@ -412,7 +412,7 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
@@ -437,7 +437,7 @@ preserves the original coordination terminal and records the later-target
 completion mode. Active/nonterminal lanes, open targets, unauthenticated target
 facts, and malformed terminal timestamps remain blocked.
 
-Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
@@ -536,12 +536,13 @@ followups_dispositions: <none|one or more ` | `-separated records with ref, owne
 
 For a PR anchor, `publish` and `replay` emit this small managed section after
 comment readback; neither mutates the PR description. The coordinator applies it
-through a separate freshly-read update, preserves all surrounding text, never
-duplicates the markers, and never reruns `publish` to retry description sync:
+inside `### Audit receipts` in the canonical `Agent details` disclosure through
+a separate freshly-read update, preserves all surrounding text, never duplicates
+the markers, and never reruns `publish` to retry description sync:
 
 ```markdown
 <!-- completed-batch-audit-summary:start -->
-## Completed-batch audit
+#### Completed-batch audit
 
 **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
 <!-- completed-batch-audit-summary:end -->

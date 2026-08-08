@@ -1264,7 +1264,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       summary = result.fetch("pr_description_summary")
       assert_equal "https://github.com/acme/widgets/pull/184", summary.fetch("url")
       assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_START
-      assert_includes summary.fetch("section"), "## Completed-batch audit"
+      assert_includes summary.fetch("section"), "#### Completed-batch audit"
       assert_includes summary.fetch("section"), "**Status:** Clean — no outstanding findings or follow-ups."
       assert_includes summary.fetch("section"), "pull/184#issuecomment-9001"
       assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_END
