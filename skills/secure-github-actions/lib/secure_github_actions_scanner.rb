@@ -105,8 +105,14 @@ module SecureGitHubActions
 
     def discover_action_paths
       paths = []
-      findings = []
       reviewable_paths = git_reviewable_paths
+      findings = if reviewable_paths
+                   reviewable_paths.fetch(:identity_errors).map do |relative|
+                     unsafe_action_discovery_finding(File.join(@root, relative))
+                   end
+                 else
+                   []
+                 end
       directories = [@root]
       until directories.empty?
         directory = directories.shift
@@ -129,19 +135,18 @@ module SecureGitHubActions
               next if excluded_action_root?(child_relative)
 
               child_stat = File.lstat(path)
-              if reviewable_paths &&
-                 reviewable_paths.fetch(:directories)[child_relative] &&
+              if reviewable_path?(reviewable_paths, child_relative, :directories, child_stat) &&
                  (!child_stat.directory? || child_stat.symlink?)
                 findings << unsafe_action_discovery_finding(path)
                 next
               end
 
               if child_stat.directory? && !child_stat.symlink?
-                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :directories)
+                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :directories, child_stat)
 
                 directories << path
               elsif ACTION_DESCRIPTORS.include?(entry)
-                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :files)
+                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :files, child_stat)
 
                 if child_stat.file? && !child_stat.symlink?
                   paths << path
@@ -182,14 +187,48 @@ module SecureGitHubActions
           directory = parent
         end
       end
-      { files: files, directories: directories }
+      paths = { files: files, directories: directories }
+      identities = { files: {}, directories: {} }
+      identity_errors = []
+      paths.each do |collection, reviewable|
+        reviewable.each_key do |relative|
+          next if collection == :files && !ACTION_DESCRIPTORS.include?(File.basename(relative))
+
+          stat = reviewable_path_lstat(relative)
+          identities.fetch(collection)[[stat.dev, stat.ino]] = true if stat
+        rescue Errno::ENOENT, Errno::ENOTDIR
+          next
+        rescue SystemCallError
+          identity_errors << relative
+        end
+      end
+      paths.merge(identities: identities, identity_errors: identity_errors.uniq)
     rescue SystemCallError
       nil
     end
 
-    def ignored_unreviewable_path?(reviewable_paths, relative, collection)
+    def reviewable_path_lstat(relative)
+      current = @root
+      segments = relative.split("/")
+      segments.each_with_index do |segment, index|
+        current = File.join(current, segment)
+        stat = File.lstat(current)
+        return stat if index == segments.length - 1
+        return nil unless stat.directory? && !stat.symlink?
+      end
+      nil
+    end
+
+    def reviewable_path?(reviewable_paths, relative, collection, stat)
       return false unless reviewable_paths
-      return false if reviewable_paths.fetch(collection)[relative]
+      return true if reviewable_paths.fetch(collection)[relative]
+
+      reviewable_paths.fetch(:identities).fetch(collection)[[stat.dev, stat.ino]]
+    end
+
+    def ignored_unreviewable_path?(reviewable_paths, relative, collection, stat)
+      return false unless reviewable_paths
+      return false if reviewable_path?(reviewable_paths, relative, collection, stat)
 
       _stdout, _stderr, status = Open3.capture3(
         "git", "-C", @root, "check-ignore", "--quiet", "--", relative,
