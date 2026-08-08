@@ -150,7 +150,11 @@ GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN"
 TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
-  "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
+  "verify pr-batch+workflow; unresolved=>UNKNOWN."
+TRIAGE_TARGET_RENDERING_RULE =
+  "Render the exact Base and `ask` mechanics for the selected target: " \
+  "`$pr-batch` and `$pr-walkthrough` for Codex, `/pr-batch` and `/pr-walkthrough` for Claude, " \
+  "or neutral `pr-batch` and `pr-walkthrough` names for portable."
 GOAL_PROMPT_FALLBACK_LINE =
   "- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; " \
   "persist output before resume/launch; preflight issue/PR only."
@@ -172,6 +176,15 @@ CLAUDE_PROMPT_START = PORTABLE_PROMPT_HEADER
                       .sub("Prompt host: portable", "Prompt host: claude")
                       .then { |header| "#{header}\n#{CLAUDE_INVOCATION_LINE}\n" }
                       .freeze
+TRIAGE_PORTABLE_PROMPT_TEMPLATE = <<~TEXT.freeze
+  Prompt host: portable
+  Prompt mode: batch
+  Preferred route: default
+  Route requirement: advisory
+  #{PORTABLE_INVOCATION_LINE}
+  #{TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE}
+  #{ASK_WALKTHROUGH_PROMPT_LINE}
+TEXT
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 CONTINUATION_PROMPT_START = <<~TEXT.freeze
@@ -419,6 +432,7 @@ def render_prompt_mechanics(prompt, sigil)
   prompt
     .sub(/^Use the pr-batch skill\b/, "Use #{sigil}pr-batch")
     .sub(/^Base:(.*;)verify pr-batch\+workflow;/, "Base:\\1verify #{sigil}pr-batch+workflow;")
+    .sub(/^(- Resolve .*; verify )pr-batch(\+workflow;)/, "\\1#{sigil}pr-batch\\2")
     .sub(/^- Resolve pr-batch;/, "- Resolve #{sigil}pr-batch;")
     .sub(/^- ask=>pr-walkthrough;/, "- ask=>#{sigil}pr-walkthrough;")
 end
@@ -545,6 +559,48 @@ def assert_canonical_prompt_adapter_contract(label, prompt_template)
            result["semantic_payload_preserved"] == true && result["prompt"] == prompts.fetch(target)
       abort_with_failure("#{label} #{source} to #{target} conversion is not byte exact: #{result.inspect}")
     end
+  end
+end
+
+def assert_triage_prompt_adapter_contract
+  prompts = {
+    codex: prompt_for_target(TRIAGE_PORTABLE_PROMPT_TEMPLATE, :codex),
+    claude: prompt_for_target(TRIAGE_PORTABLE_PROMPT_TEMPLATE, :claude),
+    portable: prompt_for_target(TRIAGE_PORTABLE_PROMPT_TEMPLATE, :generic)
+  }
+  mechanics = {
+    codex: [
+      TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE.sub("verify pr-batch", "verify $pr-batch"),
+      ASK_WALKTHROUGH_PROMPT_LINE.sub("ask=>pr-walkthrough", "ask=>$pr-walkthrough")
+    ],
+    claude: [
+      TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE.sub("verify pr-batch", "verify /pr-batch"),
+      ASK_WALKTHROUGH_PROMPT_LINE.sub("ask=>pr-walkthrough", "ask=>/pr-walkthrough")
+    ],
+    portable: [TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE, ASK_WALKTHROUGH_PROMPT_LINE]
+  }
+
+  mechanics.each do |target, expected_lines|
+    expected_lines.each do |line|
+      count = prompts.fetch(target).scan(line).length
+      abort_with_failure("triage #{target} must render mechanic exactly once: #{line}") unless count == 1
+    end
+  end
+
+  [
+    [:codex, "codex", "compatible"],
+    [:claude, "claude", "compatible"],
+    [:portable, "codex", "portable"],
+    [:portable, "claude", "portable"]
+  ].each do |target, active_host, expected_classification|
+    prompt = prompts.fetch(target)
+    result = classify_prompt(prompt, active_host, "triage #{target} on #{active_host}")
+    next if result["classification"] == expected_classification && result["execute_allowed"] == true &&
+            result["prompt"] == prompt
+
+    abort_with_failure(
+      "triage #{target} on #{active_host} is not byte-exact #{expected_classification}: #{result.inspect}"
+    )
   end
 end
 
@@ -900,6 +956,18 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
+  ASK_WALKTHROUGH_PROMPT_LINE,
+  1,
+  "triage generated-prompt ask-walkthrough contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  TRIAGE_TARGET_RENDERING_RULE,
+  1,
+  "triage generated-prompt target rendering contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
   GOAL_MODE_COMPACT_CONTRACT,
   1,
   "triage generated-prompt compact completion contract"
@@ -1021,6 +1089,7 @@ budget_checks = {
 }.each do |label, template|
   assert_canonical_prompt_adapter_contract(label, template)
 end
+assert_triage_prompt_adapter_contract
 
 codex_prompt_template = prompt_for_target(prompt_template, :codex)
 claude_prompt_template = prompt_for_target(prompt_template, :claude)
