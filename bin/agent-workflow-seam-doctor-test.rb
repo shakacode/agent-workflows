@@ -927,26 +927,90 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
-  def test_malformed_trusted_actions_values_still_fail_closed
-    variants = {
-      "mapping" => {},
-      "scalar" => "owner/action",
-      "wildcard" => ["owner/*"]
+  def test_mapping_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails({})
+  end
+
+  def test_scalar_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails("owner/action")
+  end
+
+  def test_wildcard_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails(["owner/*"])
+  end
+
+  def test_non_string_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails([123])
+  end
+
+  def test_duplicate_trusted_actions_fails_without_actions
+    assert_malformed_trusted_actions_fails(["owner/action", "owner/action"])
+  end
+
+  def test_no_actions_consumer_allows_valid_or_missing_trusted_actions
+    policies = {
+      "missing" => POLICY,
+      "valid exact entries" => POLICY.merge("trusted_actions" => ["owner/action", "other/workflows"])
     }
-    variants.each do |label, value|
+    policies.each do |label, policy|
       with_repo do |root|
         write_valid_binstub_contract(root)
-        write_policy(root, POLICY.merge("trusted_actions" => value))
+        write_policy(root, policy)
         write_skill(root, "No commands here.\n")
-        workflow = File.join(root, ".github/workflows/clean.yml")
-        FileUtils.mkdir_p(File.dirname(workflow))
-        File.write(workflow, "jobs: {}\n")
 
         out, status = run_doctor(root)
 
-        refute status.success?, label
-        assert_match(/trusted[_-]actions/i, out, label)
+        assert status.success?, "#{label}: #{out}"
       end
+    end
+  end
+
+  def test_only_explicit_trusted_actions_activates_no_actions_security_surface
+    with_repo do |root|
+      write_policy(root, POLICY)
+      refute AgentWorkflowSeamDoctor.workflow_security_surface?(root)
+
+      write_policy(root, POLICY.merge("trusted_actions" => []))
+      assert AgentWorkflowSeamDoctor.workflow_security_surface?(root)
+    end
+  end
+
+  def test_multidocument_trusted_actions_policy_fails_without_actions
+    policy_text = "#{POLICY.to_yaml}---\ntrusted_actions:\n  - owner/action\n"
+
+    assert_trusted_actions_policy_text_fails(policy_text)
+  end
+
+  def test_duplicate_trusted_actions_keys_fail_without_actions
+    policy_text = "#{POLICY.to_yaml}trusted_actions:\n  - owner/action\n" \
+                  "trusted_actions:\n  - other/workflows\n"
+
+    assert_trusted_actions_policy_text_fails(policy_text)
+  end
+
+  def assert_malformed_trusted_actions_fails(value)
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("trusted_actions" => value))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?, value.inspect
+      assert_match(/trusted[_-]actions/i, out, value.inspect)
+    end
+  end
+
+  def assert_trusted_actions_policy_text_fails(policy_text)
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      File.write(File.join(root, ".agents/agent-workflow.yml"), policy_text)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?, out
+      assert_match(/trusted[_-]actions|invalid policy config/i, out)
     end
   end
 
