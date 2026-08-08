@@ -164,9 +164,9 @@ class PromptHostAdapterTest < Minitest::Test
         source_host: "claude",
         active_host: "codex",
         source_wrapper: "",
-        expected_wrapper: "/goal\n",
+        expected_wrapper: "",
         source_mode: "batch",
-        expected_mode: "goal",
+        expected_mode: "batch",
         source_sigil: "/",
         expected_sigil: "$"
       }
@@ -533,9 +533,8 @@ class PromptHostAdapterTest < Minitest::Test
         source_host: "claude",
         target_host: "codex",
         expected_with_field: <<~PROMPT,
-          /goal
           Prompt host: codex
-          Prompt mode: goal
+          Prompt mode: batch
           Preferred route: default
           Route requirement: advisory
           Use $pr-batch complete the batch.
@@ -543,9 +542,8 @@ class PromptHostAdapterTest < Minitest::Test
           Objective: Preserve legacy Claude payload.
         PROMPT
         expected_without_field: <<~PROMPT
-          /goal
           Prompt host: codex
-          Prompt mode: goal
+          Prompt mode: batch
           Preferred route: default
           Route requirement: advisory
           Use $pr-batch complete the batch.
@@ -864,9 +862,8 @@ class PromptHostAdapterTest < Minitest::Test
         target_host: "codex",
         prefix: "- ",
         expected: <<~PROMPT
-          /goal
           Prompt host: codex
-          Prompt mode: goal
+          Prompt mode: batch
           Preferred route: default
           Route requirement: advisory
           Use $pr-batch complete the batch.
@@ -1410,9 +1407,8 @@ class PromptHostAdapterTest < Minitest::Test
   def test_legacy_leading_claude_invocation_converts_to_inert_codex_prompt
     prompt = "/pr-batch continue the verified batch.\n"
     expected = <<~PROMPT
-      /goal
       Prompt host: codex
-      Prompt mode: goal
+      Prompt mode: batch
       Preferred route: default
       Route requirement: advisory
       Use $pr-batch continue the verified batch.
@@ -1436,9 +1432,8 @@ class PromptHostAdapterTest < Minitest::Test
       - ask=>/pr-walkthrough;gate fail=>stop
     PROMPT
     expected = <<~PROMPT
-      /goal
       Prompt host: codex
-      Prompt mode: goal
+      Prompt mode: batch
       Preferred route: default
       Route requirement: advisory
       Use $pr-batch continue the verified batch.

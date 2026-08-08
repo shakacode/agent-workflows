@@ -1,6 +1,5 @@
-/goal
 Prompt host: codex
-Prompt mode: goal
+Prompt mode: batch
 Preferred route: opus/xhigh
 Route requirement: advisory
 Use $pr-batch to complete this batch with subagents.

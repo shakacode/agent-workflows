@@ -195,10 +195,10 @@ source_mechanics_supported = !conversion_source_host ||
 
 converted_prompt = if explicit_conversion
                      target_host = options.fetch(:active_host)
-                     target_mode = if headers["Prompt mode"] == "direct"
-                                     "direct"
-                                   else
-                                     (target_host == "codex" ? "goal" : "batch")
+                     target_mode = case headers["Prompt mode"]
+                                   when "direct" then "direct"
+                                   when "batch" then "batch"
+                                   when "goal" then target_host == "claude" ? "batch" : "goal"
                                    end
                      converted_body = prompt
                                       .delete_prefix("/goal\n")
@@ -219,7 +219,7 @@ converted_prompt = if explicit_conversion
                                       .sub(%r{\A/pr-batch\b}, "Use $pr-batch")
                      converted_body = rewrite_batch_size_target(converted_body, "codex")
                      converted_body = render_host_mechanics(converted_body, "codex")
-                     "/goal\nPrompt host: codex\nPrompt mode: goal\nPreferred route: default\n" \
+                     "Prompt host: codex\nPrompt mode: batch\nPreferred route: default\n" \
                        "Route requirement: advisory\n#{converted_body}"
                    end
 semantic_payload_preserved = converted_prompt &&
