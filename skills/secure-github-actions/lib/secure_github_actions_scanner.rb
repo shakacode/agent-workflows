@@ -129,6 +129,13 @@ module SecureGitHubActions
               next if excluded_action_root?(child_relative)
 
               child_stat = File.lstat(path)
+              if reviewable_paths &&
+                 reviewable_paths.fetch(:directories)[child_relative] &&
+                 (!child_stat.directory? || child_stat.symlink?)
+                findings << unsafe_action_discovery_finding(path)
+                next
+              end
+
               if child_stat.directory? && !child_stat.symlink?
                 next if ignored_unreviewable_path?(reviewable_paths, child_relative, :directories)
 
@@ -590,6 +597,7 @@ module SecureGitHubActions
 
       root = stream.children.first&.children&.first
       return invalid_trusted_actions(path) unless root.is_a?(Psych::Nodes::Mapping)
+      return invalid_trusted_actions(path) if policy_indirection?(root)
       return invalid_trusted_actions(path) unless root.children.each_slice(2).all? do |key, _value|
         key.is_a?(Psych::Nodes::Scalar)
       end
@@ -614,6 +622,21 @@ module SecureGitHubActions
       [normalized.freeze, []]
     rescue Psych::Exception, EncodingError, SystemCallError, UnsafeFileError
       invalid_trusted_actions(path)
+    end
+
+    def policy_indirection?(node)
+      return true if node.is_a?(Psych::Nodes::Alias)
+
+      if node.is_a?(Psych::Nodes::Mapping)
+        return true if node.children.each_slice(2).any? { |key, _value| yaml_merge_key?(key) }
+      end
+
+      node.respond_to?(:children) && node.children&.any? { |child| policy_indirection?(child) }
+    end
+
+    def yaml_merge_key?(node)
+      node.is_a?(Psych::Nodes::Scalar) &&
+        (node.tag == "tag:yaml.org,2002:merge" || (node.plain && node.value == "<<"))
     end
 
     def invalid_trusted_actions(path)

@@ -670,6 +670,41 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_git_action_discovery_rejects_tracked_action_ancestors_replaced_by_non_directories
+    actual = %i[symlink regular_file].map do |replacement|
+      with_repository("jobs: {}\n") do |root|
+        action_path = File.join(root, "actions/local/action.yml")
+        FileUtils.mkdir_p(File.dirname(action_path))
+        File.write(action_path, "runs: { using: composite, steps: [] }\n")
+        git!(root, "init", "-b", "main")
+        git!(root, "add", ".github/workflows/test.yml", "actions/local/action.yml")
+
+        actions_root = File.join(root, "actions")
+        FileUtils.remove_entry(actions_root)
+        if replacement == :symlink
+          replacement_target = File.join(root, "replacement-target")
+          FileUtils.mkdir_p(replacement_target)
+          File.symlink(replacement_target, actions_root)
+        else
+          File.write(actions_root, "not a directory\n")
+        end
+        File.write(File.join(root, "ordinary-file"), "not an action directory\n")
+
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        document = JSON.parse(stdout)
+        [
+          status.exitstatus,
+          stderr,
+          rule_ids(document),
+          document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+        ]
+      end
+    end
+
+    expected = [1, "", ["secure-github-actions/unsafe-file"], ["actions"]]
+    assert_equal [expected, expected], actual
+  end
+
   def test_action_discovery_requires_list_and_traverse_permissions
     expected_rules = {
       0o111 => ["secure-github-actions/unsafe-file"],
@@ -946,6 +981,65 @@ class SecureGitHubActionsScanTest < Minitest::Test
       ]
     ]
     assert_equal [expected, expected], actual
+  end
+
+  def test_policy_merge_and_alias_indirection_fails_closed_without_external_uses
+    policies = [
+      <<~YAML,
+        inherited: &inherited
+          trusted_actions: [owner/action]
+        <<: *inherited
+      YAML
+      <<~YAML,
+        first: &first
+          trusted_actions: [owner/action]
+        second: &second
+          enabled: true
+        <<: [*first, *second]
+      YAML
+      <<~YAML,
+        !!merge injected:
+          trusted_actions: [owner/action]
+      YAML
+      <<~YAML
+        <<:
+          trusted_actions: [owner/action]
+      YAML
+    ]
+
+    actual = policies.map do |policy|
+      with_repository("jobs: {}\n") do |root|
+        policy_path = File.join(root, ".agents/agent-workflow.yml")
+        FileUtils.mkdir_p(File.dirname(policy_path))
+        File.write(policy_path, policy)
+
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]
+      end
+    end
+
+    expected = [1, "", ["secure-github-actions/invalid-trusted-actions-policy"]]
+    assert_equal [expected, expected, expected, expected], actual
+  end
+
+  def test_ordinary_unrelated_policy_mappings_remain_valid
+    with_repository("jobs: {}\n") do |root|
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      FileUtils.mkdir_p(File.dirname(policy_path))
+      File.write(policy_path, <<~YAML)
+        metadata:
+          enabled: true
+          channel: stable
+        "<<":
+          trusted_actions: [owner/action]
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_predicate status, :success?
+      assert_empty stderr
+      assert_empty rule_ids(JSON.parse(stdout))
+    end
   end
 
   def test_multiple_policy_documents_are_invalid_and_do_not_trust_action
