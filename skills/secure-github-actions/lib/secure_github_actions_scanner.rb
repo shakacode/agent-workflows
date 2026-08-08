@@ -524,7 +524,7 @@ module SecureGitHubActions
 
     def readable_version_comment?(node, lines)
       suffix = lines.fetch(node.end_line, "")[node.end_column..].to_s
-      suffix.match?(/\A[ \t]+#[ \t]*[A-Za-z0-9][^\r\n]*\z/)
+      suffix.match?(/\A[ \t]+(?:(?:[}\]][ \t]*)*[}\]][ \t]+)?#[ \t]*[A-Za-z0-9][^\r\n]*\z/)
     end
 
     def trusted_use?(reference)

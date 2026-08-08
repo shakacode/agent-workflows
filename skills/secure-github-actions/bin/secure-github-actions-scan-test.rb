@@ -124,6 +124,60 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_cli_accepts_flow_style_pinned_uses_with_same_line_version_comments
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    workflows = [
+      <<~YAML,
+        jobs:
+          build:
+            runs-on: ubuntu-latest
+            steps:
+              - { uses: owner/action@#{sha} } # v1.2.3
+      YAML
+      "jobs: { build: { runs-on: ubuntu-latest, steps: [{ uses: owner/action@#{sha} }] } } # v1.2.3\n"
+    ]
+
+    actual = workflows.map do |workflow|
+      with_repository(workflow, trusted_actions: ["owner/action"]) do |root|
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]
+      end
+    end
+
+    assert_equal [[0, "", []], [0, "", []]], actual
+  end
+
+  def test_cli_rejects_flow_style_pinned_uses_with_unrelated_or_later_comments
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    workflows = [
+      <<~YAML,
+        jobs:
+          build:
+            runs-on: ubuntu-latest
+            steps:
+              - { uses: owner/action@#{sha}, name: unrelated } # v1.2.3
+      YAML
+      <<~YAML
+        jobs:
+          build:
+            runs-on: ubuntu-latest
+            steps:
+              - { uses: owner/action@#{sha} }
+                # v1.2.3
+      YAML
+    ]
+
+    actual = workflows.map do |workflow|
+      with_repository(workflow, trusted_actions: ["owner/action"]) do |root|
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]
+      end
+    end
+
+    expected = [1, "", ["secure-github-actions/missing-version-comment"]]
+    assert_equal [expected, expected], actual
+  end
+
   def test_missing_allowlist_fails_closed_for_pinned_external_use
     sha = "0123456789abcdef0123456789abcdef01234567"
     with_repository(<<~YAML) do |root|
