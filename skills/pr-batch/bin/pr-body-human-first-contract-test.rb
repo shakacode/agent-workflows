@@ -18,6 +18,7 @@ class PrBodyHumanFirstContractTest < Minitest::Test
     validation = File.read(PR_BODY_CONTRACT_VALIDATE_PATH, encoding: "UTF-8")
     goal_test = File.read(PR_BODY_CONTRACT_GOAL_TEST_PATH, encoding: "UTF-8")
     normalized_workflow = workflow.gsub(/\s+/, " ")
+    normalized_pr_batch_skill = pr_batch_skill.gsub(/\s+/, " ")
 
     assert_includes workflow, "### Human-First PR Description Contract"
     assert_includes workflow, "Only a PR body uses the [Human-First PR Description Contract]"
@@ -50,6 +51,7 @@ class PrBodyHumanFirstContractTest < Minitest::Test
     assert_includes template, "Insert the complete canonical `### QA Evidence` block"
 
     assert_includes pr_batch_skill, "Human-First PR Description Contract"
+    assert_includes normalized_pr_batch_skill, "decision note inside the PR description's `Agent details` disclosure"
     assert_includes template, "Insert the helper-managed `#### Completed-batch audit` section here."
     assert_includes pr_batch_skill, "under `### Audit receipts`"
     assert_includes audit_receipt, "#### Completed-batch audit"
