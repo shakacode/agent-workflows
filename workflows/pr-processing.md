@@ -22,6 +22,23 @@ For an interactive human-oriented explanation of a PR, use
 one conceptual change at a time, explains why it exists, and pauses for
 questions before continuing.
 
+## Prompt Host Gate
+
+Before a complete pasteable batch, goal, or direct pr-batch prompt can launch a
+worker, mutate a repository, or write to GitHub, classify it against the
+explicit active host with the resolved pr-batch skill's
+`bin/prompt-host-adapter --active-host codex|claude`, passing prompt text on
+standard input. A `compatible` or `portable` result only admits the prompt to
+the ordinary gates below. A `conversion-required` result is inert relaunch-only
+text: do not execute it, replan when requested, and classify the relaunched
+prompt again. An `ambiguous` result stops without rewrite or execution.
+
+The normative header, legacy-recognition, mechanics-only conversion, semantic
+preservation, and fail-closed ambiguity rules are in
+`docs/host-adapter/contract.md`. This gate adds no signing, receipt, waiver,
+route, QA, review, merge, or other authority. It does not apply to a bare skill
+picker invocation or generic pause/resume-only text.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -1138,6 +1155,11 @@ If the user is using `/plan`, or asks to prepare a Codex goal, stop after produc
 Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`,
 including the review/audit gate paragraphs.
 
+The fenced template is portable. For Codex, prepend `/goal`, set `Prompt host` <!-- host-allow: codex-only -->
+to `codex` and `Prompt mode` to `goal`, and use `$pr-batch`. For Claude, set
+`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and use `/pr-batch`.
+Keep the portable form unchanged for a generic destination.
+
 The `$pr-batch` skill links to this canonical `Coordination:` paragraph instead
 of duplicating it.
 
@@ -1168,7 +1190,11 @@ coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
+Prompt host: portable
+Prompt mode: batch
+Preferred route: <model/class>/<effort>
+Route requirement: advisory
+Use the pr-batch skill to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
@@ -1177,7 +1203,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
@@ -1195,7 +1220,7 @@ Items:
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
-- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+- Checker independent/evidenced.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
 Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-verification=>stop;Verify live GitHub before edits;unverifiable facts are UNKNOWN
@@ -1885,6 +1910,10 @@ always come from the operator or verified runtime roster.
 Use this prompt after filling the route placeholders:
 
 ```text
+Prompt host: codex
+Prompt mode: direct
+Preferred route: <coordinator model/class>/<effort>
+Route requirement: advisory
 Use $pr-batch to recover and continue this in-flight batch.
 Continue the existing goal; do not clear it or start a new batch.
 

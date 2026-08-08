@@ -186,7 +186,7 @@ class ModelRoutingContractTest < Minitest::Test
     }
 
     prompts.each do |label, prompt|
-      assert_includes prompt, "Coordinator model/effort preference:", label
+      assert_includes prompt, "Preferred route: <model/class>/<effort>", label
       assert_includes prompt, "Worker model/effort preferences:", label
       assert_includes prompt, "Observed host/model/effort:", label
       assert_includes prompt, "ordinary pending/active lifecycle", label

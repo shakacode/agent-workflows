@@ -76,9 +76,67 @@ host adapter may report observed host, model, and effort only from runtime state
 it actually exposes; every unavailable field is `UNKNOWN`, and absence or
 mismatch never alone blocks workflow progress. The host owns any route-exposure
 mechanism. Agent Workflows does not provision or require signing keys, fixed
-trust anchors, launch-confirmation receipts, or human waivers. Prompt conversion
-for incompatible runtime instructions is tracked separately in
-[issue #372](https://github.com/shakacode/agent-workflows/issues/372).
+trust anchors, launch-confirmation receipts, or human waivers.
+
+## Runtime Prompt Adaptation
+
+Every pasteable batch, goal, or direct pr-batch prompt must declare its runtime
+contract before the invocation:
+
+```text
+Prompt host: codex|claude|portable
+Prompt mode: goal|batch|direct
+Preferred route: default|<model-or-class>/<effort>
+Route requirement: advisory
+```
+
+Codex goal prompts put `/goal` before the header and use `$pr-batch` after it.
+Codex direct prompts omit `/goal` and use `$pr-batch`. Claude prompts omit
+`/goal` and use `/pr-batch`. Portable prompts use neutral prose such as
+`Use the pr-batch skill ...`; they resolve through this contract at runtime.
+The `Preferred route` value is metadata only. It cannot create a hard route,
+weaken a gate, or turn unavailable model/effort data into a blocker.
+
+Before worker launch, repository mutation, or a GitHub write, classify the
+complete prompt against an explicitly known active host:
+
+```bash
+skills/pr-batch/bin/prompt-host-adapter --active-host codex < prompt.txt
+skills/pr-batch/bin/prompt-host-adapter --active-host claude < prompt.txt
+```
+
+The helper reads prompt text only from standard input and emits a structured
+JSON result. It does not launch a worker, execute the prompt, mutate a
+repository, or write to GitHub. Callers must honor these classifications:
+
+| Classification | Meaning | Allowed next action |
+| --- | --- | --- |
+| `compatible` | Complete matching host headers and mechanics, or an unmistakable matching legacy wrapper | Execute only under the ordinary workflow gates; preserve the prompt byte-for-byte. |
+| `portable` | Complete portable headers plus this installed contract | Resolve host mechanics through this contract, then execute only under the ordinary workflow gates; preserve the portable prompt byte-for-byte. |
+| `conversion-required` | Complete known opposite-host prompt, or unmistakable opposite-host legacy wrapper | Do not execute. Return the converted text as inert relaunch input. Re-run planning when the result reports `replanning_required`, then classify the relaunched prompt again. |
+| `ambiguous` | Unknown active host, partial/duplicate/malformed/contradictory headers, non-advisory routing, unsupported syntax, or semantic-preservation failure | Do not rewrite or execute. Stop with the exact ambiguity for user or coordinator resolution. |
+
+Legacy detection is deliberately narrow: only a leading Codex `/goal` wrapper
+or a leading Claude `/pr-batch` invocation is unmistakable. Incidental host or
+skill names in prose do not qualify. Generic pause/resume-only text is outside
+this adapter contract unless it is itself a complete pr-batch prompt.
+
+Conversion translates mechanics only: the header host/mode, `/goal` wrapper,
+pr-batch invocation, target-specific batch-size field, and exact
+pr-walkthrough authority invocation. Objectives, targets, scope, dependencies,
+permissions, safety, QA, review, merge authority, advisory route preference,
+and all ordinary workflow gates must remain semantically identical. The helper
+normalizes those approved mechanical differences and compares the remaining
+payload; any difference or untranslated host mechanic fails closed as
+`ambiguous`. Conversion never splits or repacks lanes. A converted batch-size
+prompt reports `replanning_required` because the target host's capacity may
+differ.
+
+This runtime adapter adds no signing keys, trust anchors, launch receipts,
+waivers, or new authority. It cannot bypass security preflight, coordination,
+stage dependencies, QA, current-head review, merge assurance, or issue #299's
+human-approval boundary. A conversion result is always inert; a caller must
+relaunch and reclassify it before ordinary execution can begin.
 
 ## Host-Owned Fact Rollout
 

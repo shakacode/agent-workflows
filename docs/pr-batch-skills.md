@@ -210,9 +210,11 @@ omit the queue summary and note that queue state is unavailable.
    requires an execution envelope a coordinator-role-approved envelope regardless
    of route. Require immediate return to the coordinator on contradictory evidence,
    ambiguity, scope/risk growth, weakened verification, or consequential judgment.
-8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
-   the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
+8. Give the user the Batch Plan and fenced pr-batch goal prompt. Start with
+   the target-specific prompt-host header and invocation (`/goal`, the Codex
+   header, then `Use $pr-batch...` for Codex; the Claude header then
+   `Use /pr-batch...` for Claude; the portable header and neutral pr-batch
+   invocation for generic), then put a short `Batch title:`
    line using the optional validated `repo_prefix` from
    `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
    repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
@@ -227,9 +229,17 @@ omit the queue summary and note that queue state is unavailable.
    carry the same execution rules, including thread handles, claim holders, Lane
    Cards, registration-first coordination when supported, and UNKNOWN fallbacks.
    Do not launch workers yet.
-9. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
-   If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
-   resolves the spec tasks into exact GitHub targets before running.
+9. When the user says to run it, classify the complete fenced prompt against
+   the explicit active host with
+   `skills/pr-batch/bin/prompt-host-adapter --active-host codex|claude` before
+   worker launch, repository mutation, or a GitHub write. `compatible` and
+   `portable` may enter the ordinary gates without rewriting;
+   `conversion-required` is inert relaunch-only text and may require
+   replanning, while `ambiguous` stops. Then use the host-compatible pr-batch
+   invocation. If the preceding step was `$spec`, go to step 2 first so
+   `$plan-pr-batch` resolves the spec tasks into exact GitHub targets before
+   running. See `docs/host-adapter/contract.md` for the normative conversion
+   and semantic-preservation contract.
 
 ## Direct `$pr-batch` Flow
 

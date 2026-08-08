@@ -215,21 +215,33 @@ precise blocker.
    typed edge in the shared `stage-dependency-plan` v1 file and live replay.
    Re-evaluate the affected group after capacity placement; never convert a
    cross-group edge into an untyped ready signal.
-5. Produce one target-specific `$pr-batch` goal prompt per group, with a stable
+5. Produce one target-specific pr-batch goal prompt per group, with a stable
    batch id, lane name, agent id, target list, validation expectations, and
    coordination hooks. Every separately handed-off prompt must name
    `STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` in existing
    `Scope` data and carry the complete live replay inline or name its durable
    reference; persist or deliver both artifacts with stable planning state.
    Backend storage is optional and must not be assumed.
+   Classify the destination before generating text. Each prompt must begin,
+   after the Codex-only `/goal` wrapper when applicable, with <!-- host-allow: codex-only -->
+   `Prompt host: <codex|claude|portable>`,
+   `Prompt mode: <goal|batch>`,
+   `Preferred route: <model/class>/<effort>`, and
+   `Route requirement: advisory`. Then use `$pr-batch` for Codex,
+   `/pr-batch` for Claude, or `the pr-batch skill` for the portable form.
+   Generated text remains an inert handoff until a batch coordinator classifies
+   the complete filled prompt against the explicit active host with the resolved
+   pr-batch skill's `bin/prompt-host-adapter`. Only `compatible` or `portable`
+   can enter ordinary launch gates; `conversion-required` must be relaunched
+   (and replanned when requested), while `ambiguous` stops without rewrite or
+   execution. See `../../docs/host-adapter/contract.md`.
    Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
-   `Coordinator model/effort preference: <model/class>/<effort>.` and
    `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
    `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
    `Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart` and
    `Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`
-   It must also say `Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.`
+   It must also say `- Checker independent/evidenced.`
    and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
    Each prompt must also include this exact compact scope line:
@@ -270,7 +282,7 @@ precise blocker.
    Claude/generic prompts, measure the actual prompt,
    keep it under 8 000 characters, and split or compact it when too large rather
    than applying the Codex split threshold. Put a short `Batch title:` after the
-   target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   prompt-host header and target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
    Resolve `<PROJECT>` from the optional `repo_prefix` in
    `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`

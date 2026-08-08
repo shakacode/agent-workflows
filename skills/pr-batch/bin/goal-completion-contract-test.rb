@@ -131,7 +131,20 @@ COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `we
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
-PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
+PLAN_PR_BATCH_PORTABLE_HEADER = <<~TEXT
+  Prompt host: portable
+  Prompt mode: batch
+  Preferred route: <model/class>/<effort>
+  Route requirement: advisory
+TEXT
+PLAN_PR_BATCH_PORTABLE_INVOCATION_LINE = "Use the pr-batch skill to complete this batch with subagents.\n"
+PLAN_PR_BATCH_CODEX_HEADER = <<~TEXT
+  Prompt host: codex
+  Prompt mode: goal
+  Preferred route: <model/class>/<effort>
+  Route requirement: advisory
+TEXT
+PLAN_PR_BATCH_CODEX_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
@@ -719,18 +732,25 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_goal_prompts_put_batch_title_after_target_invocation
+    portable_start = "#{PLAN_PR_BATCH_PORTABLE_HEADER}" \
+                     "#{PLAN_PR_BATCH_PORTABLE_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
-             "#{label} must put the standard batch title line after the invocation"
+      assert text.start_with?(portable_start),
+             "#{label} must put the standard batch title line after the portable header and invocation"
     end
 
-    codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
-    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
-           "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
+    codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt
+      .sub('Prompt host: portable', 'Prompt host: codex')
+      .sub('Prompt mode: batch', 'Prompt mode: goal')
+      .sub('Use the pr-batch skill', 'Use $pr-batch')}"
+    codex_start = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_CODEX_HEADER}" \
+                  "#{PLAN_PR_BATCH_CODEX_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"
+    assert codex_goal_prompt.start_with?(codex_start),
+           "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix, header, and invocation"
   end
 
   def test_batch_title_instructions_pin_local_date_source
