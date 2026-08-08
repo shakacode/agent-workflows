@@ -410,13 +410,34 @@ def with_items(prompt_template, items)
   updated_prompt
 end
 
+def render_codex_batch(prompt)
+  rendered = prompt
+             .sub(/^Prompt host: portable$/, "Prompt host: codex")
+             .sub(/^Prompt mode: batch$/, "Prompt mode: batch")
+  render_prompt_mechanics(rendered, "$")
+end
+
+def render_codex_goal(prompt)
+  batch = render_codex_batch(prompt)
+  "/goal\n#{batch.sub(/^Prompt mode: batch$/, 'Prompt mode: goal')}"
+end
+
+def codex_prompt_for(prompt, goal_requested:)
+  batch = render_codex_batch(prompt)
+  goal = render_codex_goal(prompt)
+  use_goal = goal_requested && goal.length <= CODEX_GOAL_PROMPT_CHAR_LIMIT - GOAL_PROMPT_MIN_HEADROOM
+  {
+    prompt: use_goal ? goal : batch,
+    mode: use_goal ? "goal" : "batch",
+    fallback: goal_requested && !use_goal,
+    goal_candidate_chars: goal.length
+  }
+end
+
 def prompt_for_target(prompt_template, target)
   case target
   when :codex
-    rendered_prompt = prompt_template
-                      .sub(/^Prompt host: portable$/, "Prompt host: codex")
-                      .sub(/^Prompt mode: batch$/, "Prompt mode: goal")
-    "#{GOAL_LINE}\n#{render_prompt_mechanics(rendered_prompt, '$')}"
+    codex_prompt_for(prompt_template, goal_requested: false).fetch(:prompt)
   when :claude
     rendered_prompt = prompt_template
                       .sub(/^Prompt host: portable$/, "Prompt host: claude")
@@ -610,23 +631,41 @@ def assert_triage_prompt_adapter_contract
 end
 
 def assert_prompt_budget(label, prompt_template)
-  codex_prompt = prompt_for_target(prompt_template, :codex)
+  codex_batch_prompt = codex_prompt_for(prompt_template, goal_requested: false).fetch(:prompt)
+  codex_goal_result = codex_prompt_for(prompt_template, goal_requested: true)
+  codex_goal_prompt = codex_goal_result.fetch(:prompt)
   claude_prompt = prompt_for_target(prompt_template, :claude)
   generic_prompt = prompt_for_target(prompt_template, :generic)
 
-  codex_chars = codex_prompt.length
-  if codex_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
+  codex_goal_chars = codex_goal_result.fetch(:goal_candidate_chars)
+  unless codex_goal_result.fetch(:mode) == "goal" && codex_goal_result.fetch(:fallback) == false
     abort_with_failure(
-      "#{label} Codex goal prompt template is #{codex_chars} chars, " \
-      "must stay under #{CODEX_GOAL_PROMPT_CHAR_LIMIT}"
+      "#{label} canonical Codex goal prompt must select Goal mode"
     )
   end
 
-  template_headroom = CODEX_GOAL_PROMPT_CHAR_LIMIT - codex_chars
+  codex_goal_limit = CODEX_GOAL_PROMPT_CHAR_LIMIT - GOAL_PROMPT_MIN_HEADROOM
+  if codex_goal_chars > codex_goal_limit
+    abort_with_failure(
+      "#{label} Codex goal prompt template is #{codex_goal_chars} chars, " \
+      "must stay at or below #{codex_goal_limit}"
+    )
+  end
+
+  template_headroom = CODEX_GOAL_PROMPT_CHAR_LIMIT - codex_goal_chars
   if template_headroom < GOAL_PROMPT_MIN_HEADROOM
     abort_with_failure(
       "#{label} Codex goal prompt template has #{template_headroom} chars of headroom, " \
       "must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
+    )
+  end
+
+  codex_batch_chars = codex_batch_prompt.length
+  if codex_batch_prompt.start_with?("/goal\n") ||
+     codex_batch_chars >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+    abort_with_failure(
+      "#{label} default Codex batch prompt must omit /goal and stay under " \
+      "#{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT} chars"
     )
   end
 
@@ -643,15 +682,46 @@ def assert_prompt_budget(label, prompt_template)
   end
 
   {
-    codex_prompt: codex_prompt,
+    portable_prompt: prompt_template,
+    codex_batch_prompt: codex_batch_prompt,
+    codex_goal_prompt: codex_goal_prompt,
     claude_prompt: claude_prompt,
     generic_prompt: generic_prompt,
-    codex_chars: codex_chars,
-    codex_headroom: template_headroom,
+    codex_batch_chars: codex_batch_chars,
+    codex_goal_chars: codex_goal_chars,
+    codex_goal_headroom: template_headroom,
     claude_chars: claude_prompt.length,
     generic_chars: generic_prompt.length
   }
 end
+
+def assert_codex_goal_envelope_policy
+  small = <<~TEXT
+    Prompt host: portable
+    Prompt mode: batch
+    Preferred route: default
+    Route requirement: advisory
+    Use the pr-batch skill to complete this batch with subagents.
+    Objective: keep one complete batch.
+  TEXT
+  default_result = codex_prompt_for(small, goal_requested: false)
+  abort_with_failure("Codex must default to batch mode") unless
+    default_result[:mode] == "batch" && !default_result[:prompt].start_with?("/goal\n")
+
+  goal_result = codex_prompt_for(small, goal_requested: true)
+  abort_with_failure("small explicit goal must retain Goal mode") unless
+    goal_result[:mode] == "goal" && goal_result[:prompt].start_with?("/goal\n")
+
+  oversized = small + ("x" * 4_000)
+  fallback = codex_prompt_for(oversized, goal_requested: true)
+  abort_with_failure("oversized goal must fall back intact") unless
+    fallback[:mode] == "batch" && fallback[:fallback] == true &&
+    !fallback[:prompt].start_with?("/goal\n") &&
+    normalized_prompt_semantics(fallback[:prompt]) ==
+    normalized_prompt_semantics(render_codex_goal(oversized))
+end
+
+assert_codex_goal_envelope_policy
 
 skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
@@ -1096,11 +1166,13 @@ budget_checks = {
 end
 assert_triage_prompt_adapter_contract
 
-codex_prompt_template = prompt_for_target(prompt_template, :codex)
+codex_batch_prompt = codex_prompt_for(prompt_template, goal_requested: false).fetch(:prompt)
+codex_goal_result = codex_prompt_for(prompt_template, goal_requested: true)
+codex_goal_prompt = codex_goal_result.fetch(:prompt)
 claude_prompt_template = prompt_for_target(prompt_template, :claude)
 generic_prompt_template = prompt_for_target(prompt_template, :generic)
 prompt_templates_by_target = {
-  codex: codex_prompt_template,
+  codex: codex_goal_prompt,
   claude: claude_prompt_template,
   generic: generic_prompt_template
 }
@@ -1136,7 +1208,7 @@ expected_prompt_starts.each do |target, expected_start|
   abort_with_failure("#{target} goal prompt template is missing the exact prompt-host header block")
 end
 
-require_phrases(codex_prompt_template, required_codex_prompt_phrases, "Codex goal prompt template")
+require_phrases(codex_goal_prompt, required_codex_prompt_phrases, "Codex goal prompt template")
 
 required_all_prompt_phrases.each do |phrase|
   prompt_templates_by_target.each do |target, target_prompt_template|
@@ -1146,8 +1218,15 @@ required_all_prompt_phrases.each do |phrase|
   end
 end
 
-unless codex_prompt_template.start_with?(CODEX_PROMPT_START)
+unless codex_goal_prompt.start_with?(CODEX_PROMPT_START)
   abort_with_failure("Codex goal prompt template must start with /goal, the exact host header, and $pr-batch")
+end
+
+codex_batch_prompt_start = CODEX_PROMPT_START
+                           .delete_prefix("/goal\n")
+                           .sub("Prompt mode: goal", "Prompt mode: batch")
+unless codex_batch_prompt.start_with?(codex_batch_prompt_start)
+  abort_with_failure("default Codex batch prompt must omit /goal and start with the exact batch header")
 end
 
 unless prompt_template.start_with?(SHARED_PROMPT_START)
@@ -1172,8 +1251,9 @@ prompt_templates_by_target.each do |target, target_prompt_template|
   end
 end
 
-codex_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:codex_chars)
-template_headroom = budget_checks.fetch("plan_pr_batch").fetch(:codex_headroom)
+codex_batch_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:codex_batch_chars)
+codex_goal_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:codex_goal_chars)
+template_headroom = budget_checks.fetch("plan_pr_batch").fetch(:codex_goal_headroom)
 claude_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:claude_chars)
 generic_template_chars = budget_checks.fetch("plan_pr_batch").fetch(:generic_chars)
 
@@ -1221,7 +1301,7 @@ MIXED_ROUTE_ITEM_COUNT = 2
 realistic_checks = {}
 budget_checks.each do |label, result|
   prompts_by_target = {
-    codex: result.fetch(:codex_prompt),
+    codex: result.fetch(:codex_batch_prompt),
     claude: result.fetch(:claude_prompt),
     generic: result.fetch(:generic_prompt)
   }
@@ -1230,12 +1310,13 @@ budget_checks.each do |label, result|
     oversized: {},
     fallback: {},
     mixed_route_fallback: {},
+    goal_fallback: {},
     unsplit_four_route: {},
     split_route_groups: {}
   }
 
   prompts_by_target.each do |target, target_prompt_template|
-    limit = target == :codex ? CODEX_GOAL_PROMPT_CHAR_LIMIT : CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+    limit = CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
     target_label = "#{label} #{target}"
 
     oversized_candidate = with_items(target_prompt_template, bulky_items)
@@ -1261,18 +1342,53 @@ budget_checks.each do |label, result|
       )
     end
 
-    mixed_route_fallback = with_items(target_prompt_template, mixed_route_ready_items).sub(
+    mixed_route_source = target == :codex ? result.fetch(:portable_prompt) : target_prompt_template
+    mixed_route_items_prompt = with_items(mixed_route_source, mixed_route_ready_items)
+    mixed_route_routes_prompt = mixed_route_items_prompt.sub(
       WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
       MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE
     )
-    if mixed_route_fallback == fallback_prompt
+    if mixed_route_routes_prompt == mixed_route_items_prompt
       abort_with_failure("#{target_label} fallback prompt is missing the worker route field")
     end
-    mixed_route_fallback = mixed_route_fallback.sub(DISPATCH_PLAN_PROMPT_LINE, MIXED_DISPATCH_POLICY_LINES)
-    if mixed_route_fallback == fallback_prompt.sub(WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE,
-                                                   MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE)
+    mixed_route_candidate = mixed_route_routes_prompt.sub(DISPATCH_PLAN_PROMPT_LINE, MIXED_DISPATCH_POLICY_LINES)
+    if mixed_route_candidate == mixed_route_routes_prompt
       abort_with_failure("#{target_label} fallback prompt is missing the dispatch-policy field")
     end
+
+    mixed_route_fallback = if target == :codex
+                             goal_fallback = codex_prompt_for(mixed_route_candidate, goal_requested: true)
+                             goal_candidate_chars = goal_fallback.fetch(:goal_candidate_chars)
+                             goal_threshold = CODEX_GOAL_PROMPT_CHAR_LIMIT - GOAL_PROMPT_MIN_HEADROOM
+                             fallback_prompt_text = goal_fallback.fetch(:prompt)
+                             source_item_count = mixed_route_candidate.scan(/^\s*- Target: Issue #/).length
+                             fallback_item_count = fallback_prompt_text.scan(/^\s*- Target: Issue #/).length
+                             semantics_preserved =
+                               normalized_prompt_semantics(fallback_prompt_text) ==
+                               normalized_prompt_semantics(render_codex_goal(mixed_route_candidate))
+
+                             unless goal_fallback.fetch(:mode) == "batch" &&
+                                    goal_fallback.fetch(:fallback) == true &&
+                                    goal_candidate_chars > goal_threshold &&
+                                    fallback_prompt_text.length < limit &&
+                                    source_item_count == MIXED_ROUTE_ITEM_COUNT &&
+                                    fallback_item_count == source_item_count &&
+                                    semantics_preserved
+                               abort_with_failure(
+                                 "#{target_label} oversized Goal candidate must fall back to one complete batch"
+                               )
+                             end
+
+                             realistic_checks[label].fetch(:goal_fallback)[target] = {
+                               goal_candidate_chars: goal_candidate_chars,
+                               batch_chars: fallback_prompt_text.length,
+                               item_count: fallback_item_count,
+                               semantics_preserved: semantics_preserved
+                             }
+                             fallback_prompt_text
+                           else
+                             mixed_route_candidate
+                           end
     unless mixed_route_fallback.scan(/^\s*- Target: Issue #/).length == MIXED_ROUTE_ITEM_COUNT
       abort_with_failure("#{target_label} mixed-route fallback must include #{MIXED_ROUTE_ITEM_COUNT} realistic lane item records")
     end
@@ -1286,7 +1402,7 @@ budget_checks.each do |label, result|
         "found #{mixed_dispatch_policy_count} for two lanes"
       )
     end
-    if target != :codex && mixed_route_fallback_chars >= limit
+    if mixed_route_fallback_chars >= limit
       abort_with_failure(
         "#{target_label} mixed-route fallback prompt is #{mixed_route_fallback_chars} chars, " \
         "must stay under #{limit}"
@@ -1307,28 +1423,17 @@ budget_checks.each do |label, result|
 
     unsplit_four_route_chars = unsplit_four_route_candidate.length
     realistic_checks[label].fetch(:unsplit_four_route)[target] = unsplit_four_route_chars
-    if target == :codex
-      if unsplit_four_route_chars < limit
-        abort_with_failure(
-          "#{target_label} four-route fixture must require a route-group split at #{limit} chars"
-        )
-      end
-    elsif unsplit_four_route_chars >= limit
+    if unsplit_four_route_chars >= limit
       abort_with_failure(
         "#{target_label} four-route prompt is #{unsplit_four_route_chars} chars, must stay under #{limit}"
       )
     end
+    unless unsplit_four_route_candidate.scan(/^Dispatch /).length == 4
+      abort_with_failure("#{target_label} four-route fixture must preserve independent route-group separation")
+    end
 
     next unless target == :codex
 
-    mixed_route_headroom = limit - mixed_route_fallback_chars
-    unless mixed_route_fallback_chars < limit && mixed_route_headroom < GOAL_PROMPT_MIN_HEADROOM
-      abort_with_failure(
-        "#{target_label} mixed-route preemptive-split fixture must stay under #{limit} while " \
-        "breaching the #{GOAL_PROMPT_MIN_HEADROOM}-character headroom floor; got " \
-        "#{mixed_route_fallback_chars} chars and #{mixed_route_headroom} chars of headroom"
-      )
-    end
     realistic_checks[label].fetch(:split_route_groups)[target] = {}
     {
       "implementation" => [first_ready_item, SPLIT_ROUTE_GROUP_LINE, SPLIT_DISPATCH_POLICY_LINE],
@@ -1344,16 +1449,15 @@ budget_checks.each do |label, result|
         chars: split_route_group_chars,
         headroom: split_route_group_headroom
       }
-      next if split_route_group_chars < limit && split_route_group_headroom >= GOAL_PROMPT_MIN_HEADROOM
+      next if split_route_group_chars < limit
 
       abort_with_failure(
         "#{target_label} #{route_group} split route group is #{split_route_group_chars} chars with " \
-        "#{split_route_group_headroom} chars of headroom; must stay under #{limit} with at least " \
-        "#{GOAL_PROMPT_MIN_HEADROOM}"
+        "#{split_route_group_headroom} chars of headroom; must stay under #{limit}"
       )
     end
     unless realistic_checks[label].fetch(:split_route_groups).fetch(target).length == 2
-      abort_with_failure("#{target_label} preemptive split must validate both route groups")
+      abort_with_failure("#{target_label} route-group split must validate both route groups")
     end
   end
 end
@@ -1367,23 +1471,30 @@ claude_fallback_chars = plan_realistic_checks.fetch(:fallback).fetch(:claude)
 generic_fallback_chars = plan_realistic_checks.fetch(:fallback).fetch(:generic)
 
 puts "All checks passed."
-puts "codex_goal_prompt_template_chars=#{codex_template_chars}"
+puts "codex_batch_prompt_template_chars=#{codex_batch_template_chars}"
+puts "codex_goal_prompt_template_chars=#{codex_goal_template_chars}"
 puts "codex_goal_prompt_template_headroom=#{template_headroom}"
 puts "claude_goal_prompt_template_chars=#{claude_template_chars}"
 puts "generic_goal_prompt_template_chars=#{generic_template_chars}"
 budget_checks.each do |label, result|
-  puts "#{label}_codex_goal_prompt_template_chars=#{result.fetch(:codex_chars)}"
-  puts "#{label}_codex_goal_prompt_template_headroom=#{result.fetch(:codex_headroom)}"
+  puts "#{label}_codex_batch_prompt_template_chars=#{result.fetch(:codex_batch_chars)}"
+  puts "#{label}_codex_goal_prompt_template_chars=#{result.fetch(:codex_goal_chars)}"
+  puts "#{label}_codex_goal_prompt_template_headroom=#{result.fetch(:codex_goal_headroom)}"
   puts "#{label}_claude_goal_prompt_template_chars=#{result.fetch(:claude_chars)}"
   puts "#{label}_generic_goal_prompt_template_chars=#{result.fetch(:generic_chars)}"
 end
 realistic_checks.each do |label, result|
   %i[codex claude generic].each do |target|
     puts "#{label}_#{target}_oversized_candidate_chars=#{result.fetch(:oversized).fetch(target)}"
-    puts "#{label}_#{target}_split_fallback_goal_prompt_chars=#{result.fetch(:fallback).fetch(target)}"
-    puts "#{label}_#{target}_mixed_route_fallback_goal_prompt_chars=#{result.fetch(:mixed_route_fallback).fetch(target)}"
+    puts "#{label}_#{target}_split_fallback_batch_prompt_chars=#{result.fetch(:fallback).fetch(target)}"
+    puts "#{label}_#{target}_mixed_route_fallback_batch_prompt_chars=#{result.fetch(:mixed_route_fallback).fetch(target)}"
     puts "#{label}_#{target}_unsplit_four_route_candidate_chars=#{result.fetch(:unsplit_four_route).fetch(target)}"
   end
+  goal_fallback = result.fetch(:goal_fallback).fetch(:codex)
+  puts "#{label}_codex_oversized_goal_candidate_chars=#{goal_fallback.fetch(:goal_candidate_chars)}"
+  puts "#{label}_codex_oversized_goal_fallback_batch_chars=#{goal_fallback.fetch(:batch_chars)}"
+  puts "#{label}_codex_oversized_goal_fallback_item_count=#{goal_fallback.fetch(:item_count)}"
+  puts "#{label}_codex_oversized_goal_fallback_semantics_preserved=#{goal_fallback.fetch(:semantics_preserved)}"
   result.fetch(:split_route_groups).each do |target, route_groups|
     route_groups.each do |route_group, measurements|
       metric_group = route_group.tr("-", "_")
@@ -1395,6 +1506,6 @@ end
 puts "codex_oversized_candidate_chars=#{codex_oversized_candidate_chars}"
 puts "claude_oversized_candidate_chars=#{claude_oversized_candidate_chars}"
 puts "generic_oversized_candidate_chars=#{generic_oversized_candidate_chars}"
-puts "codex_split_fallback_goal_prompt_chars=#{codex_fallback_chars}"
-puts "claude_split_fallback_goal_prompt_chars=#{claude_fallback_chars}"
-puts "generic_split_fallback_goal_prompt_chars=#{generic_fallback_chars}"
+puts "codex_split_fallback_batch_prompt_chars=#{codex_fallback_chars}"
+puts "claude_split_fallback_batch_prompt_chars=#{claude_fallback_chars}"
+puts "generic_split_fallback_batch_prompt_chars=#{generic_fallback_chars}"
