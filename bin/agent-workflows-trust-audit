@@ -247,11 +247,14 @@ module AgentWorkflowsTrustAudit
     values.to_a.sort
   end
 
-  def print_report(repo:, prs:, trust_config:, preflight_status:, preflight_output:, parsed:)
+  def print_report(repo:, prs:, trust_config:, preflight_status:, preflight_output:, parsed:, workflow_install:)
     candidate_data = candidates(parsed)
     puts "Repository: #{repo}"
     puts "Merged PR sample: #{prs.map { |pr| "##{pr.fetch('number')}" }.join(', ')}"
     puts "Trust config: #{trust_config || '(preflight default resolution)'}"
+    puts "Workflow channel: #{workflow_install.fetch(:channel)}"
+    puts "Workflow release ref: #{workflow_install.fetch(:release_ref)}"
+    puts "Workflow exact commit: #{workflow_install.fetch(:exact_commit)}"
     puts "Preflight status: #{preflight_status_label(preflight_status)}"
     puts
 
@@ -332,7 +335,39 @@ module AgentWorkflowsTrustAudit
     puts
   end
 
-  def json_payload(repo:, prs:, trust_config:, preflight_status:, preflight_output:, parsed:)
+  def workflow_install_identity(metadata_path)
+    default_path = File.expand_path("../.agent-workflows-install.json", __dir__)
+    path = metadata_path || (File.file?(default_path) ? default_path : nil)
+    return { channel: "UNKNOWN", release_ref: "UNKNOWN", exact_commit: "UNKNOWN", tag_object: "UNKNOWN" } unless path
+
+    metadata = JSON.parse(File.binread(path).force_encoding("UTF-8").scrub)
+    raise "workflow install metadata must be a JSON object: #{path}" unless metadata.is_a?(Hash)
+
+    channel = metadata.fetch("channel", "development")
+    raise "invalid workflow install channel: #{channel}" unless %w[stable development].include?(channel)
+
+    release_ref = metadata["release_ref"]
+    exact_commit = metadata["source_revision"]
+    tag_object = metadata["tag_object"]
+    if channel == "stable" &&
+       (!release_ref.to_s.match?(/\Av\d+\.\d+\.\d+\z/) ||
+        !exact_commit.to_s.match?(/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/) ||
+        !tag_object.to_s.match?(/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/))
+      raise "stable workflow install metadata lacks an exact release identity"
+    end
+
+    {
+      channel:,
+      release_ref: release_ref || "none",
+      exact_commit: exact_commit || "UNKNOWN",
+      tag_object: tag_object || "none",
+      metadata_path: path
+    }
+  rescue JSON::ParserError => e
+    raise "invalid workflow install metadata #{path}: #{e.message}"
+  end
+
+  def json_payload(repo:, prs:, trust_config:, preflight_status:, preflight_output:, parsed:, workflow_install:)
     candidate_data = candidates(parsed)
     candidate_trust = if preflight_error?(preflight_status)
                         { trusted_users: [], trusted_bots: [], trusted_teams: [], unavailable: true }
@@ -360,6 +395,7 @@ module AgentWorkflowsTrustAudit
 
     {
       repo:,
+      workflow_install:,
       prs: prs.map { |pr| pr.slice("number", "title", "url", "mergedAt") },
       trust_config:,
       preflight_status: preflight_status_label(preflight_status),
@@ -384,6 +420,7 @@ module AgentWorkflowsTrustAudit
       numbers:
     )
     parsed = parse_preflight_output(preflight_output)
+    workflow_install = workflow_install_identity(options[:install_metadata_path])
 
     if options[:json]
       puts JSON.pretty_generate(
@@ -393,7 +430,8 @@ module AgentWorkflowsTrustAudit
           trust_config: options[:trust_config],
           preflight_status:,
           preflight_output:,
-          parsed:
+          parsed:,
+          workflow_install:
         )
       )
     else
@@ -403,7 +441,8 @@ module AgentWorkflowsTrustAudit
         trust_config: options[:trust_config],
         preflight_status:,
         preflight_output:,
-        parsed:
+        parsed:,
+        workflow_install:
       )
     end
 
@@ -416,7 +455,8 @@ options = {
   limit: AgentWorkflowsTrustAudit::DEFAULT_LIMIT,
   preflight_path: AgentWorkflowsTrustAudit.default_preflight_path,
   repo: nil,
-  trust_config: nil
+  trust_config: nil,
+  install_metadata_path: nil
 }
 
 OptionParser.new do |opts|
@@ -433,6 +473,9 @@ OptionParser.new do |opts|
   end
   opts.on("--preflight PATH", "Path to pr-security-preflight, for tests or custom installs") do |value|
     options[:preflight_path] = value
+  end
+  opts.on("--install-metadata PATH", "Installed workflow metadata to identify in the audit") do |value|
+    options[:install_metadata_path] = value
   end
   opts.on("--json", "Emit JSON") { options[:json] = true }
 end.parse!

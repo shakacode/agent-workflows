@@ -9,6 +9,7 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
+require "shellwords"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
@@ -221,6 +222,65 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal 0, status.exitstatus, out
         assert_equal "UP_TO_DATE", payload.fetch("status")
         refute payload.key?("superpowers"), out
+      end
+    end
+  end
+
+  def test_stable_status_reports_release_identity_and_rejects_a_moved_tag
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        FileUtils.mkdir_p(File.join(source, ".claude-plugin"))
+        FileUtils.mkdir_p(File.join(source, ".codex-plugin"))
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        FileUtils.mkdir_p(File.join(target, "skills/example"))
+        File.write(File.join(source, "VERSION"), "1.2.3\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "stable skill\n")
+        File.write(File.join(target, "skills/example/SKILL.md"), "stable skill\n")
+        File.write(File.join(source, ".claude-plugin/plugin.json"), "{\"version\":\"1.2.3\"}\n")
+        File.write(File.join(source, ".codex-plugin/plugin.json"), "{\"version\":\"1.2.3\"}\n")
+        system("git", "-C", source, "init", "--quiet", exception: true)
+        system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+        system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+        system("git", "-C", source, "add", ".", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "stable release", exception: true)
+        commit = `git -C #{Shellwords.escape(source)} rev-parse HEAD`.strip
+        system("git", "-C", source, "tag", "-a", "v1.2.3", "-m", "stable release", exception: true)
+        tag_object = `git -C #{Shellwords.escape(source)} rev-parse refs/tags/v1.2.3`.strip
+        File.write(File.join(source, "VERSION"), "1.2.4\n")
+        File.write(File.join(source, ".claude-plugin/plugin.json"), "{\"version\":\"1.2.4\"}\n")
+        File.write(File.join(source, ".codex-plugin/plugin.json"), "{\"version\":\"1.2.4\"}\n")
+        system("git", "-C", source, "add", ".", exception: true)
+        system("git", "-C", source, "commit", "--quiet", "-m", "development after release", exception: true)
+        write_metadata(
+          target,
+          "version" => "1.2.3",
+          "source" => source,
+          "source_revision" => commit,
+          "delivery_mode" => "flat",
+          "channel" => "stable",
+          "release_ref" => "v1.2.3",
+          "tag_object" => tag_object
+        )
+
+        out, status = run_status(
+          {}, "--target", target, "--host", "claude", "--source", source,
+          "--channel", "stable", "--release", "v1.2.3", "--json"
+        )
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal "UP_TO_DATE", payload.fetch("status")
+        assert_equal "stable", payload.fetch("channel")
+        assert_equal "v1.2.3", payload.fetch("release_ref")
+        assert_equal commit, payload.fetch("exact_commit")
+        assert_equal "1.2.3", payload.fetch("available_version")
+
+        system("git", "-C", source, "tag", "-d", "v1.2.3", out: File::NULL, exception: true)
+        system("git", "-C", source, "tag", "-a", "v1.2.3", "-m", "moved release", exception: true)
+        out, status = run_status({}, "--target", target, "--host", "claude", "--source", source, "--json")
+
+        assert_equal 3, status.exitstatus, out
+        assert_includes JSON.parse(out).fetch("reason"), "tag moved"
       end
     end
   end

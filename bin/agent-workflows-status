@@ -5,6 +5,7 @@ require "json"
 require "optparse"
 require "open3"
 require "rbconfig"
+require "tmpdir"
 
 load File.expand_path("agent-workflows-delivery-state", __dir__)
 
@@ -117,18 +118,64 @@ module AgentWorkflowsStatus
     branch.empty? ? "origin/main" : "origin/#{branch}"
   end
 
-  def available_revision(source, metadata, fetch:)
+  def verify_stable_release(source, metadata, release_ref, fetch:)
+    unless release_ref.match?(/\Av\d+\.\d+\.\d+\z/)
+      return [nil, nil, nil, "stable status requires an exact vX.Y.Z release"]
+    end
+
+    if fetch
+      _, fetch_error = git_output(source, "fetch", "--quiet", "--prune", "--tags", "origin")
+      return [nil, nil, nil, "git fetch failed: #{fetch_error}"] if fetch_error
+    end
+
+    tag_ref = "refs/tags/#{release_ref}"
+    tag_object, tag_error = git_output(source, "rev-parse", "--verify", tag_ref)
+    return [nil, nil, nil, "missing stable release tag #{release_ref}: #{tag_error}"] if tag_error
+
+    expected_tag_object = release_ref == metadata["release_ref"] ? metadata["tag_object"].to_s : tag_object
+    if expected_tag_object.empty?
+      return [nil, nil, nil, "installed stable metadata is missing tag_object"]
+    end
+    if tag_object != expected_tag_object
+      return [nil, nil, nil, "tag moved: expected #{expected_tag_object}, found #{tag_object}"]
+    end
+
+    helper = File.expand_path("agent-workflows-release", __dir__)
+    output, status = Open3.capture2e(
+      RbConfig.ruby, helper, "verify-tag", "--root", source, "--release", release_ref,
+      "--approved-commit", git_output(source, "rev-parse", "--verify", "#{tag_ref}^{commit}").first.to_s,
+      "--expected-tag-object", expected_tag_object, "--json"
+    )
+    unless status.success?
+      reason = JSON.parse(output).fetch("reason")
+      return [nil, nil, nil, reason]
+    end
+
+    verified = JSON.parse(output)
+    [verified.fetch("peeled_commit"), verified.fetch("version"), tag_object, nil]
+  rescue JSON::ParserError, SystemCallError => e
+    [nil, nil, nil, "stable release verification failed: #{e.message}"]
+  end
+
+  def available_revision(source, metadata, fetch:, channel:, release_ref:)
     return [nil, "missing source root: #{source}"] unless File.directory?(source)
+
+    if channel == "stable"
+      revision, version, tag_object, error = verify_stable_release(source, metadata, release_ref, fetch:)
+      return [nil, error, nil, nil] if error
+
+      return [revision, nil, version, tag_object]
+    end
 
     unless File.directory?(File.join(source, ".git"))
       version = version_for(source)
-      return ["version:#{version}", nil]
+      return ["version:#{version}", nil, version, nil]
     end
 
     ref =
       if fetch
         _, fetch_error = git_output(source, "fetch", "--quiet", "--prune", "origin")
-        return [nil, "git fetch failed: #{fetch_error}"] if fetch_error
+        return [nil, "git fetch failed: #{fetch_error}", nil, nil] if fetch_error
 
         remote_ref_for(source, metadata)
       else
@@ -136,9 +183,9 @@ module AgentWorkflowsStatus
       end
 
     revision, error = git_output(source, "rev-parse", ref)
-    return [nil, "git rev-parse #{ref} failed: #{error}"] if error
+    return [nil, "git rev-parse #{ref} failed: #{error}", nil, nil] if error
 
-    [revision, nil]
+    [revision, nil, version_for(source), nil]
   end
 
   def short_revision(value)
@@ -169,7 +216,26 @@ module AgentWorkflowsStatus
     { "superpowers" => AgentWorkflowsDeliveryState.superpowers_state(host, target) }
   end
 
-  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
+  def with_superpowers_delivery_state(delivery, host, target)
+    superpowers = superpowers_delivery_state(host, target)
+    superpowers ? (delivery || {}).merge(superpowers) : delivery
+  end
+
+  def stable_delivery_state(host:, target:, source:, revision:, delivery_mode:)
+    Dir.mktmpdir("agent-workflows-stable-status") do |materialized|
+      archive = File.join(materialized, "release.tar")
+      output, status = Open3.capture2e("git", "-C", source, "archive", "--format=tar", "--output", archive, revision)
+      raise "git archive failed: #{output.force_encoding('UTF-8').scrub.strip}" unless status.success?
+
+      output, status = Open3.capture2e("tar", "-xf", archive, "-C", materialized)
+      raise "release extraction failed: #{output.force_encoding('UTF-8').scrub.strip}" unless status.success?
+
+      File.delete(archive)
+      delivery_state(host:, target:, source: materialized, delivery_mode:)
+    end
+  end
+
+  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, available_version: nil, available_release_ref: nil, checked_remote: false, reason: nil, delivery_state: nil)
     payload = {
       "status" => status,
       "host" => host,
@@ -177,8 +243,12 @@ module AgentWorkflowsStatus
       "source" => source,
       "installed_version" => metadata["version"],
       "installed_revision" => metadata["source_revision"],
-      "available_version" => source && File.directory?(source) ? version_for(source) : nil,
+      "available_version" => available_version || (source && File.directory?(source) ? version_for(source) : nil),
       "available_revision" => available_revision,
+      "channel" => metadata["channel"] || "development",
+      "release_ref" => metadata["release_ref"],
+      "available_release_ref" => available_release_ref,
+      "exact_commit" => metadata["source_revision"],
       "checked_remote" => checked_remote,
       "reason" => reason,
       "guidance" => delivery_state&.fetch("guidance", nil),
@@ -193,11 +263,11 @@ module AgentWorkflowsStatus
   def text_for(payload)
     line = case payload.fetch("status")
            when "UP_TO_DATE"
-             "UP_TO_DATE version=#{payload['installed_version']} revision=#{short_revision(payload['installed_revision'])} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}"
+             "UP_TO_DATE channel=#{payload['channel']} release_ref=#{payload['release_ref'] || 'none'} version=#{payload['installed_version']} exact_commit=#{payload['exact_commit']} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}"
            when "UPGRADE_AVAILABLE"
              installed = "#{payload['installed_version']}@#{short_revision(payload['installed_revision'])}"
              available = "#{payload['available_version']}@#{short_revision(payload['available_revision'])}"
-             "UPGRADE_AVAILABLE #{installed} #{available} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}"
+             "UPGRADE_AVAILABLE channel=#{payload['channel']} release_ref=#{payload['release_ref'] || 'none'} #{installed} #{available} exact_commit=#{payload['exact_commit']} delivery_mode=#{payload['delivery_mode']} target=#{payload['target']}"
            when "NOT_INSTALLED"
              "NOT_INSTALLED target=#{payload['target']}"
            when "CHECK_FAILED"
@@ -257,9 +327,46 @@ module AgentWorkflowsStatus
       )
     end
 
+    installed_channel = metadata.fetch("channel", "development")
+    requested_channel = options[:channel] || installed_channel
+    unless %w[stable development].include?(requested_channel)
+      raise ArgumentError, "--channel must be stable or development, got: #{requested_channel}"
+    end
+    if requested_channel != installed_channel
+      raise ArgumentError, "refusing channel change from #{installed_channel} to #{requested_channel}"
+    end
+
+    requested_release = options[:release] || metadata["release_ref"]
+    if requested_channel == "stable" && requested_release.to_s.empty?
+      raise ArgumentError, "stable status requires --release or installed release_ref metadata"
+    end
+    if requested_channel == "development" && options[:release]
+      raise ArgumentError, "development channel cannot use --release"
+    end
+
     source = File.expand_path(options[:source] || metadata["source"].to_s)
     delivery_mode = requested_delivery_mode || metadata.fetch("delivery_mode", "flat")
-    delivery, delivery_error = delivery_state(host:, target:, source:, delivery_mode:)
+    revision, error, available_version, = available_revision(
+      source, metadata, fetch: options.fetch(:fetch), channel: requested_channel, release_ref: requested_release
+    )
+    if error
+      return status_payload(
+        "CHECK_FAILED",
+        target:,
+        source:,
+        host:,
+        metadata:,
+        checked_remote: options.fetch(:fetch),
+        reason: error,
+        delivery_state: superpowers_delivery_state(host, target)
+      )
+    end
+    delivery, delivery_error = if requested_channel == "stable"
+                                 stable_delivery_state(host:, target:, source:, revision:, delivery_mode:)
+                               else
+                                 delivery_state(host:, target:, source:, delivery_mode:)
+                               end
+    delivery = with_superpowers_delivery_state(delivery, host, target)
     if delivery_error
       delivery ||= {}
       delivery.merge!(superpowers_delivery_state(host, target) || {}) unless delivery.key?("superpowers")
@@ -273,23 +380,9 @@ module AgentWorkflowsStatus
         delivery_state: delivery
       )
     end
-    revision, error = available_revision(source, metadata, fetch: options.fetch(:fetch))
-    if error
-      return status_payload(
-        "CHECK_FAILED",
-        target:,
-        source:,
-        host:,
-        metadata:,
-        checked_remote: options.fetch(:fetch),
-        reason: error,
-        delivery_state: delivery
-      )
-    end
 
     installed_revision = metadata["source_revision"].to_s
     installed_version = metadata["version"].to_s
-    available_version = version_for(source)
     status = if !installed_revision.empty? && installed_revision == revision
                "UP_TO_DATE"
              elsif revision.to_s.start_with?("version:") && installed_version == available_version
@@ -305,6 +398,8 @@ module AgentWorkflowsStatus
       host:,
       metadata:,
       available_revision: revision,
+      available_version:,
+      available_release_ref: requested_release,
       checked_remote: options.fetch(:fetch),
       delivery_state: delivery
     )
@@ -314,9 +409,9 @@ module AgentWorkflowsStatus
 end
 
 if $PROGRAM_NAME == __FILE__
-  options = { host: "codex", target: nil, source: nil, delivery_mode: nil, fetch: false, json: false }
+  options = { host: "codex", target: nil, source: nil, delivery_mode: nil, channel: nil, release: nil, fetch: false, json: false }
   parser = OptionParser.new do |opts|
-    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--delivery-mode flat|plugin-companion] [--fetch] [--json]"
+    opts.banner = "Usage: agent-workflows-status [--host codex|claude|auto] [--target DIR] [--source DIR] [--delivery-mode flat|plugin-companion] [--channel stable|development] [--release vX.Y.Z] [--fetch] [--json]"
     opts.on(
       "--host HOST",
       "Agent host: codex, claude, or auto (unmarked explicit targets default to codex)"
@@ -326,6 +421,8 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--delivery-mode MODE", "Evaluate compatibility for flat or plugin-companion") do |value|
       options[:delivery_mode] = value
     end
+    opts.on("--channel CHANNEL", "Installed release channel: stable or development") { |value| options[:channel] = value }
+    opts.on("--release TAG", "Exact stable release to inspect") { |value| options[:release] = value }
     opts.on("--fetch", "Fetch origin before checking the source revision") { options[:fetch] = true }
     opts.on("--json", "Print JSON output") { options[:json] = true }
     opts.on("-h", "--help", "Show help") do

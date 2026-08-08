@@ -155,7 +155,7 @@ agent_stack_install_coordination() {
 
 agent_stack_install_workflows() {
   local repo="$source_root/agent-workflows"
-  local args=(--host "$host" --mode "$mode")
+  local args=(--host "$host" --mode "$mode" --channel development)
   [[ -z "$delivery_mode" ]] || args+=(--delivery-mode "$delivery_mode")
   [[ -z "$target" ]] || args+=(--target "$target")
   [[ -x "$repo/bin/install-agent-workflows" ]] || { echo "Cannot install workflows: missing $repo/bin/install-agent-workflows" >&2; return 1; }

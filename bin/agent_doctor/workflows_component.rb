@@ -13,11 +13,11 @@ module AgentDoctor
     }.freeze
     STATUS_FIELDS = %w[
       status host target source installed_version installed_revision available_version available_revision
-      checked_remote reason guidance delivery_mode native flat
+      channel release_ref available_release_ref exact_commit checked_remote reason guidance delivery_mode native flat
     ].freeze
     DETAIL_FIELDS = %w[
       host target source installed_version installed_revision available_version available_revision
-      checked_remote delivery_mode native flat
+      channel release_ref available_release_ref exact_commit checked_remote delivery_mode native flat
     ].freeze
 
     def initialize(runner:)
@@ -79,6 +79,8 @@ module AgentDoctor
       definition = STATUS_DEFINITIONS[[payload["status"], child_exit]]
       common_valid = definition && payload["host"].is_a?(String) && payload["target"].is_a?(String) &&
                      payload["source"].is_a?(String) && %w[flat plugin-companion].include?(payload["delivery_mode"]) &&
+                     %w[stable development].include?(payload["channel"]) && nullable_string?(payload["release_ref"]) &&
+                     nullable_string?(payload["available_release_ref"]) && nullable_string?(payload["exact_commit"]) &&
                      [true, false].include?(payload["checked_remote"]) && nullable_string?(payload["guidance"]) &&
                      nullable_hash?(payload["native"]) && nullable_hash?(payload["flat"])
       raise JSON::ParserError, "status/exit mismatch" unless common_valid && status_fields_valid?(payload)

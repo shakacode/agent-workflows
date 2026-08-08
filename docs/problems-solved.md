@@ -32,7 +32,7 @@ Codex and Claude Code are equal delivery targets for the same shared content:
 | Distribution layer | Codex | Claude Code |
 | --- | --- | --- |
 | Shared workflow source | The Source Pack's `skills/` and `workflows/` | The same `skills/` and `workflows/` |
-| Host installer | `bin/install-agent-workflows --host codex` | `bin/install-agent-workflows --host claude` |
+| Host installer | `bin/install-agent-workflows --host codex --release vX.Y.Z` | `bin/install-agent-workflows --host claude --release vX.Y.Z` |
 | Native plugin | `scw` through the Codex marketplace manifest | `scw` through the Claude marketplace manifest |
 | Repository contract | The repo-owned `.agents/` seam and `AGENTS.md` pointer | The same repo-owned `.agents/` seam and `AGENTS.md` pointer |
 | Status and upgrades | Shared helpers manage installer assets; Codex manages native-plugin updates | The same helpers manage installer assets; Claude Code manages native-plugin updates |

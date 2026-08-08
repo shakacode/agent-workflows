@@ -133,7 +133,7 @@ identifier.
 Install the Claude Code plugin from the repository marketplace:
 
 ```text
-/plugin marketplace add shakacode/agent-workflows
+/plugin marketplace add shakacode/agent-workflows@vX.Y.Z
 /plugin install scw@agent-workflows
 ```
 
@@ -151,7 +151,7 @@ For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
 
 ```bash
-codex plugin marketplace add shakacode/agent-workflows
+codex plugin marketplace add shakacode/agent-workflows --ref vX.Y.Z
 codex plugin add scw@agent-workflows
 ```
 
@@ -172,14 +172,20 @@ Native manifests are deliberately source-pack metadata: consumer repository
 commands, labels, branches, changelog rules, CI policy, and review gates still
 come from that repository's `AGENTS.md` seam and `.agents/` contract.
 
+Both examples pin the marketplace's first fetch to the immutable release:
+Claude appends the tag to the GitHub shorthand while Codex uses `--ref`. If a
+host version cannot pin the initial add, use the copy-mode stable installer or
+stop with `UNKNOWN`; do not execute a mutable branch first. See
+[Stable Release Channel](release-channel.md).
+
 ## Native Plugin And Host Installer Boundaries
 
 The native paths do not replace installer-managed companion assets. With the
 native `scw` plugin enabled, install those assets without flat skills:
 
 ```bash
-bin/install-agent-workflows --host claude --delivery-mode plugin-companion
-bin/install-agent-workflows --host codex --delivery-mode plugin-companion
+bin/install-agent-workflows --host claude --release vX.Y.Z --delivery-mode plugin-companion
+bin/install-agent-workflows --host codex --release vX.Y.Z --delivery-mode plugin-companion
 ```
 
 Native plugin installation does not install helper binaries on `PATH`, write
@@ -211,19 +217,19 @@ cd "$HOME/src/agent-workflows"
 Install for Codex:
 
 ```bash
-bin/install-agent-workflows --host codex
+bin/install-agent-workflows --host codex --release vX.Y.Z
 ```
 
 Install for Claude Code:
 
 ```bash
-bin/install-agent-workflows --host claude
+bin/install-agent-workflows --host claude --release vX.Y.Z
 ```
 
 Install into an explicit shared agent home:
 
 ```bash
-bin/install-agent-workflows --host codex --target "$HOME/.agents"
+bin/install-agent-workflows --host codex --target "$HOME/.agents" --release vX.Y.Z
 ```
 
 A clean Codex or Claude installation can plan and launch ordinary batches as
@@ -238,6 +244,7 @@ Install companion assets for an already-enabled native plugin:
 ```bash
 bin/install-agent-workflows \
   --host codex \
+  --release vX.Y.Z \
   --delivery-mode plugin-companion
 ```
 
@@ -265,7 +272,7 @@ For local development on this pack, symlink mode keeps the installed skills
 pointing at the clone:
 
 ```bash
-bin/install-agent-workflows --host codex --mode symlink
+bin/install-agent-workflows --host codex --mode symlink --channel development
 ```
 
 ## Full Stack Contributor Setup
@@ -278,7 +285,9 @@ bin/agent-stack sync
 ```
 
 `agent-stack` is ShakaCode-specific stack tooling, not part of the generic
-workflow-pack install path for consumer repositories.
+workflow-pack install path for consumer repositories. Invoking `sync` is an
+explicit development-channel choice: it follows the three repositories' `main`
+branches and passes `--channel development` to the workflow installer.
 
 It keeps editable source checkouts in `~/src`, private runtime configuration
 under `~/.agent-workflows`, compatibility symlinks under `~/codex/agent-repos`,
@@ -484,6 +493,7 @@ The installer writes:
 - `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/writing-style.md`
 - `<target>/docs/writing-style-asd-ste100.md`
+- `<target>/docs/release-channel.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflow-writing-style`
@@ -492,6 +502,7 @@ The installer writes:
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
 - `<target>/bin/agent-workflows-refresh`
+- `<target>/bin/agent-workflows-release`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
@@ -504,7 +515,8 @@ files already present in the target agent home, including generic
 consumer-owned docs under `<target>/docs`.
 
 The metadata file records host, artifact mode, skill delivery mode, source
-clone, pack version, source revision, branch, remote, and install time. Copy
+clone, pack version, channel, release ref, annotated-tag object, exact peeled
+source revision, development branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
 `managed_pack_doc_copy_fingerprints`, `managed_pack_helper_copy_fingerprints`,
 and `managed_pack_root_copy_fingerprints`,
@@ -528,7 +540,7 @@ installed `agent-workflows` pack only.
 Check the installed pack against the source clone recorded at install time:
 
 ```bash
-agent-workflows-status --host codex
+agent-workflows-status --host codex --release vX.Y.Z
 ```
 
 Check a specific install and source:
@@ -536,7 +548,8 @@ Check a specific install and source:
 ```bash
 agent-workflows-status \
   --target "$HOME/.codex" \
-  --source "$HOME/src/agent-workflows"
+  --source "$HOME/src/agent-workflows" \
+  --release vX.Y.Z
 ```
 
 Stable status tokens:
@@ -548,9 +561,10 @@ Stable status tokens:
 | `NOT_INSTALLED` | 2 | Target has no `.agent-workflows-install.json`. |
 | `CHECK_FAILED` | 3 | The check could not safely determine status. |
 
-Use `--json` for machine-readable output. Use `--fetch` only when you want a
-network check against `origin`; without `--fetch`, status compares against the
-current local source clone. Status also reports `delivery_mode`, native plugin
+Use `--json` for machine-readable output. Status always identifies `channel`,
+`release_ref`, and the full exact commit. Use `--fetch` only when you want a
+network check against `origin`; stable checks fetch tags while development
+checks follow the selected branch. Status also reports `delivery_mode`, native plugin
 evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
@@ -588,6 +602,7 @@ Upgrade the source clone, reinstall the pack, and validate a consumer repo seam:
 ```bash
 upgrade-agent-workflows \
   --host codex \
+  --release vX.Y.Z \
   --consumer-root /path/to/consumer/repo
 ```
 
@@ -597,6 +612,7 @@ For an already-updated local source clone, skip the network step:
 upgrade-agent-workflows \
   --host codex \
   --source "$HOME/src/agent-workflows" \
+  --release vX.Y.Z \
   --consumer-root /path/to/consumer/repo \
   --no-fetch
 ```
@@ -604,23 +620,25 @@ upgrade-agent-workflows \
 Preview without mutating the install:
 
 ```bash
-upgrade-agent-workflows --host codex --dry-run
+upgrade-agent-workflows --host codex --release vX.Y.Z --dry-run
 ```
 
 Upgrade behavior:
 
 1. Resolve target and source from arguments or install metadata.
-2. Fetch and fast-forward the source clone unless `--no-fetch` is set.
+2. Fetch tags for stable or fast-forward the explicitly selected development
+   branch unless `--no-fetch` is set.
 3. Back up the target install.
 4. Reinstall with the recorded or requested artifact and delivery modes.
 5. Run `agent-workflow-seam-doctor --root <consumer> --shared <source>` for
    every `--consumer-root`.
 6. Restore the previous install if reinstall or seam validation fails.
 
-The command prints `UPGRADE_COMPLETE` on success and `ROLLBACK_COMPLETE` when it
-restores the prior install after a failed upgrade. Rollback restores the prior
-delivery mode and skill layout. `upgrade-agent-workflows` never installs or
-updates the native plugin itself.
+The command prints `UPGRADE_COMPLETE` for a newer stable version and
+`ROLLBACK_COMPLETE` when an explicitly selected older stable version is
+installed. A failed operation also restores the prior delivery mode and skill
+layout before exiting. `upgrade-agent-workflows` never installs or updates the
+native plugin itself and never silently changes channels.
 
 ## Verification After Upgrade
 
@@ -739,18 +757,18 @@ stale workflow instructions or that explicitly need the new process.
 ## Network And Privacy
 
 `agent-workflows-status` does not contact the network unless `--fetch` is
-provided. `upgrade-agent-workflows` fetches and fast-forwards the source clone by
-default. Use `--no-fetch` when the source clone has already been updated or when
-the session must avoid network access.
+provided. `upgrade-agent-workflows` fetches the explicitly selected stable tag
+or development branch by default. Use `--no-fetch` when the source clone already
+has the selected ref or when the session must avoid network access.
 
 ## Troubleshooting
 
-- `NOT_INSTALLED`: run `bin/install-agent-workflows --host <host>` or pass the
+- `NOT_INSTALLED`: run `bin/install-agent-workflows --host <host> --release vX.Y.Z` or pass the
   correct `--target`.
 - `CHECK_FAILED missing source root`: reinstall from a valid clone, or pass
   `--source /path/to/agent-workflows`.
-- `UPGRADE_AVAILABLE`: run `upgrade-agent-workflows` or manually update the
-  source clone and reinstall.
+- `UPGRADE_AVAILABLE`: run `upgrade-agent-workflows --release vX.Y.Z` with the
+  intended immutable version; development users must pass `--channel development`.
 - `Auto host detection found both Codex and Claude homes`: rerun with
   `--host codex` or `--host claude`.
 - `Refusing to replace non-symlink path`: symlink mode will not overwrite a real
@@ -763,5 +781,5 @@ the session must avoid network access.
 - `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby
   helper: an older install is running under a non-UTF-8 locale (`LANG=C` /
   `LC_ALL=C`, common in CI and headless agents). The pack Ruby tools now read
-  text as UTF-8 regardless of locale; run `upgrade-agent-workflows --host <host>`
+  text as UTF-8 regardless of locale; run `upgrade-agent-workflows --host <host> --release vX.Y.Z`
   to pick up the fix.

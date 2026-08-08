@@ -91,7 +91,7 @@ Clone the workflow pack and install it into the agent host you use:
 ```bash
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
 cd "$HOME/src/agent-workflows"
-bin/install-agent-workflows --host codex
+bin/install-agent-workflows --host codex --release vX.Y.Z
 ```
 
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
@@ -127,19 +127,19 @@ delivery route: ordinary flat skills or the native `scw` plugin.
 Install into the default Codex home:
 
 ```bash
-bin/install-agent-workflows --host codex
+bin/install-agent-workflows --host codex --release vX.Y.Z
 ```
 
 Install into the default Claude Code home:
 
 ```bash
-bin/install-agent-workflows --host claude
+bin/install-agent-workflows --host claude --release vX.Y.Z
 ```
 
 Install into a different agent home, such as `~/.agents`:
 
 ```bash
-bin/install-agent-workflows --host codex --target "$HOME/.agents"
+bin/install-agent-workflows --host codex --target "$HOME/.agents" --release vX.Y.Z
 ```
 
 The installer copies:
@@ -156,12 +156,14 @@ without a second flat skill tree:
 ```bash
 bin/install-agent-workflows \
   --host codex \
+  --release vX.Y.Z \
   --delivery-mode plugin-companion
 ```
 
-The selected delivery mode is durable install state. Repeated installs,
-`upgrade-agent-workflows`, rollback, and `agent-stack sync` replay it unless an
-explicit `--delivery-mode` changes it.
+The selected delivery mode is durable install state. Stable install, update,
+and rollback always name an exact annotated `vX.Y.Z` tag; development branch
+following requires `--channel development`. Neither path silently crosses
+channels. See [Stable Release Channel](docs/release-channel.md).
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
 `agent-workflows-doctor`, `agent-workflows-refresh`, `agent-workflows-status`,
@@ -182,14 +184,14 @@ Code exposes `skills/verify/SKILL.md` as `/scw:verify`.
 Add and install the Claude Code marketplace plugin with:
 
 ```text
-/plugin marketplace add shakacode/agent-workflows
+/plugin marketplace add shakacode/agent-workflows@vX.Y.Z
 /plugin install scw@agent-workflows
 ```
 
 Add and install the Codex marketplace plugin with:
 
 ```bash
-codex plugin marketplace add shakacode/agent-workflows
+codex plugin marketplace add shakacode/agent-workflows --ref vX.Y.Z
 codex plugin add scw@agent-workflows
 ```
 
@@ -403,13 +405,14 @@ ruby bin/codex-plugin-manifest-check
 Check the installed pack:
 
 ```bash
-agent-workflows-status --host codex
+agent-workflows-status --host codex --release vX.Y.Z
 ```
 
 Upgrade and validate a consumer repo seam:
 
 ```bash
-upgrade-agent-workflows --host codex --consumer-root /path/to/consumer/repo
+upgrade-agent-workflows --host codex --release vX.Y.Z \
+  --consumer-root /path/to/consumer/repo
 ```
 
 Long-running agents keep whatever skill text they already loaded. Let active

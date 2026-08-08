@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export AGENT_WORKFLOWS_CHANNEL=development
 FAKE_CODEX_DIR="$(mktemp -d)"
 TEST_SOURCE_ROOT=""
 cleanup() {
@@ -8527,6 +8528,79 @@ RUBY
   assert_contains "$retry_output" "Installed ShakaCode agent workflows"
 }
 
+test_stable_install_materializes_the_exact_annotated_release() {
+  local tmp source target release_commit tag_object installed_content tagged_content host
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  release_commit="$(git -C "$source" rev-parse HEAD)"
+  git -C "$source" tag -a v0.1.0 -m "Agent Workflows v0.1.0"
+  tag_object="$(git -C "$source" rev-parse refs/tags/v0.1.0)"
+  printf '\nMutable development-only change.\n' >> "$source/skills/status/SKILL.md"
+  git -C "$source" add skills/status/SKILL.md
+  git -C "$source" commit --quiet -m "development change after release"
+
+  git -C "$source" show v0.1.0:skills/status/SKILL.md > "$tmp/tagged-status-skill"
+  tagged_content="$(shasum "$tmp/tagged-status-skill" | awk '{print $1}')"
+  for host in codex claude; do
+    target="$tmp/$host-home"
+    env -u AGENT_WORKFLOWS_CHANNEL "$source/bin/install-agent-workflows" \
+      --host "$host" --target "$target" --release v0.1.0 >"$tmp/$host-install.out"
+
+    installed_content="$(shasum "$target/skills/status/SKILL.md" | awk '{print $1}')"
+    [[ "$installed_content" = "$tagged_content" ]] || fail "$host stable install consumed mutable branch content"
+    ruby -rjson -e '
+      metadata = JSON.parse(File.read(ARGV.fetch(0)))
+      expected = {"host" => ARGV.fetch(1), "channel" => "stable", "release_ref" => ARGV.fetch(2),
+                  "source_revision" => ARGV.fetch(3), "tag_object" => ARGV.fetch(4)}
+      expected.each { |key, value| abort metadata.inspect unless metadata[key] == value }
+    ' "$target/.agent-workflows-install.json" "$host" v0.1.0 "$release_commit" "$tag_object"
+  done
+}
+
+test_stable_install_rejects_malformed_missing_lightweight_and_version_mismatched_refs() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  for release in release-0.1.0 v9.9.8; do
+    target="$tmp/$release-target"
+    set +e
+    output="$(env -u AGENT_WORKFLOWS_CHANNEL "$source/bin/install-agent-workflows" \
+      --target "$target" --release "$release" 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -ne 0 ]] || fail "stable install accepted invalid release $release"
+    [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "invalid release $release wrote metadata"
+  done
+
+  git -C "$source" tag v0.1.0
+  target="$tmp/lightweight-target"
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL "$source/bin/install-agent-workflows" \
+    --target "$target" --release v0.1.0 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "stable install accepted a lightweight tag"
+  assert_contains "$output" "annotated tag"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "lightweight tag wrote metadata"
+
+  git -C "$source" tag -a v9.9.9 -m "mismatched version"
+  target="$tmp/mismatch-target"
+  set +e
+  output="$(env -u AGENT_WORKFLOWS_CHANNEL "$source/bin/install-agent-workflows" \
+    --target "$target" --release v9.9.9 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "stable install accepted source/ref version mismatch"
+  assert_contains "$output" "does not match VERSION"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "version mismatch wrote metadata"
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
@@ -8752,6 +8826,8 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
+    test_stable_install_materializes_the_exact_annotated_release
+    test_stable_install_rejects_malformed_missing_lightweight_and_version_mismatched_refs
   )
 
   local test_name

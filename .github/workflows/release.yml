@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Exact annotated release tag (vX.Y.Z)
+        required: true
+        type: string
+      approved_commit:
+        description: Full exact commit approved for release
+        required: true
+        type: string
+      expected_tag_object:
+        description: Full annotated-tag object ID recorded when the tag was created
+        required: true
+        type: string
+      change_author:
+        description: GitHub login of the associated merged PR author
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: stable-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: stable-release
+    steps:
+      - name: Checkout the exact release ref
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.release }}
+
+      - name: Verify tag, exact commit, and version metadata
+        env:
+          APPROVED_COMMIT: ${{ inputs.approved_commit }}
+          EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
+          RELEASE_REF: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APPROVED_COMMIT"
+          bin/agent-workflows-release verify-tag \
+            --root . \
+            --release "$RELEASE_REF" \
+            --approved-commit "$APPROVED_COMMIT" \
+            --expected-tag-object "$EXPECTED_TAG_OBJECT"
+
+      - name: Record protected-environment approval evidence
+        env:
+          APPROVED_COMMIT: ${{ inputs.approved_commit }}
+          CHANGE_AUTHOR: ${{ inputs.change_author }}
+          EXPECTED_TAG_OBJECT: ${{ inputs.expected_tag_object }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_REF: ${{ inputs.release }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          associated_authors="$(
+            gh api "repos/$REPOSITORY/commits/$APPROVED_COMMIT/pulls" \
+              --jq '[.[] | select(.merged_at != null) | .user.login] | unique'
+          )"
+          test "$(jq 'length' <<<"$associated_authors")" -eq 1
+          test "$(jq -r '.[0]' <<<"$associated_authors")" = "$CHANGE_AUTHOR"
+
+          approvals="$(gh api "repos/$REPOSITORY/actions/runs/${{ github.run_id }}/approvals")"
+          approval_reviewer="$(
+            jq -er '[.[] |
+              select(.state == "approved") |
+              select(.user.type == "User") |
+              select(any(.environments[]?; .name == "stable-release")) |
+              .user.login] | last // empty' <<<"$approvals"
+          )"
+
+          bin/agent-workflows-release record-receipt \
+            --root . \
+            --release "$RELEASE_REF" \
+            --approved-commit "$APPROVED_COMMIT" \
+            --expected-tag-object "$EXPECTED_TAG_OBJECT" \
+            --environment stable-release \
+            --change-author "$CHANGE_AUTHOR" \
+            --release-actor "$RELEASE_ACTOR" \
+            --approval-reviewer "$approval_reviewer" \
+            --workflow-run-url "$RUN_URL" \
+            --recorded-at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --receipt agent-workflows-release-receipt.json
+
+      - name: Publish release and durable receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REF: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_REF" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to replace durable release evidence: $RELEASE_REF" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_REF" \
+            agent-workflows-release-receipt.json \
+            --verify-tag \
+            --title "Agent Workflows $RELEASE_REF" \
+            --generate-notes

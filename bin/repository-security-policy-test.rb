@@ -230,9 +230,25 @@ class RepositorySecurityPolicyTest < Minitest::Test
     policy = File.read(File.join(ROOT, "docs/repository-supply-chain.md"))
 
     assert_includes policy, "Stable release promotion, not ordinary pull-request development"
-    assert_includes policy, "agent-workflows/issues/296"
     assert_includes policy, "Automated reviews remain advisory"
-    assert_includes policy, "There is no supported human-reviewed install or upgrade path today"
+    assert_includes policy, "protected, immutable, annotated `vX.Y.Z` tags"
+    assert_includes policy, "protected `stable-release` environment"
+    assert_includes policy, "Cryptographic tag signatures are not required or checked"
+    assert_includes policy, "--channel development"
+  end
+
+  def test_release_workflow_binds_a_protected_environment_review_to_the_exact_tagged_commit
+    path = File.join(ROOT, ".github/workflows/release.yml")
+    workflow = File.read(path)
+
+    assert_includes workflow, "environment: stable-release"
+    assert_includes workflow, "actions/runs/${{ github.run_id }}/approvals"
+    assert_includes workflow, "bin/agent-workflows-release verify-tag"
+    assert_includes workflow, "bin/agent-workflows-release record-receipt"
+    assert_includes workflow, "--expected-tag-object"
+    assert_includes workflow, "--approved-commit"
+    assert_includes workflow, "gh release create"
+    refute_match(/verify-(?:commit|tag).*signature|git verify-tag|git verify-commit/, workflow)
   end
 
   def test_dependabot_proposes_pinned_action_updates_for_review

@@ -21,3 +21,8 @@ If the repo uses release branches, `AGENTS.md` should specify:
 - which checks, audits, or human approvals are required in each phase.
 
 If release phase cannot be verified, report `UNKNOWN` and avoid auto-merge.
+
+This consumer-repository branch policy is distinct from the Agent Workflows
+source pack's stable/development delivery channels. See
+[Stable Release Channel](release-channel.md) for protected immutable `v*` tags,
+the `stable-release` environment, exact-ref installation, and rollback.

@@ -11,31 +11,29 @@ place for a mandatory independent human review. Automated reviews remain advisor
 They can find defects, but they do not establish that a stable release was
 inspected and approved by a human maintainer.
 
-The repository does not have a stable release channel yet. Issue
-[agent-workflows#296](https://github.com/shakacode/agent-workflows/issues/296)
-tracks signed, immutable `vX.Y.Z` releases; exact-ref installs and upgrades;
-release receipts; and human approval bound to the exact promoted commit. Until
-that ships, `main`, the native marketplaces, and the default upgrade helper are
-development channels. Do not present them as human-reviewed releases.
+The stable channel uses protected, immutable, annotated `vX.Y.Z` tags; exact-ref
+installs, updates, and rollbacks; a protected `stable-release` environment; and
+a durable receipt binding independent human approval to the exact peeled
+commit. Cryptographic tag signatures are not required or checked. See
+[Stable Release Channel](release-channel.md).
 
 This distinction keeps routine development fast. It also gives cautious users a
-clear boundary: use the future stable channel, while maintainers who intentionally
+clear boundary: use the stable channel, while maintainers who intentionally
 want branch-tip changes can choose the development channel.
 
-## Installing and upgrading today
+## Installing And Upgrading
 
-There is no supported human-reviewed install or upgrade path today. If that
-provenance is required, do not install from `main` or use the default upgrader;
-wait for the immutable stable channel tracked in issue #296. A live checkout can
-change while an installer reads it, so a shell recipe cannot substitute for an
-immutable reviewed artifact.
+Stable operations name the exact tag: `install-agent-workflows --release
+vX.Y.Z` and `upgrade-agent-workflows --release vX.Y.Z`. The installer verifies
+and materializes the tagged tree before executing its installer. Updates and
+rollbacks never select “latest” or silently cross into development.
 
 For intentional development-channel use, do not pipe remote content into a
 shell. Clone the expected repository, verify its `origin`, inspect the checkout
-to the degree appropriate for development, and run the installer locally. The
-install receipt records the source revision, but it is not a release
-attestation. `upgrade-agent-workflows` fetches and fast-forwards the recorded
-source branch by default; this remains convenient development behavior, not a
+to the degree appropriate for development, and run the installer locally with
+`--channel development`. The install receipt records the source revision, but
+it is not a release attestation. Development upgrades likewise require
+`--channel development`; this remains convenient development behavior, not a
 reviewed stable update.
 
 Native plugin updates remain controlled by the host marketplace. Do not enable

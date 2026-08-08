@@ -146,8 +146,8 @@ libraries provides no guarantee of token or cost savings, quality, or security.
 
 2. **Install or enable the shared skills for the user/agent.** Clone
    [`shakacode/agent-workflows`](https://github.com/shakacode/agent-workflows)
-   and use `bin/install-agent-workflows --host codex` or
-   `bin/install-agent-workflows --host claude`, or use the agent platform's
+   and use `bin/install-agent-workflows --host codex --release vX.Y.Z` or
+   `bin/install-agent-workflows --host claude --release vX.Y.Z`, or use the agent platform's
    normal user-skill installation mechanism.
 
 3. **Initialize the consumer seam.** From the consumer repo, run:
@@ -347,12 +347,13 @@ source clone:
 agent-workflows-status --host codex
 ```
 
-Use `upgrade-agent-workflows` to update the source clone, reinstall, and run the
+Use `upgrade-agent-workflows` to install a selected exact release and run the
 seam doctor against one or more consumer repos:
 
 ```bash
 upgrade-agent-workflows \
   --host codex \
+  --release vX.Y.Z \
   --consumer-root /path/to/consumer/repo
 ```
 
