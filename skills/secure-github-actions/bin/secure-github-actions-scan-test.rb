@@ -649,6 +649,38 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_git_action_discovery_scans_case_variant_tracked_descriptor_filename
+    skip "filesystem is case-sensitive" unless filesystem_case_insensitive?
+
+    with_repository("jobs: {}\n") do |root|
+      indexed_action = File.join(root, "source/action.yml")
+      FileUtils.mkdir_p(File.dirname(indexed_action))
+      File.write(indexed_action, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml", "source/action.yml")
+      git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture")
+
+      intermediate = File.join(root, "source/action-case-rename")
+      File.rename(indexed_action, intermediate)
+      File.rename(intermediate, File.join(root, "source/ACTION.YML"))
+      assert_empty git!(root, "status", "--short")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["source/ACTION.YML"],
+                   document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      assert_includes document.dig("scan", "files_scanned"), "source/ACTION.YML"
+    end
+  end
+
   def test_explicitly_referenced_ignored_untracked_action_is_still_scanned
     with_repository(<<~YAML) do |root|
       jobs:
@@ -838,6 +870,64 @@ class SecureGitHubActionsScanTest < Minitest::Test
       refute_predicate result, :clean?
       assert_equal ["secure-github-actions/unsafe-file"],
                    result.findings.map { |finding| finding.fetch("rule_id") }.uniq
+    end
+  end
+
+  def test_git_descriptor_membership_does_not_treat_ignored_ambient_hardlink_as_reviewable
+    with_repository("jobs: {}\n") do |root|
+      source_action = File.join(root, "source/action.yml")
+      ambient_action = File.join(root, "ambient/action.yml")
+      symlink_action = File.join(root, "linked/action.yml")
+      [source_action, ambient_action, symlink_action].each { |path| FileUtils.mkdir_p(File.dirname(path)) }
+      File.write(source_action, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      File.link(source_action, ambient_action)
+      File.symlink(source_action, symlink_action)
+      File.write(File.join(root, ".gitignore"), "/ambient/action.yml\n/linked/action.yml\n")
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml", ".gitignore", "source/action.yml")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["source/action.yml"],
+                   document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      assert_includes document.dig("scan", "files_scanned"), "source/action.yml"
+      refute_includes document.dig("scan", "files_scanned"), "ambient/action.yml"
+      refute_includes document.dig("scan", "files_scanned"), "linked/action.yml"
+    end
+  end
+
+  def test_git_descriptor_membership_does_not_treat_same_parent_hardlink_as_same_filename
+    with_repository("jobs: {}\n") do |root|
+      tracked_action = File.join(root, "source/action.yml")
+      ignored_action = File.join(root, "source/action.yaml")
+      FileUtils.mkdir_p(File.dirname(tracked_action))
+      File.write(tracked_action, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      File.link(tracked_action, ignored_action)
+      File.write(File.join(root, ".gitignore"), "/source/action.yaml\n")
+      git!(root, "init", "-b", "main")
+      git!(root, "add", ".github/workflows/test.yml", ".gitignore", "source/action.yml")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["source/action.yml"],
+                   document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      refute_includes document.dig("scan", "files_scanned"), "source/action.yaml"
     end
   end
 

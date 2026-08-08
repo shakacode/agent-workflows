@@ -128,25 +128,30 @@ module SecureGitHubActions
             next
           end
 
-          Dir.children(directory).sort.each do |entry|
+          entries = Dir.children(directory).sort
+          entries.each do |entry|
             path = File.join(directory, entry)
             begin
               child_relative = relative_path(path)
               next if excluded_action_root?(child_relative)
 
               child_stat = File.lstat(path)
-              if reviewable_path?(reviewable_paths, child_relative, :directories, child_stat) &&
+              if reviewable_directory_path?(reviewable_paths, child_relative, child_stat) &&
                  (!child_stat.directory? || child_stat.symlink?)
                 findings << unsafe_action_discovery_finding(path)
                 next
               end
 
               if child_stat.directory? && !child_stat.symlink?
-                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :directories, child_stat)
+                next if ignored_unreviewable_directory?(reviewable_paths, child_relative, child_stat)
 
                 directories << path
-              elsif ACTION_DESCRIPTORS.include?(entry)
-                next if ignored_unreviewable_path?(reviewable_paths, child_relative, :files, child_stat)
+              else
+                reviewable_descriptor = reviewable_descriptor_path?(
+                  reviewable_paths, child_relative, directory, stat, entries, entry, child_stat
+                )
+                next unless ACTION_DESCRIPTORS.include?(entry) || reviewable_descriptor
+                next if reviewable_paths && !reviewable_descriptor && git_ignored_path?(child_relative)
 
                 if child_stat.file? && !child_stat.symlink?
                   paths << path
@@ -172,12 +177,12 @@ module SecureGitHubActions
       )
       return nil unless status.success?
 
-      files = {}
+      descriptors = {}
       directories = {}
       stdout.split("\0").each do |relative|
         next if relative.empty? || relative.start_with?("../") || relative.start_with?("/")
 
-        files[relative] = true
+        descriptors[relative] = true if ACTION_DESCRIPTORS.include?(File.basename(relative))
         directory = File.dirname(relative)
         until directory == "."
           directories[directory] = true
@@ -187,22 +192,39 @@ module SecureGitHubActions
           directory = parent
         end
       end
-      paths = { files: files, directories: directories }
-      identities = { files: {}, directories: {} }
+      paths = { descriptors: descriptors, directories: directories }
+      directory_identities = {}
+      descriptor_names_by_parent = Hash.new { |entries, identity| entries[identity] = [] }
       identity_errors = []
-      paths.each do |collection, reviewable|
-        reviewable.each_key do |relative|
-          next if collection == :files && !ACTION_DESCRIPTORS.include?(File.basename(relative))
-
+      directories.each_key do |relative|
+        begin
           stat = reviewable_path_lstat(relative)
-          identities.fetch(collection)[[stat.dev, stat.ino]] = true if stat
+          directory_identities[[stat.dev, stat.ino]] = true if stat
         rescue Errno::ENOENT, Errno::ENOTDIR
           next
         rescue SystemCallError
           identity_errors << relative
         end
       end
-      paths.merge(identities: identities, identity_errors: identity_errors.uniq)
+      descriptors.each_key do |relative|
+        basename = File.basename(relative)
+        parent = File.dirname(relative)
+        begin
+          stat = reviewable_path_lstat(parent)
+          next unless stat&.directory? && !stat.symlink?
+
+          descriptor_names_by_parent[[stat.dev, stat.ino]] << basename
+        rescue Errno::ENOENT, Errno::ENOTDIR
+          next
+        rescue SystemCallError
+          identity_errors << relative
+        end
+      end
+      paths.merge(
+        directory_identities: directory_identities,
+        descriptor_names_by_parent: descriptor_names_by_parent.transform_values { |names| names.uniq.freeze },
+        identity_errors: identity_errors.uniq
+      )
     rescue SystemCallError
       nil
     end
@@ -219,17 +241,39 @@ module SecureGitHubActions
       nil
     end
 
-    def reviewable_path?(reviewable_paths, relative, collection, stat)
+    def reviewable_directory_path?(reviewable_paths, relative, stat)
       return false unless reviewable_paths
-      return true if reviewable_paths.fetch(collection)[relative]
+      return true if reviewable_paths.fetch(:directories)[relative]
 
-      reviewable_paths.fetch(:identities).fetch(collection)[[stat.dev, stat.ino]]
+      reviewable_paths.fetch(:directory_identities)[[stat.dev, stat.ino]]
     end
 
-    def ignored_unreviewable_path?(reviewable_paths, relative, collection, stat)
+    def reviewable_descriptor_path?(reviewable_paths, relative, directory, directory_stat, entries, entry, stat)
       return false unless reviewable_paths
-      return false if reviewable_path?(reviewable_paths, relative, collection, stat)
+      return true if reviewable_paths.fetch(:descriptors)[relative]
 
+      names = reviewable_paths.fetch(:descriptor_names_by_parent)[[directory_stat.dev, directory_stat.ino]]
+      return false unless names
+
+      names.any? do |name|
+        next true if name == entry
+        next false if entries.include?(name)
+
+        listed_stat = File.lstat(File.join(directory, name))
+        [listed_stat.dev, listed_stat.ino] == [stat.dev, stat.ino]
+      rescue Errno::ENOENT, Errno::ENOTDIR
+        false
+      end
+    end
+
+    def ignored_unreviewable_directory?(reviewable_paths, relative, stat)
+      return false unless reviewable_paths
+      return false if reviewable_directory_path?(reviewable_paths, relative, stat)
+
+      git_ignored_path?(relative)
+    end
+
+    def git_ignored_path?(relative)
       _stdout, _stderr, status = Open3.capture3(
         "git", "-C", @root, "check-ignore", "--quiet", "--", relative,
         binmode: true
