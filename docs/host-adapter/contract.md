@@ -90,16 +90,34 @@ Preferred route: default|<model-or-class>/<effort>
 Route requirement: advisory
 ```
 
-Codex goal prompts put `/goal` before the header and use `$pr-batch` after it.
-Codex direct prompts omit `/goal` and use `$pr-batch`. Claude prompts omit
-`/goal` and use `/pr-batch`. Portable prompts use neutral prose such as
-`Use the pr-batch skill ...`; every embedded `pr-batch` and `pr-walkthrough`
-mechanic remains unsigiled. A target renderer applies the host's sigil to every
-supported mechanic, including the Base verification, Resolve, and walkthrough
-lines; portable output stays neutral. Portable prompts resolve through this
-contract at runtime.
+Codex defaults to `Prompt mode: batch` without `/goal` unless persistent Goal
+mode was explicitly requested. Use `/goal` only when the complete rendered goal
+is at most 3700 characters. An oversized explicit Codex goal falls back to the
+complete Codex batch form before any ordinary splitting decision. Never split
+solely to retain `/goal`.
+
+Codex batch and direct prompts omit `/goal` and use `$pr-batch`. An explicitly
+requested fitting Codex goal puts `/goal` before the header and uses
+`$pr-batch` after it. Claude prompts omit `/goal` and use `/pr-batch`. Portable
+prompts use neutral prose such as `Use the pr-batch skill ...`; every embedded
+`pr-batch` and `pr-walkthrough` mechanic remains unsigiled. A target renderer
+applies the host's sigil to every supported mechanic, including the Base
+verification, Resolve, and walkthrough lines; portable output stays neutral.
+Portable prompts resolve through this contract at runtime.
 The `Preferred route` value is metadata only. It cannot create a hard route,
 weaken a gate, or turn unavailable model/effort data into a blocker.
+
+Cross-host conversion preserves direct and batch delivery. Codex Goal delivery
+has no Claude wrapper equivalent, so it becomes Claude batch delivery. A
+conversion never invents persistent Goal mode:
+
+| Source declaration | Active target | Converted declaration | Wrapper |
+| --- | --- | --- | --- |
+| Codex `direct` | Claude | Claude `direct` | none |
+| Claude `direct` | Codex | Codex `direct` | none |
+| Codex `batch` | Claude | Claude `batch` | none |
+| Claude `batch` | Codex | Codex `batch` | none |
+| Codex `goal` | Claude | Claude `batch` | none |
 
 Before worker launch, repository mutation, or a GitHub write, classify the
 complete prompt against an explicitly known active host. Resolve

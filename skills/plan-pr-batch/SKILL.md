@@ -435,16 +435,22 @@ Plan a PR batch
      observations are `UNKNOWN`. The claim holder and `dashboard_url`
      degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
      may use the verified GitHub PR URL from PR-open/current PR state.
-   - For the `codex` target, keep the fenced goal prompt under 4000 characters
-     total with at least 300 characters of headroom, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For that target, set `Prompt host` to `codex`, set `Prompt mode` to `goal`,
-     and render every `pr-batch` and `pr-walkthrough` mechanic with the `$` <!-- host-allow: codex-only -->
-     sigil. For the `claude` target, omit `/goal`, set `Prompt host` to `claude`, <!-- host-allow: codex-only -->
-     keep `Prompt mode` as `batch`, and render every such mechanic with the `/` sigil. For the
-     `generic` target, omit `/goal` and keep the portable form unchanged. Do <!-- host-allow: codex-only -->
-     not apply Codex's strict 4000-character limit to Claude or generic prompts. <!-- host-allow: codex-only -->
-     Still keep the prompt compact, measured, under 8000 characters, and free of
-     bulky evidence.
+   - Codex defaults to `Prompt mode: batch` without `/goal` unless persistent Goal mode was explicitly requested. <!-- host-allow: codex-only -->
+     Use `/goal` only when the complete rendered goal is at most 3700 characters. <!-- host-allow: codex-only -->
+     An oversized explicit Codex goal falls back to the complete Codex batch form before any ordinary splitting decision.
+     Never split solely to retain `/goal`. <!-- host-allow: codex-only -->
+   - For the `codex` target, set `Prompt host` to `codex`, render every
+     `pr-batch` and `pr-walkthrough` mechanic with the `$` sigil, and default to
+     `Prompt mode: batch` without a wrapper. For an explicitly requested
+     persistent Goal, measure the complete candidate including the `/goal` line; <!-- host-allow: codex-only -->
+     select `Prompt mode: goal` only when it has at least 300 characters of headroom
+     under the 4000-character compatibility ceiling, so bulky detail stays in the Batch Plan.
+     For the `claude` target, omit `/goal`, set `Prompt host` to <!-- host-allow: codex-only -->
+     `claude`, keep `Prompt mode` as `batch`, and render every such mechanic with
+     the `/` sigil. For the `generic` target, omit `/goal` and keep the portable <!-- host-allow: codex-only -->
+     form unchanged. Do not apply Codex's strict 4000-character limit to default <!-- host-allow: codex-only -->
+     Codex batch, Claude, or generic prompts. Still keep each selected prompt
+     compact, measured, under 8000 characters, and free of bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
      script below, or pipe only the extracted fence body to a
      character-counting command such as `ruby -e 'print STDIN.read.length'`.
@@ -460,24 +466,27 @@ Plan a PR batch
      Require `MODEL_ESCALATION_REQUEST` before a worker moves
      to a stronger route as a deliberate escalation, while ordinary host route
      substitution remains advisory metadata.
-     When route entries themselves cause the overflow or breach the 300-character
-     headroom floor, split along route groups so each generated goal carries only
-     the included lanes' complete routes;
-     preserve omitted lanes and routes in the Batch Plan for later prompts.
-   - Before responding, measure only the text inside the goal-prompt fence,
-     including the `/goal` line for Codex and excluding the fence lines, and <!-- host-allow: codex-only -->
+     When route entries make an explicit Goal candidate exceed the headroom
+     floor, select the same complete Codex batch instead. Only if the selected
+     batch then exceeds the ordinary limit or hides ownership or collision
+     boundaries may it split along route groups so each generated prompt carries
+     only the included lanes' complete routes; preserve omitted lanes and routes
+     in the Batch Plan for later prompts.
+   - Before responding, measure only the text inside the prompt fence, including
+     the `/goal` line for an explicitly requested selected Codex Goal and <!-- host-allow: codex-only -->
+     excluding the fence lines, and
      print `Goal prompt character count: N characters (target: codex|claude|generic)`
      after the fence.
-   - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. Also split
-     before overflow when less than 300 characters of headroom remain. Output only
-     the first ready goal; list omitted ready items in the Batch Plan for later goal prompts.
+   - For Codex, if the measured prompt is 4000 characters or more, it must be
+     the complete batch form selected after Goal fallback, not a reason to split.
+     Compact only redundant detail while preserving every semantic contract.
    - For Claude or generic targets, do not split solely because the prompt is
      4000 characters or more. Split only when the prompt is too large for the
      target host, too bulky to review safely, or would hide ownership and
      collision boundaries.
    - Measure the actual filled template overhead when the prompt is near the
-     character budget; do not rely on a fixed estimate. Prefer splitting into
-     multiple goals over trimming the safety, ownership, or review content.
+     character budget; do not rely on a fixed estimate. After selector fallback,
+     prefer ordinary splitting over trimming safety, ownership, or review content.
    - Keep full path evidence in the Batch Plan when it would bloat the prompt,
      but do not leave the worker handoff with an external-only pointer. In the
      goal prompt, use the narrowest unambiguous directory/pattern summary that
@@ -485,7 +494,9 @@ Plan a PR batch
      collision-relevant exact paths inline. If compression would hide a collision
      or make ownership unclear, mark the item `UNKNOWN` and run it serially.
    - Keep each filled entry terse (target ~150 chars for `Worker notes` and `Done when`). The worker reads the issue/PR URL for full detail; push evidence and audit notes to the Batch Plan instead.
-   - If the Codex prompt will not fit, split it into smaller goals and output only the first ready goal.
+   - If the Codex prompt will not fit under the ordinary 8000-character batch
+     ceiling, split it along genuine lane boundaries and output only the first ready goal;
+     list omitted ready items in the Batch Plan for later prompts.
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
@@ -570,12 +581,15 @@ backend must say so in the declaration.
 ## Goal Prompt for pr-batch
 
 Use this template and fill it with the verified items. The fenced template below
-is the portable form. For the `codex` target, prepend `/goal`, set `Prompt host` <!-- host-allow: codex-only -->
-to `codex` and `Prompt mode` to `goal`, and render every `pr-batch` and <!-- host-allow: codex-only -->
-`pr-walkthrough` mechanic with the `$` sigil. For the `claude` target, set
-`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render every such
-mechanic with the `/` sigil. For the `generic` target, use the portable form
-unchanged. Keep every other line identical across target forms.
+is the portable form. For the default `codex` target, omit `/goal`, set <!-- host-allow: codex-only -->
+`Prompt host` to `codex` and `Prompt mode` to `batch`, and render every
+`pr-batch` and `pr-walkthrough` mechanic with the `$` sigil. If persistent Goal
+mode was explicitly requested and the complete candidate passes the Output
+selector, prepend `/goal` and change only `Prompt mode` to `goal`. For the <!-- host-allow: codex-only -->
+`claude` target, set `Prompt host` to `claude`, keep `Prompt mode` as `batch`,
+and render every such mechanic with the `/` sigil. For the `generic` target, use
+the portable form unchanged. Keep every other line identical across target
+forms.
 Keep bulky evidence and long validation notes outside the prompt.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
@@ -662,7 +676,9 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
   and more effort.
 - Do not treat model grouping as lane grouping; collate the plan by exact pair
   without combining ownership or weakening dependency and collision ordering.
-- Do not eyeball the goal-prompt length; apply the Output-section size gate and split Codex prompts into smaller goals if they are over budget.
+- Do not eyeball the prompt length; apply the Output-section selector, fall back
+  from an oversized explicit Codex Goal to the complete batch form, and split
+  only for the ordinary batch-size or ownership boundaries.
 
 ## Self-Check
 

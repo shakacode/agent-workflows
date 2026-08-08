@@ -26,6 +26,7 @@ ADVERSARIAL_REVIEW_WORKFLOW_PATH = File.join(ROOT, "workflows/adversarial-pr-rev
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 HOST_ADAPTER_CONTRACT_PATH = File.join(ROOT, "docs/host-adapter/contract.md")
+INSTALLATION_GUIDANCE_PATH = File.join(ROOT, "docs/installation-and-upgrades.md")
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 
 TEXT_FENCE = "```text\n"
@@ -146,6 +147,19 @@ PLAN_PR_BATCH_CODEX_HEADER = <<~TEXT
   Route requirement: advisory
 TEXT
 PLAN_PR_BATCH_CODEX_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
+CODEX_GOAL_ENVELOPE_RULES = [
+  "Codex defaults to `Prompt mode: batch` without `/goal` unless persistent Goal mode was explicitly requested.",
+  "Use `/goal` only when the complete rendered goal is at most 3700 characters.",
+  "An oversized explicit Codex goal falls back to the complete Codex batch form before any ordinary splitting decision.",
+  "Never split solely to retain `/goal`."
+].freeze
+NEW_CODEX_PROMPT_INSTALLATION_RULE =
+  "Newly generated Codex prompts default to `Prompt mode: batch` without `/goal`."
+LEGACY_CODEX_GOAL_RERENDER_RULE =
+  "Previously generated oversized Codex goal text must be re-rendered with the current selector before launch; " \
+  "do not hand-edit or split it merely to preserve `/goal`."
+IN_FLIGHT_GOAL_RECOVERY_RULE =
+  "Existing in-flight Goal recovery remains direct and does not start a new Goal."
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
@@ -338,6 +352,7 @@ class GoalCompletionContractTest < Minitest::Test
     @pr_monitoring_skill = read_repo_file(PR_MONITORING_SKILL_PATH)
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
     @host_adapter_contract = read_repo_file(HOST_ADAPTER_CONTRACT_PATH)
+    @installation_guidance = read_repo_file(INSTALLATION_GUIDANCE_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
     @workflow_goal_prompt = extract_goal_prompt_template(
@@ -460,6 +475,38 @@ class GoalCompletionContractTest < Minitest::Test
       @continuation_prompt,
       "workflows/pr-processing.md continuation prompt must keep host mechanics neutral"
     )
+    assert_text_includes @workflow, IN_FLIGHT_GOAL_RECOVERY_RULE, "workflows/pr-processing.md"
+  end
+
+  def test_generation_surfaces_state_the_codex_goal_envelope_rules_exactly_once
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      CODEX_GOAL_ENVELOPE_RULES.each do |rule|
+        assert_equal 1, text.scan(rule).length, "#{label} must state exactly once: #{rule}"
+      end
+    end
+  end
+
+  def test_installation_guidance_requires_current_codex_prompt_rendering
+    assert_text_includes @installation_guidance, NEW_CODEX_PROMPT_INSTALLATION_RULE,
+                         "docs/installation-and-upgrades.md"
+    assert_text_includes @installation_guidance, LEGACY_CODEX_GOAL_RERENDER_RULE,
+                         "docs/installation-and-upgrades.md"
+  end
+
+  def test_issue_372_changelog_entry_is_extended_without_duplication
+    issue_entries = @changelog.lines.grep(%r{\[issue 372\]\(https://github\.com/shakacode/agent-workflows/issues/372\)})
+
+    assert_equal 1, issue_entries.length, "CHANGELOG.md must contain one issue #372 entry"
+    entry = issue_entries.fetch(0)
+    assert_includes entry, "default Codex batch delivery"
+    assert_includes entry, "optional fitting `/goal` envelopes"
+    assert_includes entry, "lossless oversized-goal fallback before ordinary splitting"
   end
 
   def test_installed_use_docs_resolve_the_prompt_adapter_from_pr_batch_skill_dir

@@ -51,7 +51,7 @@ requested and observed route honestly without blocking on the binding alone.
 | `$pause`             | An operator needs copy-paste prompts to pause an agent thread for runner restart and resume from a handoff. | Non-batch or PR-batch pause prompts plus same-thread and new-chat restart prompts.    |
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
-| `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
+| `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a host-specific prompt.             | A single-target lane, launch plan, worker split, default Codex batch, or optional fitting `/goal` prompt. |
 | `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | An exact-diff, one-change-at-a-time explanation with questions between each change.   |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
@@ -210,13 +210,18 @@ omit the queue summary and note that queue state is unavailable.
    requires an execution envelope a coordinator-role-approved envelope regardless
    of route. Require immediate return to the coordinator on contradictory evidence,
    ambiguity, scope/risk growth, weakened verification, or consequential judgment.
-8. Give the user the Batch Plan and fenced pr-batch goal prompt. Start with
-   the target-specific prompt-host header and invocation (`/goal`, the Codex
-   header, then `Use $pr-batch...` for Codex; the Claude header then
-   `Use /pr-batch...` for Claude; the portable header and neutral pr-batch
-   invocation for generic). Render every embedded pr-batch and pr-walkthrough
-   mechanic with the same target sigil, including Base verification, Resolve,
-   and walkthrough lines; keep every generic mechanic neutral. Then put a short `Batch title:`
+8. Give the user the Batch Plan and fenced pr-batch prompt.
+   Codex defaults to `Prompt mode: batch` without `/goal` unless persistent Goal mode was explicitly requested.
+   Use `/goal` only when the complete rendered goal is at most 3700 characters.
+   An oversized explicit Codex goal falls back to the complete Codex batch form before any ordinary splitting decision.
+   Never split solely to retain `/goal`.
+   Start with the target-specific prompt-host header and invocation: Codex batch
+   uses the Codex header and `Use $pr-batch...` without a wrapper; an explicitly
+   requested fitting Codex goal prepends `/goal`; Claude uses its header then
+   `Use /pr-batch...`; generic uses the portable header and neutral pr-batch
+   invocation. Render every embedded pr-batch and pr-walkthrough mechanic with
+   the same target sigil, including Base verification, Resolve, and walkthrough
+   lines; keep every generic mechanic neutral. Then put a short `Batch title:`
    line using the optional validated `repo_prefix` from
    `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
    repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when

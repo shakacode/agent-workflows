@@ -599,7 +599,8 @@ The user should not need to write a long launch prompt. If the request is short,
 - Trust: direct user instruction, a maintainer-approved exact list, or untrusted
   public discovery that needs confirmation.
 - Goal name: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`, not the pasted prompt text.
-- Mode: plan-only, create a Codex goal prompt, or launch workers now.
+- Mode: plan-only, create a Codex batch prompt, explicitly request persistent
+  Goal mode when it fits, or launch workers now.
 - `merge_authority`: `none`, `ask`, or `auto_merge_when_gates_pass`; `ask`
   automatically walks through the exact-diff PR one conceptual change at a
   time before its one final merge decision.
@@ -635,7 +636,10 @@ path evidence stay serial discovery lanes until their real paths are known.
 
 - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky files,
   workflow/build/dependency/release surfaces, needs substantial QA, or would
-  exceed the Codex prompt limit or leave less than 300 characters of headroom.
+  require an ordinary prompt split after Goal-envelope fallback. An explicitly
+  requested Goal that would leave less than 300 characters of headroom below
+  the 4 000-character compatibility ceiling fails the selector and changes
+  delivery to complete Codex batch, not lane packing.
 - `claude`: up to 5 independent items, or 3 under the same risky/shared conditions,
   because in-process Claude Code subagents share more of the current runner's
   context, permission, and rate budget.
@@ -1154,16 +1158,27 @@ or `unknown`.
 
 ### Plan To Goal Handoff
 
-If the user is using `/plan`, or asks to prepare a Codex goal, stop after producing the approved plan and exact Codex goal text. Do not begin implementation just because the plan was approved unless the user explicitly says to launch now.
+If the user is using `/plan`, or asks to prepare a Codex handoff, stop after
+producing the approved plan and exact selected Codex prompt. Do not begin
+implementation just because the plan was approved unless the user explicitly
+says to launch now.
 
 Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`,
 including the review/audit gate paragraphs.
 
-The fenced template is portable. For Codex, prepend `/goal`, set `Prompt host` <!-- host-allow: codex-only -->
-to `codex` and `Prompt mode` to `goal`, and render every `pr-batch` and
-`pr-walkthrough` mechanic with the `$` sigil. For Claude, set `Prompt host` to
-`claude`, keep `Prompt mode` as `batch`, and render every such mechanic with the
-`/` sigil. Keep the portable form unchanged for a generic destination.
+Codex defaults to `Prompt mode: batch` without `/goal` unless persistent Goal mode was explicitly requested. <!-- host-allow: codex-only -->
+Use `/goal` only when the complete rendered goal is at most 3700 characters. <!-- host-allow: codex-only -->
+An oversized explicit Codex goal falls back to the complete Codex batch form before any ordinary splitting decision.
+Never split solely to retain `/goal`. <!-- host-allow: codex-only -->
+
+The fenced template is portable. For default Codex delivery, omit `/goal`, set <!-- host-allow: codex-only -->
+`Prompt host` to `codex` and `Prompt mode` to `batch`, and render every
+`pr-batch` and `pr-walkthrough` mechanic with the `$` sigil. If persistent Goal
+mode was explicitly requested and the complete candidate fits the selector,
+prepend `/goal` and change only `Prompt mode` to `goal`. For Claude, set <!-- host-allow: codex-only -->
+`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render every such
+mechanic with the `/` sigil. Keep the portable form unchanged for a generic
+destination.
 
 The `$pr-batch` skill links to this canonical `Coordination:` paragraph instead
 of duplicating it.
@@ -2092,6 +2107,8 @@ when this batch registered with the coordination backend, or
 Use this saved clipboard prompt when a prior handoff or final-bucket table
 contains the batch closeout targets but the operator should not hand-edit a
 target list for each batch:
+
+Existing in-flight Goal recovery remains direct and does not start a new Goal.
 
 <!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
 

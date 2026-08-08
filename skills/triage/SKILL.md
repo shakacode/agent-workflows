@@ -222,8 +222,13 @@ precise blocker.
    `Scope` data and carry the complete live replay inline or name its durable
    reference; persist or deliver both artifacts with stable planning state.
    Backend storage is optional and must not be assumed.
+   Codex defaults to `Prompt mode: batch` without `/goal` unless persistent Goal mode was explicitly requested. <!-- host-allow: codex-only -->
+   Use `/goal` only when the complete rendered goal is at most 3700 characters. <!-- host-allow: codex-only -->
+   An oversized explicit Codex goal falls back to the complete Codex batch form before any ordinary splitting decision.
+   Never split solely to retain `/goal`. <!-- host-allow: codex-only -->
    Classify the destination before generating text. Each prompt must begin,
-   after the Codex-only `/goal` wrapper when applicable, with <!-- host-allow: codex-only -->
+   after the Codex-only `/goal` wrapper only for an explicitly requested <!-- host-allow: codex-only -->
+   fitting goal, with <!-- host-allow: codex-only -->
    `Prompt host: <codex|claude|portable>`,
    `Prompt mode: <goal|batch>`,
    `Preferred route: <model/class>/<effort>`, and
@@ -276,13 +281,14 @@ precise blocker.
    Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
    A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
    When host observations become available, reconcile registration field by field. Before requiring reconciliation, detect advertised registration update/upsert/reconciliation capability. An unadvertised or unsupported create-only backend records each affected field `UNKNOWN`. An advertised update uses the bounded safe executable-plus-opaque-argv contract; failure records affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a backend-advertised safe executable plus ordered opaque argv without shell evaluation and runs with a finite hard deadline in its own process group; timeout or whole-group `TERM` then `KILL` records best-effort field-granular `UNKNOWN`, names reconciliation, and does not block worker launch.
-   For Codex prompts, keep the
-   prompt under the `$plan-pr-batch` Codex 4 000-character limit with at least
-   300 characters of headroom, including the Codex invocation line; split route
-   groups before overflow when the unsplit prompt breaches that floor. For
-   Claude/generic prompts, measure the actual prompt,
-   keep it under 8 000 characters, and split or compact it when too large rather
-   than applying the Codex split threshold. Put a short `Batch title:` after the
+   For an explicitly requested Codex goal, measure the complete rendered text,
+   including the `/goal` wrapper, and require at least 300 characters of headroom <!-- host-allow: codex-only -->
+   under the 4 000-character compatibility ceiling. If it does not
+   fit, render the complete group as Codex batch without a wrapper before
+   applying the ordinary measured 8 000-character limit. Split or compact only
+   when that batch limit or genuine ownership and collision boundaries require
+   it. For Claude/generic prompts, measure the actual prompt, keep it under
+   8 000 characters, and split or compact it when too large. Put a short `Batch title:` after the
    prompt-host header and target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
    Resolve `<PROJECT>` from the optional `repo_prefix` in
    `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
@@ -352,9 +358,10 @@ Return:
 - One current-wave plan whose total item count is capped in aggregate by the
   host-aware target, then split into up to `N` non-empty capacity-derived groups,
   each with a ready `$pr-batch` prompt within the target-specific prompt size
-  limit: Codex 10/8 and 4 000 characters with at least 300 characters of headroom,
-  including the Codex invocation line;
-  Claude/generic 5/3 and under 8 000 measured characters. Each prompt carries
+  limit: Codex 10/8 defaults to batch under 8 000 measured characters, while an
+  explicitly requested goal must fit at 3 700 characters with at least 300 characters of headroom
+  under the compatibility ceiling or fall back intact to
+  batch; Claude/generic 5/3 stays under 8 000 measured characters. Each prompt carries
   its selected batch size target, aggregate wave cap, thread handle, and Lane
   Card. Report idle slots or remaining backlog/next wave separately.
 - One durable planning-chat lifecycle record covering every generated group:

@@ -560,12 +560,20 @@ paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-Use this portable template for generated batch text. For Codex, prepend `/goal`, <!-- host-allow: codex-only -->
-set `Prompt host` to `codex` and `Prompt mode` to `goal`, and render every
-`pr-batch` and `pr-walkthrough` mechanic with the `$` sigil. For Claude, set
-`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render every such
-mechanic with the `/` sigil. Keep the portable form unchanged for a generic
-destination.
+Use this portable template for generated batch text.
+
+Codex defaults to `Prompt mode: batch` without `/goal` unless persistent Goal mode was explicitly requested. <!-- host-allow: codex-only -->
+Use `/goal` only when the complete rendered goal is at most 3700 characters. <!-- host-allow: codex-only -->
+An oversized explicit Codex goal falls back to the complete Codex batch form before any ordinary splitting decision.
+Never split solely to retain `/goal`. <!-- host-allow: codex-only -->
+
+For Codex batch delivery, set `Prompt host` to `codex`, keep `Prompt mode` as
+`batch`, omit `/goal`, and render every `pr-batch` and `pr-walkthrough` mechanic <!-- host-allow: codex-only -->
+with the `$` sigil. For an explicitly requested fitting Codex goal, prepend
+`/goal`, set `Prompt mode` to `goal`, and use the same Codex mechanics. For <!-- host-allow: codex-only -->
+Claude, set `Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render
+every such mechanic with the `/` sigil. Keep the portable form unchanged for a
+generic destination.
 
 ```text
 Prompt host: portable

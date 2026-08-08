@@ -43,6 +43,8 @@ HOST_ROLLOUT_MATRIX_RULE =
   "Before any host-owned fact becomes a portable mandatory gate, the proposal must name an accountable owner for each producer, verifier, provisioner, and installer role and define clean-install acceptance for every supported host."
 HOST_ROLLOUT_OPTIONAL_RULE =
   "If any role or clean-install acceptance is absent, the capability remains optional and advisory; unavailable host-owned fields use `UNKNOWN` and do not block otherwise valid workflow progress."
+CLAUDE_BATCH_TO_CODEX_BATCH_MODE_ROW = "| Claude `batch` | Codex | Codex `batch` | none |"
+CODEX_GOAL_TO_CLAUDE_BATCH_MODE_ROW = "| Codex `goal` | Claude | Claude `batch` | none |"
 
 ROUTING_SURFACES = %w[
   CONTEXT.md
@@ -289,6 +291,13 @@ class ModelRoutingContractTest < Minitest::Test
 
     assert_includes contract, HOST_ROLLOUT_MATRIX_RULE
     assert_includes contract, HOST_ROLLOUT_OPTIONAL_RULE
+  end
+
+  def test_host_adapter_documents_cross_host_mode_mapping
+    contract = read_repo_file("docs/host-adapter/contract.md")
+
+    assert_equal 1, contract.scan(CLAUDE_BATCH_TO_CODEX_BATCH_MODE_ROW).length
+    assert_equal 1, contract.scan(CODEX_GOAL_TO_CLAUDE_BATCH_MODE_ROW).length
   end
 
   def test_signed_launch_postmortem_has_accountable_followup_owners_and_resumption_boundary

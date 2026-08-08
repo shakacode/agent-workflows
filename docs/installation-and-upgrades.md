@@ -593,6 +593,9 @@ Long-running agents usually keep the skill text they already loaded. Use the new
 pack for new batches and canary runs. Restart only lanes that are blocked by
 stale workflow instructions or that explicitly need the new process.
 
+Newly generated Codex prompts default to `Prompt mode: batch` without `/goal`.
+Previously generated oversized Codex goal text must be re-rendered with the current selector before launch; do not hand-edit or split it merely to preserve `/goal`.
+
 An already-running lane may finish under its loaded contract. A generated but
 not-yet-launched prompt is different: after installing or upgrading, classify
 it with the newly installed prompt adapter before any launch or mutation. If it
