@@ -128,6 +128,7 @@ identifies the fail-closed category, such as `invalid-encoding`,
 `partial-headers`, `duplicate-headers`, `non-advisory-route`,
 `invalid-preferred-route`, `invalid-host-mode-wrapper`,
 `contradictory-host-mechanic`, `contradictory-source-mechanic`,
+`invalid-batch-size-target`, `duplicate-batch-size-target`,
 `contradictory-batch-size-target`,
 `unsupported-host-mechanic`, or
 `unrecognized-prompt`.
@@ -151,10 +152,15 @@ this adapter contract unless it is itself a complete pr-batch prompt.
 Conversion translates mechanics only: the header host/mode, `/goal` wrapper,
 pr-batch invocation, target-specific batch-size field, exact Base verification
 and Resolve mechanics, and exact pr-walkthrough authority invocation.
-Before execution or conversion, a filled concrete batch-size target must agree
-with its declared host: `codex` for Codex, `claude` for Claude, and `generic`
-for portable. A contradiction fails closed as
-`contradictory-batch-size-target`; it is never executed or rewritten.
+Before execution or conversion, a prompt may omit the batch-size field. When
+`Batch size target:` is present, it must occur exactly once and contain one
+canonical allowed target followed by a semicolon: `codex` for Codex, `claude`
+for Claude, and `generic` for portable. Unsupported values or malformed field
+syntax fail closed as `invalid-batch-size-target`; duplicate fields, whether
+identical or conflicting, fail closed as `duplicate-batch-size-target`. A
+well-formed target that disagrees with the declared host fails closed as
+`contradictory-batch-size-target`. None of these invalid inputs is executed,
+rewritten, or returned as relaunch text.
 Objectives, targets, scope, dependencies,
 permissions, safety, QA, review, merge authority, advisory route preference,
 and all ordinary workflow gates must remain semantically identical. The helper

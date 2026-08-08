@@ -122,13 +122,17 @@ valid_declared_invocation = case headers["Prompt host"]
 complete_valid_headers = valid_header_counts && valid_host_mode_wrapper && valid_preferred_route &&
                          ordered_headers && valid_declared_invocation &&
                          headers["Route requirement"] == "advisory"
+batch_size_target_count = prompt.scan(/^Batch size target:/).length
 concrete_batch_size_targets = prompt.scan(/^Batch size target: (codex|claude|generic);/).flatten
 expected_batch_size_target = {
   "codex" => "codex",
   "claude" => "claude",
   "portable" => "generic"
 }[headers["Prompt host"]]
-batch_size_target_consistent = concrete_batch_size_targets.empty? ||
+batch_size_target_format_valid = batch_size_target_count.zero? ||
+                                 concrete_batch_size_targets.length == batch_size_target_count
+batch_size_target_unique = batch_size_target_count <= 1
+batch_size_target_consistent = batch_size_target_format_valid && batch_size_target_unique &&
                                concrete_batch_size_targets.all? { |target| target == expected_batch_size_target }
 legacy_host = if no_headers && prompt.start_with?("/goal\n")
                 "codex"
@@ -224,6 +228,10 @@ reason_code = if classification != "ambiguous"
               elsif some_headers && !valid_declared_invocation
                 expected_prefix = headers["Prompt host"] == "codex" ? "Use /pr-batch" : "Use $pr-batch"
                 prompt_body.start_with?(expected_prefix) ? "contradictory-host-mechanic" : "invalid-host-invocation"
+              elsif complete_valid_headers && !batch_size_target_unique
+                "duplicate-batch-size-target"
+              elsif complete_valid_headers && !batch_size_target_format_valid
+                "invalid-batch-size-target"
               elsif complete_valid_headers && !batch_size_target_consistent
                 "contradictory-batch-size-target"
               elsif (explicit_conversion || legacy_conversion) && !source_mechanics_supported

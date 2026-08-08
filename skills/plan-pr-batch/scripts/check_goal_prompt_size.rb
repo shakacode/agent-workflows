@@ -438,8 +438,11 @@ def render_prompt_mechanics(prompt, sigil)
 end
 
 def prompt_for_adapter(prompt_template, target)
+  batch_size_target = { codex: "codex", claude: "claude", generic: "generic" }.fetch(target)
   prompt_for_target(prompt_template, target)
     .sub(PREFERRED_ROUTE_PROMPT_LINE, "Preferred route: default")
+    .sub(/^Batch size target: <codex\|claude\|generic>;/,
+         "Batch size target: #{batch_size_target};")
 end
 
 def classify_prompt(prompt, active_host, label, adapter_path: PROMPT_HOST_ADAPTER)
@@ -507,6 +510,8 @@ def normalized_prompt_semantics(prompt)
     .sub(/^Prompt mode: (?:goal|batch)$/, "Prompt mode: batch")
     .sub(%r{^Use (?:the pr-batch skill|[/$]pr-batch) to complete this batch with subagents\.$},
          PORTABLE_INVOCATION_LINE.chomp)
+    .sub(/^Batch size target: (?:codex|claude|generic);/,
+         "Batch size target: <codex|claude|generic>;")
     .gsub(%r{[/$]pr-batch\b}, "pr-batch")
     .gsub(%r{[/$]pr-walkthrough\b}, "pr-walkthrough")
 end

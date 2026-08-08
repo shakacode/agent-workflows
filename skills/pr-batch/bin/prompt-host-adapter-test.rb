@@ -388,6 +388,67 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_malformed_or_unsupported_batch_size_target_fails_closed_without_echo
+    cases = [
+      ["matching Codex", "codex", "codex", "rust; wave: 1/1."],
+      ["matching Claude", "claude", "claude", "claude wave: 1/1."],
+      ["cross-host conversion", "codex", "claude", "rust; wave: 1/1."],
+      ["converted relaunch", "claude", "claude", "rust; wave: 1/1."],
+      ["portable unsupported value", "portable", "codex", "rust; wave: 1/1."],
+      ["portable malformed delimiter", "portable", "claude", "generic wave: 1/1."]
+    ]
+
+    cases.each do |label, declared_host, active_host, field_value|
+      marker = "SECRET_#{label.upcase.gsub(/\W+/, '_')}"
+      prompt = direct_prompt(
+        host: declared_host,
+        body: "Batch size target: #{field_value}\nObjective: #{marker}"
+      )
+
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), label
+      assert_equal "invalid-batch-size-target", result.fetch("reason_code"), label
+      assert_equal false, result.fetch("execute_allowed"), label
+      assert_equal false, result.fetch("relaunch_required"), label
+      assert_equal false, result.fetch("replanning_required"), label
+      assert_nil result.fetch("semantic_payload_preserved"), label
+      assert_nil result.fetch("prompt"), label
+      refute_includes stdout, marker
+    end
+  end
+
+  def test_duplicate_batch_size_target_fails_closed_without_echo
+    cases = [
+      ["matching identical", "codex", "codex", %w[codex codex]],
+      ["matching conflicting", "codex", "codex", %w[codex claude]],
+      ["cross-host identical", "codex", "claude", %w[codex codex]],
+      ["cross-host conflicting", "codex", "claude", %w[codex claude]],
+      ["converted relaunch identical", "claude", "claude", %w[claude claude]],
+      ["portable identical", "portable", "codex", %w[generic generic]],
+      ["portable conflicting", "portable", "claude", %w[generic codex]]
+    ]
+
+    cases.each do |label, declared_host, active_host, targets|
+      marker = "SECRET_#{label.upcase.gsub(/\W+/, '_')}"
+      fields = targets.map { |target| "Batch size target: #{target}; wave: 1/1." }.join("\n")
+      prompt = direct_prompt(host: declared_host, body: "#{fields}\nObjective: #{marker}")
+
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), label
+      assert_equal "duplicate-batch-size-target", result.fetch("reason_code"), label
+      assert_equal false, result.fetch("execute_allowed"), label
+      assert_equal false, result.fetch("relaunch_required"), label
+      assert_equal false, result.fetch("replanning_required"), label
+      assert_nil result.fetch("semantic_payload_preserved"), label
+      assert_nil result.fetch("prompt"), label
+      refute_includes stdout, marker
+    end
+  end
+
   def test_known_opposite_direct_host_requires_inert_conversion
     prompt = <<~PROMPT
       Prompt host: codex
