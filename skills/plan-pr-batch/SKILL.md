@@ -438,8 +438,9 @@ Plan a PR batch
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
      total with at least 300 characters of headroom, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
      For that target, set `Prompt host` to `codex`, set `Prompt mode` to `goal`,
-     and use `$pr-batch`. For the `claude` target, omit `/goal`, set `Prompt <!-- host-allow: codex-only -->
-     host` to `claude`, keep `Prompt mode` as `batch`, and use `/pr-batch`. For the
+     and render every `pr-batch` and `pr-walkthrough` mechanic with the `$` <!-- host-allow: codex-only -->
+     sigil. For the `claude` target, omit `/goal`, set `Prompt host` to `claude`, <!-- host-allow: codex-only -->
+     keep `Prompt mode` as `batch`, and render every such mechanic with the `/` sigil. For the
      `generic` target, omit `/goal` and keep the portable form unchanged. Do <!-- host-allow: codex-only -->
      not apply Codex's strict 4000-character limit to Claude or generic prompts. <!-- host-allow: codex-only -->
      Still keep the prompt compact, measured, under 8000 characters, and free of
@@ -570,9 +571,10 @@ backend must say so in the declaration.
 
 Use this template and fill it with the verified items. The fenced template below
 is the portable form. For the `codex` target, prepend `/goal`, set `Prompt host` <!-- host-allow: codex-only -->
-to `codex` and `Prompt mode` to `goal`, and use `$pr-batch`. <!-- host-allow: codex-only -->
-For the `claude` target, set `Prompt host` to `claude`, keep `Prompt mode` as
-`batch`, and use `/pr-batch`. For the `generic` target, use the portable form
+to `codex` and `Prompt mode` to `goal`, and render every `pr-batch` and <!-- host-allow: codex-only -->
+`pr-walkthrough` mechanic with the `$` sigil. For the `claude` target, set
+`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render every such
+mechanic with the `/` sigil. For the `generic` target, use the portable form
 unchanged. Keep every other line identical across target forms.
 Keep bulky evidence and long validation notes outside the prompt.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
@@ -624,8 +626,8 @@ Items:
   Notes:scope/branch/dependency
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
-Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN
+- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Checker independent/evidenced.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
@@ -633,7 +635,7 @@ Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-veri
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
 

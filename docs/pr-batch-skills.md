@@ -214,7 +214,9 @@ omit the queue summary and note that queue state is unavailable.
    the target-specific prompt-host header and invocation (`/goal`, the Codex
    header, then `Use $pr-batch...` for Codex; the Claude header then
    `Use /pr-batch...` for Claude; the portable header and neutral pr-batch
-   invocation for generic), then put a short `Batch title:`
+   invocation for generic). Render every embedded pr-batch and pr-walkthrough
+   mechanic with the same target sigil, including Base verification, Resolve,
+   and walkthrough lines; keep every generic mechanic neutral. Then put a short `Batch title:`
    line using the optional validated `repo_prefix` from
    `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
    repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when

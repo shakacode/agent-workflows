@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "json"
+require "open3"
 require "stringio"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
@@ -8,6 +10,7 @@ CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 300
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
+PROMPT_HOST_ADAPTER = File.expand_path("../../pr-batch/bin/prompt-host-adapter", __dir__)
 TEXT_FENCE = "```text\n"
 GOAL_LINE = "/goal"
 CODEX_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
@@ -143,14 +146,14 @@ TRIAGE_GOAL_PROMPT_ITEM_SHAPE = <<~TEXT.chomp
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 TEXT
 GOAL_PROMPT_BASE_RESOLUTION_LINE =
-  "Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN"
+  "Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN"
 TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE =
-  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
+  "- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; " \
   "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
@@ -396,18 +399,107 @@ end
 def prompt_for_target(prompt_template, target)
   case target
   when :codex
-    "#{GOAL_LINE}\n#{prompt_template
-      .sub(/^Prompt host: portable$/, 'Prompt host: codex')
-      .sub(/^Prompt mode: batch$/, 'Prompt mode: goal')
-      .sub(/^Use the pr-batch skill\b/, 'Use $pr-batch')}"
+    rendered_prompt = prompt_template
+                      .sub(/^Prompt host: portable$/, "Prompt host: codex")
+                      .sub(/^Prompt mode: batch$/, "Prompt mode: goal")
+    "#{GOAL_LINE}\n#{render_prompt_mechanics(rendered_prompt, '$')}"
   when :claude
-    prompt_template
-      .sub(/^Prompt host: portable$/, "Prompt host: claude")
-      .sub(/^Use the pr-batch skill\b/, "Use /pr-batch")
+    rendered_prompt = prompt_template
+                      .sub(/^Prompt host: portable$/, "Prompt host: claude")
+    render_prompt_mechanics(rendered_prompt, "/")
   when :generic
     prompt_template
   else
     abort_with_failure("unknown prompt target: #{target.inspect}")
+  end
+end
+
+def render_prompt_mechanics(prompt, sigil)
+  prompt
+    .sub(/^Use the pr-batch skill\b/, "Use #{sigil}pr-batch")
+    .sub(/^Base:(.*;)verify pr-batch\+workflow;/, "Base:\\1verify #{sigil}pr-batch+workflow;")
+    .sub(/^- Resolve pr-batch;/, "- Resolve #{sigil}pr-batch;")
+    .sub(/^- ask=>pr-walkthrough;/, "- ask=>#{sigil}pr-walkthrough;")
+end
+
+def prompt_for_adapter(prompt_template, target)
+  prompt_for_target(prompt_template, target)
+    .sub(PREFERRED_ROUTE_PROMPT_LINE, "Preferred route: default")
+end
+
+def classify_prompt(prompt, active_host, label)
+  stdout, stderr, status = Open3.capture3(
+    PROMPT_HOST_ADAPTER,
+    "--active-host",
+    active_host,
+    stdin_data: prompt
+  )
+  abort_with_failure("#{label} adapter invocation failed: #{stderr}") unless status.success?
+
+  JSON.parse(stdout)
+rescue JSON::ParserError => e
+  abort_with_failure("#{label} adapter returned invalid JSON: #{e.message}")
+end
+
+def normalized_prompt_semantics(prompt)
+  prompt
+    .delete_prefix("/goal\n")
+    .sub(/^Prompt host: (?:codex|claude|portable)$/, "Prompt host: portable")
+    .sub(/^Prompt mode: (?:goal|batch)$/, "Prompt mode: batch")
+    .sub(%r{^Use (?:the pr-batch skill|[/$]pr-batch) to complete this batch with subagents\.$},
+         PORTABLE_INVOCATION_LINE.chomp)
+    .gsub(%r{[/$]pr-batch\b}, "pr-batch")
+    .gsub(%r{[/$]pr-walkthrough\b}, "pr-walkthrough")
+end
+
+def assert_canonical_prompt_adapter_contract(label, prompt_template)
+  prompts = %i[codex claude generic].to_h do |target|
+    [target, prompt_for_adapter(prompt_template, target)]
+  end
+  expected = {
+    codex: %w[codex compatible],
+    claude: %w[claude compatible]
+  }
+
+  { codex: "$", claude: "/", generic: nil }.each do |target, sigil|
+    expected_mechanics = [
+      GOAL_PROMPT_BASE_RESOLUTION_LINE,
+      GOAL_PROMPT_FALLBACK_LINE,
+      ASK_WALKTHROUGH_PROMPT_LINE
+    ].map { |line| sigil ? render_prompt_mechanics(line, sigil) : line }
+    expected_mechanics.each do |mechanic|
+      count = prompts.fetch(target).scan(mechanic).length
+      abort_with_failure("#{label} #{target} must render mechanic exactly once: #{mechanic}") unless count == 1
+    end
+  end
+
+  expected.each do |target, (active_host, classification)|
+    result = classify_prompt(prompts.fetch(target), active_host, "#{label} #{target}")
+    unless result["classification"] == classification && result["execute_allowed"] == true &&
+           result["prompt"] == prompts.fetch(target)
+      abort_with_failure("#{label} #{target} prompt is not byte-exact executable #{classification}: #{result.inspect}")
+    end
+  end
+
+  %w[codex claude].each do |active_host|
+    result = classify_prompt(prompts.fetch(:generic), active_host, "#{label} generic on #{active_host}")
+    unless result["classification"] == "portable" && result["execute_allowed"] == true &&
+           result["prompt"] == prompts.fetch(:generic)
+      abort_with_failure("#{label} generic prompt is not byte-exact portable on #{active_host}: #{result.inspect}")
+    end
+  end
+
+  semantics = prompts.transform_values { |prompt| normalized_prompt_semantics(prompt) }
+  unless semantics.values.uniq.one?
+    abort_with_failure("#{label} target rendering changed non-host semantics")
+  end
+
+  { codex: ["claude", :claude], claude: ["codex", :codex] }.each do |source, (active_host, target)|
+    result = classify_prompt(prompts.fetch(source), active_host, "#{label} #{source} to #{target}")
+    unless result["classification"] == "conversion-required" && result["execute_allowed"] == false &&
+           result["semantic_payload_preserved"] == true && result["prompt"] == prompts.fetch(target)
+      abort_with_failure("#{label} #{source} to #{target} conversion is not byte exact: #{result.inspect}")
+    end
   end
 end
 
@@ -536,7 +628,7 @@ required_skill_rule_phrases = [
   "target-specific prompt",
   "including the `/goal` line",
   "set `Prompt host` to `codex`",
-  "use `/pr-batch`",
+  "render every such mechanic with the `/` sigil",
   "portable form unchanged",
   "apply Codex's strict 4000-character limit",
   GOAL_PROMPT_HEADROOM_RULE_PHRASE,
@@ -580,7 +672,6 @@ required_all_prompt_phrases = [
   DISPATCH_PLAN_PROMPT_LINE,
   STAGE_DEPENDENCY_PROMPT_LINE,
   STAGE_DEPENDENCY_SCOPE_LINE,
-  ASK_WALKTHROUGH_PROMPT_LINE,
   "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
@@ -877,6 +968,14 @@ budget_checks = {
     workflow_prompt_template
   )
 }
+
+{
+  "plan-pr-batch" => prompt_template,
+  "pr-batch" => pr_batch_prompt_template,
+  "workflow plan-to-goal" => workflow_prompt_template
+}.each do |label, template|
+  assert_canonical_prompt_adapter_contract(label, template)
+end
 
 codex_prompt_template = prompt_for_target(prompt_template, :codex)
 claude_prompt_template = prompt_for_target(prompt_template, :claude)

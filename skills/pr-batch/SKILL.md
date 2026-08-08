@@ -561,9 +561,11 @@ workflow rules instead of duplicating them.
 `GMCC-v3` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 Use this portable template for generated batch text. For Codex, prepend `/goal`, <!-- host-allow: codex-only -->
-set `Prompt host` to `codex` and `Prompt mode` to `goal`, and use `$pr-batch`.
-For Claude, set `Prompt host` to `claude`, keep `Prompt mode` as `batch`, and
-use `/pr-batch`. Keep the portable form unchanged for a generic destination.
+set `Prompt host` to `codex` and `Prompt mode` to `goal`, and render every
+`pr-batch` and `pr-walkthrough` mechanic with the `$` sigil. For Claude, set
+`Prompt host` to `claude`, keep `Prompt mode` as `batch`, and render every such
+mechanic with the `/` sigil. Keep the portable form unchanged for a generic
+destination.
 
 ```text
 Prompt host: portable
@@ -594,8 +596,8 @@ Items:
   Notes:scope/branch/dependency
   Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
 Execution rules:
-Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN
+- Resolve pr-batch; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Checker independent/evidenced.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
@@ -603,7 +605,7 @@ Workers:owned paths/envelope only;contradiction/ambiguity/scope-risk/weaker-veri
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```

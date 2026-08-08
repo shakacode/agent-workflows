@@ -93,7 +93,11 @@ Route requirement: advisory
 Codex goal prompts put `/goal` before the header and use `$pr-batch` after it.
 Codex direct prompts omit `/goal` and use `$pr-batch`. Claude prompts omit
 `/goal` and use `/pr-batch`. Portable prompts use neutral prose such as
-`Use the pr-batch skill ...`; they resolve through this contract at runtime.
+`Use the pr-batch skill ...`; every embedded `pr-batch` and `pr-walkthrough`
+mechanic remains unsigiled. A target renderer applies the host's sigil to every
+supported mechanic, including the Base verification, Resolve, and walkthrough
+lines; portable output stays neutral. Portable prompts resolve through this
+contract at runtime.
 The `Preferred route` value is metadata only. It cannot create a hard route,
 weaken a gate, or turn unavailable model/effort data into a blocker.
 
@@ -123,8 +127,20 @@ An ambiguous result never includes raw prompt text. Its stable `reason_code`
 identifies the fail-closed category, such as `invalid-encoding`,
 `partial-headers`, `duplicate-headers`, `non-advisory-route`,
 `invalid-preferred-route`, `invalid-host-mode-wrapper`,
-`contradictory-host-mechanic`, `unsupported-host-mechanic`, or
+`contradictory-host-mechanic`, `contradictory-source-mechanic`,
+`unsupported-host-mechanic`, or
 `unrecognized-prompt`.
+
+Mechanic detection is token-based rather than verb-based: a bare lowercase
+`$name` or `/name` token counts as a host mechanic even after words such as
+"execute", "trigger", "launch", or "apply", or in a bare list item. URL and
+path continuations are not command tokens. The leading Codex `/goal` wrapper
+is structural. A whole line of the exact form
+`Document $name and /name as literal names only.` is explicitly literal; adding
+an invocation or contradictory phrase to that line removes the exemption.
+Portable prompts cannot contain any detected host mechanic. Codex and Claude
+prompts, including conversion sources, cannot contain a mechanic for the other
+host.
 
 Legacy detection is deliberately narrow: only a leading Codex `/goal` wrapper
 or a leading Claude `/pr-batch` invocation is unmistakable. Incidental host or
@@ -132,8 +148,9 @@ skill names in prose do not qualify. Generic pause/resume-only text is outside
 this adapter contract unless it is itself a complete pr-batch prompt.
 
 Conversion translates mechanics only: the header host/mode, `/goal` wrapper,
-pr-batch invocation, target-specific batch-size field, and exact
-pr-walkthrough authority invocation. Objectives, targets, scope, dependencies,
+pr-batch invocation, target-specific batch-size field, exact Base verification
+and Resolve mechanics, and exact pr-walkthrough authority invocation.
+Objectives, targets, scope, dependencies,
 permissions, safety, QA, review, merge authority, advisory route preference,
 and all ordinary workflow gates must remain semantically identical. The helper
 normalizes those approved mechanical differences and compares the remaining

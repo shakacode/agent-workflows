@@ -315,6 +315,33 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_arbitrary_sigiled_commands_are_host_mechanics_without_a_verb_allowlist
+    cases = [
+      ["claude", "claude", "Execute $address-review before closeout."],
+      ["claude", "claude", "Trigger $address-review before closeout."],
+      ["claude", "claude", "Launch $address-review before closeout."],
+      ["claude", "claude", "Apply $address-review before closeout."],
+      ["claude", "claude", "  - $address-review before closeout."],
+      ["codex", "codex", "Execute /address-review before closeout."],
+      ["portable", "codex", "Trigger $address-review before closeout."],
+      ["portable", "claude", "  - /address-review before closeout."],
+      ["claude", "claude", "Execute $address-review; document $address-review as literal names only."]
+    ]
+
+    cases.each do |declared_host, active_host, mechanic|
+      result, stderr, status = run_adapter(
+        direct_prompt(host: declared_host, body: mechanic),
+        active_host: active_host
+      )
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), mechanic
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), mechanic
+      assert_equal false, result.fetch("execute_allowed"), mechanic
+      assert_nil result.fetch("prompt"), mechanic
+    end
+  end
+
   def test_explicit_conversion_rejects_mechanics_contradicting_the_declared_source_host
     cases = [
       ["codex", "claude", "Before closeout, run /address-review now."],
@@ -350,6 +377,25 @@ class PromptHostAdapterTest < Minitest::Test
       expected = declared_host == "portable" ? "portable" : "compatible"
       assert_equal expected, result.fetch("classification"), prose
       assert_equal true, result.fetch("execute_allowed"), prose
+    end
+  end
+
+  def test_absolute_filesystem_paths_are_not_slash_command_mechanics
+    cases = [
+      ["codex", "codex", "Inspect /tmp/work/file before closeout.", "compatible"],
+      ["codex", "codex", "Inspect /tmp.json before closeout.", "compatible"],
+      ["portable", "codex", "Read /var/data.json as evidence.", "portable"],
+      ["portable", "claude", "Compare /tmp/work/file with /var/data.json.", "portable"]
+    ]
+
+    cases.each do |declared_host, active_host, prose, expected_classification|
+      prompt = direct_prompt(host: declared_host, body: prose)
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal expected_classification, result.fetch("classification"), prose
+      assert_equal true, result.fetch("execute_allowed"), prose
+      assert_equal prompt, result.fetch("prompt"), prose
     end
   end
 

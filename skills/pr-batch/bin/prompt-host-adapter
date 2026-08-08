@@ -12,14 +12,26 @@ def normalized_semantic_payload(prompt)
     .sub(%r{\A/pr-batch\b}, "Use pr-batch")
     .sub(%r{^Use [/$]pr-batch\b}, "Use pr-batch")
     .sub(/^Batch size target: (?:codex|claude);/, "Batch size target: HOST;")
+    .gsub(%r{^(Base:.*;verify )[/$]pr-batch\+workflow;}, '\1pr-batch+workflow;')
+    .gsub(%r{^(- Resolve )`?[/$]pr-batch`?;}, '\1pr-batch;')
     .gsub(%r{^(\s*-\s*ask=>)[/$]pr-walkthrough;}, '\1pr-walkthrough;')
 end
 
+def render_host_mechanics(prompt, target_host)
+  sigil = target_host == "codex" ? "$" : "/"
+
+  prompt
+    .sub(%r{^Use [/$]pr-batch\b}, "Use #{sigil}pr-batch")
+    .gsub(%r{^(Base:.*;verify )[/$]pr-batch\+workflow;}, "\\1#{sigil}pr-batch+workflow;")
+    .gsub(%r{^(- Resolve )`?[/$]pr-batch`?;}, "\\1#{sigil}pr-batch;")
+    .gsub(%r{^(\s*-\s*ask=>)[/$]pr-walkthrough;}, "\\1#{sigil}pr-walkthrough;")
+end
+
 def invoked_host_mechanics(prompt)
-  mechanics = prompt.scan(%r{\b(?:use|run|invoke|call|start)\s+(?:the\s+)?([/$][a-z][a-z0-9-]*)}i).flatten
-  mechanics.concat(prompt.scan(%r{\b[a-z][a-z0-9_-]*=>\s*([/$][a-z][a-z0-9-]*)}i).flatten)
-  mechanics << "/pr-batch" if prompt.match?(%r{\A/pr-batch(?:\s|\z)})
-  mechanics.uniq
+  literal_names = %r{\A\s*Document [/$][a-z][a-z0-9-]*(?: and [/$][a-z][a-z0-9-]*)* as literal names only\.\s*\z}
+  candidate_text = prompt.delete_prefix("/goal\n").lines.reject { |line| line.match?(literal_names) }.join
+
+  candidate_text.scan(%r{(?<![[:alnum:]_./:$-])[$/][a-z][a-z0-9-]*\b(?!/|\.[a-z0-9])}).uniq
 end
 
 def host_mechanics_supported?(prompt, active_host)
@@ -131,17 +143,7 @@ converted_prompt = if explicit_conversion
                                       .sub(/^Prompt host: (?:codex|claude)$/, "Prompt host: #{target_host}")
                                       .sub(/^Prompt mode: (?:goal|direct|batch)$/, "Prompt mode: #{target_mode}")
                                       .sub(/^Batch size target: (?:codex|claude);/, "Batch size target: #{target_host};")
-                     converted_body = if target_host == "codex"
-                                        converted_body
-                                          .sub(%r{^Use /pr-batch\b}, "Use $pr-batch")
-                                          .gsub(%r{^(\s*-\s*ask=>)/pr-walkthrough;},
-                                                '\1$pr-walkthrough;')
-                                      else
-                                        converted_body
-                                          .sub(/^Use \$pr-batch\b/, "Use /pr-batch")
-                                          .gsub(/^(\s*-\s*ask=>)\$pr-walkthrough;/,
-                                                '\1/pr-walkthrough;')
-                                      end
+                     converted_body = render_host_mechanics(converted_body, target_host)
                      target_mode == "goal" ? "/goal\n#{converted_body}" : converted_body
                    elsif legacy_conversion && options.fetch(:active_host) == "claude"
                      converted_body = prompt
