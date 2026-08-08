@@ -7,9 +7,22 @@ require "fileutils"
 require "tmpdir"
 require "yaml"
 
+require_relative "../skills/secure-github-actions/lib/secure_github_actions_scanner"
+
 class RepositorySecurityPolicyTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
   YAML_TIMESTAMP_CLASSES = [Date, Time].freeze
+
+  def test_repository_passes_the_secure_github_actions_gate
+    result = SecureGitHubActions::Scanner.new(ROOT).scan
+    rendered = result.findings.map do |finding|
+      location = finding.fetch("location")
+      "#{location.fetch('file')}:#{location.fetch('line')} " \
+        "[#{finding.fetch('rule_id')}] #{finding.fetch('title')}"
+    end
+
+    assert_empty rendered, "GitHub Actions security findings:\n#{rendered.join("\n")}"
+  end
 
   def test_github_actions_are_pinned_to_full_commit_shas
     reference_sets = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).map do |path|

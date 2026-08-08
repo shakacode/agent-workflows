@@ -312,6 +312,27 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_workflow_security_gate_is_part_of_seam_validation
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      workflow_path = File.join(root, ".github/workflows/unsafe.yml")
+      FileUtils.mkdir_p(File.dirname(workflow_path))
+      File.write(workflow_path, <<~'YAML')
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "secure-github-actions/expression-in-run"
+      assert_includes out, ".github/workflows/unsafe.yml"
+    end
+  end
+
   def test_incomplete_untrusted_contributor_intake_policy_fails
     with_repo do |root|
       write_valid_binstub_contract(root)

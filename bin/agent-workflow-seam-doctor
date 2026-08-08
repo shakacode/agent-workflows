@@ -1559,6 +1559,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(binstub_issues(root))
     issues.concat(policy_issues(root))
     issues.concat(trust_issues(root))
+    issues.concat(workflow_security_issues(root, shared_roots))
 
     issues.concat(shared_root_issues(shared_roots))
 
@@ -1567,6 +1568,44 @@ module AgentWorkflowSeamDoctor
     end
 
     issues
+  end
+
+  def workflow_security_issues(root, shared_roots)
+    return [] unless workflow_security_surface?(root)
+    unless load_secure_github_actions_scanner(shared_roots)
+      return ["workflow security scan failed closed: trusted secure-github-actions scanner is unavailable"]
+    end
+
+    SecureGitHubActions::Scanner.new(root).scan.findings.map do |finding|
+      location = finding.fetch("location")
+      "workflow security finding: #{location.fetch('file')}:#{location.fetch('line')} " \
+        "[#{finding.fetch('rule_id')}] #{finding.fetch('title')}"
+    end
+  rescue ArgumentError, SystemCallError => e
+    ["workflow security scan failed closed: #{e.message}"]
+  end
+
+  def workflow_security_surface?(root)
+    workflows = File.join(root, ".github/workflows")
+    return true if File.exist?(workflows) || File.symlink?(workflows)
+
+    Dir.glob(File.join(root, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).any?
+  end
+
+  def load_secure_github_actions_scanner(shared_roots)
+    return true if defined?(SecureGitHubActions::Scanner)
+
+    candidates = [File.expand_path("../skills/secure-github-actions/lib/secure_github_actions_scanner.rb", __dir__)]
+    candidates.concat(shared_roots.map do |shared_root|
+      File.join(shared_root, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb")
+    end)
+    scanner = candidates.find { |path| File.file?(path) && !File.symlink?(path) }
+    return false unless scanner
+
+    require scanner
+    defined?(SecureGitHubActions::Scanner)
+  rescue LoadError
+    false
   end
 
   def pointer_section_issues(text)

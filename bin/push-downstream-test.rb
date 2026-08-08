@@ -218,6 +218,134 @@ class PushDownstreamConfigTest < Minitest::Test
   end
 end
 
+class PushDownstreamSecurityAuditFleetTest < Minitest::Test
+  SOURCE_REGISTRY = File.expand_path("../downstream.yml", __dir__)
+
+  def test_source_registry_declares_narrow_shakapacker_audit_fleet
+    fleet = PushDownstream.load_security_audit_fleet(SOURCE_REGISTRY, "secure-github-actions")
+    repos = fleet.fetch(:repos)
+    repo_names = repos.map { |repo| repo.fetch(:nwo) }
+    base_branches = repos.map { |repo| repo.fetch(:base_branch) }
+
+    assert_equal "secure-github-actions", fleet.fetch(:name)
+    assert_equal ["shakacode/shakapacker"], repo_names
+    assert_equal ["main"], base_branches
+  end
+
+  def test_security_audit_fleet_is_read_only_and_head_bound
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      File.write(File.join(consumer, ".github/workflows/unsafe.yml"), <<~'YAML')
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+      git!(consumer, "init", "-b", "main")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      head = git!(consumer, "rev-parse", "HEAD").strip
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: shakapacker
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: ["shakapacker"]
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      report = JSON.parse(out)
+      assert_equal "github-actions-fleet-audit", report.fetch("contract")
+      assert_equal true, report.fetch("read_only")
+      repo = report.fetch("repositories").fetch(0)
+      assert_equal "shakacode/shakapacker", repo.fetch("repository")
+      assert_equal head, repo.fetch("head_sha")
+      assert_equal "noncompliant", repo.fetch("status")
+      assert_includes repo.fetch("rule_ids"), "secure-github-actions/expression-in-run"
+      assert_equal "coordinator-owned-targeted-pr", repo.dig("rollout", "mode")
+      assert_equal "maintainer-decision-required", repo.dig("rollout", "trusted_actions")
+      assert_equal head, git!(consumer, "rev-parse", "HEAD").strip
+      assert_empty git!(consumer, "status", "--short")
+    end
+  end
+
+  def test_security_audit_cli_rejects_apply
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - { owner: shakacode, repo: shakapacker, base_branch: main }
+      YAML
+
+      out, status = Open3.capture2e(
+        RbConfig.ruby, SCRIPT,
+        "--config", config,
+        "--security-audit-fleet", "workflow-security",
+        "--apply"
+      )
+
+      assert_equal 1, status.exitstatus
+      assert_includes out, "--apply cannot be combined with --security-audit-fleet"
+    end
+  end
+
+  def test_security_audit_reports_unknown_when_exact_head_cannot_be_resolved
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      config = File.join(dir, "downstream.yml")
+      missing_remote = File.join(dir, "missing.git")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: missing
+                base_branch: main
+                remote_url: #{missing_remote.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: nil
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "UNKNOWN", repo.fetch("status")
+      assert_equal "UNKNOWN", repo.fetch("head_sha")
+      assert_equal "clone-or-base-resolution-failed", repo.fetch("reason")
+    end
+  end
+
+  private
+
+  def git!(root, *arguments)
+    out, status = Open3.capture2e("git", "-C", root, *arguments)
+    raise "git fixture failed: #{out}" unless status.success?
+
+    out
+  end
+end
+
 class PushDownstreamAdapterTest < Minitest::Test
   def test_resolve_contract_layers_defaults_preset_and_overrides
     presets = {

@@ -65,6 +65,11 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== repository security policy =="
 ruby bin/repository-security-policy-test.rb
 
+echo "== secure GitHub Actions gate =="
+ruby skills/secure-github-actions/bin/secure-github-actions-scan-test.rb
+ruby skills/secure-github-actions/bin/secure-github-actions-review-lens-test.rb
+ruby skills/secure-github-actions/bin/secure-github-actions-contract-test.rb
+
 echo "== push-downstream unit tests =="
 ruby bin/push-downstream-test.rb
 
