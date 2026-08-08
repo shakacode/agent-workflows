@@ -25,6 +25,7 @@ TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 ADVERSARIAL_REVIEW_WORKFLOW_PATH = File.join(ROOT, "workflows/adversarial-pr-review.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
+HOST_ADAPTER_CONTRACT_PATH = File.join(ROOT, "docs/host-adapter/contract.md")
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 
 TEXT_FENCE = "```text\n"
@@ -336,6 +337,7 @@ class GoalCompletionContractTest < Minitest::Test
     @adversarial_review_workflow = read_repo_file(ADVERSARIAL_REVIEW_WORKFLOW_PATH)
     @pr_monitoring_skill = read_repo_file(PR_MONITORING_SKILL_PATH)
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
+    @host_adapter_contract = read_repo_file(HOST_ADAPTER_CONTRACT_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
     @workflow_goal_prompt = extract_goal_prompt_template(
@@ -345,6 +347,11 @@ class GoalCompletionContractTest < Minitest::Test
     )
     @pr_batch_goal_prompt = extract_goal_prompt_template(@pr_batch_skill, "## Goal Prompt Template")
     @plan_goal_prompt = extract_goal_prompt_template(@plan_pr_batch_skill, "## Goal Prompt for pr-batch")
+    @continuation_prompt = extract_goal_prompt_template(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
   end
 
   def test_canonical_workflow_retains_the_full_authoritative_contract
@@ -434,6 +441,27 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes continuation, "`blocked-user-input` does not start a monitor", "continuation prompt"
     assert_text_includes continuation, CANONICAL_AUTO_MERGE_EXPANSION, "continuation prompt"
     refute_includes continuation, LEGACY_AUTO_MERGE_EXPANSION, "continuation prompt"
+  end
+
+  def test_continuation_prompt_starts_with_portable_headers_invocation_and_title
+    expected_start = <<~TEXT
+      Prompt host: portable
+      Prompt mode: direct
+      Preferred route: <model/class>/<effort>
+      Route requirement: advisory
+      Use the pr-batch skill to continue PR-batch closeout, not to start a new implementation batch.
+      #{BATCH_TITLE_LINE.sub('<short title>', '<continuation title>')}
+    TEXT
+
+    assert @continuation_prompt.start_with?(expected_start)
+    refute_match(%r{(?:^|\s)[/$](?:pr-batch|pr-walkthrough)\b}, @continuation_prompt)
+  end
+
+  def test_installed_use_docs_resolve_the_prompt_adapter_from_pr_batch_skill_dir
+    [@host_adapter_contract, @pr_batch_docs].each do |text|
+      assert_includes text, "${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter"
+      refute_includes text, "skills/pr-batch/bin/prompt-host-adapter --active-host"
+    end
   end
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces

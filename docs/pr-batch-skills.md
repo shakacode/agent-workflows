@@ -230,8 +230,10 @@ omit the queue summary and note that queue state is unavailable.
    Cards, registration-first coordination when supported, and UNKNOWN fallbacks.
    Do not launch workers yet.
 9. When the user says to run it, classify the complete fenced prompt against
-   the explicit active host with
-   `skills/pr-batch/bin/prompt-host-adapter --active-host codex|claude` before
+   the explicit active host. Resolve `PR_BATCH_SKILL_DIR` from an explicit
+   environment value, the loaded skill base, or the repo-local pinned
+   `.agents/skills/pr-batch`, then run
+   `${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter --active-host codex|claude` before
    worker launch, repository mutation, or a GitHub write. `compatible` and
    `portable` may enter the ordinary gates without rewriting;
    `conversion-required` is inert relaunch-only text and may require

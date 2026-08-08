@@ -101,6 +101,8 @@ assert_prompt_host_adapter() {
     abort result.inspect unless result["classification"] == "conversion-required" &&
                                 result["execute_allowed"] == false &&
                                 result["relaunch_required"] == true &&
+                                result["replanning_required"] == true &&
+                                result["semantic_payload_preserved"] == true &&
                                 result["prompt"] == expected
   ' "$codex_to_claude" \
     "$target/skills/pr-batch/fixtures/prompt-host-codex-to-claude.expected.txt" || \
@@ -114,6 +116,8 @@ assert_prompt_host_adapter() {
     abort result.inspect unless result["classification"] == "conversion-required" &&
                                 result["execute_allowed"] == false &&
                                 result["relaunch_required"] == true &&
+                                result["replanning_required"] == true &&
+                                result["semantic_payload_preserved"] == true &&
                                 result["prompt"] == expected
   ' "$claude_to_codex" \
     "$target/skills/pr-batch/fixtures/prompt-host-claude-to-codex.expected.txt" || \

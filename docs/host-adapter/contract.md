@@ -98,11 +98,14 @@ The `Preferred route` value is metadata only. It cannot create a hard route,
 weaken a gate, or turn unavailable model/effort data into a blocker.
 
 Before worker launch, repository mutation, or a GitHub write, classify the
-complete prompt against an explicitly known active host:
+complete prompt against an explicitly known active host. Resolve
+`PR_BATCH_SKILL_DIR` in the normal installed-skill order: explicit environment
+variable, loaded skill base, repo-local `.agents/skills/pr-batch`, then stop if
+none is available. Invoke the resolved installed or pinned helper:
 
 ```bash
-skills/pr-batch/bin/prompt-host-adapter --active-host codex < prompt.txt
-skills/pr-batch/bin/prompt-host-adapter --active-host claude < prompt.txt
+"${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter" --active-host codex < prompt.txt
+"${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter" --active-host claude < prompt.txt
 ```
 
 The helper reads prompt text only from standard input and emits a structured
@@ -114,7 +117,14 @@ repository, or write to GitHub. Callers must honor these classifications:
 | `compatible` | Complete matching host headers and mechanics, or an unmistakable matching legacy wrapper | Execute only under the ordinary workflow gates; preserve the prompt byte-for-byte. |
 | `portable` | Complete portable headers plus this installed contract | Resolve host mechanics through this contract, then execute only under the ordinary workflow gates; preserve the portable prompt byte-for-byte. |
 | `conversion-required` | Complete known opposite-host prompt, or unmistakable opposite-host legacy wrapper | Do not execute. Return the converted text as inert relaunch input. Re-run planning when the result reports `replanning_required`, then classify the relaunched prompt again. |
-| `ambiguous` | Unknown active host, partial/duplicate/malformed/contradictory headers, non-advisory routing, unsupported syntax, or semantic-preservation failure | Do not rewrite or execute. Stop with the exact ambiguity for user or coordinator resolution. |
+| `ambiguous` | Unknown active host, invalid encoding, partial/duplicate/malformed/contradictory headers, non-advisory routing, unsupported syntax, or semantic-preservation failure | Do not rewrite or execute. Report the stable `reason_code` and stop for user or coordinator resolution. |
+
+An ambiguous result never includes raw prompt text. Its stable `reason_code`
+identifies the fail-closed category, such as `invalid-encoding`,
+`partial-headers`, `duplicate-headers`, `non-advisory-route`,
+`invalid-preferred-route`, `invalid-host-mode-wrapper`,
+`contradictory-host-mechanic`, `unsupported-host-mechanic`, or
+`unrecognized-prompt`.
 
 Legacy detection is deliberately narrow: only a leading Codex `/goal` wrapper
 or a leading Claude `/pr-batch` invocation is unmistakable. Incidental host or
@@ -131,6 +141,11 @@ payload; any difference or untranslated host mechanic fails closed as
 `ambiguous`. Conversion never splits or repacks lanes. A converted batch-size
 prompt reports `replanning_required` because the target host's capacity may
 differ.
+
+The helper reads stdin as deterministic UTF-8 independent of locale. Valid
+non-ASCII semantic text is preserved through classification and conversion;
+invalid byte sequences return `ambiguous` with `reason_code: invalid-encoding`
+instead of raising or echoing input.
 
 This runtime adapter adds no signing keys, trust anchors, launch receipts,
 waivers, or new authority. It cannot bypass security preflight, coordination,

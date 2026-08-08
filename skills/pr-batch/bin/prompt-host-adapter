@@ -12,7 +12,36 @@ def normalized_semantic_payload(prompt)
     .sub(%r{\A/pr-batch\b}, "Use pr-batch")
     .sub(%r{^Use [/$]pr-batch\b}, "Use pr-batch")
     .sub(/^Batch size target: (?:codex|claude);/, "Batch size target: HOST;")
-    .sub(%r{^- ask=>[/$]pr-walkthrough;}, "- ask=>pr-walkthrough;")
+    .gsub(%r{^(\s*-\s*ask=>)[/$]pr-walkthrough;}, '\1pr-walkthrough;')
+end
+
+def invoked_host_mechanics(prompt)
+  mechanics = prompt.scan(%r{\b(?:use|run|invoke|call|start)\s+(?:the\s+)?([/$][a-z][a-z0-9-]*)}i).flatten
+  mechanics.concat(prompt.scan(%r{\b[a-z][a-z0-9_-]*=>\s*([/$][a-z][a-z0-9-]*)}i).flatten)
+  mechanics << "/pr-batch" if prompt.match?(%r{\A/pr-batch(?:\s|\z)})
+  mechanics.uniq
+end
+
+def host_mechanics_supported?(prompt, active_host)
+  opposite_prefix = active_host == "codex" ? "/" : "$"
+  invoked_host_mechanics(prompt).none? { |mechanic| mechanic.start_with?(opposite_prefix) }
+end
+
+def ambiguous_result(active_host, reason_code)
+  {
+    "contract" => "prompt-host-adapter",
+    "version" => 1,
+    "classification" => "ambiguous",
+    "reason_code" => reason_code,
+    "active_host" => active_host,
+    "declared_host" => nil,
+    "execute_allowed" => false,
+    "adapter_contract" => nil,
+    "relaunch_required" => false,
+    "replanning_required" => false,
+    "semantic_payload_preserved" => nil,
+    "prompt" => nil
+  }
 end
 
 options = { active_host: "unknown" }
@@ -20,7 +49,13 @@ OptionParser.new do |parser|
   parser.on("--active-host HOST") { |host| options[:active_host] = host }
 end.parse!
 
-prompt = $stdin.read
+raw_prompt = $stdin.binmode.read
+prompt = raw_prompt.dup.force_encoding(Encoding::UTF_8)
+unless prompt.valid_encoding?
+  puts JSON.generate(ambiguous_result(options.fetch(:active_host), "invalid-encoding"))
+  exit
+end
+
 active_host_known = %w[codex claude].include?(options.fetch(:active_host))
 has_goal_wrapper = prompt.start_with?("/goal\n")
 header_text = has_goal_wrapper ? prompt.delete_prefix("/goal\n") : prompt
@@ -31,12 +66,11 @@ headers = header_lines.to_h do |line|
   [key, value]
 end
 header_names = ["Prompt host", "Prompt mode", "Preferred route", "Route requirement"]
-valid_header_counts = header_names.all? do |name|
-  prompt.scan(/^#{Regexp.escape(name)}:/).length == 1
-end
-no_headers = header_names.all? do |name|
-  prompt.scan(/^#{Regexp.escape(name)}:/).empty?
-end
+header_counts = header_names.to_h { |name| [name, prompt.scan(/^#{Regexp.escape(name)}:/).length] }
+valid_header_counts = header_counts.values.all?(1)
+no_headers = header_counts.values.all?(&:zero?)
+some_headers = header_counts.values.any?(&:positive?)
+ordered_headers = header_lines.map { |line| line.split(": ", 2).first } == header_names
 valid_host_mode_wrapper = case [headers["Prompt host"], headers["Prompt mode"]]
                           when %w[codex goal]
                             has_goal_wrapper
@@ -61,23 +95,29 @@ valid_declared_invocation = case headers["Prompt host"]
                               false
                             end
 complete_valid_headers = valid_header_counts && valid_host_mode_wrapper && valid_preferred_route &&
-                         valid_declared_invocation &&
+                         ordered_headers && valid_declared_invocation &&
                          headers["Route requirement"] == "advisory"
 legacy_host = if no_headers && prompt.start_with?("/goal\n")
                 "codex"
               elsif no_headers && prompt.match?(%r{\A/pr-batch(?:\s|\z)})
                 "claude"
               end
-legacy_compatible = active_host_known && legacy_host == options.fetch(:active_host)
+legacy_compatible = active_host_known && legacy_host == options.fetch(:active_host) &&
+                    host_mechanics_supported?(prompt, options.fetch(:active_host))
 legacy_conversion = active_host_known && legacy_host && legacy_host != options.fetch(:active_host)
 
 compatible = active_host_known && complete_valid_headers &&
-             headers["Prompt host"] == options.fetch(:active_host)
+             headers["Prompt host"] == options.fetch(:active_host) &&
+             host_mechanics_supported?(prompt, options.fetch(:active_host))
 portable = active_host_known && complete_valid_headers && headers["Prompt host"] == "portable" &&
+           invoked_host_mechanics(prompt).empty? &&
            File.file?(File.expand_path("../../../docs/host-adapter/contract.md", __dir__))
 explicit_conversion = active_host_known && complete_valid_headers &&
                       %w[codex claude].include?(headers["Prompt host"]) &&
                       headers["Prompt host"] != options.fetch(:active_host)
+conversion_source_host = explicit_conversion ? headers["Prompt host"] : legacy_host
+source_mechanics_supported = !conversion_source_host ||
+                             host_mechanics_supported?(prompt, conversion_source_host)
 
 converted_prompt = if explicit_conversion
                      target_host = options.fetch(:active_host)
@@ -94,11 +134,13 @@ converted_prompt = if explicit_conversion
                      converted_body = if target_host == "codex"
                                         converted_body
                                           .sub(%r{^Use /pr-batch\b}, "Use $pr-batch")
-                                          .sub(%r{^- ask=>/pr-walkthrough;}, "- ask=>$pr-walkthrough;")
+                                          .gsub(%r{^(\s*-\s*ask=>)/pr-walkthrough;},
+                                                '\1$pr-walkthrough;')
                                       else
                                         converted_body
                                           .sub(/^Use \$pr-batch\b/, "Use /pr-batch")
-                                          .sub(/^- ask=>\$pr-walkthrough;/, "- ask=>/pr-walkthrough;")
+                                          .gsub(/^(\s*-\s*ask=>)\$pr-walkthrough;/,
+                                                '\1/pr-walkthrough;')
                                       end
                      target_mode == "goal" ? "/goal\n#{converted_body}" : converted_body
                    elsif legacy_conversion && options.fetch(:active_host) == "claude"
@@ -115,9 +157,9 @@ converted_prompt = if explicit_conversion
 semantic_payload_preserved = converted_prompt &&
                              normalized_semantic_payload(prompt) == normalized_semantic_payload(converted_prompt)
 conversion_mechanics_supported = if converted_prompt && options.fetch(:active_host) == "claude"
-                                   !converted_prompt.match?(/^(?:Use |[^\n]*=>)\$[a-z0-9-]+\b/i)
+                                   host_mechanics_supported?(converted_prompt, "claude")
                                  elsif converted_prompt && options.fetch(:active_host) == "codex"
-                                   !converted_prompt.match?(%r{^(?:Use |[^\n]*=>)/[a-z0-9-]+\b}i)
+                                   host_mechanics_supported?(converted_prompt, "codex")
                                  else
                                    true
                                  end
@@ -128,20 +170,61 @@ classification = if compatible
                    "compatible"
                  elsif portable
                    "portable"
-                 elsif (explicit_conversion || legacy_conversion) && semantic_payload_preserved &&
+                 elsif (explicit_conversion || legacy_conversion) && source_mechanics_supported &&
+                       semantic_payload_preserved &&
                        conversion_mechanics_supported
                    "conversion-required"
                  else
                    "ambiguous"
                  end
 
+declared_host = headers["Prompt host"] if %w[codex claude portable].include?(headers["Prompt host"])
+declared_host ||= legacy_host
+reason_code = if classification != "ambiguous"
+                nil
+              elsif !active_host_known
+                "unknown-active-host"
+              elsif header_counts.values.any? { |count| count > 1 }
+                "duplicate-headers"
+              elsif some_headers && !valid_header_counts
+                "partial-headers"
+              elsif some_headers && !ordered_headers
+                "malformed-headers"
+              elsif some_headers && !%w[codex claude portable].include?(headers["Prompt host"])
+                "unsupported-declared-host"
+              elsif some_headers && headers["Route requirement"] != "advisory"
+                "non-advisory-route"
+              elsif some_headers && !valid_preferred_route
+                "invalid-preferred-route"
+              elsif some_headers && !valid_host_mode_wrapper
+                "invalid-host-mode-wrapper"
+              elsif some_headers && !valid_declared_invocation
+                expected_prefix = headers["Prompt host"] == "codex" ? "Use /pr-batch" : "Use $pr-batch"
+                prompt_body.start_with?(expected_prefix) ? "contradictory-host-mechanic" : "invalid-host-invocation"
+              elsif (explicit_conversion || legacy_conversion) && !source_mechanics_supported
+                "contradictory-source-mechanic"
+              elsif (explicit_conversion || legacy_conversion) && converted_prompt && !semantic_payload_preserved
+                "semantic-payload-changed"
+              elsif complete_valid_headers && headers["Prompt host"] == "portable" &&
+                    invoked_host_mechanics(prompt).any?
+                "unsupported-host-mechanic"
+              elsif (complete_valid_headers || legacy_host) &&
+                    !host_mechanics_supported?(converted_prompt || prompt, options.fetch(:active_host))
+                "unsupported-host-mechanic"
+              elsif some_headers && headers["Prompt host"] == "portable"
+                "adapter-contract-missing"
+              else
+                "unrecognized-prompt"
+              end
+
 result = {
   "contract" => "prompt-host-adapter",
   "version" => 1,
   "classification" => classification,
+  "reason_code" => reason_code,
   "active_host" => options.fetch(:active_host),
-  "declared_host" => headers["Prompt host"] || legacy_host,
-  "execute_allowed" => compatible || legacy_compatible || portable,
+  "declared_host" => declared_host,
+  "execute_allowed" => %w[compatible portable].include?(classification),
   "adapter_contract" => portable ? "docs/host-adapter/contract.md" : nil,
   "relaunch_required" => classification == "conversion-required",
   "replanning_required" => classification == "conversion-required" && prompt.match?(/^Batch size target:/),

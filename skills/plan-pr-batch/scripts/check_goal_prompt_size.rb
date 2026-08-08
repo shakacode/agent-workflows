@@ -170,6 +170,14 @@ CLAUDE_PROMPT_START = PORTABLE_PROMPT_HEADER
                       .freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_PROMPT_START = <<~TEXT.freeze
+  Prompt host: portable
+  Prompt mode: direct
+  Preferred route: <model/class>/<effort>
+  Route requirement: advisory
+  Use the pr-batch skill to continue PR-batch closeout, not to start a new implementation batch.
+  #{CONTINUATION_BATCH_TITLE_LINE}
+TEXT
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
@@ -190,8 +198,7 @@ TEXT
 # Pinned to workflows/pr-processing.md -> "Generic PR-Batch Continuation Prompt".
 # Keep phrase checks here in sync when that source prompt changes.
 CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
-  CONTINUATION_BATCH_TITLE_LINE,
-  "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
+  CONTINUATION_PROMPT_START,
   "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
   "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
   "If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear.",
@@ -845,8 +852,8 @@ require_phrases(
   "canonical parent release-or-archive pressure scenarios"
 )
 
-unless continuation_prompt.start_with?("#{CONTINUATION_BATCH_TITLE_LINE}\n")
-  abort_with_failure("canonical workflow continuation prompt must start with the batch title line")
+unless continuation_prompt.start_with?(CONTINUATION_PROMPT_START)
+  abort_with_failure("canonical workflow continuation prompt must start with portable headers, invocation, and batch title")
 end
 
 unexpected_pressure_refs = pressure_scenario_text.scan(/#\d+/).uniq - ALLOWED_PRESSURE_SCENARIO_REFS
