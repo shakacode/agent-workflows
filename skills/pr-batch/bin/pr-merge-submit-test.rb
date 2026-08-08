@@ -46,9 +46,22 @@ class PrMergeSubmitTest < Minitest::Test
   # timeout is the same observable event as the hang under test. They keep the
   # tight deadline that makes their elapsed-time bounds meaningful.
   SOLE_CALL_TIMEOUT_GH_SECONDS = "0.1"
+  # metadata_timeout_descendant is a sole-call hang too, but unlike the group
+  # above its assertion cares what happens *inside* the hang: whether the stub
+  # reached its fork() before termination. A tight deadline there makes the
+  # test vacuous (#238) -- the stub is usually killed before it forks. 1s is
+  # ~10x the warm stub's measured max (0.101s), and the descendant deliberately
+  # ignores TERM, so termination also consumes a full 1s TERM grace before
+  # escalating to KILL -- leaving the total comfortably below the stub's
+  # deliberate 30s sleep.
+  DESCENDANT_TIMEOUT_GH_SECONDS = "1"
   NO_TIMEOUT_GH_SECONDS = "60"
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
   MUTATION_TIMEOUT_ATTEMPTS = 3
+  # Attempts allowed for the descendant-timeout scenario whose stub never
+  # reached its fork() before the deadline (an empty PID file: a precondition
+  # miss, per #230, not a product failure).
+  DESCENDANT_TIMEOUT_ATTEMPTS = 3
   QUEUE_DISABLED_ERROR = "queue-disabled submission is unsupported by the trusted-base " \
                          "merge_submission policy; configure an explicit repository-owned " \
                          "guarded-direct exception or use a merge queue"
@@ -974,16 +987,53 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_timeout_kills_a_surviving_process_group_descendant
+    # An empty/missing PID file means the stub never reached its fork() before
+    # the deadline: a precondition miss (see DESCENDANT_TIMEOUT_GH_SECONDS),
+    # not a product failure, so retry it instead of reporting a misleading
+    # pass or orphan. A real orphan regression still fails, because there the
+    # stub does fork, records the descendant's pid, and the descendant
+    # survives termination. Mirrors
+    # stale-assignment-sweep-test.rb#test_timed_out_gh_call_terminates_its_process_group_with_no_orphan.
+    status = nil
+    stderr = nil
+    descendant_pid = nil
     started_at = nil
-    result, = run_cli(
-      mode: "metadata_timeout_descendant",
-      after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
-    )
+    DESCENDANT_TIMEOUT_ATTEMPTS.times do
+      started_at = nil
+      result, _log, _guard_log, _attacker_log, _fixture_head, descendant_pid = run_cli(
+        mode: "metadata_timeout_descendant",
+        after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+      )
+      status = result.fetch(:status)
+      stderr = result.fetch(:stderr)
+      break if descendant_pid
+    end
+
+    refute_nil descendant_pid,
+               "stub gh never recorded a spawned descendant pid in #{DESCENDANT_TIMEOUT_ATTEMPTS} " \
+               "attempts, so the process-group-descendant path was never exercised: #{stderr}"
 
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
-    assert_equal 1, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "timed out"
-    assert_operator elapsed, :<, 3
+    assert_equal 1, status.exitstatus
+    assert_includes stderr, "timed out"
+    # Both substrings come from the same literal on the :timed_out diagnostic
+    # path, so together they pin its exact shape without a clock. "timed out"
+    # is the stronger discriminator of the two: the :undead path raises
+    # UnknownOutcome before any diagnostic is built and warns a message
+    # containing neither substring, and the interrupt path emits
+    # "was terminated" without "timed out". Asserting both keeps the message
+    # from drifting into either neighbour.
+    assert_includes stderr, "was terminated"
+    # Loose sanity check, not the load-bearing assertion: well under the
+    # stub's deliberate 30s sleep (measured ~2.2-2.5s over 15 runs at load
+    # avg 11-14), so a pass still corroborates that termination was bounded
+    # rather than merely waiting out the sleep. The 30s stub / 10s bound gap
+    # (vs. the old 5s / 3.5s gap) makes this essentially load-insensitive; a
+    # genuine unbounded-termination regression now takes ~30s to surface
+    # instead of ~5s.
+    assert_operator elapsed, :<, 10
+    assert descendant_terminated?(descendant_pid),
+           "descendant #{descendant_pid} was orphaned instead of terminated with its process group"
   end
 
   def test_interrupt_is_forwarded_and_mutation_outcome_is_reconciled
@@ -1380,6 +1430,7 @@ class PrMergeSubmitTest < Minitest::Test
       guard_log_path = File.join(dir, "guard.log")
       guard_marker_path = File.join(dir, "guard-called")
       attacker_log_path = File.join(dir, "attacker-called")
+      descendant_pid_path = File.join(dir, "descendant.pid")
       File.write(File.join(dir, "guard-mode"), mode)
       File.write(
         File.join(dir, "guard-live-path"),
@@ -1412,7 +1463,7 @@ class PrMergeSubmitTest < Minitest::Test
         guard_log_path:, guard_marker_path:, attacker_log_path:,
         guard_live_path: File.join(repo_root, ".agents/bin/merge-pr-after-checks"),
         interpreter_attack_path:, bash_env_attack_path:,
-        guard_timeout_seconds:
+        guard_timeout_seconds:, descendant_pid_path:
       )
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
@@ -1429,7 +1480,8 @@ class PrMergeSubmitTest < Minitest::Test
       log = File.exist?(log_path) ? File.read(log_path) : ""
       guard_log = File.exist?(guard_log_path) ? File.read(guard_log_path) : ""
       attacker_log = File.exist?(attacker_log_path) ? File.read(attacker_log_path) : ""
-      [result, log, guard_log, attacker_log, fixture_head]
+      descendant_pid = read_descendant_pid(descendant_pid_path)
+      [result, log, guard_log, attacker_log, fixture_head, descendant_pid]
     end
   end
 
@@ -1524,6 +1576,36 @@ class PrMergeSubmitTest < Minitest::Test
     )
   end
 
+  # An empty/missing file means the mode's stub never reached the point where
+  # it records a descendant pid (e.g. the metadata_timeout_descendant stub was
+  # killed before its fork()) -- a precondition miss for the caller to retry,
+  # not a value to report as terminated. See #238.
+  def read_descendant_pid(path)
+    return nil unless File.exist?(path)
+
+    contents = File.read(path).strip
+    contents.empty? ? nil : Integer(contents)
+  end
+
+  # Poll until the pid is gone (ESRCH), mirroring
+  # stale-assignment-sweep-test.rb#child_terminated?. A short grace avoids a
+  # race with the descendant's own SIGKILL-driven teardown.
+  def descendant_terminated?(pid)
+    deadline = Time.now + 5
+    loop do
+      begin
+        Process.kill(0, pid)
+      rescue Errno::ESRCH
+        return true
+      rescue Errno::EPERM
+        return false
+      end
+      return false if Time.now >= deadline
+
+      sleep 0.05
+    end
+  end
+
   def cli_environment(
     dir, log_path, mode,
     guard_log_path:, guard_marker_path:,
@@ -1531,7 +1613,8 @@ class PrMergeSubmitTest < Minitest::Test
     guard_live_path: "",
     interpreter_attack_path: nil,
     bash_env_attack_path: nil,
-    guard_timeout_seconds: nil
+    guard_timeout_seconds: nil,
+    descendant_pid_path: File.join(dir, "descendant.pid")
   )
     path = [interpreter_attack_path, dir, ENV.fetch("PATH")].compact.join(File::PATH_SEPARATOR)
     environment = {
@@ -1542,6 +1625,7 @@ class PrMergeSubmitTest < Minitest::Test
       "PR_TEST_GUARD_MARKER" => guard_marker_path,
       "PR_TEST_ATTACKER_MARKER" => attacker_log_path,
       "PR_TEST_GUARD_LIVE_PATH" => guard_live_path,
+      "PR_TEST_DESCENDANT_PID_FILE" => descendant_pid_path,
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }
     environment["PR_MERGE_SUBMIT_GUARD_TIMEOUT_SECONDS"] = guard_timeout_seconds if guard_timeout_seconds
@@ -1575,6 +1659,7 @@ class PrMergeSubmitTest < Minitest::Test
     return NO_TIMEOUT_GH_SECONDS unless mode.include?("timeout")
     return GUARD_TIMEOUT_GH_SECONDS if mode == "guard_timeout"
     return MUTATION_TIMEOUT_GH_SECONDS if MUTATION_TIMEOUT_MODES.include?(mode)
+    return DESCENDANT_TIMEOUT_GH_SECONDS if mode == "metadata_timeout_descendant"
 
     SOLE_CALL_TIMEOUT_GH_SECONDS
   end
@@ -1588,7 +1673,7 @@ class PrMergeSubmitTest < Minitest::Test
   )
     runner = <<~RUBY
       load #{SCRIPT.inspect}
-      test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER].to_h { |name| [name, ENV.fetch(name)] }
+      test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER PR_TEST_DESCENDANT_PID_FILE].to_h { |name| [name, ENV.fetch(name)] }
       runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => #{gh_path.inspect} })
       runner.define_singleton_method(:system_tool_test_environment) { test_environment }
       exit runner.run(ARGV)
@@ -2002,12 +2087,13 @@ class PrMergeSubmitTest < Minitest::Test
           sleep 5
         end
         if #{mode.inspect} == "metadata_timeout_descendant"
-          fork do
+          descendant_pid = fork do
             trap("TERM", "IGNORE")
-            sleep 5
+            sleep 30
             exit! 0
           end
-          sleep 5
+          File.write(ENV.fetch("PR_TEST_DESCENDANT_PID_FILE"), descendant_pid.to_s)
+          sleep 30
         end
         sleep 5 if #{mode.inspect} == "metadata_timeout"
         query_count_path = ENV.fetch("GH_LOG") + ".queries"
