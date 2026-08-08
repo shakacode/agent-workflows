@@ -35,10 +35,12 @@ module SecureGitHubActions
     end
 
     def scan
-      workflow_paths = Dir.glob(File.join(@root, ".github/workflows/*.{yml,yaml}"))
-      action_paths = Dir.glob(File.join(@root, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).reject do |path|
-        excluded_action_root?(relative_path(path))
-      end
+      workflow_paths = Dir.glob(
+        ".github/workflows/*.{yml,yaml}", File::FNM_DOTMATCH, base: @root
+      ).map { |relative| File.join(@root, relative) }
+      action_paths = Dir.glob("**/action.{yml,yaml}", File::FNM_DOTMATCH, base: @root)
+                        .reject { |relative| excluded_action_root?(relative) }
+                        .map { |relative| File.join(@root, relative) }
       paths = (workflow_paths + action_paths).uniq.sort
       @trusted_actions, policy_findings = load_trusted_actions
       findings = policy_findings + input_boundary_findings + paths.flat_map { |path| scan_workflow(path) }

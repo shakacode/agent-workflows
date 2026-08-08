@@ -32,6 +32,65 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_dot_prefixed_workflow_is_scanned
+    with_repository("jobs: {}\n") do |root|
+      hidden_workflow = File.join(root, ".github/workflows/.called.yml")
+      File.write(hidden_workflow, <<~'YAML')
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      finding = JSON.parse(stdout).fetch("review_findings").first
+      assert_equal "secure-github-actions/expression-in-run", finding.fetch("rule_id")
+      assert_equal ".github/workflows/.called.yml", finding.dig("location", "file")
+    end
+  end
+
+  def test_glob_metacharacter_root_scans_workflow_and_composite_action
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer[fixture]")
+      workflow = File.join(root, ".github/workflows/unsafe.yml")
+      action = File.join(root, "components/example/action.yml")
+      policy = File.join(root, ".agents/agent-workflow.yml")
+      FileUtils.mkdir_p(File.dirname(workflow))
+      FileUtils.mkdir_p(File.dirname(action))
+      FileUtils.mkdir_p(File.dirname(policy))
+      File.write(workflow, <<~'YAML')
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.pull_request.title }}"
+      YAML
+      File.write(action, <<~YAML)
+        runs:
+          using: composite
+          steps:
+            - uses: owner/action@v1
+      YAML
+      File.write(policy, YAML.dump("trusted_actions" => ["owner/action"]))
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "secure-github-actions/expression-in-run",
+        "secure-github-actions/unpinned-external-use"
+      ], rule_ids(document)
+      assert_equal [
+        ".github/workflows/unsafe.yml",
+        "components/example/action.yml"
+      ], document.dig("scan", "files_scanned")
+    end
+  end
+
   def test_cli_rejects_mutable_external_use
     with_repository(<<~YAML, trusted_actions: ["owner/action"]) do |root|
       jobs:

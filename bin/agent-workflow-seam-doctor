@@ -1589,7 +1589,7 @@ module AgentWorkflowSeamDoctor
     workflows = File.join(root, ".github/workflows")
     return true if File.exist?(workflows) || File.symlink?(workflows)
 
-    Dir.glob(File.join(root, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).any?
+    Dir.glob("**/action.{yml,yaml}", File::FNM_DOTMATCH, base: root).any?
   end
 
   def load_secure_github_actions_scanner(shared_roots)
@@ -1723,6 +1723,7 @@ module AgentWorkflowSeamDoctor
 
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
+      next if key == "trusted_actions" && value == []
 
       autonomous_merge = key == "autonomous_merge"
       next unless unresolved_policy_value?(

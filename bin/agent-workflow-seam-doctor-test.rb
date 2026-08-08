@@ -27,8 +27,8 @@ module AgentWorkflowSeamDoctorTestHelpers
     "ci_change_detector" => "n/a"
   }.freeze
 
-  def with_repo
-    Dir.mktmpdir("agent-workflow-seam-doctor-test") do |dir|
+  def with_repo(prefix = "agent-workflow-seam-doctor-test")
+    Dir.mktmpdir(prefix) do |dir|
       FileUtils.mkdir_p(File.join(dir, ".agents/bin"))
       FileUtils.mkdir_p(File.join(dir, ".agents/skills/example"))
       FileUtils.mkdir_p(File.join(dir, ".agents/workflows"))
@@ -330,6 +330,27 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       assert_includes out, "secure-github-actions/expression-in-run"
       assert_includes out, ".github/workflows/unsafe.yml"
+    end
+  end
+
+  def test_workflow_security_gate_discovers_action_under_metacharacter_root
+    with_repo("agent-workflow-seam-doctor-test[fixture]") do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      action_path = File.join(root, "components/example/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "secure-github-actions/expression-in-run"
+      assert_includes out, "components/example/action.yml"
     end
   end
 
@@ -889,6 +910,42 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
         refute status.success?, empty_collection.class.name
         assert_includes out, "unresolved policy value for key: custom_runtime_paths", empty_collection.class.name
+      end
+    end
+  end
+
+  def test_explicit_empty_trusted_actions_is_a_valid_closed_allowlist
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("trusted_actions" => []))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS agent workflow seam is complete"
+    end
+  end
+
+  def test_malformed_trusted_actions_values_still_fail_closed
+    variants = {
+      "mapping" => {},
+      "scalar" => "owner/action",
+      "wildcard" => ["owner/*"]
+    }
+    variants.each do |label, value|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("trusted_actions" => value))
+        write_skill(root, "No commands here.\n")
+        workflow = File.join(root, ".github/workflows/clean.yml")
+        FileUtils.mkdir_p(File.dirname(workflow))
+        File.write(workflow, "jobs: {}\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_match(/trusted[_-]actions/i, out, label)
       end
     end
   end
