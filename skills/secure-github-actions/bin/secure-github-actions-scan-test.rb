@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "etc"
 require "json"
 require "minitest/autorun"
 require "open3"
@@ -477,6 +478,64 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_action_discovery_requires_list_and_traverse_permissions
+    expected_rules = {
+      0o111 => ["secure-github-actions/unsafe-file"],
+      0o311 => ["secure-github-actions/unsafe-file"],
+      0o511 => ["secure-github-actions/expression-in-run"]
+    }
+
+    actual = expected_rules.keys.to_h do |mode|
+      with_repository("jobs: {}\n") do |root|
+        action_dir = File.join(root, "opaque-action")
+        FileUtils.mkdir_p(action_dir)
+        File.write(File.join(action_dir, "action.yml"), <<~'YAML')
+          runs:
+            using: composite
+            steps:
+              - run: echo "${{ github.event.issue.title }}"
+        YAML
+        File.chmod(mode, action_dir)
+
+        begin
+          stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        ensure
+          File.chmod(0o755, action_dir)
+        end
+
+        [mode, [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]]
+      end
+    end
+
+    assert_equal expected_rules.transform_values { |rules| [1, "", rules] }, actual
+  end
+
+  def test_unreferenced_symlinked_action_descriptor_fails_closed_without_reading_target
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      action_dir = File.join(root, "local-action")
+      outside = File.join(outer, "action.yml")
+      FileUtils.mkdir_p(File.join(root, ".github/workflows"))
+      FileUtils.mkdir_p(action_dir)
+      File.write(File.join(root, ".github/workflows/test.yml"), "jobs: {}\n")
+      File.write(outside, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      File.symlink(outside, File.join(action_dir, "action.yml"))
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["secure-github-actions/unsafe-file"], rule_ids(document)
+      refute_includes document.dig("scan", "files_scanned"), "local-action/action.yml"
+    end
+  end
+
   def test_symlinked_workflow_fails_closed_without_reading_target
     Dir.mktmpdir("secure-github-actions") do |outer|
       root = File.join(outer, "consumer")
@@ -676,6 +735,165 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_predicate status, :success?
       assert_empty stderr
       assert_empty rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_referenced_local_action_is_scanned_when_its_directory_is_not_listable
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./local-action
+    YAML
+      action_dir = File.join(root, "local-action")
+      action_path = File.join(action_dir, "action.yml")
+      FileUtils.mkdir_p(action_dir)
+      File.write(action_path, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      File.chmod(0o111, action_dir)
+
+      begin
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+      ensure
+        File.chmod(0o755, action_dir)
+      end
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "secure-github-actions/unsafe-file",
+        "secure-github-actions/expression-in-run"
+      ], rule_ids(document)
+      assert_includes document.dig("scan", "files_scanned"), "local-action/action.yml"
+    end
+  end
+
+  def test_referenced_local_action_chains_are_scanned_once_across_cycles
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./actions/a
+            - uses: ./actions/a
+    YAML
+      action_a = File.join(root, "actions/a/action.yml")
+      action_b = File.join(root, "hidden-parent/b/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_a))
+      FileUtils.mkdir_p(File.dirname(action_b))
+      File.write(action_a, <<~YAML)
+        runs:
+          using: composite
+          steps:
+            - uses: ./hidden-parent/b
+            - uses: ./hidden-parent/b
+      YAML
+      File.write(action_b, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+            - uses: ./actions/a
+      YAML
+      hidden_parent = File.join(root, "hidden-parent")
+      File.chmod(0o111, hidden_parent)
+
+      begin
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+      ensure
+        File.chmod(0o755, hidden_parent)
+      end
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "secure-github-actions/unsafe-file",
+        "secure-github-actions/expression-in-run"
+      ], rule_ids(document)
+      files = document.dig("scan", "files_scanned")
+      assert_equal 1, files.count("actions/a/action.yml")
+      assert_equal 1, files.count("hidden-parent/b/action.yml")
+    end
+  end
+
+  def test_referenced_local_action_is_scanned_below_non_listable_github_directory
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./.github/actions/local
+    YAML
+      action_path = File.join(root, ".github/actions/local/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      github_path = File.join(root, ".github")
+      File.chmod(0o111, github_path)
+
+      begin
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+      ensure
+        File.chmod(0o755, github_path)
+      end
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "secure-github-actions/unsafe-file",
+        "secure-github-actions/expression-in-run"
+      ], rule_ids(document)
+      assert_includes document.dig("scan", "files_scanned"), ".github/actions/local/action.yml"
+    end
+  end
+
+  def test_referenced_local_action_is_scanned_when_acl_denies_directory_listing
+    skip "directory ACLs are only available on Darwin" unless RUBY_PLATFORM.include?("darwin")
+
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./acl-action
+    YAML
+      action_dir = File.join(root, "acl-action")
+      action_path = File.join(action_dir, "action.yml")
+      FileUtils.mkdir_p(action_dir)
+      File.write(action_path, <<~'YAML')
+        runs:
+          using: composite
+          steps:
+            - run: echo "${{ github.event.issue.title }}"
+      YAML
+      acl = "user:#{Etc.getpwuid(Process.uid).name} deny list"
+      _stdout, apply_stderr, apply_status = Open3.capture3("/bin/chmod", "+a", acl, action_dir)
+      skip "filesystem does not support deny-list ACLs: #{apply_stderr}" unless apply_status.success?
+
+      begin
+        refute File.readable?(action_dir)
+        assert File.executable?(action_dir)
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+      ensure
+        Open3.capture3("/bin/chmod", "-a", acl, action_dir)
+      end
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "secure-github-actions/unsafe-file",
+        "secure-github-actions/expression-in-run"
+      ], rule_ids(document)
+      assert_includes document.dig("scan", "files_scanned"), "acl-action/action.yml"
     end
   end
 

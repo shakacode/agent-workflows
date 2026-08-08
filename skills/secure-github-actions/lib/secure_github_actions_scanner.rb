@@ -39,13 +39,20 @@ module SecureGitHubActions
       workflow_paths = Dir.glob(
         ".github/workflows/*.{yml,yaml}", File::FNM_DOTMATCH, base: @root
       ).map { |relative| File.join(@root, relative) }
-      action_paths = Dir.glob("**/action.{yml,yaml}", File::FNM_DOTMATCH, base: @root)
-                        .reject { |relative| excluded_action_root?(relative) }
-                        .map { |relative| File.join(@root, relative) }
+      action_paths, action_discovery_findings = discover_action_paths
       paths = (workflow_paths + action_paths).uniq.sort
+      @scan_queue = paths.dup
+      @queued_paths = paths.to_h { |path| [path, true] }
+      scanned_paths = []
       @trusted_actions, policy_findings = load_trusted_actions
-      findings = policy_findings + input_boundary_findings + paths.flat_map { |path| scan_workflow(path) }
-      Result.new(root: @root, files: paths.map { |path| relative_path(path) }, findings: findings)
+      findings = policy_findings + input_boundary_findings + action_discovery_findings
+      until @scan_queue.empty?
+        path = @scan_queue.shift
+        scanned_paths << path
+        findings.concat(scan_workflow(path))
+      end
+      findings.uniq! { |finding| finding.fetch("id") }
+      Result.new(root: @root, files: scanned_paths.map { |path| relative_path(path) }.sort, findings: findings)
     end
 
     private
@@ -93,6 +100,73 @@ module SecureGitHubActions
         (permission_bits & permission) == permission
       end
       explicit_enumeration_permission && File.readable?(path) && File.executable?(path)
+    end
+
+    def discover_action_paths
+      paths = []
+      findings = []
+      directories = [@root]
+      until directories.empty?
+        directory = directories.shift
+        begin
+          relative = relative_path(directory)
+          next if directory != @root && excluded_action_root?(relative)
+
+          stat = File.lstat(directory)
+          next unless stat.directory? && !stat.symlink?
+
+          unless directory_enumerable?(directory, stat)
+            findings << unsafe_action_discovery_finding(directory)
+            next
+          end
+
+          Dir.children(directory).sort.each do |entry|
+            path = File.join(directory, entry)
+            begin
+              child_relative = relative_path(path)
+              next if excluded_action_root?(child_relative)
+
+              child_stat = File.lstat(path)
+              if child_stat.directory? && !child_stat.symlink?
+                directories << path
+              elsif ACTION_DESCRIPTORS.include?(entry)
+                if child_stat.file? && !child_stat.symlink?
+                  paths << path
+                else
+                  findings << unsafe_action_descriptor_finding(path)
+                end
+              end
+            rescue SystemCallError
+              findings << unsafe_action_discovery_finding(path)
+            end
+          end
+        rescue SystemCallError
+          findings << unsafe_action_discovery_finding(directory)
+        end
+      end
+      [paths, findings]
+    end
+
+    def unsafe_action_discovery_finding(path)
+      finding(
+        rule_id: "secure-github-actions/unsafe-file",
+        path: path,
+        symbol: "<directory>",
+        line: 1,
+        title: "Local action discovery boundary could not be enumerated safely",
+        body: "Use readable, traversable, non-symlink repository directories so composite actions cannot be omitted from the security scan."
+      )
+    end
+
+    def unsafe_action_descriptor_finding(path)
+      finding(
+        rule_id: "secure-github-actions/unsafe-file",
+        path: path,
+        symbol: "<document>",
+        line: 1,
+        title: "Local action descriptor is outside the safe file boundary",
+        body: "Use a regular, non-symlink action.yml or action.yaml file within real repository directories."
+      )
     end
 
     def scan_workflow(path)
@@ -392,10 +466,19 @@ module SecureGitHubActions
                                       .select { |path| File.exist?(path) || File.symlink?(path) }
       return false if descriptors.empty?
 
-      descriptors.all? do |path|
+      safe = descriptors.all? do |path|
         stat = File.lstat(path)
         stat.file? && !stat.symlink?
       end
+      descriptors.each { |path| enqueue_scan_path(path) } if safe
+      safe
+    end
+
+    def enqueue_scan_path(path)
+      return if @queued_paths[path]
+
+      @queued_paths[path] = true
+      @scan_queue << path
     end
 
     def safe_directory_path(segments)
