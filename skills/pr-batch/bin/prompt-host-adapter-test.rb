@@ -18,7 +18,7 @@ class PromptHostAdapterTest < Minitest::Test
       active_host,
       stdin_data: prompt
     )
-    [JSON.parse(stdout), stderr, status]
+    [JSON.parse(stdout), stderr, status, stdout]
   end
 
   def direct_prompt(host:, body:)
@@ -224,6 +224,39 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal expected, result.fetch("prompt")
   end
 
+  def test_legacy_codex_canonical_mechanics_convert_to_claude
+    prompt = <<~PROMPT
+      /goal
+      Use $pr-batch to continue the verified batch.
+      Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
+      - Resolve $pr-batch; load persisted state before launch.
+      - ask=>$pr-walkthrough;gate fail=>stop
+    PROMPT
+    expected = <<~PROMPT
+      Prompt host: claude
+      Prompt mode: batch
+      Preferred route: default
+      Route requirement: advisory
+      Use /pr-batch to continue the verified batch.
+      Base:repo/AGENTS;fetch/prune origin;verify /pr-batch+workflow;unresolved=>UNKNOWN
+      - Resolve /pr-batch; load persisted state before launch.
+      - ask=>/pr-walkthrough;gate fail=>stop
+    PROMPT
+
+    result, stderr, status = run_adapter(prompt, active_host: "claude")
+
+    assert status.success?, stderr
+    assert_equal "conversion-required", result.fetch("classification")
+    assert_equal false, result.fetch("execute_allowed")
+    assert_equal true, result.fetch("semantic_payload_preserved")
+    assert_equal expected, result.fetch("prompt")
+
+    relaunched, relaunch_stderr, relaunch_status = run_adapter(expected, active_host: "claude")
+    assert relaunch_status.success?, relaunch_stderr
+    assert_equal "compatible", relaunched.fetch("classification")
+    assert_equal expected, relaunched.fetch("prompt")
+  end
+
   def test_matching_direct_mode_is_compatible_without_goal_wrapper
     prompt = <<~PROMPT
       Prompt host: codex
@@ -342,6 +375,29 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_case_variant_and_underscore_sigiled_commands_fail_closed
+    cases = [
+      ["claude", "claude", "Execute $PR-Batch before closeout."],
+      ["codex", "codex", "Execute /Pr-Walkthrough before closeout."],
+      ["claude", "claude", "Execute $pr_batch before closeout."],
+      ["portable", "codex", "Execute /PR-BATCH before closeout."],
+      ["portable", "claude", "Execute $pr_batch before closeout."]
+    ]
+
+    cases.each do |declared_host, active_host, mechanic|
+      result, stderr, status = run_adapter(
+        direct_prompt(host: declared_host, body: mechanic),
+        active_host: active_host
+      )
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), mechanic
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), mechanic
+      assert_equal false, result.fetch("execute_allowed"), mechanic
+      assert_nil result.fetch("prompt"), mechanic
+    end
+  end
+
   def test_punctuation_delimited_sigiled_commands_fail_closed
     cases = [
       ["codex", "codex", "Execute:/address-review before closeout."],
@@ -412,12 +468,14 @@ class PromptHostAdapterTest < Minitest::Test
     ]
 
     cases.each do |declared_host, active_host, prose|
-      result, stderr, status = run_adapter(direct_prompt(host: declared_host, body: prose), active_host: active_host)
+      prompt = direct_prompt(host: declared_host, body: prose)
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
 
       assert status.success?, stderr
       expected = declared_host == "portable" ? "portable" : "compatible"
       assert_equal expected, result.fetch("classification"), prose
       assert_equal true, result.fetch("execute_allowed"), prose
+      assert_equal prompt, result.fetch("prompt"), prose
     end
   end
 
@@ -473,18 +531,32 @@ class PromptHostAdapterTest < Minitest::Test
     prompt = direct_prompt(host: "codex", body: "Objective: preserve café and 東京.")
     env = { "LANG" => "C", "LC_ALL" => "C" }
 
-    result, stderr, status = run_adapter(prompt, active_host: "claude", env: env)
+    normal_result, normal_stderr, normal_status, normal_stdout = run_adapter(prompt, active_host: "claude")
+    assert normal_status.success?, normal_stderr
+
+    result, stderr, status, stdout = run_adapter(prompt, active_host: "claude", env: env)
 
     assert status.success?, stderr
+    assert_equal normal_result, result
+    assert_equal normal_stdout, stdout
+    assert_equal normal_stderr, stderr
     assert_equal "conversion-required", result.fetch("classification")
     assert_includes result.fetch("prompt"), "café and 東京"
 
-    relaunched, relaunch_stderr, relaunch_status = run_adapter(
+    relaunched, relaunch_stderr, relaunch_status, relaunch_stdout = run_adapter(
       result.fetch("prompt"),
       active_host: "claude",
       env: env
     )
+    normal_relaunched, normal_relaunch_stderr, normal_relaunch_status, normal_relaunch_stdout = run_adapter(
+      result.fetch("prompt"),
+      active_host: "claude"
+    )
+    assert normal_relaunch_status.success?, normal_relaunch_stderr
     assert relaunch_status.success?, relaunch_stderr
+    assert_equal normal_relaunched, relaunched
+    assert_equal normal_relaunch_stdout, relaunch_stdout
+    assert_equal normal_relaunch_stderr, relaunch_stderr
     assert_equal "compatible", relaunched.fetch("classification")
     assert_includes relaunched.fetch("prompt"), "café and 東京"
   end
@@ -582,5 +654,38 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal true, result.fetch("relaunch_required")
     assert_equal true, result.fetch("semantic_payload_preserved")
     assert_equal expected, result.fetch("prompt")
+  end
+
+  def test_legacy_claude_canonical_mechanics_convert_to_codex
+    prompt = <<~PROMPT
+      /pr-batch continue the verified batch.
+      Base:repo/AGENTS;fetch/prune origin;verify /pr-batch+workflow;unresolved=>UNKNOWN
+      - Resolve /pr-batch; load persisted state before launch.
+      - ask=>/pr-walkthrough;gate fail=>stop
+    PROMPT
+    expected = <<~PROMPT
+      /goal
+      Prompt host: codex
+      Prompt mode: goal
+      Preferred route: default
+      Route requirement: advisory
+      Use $pr-batch continue the verified batch.
+      Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
+      - Resolve $pr-batch; load persisted state before launch.
+      - ask=>$pr-walkthrough;gate fail=>stop
+    PROMPT
+
+    result, stderr, status = run_adapter(prompt, active_host: "codex")
+
+    assert status.success?, stderr
+    assert_equal "conversion-required", result.fetch("classification")
+    assert_equal false, result.fetch("execute_allowed")
+    assert_equal true, result.fetch("semantic_payload_preserved")
+    assert_equal expected, result.fetch("prompt")
+
+    relaunched, relaunch_stderr, relaunch_status = run_adapter(expected, active_host: "codex")
+    assert relaunch_status.success?, relaunch_stderr
+    assert_equal "compatible", relaunched.fetch("classification")
+    assert_equal expected, relaunched.fetch("prompt")
   end
 end

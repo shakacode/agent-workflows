@@ -453,14 +453,22 @@ class GoalCompletionContractTest < Minitest::Test
       #{BATCH_TITLE_LINE.sub('<short title>', '<continuation title>')}
     TEXT
 
-    assert @continuation_prompt.start_with?(expected_start)
-    refute_match(%r{(?:^|\s)[/$](?:pr-batch|pr-walkthrough)\b}, @continuation_prompt)
+    assert @continuation_prompt.start_with?(expected_start),
+           "workflows/pr-processing.md continuation prompt must start with the portable contract"
+    refute_match(
+      %r{(?:^|\s)[/$](?:pr-batch|pr-walkthrough)\b},
+      @continuation_prompt,
+      "workflows/pr-processing.md continuation prompt must keep host mechanics neutral"
+    )
   end
 
   def test_installed_use_docs_resolve_the_prompt_adapter_from_pr_batch_skill_dir
-    [@host_adapter_contract, @pr_batch_docs].each do |text|
-      assert_includes text, "${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter"
-      refute_includes text, "skills/pr-batch/bin/prompt-host-adapter --active-host"
+    {
+      "docs/host-adapter/contract.md" => @host_adapter_contract,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_includes text, "${PR_BATCH_SKILL_DIR}/bin/prompt-host-adapter", label
+      refute_includes text, "skills/pr-batch/bin/prompt-host-adapter", label
     end
   end
 

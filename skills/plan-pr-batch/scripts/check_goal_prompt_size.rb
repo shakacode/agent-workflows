@@ -4,6 +4,7 @@
 require "json"
 require "open3"
 require "stringio"
+require "tmpdir"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
@@ -427,9 +428,9 @@ def prompt_for_adapter(prompt_template, target)
     .sub(PREFERRED_ROUTE_PROMPT_LINE, "Preferred route: default")
 end
 
-def classify_prompt(prompt, active_host, label)
+def classify_prompt(prompt, active_host, label, adapter_path: PROMPT_HOST_ADAPTER)
   stdout, stderr, status = Open3.capture3(
-    PROMPT_HOST_ADAPTER,
+    adapter_path,
     "--active-host",
     active_host,
     stdin_data: prompt
@@ -437,9 +438,53 @@ def classify_prompt(prompt, active_host, label)
   abort_with_failure("#{label} adapter invocation failed: #{stderr}") unless status.success?
 
   JSON.parse(stdout)
+rescue Errno::EACCES, Errno::ENOENT
+  abort(
+    "BLOCKED: goal prompt validation requires the sibling pr-batch " \
+    "prompt-host-adapter from the same Agent Workflows pack revision; " \
+    "missing companion: #{adapter_path}"
+  )
 rescue JSON::ParserError => e
   abort_with_failure("#{label} adapter returned invalid JSON: #{e.message}")
 end
+
+def assert_unavailable_prompt_host_adapter_is_precisely_blocked
+  Dir.mktmpdir("prompt-host-adapter-companion") do |directory|
+    missing_adapter = File.join(directory, "missing-prompt-host-adapter")
+    non_executable_adapter = File.join(directory, "non-executable-prompt-host-adapter")
+    File.write(non_executable_adapter, "#!/bin/sh\n")
+    File.chmod(0o644, non_executable_adapter)
+
+    [missing_adapter, non_executable_adapter].each do |adapter_path|
+      original_stderr = $stderr
+      stderr = StringIO.new
+      status = nil
+      unexpected_error = nil
+      begin
+        $stderr = stderr
+        classify_prompt("", "codex", "adapter companion self-test", adapter_path: adapter_path)
+      rescue SystemExit => e
+        status = e.status
+      rescue StandardError => e
+        unexpected_error = e
+      ensure
+        $stderr = original_stderr
+      end
+
+      expected = "BLOCKED: goal prompt validation requires the sibling pr-batch " \
+                 "prompt-host-adapter from the same Agent Workflows pack revision; " \
+                 "missing companion: #{adapter_path}\n"
+      next if unexpected_error.nil? && status == 1 && stderr.string == expected
+
+      abort_with_failure(
+        "unavailable prompt-host adapter did not emit the precise blocker: " \
+        "error=#{unexpected_error&.class} status=#{status.inspect} stderr=#{stderr.string.inspect}"
+      )
+    end
+  end
+end
+
+assert_unavailable_prompt_host_adapter_is_precisely_blocked
 
 def normalized_prompt_semantics(prompt)
   prompt

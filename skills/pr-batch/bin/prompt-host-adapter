@@ -28,9 +28,10 @@ def render_host_mechanics(prompt, target_host)
 end
 
 def invoked_host_mechanics(prompt)
-  literal_names = %r{\A\s*Document [/$][a-z][a-z0-9-]*(?: and [/$][a-z][a-z0-9-]*)* as literal names only\.\s*\z}
+  command_name = "[A-Za-z][A-Za-z0-9_-]*"
+  literal_names = %r{\A\s*Document [/$]#{command_name}(?: and [/$]#{command_name})* as literal names only\.\s*\z}
   candidate_text = prompt.delete_prefix("/goal\n").lines.reject { |line| line.match?(literal_names) }.join
-  token_pattern = %r{(?<![[:alnum:]_/$])[$/][a-z][a-z0-9-]*\b(?!/|\.[a-z0-9])}
+  token_pattern = %r{(?<![[:alnum:]_/$])[$/]#{command_name}\b(?!/|\.[A-Za-z0-9])}
 
   candidate_text.to_enum(:scan, token_pattern).filter_map do
     match = Regexp.last_match
@@ -153,13 +154,12 @@ converted_prompt = if explicit_conversion
                      converted_body = render_host_mechanics(converted_body, target_host)
                      target_mode == "goal" ? "/goal\n#{converted_body}" : converted_body
                    elsif legacy_conversion && options.fetch(:active_host) == "claude"
-                     converted_body = prompt
-                                      .delete_prefix("/goal\n")
-                                      .sub(/\AUse \$pr-batch\b/, "Use /pr-batch")
+                     converted_body = render_host_mechanics(prompt.delete_prefix("/goal\n"), "claude")
                      "Prompt host: claude\nPrompt mode: batch\nPreferred route: default\n" \
                        "Route requirement: advisory\n#{converted_body}"
                    elsif legacy_conversion && options.fetch(:active_host) == "codex"
                      converted_body = prompt.sub(%r{\A/pr-batch\b}, "Use $pr-batch")
+                     converted_body = render_host_mechanics(converted_body, "codex")
                      "/goal\nPrompt host: codex\nPrompt mode: goal\nPreferred route: default\n" \
                        "Route requirement: advisory\n#{converted_body}"
                    end
