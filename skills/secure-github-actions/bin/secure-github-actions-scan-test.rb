@@ -255,6 +255,25 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_root_merge_alias_cannot_hide_jobs
+    with_repository(<<~'YAML') do |root|
+      hidden: &root
+        jobs:
+          build:
+            steps:
+              - run: echo "${{ github.event.issue.title }}"
+      <<: *root
+    YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      finding = JSON.parse(stdout).fetch("review_findings").first
+      assert_equal "secure-github-actions/unsupported-yaml-alias", finding.fetch("rule_id")
+      assert_equal "<<", finding.dig("location", "symbol")
+    end
+  end
+
   def test_unknown_and_cyclic_aliases_fail_closed_at_step_boundaries
     with_repository(<<~YAML) do |root|
       jobs:
@@ -443,6 +462,25 @@ class SecureGitHubActionsScanTest < Minitest::Test
       document = JSON.parse(stdout)
       assert_equal ["secure-github-actions/unsafe-file"], rule_ids(document)
       assert_equal ".github/workflows", document.fetch("review_findings").first.dig("location", "file")
+    end
+  end
+
+  def test_untraversable_github_directory_fails_closed
+    with_repository("jobs: {}\n") do |root|
+      github_path = File.join(root, ".github")
+      File.chmod(0o000, github_path)
+
+      begin
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+      ensure
+        File.chmod(0o755, github_path)
+      end
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal ["secure-github-actions/unsafe-file"], rule_ids(document)
+      assert_equal ".github", document.fetch("review_findings").first.dig("location", "file")
     end
   end
 

@@ -55,7 +55,7 @@ module SecureGitHubActions
         next unless File.exist?(path) || File.symlink?(path)
 
         stat = File.lstat(path)
-        next if stat.directory? && !stat.symlink?
+        next if stat.directory? && !stat.symlink? && File.executable?(path)
 
         return [finding(
           rule_id: "secure-github-actions/unsafe-file",
@@ -193,6 +193,7 @@ module SecureGitHubActions
     end
 
     def sensitive_alias_destination?(keys)
+      return true if keys == ["<<"]
       return true if [["jobs"], ["runs"]].include?(keys)
 
       if keys.first == "jobs"
