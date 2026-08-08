@@ -142,7 +142,11 @@ is structural. A whole line of the exact form
 an invocation or contradictory phrase to that line removes the exemption.
 Portable prompts cannot contain any detected host mechanic. Codex and Claude
 prompts, including conversion sources, cannot contain a mechanic for the other
-host.
+host. They also cannot contain a partially rendered neutral form of a supported
+canonical mechanic: the Base verification, generated-triage Base resolution,
+Resolve, and walkthrough authority lines must use the declared host's sigil.
+Those exact neutral forms remain valid in portable prompts; incidental prose,
+literal names, and paths containing workflow names are not mechanics.
 
 Legacy detection is deliberately narrow: only a leading Codex `/goal` wrapper
 or a leading Claude `/pr-batch` invocation is unmistakable. Incidental host or
@@ -161,6 +165,9 @@ identical or conflicting, fail closed as `duplicate-batch-size-target`. A
 well-formed target that disagrees with the declared host fails closed as
 `contradictory-batch-size-target`. None of these invalid inputs is executed,
 rewritten, or returned as relaunch text.
+The field may begin at column zero or after zero to three spaces and one common
+Markdown list marker (`-`, `*`, or `+`); conversion preserves that exact prefix.
+Other prose that merely mentions `Batch size target:` is not a declaration.
 The same checks apply to an unmistakable legacy prompt using its inferred
 Codex or Claude host. Cross-host legacy conversion rewrites one valid
 source-matching target to the target host before returning inert relaunch text.

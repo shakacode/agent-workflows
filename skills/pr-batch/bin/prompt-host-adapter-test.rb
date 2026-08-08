@@ -566,6 +566,206 @@ class PromptHostAdapterTest < Minitest::Test
     end
   end
 
+  def test_prefixed_batch_size_targets_share_the_canonical_field_contract
+    prefixes = ["  ", "- ", "  - ", "* ", "+ "]
+
+    prefixes.each do |prefix|
+      [%w[codex codex], %w[claude claude]].each do |declared_host, active_host|
+        prompt = direct_prompt(
+          host: declared_host,
+          body: "#{prefix}Batch size target: #{declared_host}; wave: 1/1."
+        )
+        result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+        assert status.success?, stderr
+        assert_equal "compatible", result.fetch("classification"), prefix.inspect
+        assert_equal true, result.fetch("execute_allowed"), prefix.inspect
+        assert_equal prompt, result.fetch("prompt"), prefix.inspect
+      end
+
+      %w[codex claude].each do |active_host|
+        prompt = direct_prompt(
+          host: "portable",
+          body: "#{prefix}Batch size target: generic; wave: 1/1."
+        )
+        result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+        assert status.success?, stderr
+        assert_equal "portable", result.fetch("classification"), prefix.inspect
+        assert_equal true, result.fetch("execute_allowed"), prefix.inspect
+        assert_equal prompt, result.fetch("prompt"), prefix.inspect
+      end
+    end
+
+    contradictory_cases = [
+      [direct_prompt(host: "codex", body: "  Batch size target: claude; SECRET_PREFIX_CONTRADICT_1"),
+       "codex"],
+      [direct_prompt(host: "claude", body: "- Batch size target: codex; SECRET_PREFIX_CONTRADICT_2"),
+       "claude"],
+      [direct_prompt(host: "portable", body: "  - Batch size target: codex; SECRET_PREFIX_CONTRADICT_3"),
+       "codex"],
+      [direct_prompt(host: "codex", body: "* Batch size target: claude; SECRET_PREFIX_CONTRADICT_4"),
+       "claude"],
+      [legacy_prompt(host: "codex", body: "+ Batch size target: claude; SECRET_PREFIX_CONTRADICT_5"),
+       "codex"],
+      [legacy_prompt(host: "claude", body: "  Batch size target: codex; SECRET_PREFIX_CONTRADICT_6"),
+       "codex"]
+    ]
+    contradictory_cases.each do |prompt, active_host|
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification")
+      assert_equal "contradictory-batch-size-target", result.fetch("reason_code")
+      assert_equal false, result.fetch("execute_allowed")
+      assert_equal false, result.fetch("relaunch_required")
+      assert_nil result.fetch("prompt")
+      refute_includes stdout, "SECRET_PREFIX_CONTRADICT"
+    end
+
+    malformed_cases = [
+      [direct_prompt(host: "codex", body: "  Batch size target: rust; SECRET_PREFIX_MALFORMED_1"), "codex"],
+      [direct_prompt(host: "claude", body: "- Batch size target: claude SECRET_PREFIX_MALFORMED_2"), "codex"],
+      [direct_prompt(host: "portable", body: "  - Batch size target: generic SECRET_PREFIX_MALFORMED_3"), "claude"],
+      [legacy_prompt(host: "codex", body: "* Batch size target: codex SECRET_PREFIX_MALFORMED_4"), "codex"],
+      [legacy_prompt(host: "claude", body: "+ Batch size target: rust; SECRET_PREFIX_MALFORMED_5"), "codex"]
+    ]
+    malformed_cases.each do |prompt, active_host|
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification")
+      assert_equal "invalid-batch-size-target", result.fetch("reason_code")
+      assert_equal false, result.fetch("execute_allowed")
+      assert_equal false, result.fetch("relaunch_required")
+      assert_nil result.fetch("prompt")
+      refute_includes stdout, "SECRET_PREFIX_MALFORMED"
+    end
+
+    duplicate_cases = [
+      [direct_prompt(
+        host: "codex",
+        body: "  Batch size target: codex;\n- Batch size target: codex; SECRET_PREFIX_DUPLICATE_1"
+      ), "codex"],
+      [direct_prompt(
+        host: "claude",
+        body: "* Batch size target: claude;\n+ Batch size target: codex; SECRET_PREFIX_DUPLICATE_2"
+      ), "codex"],
+      [direct_prompt(
+        host: "portable",
+        body: "Batch size target: generic;\n  - Batch size target: generic; SECRET_PREFIX_DUPLICATE_3"
+      ), "claude"],
+      [legacy_prompt(
+        host: "codex",
+        body: "  Batch size target: codex;\n* Batch size target: claude; SECRET_PREFIX_DUPLICATE_4"
+      ), "codex"],
+      [legacy_prompt(
+        host: "claude",
+        body: "- Batch size target: claude;\n  Batch size target: claude; SECRET_PREFIX_DUPLICATE_5"
+      ), "codex"]
+    ]
+    duplicate_cases.each do |prompt, active_host|
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification")
+      assert_equal "duplicate-batch-size-target", result.fetch("reason_code")
+      assert_equal false, result.fetch("execute_allowed")
+      assert_equal false, result.fetch("relaunch_required")
+      assert_nil result.fetch("prompt")
+      refute_includes stdout, "SECRET_PREFIX_DUPLICATE"
+    end
+
+    [
+      ["codex", "claude", "  "],
+      ["claude", "codex", "- "]
+    ].each do |source_host, target_host, prefix|
+      prompt = direct_prompt(
+        host: source_host,
+        body: "#{prefix}Batch size target: #{source_host}; wave: 1/1."
+      )
+      expected = direct_prompt(
+        host: target_host,
+        body: "#{prefix}Batch size target: #{target_host}; wave: 1/1."
+      )
+      result, stderr, status = run_adapter(prompt, active_host: target_host)
+
+      assert status.success?, stderr
+      assert_equal "conversion-required", result.fetch("classification"), prefix.inspect
+      assert_equal false, result.fetch("execute_allowed"), prefix.inspect
+      assert_equal true, result.fetch("relaunch_required"), prefix.inspect
+      assert_equal true, result.fetch("replanning_required"), prefix.inspect
+      assert_equal true, result.fetch("semantic_payload_preserved"), prefix.inspect
+      assert_equal expected, result.fetch("prompt"), prefix.inspect
+
+      relaunched, relaunch_stderr, relaunch_status = run_adapter(expected, active_host: target_host)
+      assert relaunch_status.success?, relaunch_stderr
+      assert_equal "compatible", relaunched.fetch("classification"), prefix.inspect
+      assert_equal expected, relaunched.fetch("prompt"), prefix.inspect
+    end
+
+    legacy_conversions = [
+      {
+        source_host: "codex",
+        target_host: "claude",
+        prefix: "  ",
+        expected: <<~PROMPT
+          Prompt host: claude
+          Prompt mode: batch
+          Preferred route: default
+          Route requirement: advisory
+          Use /pr-batch to complete the batch.
+            Batch size target: claude; wave: 1/1.
+        PROMPT
+      },
+      {
+        source_host: "claude",
+        target_host: "codex",
+        prefix: "- ",
+        expected: <<~PROMPT
+          /goal
+          Prompt host: codex
+          Prompt mode: goal
+          Preferred route: default
+          Route requirement: advisory
+          Use $pr-batch complete the batch.
+          - Batch size target: codex; wave: 1/1.
+        PROMPT
+      }
+    ]
+    legacy_conversions.each do |entry|
+      prompt = legacy_prompt(
+        host: entry.fetch(:source_host),
+        body: "#{entry.fetch(:prefix)}Batch size target: #{entry.fetch(:source_host)}; wave: 1/1."
+      )
+      result, stderr, status = run_adapter(prompt, active_host: entry.fetch(:target_host))
+
+      assert status.success?, stderr
+      assert_equal "conversion-required", result.fetch("classification"), entry.inspect
+      assert_equal true, result.fetch("replanning_required"), entry.inspect
+      assert_equal true, result.fetch("semantic_payload_preserved"), entry.inspect
+      assert_equal entry.fetch(:expected), result.fetch("prompt"), entry.inspect
+
+      relaunched, relaunch_stderr, relaunch_status = run_adapter(
+        entry.fetch(:expected),
+        active_host: entry.fetch(:target_host)
+      )
+      assert relaunch_status.success?, relaunch_stderr
+      assert_equal "compatible", relaunched.fetch("classification"), entry.inspect
+    end
+
+    ordinary_prose = "Objective: document the phrase Batch size target: claude; without declaring a field."
+    %w[codex claude].each do |host|
+      prompt = direct_prompt(host: host, body: ordinary_prose)
+      result, stderr, status = run_adapter(prompt, active_host: host)
+
+      assert status.success?, stderr
+      assert_equal "compatible", result.fetch("classification"), host
+      assert_equal true, result.fetch("execute_allowed"), host
+      assert_equal prompt, result.fetch("prompt"), host
+    end
+  end
+
   def test_malformed_or_unsupported_batch_size_target_fails_closed_without_echo
     cases = [
       ["matching Codex", "codex", "codex", "rust; wave: 1/1."],
@@ -670,6 +870,84 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal "unsupported-host-mechanic", result.fetch("reason_code")
     assert_equal false, result.fetch("execute_allowed")
     assert_nil result.fetch("prompt")
+  end
+
+  def test_neutral_canonical_mechanics_fail_closed_for_host_specific_prompts_only
+    mechanics = [
+      "- ask=>pr-walkthrough;gate fail=>stop",
+      "Base:repo/AGENTS;fetch/prune origin;verify pr-batch+workflow;unresolved=>UNKNOWN",
+      "- Resolve pr-batch; load persisted state before launch.",
+      "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
+        "verify pr-batch+workflow; unresolved=>UNKNOWN."
+    ]
+
+    %w[codex claude].each do |declared_host|
+      mechanics.each do |mechanic|
+        marker = "SECRET_NEUTRAL_#{declared_host.upcase}_#{mechanics.index(mechanic)}"
+        prompt = direct_prompt(host: declared_host, body: "#{mechanic}\nObjective: #{marker}")
+
+        result, stderr, status, stdout = run_adapter(prompt, active_host: declared_host)
+
+        assert status.success?, stderr
+        assert_equal "ambiguous", result.fetch("classification"), mechanic
+        assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), mechanic
+        assert_equal false, result.fetch("execute_allowed"), mechanic
+        assert_equal false, result.fetch("relaunch_required"), mechanic
+        assert_nil result.fetch("prompt"), mechanic
+        refute_includes stdout, marker
+      end
+
+      prompt = legacy_prompt(host: declared_host, body: mechanics.last)
+      result, stderr, status = run_adapter(prompt, active_host: declared_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), declared_host
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), declared_host
+      assert_equal false, result.fetch("execute_allowed"), declared_host
+      assert_nil result.fetch("prompt"), declared_host
+    end
+
+    [%w[codex claude], %w[claude codex]].each do |declared_host, active_host|
+      prompt = direct_prompt(host: declared_host, body: mechanics.first)
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), declared_host
+      assert_equal "unsupported-host-mechanic", result.fetch("reason_code"), declared_host
+      assert_equal false, result.fetch("execute_allowed"), declared_host
+      assert_equal false, result.fetch("relaunch_required"), declared_host
+      assert_nil result.fetch("prompt"), declared_host
+    end
+
+    %w[codex claude].each do |active_host|
+      mechanics.each do |mechanic|
+        prompt = direct_prompt(host: "portable", body: mechanic)
+        result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+        assert status.success?, stderr
+        assert_equal "portable", result.fetch("classification"), mechanic
+        assert_equal true, result.fetch("execute_allowed"), mechanic
+        assert_equal prompt, result.fetch("prompt"), mechanic
+      end
+    end
+
+    incidental_prose = [
+      "Document pr-batch and pr-walkthrough as literal names only.",
+      "Inspect skills/pr-batch/bin/prompt-host-adapter before closeout.",
+      "The Base verifier discusses pr-batch+workflow in prose.",
+      "Resolve the pr-batch documentation before launch."
+    ]
+    %w[codex claude].each do |host|
+      incidental_prose.each do |prose|
+        prompt = direct_prompt(host: host, body: prose)
+        result, stderr, status = run_adapter(prompt, active_host: host)
+
+        assert status.success?, stderr
+        assert_equal "compatible", result.fetch("classification"), prose
+        assert_equal true, result.fetch("execute_allowed"), prose
+        assert_equal prompt, result.fetch("prompt"), prose
+      end
+    end
   end
 
   def test_opposite_host_mechanics_never_reach_an_executable_classification
