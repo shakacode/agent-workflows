@@ -25,6 +25,13 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_NON_TERMINAL_DISPOSITION_NON_CLEAN_RULE = "A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
   REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
   REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  COMPLETED_BATCH_AUDIT_PLACEMENT_RULE = "When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  COMPLETED_BATCH_AUDIT_PLACEMENT_FILES = [
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md",
+    "workflows/pr-processing.md",
+    "skills/pr-batch/SKILL.md"
+  ].freeze
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "<!-- completed-batch-audit v1"
@@ -104,6 +111,17 @@ class PostMergeAuditPolicyTest < Minitest::Test
       OBSOLETE_APPROVAL_GATES.each do |obsolete|
         refute_includes text, obsolete, "#{relative_path} still has obsolete approval-gated issue creation text"
       end
+    end
+  end
+
+  def test_completed_batch_audit_placement_is_mirrored
+    placement_pattern = /When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section[^.]*\./
+
+    COMPLETED_BATCH_AUDIT_PLACEMENT_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+
+      assert_equal [COMPLETED_BATCH_AUDIT_PLACEMENT_RULE], text.scan(placement_pattern),
+                   "#{relative_path} should use the canonical completed-batch audit placement rule"
     end
   end
 
