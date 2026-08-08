@@ -16,7 +16,7 @@ BATCH_SIZE_TARGET_PREFIX = " {0,3}(?:[-*+] +)?"
 BATCH_SIZE_TARGET_FIELD = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target:/
 BATCH_SIZE_TARGET_VALUE = /^#{BATCH_SIZE_TARGET_PREFIX}Batch size target: (codex|claude|generic);/
 RESERVED_HEADER_LABEL =
-  "(?:prompt[ ._-]*(?:host|mode)|preferred[ ._-]*route|route[ ._-]*requirement)"
+  "(?:prompt[ ._\t-]*(?:host|mode)|preferred[ ._\t-]*route|route[ ._\t-]*requirement)"
 RESERVED_HEADER_LIKE_DECLARATION = /\A[ \t]*#{RESERVED_HEADER_LABEL}[ \t]*(?::+|=)/i
 CANONICAL_RESERVED_HEADER_DECLARATION =
   /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): /
@@ -152,7 +152,8 @@ valid_declared_invocation = case headers["Prompt host"]
                             else
                               false
                             end
-complete_valid_headers = valid_header_counts && valid_host_mode_wrapper && valid_preferred_route &&
+complete_valid_headers = !malformed_reserved_headers && valid_header_counts &&
+                         valid_host_mode_wrapper && valid_preferred_route &&
                          ordered_headers && valid_declared_invocation &&
                          headers["Route requirement"] == "advisory"
 legacy_host = if no_headers && !malformed_reserved_headers && prompt.start_with?("/goal\n")
