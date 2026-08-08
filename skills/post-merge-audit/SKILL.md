@@ -267,7 +267,7 @@ For each included PR:
   a process finding unless a maintainer explicitly waived replay for that
   scope.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.
-- Decision log: inspect any `Codex Decision Log` or equivalent section and verify the decisions still hold after the merge.
+- Decision log: inspect the canonical `### Decision log` subsection inside the PR description's `Agent details` disclosure first; also discover legacy `## Codex Decision Log` and consumer-equivalent sections, then verify their decisions still hold after the merge.
 
 For each worked issue, QA lane, or advisory `codex-claim` recovery row from
 coordination state, including no-PR, blocked, parked, done-unmerged, or
