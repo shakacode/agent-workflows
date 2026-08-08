@@ -458,9 +458,14 @@ def render_prompt_mechanics(prompt, sigil)
     .sub(/^- ask=>pr-walkthrough;/, "- ask=>#{sigil}pr-walkthrough;")
 end
 
-def prompt_for_adapter(prompt_template, target)
+def prompt_for_adapter(prompt_template, target, goal_requested: false)
   batch_size_target = { codex: "codex", claude: "claude", generic: "generic" }.fetch(target)
-  prompt_for_target(prompt_template, target)
+  rendered_prompt = if target == :codex
+                      codex_prompt_for(prompt_template, goal_requested:).fetch(:prompt)
+                    else
+                      prompt_for_target(prompt_template, target)
+                    end
+  rendered_prompt
     .sub(PREFERRED_ROUTE_PROMPT_LINE, "Preferred route: default")
     .sub(/^Batch size target: <codex\|claude\|generic>;/,
          "Batch size target: #{batch_size_target};")
@@ -538,9 +543,15 @@ def normalized_prompt_semantics(prompt)
 end
 
 def assert_canonical_prompt_adapter_contract(label, prompt_template)
-  prompts = %i[codex claude generic].to_h do |target|
-    [target, prompt_for_adapter(prompt_template, target)]
-  end
+  codex_prompts = {
+    batch: prompt_for_adapter(prompt_template, :codex, goal_requested: false),
+    goal: prompt_for_adapter(prompt_template, :codex, goal_requested: true)
+  }
+  prompts = {
+    codex: codex_prompts.fetch(:batch),
+    claude: prompt_for_adapter(prompt_template, :claude),
+    generic: prompt_for_adapter(prompt_template, :generic)
+  }
   expected = {
     codex: %w[codex compatible],
     claude: %w[claude compatible]
@@ -566,6 +577,13 @@ def assert_canonical_prompt_adapter_contract(label, prompt_template)
     end
   end
 
+  explicit_goal_result = classify_prompt(codex_prompts.fetch(:goal), "codex", "#{label} codex goal")
+  unless explicit_goal_result["classification"] == "compatible" &&
+         explicit_goal_result["execute_allowed"] == true &&
+         explicit_goal_result["prompt"] == codex_prompts.fetch(:goal)
+    abort_with_failure("#{label} explicit Codex Goal is not byte-exact executable compatible")
+  end
+
   %w[codex claude].each do |active_host|
     result = classify_prompt(prompts.fetch(:generic), active_host, "#{label} generic on #{active_host}")
     unless result["classification"] == "portable" && result["execute_allowed"] == true &&
@@ -585,6 +603,14 @@ def assert_canonical_prompt_adapter_contract(label, prompt_template)
            result["semantic_payload_preserved"] == true && result["prompt"] == prompts.fetch(target)
       abort_with_failure("#{label} #{source} to #{target} conversion is not byte exact: #{result.inspect}")
     end
+  end
+
+  explicit_goal_conversion = classify_prompt(codex_prompts.fetch(:goal), "claude", "#{label} codex goal to claude")
+  unless explicit_goal_conversion["classification"] == "conversion-required" &&
+         explicit_goal_conversion["execute_allowed"] == false &&
+         explicit_goal_conversion["semantic_payload_preserved"] == true &&
+         explicit_goal_conversion["prompt"] == prompts.fetch(:claude)
+    abort_with_failure("#{label} explicit Codex Goal to Claude conversion is not byte exact")
   end
 end
 
