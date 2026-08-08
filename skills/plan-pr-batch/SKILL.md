@@ -495,11 +495,12 @@ Use the canonical human-facing readiness states from
 [Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format)
 in planning notes, done conditions, and final-bucket handoffs. Normal
 interactive output stays human-readable; do not replace those states with vague
-labels such as `ready`, `complete`, or `done`. Preserve explicit `UNKNOWN` for
-facts that cannot be verified, including coordination, file-touch, review, CI,
-QA, or merge-ledger evidence; do not turn unknown evidence into an optimistic
-state. Optional structured handoff blocks may reduce ambiguity for a coordinator
-or validator, but they are not required and JSON is not mandatory.
+labels such as `ready`, `complete`, or `done`, and never invent `gate-clean`.
+Preserve explicit `UNKNOWN` for facts that cannot be verified, including
+coordination, file-touch, review, CI, QA, or merge-ledger evidence; do not turn
+unknown evidence into an optimistic state. Optional structured handoff blocks
+may reduce ambiguity for a coordinator or validator, but they are not required
+and JSON is not mandatory.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 

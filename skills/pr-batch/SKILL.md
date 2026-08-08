@@ -225,7 +225,7 @@ Use the canonical human-facing final states from
 [Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format)
 for target and batch handoffs. Normal interactive output stays human-readable.
 Do not replace the split states with vague labels like `ready`, `complete`, or
-`done`; each target needs blockers, links, tests, next action, and
+`done`, and never invent `gate-clean`; each target needs blockers, links, tests, next action, and
 `merge_authority` evidence attached. Preserve explicit `UNKNOWN` for any fact
 that cannot be verified, including coordination, CI, review, QA, release, or
 merge-ledger evidence. Optional structured handoff blocks are allowed only when
@@ -897,7 +897,12 @@ Replay the final visible status line from the normalized blocker union: render a
 When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
 target is merged + closed out (or a true blocker / no-PR with evidence), not
 "stopped at a recommendation." When `merge_authority` is `ask` and gates are
-clean, automatically start the exact-diff PR walkthrough before approval: use
+clean, first establish the exact current integration candidate from the current
+head plus current base or a provider-produced merge result. A successful check
+on an older head or before the current base was incorporated does not qualify.
+Do not start the walkthrough while current-integration CI is missing, stale,
+pending, failing, or `UNKNOWN`. After current-integration CI passes,
+automatically start the exact-diff PR walkthrough before approval: use
 `$pr-walkthrough` when available, use full interactive mode for large or complex
 PRs and concise interactive mode for smaller cohesive PRs, and do not repeat a
 walkthrough completed for the same diff identity. Honor an explicit request to

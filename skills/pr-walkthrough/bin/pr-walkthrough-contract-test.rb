@@ -46,11 +46,27 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes skill, "Walkthrough participation is not merge approval."
   end
 
+  def test_missing_or_stale_hosted_ci_is_loud_and_never_described_as_clean
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+
+    [
+      "Report hosted or external CI separately as `PASSED`, `PENDING`, `FAILED`, `NOT RUN`, or `UNKNOWN`",
+      "GitHub's `CLEAN` merge state reports conflict detection, not CI or merge readiness.",
+      "HOSTED CI NOT RUN FOR CURRENT INTEGRATION CANDIDATE — NOT MERGE-READY.",
+      "Never describe a PR as `gate-clean`, `clean`, `green`, `ready`, or an equivalent reassuring label",
+      "The walkthrough remains read-only and does not start CI itself."
+    ].each do |phrase|
+      assert_includes skill, phrase
+    end
+  end
+
   def test_ask_authority_automatically_walks_through_before_merge_decision
     [WORKFLOW, PR_BATCH, PR_MONITORING].each do |path|
       text = File.read(path).gsub(/\s+/, " ")
 
       phrases = [
+        "A successful check on an older head or before the current base was incorporated does not qualify.",
+        "Do not start the walkthrough while current-integration CI is missing, stale, pending, failing, or `UNKNOWN`.",
         "automatically start the exact-diff PR walkthrough",
         "full interactive mode for large or complex PRs",
         "After it completes or is skipped, refresh the diff identity and ordinary readiness.",

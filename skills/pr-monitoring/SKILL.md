@@ -115,6 +115,11 @@ cohorts on the new head.
    - `DIRTY`, conflicted, or behind branches are not ready.
    - Rebase or merge base updates only when safe and consistent with repo
      policy.
+   - Establish the exact current integration candidate from the current head
+     plus current base or a provider-produced merge result. A successful check
+     on an older head or before the current base was incorporated does not
+     qualify. Do not start the walkthrough while current-integration CI is
+     missing, stale, pending, failing, or `UNKNOWN`.
 
 5. **Apply authority.**
    - `auto_merge_when_gates_pass`: merge only if ordinary readiness and the
