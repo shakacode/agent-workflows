@@ -165,7 +165,11 @@ module PushDownstream
   end
 
   def load_security_audit_fleet(config_path, fleet_name)
-    data = YAML.safe_load(File.read(config_path), aliases: false) || {}
+    data = YAML.safe_load(File.read(config_path), aliases: false)
+    unless data.is_a?(Hash)
+      raise "invalid downstream registry: top level must be a mapping"
+    end
+
     fleets = data["security_audit_fleets"]
     raise "missing security_audit_fleets registry" unless fleets.is_a?(Hash)
 
@@ -181,8 +185,12 @@ module PushDownstream
       owner = entry["owner"]
       repo = entry["repo"]
       base_branch = entry["base_branch"]
+      remote_url = entry["remote_url"]
       unless [owner, repo, base_branch].all? { |value| value.is_a?(String) && !value.empty? && !value.match?(/[\0\r\n]/) }
         raise "invalid security audit fleet entry"
+      end
+      if !remote_url.nil? && !valid_security_audit_remote_url?(remote_url)
+        raise "invalid security audit fleet remote_url for #{owner}/#{repo}"
       end
 
       {
@@ -190,7 +198,7 @@ module PushDownstream
         repo: repo,
         nwo: "#{owner}/#{repo}",
         base_branch: base_branch,
-        remote_url: entry["remote_url"]
+        remote_url: remote_url
       }
     end
     duplicates = repos.group_by { |repo| repo.fetch(:nwo) }.select { |_nwo, matches| matches.length > 1 }.keys
@@ -199,6 +207,12 @@ module PushDownstream
     { name: fleet_name, repos: repos }
   rescue Psych::Exception => e
     raise "invalid downstream registry: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def valid_security_audit_remote_url?(remote_url)
+    remote_url.is_a?(String) &&
+      remote_url.match?(/\A[^\s\0]+\z/) &&
+      !remote_url.start_with?("-")
   end
 
   def validate_policy_fleet_values!(fleet_name, repos, keys)

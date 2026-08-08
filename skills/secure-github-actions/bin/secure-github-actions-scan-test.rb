@@ -9,6 +9,7 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 require "yaml"
+require_relative "../lib/secure_github_actions_scanner"
 
 class SecureGitHubActionsScanTest < Minitest::Test
   SCANNER = File.expand_path("secure-github-actions-scan", __dir__)
@@ -146,6 +147,25 @@ class SecureGitHubActionsScanTest < Minitest::Test
           steps:
             - uses: ./nested/../../outside
     YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal ["secure-github-actions/unsafe-local-use"], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_local_action_reference_rejects_backslash_as_an_alternate_separator
+    with_repository(<<~'YAML') do |root|
+      jobs:
+        build:
+          steps:
+            - uses: './tmp\evil'
+    YAML
+      action = File.join(root, "tmp\\evil/action.yml")
+      FileUtils.mkdir_p(File.dirname(action))
+      File.write(action, "runs: { using: composite, steps: [] }\n")
+
       stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
 
       assert_equal 1, status.exitstatus
@@ -687,6 +707,41 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_non_scalar_and_alias_allowlist_entries_fail_closed_as_structured_findings
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    policies = [
+      "trusted_actions:\n  - owner: action\n",
+      "trusted_actions:\n  - [owner/action]\n",
+      "shared: &action owner/action\ntrusted_actions:\n  - *action\n"
+    ]
+
+    actual = policies.map do |policy|
+      with_repository(<<~YAML) do |root|
+        jobs:
+          build:
+            steps:
+              - uses: owner/action@#{sha} # v1.2.3
+      YAML
+        policy_path = File.join(root, ".agents/agent-workflow.yml")
+        FileUtils.mkdir_p(File.dirname(policy_path))
+        File.write(policy_path, policy)
+
+        stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+        [status.exitstatus, stderr, rule_ids(JSON.parse(stdout))]
+      end
+    end
+
+    expected = [
+      1,
+      "",
+      [
+        "secure-github-actions/invalid-trusted-actions-policy",
+        "secure-github-actions/untrusted-external-use"
+      ]
+    ]
+    assert_equal [expected, expected, expected], actual
+  end
+
   def test_multiple_policy_documents_are_invalid_and_do_not_trust_action
     sha = "0123456789abcdef0123456789abcdef01234567"
     with_repository(<<~YAML) do |root|
@@ -974,6 +1029,19 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_empty rule_ids(document)
       assert_includes document.dig("scan", "files_scanned"), "TMP/local/action.yml"
       refute_includes document.dig("scan", "files_scanned"), "tmp/hidden/action.yml"
+    end
+  end
+
+  def test_missing_normalized_excluded_root_is_distinct_but_indeterminate_identity_fails_closed
+    with_repository("jobs: {}\n") do |root|
+      scanner = SecureGitHubActions::Scanner.new(root)
+
+      scanner.define_singleton_method(:action_root_entry_exists?) { |*, **| false }
+      scanner.define_singleton_method(:identical_action_roots?) { |*, **| raise "identity lookup must not run" }
+      refute scanner.send(:excluded_action_root?, "TMP/local")
+
+      scanner.define_singleton_method(:action_root_entry_exists?) { |*, **| raise Errno::EACCES }
+      assert scanner.send(:excluded_action_root?, "TMP/local")
     end
   end
 

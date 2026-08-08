@@ -283,6 +283,104 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
     end
   end
 
+  def test_security_audit_reports_malformed_trusted_actions_as_noncompliant
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      FileUtils.mkdir_p(File.join(consumer, ".agents"))
+      File.write(File.join(consumer, ".github/workflows/test.yml"), <<~YAML)
+        jobs:
+          build:
+            steps:
+              - uses: owner/action@0123456789abcdef0123456789abcdef01234567 # v1.2.3
+      YAML
+      File.write(File.join(consumer, ".agents/agent-workflow.yml"), <<~YAML)
+        trusted_actions:
+          - owner: action
+      YAML
+      git!(consumer, "init", "-b", "main")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: consumer
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: nil
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "noncompliant", repo.fetch("status")
+      assert_includes repo.fetch("rule_ids"), "secure-github-actions/invalid-trusted-actions-policy"
+    end
+  end
+
+  def test_security_audit_rejects_sequence_and_scalar_registries_without_backtrace
+    ["- invalid\n", "invalid\n", "false\n", "null\n"].each do |yaml|
+      with_security_audit_config(yaml) do |config|
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+
+        assert_equal 1, @status
+        assert_empty out
+        assert_includes err, "FAIL security audit fleet workflow-security: invalid downstream registry: top level must be a mapping"
+        refute_includes err, "backtrace"
+      end
+    end
+  end
+
+  def test_security_audit_rejects_invalid_remote_url_types_and_shapes_without_backtrace
+    invalid_remote_urls = [{ "url" => "/tmp/repo" }, ["/tmp/repo"], "", "--upload-pack=evil"]
+    invalid_remote_urls.each do |remote_url|
+      yaml = YAML.dump(
+        "security_audit_fleets" => {
+          "workflow-security" => {
+            "repos" => [{
+              "owner" => "shakacode",
+              "repo" => "consumer",
+              "base_branch" => "main",
+              "remote_url" => remote_url
+            }]
+          }
+        }
+      )
+
+      with_security_audit_config(yaml) do |config|
+        out, err = capture_io do
+          @status = PushDownstream.run_security_audit_fleet(
+            config,
+            fleet_name: "workflow-security",
+            only: nil
+          )
+        end
+
+        assert_equal 1, @status
+        assert_empty out
+        assert_includes err, "invalid security audit fleet remote_url"
+        refute_includes err, "backtrace"
+      end
+    end
+  end
+
   def test_security_audit_cli_rejects_apply
     Dir.mktmpdir("push-downstream-security-audit") do |dir|
       config = File.join(dir, "downstream.yml")
@@ -375,6 +473,14 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
   end
 
   private
+
+  def with_security_audit_config(yaml)
+    Dir.mktmpdir("push-downstream-security-audit-config") do |dir|
+      config = File.join(dir, "downstream.yml")
+      File.write(config, yaml)
+      yield config
+    end
+  end
 
   def git!(root, *arguments)
     out, status = Open3.capture2e("git", "-C", root, *arguments)

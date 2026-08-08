@@ -425,7 +425,7 @@ module SecureGitHubActions
     end
 
     def safe_local_use?(reference)
-      return false unless reference.match?(%r{\A\./[^\s@]+\z})
+      return false unless reference.match?(%r{\A\./[^\s@\\]+\z})
 
       reference.split("/").drop(1).none? { |segment| segment.empty? || %w[. ..].include?(segment) }
     end
@@ -500,9 +500,22 @@ module SecureGitHubActions
 
       # Preserve distinct uppercase roots on case-sensitive filesystems; reject
       # only when the alias and reserved spelling resolve to the same entry.
-      File.identical?(File.join(@root, root_segment), File.join(@root, normalized))
+      return false unless action_root_entry_exists?(normalized)
+
+      identical_action_roots?(root_segment, normalized)
     rescue SystemCallError
       true
+    end
+
+    def action_root_entry_exists?(segment)
+      File.lstat(File.join(@root, segment))
+      true
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      false
+    end
+
+    def identical_action_roots?(root_segment, normalized)
+      File.identical?(File.join(@root, root_segment), File.join(@root, normalized))
     end
 
     def external_use?(reference)
@@ -541,9 +554,10 @@ module SecureGitHubActions
           (entry.tag.nil? || entry.tag == "tag:yaml.org,2002:str") &&
           entry.value.match?(%r{\A[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\z})
       end
-      normalized = entries.map { |entry| entry.value.downcase }
-      valid &&= normalized.uniq.length == normalized.length
       return invalid_trusted_actions(path) unless valid
+
+      normalized = entries.map { |entry| entry.value.downcase }
+      return invalid_trusted_actions(path) unless normalized.uniq.length == normalized.length
 
       [normalized.freeze, []]
     rescue Psych::Exception, EncodingError, SystemCallError, UnsafeFileError

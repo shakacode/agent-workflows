@@ -341,6 +341,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/bin/agent-workflows-doctor"
     assert_file "$target/bin/agent_doctor/process_runner.rb"
     assert_file "$target/bin/agent-workflows-delivery-state"
+    assert_file "$target/lib/agent-workflows/secure_github_actions_scanner.rb"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
       abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"

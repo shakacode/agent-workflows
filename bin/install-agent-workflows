@@ -25,6 +25,7 @@ Installed paths:
   <target>/bin/agent_doctor/*
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
+  <target>/lib/agent-workflows/secure_github_actions_scanner.rb (plugin-companion mode only)
   <target>/.agent-workflows-install.json
 USAGE
 }
@@ -690,6 +691,20 @@ else
 fi
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
+  scanner_companion_dir="$target/lib/agent-workflows"
+  scanner_companion="$scanner_companion_dir/secure_github_actions_scanner.rb"
+  ensure_real_directory "$scanner_companion_dir"
+  if [[ -L "$scanner_companion" ]]; then
+    rm -f "$scanner_companion"
+  fi
+  if [[ -e "$scanner_companion" && ! -f "$scanner_companion" ]]; then
+    echo "Refusing to replace non-file path: $scanner_companion" >&2
+    exit 1
+  fi
+  install -m 0644 \
+    "$repo_root/skills/secure-github-actions/lib/secure_github_actions_scanner.rb" \
+    "$scanner_companion"
+
   set +e
   delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
   delivery_status=$?

@@ -998,6 +998,28 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_trusted_actions_policy_text_fails(policy_text)
   end
 
+  def test_non_scalar_and_alias_trusted_actions_entries_fail_without_backtrace
+    entries = [
+      "trusted_actions:\n  - owner: action\n",
+      "trusted_actions:\n  - [owner/action]\n",
+      "shared_action: &action owner/action\ntrusted_actions:\n  - *action\n"
+    ]
+
+    entries.each do |entry|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        File.write(File.join(root, ".agents/agent-workflow.yml"), "#{POLICY.to_yaml}#{entry}")
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, out
+        assert_includes out, "secure-github-actions/invalid-trusted-actions-policy"
+        refute_includes out, "NoMethodError"
+      end
+    end
+  end
+
   def test_policy_type_change_during_check_fails_closed_without_actions
     with_repo do |root|
       write_valid_binstub_contract(root)

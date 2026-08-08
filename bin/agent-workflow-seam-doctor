@@ -1587,7 +1587,10 @@ module AgentWorkflowSeamDoctor
   def load_secure_github_actions_scanner(shared_roots)
     return true if defined?(SecureGitHubActions::Scanner)
 
-    candidates = [File.expand_path("../skills/secure-github-actions/lib/secure_github_actions_scanner.rb", __dir__)]
+    candidates = [
+      File.expand_path("../skills/secure-github-actions/lib/secure_github_actions_scanner.rb", __dir__),
+      File.expand_path("../lib/agent-workflows/secure_github_actions_scanner.rb", __dir__)
+    ]
     candidates.concat(shared_roots.map do |shared_root|
       File.join(shared_root, "skills/secure-github-actions/lib/secure_github_actions_scanner.rb")
     end)
