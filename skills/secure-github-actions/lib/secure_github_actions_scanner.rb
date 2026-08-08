@@ -125,7 +125,7 @@ module SecureGitHubActions
 
           stat = File.lstat(directory)
           unless stat.directory? && !stat.symlink?
-            findings << unsafe_action_discovery_finding(directory) if directory != @root
+            findings << unsafe_action_discovery_finding(directory)
             next
           end
 

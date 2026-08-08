@@ -909,6 +909,63 @@ class SecureGitHubActionsScanTest < Minitest::Test
     assert_equal expected, actual
   end
 
+  def test_action_discovery_fails_closed_when_the_repository_root_is_replaced
+    expected = []
+    expected_file_types = { symlink: "link", regular_file: "file", fifo: "fifo" }
+    actual = %i[symlink regular_file fifo].map do |replacement|
+      Dir.mktmpdir("secure-github-actions-root-replacement") do |outer|
+        root = File.join(outer, "repository")
+        moved_root = File.join(outer, "repository-moved")
+        action_path = File.join(root, "source/action.yml")
+        FileUtils.mkdir_p(File.dirname(action_path))
+        File.write(action_path, <<~'YAML')
+          runs:
+            using: composite
+            steps:
+              - run: echo "${{ github.event.issue.title }}"
+        YAML
+        git!(root, "init", "-b", "main")
+        git!(root, "add", "source/action.yml")
+
+        canonical_root = File.realpath(root)
+        scanner = SecureGitHubActions::Scanner.new(root)
+        File.rename(root, moved_root)
+        case replacement
+        when :symlink
+          replacement_target = File.join(outer, "empty-repository")
+          Dir.mkdir(replacement_target)
+          File.symlink(replacement_target, root)
+        when :regular_file
+          File.write(root, "not a directory\n")
+        when :fifo
+          File.mkfifo(root)
+        end
+
+        result = scanner.scan
+        expected << [
+          replacement,
+          expected_file_types.fetch(replacement),
+          false,
+          [],
+          ["secure-github-actions/unsafe-file"],
+          [canonical_root],
+          [canonical_root]
+        ]
+        [
+          replacement,
+          File.lstat(root).ftype,
+          result.clean?,
+          result.files,
+          result.findings.map { |finding| finding.fetch("rule_id") },
+          result.findings.map { |finding| finding.dig("location", "file") },
+          result.findings.map { |finding| finding.dig("target", "root") }
+        ]
+      end
+    end
+
+    assert_equal expected, actual
+  end
+
   def test_git_action_discovery_rejects_tracked_action_ancestors_replaced_by_non_directories
     actual = %i[symlink regular_file].map do |replacement|
       with_repository("jobs: {}\n") do |root|
