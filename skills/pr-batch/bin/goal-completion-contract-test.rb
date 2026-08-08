@@ -15,7 +15,6 @@ unless File.file?(receipt_parser_path)
   )
 end
 load receipt_parser_path
-require_relative "pr-body-human-first-contract-test"
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")

@@ -7,12 +7,16 @@ PR_BODY_CONTRACT_ROOT = File.expand_path("../../..", __dir__)
 PR_BODY_CONTRACT_WORKFLOW_PATH = File.join(PR_BODY_CONTRACT_ROOT, "workflows/pr-processing.md")
 PR_BODY_CONTRACT_PR_BATCH_SKILL_PATH = File.join(PR_BODY_CONTRACT_ROOT, "skills/pr-batch/SKILL.md")
 PR_BODY_CONTRACT_AUDIT_RECEIPT_PATH = File.join(PR_BODY_CONTRACT_ROOT, "skills/post-merge-audit/bin/completed-batch-audit-receipt")
+PR_BODY_CONTRACT_VALIDATE_PATH = File.join(PR_BODY_CONTRACT_ROOT, "bin/validate")
+PR_BODY_CONTRACT_GOAL_TEST_PATH = File.join(PR_BODY_CONTRACT_ROOT, "skills/pr-batch/bin/goal-completion-contract-test.rb")
 
 class PrBodyHumanFirstContractTest < Minitest::Test
   def test_canonical_pr_body_keeps_human_context_visible_and_collapses_agent_evidence_once
     workflow = File.read(PR_BODY_CONTRACT_WORKFLOW_PATH, encoding: "UTF-8")
     pr_batch_skill = File.read(PR_BODY_CONTRACT_PR_BATCH_SKILL_PATH, encoding: "UTF-8")
     audit_receipt = File.read(PR_BODY_CONTRACT_AUDIT_RECEIPT_PATH, encoding: "UTF-8")
+    validation = File.read(PR_BODY_CONTRACT_VALIDATE_PATH, encoding: "UTF-8")
+    goal_test = File.read(PR_BODY_CONTRACT_GOAL_TEST_PATH, encoding: "UTF-8")
     normalized_workflow = workflow.gsub(/\s+/, " ")
 
     assert_includes workflow, "### Human-First PR Description Contract"
@@ -49,6 +53,8 @@ class PrBodyHumanFirstContractTest < Minitest::Test
     assert_includes template, "Insert the helper-managed `#### Completed-batch audit` section here."
     assert_includes pr_batch_skill, "under `### Audit receipts`"
     assert_includes audit_receipt, "#### Completed-batch audit"
-    refute_match(/^### Completed-batch audit$/, audit_receipt)
+    refute_match(/^## Completed-batch audit$/, audit_receipt)
+    assert_includes validation, "ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb"
+    refute_includes goal_test, 'require_relative "pr-body-human-first-contract-test"'
   end
 end
