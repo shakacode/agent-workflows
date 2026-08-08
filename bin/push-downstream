@@ -794,6 +794,14 @@ module PushDownstream
       head, head_status = Open3.capture2("git", "-C", clone, "rev-parse", "HEAD")
       return unknown_security_audit(repo, "head-resolution-failed") unless head_status.success?
 
+      base_ref = "refs/remotes/origin/#{repo.fetch(:base_branch)}"
+      base_head, _base_err, base_status = Open3.capture3(
+        "git", "-C", clone, "rev-parse", "--verify", "#{base_ref}^{commit}"
+      )
+      unless base_status.success? && base_head.strip == head.strip
+        return unknown_security_audit(repo, "base-branch-ref-missing-or-head-mismatch")
+      end
+
       result = SecureGitHubActions::Scanner.new(clone).scan
       findings = result.findings.map do |finding|
         location = finding.fetch("location")

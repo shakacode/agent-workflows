@@ -16,6 +16,13 @@ for every affected workflow:
 - justify every exact `trusted_actions` entry instead of widening trust for
   convenience.
 
+The readable-version-comment check is intentionally lexical: a non-empty
+same-line comment passes mechanically, but the scanner cannot prove that the
+comment names the release represented by the SHA. Compare that pair manually.
+Treat the absence of a stricter version grammar as a nonblocking observation
+unless the repository adopts an unambiguous grammar; do not invent one during
+review.
+
 For public repositories, additionally require:
 
 - no secrets or privileged token in fork-PR build, test, lint, or scanner jobs;

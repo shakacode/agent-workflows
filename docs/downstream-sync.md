@@ -180,6 +180,8 @@ or the broad scaffold reconciliation path.
 `security_audit_fleets` is a separate, read-only inventory. It clones only the
 registered base branch into a temporary directory, runs the
 `secure-github-actions` parser-backed gate, and emits a head-bound JSON report.
+After cloning, it requires `refs/remotes/origin/<base>` to exist and match
+`HEAD`; a same-named tag or any ref mismatch is `UNKNOWN`, never clean evidence.
 It never changes a consumer checkout, pushes a branch, opens a PR, chooses a
 `trusted_actions` entry, or enables Dependabot. `UNKNOWN` clone, head, or scan
 state is non-clean and exits nonzero.

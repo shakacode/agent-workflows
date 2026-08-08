@@ -117,6 +117,8 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert acceptable_action_reference?("owner/action@#{sha}")
     assert acceptable_action_reference?("owner/action/subpath@#{sha}")
     assert acceptable_action_reference?("docker://alpine@sha256:#{'a' * 64}")
+    refute acceptable_action_reference?("./tmp/evil")
+    refute acceptable_action_reference?("./nested/../../outside")
     refute acceptable_action_reference?("owner/action@v1")
     refute acceptable_action_reference?("owner/action@v1@#{sha}")
     refute acceptable_action_reference?("docker://alpine@#{sha}")
@@ -166,7 +168,11 @@ class RepositorySecurityPolicyTest < Minitest::Test
   def acceptable_action_reference?(reference)
     return false unless reference.is_a?(String)
 
-    return true if reference.start_with?("./")
+    if reference.start_with?("./")
+      segments = reference.delete_prefix("./").split("/")
+      return !segments.empty? && !%w[.codex .git .tmp tmp].include?(segments.first) &&
+             segments.none? { |segment| segment.empty? || %w[. ..].include?(segment) }
+    end
     return true if reference.match?(%r{\Adocker://[^\s@]+@sha256:[0-9a-fA-F]{64}\z})
 
     reference.match?(%r{\A[^\s@/]+/[^\s@/]+(?:/[^\s@/]+)*@[0-9a-f]{40}\z})

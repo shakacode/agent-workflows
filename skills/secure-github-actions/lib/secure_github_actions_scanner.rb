@@ -26,6 +26,8 @@ module SecureGitHubActions
 
   class Scanner
     EXPRESSION_PATTERN = /\$\{\{.*?\}\}/m
+    EXCLUDED_ACTION_ROOTS = %w[.codex .git .tmp tmp].freeze
+    ACTION_DESCRIPTORS = %w[action.yml action.yaml].freeze
 
     def initialize(root)
       @root = File.realpath(root)
@@ -35,7 +37,7 @@ module SecureGitHubActions
     def scan
       workflow_paths = Dir.glob(File.join(@root, ".github/workflows/*.{yml,yaml}"))
       action_paths = Dir.glob(File.join(@root, "**/action.{yml,yaml}"), File::FNM_DOTMATCH).reject do |path|
-        %w[.codex .git .tmp tmp].include?(relative_path(path).split("/", 2).first)
+        excluded_action_root?(relative_path(path))
       end
       paths = (workflow_paths + action_paths).uniq.sort
       @trusted_actions, policy_findings = load_trusted_actions
@@ -130,13 +132,15 @@ module SecureGitHubActions
 
     def scan_node(node, path, keys, lines)
       case node
+      when Psych::Nodes::Alias
+        alias_findings(node, path, keys)
       when Psych::Nodes::Mapping
         node.children.each_slice(2).flat_map do |key, value|
           key_name = key.is_a?(Psych::Nodes::Scalar) ? key.value : "<key>"
           symbol = (keys + [key_name]).join(".")
           findings = if sensitive_position?(key_name, keys)
                        shape_findings(key_name, value, path, symbol) +
-                         scalar_findings(key_name, value, path, symbol, lines)
+                         scalar_findings(key_name, value, path, symbol, lines, keys)
                      else
                        []
                      end
@@ -153,6 +157,37 @@ module SecureGitHubActions
           []
         end
       end
+    end
+
+    def alias_findings(node, path, keys)
+      return [] unless sensitive_alias_destination?(keys)
+
+      [finding(
+        rule_id: "secure-github-actions/unsupported-yaml-alias",
+        path: path,
+        symbol: keys.join("."),
+        line: node.start_line + 1,
+        title: "YAML alias enters a security-sensitive GitHub Actions boundary",
+        body: "Expand the aliased job or step mapping explicitly so run, uses, and secrets checks remain destination-bound."
+      )]
+    end
+
+    def sensitive_alias_destination?(keys)
+      return true if [["jobs"], ["runs"]].include?(keys)
+
+      if keys.first == "jobs"
+        return true if keys.length == 2
+        return true if keys.length >= 3 && keys[2] == "<<"
+        return true if keys.length == 3 && keys[2] == "steps"
+        return true if keys.length == 4 && keys[2] == "steps" && keys[3].is_a?(Integer)
+        return true if keys.length >= 5 && keys[2] == "steps" && keys[3].is_a?(Integer) && keys[4] == "<<"
+      end
+
+      return false unless keys.first == "runs"
+      return true if keys.length == 2 && keys[1] == "steps"
+      return true if keys.length == 3 && keys[1] == "steps" && keys[2].is_a?(Integer)
+
+      keys.length >= 4 && keys[1] == "steps" && keys[2].is_a?(Integer) && keys[3] == "<<"
     end
 
     def sensitive_position?(key_name, keys)
@@ -189,7 +224,7 @@ module SecureGitHubActions
       )]
     end
 
-    def scalar_findings(key_name, value, path, symbol, lines)
+    def scalar_findings(key_name, value, path, symbol, lines, keys)
       return [] unless value.is_a?(Psych::Nodes::Scalar)
 
       findings = []
@@ -214,14 +249,14 @@ module SecureGitHubActions
       end
 
       if key_name == "uses" && local_use?(value.value) &&
-         (!safe_local_use?(value.value) || !safe_local_target?(value.value))
+         (!safe_local_use?(value.value) || !safe_local_target?(value.value, keys))
         findings << finding(
           rule_id: "secure-github-actions/unsafe-local-use",
           path: path,
           symbol: symbol,
           line: value.start_line + 1,
-          title: "Local action reference escapes its repository boundary",
-          body: "Use an existing repository-relative action directory without empty, dot, parent, or symlink segments."
+          title: "Local GitHub Actions reference is outside its safe input boundary",
+          body: "Use a regular local workflow file for job-level uses, or a regular action directory and descriptor for step-level uses; excluded roots, traversal, missing targets, and symlinks are rejected."
         )
       elsif key_name == "uses" && !immutable_use?(value.value)
         findings << finding(
@@ -274,17 +309,60 @@ module SecureGitHubActions
       reference.split("/").drop(1).none? { |segment| segment.empty? || %w[. ..].include?(segment) }
     end
 
-    def safe_local_target?(reference)
-      current = @root
-      reference.delete_prefix("./").split("/").each do |segment|
-        current = File.join(current, segment)
-        stat = File.lstat(current)
-        return false unless stat.directory? && !stat.symlink?
-      end
+    def safe_local_target?(reference, keys)
+      relative = reference.delete_prefix("./")
+      return false if excluded_action_root?(relative)
 
-      true
+      segments = relative.split("/")
+      if job_level_use_position?(keys)
+        safe_local_workflow_file?(reference, segments)
+      else
+        safe_local_action_directory?(segments)
+      end
     rescue SystemCallError
       false
+    end
+
+    def job_level_use_position?(keys)
+      keys.length == 2 && keys[0] == "jobs"
+    end
+
+    def safe_local_workflow_file?(reference, segments)
+      return false unless reference.match?(%r{\A\./\.github/workflows/[^/]+\.ya?ml\z})
+
+      current = safe_directory_path(segments[0...-1])
+      return false unless current
+
+      stat = File.lstat(File.join(current, segments.last))
+      stat.file? && !stat.symlink?
+    end
+
+    def safe_local_action_directory?(segments)
+      directory = safe_directory_path(segments)
+      return false unless directory
+
+      descriptors = ACTION_DESCRIPTORS.map { |name| File.join(directory, name) }
+                                      .select { |path| File.exist?(path) || File.symlink?(path) }
+      return false if descriptors.empty?
+
+      descriptors.all? do |path|
+        stat = File.lstat(path)
+        stat.file? && !stat.symlink?
+      end
+    end
+
+    def safe_directory_path(segments)
+      current = @root
+      segments.each do |segment|
+        current = File.join(current, segment)
+        stat = File.lstat(current)
+        return nil unless stat.directory? && !stat.symlink?
+      end
+      current
+    end
+
+    def excluded_action_root?(relative)
+      EXCLUDED_ACTION_ROOTS.include?(relative.split("/", 2).first)
     end
 
     def external_use?(reference)

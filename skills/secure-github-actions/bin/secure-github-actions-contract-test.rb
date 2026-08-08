@@ -27,8 +27,11 @@ class SecureGitHubActionsContractTest < Minitest::Test
 
     assert_includes audit, "secure-github-actions-scan"
     assert_includes audit, "trusted_actions"
+    assert_includes audit, "aliases at security-sensitive job and step boundaries"
+    assert_includes audit, ".tmp"
     assert_includes public_rules, "persist-credentials: false"
     assert_includes public_rules, "necessary but not sufficient"
+    assert_includes public_rules, "nonblocking observation"
   end
 
   def test_repository_validation_runs_all_focused_security_suites
@@ -55,6 +58,8 @@ class SecureGitHubActionsContractTest < Minitest::Test
     assert_includes downstream, "Shakapacker"
     assert_includes supply_chain, "necessary but not sufficient"
     assert_includes supply_chain, "trusted_actions"
+    assert_includes supply_chain, "YAML aliases"
+    assert_includes downstream, "same-named tag"
     assert_includes changelog, "issue 273"
   end
 

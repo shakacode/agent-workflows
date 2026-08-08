@@ -47,6 +47,8 @@ unattended marketplace updates when you require human-reviewed provenance.
 enforces the repository policy for workflows and nested composite actions:
 
 - no `${{ ... }}` expression appears inside any `run:` scalar;
+- YAML aliases cannot enter job or step boundaries where they could hide
+  `run`, `uses`, or `secrets` content;
 - reusable workflows never use `secrets: inherit`;
 - every external `uses:` ref has a lowercase full 40-hex commit SHA plus a
   readable version comment; and
@@ -55,8 +57,11 @@ enforces the repository policy for workflows and nested composite actions:
 
 A missing or malformed allowlist trusts nothing. Wildcards, refs, and subpaths
 are not entries, and allowlisting an action never weakens the SHA or comment
-rules. Safe repository-relative local actions and digest-pinned containers keep
-their distinct immutable forms. `agent-workflow-seam-doctor` and `bin/validate`
+rules. Job-level local reusable workflows must be regular non-symlink files
+under `.github/workflows`. Step-level local actions must be regular non-symlink
+directories with regular `action.yml` / `action.yaml` descriptors, and excluded
+temporary or metadata roots cannot be referenced. Digest-pinned containers keep
+their distinct immutable form. `agent-workflow-seam-doctor` and `bin/validate`
 run this gate.
 
 A clean mechanical result is necessary but not sufficient. Review permissions,

@@ -19,8 +19,8 @@ provides a read-only deterministic gate plus a bounded manual security review.
    Use `--json` for `review-finding-v0` output. See
    [audit commands](references/audit-commands.md).
 3. Fix every deterministic finding. The scanner fails closed on malformed YAML,
-   unsafe file boundaries, invalid sensitive-field shapes, and invalid
-   `trusted_actions` policy.
+   aliases entering job or step boundaries, unsafe file boundaries, invalid
+   sensitive-field shapes, and invalid `trusted_actions` policy.
 4. Apply the judgment checks in
    [public repository rules](references/public-repo-rules.md), including the
    non-public baseline. The mechanical result is necessary but not sufficient.
@@ -31,8 +31,11 @@ The mechanical gate enforces:
 - no GitHub expression `${{ ... }}` in a `run:` scalar, including literal,
   folded, quoted, and explicitly typed string scalars;
 - no `secrets: inherit` on reusable-workflow jobs;
-- local actions stay repository-relative and digest-pinned container actions
-  remain valid;
+- job-level local reusable workflows resolve to regular non-symlink files under
+  `.github/workflows`, while step-level local actions resolve to regular
+  non-symlink directories and `action.yml` / `action.yaml` descriptors outside
+  excluded temporary or metadata roots; digest-pinned container actions remain
+  valid;
 - every other `uses:` reference has an exact lowercase 40-hex commit SHA and a
   readable same-line version comment; and
 - every external action repository is present as an exact `owner/repository`

@@ -30,3 +30,9 @@ rg -n '^\s*(run|uses|secrets):' .github/workflows --glob '*.{yml,yaml}'
 
 The parser-backed scan covers block, folded, and explicitly typed scalars, so it
 does not reproduce the line-oriented gaps of the upstream quick-audit commands.
+It rejects aliases at security-sensitive job and step boundaries rather than
+deserializing arbitrary YAML objects. Job-level local `uses:` must name a
+regular `.github/workflows/*.yml` or `.yaml` file; step-level local `uses:` must
+name a regular action directory with a regular descriptor. Symlinks, traversal,
+missing descriptors, and references beneath `.git`, `.codex`, `.tmp`, or `tmp`
+fail closed.

@@ -167,6 +167,78 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_aliases_cannot_hide_sensitive_step_content
+    with_repository(<<~'YAML', trusted_actions: ["owner/action"]) do |root|
+      hidden_run: &hidden_run
+        run: echo "${{ github.event.pull_request.title }}"
+      hidden_use: &hidden_use
+        uses: owner/action@v1
+      jobs:
+        build:
+          steps:
+            - *hidden_run
+            - <<: *hidden_use
+    YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "secure-github-actions/unsupported-yaml-alias",
+        "secure-github-actions/unsupported-yaml-alias"
+      ], rule_ids(document)
+      symbols = document.fetch("review_findings").map { |finding| finding.dig("location", "symbol") }
+      assert_equal [
+        "jobs.build.steps.0",
+        "jobs.build.steps.1.<<"
+      ], symbols
+    end
+  end
+
+  def test_unknown_and_cyclic_aliases_fail_closed_at_step_boundaries
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - *unknown_step
+            - &cyclic_step
+              <<: *cyclic_step
+    YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal [
+        "secure-github-actions/unsupported-yaml-alias",
+        "secure-github-actions/unsupported-yaml-alias"
+      ], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_composite_step_alias_fails_closed
+    with_repository("jobs: {}\n") do |root|
+      action_path = File.join(root, "components/aliased/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, <<~'YAML')
+        hidden: &hidden
+          run: echo "${{ github.event.issue.title }}"
+        runs:
+          using: composite
+          steps:
+            - *hidden
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      finding = JSON.parse(stdout).fetch("review_findings").first
+      assert_equal "secure-github-actions/unsupported-yaml-alias", finding.fetch("rule_id")
+      assert_equal "runs.steps.0", finding.dig("location", "symbol")
+    end
+  end
+
   def test_scanner_covers_nested_composite_actions
     with_repository("jobs: {}\n", trusted_actions: ["owner/action"]) do |root|
       action_path = File.join(root, "components/example/action.yml")
@@ -338,6 +410,114 @@ class SecureGitHubActionsScanTest < Minitest::Test
       assert_predicate status, :success?
       assert_empty stderr
       assert_empty rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_referenced_local_action_in_excluded_root_is_rejected
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./tmp/evil
+    YAML
+      action = File.join(root, "tmp/evil/action.yml")
+      FileUtils.mkdir_p(File.dirname(action))
+      File.write(action, "runs: { using: composite, steps: [] }\n")
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal ["secure-github-actions/unsafe-local-use"], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_step_local_action_requires_a_regular_descriptor
+    with_repository(<<~YAML) do |root|
+      jobs:
+        build:
+          steps:
+            - uses: ./local-action
+    YAML
+      FileUtils.mkdir_p(File.join(root, "local-action"))
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal ["secure-github-actions/unsafe-local-use"], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_step_local_action_rejects_a_symlinked_descriptor
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      workflow_path = File.join(root, ".github/workflows/test.yml")
+      action_dir = File.join(root, "local-action")
+      outside = File.join(outer, "action.yml")
+      FileUtils.mkdir_p(File.dirname(workflow_path))
+      FileUtils.mkdir_p(action_dir)
+      File.write(outside, "runs: { using: composite, steps: [] }\n")
+      File.symlink(outside, File.join(action_dir, "action.yml"))
+      File.write(workflow_path, <<~YAML)
+        jobs:
+          build:
+            steps:
+              - uses: ./local-action
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_includes rule_ids(JSON.parse(stdout)), "secure-github-actions/unsafe-local-use"
+    end
+  end
+
+  def test_job_level_local_reusable_workflow_is_accepted
+    with_repository(<<~YAML) do |root|
+      on: workflow_call
+      jobs:
+        call:
+          uses: ./.github/workflows/called.yml
+    YAML
+      File.write(File.join(root, ".github/workflows/called.yml"), <<~YAML)
+        on: workflow_call
+        jobs:
+          called:
+            runs-on: ubuntu-latest
+            steps:
+              - run: echo safe
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_predicate status, :success?
+      assert_empty stderr
+      assert_empty rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_job_level_local_reusable_workflow_rejects_symlink
+    Dir.mktmpdir("secure-github-actions") do |outer|
+      root = File.join(outer, "consumer")
+      workflow_dir = File.join(root, ".github/workflows")
+      outside = File.join(outer, "called.yml")
+      FileUtils.mkdir_p(workflow_dir)
+      File.write(outside, "on: workflow_call\njobs: {}\n")
+      File.symlink(outside, File.join(workflow_dir, "called.yml"))
+      File.write(File.join(workflow_dir, "caller.yml"), <<~YAML)
+        on: workflow_call
+        jobs:
+          call:
+            uses: ./.github/workflows/called.yml
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_includes rule_ids(JSON.parse(stdout)), "secure-github-actions/unsafe-local-use"
     end
   end
 

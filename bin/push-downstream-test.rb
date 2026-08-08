@@ -336,6 +336,44 @@ class PushDownstreamSecurityAuditFleetTest < Minitest::Test
     end
   end
 
+  def test_security_audit_reports_unknown_when_base_name_resolves_only_to_a_tag
+    Dir.mktmpdir("push-downstream-security-audit") do |dir|
+      consumer = File.join(dir, "consumer")
+      FileUtils.mkdir_p(File.join(consumer, ".github/workflows"))
+      File.write(File.join(consumer, ".github/workflows/clean.yml"), "jobs: {}\n")
+      git!(consumer, "init", "-b", "trunk")
+      git!(consumer, "add", ".")
+      git!(consumer, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "-m", "fixture")
+      git!(consumer, "tag", "main")
+      config = File.join(dir, "downstream.yml")
+      File.write(config, <<~YAML)
+        security_audit_fleets:
+          workflow-security:
+            repos:
+              - owner: shakacode
+                repo: tag-only
+                base_branch: main
+                remote_url: #{consumer.inspect}
+      YAML
+
+      out, err = capture_io do
+        @status = PushDownstream.run_security_audit_fleet(
+          config,
+          fleet_name: "workflow-security",
+          only: nil
+        )
+      end
+
+      assert_equal 1, @status
+      assert_empty err
+      repo = JSON.parse(out).fetch("repositories").fetch(0)
+      assert_equal "UNKNOWN", repo.fetch("status")
+      assert_equal "UNKNOWN", repo.fetch("head_sha")
+      assert_equal "base-branch-ref-missing-or-head-mismatch", repo.fetch("reason")
+    end
+  end
+
   private
 
   def git!(root, *arguments)
