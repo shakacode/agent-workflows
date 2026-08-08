@@ -615,18 +615,12 @@ status first when state is unclear, and do not substitute a direct hosted-CI-rea
 label from automation for the trigger command; direct labels are only the human/local
 user-token path.
 
-Suggested PR description section:
-
-```markdown
-## Codex Decision Log
-
-- **Non-blocking:** <question or fork in approach>
-  - **Decision:** <what was chosen>
-  - **Why:** <evidence or nearby pattern>
-  - **Review later:** <what a maintainer may want to revisit, or "None">
-```
-
-Before merge or final readiness, scan the PR description for the decision log and make sure each non-blocking decision is still accurate after review changes.
+Use the canonical [Human-First PR Description Contract](../../workflows/pr-processing.md#human-first-pr-description-contract).
+Keep the human-visible why, change summary, review path, and genuine maintainer
+questions or blockers outside its one `Agent details` disclosure; put the
+decision log and all agent evidence inside it. Before merge or final readiness,
+scan the decision log and make sure each non-blocking decision is still accurate
+after review changes.
 
 ## Maintainer Attention Contract
 
@@ -884,7 +878,7 @@ follow-ups, unresolved questions, pending work, or `UNKNOWN` facts ends with
 line must be `Conversation status: Follow-ups remain — <each exact action or
 blocker>.` A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 

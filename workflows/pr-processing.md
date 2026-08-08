@@ -97,7 +97,7 @@ questions before continuing.
 5. Self-review before every push or PR-ready signal.
 6. Run local validation based on changed areas.
 7. Run the pre-push AI review and simplify gate when the change is non-trivial or high-risk.
-8. Update the PR body, issue, or one concise PR comment with exact verification evidence, churn notes, and remaining gaps. Every PR body must include a self-contained why/rationale summary; link issues as supporting context, but do not require reviewers to open an issue to understand why the PR exists.
+8. Update the PR body, issue, or one concise PR comment with exact verification evidence, churn notes, and remaining gaps. Only a PR body uses the [Human-First PR Description Contract](#human-first-pr-description-contract); issue and comment destinations keep concise evidence suited to that destination. Every PR body must include a self-contained why/rationale summary; link issues as supporting context, but do not require reviewers to open an issue to understand why the PR exists.
 9. Only then request review, hosted CI, or merge readiness.
 
 ## Stage-Typed Dependency Gate
@@ -1028,8 +1028,12 @@ includes this evidence block:
 - Process-gap disposition: <script | schema | checklist+replay | park | not applicable>
 ```
 
-For replayable post-merge audit, append a hidden `qa-evidence v2` marker next to
-the human QA Evidence block whenever QA is required or explicitly not required:
+For replayable post-merge audit, keep the full QA Evidence block and hidden
+`qa-evidence v2` marker adjacent whenever QA is required or explicitly not
+required. When the evidence destination is a PR description, place both inside
+the canonical `Agent details` disclosure. In a handoff, issue comment, or saved
+evidence file, keep the marker adjacent to its QA Evidence block; a PR
+description is not required.
 
 ```markdown
 <!-- qa-evidence v2
@@ -1212,7 +1216,7 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
 Classify every unresolved question before continuing:
 
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine GitHub targets, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. For an ad-hoc target, record the question in the lane handoff because no target comment exists. A worker handoff should include the question, any comment URL, and that target's blocked final state.
-- **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note to the PR description so later review across merged PRs can surface these items quickly.
+- **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note inside the PR description's `Agent details` disclosure so later review across merged PRs can surface these items quickly.
 
 Before a private-backend lane pauses for required user input, emit
 `help_requested` alongside the prose handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. Follow the backend `n/a`, best-effort, and degraded-`UNKNOWN` rules under
@@ -1237,18 +1241,89 @@ suite selection may be insufficient, request force-full hosted CI and record why
 Re-fetch and wait for the newly requested current-head checks, then continue the
 readiness flow instead of escalating it as an immediate maintainer question.
 
-Suggested PR description section:
+### Human-First PR Description Contract
+
+Every PR description is human-first: a reviewer should understand the problem,
+the change, and a practical verification path without expanding implementation
+telemetry. Put all agent artifacts in exactly one canonical GitHub disclosure,
+with this exact opening and summary: `<details>\n<summary>Agent details</summary>`.
+This layout is a default, not a replacement for repository policy. Before
+writing, read the repository's PR template and applicable `AGENTS.md` seams.
+Merge every repository-required PR template section and AGENTS.md seam into this
+layout. Keep required human-visible sections and checklists outside `Agent
+details`; keep agent telemetry, including repository-required telemetry, inside
+the one canonical `Agent details` disclosure.
+Do not create a separate agent-artifact disclosure for QA, audit, review, or
+other telemetry. Human-authored product or design detail may use its own
+disclosure when it improves review. Include `## Maintainer attention` before
+the agent disclosure only for a genuine blocker, question, or high-value risk
+that needs maintainer action; do not add a `None.` placeholder to otherwise
+clean PRs.
+
+Use this structure; replace placeholders with concise, task-specific content:
 
 ```markdown
-## Codex Decision Log
+## Why
+
+<What problem, user outcome, or maintenance need does this address?>
+
+## What changed
+
+- <Human-readable change and its relevant boundary>
+
+## How to review and verify
+
+1. <A reviewer-oriented behavior or diff path to inspect.>
+2. <A concise outcome-level verification statement; link durable evidence when useful.>
+
+<!-- Insert required repository human-visible template sections and checklists here. -->
+
+<details>
+<summary>Agent details</summary>
+
+### Commands and results
+
+<Exact commands, results, CI URLs, and failures or timeouts.>
+
+### Exact-head and replay evidence
+
+<Head/base SHAs and replay scope.>
+
+<Insert the complete canonical `### QA Evidence` block, including its heading
+and the `<!-- qa-evidence v2 ... -->` and
+`<!-- priority-finding-dispositions v1 ... -->` markers, unchanged inside this
+disclosure.>
+
+### Coordination and reviewer telemetry
+
+<Claims, heartbeats, lane state, reviewer/checker identity, review-thread
+triage, and current-head coverage.>
+
+### Decision log
 
 - **Non-blocking:** <question or fork in approach>
   - **Decision:** <what was chosen>
   - **Why:** <evidence or nearby pattern>
   - **Review later:** <what a maintainer may want to revisit, or "None">
+
+### Merge confidence
+
+<The exact `Agent Merge Confidence` block when required, plus readiness and
+confidence metadata.>
+
+### Audit receipts
+
+<Managed audit summaries, durable receipt links, and audit/replay metadata.
+Insert the helper-managed `#### Completed-batch audit` section here.>
+
+</details>
 ```
 
-Before merge or final readiness, scan the PR description for the decision log and make sure each non-blocking decision is still accurate after review changes.
+Do not substitute raw commands, SHAs, agent status, confidence metadata, QA
+fields, replay markers, coordination data, reviewer telemetry, decision logs,
+or audit receipts for the human-visible summary. Before merge or final
+readiness, scan the `Agent details` decision log and make sure each non-blocking
+decision is still accurate after review changes.
 
 ### Batch Handoff Format
 
@@ -2152,7 +2227,7 @@ Parent cross-batch reconciliation is checklist+replay over durable terminal hand
 
 Batch coordinators execute their retained closeout through checklist+replay.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description. Before publishing `audit_status: complete`, the coordinator runs `completed-batch-publication-preflight` with `--workflow-config <trusted repo workflow config>`, a fresh raw bounded targeted coordination status, the exact trusted target manifest, refreshed target terminal states/full heads, and one exact-head QA Evidence marker per target. The helper derives the full set from coordination lanes and refuses absent, ambiguous, nonterminal, unmerged/unclosed, or `UNKNOWN` state. QA must replay as `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED` with an authenticated replayable maintainer-waiver comment; `unknown`, `in_progress`, missing, stale, malformed, or blocked QA refuses completion. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible preflight and exact manifest match. Pass the refreshed preflight receipt to `publish` and `replay` with `--publication-preflight` and explicit `--workflow-config <trusted repo workflow config>`; replay blocks on a coordination, target/head, or QA snapshot mismatch/staleness.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside `### Audit receipts` in the canonical `Agent details` disclosure. Before publishing `audit_status: complete`, the coordinator runs `completed-batch-publication-preflight` with `--workflow-config <trusted repo workflow config>`, a fresh raw bounded targeted coordination status, the exact trusted target manifest, refreshed target terminal states/full heads, and one exact-head QA Evidence marker per target. The helper derives the full set from coordination lanes and refuses absent, ambiguous, nonterminal, unmerged/unclosed, or `UNKNOWN` state. QA must replay as `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED` with an authenticated replayable maintainer-waiver comment; `unknown`, `in_progress`, missing, stale, malformed, or blocked QA refuses completion. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible preflight and exact manifest match. Pass the refreshed preflight receipt to `publish` and `replay` with `--publication-preflight` and explicit `--workflow-config <trusted repo workflow config>`; replay blocks on a coordination, target/head, or QA snapshot mismatch/staleness.
 
 Each `qa_evidence` row must carry a coordinator-owned
 `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's
