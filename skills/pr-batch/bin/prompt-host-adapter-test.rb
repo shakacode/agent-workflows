@@ -140,6 +140,69 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal true, relaunched.fetch("execute_allowed")
   end
 
+  def test_generated_triage_prompt_converts_every_canonical_mechanic_in_both_directions
+    cases = [
+      {
+        source_host: "codex",
+        active_host: "claude",
+        source_wrapper: "/goal\n",
+        expected_wrapper: "",
+        source_mode: "goal",
+        expected_mode: "batch",
+        source_sigil: "$",
+        expected_sigil: "/"
+      },
+      {
+        source_host: "claude",
+        active_host: "codex",
+        source_wrapper: "",
+        expected_wrapper: "/goal\n",
+        source_mode: "batch",
+        expected_mode: "goal",
+        source_sigil: "/",
+        expected_sigil: "$"
+      }
+    ]
+
+    cases.each do |entry|
+      prompt = <<~PROMPT
+        #{entry.fetch(:source_wrapper)}Prompt host: #{entry.fetch(:source_host)}
+        Prompt mode: #{entry.fetch(:source_mode)}
+        Preferred route: default
+        Route requirement: advisory
+        Use #{entry.fetch(:source_sigil)}pr-batch to complete this generated triage batch with subagents.
+        Batch size target: #{entry.fetch(:source_host)}; wave: 1/1.
+        - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify #{entry.fetch(:source_sigil)}pr-batch+workflow; unresolved=>UNKNOWN.
+        - ask=>#{entry.fetch(:source_sigil)}pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+      PROMPT
+      expected = <<~PROMPT
+        #{entry.fetch(:expected_wrapper)}Prompt host: #{entry.fetch(:active_host)}
+        Prompt mode: #{entry.fetch(:expected_mode)}
+        Preferred route: default
+        Route requirement: advisory
+        Use #{entry.fetch(:expected_sigil)}pr-batch to complete this generated triage batch with subagents.
+        Batch size target: #{entry.fetch(:active_host)}; wave: 1/1.
+        - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify #{entry.fetch(:expected_sigil)}pr-batch+workflow; unresolved=>UNKNOWN.
+        - ask=>#{entry.fetch(:expected_sigil)}pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+      PROMPT
+
+      result, stderr, status = run_adapter(prompt, active_host: entry.fetch(:active_host))
+
+      assert status.success?, stderr
+      assert_equal "conversion-required", result.fetch("classification"), entry.inspect
+      assert_equal false, result.fetch("execute_allowed"), entry.inspect
+      assert_equal true, result.fetch("relaunch_required"), entry.inspect
+      assert_equal true, result.fetch("replanning_required"), entry.inspect
+      assert_equal true, result.fetch("semantic_payload_preserved"), entry.inspect
+      assert_equal expected, result.fetch("prompt"), entry.inspect
+
+      relaunched, relaunch_stderr, relaunch_status = run_adapter(expected, active_host: entry.fetch(:active_host))
+      assert relaunch_status.success?, relaunch_stderr
+      assert_equal "compatible", relaunched.fetch("classification"), entry.inspect
+      assert_equal expected, relaunched.fetch("prompt"), entry.inspect
+    end
+  end
+
   def test_duplicate_header_is_ambiguous_and_cannot_execute
     prompt = <<~PROMPT
       /goal
@@ -272,6 +335,57 @@ class PromptHostAdapterTest < Minitest::Test
     assert_equal "compatible", result.fetch("classification")
     assert_equal true, result.fetch("execute_allowed")
     assert_equal prompt, result.fetch("prompt")
+  end
+
+  def test_contradictory_batch_size_target_fails_closed_without_echo
+    cases = [
+      %w[claude claude codex],
+      %w[codex codex claude],
+      %w[codex claude claude],
+      %w[claude codex codex]
+    ]
+
+    cases.each do |declared_host, active_host, batch_size_target|
+      marker = "SECRET_#{declared_host.upcase}_#{active_host.upcase}_#{batch_size_target.upcase}"
+      prompt = direct_prompt(
+        host: declared_host,
+        body: "Batch size target: #{batch_size_target}; wave: 1/1. #{marker}"
+      )
+
+      result, stderr, status, stdout = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal "ambiguous", result.fetch("classification"), marker
+      assert_equal "contradictory-batch-size-target", result.fetch("reason_code"), marker
+      assert_equal false, result.fetch("execute_allowed"), marker
+      assert_equal false, result.fetch("relaunch_required"), marker
+      assert_nil result.fetch("semantic_payload_preserved"), marker
+      assert_nil result.fetch("prompt"), marker
+      refute_includes stdout, marker
+    end
+  end
+
+  def test_matching_and_portable_generic_batch_size_targets_remain_byte_exact
+    cases = [
+      %w[codex codex codex compatible],
+      %w[claude claude claude compatible],
+      %w[portable codex generic portable],
+      %w[portable claude generic portable]
+    ]
+
+    cases.each do |declared_host, active_host, batch_size_target, classification|
+      prompt = direct_prompt(
+        host: declared_host,
+        body: "Batch size target: #{batch_size_target}; wave: 1/1."
+      )
+
+      result, stderr, status = run_adapter(prompt, active_host: active_host)
+
+      assert status.success?, stderr
+      assert_equal classification, result.fetch("classification"), prompt
+      assert_equal true, result.fetch("execute_allowed"), prompt
+      assert_equal prompt, result.fetch("prompt"), prompt
+    end
   end
 
   def test_known_opposite_direct_host_requires_inert_conversion

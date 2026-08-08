@@ -4,6 +4,9 @@
 require "json"
 require "optparse"
 
+TRIAGE_BASE_HOST_MECHANIC =
+  %r{^(- Resolve `base_branch` via repo/`AGENTS\.md` config; fetch/prune origin; verify )[/$]pr-batch\+workflow;}
+
 def normalized_semantic_payload(prompt)
   text = prompt.delete_prefix("/goal\n")
   header_prefix = /\APrompt host: (?:codex|claude|portable)\nPrompt mode: (?:goal|direct|batch)\nPreferred route: [^\n]+\nRoute requirement: advisory\n/
@@ -13,6 +16,7 @@ def normalized_semantic_payload(prompt)
     .sub(%r{^Use [/$]pr-batch\b}, "Use pr-batch")
     .sub(/^Batch size target: (?:codex|claude);/, "Batch size target: HOST;")
     .gsub(%r{^(Base:.*;verify )[/$]pr-batch\+workflow;}, '\1pr-batch+workflow;')
+    .gsub(TRIAGE_BASE_HOST_MECHANIC, '\1pr-batch+workflow;')
     .gsub(%r{^(- Resolve )`?[/$]pr-batch`?;}, '\1pr-batch;')
     .gsub(%r{^(\s*-\s*ask=>)[/$]pr-walkthrough;}, '\1pr-walkthrough;')
 end
@@ -23,6 +27,7 @@ def render_host_mechanics(prompt, target_host)
   prompt
     .sub(%r{^Use [/$]pr-batch\b}, "Use #{sigil}pr-batch")
     .gsub(%r{^(Base:.*;verify )[/$]pr-batch\+workflow;}, "\\1#{sigil}pr-batch+workflow;")
+    .gsub(TRIAGE_BASE_HOST_MECHANIC, "\\1#{sigil}pr-batch+workflow;")
     .gsub(%r{^(- Resolve )`?[/$]pr-batch`?;}, "\\1#{sigil}pr-batch;")
     .gsub(%r{^(\s*-\s*ask=>)[/$]pr-walkthrough;}, "\\1#{sigil}pr-walkthrough;")
 end
@@ -117,6 +122,14 @@ valid_declared_invocation = case headers["Prompt host"]
 complete_valid_headers = valid_header_counts && valid_host_mode_wrapper && valid_preferred_route &&
                          ordered_headers && valid_declared_invocation &&
                          headers["Route requirement"] == "advisory"
+concrete_batch_size_targets = prompt.scan(/^Batch size target: (codex|claude|generic);/).flatten
+expected_batch_size_target = {
+  "codex" => "codex",
+  "claude" => "claude",
+  "portable" => "generic"
+}[headers["Prompt host"]]
+batch_size_target_consistent = concrete_batch_size_targets.empty? ||
+                               concrete_batch_size_targets.all? { |target| target == expected_batch_size_target }
 legacy_host = if no_headers && prompt.start_with?("/goal\n")
                 "codex"
               elsif no_headers && prompt.match?(%r{\A/pr-batch(?:\s|\z)})
@@ -126,13 +139,14 @@ legacy_compatible = active_host_known && legacy_host == options.fetch(:active_ho
                     host_mechanics_supported?(prompt, options.fetch(:active_host))
 legacy_conversion = active_host_known && legacy_host && legacy_host != options.fetch(:active_host)
 
-compatible = active_host_known && complete_valid_headers &&
+compatible = active_host_known && complete_valid_headers && batch_size_target_consistent &&
              headers["Prompt host"] == options.fetch(:active_host) &&
              host_mechanics_supported?(prompt, options.fetch(:active_host))
-portable = active_host_known && complete_valid_headers && headers["Prompt host"] == "portable" &&
+portable = active_host_known && complete_valid_headers && batch_size_target_consistent &&
+           headers["Prompt host"] == "portable" &&
            invoked_host_mechanics(prompt).empty? &&
            File.file?(File.expand_path("../../../docs/host-adapter/contract.md", __dir__))
-explicit_conversion = active_host_known && complete_valid_headers &&
+explicit_conversion = active_host_known && complete_valid_headers && batch_size_target_consistent &&
                       %w[codex claude].include?(headers["Prompt host"]) &&
                       headers["Prompt host"] != options.fetch(:active_host)
 conversion_source_host = explicit_conversion ? headers["Prompt host"] : legacy_host
@@ -210,6 +224,8 @@ reason_code = if classification != "ambiguous"
               elsif some_headers && !valid_declared_invocation
                 expected_prefix = headers["Prompt host"] == "codex" ? "Use /pr-batch" : "Use $pr-batch"
                 prompt_body.start_with?(expected_prefix) ? "contradictory-host-mechanic" : "invalid-host-invocation"
+              elsif complete_valid_headers && !batch_size_target_consistent
+                "contradictory-batch-size-target"
               elsif (explicit_conversion || legacy_conversion) && !source_mechanics_supported
                 "contradictory-source-mechanic"
               elsif (explicit_conversion || legacy_conversion) && converted_prompt && !semantic_payload_preserved
