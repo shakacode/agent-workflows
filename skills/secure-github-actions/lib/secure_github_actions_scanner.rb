@@ -136,7 +136,14 @@ module SecureGitHubActions
         alias_findings(node, path, keys)
       when Psych::Nodes::Mapping
         node.children.each_slice(2).flat_map do |key, value|
-          key_name = key.is_a?(Psych::Nodes::Scalar) ? key.value : "<key>"
+          unless key.is_a?(Psych::Nodes::Scalar)
+            key_name = "<non-scalar-key@#{key.start_line + 1}:#{key.start_column + 1}>"
+            symbol = (keys + [key_name]).join(".")
+            key_findings = unsupported_mapping_key_findings(key, path, symbol)
+            next key_findings + scan_node(value, path, keys + [key_name], lines)
+          end
+
+          key_name = key.value
           symbol = (keys + [key_name]).join(".")
           findings = if sensitive_position?(key_name, keys)
                        shape_findings(key_name, value, path, symbol) +
@@ -157,6 +164,17 @@ module SecureGitHubActions
           []
         end
       end
+    end
+
+    def unsupported_mapping_key_findings(node, path, symbol)
+      [finding(
+        rule_id: "secure-github-actions/unsupported-yaml-mapping-key",
+        path: path,
+        symbol: symbol,
+        line: node.start_line + 1,
+        title: "GitHub Actions YAML uses a non-scalar mapping key",
+        body: "Replace alias, sequence, or mapping keys with explicit scalar keys so security-sensitive fields cannot be hidden."
+      )]
     end
 
     def alias_findings(node, path, keys)

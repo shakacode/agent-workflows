@@ -239,6 +239,94 @@ class SecureGitHubActionsScanTest < Minitest::Test
     end
   end
 
+  def test_alias_mapping_key_cannot_hide_root_jobs
+    with_repository(<<~YAML) do |root|
+      jobs_key: &jobs_key jobs
+      *jobs_key:
+        build:
+          runs-on: ubuntu-latest
+          steps:
+            - run: echo safe
+    YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      finding = JSON.parse(stdout).fetch("review_findings").first
+      assert_equal "secure-github-actions/unsupported-yaml-mapping-key", finding.fetch("rule_id")
+      assert_equal ".github/workflows/test.yml", finding.dig("location", "file")
+      assert_equal 2, finding.dig("location", "line")
+      assert_includes finding.dig("location", "symbol"), "non-scalar-key"
+    end
+  end
+
+  def test_alias_mapping_keys_cannot_hide_workflow_step_run_or_uses
+    with_repository(<<~'YAML', trusted_actions: ["owner/action"]) do |root|
+      run_key: &run_key run
+      uses_key: &uses_key uses
+      jobs:
+        build:
+          steps:
+            - *run_key: echo "${{ github.event.pull_request.title }}"
+            - *uses_key: owner/action@v1
+    YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal [
+        "secure-github-actions/unsupported-yaml-mapping-key",
+        "secure-github-actions/unsupported-yaml-mapping-key"
+      ], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_alias_mapping_key_cannot_hide_job_level_reusable_workflow_use
+    with_repository(<<~YAML, trusted_actions: ["owner/workflows"]) do |root|
+      uses_key: &uses_key uses
+      jobs:
+        deploy:
+          *uses_key: owner/workflows/.github/workflows/deploy.yml@v1
+    YAML
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      assert_equal ["secure-github-actions/unsupported-yaml-mapping-key"], rule_ids(JSON.parse(stdout))
+    end
+  end
+
+  def test_alias_mapping_keys_cannot_hide_composite_step_run_or_uses
+    with_repository("jobs: {}\n", trusted_actions: ["owner/action"]) do |root|
+      action_path = File.join(root, "components/key-alias/action.yml")
+      FileUtils.mkdir_p(File.dirname(action_path))
+      File.write(action_path, <<~'YAML')
+        run_key: &run_key run
+        uses_key: &uses_key uses
+        runs:
+          using: composite
+          steps:
+            - *run_key: echo "${{ github.event.issue.title }}"
+            - *uses_key: owner/action@v1
+      YAML
+
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, SCANNER, "--json", root)
+
+      assert_equal 1, status.exitstatus
+      assert_empty stderr
+      document = JSON.parse(stdout)
+      assert_equal [
+        "secure-github-actions/unsupported-yaml-mapping-key",
+        "secure-github-actions/unsupported-yaml-mapping-key"
+      ], rule_ids(document)
+      files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+      assert_equal [
+        "components/key-alias/action.yml",
+        "components/key-alias/action.yml"
+      ], files
+    end
+  end
+
   def test_scanner_covers_nested_composite_actions
     with_repository("jobs: {}\n", trusted_actions: ["owner/action"]) do |root|
       action_path = File.join(root, "components/example/action.yml")

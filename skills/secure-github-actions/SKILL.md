@@ -19,8 +19,9 @@ provides a read-only deterministic gate plus a bounded manual security review.
    Use `--json` for `review-finding-v0` output. See
    [audit commands](references/audit-commands.md).
 3. Fix every deterministic finding. The scanner fails closed on malformed YAML,
-   aliases entering job or step boundaries, unsafe file boundaries, invalid
-   sensitive-field shapes, and invalid `trusted_actions` policy.
+   non-scalar mapping keys, aliases entering job or step boundaries, unsafe file
+   boundaries, invalid sensitive-field shapes, and invalid `trusted_actions`
+   policy.
 4. Apply the judgment checks in
    [public repository rules](references/public-repo-rules.md), including the
    non-public baseline. The mechanical result is necessary but not sufficient.

@@ -27,7 +27,8 @@ class SecureGitHubActionsContractTest < Minitest::Test
 
     assert_includes audit, "secure-github-actions-scan"
     assert_includes audit, "trusted_actions"
-    assert_includes audit, "aliases at security-sensitive job and step boundaries"
+    assert_includes audit, "aliases at security-sensitive"
+    assert_includes audit, "non-scalar mapping keys everywhere"
     assert_includes audit, ".tmp"
     assert_includes public_rules, "persist-credentials: false"
     assert_includes public_rules, "necessary but not sufficient"
