@@ -23,6 +23,7 @@ Installed paths:
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
+  <target>/bin/agent-workflows-refresh
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
   <target>/.agent-workflows-install.json
@@ -42,6 +43,7 @@ bin_helpers=(
   agent-workflow-seam-doctor
   agent-workflows-delivery-state
   agent-workflows-doctor
+  agent-workflows-refresh
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows

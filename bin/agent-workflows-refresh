@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: agent-workflows-refresh [--host codex|claude|auto]
+
+Refreshes the Agent Workflows plugin through the selected host's native CLI.
+USAGE
+}
+
+usage_error() {
+  echo "$1" >&2
+  usage >&2
+  exit 64
+}
+
+host="auto"
+
+while (($#)); do
+  case "$1" in
+    --host)
+      (($# >= 2)) || usage_error "--host requires codex, claude, or auto"
+      host="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage_error "Unknown option: $1"
+      ;;
+  esac
+done
+
+case "$host" in
+  codex|claude|auto) ;;
+  *) usage_error "--host must be codex, claude, or auto; got: $host" ;;
+esac
+
+if [[ "$host" == "auto" ]]; then
+  codex_home="${CODEX_HOME:-$HOME/.codex}"
+  claude_home="${CLAUDE_HOME:-$HOME/.claude}"
+  codex_detected=false
+  claude_detected=false
+  [[ -n "${CODEX_HOME:-}" || -d "$codex_home" ]] && codex_detected=true
+  [[ -n "${CLAUDE_HOME:-}" || -d "$claude_home" ]] && claude_detected=true
+
+  if [[ "$codex_detected" == true && "$claude_detected" == true ]]; then
+    echo "Auto host detection found both Codex and Claude homes; pass --host codex or --host claude." >&2
+    exit 64
+  elif [[ "$claude_detected" == true ]]; then
+    host="claude"
+  else
+    host="codex"
+  fi
+fi
+
+case "$host" in
+  codex)
+    if ! command -v codex >/dev/null 2>&1; then
+      echo "codex was not found on PATH. Install or configure the Codex CLI, then retry." >&2
+      exit 127
+    fi
+    codex plugin marketplace upgrade agent-workflows
+    ;;
+  claude)
+    if ! command -v claude >/dev/null 2>&1; then
+      echo "claude was not found on PATH. Install or configure the Claude CLI, then retry." >&2
+      exit 127
+    fi
+    claude plugin marketplace update agent-workflows
+    claude plugin update scw@agent-workflows
+    ;;
+esac
+
+echo "REFRESH_COMPLETE host=$host"
