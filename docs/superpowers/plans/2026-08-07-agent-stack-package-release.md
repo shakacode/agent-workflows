@@ -33,6 +33,50 @@
   conflicting `RUBYGEMS_HOST`.
 - The source-pack installer does not switch to remote gem resolution merely because a gem is published.
 
+### Shared RubyGems release contract
+
+Both Ruby packages use this single release contract. Package tasks below add
+only their package-specific inputs and validation; they do not restate or
+weaken these controls.
+
+Add two distinct release tasks so Rake's run-once semantics cannot skip the
+post-push check. A pre-source-control prerequisite, after the Bundler build,
+requires the authorized commit and artifact SHA-256 inputs, compares them with
+`HEAD` and the exact built gem, fetches tags, and requires the version tag
+either to be absent or to dereference to the authorized commit. A tag at
+another commit is a terminal collision. A separate prerequisite of
+`release:rubygem_push`, which runs after `release:source_control_push`, refetches
+and reads back both the local and remote tag, requires each to dereference to
+the authorized commit, and rechecks `HEAD` plus the artifact SHA-256 before gem
+publication. Test missing or mismatched authorization, absent, matching, and
+colliding pre-push tags, missing or mismatched post-push tags, and a fully
+matching sequence without registry mutation.
+
+Each first-release workflow is protected `workflow_dispatch` only and requires
+exact package, version, release branch, commit, artifact SHA-256, workflow path,
+workflow ref, and workflow-file SHA-256 authorization inputs. Dispatch only
+from that exact authorized branch ref. Configure the protected `release`
+environment with a deployment-branch rule admitting only that branch and
+required human review. Before approving the environment deployment, the
+reviewer reads the run metadata and independently verifies its workflow path,
+`github.workflow_ref`, and `head_sha` against the authorization; a mismatch is
+rejected before any job with `id-token: write` can start.
+
+The OIDC-capable release job declares permissions at job scope, uses the
+protected `release` environment, and begins by hashing its checked-out workflow
+file and matching every workflow binding. Fetch full history, check out the
+authorized release branch as an attached local branch rather than the raw SHA,
+and verify both `HEAD` and `origin/<authorized-release-branch>` equal the
+authorized commit. Branch movement stops the workflow and requires fresh
+authorization; never let Bundler run from detached `HEAD`, because its release
+task pushes the current branch before the tag. The job uses `id-token: write`,
+`contents: write` for Bundler's release-tag push, pinned actions, package tests,
+a rebuilt artifact, checksum verification, and `rubygems/release-gem`. It has
+no long-lived RubyGems API token or broader repository permission. Test wrong
+dispatch ref, run head SHA, workflow path/ref, and workflow-file digest as
+release-stopping cases. A later tag-triggered release is a separate design
+change unless an immutable authorization manifest supplies the same bindings.
+
 ---
 
 ## Repository Package Map
@@ -167,9 +211,9 @@ Run:
 mkdir -p pkg
 gem build agent-coordination.gemspec --output pkg/agent-coordination-0.1.0.gem
 gem specification pkg/agent-coordination-0.1.0.gem --yaml
-rm -rf pkg/agent-coordination-unpacked
-gem unpack pkg/agent-coordination-0.1.0.gem --target pkg/agent-coordination-unpacked
-find pkg/agent-coordination-unpacked -type f -print | sort
+unpack_root="$(mktemp -d "${TMPDIR:-/tmp}/agent-coordination-unpacked.XXXXXX")"
+gem unpack pkg/agent-coordination-0.1.0.gem --target "${unpack_root}"
+find "${unpack_root}" -type f -print | sort
 shasum -a 256 pkg/agent-coordination-0.1.0.gem
 ```
 
@@ -190,44 +234,10 @@ Add `gem "rake", require: false` to `Gemfile`, update the lockfile, require
 `bundler/gem_tasks` from `Rakefile`, and test that `bundle exec rake -T` exposes
 the build and release tasks in a clean bundle.
 
-Add two distinct release tasks so Rake's run-once semantics cannot skip the
-post-push check. A pre-source-control prerequisite, after the Bundler build,
-requires the authorized commit and SHA-256 inputs, compares them with `HEAD` and
-the exact `pkg/agent-coordination-0.1.0.gem`, fetches tags, and requires
-`v0.1.0` either to be absent or to dereference to the authorized commit. A tag
-at another commit is a terminal collision. A separate prerequisite of
-`release:rubygem_push`, which runs after `release:source_control_push`, refetches
-and read-backs both the local and remote tag, requires each to dereference to
-the authorized commit, and rechecks `HEAD` plus the artifact SHA-256 before gem
-publication. Test missing/mismatched authorization, absent/matching/colliding
-pre-push tags, missing/mismatched post-push tags, and a fully matching sequence
-without registry mutation.
-
-The first-release workflow is protected `workflow_dispatch` only and requires
-exact package, version, release branch, commit, artifact SHA-256, workflow path,
-workflow ref, and workflow-file SHA-256 inputs from Step 7. Dispatch the
-workflow only from that exact authorized branch ref. Configure the protected
-`release` environment with a deployment-branch rule admitting only that branch
-and required human review. Before approving the environment deployment, the
-reviewer reads the run metadata and independently verifies its workflow path,
-`github.workflow_ref`, and `head_sha` against the authorization; a ref or SHA
-mismatch is rejected before any job with `id-token: write` can start.
-
-The OIDC-capable release job declares permissions at job scope, uses the
-protected `release` environment, and begins by hashing its checked-out workflow
-file and matching every workflow binding. Fetch full history, check out the
-authorized release branch as an attached local branch rather than checking out
-the raw SHA, and verify both `HEAD` and
-`origin/<authorized-release-branch>` equal the authorized commit. Branch
-movement stops the workflow and requires fresh authorization; never let Bundler
-run from detached `HEAD`, because its release task pushes the current branch
-before pushing the tag. The job uses `id-token: write`, `contents: write` for
-Bundler's release-tag push, pinned actions, package tests, a rebuilt artifact,
-checksum verification, and `rubygems/release-gem`. It contains no long-lived
-RubyGems API token and no broader repository permission. Test wrong dispatch
-ref, run head SHA, workflow path/ref, and workflow-file digest as release-stopping
-cases. A later tag-triggered release is a separate design change unless an
-immutable authorization manifest supplies the same bindings.
+Implement the shared RubyGems release contract above with package
+`agent-coordination`, version and tag `0.1.0`/`v0.1.0`, and the exact
+`pkg/agent-coordination-0.1.0.gem` artifact. The authorization inputs come from
+Step 7.
 
 - [ ] **Step 6: Run repository release gates**
 
@@ -301,10 +311,9 @@ changelog contract tests before authorization.
 
 - [ ] **Step 4: Add the OIDC-only release workflow**
 
-Use the same protected manual-dispatch, external environment approval,
-workflow-path/ref/file-digest binding, exact-commit, authorized-artifact,
-distinct pre-push/post-push tag verification, and GitHub Release pattern as
-Task 2. Confirm the foundation `Gemfile` includes Rake and its `Rakefile` still
+Implement the shared RubyGems release contract above with package
+`agent-workflows`, version and tag `0.2.0`/`v0.2.0`, and its exact built gem.
+Confirm the foundation `Gemfile` includes Rake and its `Rakefile` still
 exposes Bundler's release task under `bundle exec`, then run `bin/validate`, gem
 packaging tests, isolated install smoke, and source-pack parity before
 `rubygems/release-gem`. Require the foundation workflow's exact-commit
@@ -339,6 +348,14 @@ After the workflow reports success, independently query RubyGems, install the pu
 
 - Consumes: Node `>=22.12.0`, existing `prepack`, build, test, lifecycle CLI.
 - Produces: npm `agent-coordination-dashboard` 0.1.0 and matching GitHub release/tag.
+
+The dashboard has three deliberately distinct Node.js toolchain requirements:
+
+| Purpose | Node.js | npm | Publication authority |
+| --- | --- | --- | --- |
+| Runtime and CI compatibility floor | `22.12.0` | Repository-supported npm | Never authorizes publication |
+| npm trusted-publisher platform minimum | `22.14.0` | `11.5.1` | Compatibility threshold only |
+| Authorized publication toolchain | `24.8.0` | `11.5.1` | The only toolchain allowed to publish |
 
 - [ ] **Step 1: Add package-content assertions**
 

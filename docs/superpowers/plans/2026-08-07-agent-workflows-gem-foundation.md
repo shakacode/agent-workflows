@@ -214,28 +214,31 @@ require_relative "lib/agent_workflows/version"
 root = __dir__
 manifest = File.join(root, "agent-workflows.manifest")
 package_files = File.readlines(manifest, chomp: true, encoding: "UTF-8").reject(&:empty?)
-raise "Unsafe agent-workflows manifest" unless package_files.uniq == package_files &&
+raise "Unsafe agent-workflows manifest" unless package_files == package_files.sort &&
+                                               package_files.uniq == package_files &&
                                                package_files.none? { |path| path.start_with?("/", "../") || path.include?("/../") }
 
-def regular_manifest_entry?(root, relative_path)
+def resolved_manifest_entry(root, relative_path)
   parts = relative_path.split("/", -1)
-  return false if parts.empty? || parts.any? { |part| part.empty? || part == "." || part == ".." }
+  return if parts.empty? || parts.any? { |part| part.empty? || part == "." || part == ".." }
 
   root = File.realpath(root)
   current = root
   parts.each_with_index do |part, index|
     current = File.join(current, part)
     stat = File.lstat(current)
-    return false if stat.symlink?
-    return false unless index == parts.length - 1 ? stat.file? : stat.directory?
+    return if stat.symlink?
+    return unless index == parts.length - 1 ? stat.file? : stat.directory?
   end
-  File.realpath(current).start_with?("#{root}#{File::SEPARATOR}")
+  resolved = File.realpath(current)
+  resolved if resolved.start_with?("#{root}#{File::SEPARATOR}")
 rescue Errno::ENOENT, Errno::ELOOP
-  false
+  nil
 end
 
-regular_package_files = package_files.all? { |path| regular_manifest_entry?(root, path) }
-raise "Missing or non-regular agent-workflows manifest entry" unless regular_package_files
+resolved_package_files = package_files.map { |path| resolved_manifest_entry(root, path) }
+raise "Missing, duplicate, or non-regular agent-workflows manifest entry" unless resolved_package_files.none?(&:nil?) &&
+                                                                               resolved_package_files.uniq == resolved_package_files
 
 Gem::Specification.new do |spec|
   spec.name = "agent-workflows"
