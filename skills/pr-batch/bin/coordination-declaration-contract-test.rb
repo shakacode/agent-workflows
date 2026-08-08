@@ -7,8 +7,26 @@
 # writes while still producing a clean-looking final handoff. The declaration
 # closes that hole: a handoff must say what it did about coordination, and
 # silence is a hard blocker rather than an implicit success.
+#
+# The gate logic lives in the shipped `coordination-declaration` helper that the
+# coordinator closeout lane runs, not here; this file loads it so the runtime
+# gate and the documented contract cannot drift apart.
 
 require "minitest/autorun"
+require "json"
+require "fileutils"
+require "open3"
+require "tmpdir"
+
+COORDINATION_DECLARATION_HELPER = File.expand_path("coordination-declaration", __dir__)
+unless File.file?(COORDINATION_DECLARATION_HELPER)
+  abort(
+    "BLOCKED: the coordination declaration gate requires its sibling pr-batch runtime " \
+      "helper from the same Agent Workflows pack revision; " \
+      "missing companion: #{COORDINATION_DECLARATION_HELPER}"
+  )
+end
+load COORDINATION_DECLARATION_HELPER
 
 ROOT = File.expand_path("../../..", __dir__)
 
@@ -33,7 +51,7 @@ REQUIRED_SURFACES = {
   "docs/coordination-backend.md" => COORDINATION_BACKEND_DOCS_PATH
 }.freeze
 
-EM_DASH = "—"
+EM_DASH = CoordinationDeclaration::EM_DASH
 
 COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every final batch handoff must carry exactly " \
                                 "one `coordination:` line, and no handoff is complete or clean without it. Use " \
@@ -48,13 +66,7 @@ COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every final bat
                                 "accepted value; a batch " \
                                 "that wrote nothing to the coordination backend must say so in the declaration.".freeze
 
-MISSING_DECLARATION_BLOCKER = "final handoff is missing the mandatory `coordination:` declaration; " \
-                              "declare `coordination: registered <batch-id>` or " \
-                              "`coordination: unavailable #{EM_DASH} <reason>`".freeze
-
-# Accepts an optional list marker so a declaration reads naturally inside a
-# bulleted Lane Card or handoff section.
-DECLARATION_LINE = /^[[:space:]]*(?:[-*+][[:space:]]+)?coordination:[[:space:]]*(.*?)[[:space:]]*$/
+MISSING_DECLARATION_BLOCKER = CoordinationDeclaration::MISSING_DECLARATION_BLOCKER
 
 def read_repo_file(path)
   File.read(path, encoding: "UTF-8")
@@ -64,81 +76,21 @@ def normalize_prose(text)
   text.gsub(/\s+/, " ")
 end
 
-def unknown_sentinel?(value)
-  value.strip.casecmp("UNKNOWN").zero?
+# Anchored to a whole heading line so a heading quoted in prose or a sync comment
+# cannot capture the section.
+def extract_anchored_section(text, heading, end_heading:)
+  match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing #{heading} section" unless match
+
+  tail = text[match.end(0)..]
+  stop = tail.match(end_heading)
+  stop ? tail[0...stop.begin(0)] : tail
 end
 
-# The gate itself. Returns the list of blockers for a candidate final handoff;
-# an empty list means the handoff declared its coordination state acceptably.
+# Delegate to the shipped helper so every gate assertion below tests the script
+# the coordinator closeout lane actually runs.
 def coordination_declaration_blockers(handoff_text)
-  values = handoff_text.to_s.lines.filter_map { |line| line[DECLARATION_LINE, 1] }
-
-  return [MISSING_DECLARATION_BLOCKER] if values.empty?
-
-  if values.length > 1
-    return ["final handoff declares `coordination:` #{values.length} times; exactly one declaration is allowed"]
-  end
-
-  declared_value_blockers(values.first)
-end
-
-def declared_value_blockers(value)
-  # Require whitespace (or end of value) after the keyword. `\b` is a zero-width
-  # boundary, so `registered-aw-1` would otherwise parse as a valid declaration.
-  case value
-  when /\Aregistered(?:[[:space:]]+(.*))?\z/m
-    registered_blockers(Regexp.last_match(1).to_s.strip)
-  when /\Aunavailable(?:[[:space:]]+(.*))?\z/m
-    unavailable_blockers(Regexp.last_match(1).to_s)
-  else
-    ["unrecognized `coordination:` declaration #{value.inspect}; " \
-     "use `registered <batch-id>` or `unavailable #{EM_DASH} <reason>`"]
-  end
-end
-
-def registered_blockers(batch_id)
-  return ["`coordination: registered` is missing its exact backend batch id"] if batch_id.empty?
-
-  if unknown_sentinel?(batch_id)
-    return ["`coordination: registered` batch id is `UNKNOWN`; an unregistered batch must " \
-            "declare `unavailable #{EM_DASH} <reason>`"]
-  end
-
-  # A batch id is a single opaque token. Without this, one line carrying both
-  # forms -- `registered aw-1 unavailable #{EM_DASH} backend flaky` -- would be
-  # swallowed whole into the batch id and pass as a clean declaration.
-  if batch_id.match?(/[[:space:]]/)
-    tail = batch_id.split(/[[:space:]]+/, 2).last.to_s
-    hint = if tail.start_with?("unavailable")
-             "declare exactly one form, never both on one line"
-           else
-             "drop the trailing text after the batch id"
-           end
-    return ["`coordination: registered` batch id must be a single token, got #{batch_id.inspect}; #{hint}"]
-  end
-
-  []
-end
-
-def unavailable_blockers(remainder)
-  trimmed = remainder.strip
-  # Report a bare `unavailable` as a missing reason rather than blaming the
-  # separator, which is the more direct diagnosis for that input.
-  return ["`coordination: unavailable` is missing its exact nonempty reason"] if trimmed.empty?
-
-  unless trimmed.start_with?(EM_DASH)
-    return ["`coordination: unavailable` must separate its reason with an em dash (#{EM_DASH})"]
-  end
-
-  reason = trimmed.delete_prefix(EM_DASH).strip
-  return ["`coordination: unavailable` is missing its exact nonempty reason"] if reason.empty?
-
-  if unknown_sentinel?(reason)
-    return ["`coordination: unavailable` reason is `UNKNOWN`; the declaration must state the exact " \
-            "reason coordination did not happen"]
-  end
-
-  []
+  CoordinationDeclaration.blockers(handoff_text)
 end
 
 class CoordinationDeclarationContractTest < Minitest::Test
@@ -370,5 +322,109 @@ class CoordinationDeclarationContractTest < Minitest::Test
     assert_includes normalize_prose(read_repo_file(CHANGELOG_PATH)),
                     "every final batch handoff must declare its coordination state",
                     "CHANGELOG.md must announce the mandatory coordination declaration"
+  end
+
+  # --- The shipped runtime helper, not just the gate logic -------------------
+
+  # Open3 tags captured bytes with the default external encoding, which can be
+  # US-ASCII. The helper always emits UTF-8, including the em dash in its blockers.
+  def parse_report(output)
+    JSON.parse(output.dup.force_encoding(Encoding::UTF_8))
+  end
+
+  def test_helper_cli_accepts_a_declared_handoff
+    out, _err, status = Open3.capture3(
+      "ruby", COORDINATION_DECLARATION_HELPER, "--handoff", "-",
+      stdin_data: "coordination: registered aw-20260723-1124-koa\nfinal state: merged\n"
+    )
+    report = parse_report(out)
+
+    assert_equal 0, status.exitstatus
+    assert report["ok"]
+    assert_equal "registered", report["form"]
+    assert_equal "aw-20260723-1124-koa", report["batch_id"]
+    assert_empty report["blockers"]
+  end
+
+  def test_helper_cli_blocks_a_handoff_with_no_declaration
+    out, _err, status = Open3.capture3(
+      "ruby", COORDINATION_DECLARATION_HELPER, "--handoff", "-",
+      stdin_data: "final state: merged\nAll gates passed and every target is closed out.\n"
+    )
+    report = parse_report(out)
+
+    assert_equal 1, status.exitstatus, "a silent handoff must exit nonzero so closeout cannot ignore it"
+    refute report["ok"]
+    assert_equal [MISSING_DECLARATION_BLOCKER], report["blockers"]
+  end
+
+  # The `unavailable` form requires an em dash, so the helper must not depend on
+  # the caller's locale to read its own required separator.
+  def test_helper_cli_reads_the_em_dash_form_under_an_ascii_locale
+    out, err, status = Open3.capture3(
+      { "LC_ALL" => "C", "LANG" => "C" },
+      "ruby", COORDINATION_DECLARATION_HELPER, "--handoff", "-",
+      stdin_data: "coordination: unavailable #{EM_DASH} deliberately uncoordinated single-operator run\n"
+    )
+
+    assert_equal 0, status.exitstatus, "an em-dash handoff must validate under an ASCII locale: #{err}"
+
+    report = parse_report(out)
+
+    assert report["ok"]
+    assert_equal "unavailable", report["form"]
+    assert_equal "deliberately uncoordinated single-operator run", report["reason"]
+  end
+
+  def test_helper_cli_validates_a_handoff_file
+    Dir.mktmpdir("coordination-declaration") do |directory|
+      path = File.join(directory, "handoff.md")
+      File.write(path, "- coordination: registered aw-1\n", encoding: "UTF-8")
+
+      out, _err, status = Open3.capture3("ruby", COORDINATION_DECLARATION_HELPER, "--handoff", path)
+
+      assert_equal 0, status.exitstatus
+      assert parse_report(out)["ok"]
+    end
+  end
+
+  def test_helper_cli_reports_a_usage_error_without_a_handoff
+    _out, err, status = Open3.capture3("ruby", COORDINATION_DECLARATION_HELPER)
+
+    assert_equal 64, status.exitstatus
+    assert_includes err, "--handoff"
+  end
+
+  def test_missing_runtime_helper_companion_stops_with_a_precise_blocker
+    Dir.mktmpdir("isolated-pr-batch") do |directory|
+      isolated_test = File.join(
+        File.realpath(directory),
+        "skills/pr-batch/bin/coordination-declaration-contract-test.rb"
+      )
+      FileUtils.mkdir_p(File.dirname(isolated_test))
+      FileUtils.cp(__FILE__, isolated_test)
+      missing_companion = File.expand_path("coordination-declaration", File.dirname(isolated_test))
+
+      out, err, status = Open3.capture3("ruby", isolated_test)
+
+      assert_equal 1, status.exitstatus
+      assert_includes err, "missing companion: #{missing_companion}"
+      refute_includes "#{out}\n#{err}", "LoadError"
+    end
+  end
+
+  # The gate was spec-only enforcement until the closeout lane actually ran it.
+  def test_coordinator_closeout_lane_runs_the_declaration_helper
+    closeout = extract_anchored_section(
+      read_repo_file(WORKFLOW_PATH),
+      "### Coordinator Closeout Lane",
+      end_heading: /^##[[:blank:]]+/
+    )
+    normalized = normalize_prose(closeout)
+
+    assert_includes normalized, '"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff',
+                    "the closeout lane must run the declaration helper against the drafted handoff"
+    assert_includes normalized, "A nonzero exit is a hard blocker",
+                    "the closeout lane must treat a failed declaration check as a hard blocker"
   end
 end
